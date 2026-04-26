@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kodo"
+version = "0.1.0b1"
+description = "Kōdo (コード) — an open-source agentic harness"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+kodo = "kodo.__main__:main"
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kodo"]
+
+[tool.hatch.envs.default]
+dependencies = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.9",
+    "mypy>=1.13",
+]
+
+[tool.hatch.envs.default.scripts]
+fmt      = "ruff format src test"
+lint     = "ruff check src test"
+typecheck = "mypy"
+test     = "pytest"
+check-version = "python scripts/check_version.py"
+check    = ["ruff format src test", "ruff check src test", "mypy", "python scripts/check_version.py", "pytest"]
+build    = ["python scripts/pre_build.py", "ruff format src test", "ruff check src test", "mypy", "python scripts/check_version.py", "pytest", "hatch build", "python scripts/post_build.py"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+addopts = "--cov=kodo --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src"]
