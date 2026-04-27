@@ -8,9 +8,8 @@ import shutil
 import sys
 import tempfile
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 from ._models import DecisionState, WorkflowRecord
 from ._worker import worker_main
@@ -69,7 +68,7 @@ class Orchestrator:
         self,
         module: str,
         intake_path: str,
-        parent_id: Optional[str] = None,
+        parent_id: str | None = None,
     ) -> WorkflowRecord:
         """Create and schedule a new workflow.
 
@@ -87,17 +86,13 @@ class Orchestrator:
         """
         async with self.__lock:
             if self.active_count >= self.__max:
-                raise RuntimeError(
-                    f"Concurrency limit of {self.__max} active workflows reached"
-                )
+                raise RuntimeError(f"Concurrency limit of {self.__max} active workflows reached")
             if parent_id is not None:
                 parent = self.__workflows.get(parent_id)
                 if parent is None:
                     raise ValueError(f"Parent workflow {parent_id!r} not found")
                 if parent.is_child:
-                    raise ValueError(
-                        f"Workflow {parent_id!r} is a child and cannot spawn children"
-                    )
+                    raise ValueError(f"Workflow {parent_id!r} is a child and cannot spawn children")
 
             wid = str(uuid.uuid4())
             workdir = Path(tempfile.mkdtemp(prefix=f"kodo-{wid[:8]}-"))
@@ -105,7 +100,7 @@ class Orchestrator:
                 workflow_id=wid,
                 parent_id=parent_id,
                 workdir=workdir,
-                started_at=datetime.now(tz=timezone.utc),
+                started_at=datetime.now(tz=UTC),
                 is_child=parent_id is not None,
             )
             if parent_id:
@@ -143,7 +138,7 @@ class Orchestrator:
             if record.is_active() and record.parent_id is None:
                 await self.cancel(wid)
 
-    def get(self, wid: str) -> Optional[WorkflowRecord]:
+    def get(self, wid: str) -> WorkflowRecord | None:
         """Return the record for a given UUID, or ``None``.
 
         Args:
@@ -190,7 +185,7 @@ class Orchestrator:
         self,
         wid: str,
         choice: str,
-        message: Optional[str] = None,
+        message: str | None = None,
     ) -> None:
         """Submit a human answer for a pending decision.
 
@@ -211,7 +206,7 @@ class Orchestrator:
             raise ValueError("No pending decision for this workflow")
         decision.submit(choice, message)
 
-    def get_decision_answer(self, wid: str) -> dict:
+    def get_decision_answer(self, wid: str) -> dict[str, dict[str, str | None] | str | None]:
         """Return the current decision status for a worker polling for its answer.
 
         Args:

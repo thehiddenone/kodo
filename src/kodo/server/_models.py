@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 from multiprocessing import Process
 from pathlib import Path
-from typing import Optional
 
 
 class DecisionState:
@@ -14,7 +13,7 @@ class DecisionState:
     __prompt: str
     __options: list[str]
     __default: str
-    __answer: Optional[str]
+    __answer: str | None
     __status: str
 
     def __init__(self, prompt: str, options: list[str], default: str) -> None:
@@ -47,7 +46,7 @@ class DecisionState:
         return self.__default
 
     @property
-    def answer(self) -> Optional[str]:
+    def answer(self) -> str | None:
         """The recorded answer, or ``None`` if not yet answered."""
         return self.__answer
 
@@ -64,7 +63,7 @@ class DecisionState:
         """
         return self.__status == "pending"
 
-    def submit(self, choice: str, message: Optional[str] = None) -> None:
+    def submit(self, choice: str, message: str | None = None) -> None:
         """Record a human answer.
 
         Args:
@@ -95,18 +94,18 @@ class WorkflowRecord:
 
     __id: str
     __state: str
-    __parent_id: Optional[str]
+    __parent_id: str | None
     __workdir: Path
     __started_at: datetime
     __is_child: bool
     __children: list[str]
-    __process: Optional[Process]
-    __decision: Optional[DecisionState]
+    __process: Process | None
+    __decision: DecisionState | None
 
     def __init__(
         self,
         workflow_id: str,
-        parent_id: Optional[str],
+        parent_id: str | None,
         workdir: Path,
         started_at: datetime,
         is_child: bool,
@@ -141,7 +140,7 @@ class WorkflowRecord:
         return self.__state
 
     @property
-    def parent_id(self) -> Optional[str]:
+    def parent_id(self) -> str | None:
         """UUID of the parent workflow, or ``None`` for top-level workflows."""
         return self.__parent_id
 
@@ -166,7 +165,7 @@ class WorkflowRecord:
         return list(self.__children)
 
     @property
-    def decision(self) -> Optional[DecisionState]:
+    def decision(self) -> DecisionState | None:
         """The current pending decision, or ``None``."""
         return self.__decision
 

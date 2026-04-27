@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 
 class MCPServerConfig:
     """Configuration for a single MCP server connection.
@@ -13,15 +11,15 @@ class MCPServerConfig:
     """
 
     __name: str
-    __url: Optional[str]
-    __command: Optional[list[str]]
+    __url: str | None
+    __command: list[str] | None
 
     def __init__(
         self,
         name: str,
         *,
-        url: Optional[str] = None,
-        command: Optional[list[str]] = None,
+        url: str | None = None,
+        command: list[str] | None = None,
     ) -> None:
         """Initialise the configuration.
 
@@ -47,11 +45,11 @@ class MCPServerConfig:
         return self.__name
 
     @property
-    def url(self) -> Optional[str]:
+    def url(self) -> str | None:
         """HTTP endpoint, or ``None`` for stdio-based servers."""
         return self.__url
 
     @property
-    def command(self) -> Optional[list[str]]:
+    def command(self) -> list[str] | None:
         """Command and arguments for stdio-based servers, or ``None`` for HTTP servers."""
         return self.__command

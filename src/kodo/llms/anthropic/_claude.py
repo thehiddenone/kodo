@@ -153,11 +153,13 @@ class ClaudeClient(LLMInterface):
             if block.type != "tool_use":
                 continue
             result = self.__call_mcp_tool(block.name, block.input)
-            results.append({
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": result,
-            })
+            results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                }
+            )
         return results
 
     def __call_mcp_tool(
@@ -180,9 +182,7 @@ class ClaudeClient(LLMInterface):
             NotImplementedError: Until MCP dispatch is implemented.
         """
         # TODO: route to the correct MCP server and execute the tool call
-        raise NotImplementedError(
-            f"MCP tool dispatch not yet implemented (tool: {tool_name!r})"
-        )
+        raise NotImplementedError(f"MCP tool dispatch not yet implemented (tool: {tool_name!r})")
 
     def __extract_text(self, response: anthropic.types.Message) -> str:
         """Concatenate all text blocks from a model response.
@@ -193,8 +193,4 @@ class ClaudeClient(LLMInterface):
         Returns:
             str: Concatenated plain text content.
         """
-        return "".join(
-            block.text
-            for block in response.content
-            if block.type == "text"
-        )
+        return "".join(block.text for block in response.content if block.type == "text")

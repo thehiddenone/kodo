@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, AsyncIterator
 
 from mcp import ClientSession
 from mcp.client.sse import sse_client
@@ -87,7 +87,7 @@ class MCPRegistry:
 
     __config_path: Path
     __servers: dict[str, _ServerEntry]
-    __tools_cache: list[dict[str, Any]] | None
+    __tools_cache: list[dict[str, object]] | None
     __tool_index: dict[str, str]
 
     def __init__(self, config_path: str | Path) -> None:
@@ -104,7 +104,7 @@ class MCPRegistry:
         self.__tools_cache = None
         self.__tool_index = {}
 
-    def tools(self) -> list[dict[str, Any]]:
+    def tools(self) -> list[dict[str, object]]:
         """Return all tools from all registered servers.
 
         Connects to each server on first call; subsequent calls return the
@@ -118,7 +118,7 @@ class MCPRegistry:
             self.__tools_cache = asyncio.run(self.__discover_all_tools())
         return self.__tools_cache
 
-    def call(self, tool_name: str, tool_input: dict[str, Any]) -> str:
+    def call(self, tool_name: str, tool_input: dict[str, object]) -> str:
         """Route a tool call to the appropriate server and return its output.
 
         Args:
@@ -139,44 +139,46 @@ class MCPRegistry:
         return asyncio.run(self.__invoke_tool(self.__servers[server_name], tool_name, tool_input))
 
     def __load_config(self) -> dict[str, _ServerEntry]:
-        data: dict[str, Any] = json.loads(self.__config_path.read_text(encoding="utf-8"))
+        data: dict[str, object] = json.loads(self.__config_path.read_text(encoding="utf-8"))
         servers: dict[str, _ServerEntry] = {}
-        for name, cfg in data.get("servers", {}).items():
-            command: list[str] | None = None
-            if "command" in cfg:
-                command = [cfg["command"]] + cfg.get("args", [])
-            url: str | None = cfg.get("url")
-            if command is None and url is None:
-                raise ValueError(
-                    f"MCP server {name!r} must have either 'command' or 'url'"
+        servers_dict = data.get("servers", {})
+        if isinstance(servers_dict, dict):
+            for name, cfg in servers_dict.items():
+                command: list[str] | None = None
+                if "command" in cfg:
+                    command = [cfg["command"]] + cfg.get("args", [])
+                url: str | None = cfg.get("url")
+                if command is None and url is None:
+                    raise ValueError(f"MCP server {name!r} must have either 'command' or 'url'")
+                servers[name] = _ServerEntry(
+                    name=name,
+                    command=command,
+                    env=cfg.get("env", {}),
+                    url=url,
                 )
-            servers[name] = _ServerEntry(
-                name=name,
-                command=command,
-                env=cfg.get("env", {}),
-                url=url,
-            )
         return servers
 
-    async def __discover_all_tools(self) -> list[dict[str, Any]]:
-        all_tools: list[dict[str, Any]] = []
+    async def __discover_all_tools(self) -> list[dict[str, object]]:
+        all_tools: list[dict[str, object]] = []
         for name, entry in self.__servers.items():
             async with self.__open_session(entry) as session:
                 result = await session.list_tools()
                 for tool in result.tools:
                     self.__tool_index[tool.name] = name
-                    all_tools.append({
-                        "name": tool.name,
-                        "description": tool.description or "",
-                        "input_schema": tool.inputSchema,
-                    })
+                    all_tools.append(
+                        {
+                            "name": tool.name,
+                            "description": tool.description or "",
+                            "input_schema": tool.inputSchema,
+                        }
+                    )
         return all_tools
 
     async def __invoke_tool(
         self,
         entry: _ServerEntry,
         tool_name: str,
-        tool_input: dict[str, Any],
+        tool_input: dict[str, object],
     ) -> str:
         async with self.__open_session(entry) as session:
             result = await session.call_tool(tool_name, tool_input)
@@ -187,14 +189,14 @@ class MCPRegistry:
             return "\n".join(parts)
 
     @contextlib.asynccontextmanager
-    async def __open_session(
-        self, entry: _ServerEntry
-    ) -> AsyncIterator[ClientSession]:
+    async def __open_session(self, entry: _ServerEntry) -> AsyncIterator[ClientSession]:
         if entry.url is not None:
-            async with sse_client(entry.url) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    yield session
+            async with (
+                sse_client(entry.url) as (read, write),
+                ClientSession(read, write) as session,
+            ):
+                await session.initialize()
+                yield session
         else:
             assert entry.command is not None
             params = StdioServerParameters(
@@ -202,7 +204,6 @@ class MCPRegistry:
                 args=entry.command[1:],
                 env=entry.env or None,
             )
-            async with stdio_client(params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    yield session
+            async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+                await session.initialize()
+                yield session

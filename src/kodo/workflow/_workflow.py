@@ -81,11 +81,13 @@ class WorkflowContext:
         Raises:
             InterruptedError: If the workflow is cancelled while waiting.
         """
-        params = urllib.parse.urlencode({
-            "prompt": prompt,
-            "options": json.dumps(options),
-            "default": default,
-        })
+        params = urllib.parse.urlencode(
+            {
+                "prompt": prompt,
+                "options": json.dumps(options),
+                "default": default,
+            }
+        )
         reg_url = f"{self.__url}/internal/workflows/{self.__id}/decision/register?{params}"
         urllib.request.urlopen(reg_url, timeout=10).read()
 
@@ -95,7 +97,10 @@ class WorkflowContext:
                 data = json.loads(resp.read())
             status = data["status"]
             if status == "answered":
-                return data["data"]["answer"]
+                result = data["data"]["answer"]
+                if isinstance(result, str):
+                    return result
+                raise TypeError(f"Expected an str answer, got {type(str).__name__}")
             if status == "cancelled":
                 raise InterruptedError("Workflow cancelled while waiting for decision")
             time.sleep(1.0)

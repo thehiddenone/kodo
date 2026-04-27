@@ -27,9 +27,12 @@ def main() -> None:
     )
     try:
         web.run_app(app, host="127.0.0.1", port=PORT)
-    except:
+    except Exception:
         _, exc, _ = sys.exc_info()
-        if isinstance(exc, RuntimeError) and str(exc) == 'Event loop stopped before Future completed.':
+        if (
+            isinstance(exc, RuntimeError)
+            and str(exc) == "Event loop stopped before Future completed."
+        ):
             pass
         else:
             sys.stderr.write(traceback.format_exc())

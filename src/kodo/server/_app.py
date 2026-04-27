@@ -21,6 +21,7 @@ DEFAULT_DECISION_TIMEOUT: float = 300.0
 # Public route handlers
 #
 
+
 async def _status(request: web.Request) -> web.Response:
     orch: Orchestrator = request.app["orchestrator"]
     return ok(
@@ -81,9 +82,7 @@ async def _create_child_workflow(request: web.Request) -> web.Response:
         return err("Required query parameters: intake, module")
 
     try:
-        record = await orch.create_workflow(
-            module=module, intake_path=intake, parent_id=parent_id
-        )
+        record = await orch.create_workflow(module=module, intake_path=intake, parent_id=parent_id)
     except (RuntimeError, ValueError) as exc:
         return status_resp("error", str(exc))
     except Exception as exc:
@@ -182,6 +181,7 @@ async def _shutdown(request: web.Request) -> web.Response:
 # Internal route handlers — worker subprocess → orchestrator IPC only
 #
 
+
 async def _internal_register_decision(request: web.Request) -> web.Response:
     orch: Orchestrator = request.app["orchestrator"]
     wid = request.match_info["id"]
@@ -205,16 +205,19 @@ async def _internal_decision_answer(request: web.Request) -> web.Response:
     orch: Orchestrator = request.app["orchestrator"]
     wid = request.match_info["id"]
     result = orch.get_decision_answer(wid)
-    return web.json_response({
-        "status": result["status"],
-        "message": result["status"],
-        "data": result.get("data"),
-    })
+    return web.json_response(
+        {
+            "status": result["status"],
+            "message": result["status"],
+            "data": result.get("data"),
+        }
+    )
 
 
 #
 # App factory and entry point
 #
+
 
 def create_app(
     max_workflows: int = DEFAULT_MAX_WORKFLOWS,
@@ -246,13 +249,7 @@ def create_app(
     app.router.add_get("/workflows/{id}/decision", _poll_decision)
     app.router.add_get("/workflows/{id}/decision/submit", _submit_decision)
     app.router.add_get("/shutdown", _shutdown)
-    app.router.add_get(
-        "/internal/workflows/{id}/decision/register", _internal_register_decision
-    )
-    app.router.add_get(
-        "/internal/workflows/{id}/decision/answer", _internal_decision_answer
-    )
+    app.router.add_get("/internal/workflows/{id}/decision/register", _internal_register_decision)
+    app.router.add_get("/internal/workflows/{id}/decision/answer", _internal_decision_answer)
 
     return app
-
-

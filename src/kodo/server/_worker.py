@@ -35,5 +35,5 @@ def worker_main(
     )
 
     mod = importlib.import_module(module_path)
-    workflow_cls = getattr(mod, "workflow")
+    workflow_cls = mod.workflow
     workflow_cls().run(ctx)

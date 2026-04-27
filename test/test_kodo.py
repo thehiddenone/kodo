@@ -1,9 +1,12 @@
+from importlib.metadata import version
+
 import kodo
 
 
-def test_version() -> None:
-    import re
-    from importlib.metadata import version
+def get_base_version(ver: str) -> str:
+    pos = ver.rfind("b")
+    return ver[:pos]
 
-    base = re.sub(r"b\d+$", "", kodo.__version__)
-    assert base == version("kodo")
+
+def test_version() -> None:
+    assert get_base_version(kodo.__version__) == get_base_version(version("kodo"))

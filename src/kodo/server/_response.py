@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import traceback as tb
-from typing import Any, Optional
 
 from aiohttp import web
 
 
-def ok(data: Any = None, message: str = "OK") -> web.Response:
+def ok(data: object | None = None, message: str = "OK") -> web.Response:
     """Build a successful ``status: ok`` response.
 
     Args:
@@ -18,7 +17,7 @@ def ok(data: Any = None, message: str = "OK") -> web.Response:
     Returns:
         web.Response: JSON response with ``status: ok``.
     """
-    body: dict[str, Any] = {"status": "ok", "message": message}
+    body: dict[str, object] = {"status": "ok", "message": message}
     if data is not None:
         body["data"] = data
     return web.json_response(body)
@@ -26,7 +25,7 @@ def ok(data: Any = None, message: str = "OK") -> web.Response:
 
 def err(
     message: str,
-    exc: Optional[BaseException] = None,
+    exc: BaseException | None = None,
     *,
     debug: bool = False,
 ) -> web.Response:
@@ -40,7 +39,7 @@ def err(
     Returns:
         web.Response: JSON response with ``status: error``.
     """
-    body: dict[str, Any] = {"status": "error", "message": message}
+    body: dict[str, object] = {"status": "error", "message": message}
     if exc is not None:
         e: dict[str, str] = {"type": type(exc).__name__, "message": str(exc)}
         if debug:
@@ -49,7 +48,7 @@ def err(
     return web.json_response(body)
 
 
-def status_resp(status: str, message: str, data: Any = None) -> web.Response:
+def status_resp(status: str, message: str, data: object | None = None) -> web.Response:
     """Build a response with an arbitrary status value.
 
     Args:
@@ -60,7 +59,7 @@ def status_resp(status: str, message: str, data: Any = None) -> web.Response:
     Returns:
         web.Response: JSON response envelope.
     """
-    body: dict[str, Any] = {"status": status, "message": message}
+    body: dict[str, object] = {"status": status, "message": message}
     if data is not None:
         body["data"] = data
     return web.json_response(body)
