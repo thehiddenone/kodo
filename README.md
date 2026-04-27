@@ -20,7 +20,7 @@ A Kōdo project treats `.kd` files as its primary source. Everything else is der
 
 ```text
 src/    *.kd files — the source of truth; what humans write and review
-gen/    generated source code — produced by Kōdo from the specs
+gen/    generated source code — produced by Kōdo from the specs in src/
 dist/   final artifact — executable, package, or deployable
 ```
 
@@ -38,6 +38,11 @@ The mirror repo acts as a checkpoint and diff surface. Nothing lands in your cod
 explicit human approval.
 
 ## Key features
+
+**Spec authoring agent** — a built-in subagent helps you write and refine `.kd` files.
+Rather than starting from a blank page, you describe intent in plain language and the agent
+structures it into well-formed specs, suggests how to decompose complex requirements, and
+flags anything likely to produce ambiguous or conflicting output.
 
 **Explicit change context** — `.kd` files carry information about what was added, removed, or
 revised since the last build. The LLM sees intent, not just state.
@@ -65,6 +70,9 @@ deployable output, with no manual steps in between.
 **Visual Studio Code extension** — a dedicated VS Code extension surfaces the full Kōdo
 workflow inside the editor: authoring `.kd` files with syntax support, triggering builds,
 and inspecting sync state without leaving the IDE.
+
+**MCP support** — LLMs have access to any [Model Context Protocol](https://modelcontextprotocol.io)
+server, giving them access to external tools, data sources, and services during code generation.
 
 **Plugin system** — toolchains, LLM backends, and deployment targets are all first-class
 extension points. Adding support for a new language ecosystem or a custom deployment workflow

@@ -9,10 +9,19 @@ description = "Kōdo (コード) — an open-source agentic harness"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "aiohttp>=3.9",
+    "anthropic>=0.97.0",
+    "google-genai>=1.73.1",
+    "llama-api-client>=0.6.0",
+    "mcp>=1.27.0",
+    "openai>=2.32.0",
+    "xai-sdk>=1.11.0",
+]
 
 [project.scripts]
 kodo = "kodo.__main__:main"
+kodo-server = "kodo.server.__main__:main"
 
 
 [tool.hatch.build.targets.wheel]
