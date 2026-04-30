@@ -46,7 +46,7 @@ class ClaudeClient(LLMInterface):
         """Currently selected model identifier, or ``None`` if not yet set."""
         return self.__model
 
-    def available_models(self) -> dict[str, dict[str, Any]]:
+    def available_models(self) -> dict[str, dict[str, object]]:
         """Fetch available models from the Anthropic API and return their capabilities.
 
         Returns:
@@ -54,13 +54,7 @@ class ClaudeClient(LLMInterface):
             ``display_name`` and ``created_at`` as reported by the API.
         """
         page = self.__client.models.list()
-        return {
-            m.id: {
-                "display_name": m.display_name,
-                "created_at": m.created_at,
-            }
-            for m in page.data
-        }
+        return {m.id: m.to_dict() for m in page.data}
 
     def set_model(self, model: str) -> None:
         """Select the model to use for subsequent ``run()`` calls.
@@ -92,7 +86,7 @@ class ClaudeClient(LLMInterface):
             str: Final text response from the model.
         """
         tools = self.__build_tools()
-        messages: list[dict[str, Any]] = [
+        messages: list[dict[str, object]] = [
             {
                 "role": "user",
                 "content": [
@@ -126,7 +120,7 @@ class ClaudeClient(LLMInterface):
             else:
                 return self.__extract_text(response)
 
-    def __build_tools(self) -> list[dict[str, Any]]:
+    def __build_tools(self) -> list[dict[str, object]]:
         """Convert declared MCP servers into Anthropic tool definitions.
 
         Returns:
@@ -139,7 +133,7 @@ class ClaudeClient(LLMInterface):
     def __dispatch_tool_calls(
         self,
         response: anthropic.types.Message,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, object]]:
         """Execute all tool-use blocks in a model response and collect results.
 
         Args:
@@ -148,7 +142,7 @@ class ClaudeClient(LLMInterface):
         Returns:
             list[dict]: Tool-result content blocks for the next user message.
         """
-        results: list[dict[str, Any]] = []
+        results: list[dict[str, object]] = []
         for block in response.content:
             if block.type != "tool_use":
                 continue
@@ -165,7 +159,7 @@ class ClaudeClient(LLMInterface):
     def __call_mcp_tool(
         self,
         tool_name: str,
-        tool_input: dict[str, Any],
+        tool_input: dict[str, object],
         server: MCPServerConfig | None = None,
     ) -> str:
         """Invoke a single MCP tool and return its output.

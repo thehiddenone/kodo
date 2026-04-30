@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from ._registry import MCPRegistry
 
 
@@ -23,7 +21,7 @@ class MCPDeclaration:
         """
         self.__registry = registry
 
-    def for_anthropic(self) -> list[dict[str, Any]]:
+    def for_anthropic(self) -> list[dict[str, object]]:
         """Generate Anthropic-compatible tool declarations.
 
         Applies an ephemeral ``cache_control`` hint to the final declaration

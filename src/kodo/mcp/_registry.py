@@ -14,7 +14,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.types import TextContent
 
 
-class _ServerEntry:
+class MCPServerEntry:
     """Configuration record for a single MCP server."""
 
     __name: str
@@ -86,7 +86,7 @@ class MCPRegistry:
     """
 
     __config_path: Path
-    __servers: dict[str, _ServerEntry]
+    __servers: dict[str, MCPServerEntry]
     __tools_cache: list[dict[str, object]] | None
     __tool_index: dict[str, str]
 
@@ -138,9 +138,9 @@ class MCPRegistry:
             raise KeyError(f"No registered MCP server provides tool {tool_name!r}")
         return asyncio.run(self.__invoke_tool(self.__servers[server_name], tool_name, tool_input))
 
-    def __load_config(self) -> dict[str, _ServerEntry]:
+    def __load_config(self) -> dict[str, MCPServerEntry]:
         data: dict[str, object] = json.loads(self.__config_path.read_text(encoding="utf-8"))
-        servers: dict[str, _ServerEntry] = {}
+        servers: dict[str, MCPServerEntry] = {}
         servers_dict = data.get("servers", {})
         if isinstance(servers_dict, dict):
             for name, cfg in servers_dict.items():
@@ -150,7 +150,7 @@ class MCPRegistry:
                 url: str | None = cfg.get("url")
                 if command is None and url is None:
                     raise ValueError(f"MCP server {name!r} must have either 'command' or 'url'")
-                servers[name] = _ServerEntry(
+                servers[name] = MCPServerEntry(
                     name=name,
                     command=command,
                     env=cfg.get("env", {}),
@@ -176,7 +176,7 @@ class MCPRegistry:
 
     async def __invoke_tool(
         self,
-        entry: _ServerEntry,
+        entry: MCPServerEntry,
         tool_name: str,
         tool_input: dict[str, object],
     ) -> str:
@@ -189,7 +189,7 @@ class MCPRegistry:
             return "\n".join(parts)
 
     @contextlib.asynccontextmanager
-    async def __open_session(self, entry: _ServerEntry) -> AsyncIterator[ClientSession]:
+    async def __open_session(self, entry: MCPServerEntry) -> AsyncIterator[ClientSession]:
         if entry.url is not None:
             async with (
                 sse_client(entry.url) as (read, write),

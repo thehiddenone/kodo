@@ -25,7 +25,7 @@ def worker_main(
         workdir (str): Path to the isolated working directory.
         orchestrator_url (str): Base URL of the orchestrator server for IPC calls.
     """
-    from kodo.workflow._workflow import WorkflowContext
+    from kodo.workflow import WorkflowContext
 
     ctx = WorkflowContext(
         workflow_id=workflow_id,
@@ -34,6 +34,28 @@ def worker_main(
         intake_path=intake_path,
     )
 
+    from kodo.workflow import Workflow
+
     mod = importlib.import_module(module_path)
-    workflow_cls = mod.workflow
-    workflow_cls().run(ctx)
+
+    candidates = [
+        obj
+        for obj in mod.__dict__.values()
+        if isinstance(obj, type) and issubclass(obj, Workflow) and obj is not Workflow
+    ]
+
+    if len(candidates) > 1:
+        names = ", ".join(c.__name__ for c in candidates)
+        raise ValueError(
+            f"Workflow module {module_path!r} defines more than one Workflow subclass "
+            f"({names}). A workflow module must contain exactly one."
+        )
+    if not candidates:
+        raise ValueError(f"Workflow module {module_path!r} contains no Workflow subclass.")
+
+    instance = candidates[0]()
+    try:
+        instance.setup(ctx)
+        instance.run()
+    finally:
+        instance.teardown()

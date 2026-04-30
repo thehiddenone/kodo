@@ -109,19 +109,34 @@ class WorkflowContext:
 class Workflow(ABC):
     """Abstract base class for all Kōdo workflow implementations.
 
-    A workflow module must export a module-level variable named ``workflow``
-    pointing to a concrete subclass of this class.  The orchestrator will
-    instantiate it and call :meth:`run`.
+    The orchestrator calls :meth:`setup`, then :meth:`run`, then :meth:`teardown`
+    (the latter always, provided :meth:`setup` returned without raising).
     """
 
     @abstractmethod
-    def run(self, ctx: WorkflowContext) -> None:
-        """Execute the workflow.
+    def setup(self, ctx: WorkflowContext) -> None:
+        """Initialise the workflow and store the execution context.
 
-        On success write a ``SUCCESS`` marker to ``ctx.workdir``.  If this
-        file is absent when ``run`` returns (or if ``run`` raises), the
-        orchestrator treats the run as failed and discards the workdir.
+        Called once before :meth:`run`.  Implementations should retain ``ctx``
+        as an instance attribute for use during :meth:`run` and :meth:`teardown`.
 
         Args:
             ctx (WorkflowContext): Execution context for this run.
+        """
+
+    @abstractmethod
+    def run(self) -> None:
+        """Execute the workflow.
+
+        On success write a ``SUCCESS`` marker to the workdir received in
+        :meth:`setup`.  If this file is absent when ``run`` returns (or if
+        ``run`` raises), the orchestrator treats the run as failed and
+        discards the workdir.
+        """
+
+    @abstractmethod
+    def teardown(self) -> None:
+        """Release any resources acquired during :meth:`setup` or :meth:`run`.
+
+        Always called after :meth:`setup` completes, even if :meth:`run` raises.
         """

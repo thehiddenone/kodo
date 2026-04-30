@@ -82,6 +82,8 @@ You MUST NOT use `Optional`, `Any`, `Dict`, `List`, `TYPE_CHECKING` etc. No loos
 
 You MUST use `object` instead of `Any`, and use `cast` or `isinstance` where necessary.
 
+One exception for the "no Any" rule: you are ALLOWED to use `Any` in definitions of kwargs, as this is the only way to make it work.
+
 You MUST use `typename | None` instead of `Optional`.
 
 ## Test implementation
