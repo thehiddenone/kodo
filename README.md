@@ -1,83 +1,61 @@
 # Kōdo
 
-**Kōdo** (コード) is an agentic harness that treats natural language as source code.
+**Kōdo** (コード) is a build system that converts natural language into working code through a multi-agent LLM workflow.
 
 ## Concept
 
-Most AI coding tools hand the LLM a file and ask it to figure out what changed.
-Kōdo takes a different approach: the `.kd` file format explicitly captures *what has changed*
-alongside the current specification, so the LLM receives precise change context rather than
-having to infer it by comparing versions.
+Most AI coding tools treat code generation as one big prompt: hand the LLM a problem, hope it produces something usable. Kōdo decomposes the work the way a team of engineers would. A Narrative Author captures the goal, an Architect breaks it into components, Requirements and Functional Designers specify each component, a Test Designer writes a test plan that defines "done", a Coder implements until those tests pass, and Reviewers gate every step. Specification stages produce versioned `.kd` artefacts under `src/`; the test-coding and implementation stages produce source code under `gen/`. Every stage is reviewed and approved before the next runs.
 
-Think of it as a **build system for natural language**. Just as `make` tracks which source files
-changed and recompiles only what's necessary, `kodo build` reads your `.kd` files, determines
-what work needs to be done, and drives one or more LLMs to produce the minimum necessary code
-changes.
+The result is **specs as source code**: humans own the natural-language spec, Kōdo owns the translation from spec to running code. TDD is built in — tests are designed and written from requirements *before* implementation begins, and the Coder's only job is to satisfy them.
+
+Kōdo runs as a Visual Studio Code extension talking to a local Python server. Both ship together; nothing leaves your machine except the LLM API call.
 
 ## A Kōdo project's structure
 
-A Kōdo project treats `.kd` files as its primary source. Everything else is derived:
+A Kōdo project treats `.kd` files as its primary source. Generated code lives alongside.
 
 ```text
-src/    *.kd files — the source of truth; what humans write and review
-gen/    generated source code — produced by Kōdo from the specs in src/
-dist/   final artifact — executable, package, or deployable
+kodo.md   project manifest — declares this is a Kōdo project; selects the toolchain
+src/      *.kd files — narrative, responsibilities, per-component specs; the source of truth
+gen/      generated source code, unit tests, integration tests, and the end-to-end test
+.kodo/    Kōdo working state — checkpoint mirror (git), settings, security rules, logs
 ```
 
-The relationship mirrors a traditional compiled project: specs are to generated source as
-source is to binary. Humans own `src/`; Kōdo owns the rest of the pipeline.
+The relationship mirrors a traditional compiled project: specs are to generated code as source is to binary. Humans own `src/` and approve everything that lands in `gen/`. For the MVP, `.kd` is plain Markdown — extended-tag variants are post-MVP.
 
 ## Workflow
 
-1. **Author** — edit `.kd` files (standard Markdown with extra context tracked under the hood)
-2. **Build** — run `kodo build`; Kōdo batches LLM calls efficiently across all changed specs
-3. **Review** — inspect generated changes in a git-mirrored staging repo before anything touches your main repo
-4. **Approve** — promote reviewed code from the mirror into your project
+1. **Init** — `Kodo: Init Project` lays down `kodo.md`, `src/`, `gen/`, and `.kodo/`.
+2. **Prompt** — describe your idea in the WebView. The Narrative Author drafts a top-level description.
+3. **Architecture** — the Architect carves the work into components and emits a dependency graph used later for integration-test scheduling.
+4. **Per-component specs** — for each component, Author/Reviewer pairs iterate on Requirements, then Functional Design, then Test Plan, with an approval gate between every stage.
+5. **Tests first** — the Test Coder produces failing tests from the test plan; nothing is implemented yet.
+6. **Implementation** — the Coder iterates until every test passes; the Code Reviewer gates the diff.
+7. **Final approval** — the end-to-end test passes, the workflow closes, you review the full mirror history.
 
-The mirror repo acts as a checkpoint and diff surface. Nothing lands in your codebase without
-explicit human approval.
+At each gate you can **Agree** (proceed) or **provide feedback** (re-run only the responsible Author/Reviewer pair with your input). A global **STOP** is available at all times. **Autonomous mode** lets a small LLM agent (the Dev Proxy) answer for you, following natural-language rules you define, when you want unattended runs.
 
 ## Key features
 
-**Spec authoring agent** — a built-in subagent helps you write and refine `.kd` files.
-Rather than starting from a blank page, you describe intent in plain language and the agent
-structures it into well-formed specs, suggests how to decompose complex requirements, and
-flags anything likely to produce ambiguous or conflicting output.
+**Multi-agent workflow** — eleven specialised agents (Narrative Author, Architect, Requirements Author/Reviewer, Functional Designer/Critic, Test Designer/Critic, Test Coder, Coder, Code Reviewer) collaborate on every project. Each Author has a Reviewer that gates output until quality is acceptable, capped at five iterations before escalating.
 
-**Explicit change context** — `.kd` files carry information about what was added, removed, or
-revised since the last build. The LLM sees intent, not just state.
+**TDD by construction** — Kōdo writes tests from requirements before any implementation exists. The Coder's loop terminates when tests pass; if a requirement is not testable, the Test Designer pushes back during specification, before code is written.
 
-**Batched, token-efficient builds** — Kōdo groups LLM calls to maximise prompt cache reuse and
-minimise cost. A batched build over Claude can save ~50% on tokens compared to naive
-per-file calls.
+**Behaviour testing, not implementation testing** — generated tests assert observable outcomes (a price change produced an order, a record was written) rather than call counts or internal mocks. LLMs tend toward brittle, implementation-coupled tests; Kōdo's Test Design Critic enforces the opposite by default.
 
-**Multiple LLM backends** — not tied to a single provider; configure the backend that fits your
-cost and capability requirements.
+**Approval gates with feedback loops** — every stage ends at a gate. Agree to proceed, or provide feedback that re-runs only the responsible agent pair — never the entire workflow. No work lands in `gen/` until you approve.
 
-**Git-mirrored staging** — generated code lives in a mirror repo, checkpointed via git. Diff,
-revert, or cherry-pick freely before promoting to your main repo.
+**Mirror checkpoints** — every approval is a git commit inside `.kodo/checkpoints/`. Browse history, roll back to any prior checkpoint, diff between any two states. Your main repository is never modified by Kōdo without explicit promotion.
 
-**Optional single-responsibility validation** — before building, Kōdo can run a pre-flight pass
-to verify that each `.kd` file has a single, coherent purpose. This catches scope creep in specs
-early and tends to produce cleaner, more predictable code generation. It is opt-in; you are free
-to organise `.kd` files however suits your project.
+**Token-efficient builds** — the Anthropic LLM plugin uses prompt caching with cache-control breakpoints on each agent's system prompt and on the project-context block, so most agent-to-agent transitions read from the cache.
 
-**End-to-end pipeline** — Kōdo does not stop at code generation. It understands how to scaffold
-a project from scratch and how to invoke the appropriate toolchain to compile, package, or
-otherwise build the generated artefacts. The goal is a single command that takes specs to a
-deployable output, with no manual steps in between.
+**End-to-end pipeline** — Kōdo scaffolds the project, generates code, invokes the toolchain, and runs the full test suite up to and including an end-to-end test. The goal is a single workflow from idea to deployable artefact. MVP toolchains: Python (`pytest`, `uv`) and Node (`vitest`, `npm`).
 
-**Visual Studio Code extension** — a dedicated VS Code extension surfaces the full Kōdo
-workflow inside the editor: authoring `.kd` files with syntax support, triggering builds,
-and inspecting sync state without leaving the IDE.
+**Visual Studio Code extension** — a dedicated extension hosts a WebView for the Kōdo session: streamed agent output, file diffs (opened in VS Code's native diff editor), shell results, approval prompts, cumulative cost, autonomous toggle, and STOP — all without leaving the IDE.
 
-**MCP support** — LLMs have access to any [Model Context Protocol](https://modelcontextprotocol.io)
-server, giving them access to external tools, data sources, and services during code generation.
+**MCP integration** — agents call in-process [Model Context Protocol](https://modelcontextprotocol.io) servers for filesystem and shell operations. Every tool call passes through a regex-based security layer with session and global rules; rules ship with sane defaults and you can add your own from the WebView.
 
-**Plugin system** — toolchains, LLM backends, and deployment targets are all first-class
-extension points. Adding support for a new language ecosystem or a custom deployment workflow
-means writing a plugin, not forking the core. The plugin API is designed to be narrow and
-stable so integrations remain low-maintenance as Kōdo evolves.
+**Plugin system** — three first-class plugin kinds: LLM plugins (the model provider), agent plugins (a specialised role in the workflow), and toolchain plugins (the language ecosystem). The plugin API is narrow and stable so integrations remain low-maintenance as Kōdo evolves.
 
 ## Building the project
 
@@ -119,4 +97,4 @@ test/       — Tests (unit tests, functional tests, etc)
 
 ## Status
 
-Early-stage / experimental. The `.kd` format, tag schema, and build protocol are under active design.
+Early-stage. The MVP design is captured in [`doc/REQUIREMENTS.md`](doc/REQUIREMENTS.md), [`doc/DESIGN.md`](doc/DESIGN.md), and [`doc/PLAN.md`](doc/PLAN.md). The single release gate is the ability to build an algorithmic E\*TRADE trading bot end-to-end with all generated tests passing — no other criterion ships v1.0. MVP scope: back-end-only, green-field-only, Anthropic-only.
