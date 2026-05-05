@@ -1,4 +1,4 @@
-"""In-process MCP server contract and registry.
+"""ToolchainPlugin interface and Python / Node implementations.
 
 Stub for M1; full implementation in M4.
 """

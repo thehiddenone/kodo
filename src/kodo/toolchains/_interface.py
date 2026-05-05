@@ -1,4 +1,4 @@
-"""In-process MCP server registry.
+"""ToolchainPlugin abstract base class.
 
 Stub for M1; full implementation in M4.
 """

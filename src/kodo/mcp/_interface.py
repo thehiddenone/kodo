@@ -1,4 +1,4 @@
-"""In-process MCP server registry.
+"""In-process MCP server contract.
 
 Stub for M1; full implementation in M4.
 """

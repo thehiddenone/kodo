@@ -50,21 +50,21 @@ src/kodo/
 │   ├── _gates.py           # approval gate orchestration
 │   ├── _scheduler.py       # component scheduling, integration DAG
 │   └── _session.py         # per-session metadata, resume logic
-├── agents/
-│   ├── _interface.py       # AgentPlugin ABC
-│   ├── _registry.py
-│   ├── narrative_author.py
-│   ├── architect.py
-│   ├── requirements_author.py
-│   ├── requirements_reviewer.py
-│   ├── functional_designer.py
-│   ├── functional_design_critic.py
-│   ├── test_designer.py
-│   ├── test_design_critic.py
-│   ├── test_coder.py
-│   ├── coder.py
-│   ├── code_reviewer.py
-│   └── dev_proxy.py        # rule-based, autonomous mode
+├── agents/                 # markdown agent files; one file per (name, model)
+│   ├── _loader.py          # parses frontmatter + body into Agent dataclass
+│   ├── _registry.py        # (name, model) -> Agent
+│   ├── narrative_author.claude-sonnet-4-6.md
+│   ├── architect.claude-sonnet-4-6.md
+│   ├── requirements_author.claude-sonnet-4-6.md
+│   ├── requirements_reviewer.claude-sonnet-4-6.md
+│   ├── functional_designer.claude-sonnet-4-6.md
+│   ├── functional_design_critic.claude-sonnet-4-6.md
+│   ├── test_designer.claude-sonnet-4-6.md
+│   ├── test_design_critic.claude-sonnet-4-6.md
+│   ├── test_coder.claude-sonnet-4-6.md
+│   ├── coder.claude-sonnet-4-6.md
+│   ├── code_reviewer.claude-sonnet-4-6.md
+│   └── dev_proxy.claude-haiku-4-5-20251001.md
 ├── llms/
 │   ├── _interface.py       # LLMPlugin ABC
 │   └── anthropic/
@@ -226,23 +226,34 @@ class LLMPlugin(ABC):
 
 `StreamEvent` covers token deltas, tool-use requests, and end-of-turn. The Anthropic implementation uses the SDK's streaming interface and translates `tool_use` content blocks into `StreamEvent.tool_call`.
 
-### 4.2 AgentPlugin (FR-AGT)
+### 4.2 Agents (FR-AGT)
+
+Agents are not Python classes. They are markdown files at `kodo/agents/<name>.<model>.md`, parsed into a small data type at startup:
 
 ```python
-class AgentPlugin(ABC):
+@dataclass(frozen=True)
+class Agent:
     name: str
-    role: AgentRole
-    inputs: list[ArtifactType]
-    outputs: list[ArtifactType]
-    capabilities: set[Capability]
-    model_preference: ModelPreference  # primary + fallbacks
-
-    async def run(self, ctx: AgentContext) -> AgentResult: ...
+    model: str
+    tools: frozenset[str]            # MCP tool names this agent may invoke
+    system_prompt: str               # body of the markdown
+    source_path: Path
 ```
 
-`AgentContext` is a typed bundle giving the agent: a handle to its LLM plugin, MCP tool handles (security-wrapped), the project filesystem (via `kodo.project`), the prior conversation (read-only), and an `interact` callable for clarifying questions / approvals.
+Frontmatter schema:
 
-`AgentResult` carries: emitted artifact paths, accept/reject (for reviewer roles), and any feedback text.
+```yaml
+---
+name: requirements_author
+tools:
+  - tools/fileio.read_file
+  - tools/fileio.write_file
+---
+```
+
+The body is the full system prompt for the model encoded in the filename. There is no inheritance, no shared common section: each (name, model) file is self-contained and independently editable. Looking up a name with no variant for the active model is a hard error — adding a model means authoring a new variant file.
+
+Agents are invoked by the workflow, not by each other. Per agent invocation the workflow function: collects inputs (reads `.kd` files, gathers prior turns), constructs the user message, calls the LLM plugin with the agent's `system_prompt` plus the constructed messages plus the `tools` filter (a hard pre-filter the security layer reads before its own rule evaluation), and interprets the response (writing files via `tools/fileio`, parsing accept/feedback output for reviewer agents, etc.).
 
 ### 4.3 ToolchainPlugin (FR-TC)
 
@@ -353,7 +364,7 @@ user (uncached):
 
 ### 6.2 Per-agent specifics
 
-Each agent file is roughly 100 lines: a class with `run()`, a system prompt template (read from a sibling `.txt` file for ease of editing), and any agent-local helpers. Detailed prompts will be authored during the M3 milestone (see [PLAN.md](PLAN.md)).
+Each agent is a single markdown file (see §4.2). The body of the file is the system prompt; constraints below are encoded directly in that prompt. Detailed prompts are authored during the M3 milestone (see [PLAN.md](PLAN.md)).
 
 Notable agent constraints:
 
@@ -363,17 +374,7 @@ Notable agent constraints:
 
 ### 6.3 Dev Proxy (LLM agent with rules)
 
-The Dev Proxy is itself an `AgentPlugin` — a small LLM agent whose role is to answer prompts that would otherwise interrupt Dev. It is configured with a list of natural-language rules; it applies those rules to the incoming event using model judgement, returning a structured action.
-
-```python
-class DevProxy(AgentPlugin):
-    name: ClassVar[str] = "dev_proxy"
-    role: ClassVar[AgentRole] = AgentRole.PROXY
-    capabilities: ClassVar[set[Capability]] = {Capability.PROMPT, Capability.USAGE_REPORT}
-    model_preference: ClassVar[ModelPreference]   # smaller/cheaper Claude by default
-
-    async def respond(self, event: ProxyableEvent) -> ProxyResponse: ...
-```
+The Dev Proxy is an ordinary agent (per §4.2) — a markdown file at `kodo/agents/dev_proxy.<model>.md` whose system prompt establishes the role of "autonomous-mode proxy." User-defined rules from project settings are interpolated into the prompt at invocation time.
 
 Configuration in `<project>/.kodo/settings.json`:
 

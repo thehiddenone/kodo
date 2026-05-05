@@ -1,4 +1,4 @@
-"""Claude LLM plugin implementation.
+"""Project filesystem path conventions (kodo.md, src/, gen/, .kodo/).
 
 Stub for M1; full implementation in M2.
 """

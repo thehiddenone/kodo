@@ -1,4 +1,4 @@
-"""In-process MCP server registry.
+"""Security layer: gate every tool call through ordered regex rules.
 
 Stub for M1; full implementation in M4.
 """

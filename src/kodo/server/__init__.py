@@ -1,7 +1,3 @@
-"""Kōdo orchestrator server package."""
+"""Kōdo server — WebSocket entry point, lifecycle, and configuration."""
 
-from ._app import create_app
-
-__all__ = [
-    "create_app",
-]
+__all__: list[str] = []

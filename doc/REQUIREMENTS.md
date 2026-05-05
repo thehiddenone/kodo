@@ -95,32 +95,34 @@ This is the only acceptance criterion that gates MVP release. Per-feature requir
 
 ### 5.5 Agents (FR-AGT)
 
-#### 5.5.1 Common agent contract
+#### 5.5.1 Agent definition
 
-- **FR-AGT-01.** Every agent SHALL be a plugin loadable by dotted Python path, declaring: `name`, `role` (author/reviewer/critic/coder/etc.), `model_preference`, `capabilities` (subset of `{prompt, mcp, interactive, usage_report}`), and `inputs` / `outputs` (named artifact types).
-- **FR-AGT-02.** Agents SHALL communicate exclusively through the workflow engine — no direct agent-to-agent calls.
-- **FR-AGT-03.** Each Author/Reviewer pair SHALL iterate until the Reviewer signals acceptance or a configurable iteration limit is reached (default 5). On limit reached: in interactive mode, the Dev is alerted and asked to intervene; in autonomous mode, the Author's last output is accepted as-is and the event is logged.
-- **FR-AGT-04.** Agents SHALL ask clarifying questions liberally. Disambiguation is preferred over assumption.
+- **FR-AGT-01.** An agent SHALL be defined by a single Markdown file at `kodo/agents/<name>.<model>.md`. The file SHALL have YAML frontmatter declaring `name` and `tools` (a list of MCP tool names the agent may invoke), and a body containing the full system prompt for the named model. Agents are not Python classes or plugins — they have no `role`, no typed `inputs`/`outputs`, and no capability set beyond the tool list.
+- **FR-AGT-02.** Each agent file SHALL be a complete, self-contained prompt for the model encoded in its filename. Multiple files MAY exist for a single `name` (one per model variant); each file is independent — there is no shared "common" body across variants.
+- **FR-AGT-03.** Agents SHALL be looked up by `(name, model)` at runtime. Looking up an agent for a model with no matching file SHALL be a hard error.
+- **FR-AGT-04.** Agents SHALL be invoked only by workflow code; no direct agent-to-agent calls. The workflow function is the sole orchestration mechanism.
+- **FR-AGT-05.** Each Author/Reviewer pair SHALL iterate until the Reviewer signals acceptance or a configurable iteration limit is reached (default 5). On limit reached: in interactive mode, the Dev is alerted and asked to intervene; in autonomous mode, the Author's last output is accepted as-is and the event is logged.
+- **FR-AGT-06.** Agents SHALL ask clarifying questions liberally. Disambiguation is preferred over assumption.
 
 #### 5.5.2 Required agents for MVP
 
-For each agent below, MVP SHALL include: a system prompt template, a model preference, declared inputs/outputs, and unit-level test coverage of its capability declaration.
+For each agent below, MVP SHALL include one markdown file under `kodo/agents/` for the default model (`claude-sonnet-4-6` for all agents except Dev Proxy, which uses `claude-haiku-4-5-20251001`). The "reads / writes" annotations describe what the workflow function passes the agent and where its output lands; they are documentation, not declared types.
 
-- **FR-AGT-NA.** **Narrative Author** — input: Dev prompt. Output: `src/narrative.kd`.
-- **FR-AGT-AR.** **Architect** — input: narrative. Output: `src/responsibilities.kd` (list with names + brief descriptions) and component scaffolding (one directory per component under `src/<component>/` with empty `requirements.kd`, `design.kd`, `test_plan.kd`).
-- **FR-AGT-RA.** **Requirements Author** — input: narrative + responsibility description. Output: `src/<component>/requirements.kd`.
-- **FR-AGT-RR.** **Requirements Reviewer** — input: same. Verifies for ambiguity, contradiction, and gaps; produces feedback or "accept".
-- **FR-AGT-FD.** **Functional Designer** — input: requirements. Output: `src/<component>/design.kd` with interfaces and behaviors.
+- **FR-AGT-NA.** **Narrative Author** — reads: Dev prompt. Writes: `src/narrative.kd`.
+- **FR-AGT-AR.** **Architect** — reads: narrative. Writes: `src/responsibilities.kd` (list with names + brief descriptions) and component scaffolding (one directory per component under `src/<component>/` with empty `requirements.kd`, `design.kd`, `test_plan.kd`).
+- **FR-AGT-RA.** **Requirements Author** — reads: narrative + responsibility description. Writes: `src/<component>/requirements.kd`.
+- **FR-AGT-RR.** **Requirements Reviewer** — reads: same. Verifies for ambiguity, contradiction, and gaps; produces feedback or "accept".
+- **FR-AGT-FD.** **Functional Designer** — reads: requirements. Writes: `src/<component>/design.kd` with interfaces and behaviors.
 - **FR-AGT-FC.** **Functional Design Critic** — verifies against requirements and SOLID; produces feedback or "accept".
-- **FR-AGT-TD.** **Test Designer** — input: requirements + design. Output: `src/<component>/test_plan.kd` plus a flag identifying which test belongs to the end-to-end suite.
+- **FR-AGT-TD.** **Test Designer** — reads: requirements + design. Writes: `src/<component>/test_plan.kd` plus a flag identifying which test belongs to the end-to-end suite.
 - **FR-AGT-TC.** **Test Design Critic** — verifies test plan for contradictions, coverage gaps, and behavior-vs-implementation focus (FR-TST).
-- **FR-AGT-TX.** **Test Coder** — input: test plan + design. Output: test source files under `gen/<component>/tests/` and `gen/tests/e2e/`. All tests SHALL be expected-to-fail when first generated.
-- **FR-AGT-CO.** **Coder** — input: design + failing tests. Output: implementation files under `gen/<component>/`. Iterates until tests pass.
+- **FR-AGT-TX.** **Test Coder** — reads: test plan + design. Writes: test source files under `gen/<component>/tests/` and `gen/tests/e2e/`. All tests SHALL be expected-to-fail when first generated.
+- **FR-AGT-CO.** **Coder** — reads: design + failing tests. Writes: implementation files under `gen/<component>/`. Iterates until tests pass.
 - **FR-AGT-CR.** **Code Reviewer** — gate-keeps Coder output; signals accept or feedback.
 
 #### 5.5.3 Dev Proxy (autonomous mode)
 
-- **FR-AGT-DP-01.** Dev Proxy SHALL be implemented as a small LLM agent governed by a configurable rule set. It SHALL respond to events that would otherwise interrupt the user when autonomous mode is active. Rules are natural-language statements that the proxy applies to the event with contextual judgement (pattern matching against event content, prior decisions, project state).
+- **FR-AGT-DP-01.** Dev Proxy SHALL be defined as an agent markdown file (per FR-AGT-01) whose system prompt establishes the role of "autonomous-mode proxy" and accepts a list of user-defined rules at runtime. It SHALL respond to events that would otherwise interrupt the user when autonomous mode is active. Rules are natural-language statements that the proxy applies to the event with contextual judgement (pattern matching against event content, prior decisions, project state).
 - **FR-AGT-DP-02.** Default action for events not clearly covered by any rule: **Allow / Agree**.
 - **FR-AGT-DP-03.** Dev Proxy rules and (optionally) its preferred model SHALL be configurable per project in `.kodo/settings.json` under `dev_proxy`.
 - **FR-AGT-DP-04.** Dev Proxy LLM calls SHALL be reported through the standard usage stream (FR-COS), so the cost of autonomous runs is visible.

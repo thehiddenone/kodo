@@ -1,4 +1,4 @@
-"""In-process MCP server registry.
+"""Node.js toolchain plugin: init, add_dependency, build, test, format.
 
 Stub for M1; full implementation in M4.
 """

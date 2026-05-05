@@ -104,7 +104,7 @@ Each milestone has: deliverables, exit criteria, rough size, and dependencies.
 ### M3 — First agents + approval gates + mirror (large, ~2 weeks)
 
 **Deliverables**
-- `kodo.agents.{_interface,_registry}` plus the Narrative Author and Architect.
+- `kodo.agents.{_loader,_registry}` (markdown frontmatter parser + `(name, model) -> Agent` lookup) plus the Narrative Author and Architect agent files (`narrative_author.claude-sonnet-4-6.md`, `architect.claude-sonnet-4-6.md`).
 - Author/Reviewer iteration loop (5-iter limit); for M3 use a single critic stub for both agents until M5.
 - `kodo.workflow._gates`: approval gate orchestration with feedback re-runs.
 - `kodo.mirror.{_repo,_checkpoints}`: git mirror init + checkpoint-on-gate.
@@ -117,7 +117,7 @@ Each milestone has: deliverables, exit criteria, rough size, and dependencies.
 - Feedback loop demonstrably re-runs the responsible agent pair only.
 
 **Requirements covered**
-- Agent contract: **FR-AGT-01** (plugin shape), **FR-AGT-02** (no direct agent-to-agent calls), **FR-AGT-03** (5-iter Author/Reviewer cap), **FR-AGT-04** (clarifying questions).
+- Agent contract: **FR-AGT-01** (markdown agent file shape), **FR-AGT-02** (per-model variants, no shared body), **FR-AGT-03** (lookup by `(name, model)`, missing variant is hard error), **FR-AGT-04** (no direct agent-to-agent calls), **FR-AGT-05** (5-iter Author/Reviewer cap), **FR-AGT-06** (clarifying questions).
 - Agents: **FR-AGT-NA** (Narrative Author), **FR-AGT-AR** (Architect, including DAG emission).
 - Workflow: **FR-WF-01** (workflow definition begins — narrative + architecture stages live), **FR-WF-05** (gates: narrative, responsibilities), **FR-WF-06** (Agree / Feedback only, no Reject).
 - Mirror: **FR-MIR-01..05** complete (separate git repo, checkpoint-on-gate, rollback).
@@ -134,7 +134,7 @@ Each milestone has: deliverables, exit criteria, rough size, and dependencies.
 - `kodo.security.{_layer,_rules,_store,_defaults}`: rule schema, default ruleset, session/global stores, prompt event emission.
 - `kodo.toolchains.python.{_plugin,_pytest}`: init, add_dependency (uv), build, test (pytest), format (ruff).
 - WebView: Security prompt card, ShellEvent card.
-- Add Requirements Author + Requirements Reviewer + Functional Designer + Functional Design Critic + Test Designer + Test Design Critic + Test Coder agents (prompts authored interactively with M3's Kodo if dogfooding milestone is hit).
+- Add agent markdown files: `requirements_author`, `requirements_reviewer`, `functional_designer`, `functional_design_critic`, `test_designer`, `test_design_critic`, `test_coder` (each as a `.claude-sonnet-4-6.md` file under `kodo/agents/`). Prompts authored interactively with M3's Kodo if dogfooding milestone is hit.
 
 **Exit criteria**
 - Build a tiny throwaway sample project with Kodo: prompt → narrative → architecture → 1 component (a calculator) → requirements → design → test plan → tests written → tests fail (no impl yet). All artifacts present.
@@ -156,9 +156,9 @@ Each milestone has: deliverables, exit criteria, rough size, and dependencies.
 ### M5 — Coder + Code Reviewer + Node toolchain + autonomous mode (large, ~2 weeks)
 
 **Deliverables**
-- `kodo.agents.{coder,code_reviewer}`: implementation loop and review.
+- Add agent markdown files: `coder.claude-sonnet-4-6.md`, `code_reviewer.claude-sonnet-4-6.md`. Workflow code orchestrates the implementation loop and review.
 - `kodo.toolchains.node.{_plugin,_vitest}`: parity with Python plugin.
-- `kodo.agents.dev_proxy`: small LLM agent driven by configurable natural-language rules; default action Allow.
+- `dev_proxy.claude-haiku-4-5-20251001.md`: agent markdown file driven by configurable natural-language rules from settings; default action Allow.
 - WebView: AutonomousToggle, ResumeBanner.
 - Resume logic: server detects unfinished session at startup and offers resume.
 - `STOP` plumbed end-to-end: cancels worker, cancels LLM stream within 1s, leaves `STOPPED` state.

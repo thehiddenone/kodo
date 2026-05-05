@@ -1,4 +1,4 @@
-"""In-process MCP server contract and registry.
+"""Node.js toolchain plugin (npm + vitest).
 
 Stub for M1; full implementation in M4.
 """

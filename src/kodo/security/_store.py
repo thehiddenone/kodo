@@ -1,4 +1,4 @@
-"""In-process MCP server registry.
+"""Session and global security rule stores.
 
 Stub for M1; full implementation in M4.
 """

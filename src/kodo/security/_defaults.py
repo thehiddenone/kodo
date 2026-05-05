@@ -1,4 +1,4 @@
-"""In-process MCP server registry.
+"""Built-in default security ruleset.
 
 Stub for M1; full implementation in M4.
 """

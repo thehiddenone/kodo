@@ -1,4 +1,4 @@
-"""In-process MCP server registry.
+"""vitest TestResult parser for the Node.js toolchain plugin.
 
 Stub for M1; full implementation in M4.
 """

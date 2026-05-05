@@ -1,4 +1,4 @@
-"""Claude LLM plugin implementation.
+"""Project memory helpers — ``.kd`` files under ``src/.memory/``.
 
 Stub for M1; full implementation in M2.
 """

@@ -1,4 +1,4 @@
-"""Claude LLM plugin implementation.
+"""Token-usage and dollar-cost accounting for the Anthropic plugin.
 
 Stub for M1; full implementation in M2.
 """

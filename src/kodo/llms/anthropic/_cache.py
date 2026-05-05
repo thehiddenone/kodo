@@ -1,4 +1,4 @@
-"""Claude LLM plugin implementation.
+"""Prompt-caching breakpoint logic for the Anthropic plugin.
 
 Stub for M1; full implementation in M2.
 """

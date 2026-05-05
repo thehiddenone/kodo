@@ -1,4 +1,4 @@
-"""In-process MCP server contract and registry.
+"""Python toolchain plugin (pytest + uv/pip + ruff).
 
 Stub for M1; full implementation in M4.
 """

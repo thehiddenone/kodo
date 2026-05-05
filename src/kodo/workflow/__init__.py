@@ -1,8 +1,6 @@
-"""Workflow ABC and execution context for building Kōdo workflow modules."""
+"""Kōdo workflow engine — stage machine, approval gates, and session management.
 
-from ._workflow import Workflow, WorkflowContext
+Stub for M1; full implementation in M2.
+"""
 
-__all__ = [
-    "Workflow",
-    "WorkflowContext",
-]
+__all__: list[str] = []

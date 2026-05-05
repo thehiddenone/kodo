@@ -1,4 +1,4 @@
-"""In-process MCP server registry.
+"""Security rule schema and regex matcher.
 
 Stub for M1; full implementation in M4.
 """
