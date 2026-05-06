@@ -57,10 +57,10 @@ This is the only acceptance criterion that gates MVP release. Per-feature requir
 
 - **FR-VSIX-01.** The extension SHALL be implemented in TypeScript and packaged as a `.vsix`.
 - **FR-VSIX-02.** On activation, the extension SHALL ensure a Kodo Server binary is present under `~/.kodo/bin/` and matches the version expected by the extension; if missing or mismatched, the extension SHALL download the matching binary from the published GitHub release for the current OS/arch and store it under `~/.kodo/bin/`.
-- **FR-VSIX-03.** The extension SHALL launch one Kodo Server subprocess per VS Code window, passing the project root as a CLI argument.
+- **FR-VSIX-03.** The extension SHALL activate automatically on VS Code window startup (not on first user command), launch one Kodo Server subprocess per VS Code window, passing the project root and a freshly-picked free loopback port as CLI arguments. Multiple VS Code windows SHALL be able to run Kodo concurrently without coordination.
 - **FR-VSIX-04.** The extension SHALL read the Anthropic API token from VS Code SecretStorage and pass it to the server via a non-persisted handshake (env var on subprocess spawn).
 - **FR-VSIX-05.** The extension SHALL provide a `Kodo: Init Project` command that creates `kodo.md`, `src/`, `gen/`, and `.kodo/` in the workspace root if absent.
-- **FR-VSIX-06.** The extension SHALL provide a `Kodo: Open Panel` command that opens a WebView showing the conversation, file events, approval prompts, and usage panel.
+- **FR-VSIX-06.** The extension SHALL provide a `Kodo: Open Panel` command that opens (or reveals) a WebView showing the conversation, file events, approval prompts, and usage panel. The WebView SHALL be a view onto extension-host-resident state: while the panel is closed the WebSocket connection MUST remain open, agent state MUST keep updating, and reopening the panel MUST rehydrate the UI from the cached state without forcing a server-side reconnect.
 - **FR-VSIX-07.** The extension SHALL provide a globally visible **STOP** control inside the WebView that cancels all running agent work for the project.
 - **FR-VSIX-08.** The extension SHALL register URL handlers for diff and file links so that clicking a diff link in the WebView opens VS Code's native diff editor, and clicking a file link opens the file in the editor.
 - **FR-VSIX-09.** The extension SHALL gracefully handle server-side disconnects by displaying a reconnect status and resuming the message stream when the server returns; no Dev input is lost across reconnects.
@@ -69,7 +69,7 @@ This is the only acceptance criterion that gates MVP release. Per-feature requir
 
 - **FR-SRV-01.** The server SHALL be implemented in Python and shipped as a single PyInstaller binary for Windows, macOS, and Linux.
 - **FR-SRV-02.** A single server instance SHALL be bound to exactly one project (the path passed at launch). Multi-project servers are explicitly out of scope.
-- **FR-SRV-03.** The server SHALL listen on `127.0.0.1:9042` for WebSocket connections from the extension. The port is configurable via CLI flag for development.
+- **FR-SRV-03.** The server SHALL listen on a loopback (`127.0.0.1`) WebSocket port supplied at launch via the `--port` CLI argument. The extension is the canonical caller and SHALL pick a free ephemeral port at activation time so multiple VS Code windows can run Kodo in parallel without clashing. The CLI default (9042) is a fallback for manual invocation only.
 - **FR-SRV-04.** The server SHALL refuse connections from non-loopback addresses.
 - **FR-SRV-05.** On startup, the server SHALL verify `git` is on PATH and abort with a clear error if not.
 - **FR-SRV-06.** On startup, the server SHALL write a PID file at `<project>/.kodo/server.pid`. If a running server is already bound to the project, the new server SHALL exit non-zero. The extension SHALL clean up stale PID files.

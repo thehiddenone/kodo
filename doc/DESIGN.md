@@ -10,7 +10,7 @@ Two processes, one project:
 
 ```
 +----------------------------------+        WebSocket        +-----------------------------+
-|  VS Code (extension host)        |  ws://127.0.0.1:9042    |  Kodo Server (Python)       |
+|  VS Code (extension host)        |  ws://127.0.0.1:<p>     |  Kodo Server (Python)       |
 |                                  | <---------------------> |                             |
 |  - Activation / lifecycle        |   JSON envelopes        |  - WebSocket transport      |
 |  - WebView (Preact + Vite)       |   token streaming       |  - Workflow engine          |
@@ -28,7 +28,9 @@ Two processes, one project:
                                                                   <project>/.kodo/
 ```
 
-Single project per server (FR-SRV-02). One WebSocket connection per server (FR-SRV-03/04). Single async worker (FR-WF-02). MCP servers run in-process to avoid extra processes for MVP — they expose the MCP wire format inside Python coroutines, not stdio.
+Single project per server (FR-SRV-02). One WebSocket connection per server, on a loopback port chosen by the extension at activation time (FR-SRV-03/04, FR-VSIX-03) — each VS Code window picks its own free port so multiple windows can run Kodo concurrently. Single async worker (FR-WF-02). MCP servers run in-process to avoid extra processes for MVP — they expose the MCP wire format inside Python coroutines, not stdio.
+
+The Kodo panel (WebView) is a *view* onto state owned by the extension host: the WebSocket connection and the cached agent/conversation state persist for the lifetime of the VS Code window, independent of whether the panel is open. Closing the panel does not tear down the connection; reopening it rehydrates the WebView from the cached state and resumes live updates (FR-VSIX-06).
 
 ### 1.1 Server-side module layout
 
@@ -132,12 +134,12 @@ kodo-vsix/
 
 ## 2. Process model & startup (FR-SRV, FR-VSIX)
 
-1. VS Code activates extension. Extension reads token from `SecretStorage` (prompts if absent).
+1. VS Code window starts → extension activates on `onStartupFinished` (no command needed). Extension reads token from `SecretStorage` (prompts if absent).
 2. Extension checks `~/.kodo/bin/kodo-server-<os>-<arch>` against expected version. Downloads from GitHub release if mismatched. Verifies SHA-256 against the release manifest.
 3. Extension reads `<workspace>/.kodo/server.pid`. If a process is alive, attempts a clean handshake; if it's a stale or foreign PID, kills it and removes the file.
-4. Extension launches the server with: `kodo-server --project <root> --port 9042` and `ANTHROPIC_API_KEY` in env.
-5. Server: validates `git` on PATH; ensures project layout (`kodo.md` exists OR errors with init hint); writes PID file; opens WS listener on loopback only.
-6. Extension opens WebSocket, sends `request{kind:"hello", payload:{client:"vsix", version:...}}`. Server responds with `response{payload:{server_version, project_root, last_session?}}`.
+4. Extension picks a free loopback TCP port (binds `127.0.0.1:0`, reads the OS-assigned port, releases it) and launches the server with: `kodo-server --project <root> --port <picked>` and `ANTHROPIC_API_KEY` in env.
+5. Server: validates `git` on PATH; ensures project layout (`kodo.md` exists OR errors with init hint); writes PID file; opens WS listener on the supplied port (loopback only).
+6. Extension opens WebSocket, sends `request{kind:"hello", payload:{client:"vsix", version:...}}`. Server responds with `response{payload:{server_version, project_root, last_session?}}`. The WS connection persists for the lifetime of the VS Code window; the Kodo panel may open and close many times against the same connection.
 7. If `last_session` exists and is not in a clean terminal state, server emits `event{kind:"resume_offer"}` so the WebView can prompt Dev to resume.
 
 Graceful shutdown is triggered by VS Code window close, an explicit `shutdown` request, or SIGTERM. The server flushes transient state, closes the WS, terminates child processes started under tools/shell, removes PID file, exits.
@@ -536,8 +538,10 @@ Schema is documented in `src/kodo/server/_config.py` as a `pydantic` model. VS C
 
 ### 10.3 State
 
-- WebView state managed with `@preact/signals`; one signal per top-level slice (conversation, usage, stage, autonomous).
-- Server is the source of truth: WebView only persists draft text in the prompt input across reloads.
+- The **extension host** owns persistent state (connection status, current stage, conversation buffer, usage totals, autonomous flag, etc.) for the lifetime of the VS Code window. The WS client maintains it in memory; closing the panel does not affect it.
+- The WebView is a stateless view onto that state. On mount the Preact app posts `{type:"ready"}` to the host; the host replies with the current cached state, and live envelopes flow into both the cache and the WebView from then on.
+- WebView-side state is managed with `@preact/signals`; one signal per top-level slice (conversation, usage, stage, autonomous). It is purely UI-mirror state — the source of truth is the extension host's cache, which in turn mirrors the server.
+- WebView local-storage is used only for ephemeral draft text in the prompt input across panel close/open.
 
 ---
 

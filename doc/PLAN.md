@@ -56,18 +56,23 @@ Each milestone has: deliverables, exit criteria, rough size, and dependencies.
 
 **Deliverables**
 - `kodo.transport`: envelope, message catalog, outbox, aiohttp WS handler.
-- `kodo.server.{_app,_lifecycle,_config}`: launches WS on `127.0.0.1:9042`, writes PID file, handles graceful shutdown.
-- Extension: `server-launcher.ts` finds/downloads/launches binary; `ws-client.ts` talks the protocol; minimal WebView (Preact) shows a "ping" button that round-trips.
+- `kodo.server.{_app,_lifecycle,_config}`: launches WS on a `--port`-supplied loopback port, writes PID file, handles graceful shutdown.
+- Extension: activates on `onStartupFinished`; picks a free ephemeral port via a probe socket; `server-launcher.ts` finds/downloads/launches the binary against that port; `ws-client.ts` opens a persistent connection that lives for the whole VS Code window; minimal WebView (Preact) shows a "ping" button that round-trips.
+- Extension-host state cache: connection status, current stage, and rolling stream buffer survive panel close/reopen and are replayed to a freshly-mounted WebView via a `ready` handshake.
 - Token-streaming demo: a fake `agent.tokens` stream of 200 chunks visible in the WebView.
 
 **Exit criteria**
-- Open VS Code → activate extension → server launches → WebView shows green "connected" → ping/pong works → fake stream renders.
-- Disconnect WebView (close panel), reconnect: outbox replays missed events.
+
+- Open VS Code → extension activates automatically → server launches on a per-window free port → WebView shows green "connected" → ping/pong works → fake stream renders.
+- Close the Kodo panel mid-stream and reopen: status remains "connected", current stage is reflected, and any stream output produced while the panel was closed is visible without a server-side reconnect.
+- WebSocket dropouts (e.g. server restart) are tolerated: outbox replays missed events on reconnect.
+- Two VS Code windows running Kodo against different projects coexist without port conflicts.
 - `mypy --strict` clean on `kodo.transport` and `kodo.server`.
 
 **Requirements covered**
-- VSIX lifecycle: **FR-VSIX-01** (TS extension), **FR-VSIX-03** (one server per window), **FR-VSIX-09** (reconnect tolerance).
-- Server lifecycle: **FR-SRV-01** (Python server), **FR-SRV-03** (loopback `:9042`), **FR-SRV-04** (loopback only), **FR-SRV-06** (PID file), **FR-SRV-07** (graceful shutdown).
+
+- VSIX lifecycle: **FR-VSIX-01** (TS extension), **FR-VSIX-03** (auto-activation, one server per window, ephemeral per-window port), **FR-VSIX-06** (panel as a view onto persistent host-side state), **FR-VSIX-09** (reconnect tolerance).
+- Server lifecycle: **FR-SRV-01** (Python server), **FR-SRV-03** (loopback, port supplied at launch), **FR-SRV-04** (loopback only), **FR-SRV-06** (PID file), **FR-SRV-07** (graceful shutdown).
 - Wire protocol: **FR-WS-01** (envelope), **FR-WS-02** (request/response/event/streaming), **FR-WS-04** (replay on reconnect). Message catalog (**FR-WS-03**) seeded with `hello`, `state`, fake `agent.tokens`.
 - NFRs: **NFR-02** (first-token latency), **NFR-06** (loopback bind), **NFR-07** (conventions).
 
