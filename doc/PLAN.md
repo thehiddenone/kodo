@@ -35,6 +35,9 @@ Each milestone has: deliverables, exit criteria, rough size, and dependencies.
 
 ### M0 — Repo reset & toolchain (small, ~2 days)
 
+**Status**
+Completed
+
 **Deliverables**
 - Remove existing scaffolding except `pyproject.toml`, `LICENSE`, `README.md`, `src/kodo/CLAUDE.md`, `hatch_build.py`, `scripts/*`.
 - New empty package layout per DESIGN §1.1.
@@ -53,6 +56,9 @@ Each milestone has: deliverables, exit criteria, rough size, and dependencies.
 ---
 
 ### M1 — Wire spine: server + extension can shake hands and stream (medium, ~1 week)
+
+**Status**
+Completed
 
 **Deliverables**
 - `kodo.transport`: envelope, message catalog, outbox, aiohttp WS handler.
@@ -79,6 +85,9 @@ Each milestone has: deliverables, exit criteria, rough size, and dependencies.
 ---
 
 ### M2 — LLM plugin + project layout + workflow skeleton (medium, ~1 week)
+
+**Status**
+Completed
 
 **Deliverables**
 - `kodo.llms.anthropic`: `_claude.py`, `_cache.py`, `_retry.py`, `_usage.py`. Streaming, cache-control breakpoints, 2/8/32s retry, usage accounting.
@@ -108,6 +117,9 @@ Each milestone has: deliverables, exit criteria, rough size, and dependencies.
 
 ### M3 — First agents + approval gates + mirror (large, ~2 weeks)
 
+**Status**
+Not Started
+
 **Deliverables**
 - `kodo.agents.{_loader,_registry}` (markdown frontmatter parser + `(name, model) -> Agent` lookup) plus the Narrative Author and Architect agent files (`narrative_author.claude-sonnet-4-6.md`, `architect.claude-sonnet-4-6.md`).
 - Author/Reviewer iteration loop (5-iter limit); for M3 use a single critic stub for both agents until M5.
@@ -132,6 +144,9 @@ Each milestone has: deliverables, exit criteria, rough size, and dependencies.
 ---
 
 ### M4 — MCP, security layer, toolchain plugin: Python (large, ~2 weeks)
+
+**Status**
+Not Started
 
 **Deliverables**
 - `kodo.mcp._{interface,registry}`: in-process MCP servers exposed to LLM plugin.
@@ -159,6 +174,9 @@ Each milestone has: deliverables, exit criteria, rough size, and dependencies.
 ---
 
 ### M5 — Coder + Code Reviewer + Node toolchain + autonomous mode (large, ~2 weeks)
+
+**Status**
+Not Started
 
 **Deliverables**
 - Add agent markdown files: `coder.claude-sonnet-4-6.md`, `code_reviewer.claude-sonnet-4-6.md`. Workflow code orchestrates the implementation loop and review.
@@ -188,6 +206,9 @@ Each milestone has: deliverables, exit criteria, rough size, and dependencies.
 
 ### M6 — E\*TRADE bot dogfood + integration tests + e2e (medium-large, ~2 weeks)
 
+**Status**
+Not Started
+
 **Deliverables**
 - Run the full workflow on the E\*TRADE bot prompt: *"Build an algorithmic stock trading bot for E\*TRADE that places orders based on a configurable strategy."*
 - Architect emits a multi-component DAG. Integration tests are scheduled per FR-WF-04.
@@ -208,6 +229,9 @@ Each milestone has: deliverables, exit criteria, rough size, and dependencies.
 ---
 
 ### M7 — Hardening, packaging, release (medium, ~1 week)
+
+**Status**
+Not Started
 
 **Deliverables**
 - PyInstaller builds for Windows (x64, arm64), macOS (x64, arm64), Linux (x64, arm64).

@@ -1,6 +1,12 @@
-"""Kodo project layout conventions and ``kodo.md`` manifest parser.
+"""Kodo project layout conventions and ``kodo.md`` manifest parser."""
 
-Stub for M1; full implementation in M2.
-"""
+from ._layout import ProjectLayout, ProjectLayoutError
+from ._manifest import Manifest, ManifestError, parse_manifest
 
-__all__: list[str] = []
+__all__ = [
+    "ProjectLayout",
+    "ProjectLayoutError",
+    "Manifest",
+    "ManifestError",
+    "parse_manifest",
+]

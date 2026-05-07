@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sys
 
@@ -66,7 +67,5 @@ async def _serve(app: web.Application, config: Config, lifecycle: Lifecycle) -> 
 
 
 if __name__ == "__main__":
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         main(sys.argv[1:])
-    except KeyboardInterrupt:
-        pass

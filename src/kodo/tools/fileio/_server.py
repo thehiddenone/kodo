@@ -31,7 +31,7 @@ class FileIO:
 
         self.__app.tool(
             name="create_file",
-            description="Create a new file with the provided content. Fails if the file already exists.",
+            description="Create a new file with content. Fails if the file already exists.",
         )(self.__create_file)
 
         self.__app.tool(
@@ -63,10 +63,10 @@ class FileIO:
         if self.__base_dir is not None:
             try:
                 resolved.relative_to(self.__base_dir)
-            except ValueError:
+            except ValueError as exc:
                 raise PermissionError(
                     f"Path {path!r} is outside the allowed directory {str(self.__base_dir)!r}"
-                )
+                ) from exc
         return resolved
 
     def __create_file(self, path: str, content: str) -> str:

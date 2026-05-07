@@ -1,6 +1,8 @@
-"""Transient per-session state and project memory helpers.
+"""Transient per-session state and project memory helpers."""
 
-Stub for M1; full implementation in M2.
-"""
+from ._transient import SessionMeta, TransientStore
 
-__all__: list[str] = []
+__all__ = [
+    "TransientStore",
+    "SessionMeta",
+]

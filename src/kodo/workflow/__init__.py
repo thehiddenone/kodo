@@ -1,6 +1,11 @@
-"""Kōdo workflow engine — stage machine, approval gates, and session management.
+"""Kōdo workflow engine — stage machine, approval gates, and session management."""
 
-Stub for M1; full implementation in M2.
-"""
+from ._engine import WorkflowEngine
+from ._session import SessionState
+from ._stages import Stage
 
-__all__: list[str] = []
+__all__ = [
+    "WorkflowEngine",
+    "SessionState",
+    "Stage",
+]

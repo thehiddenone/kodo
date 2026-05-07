@@ -1,6 +1,23 @@
-"""LLM plugin interfaces and Anthropic implementation.
+"""LLM plugin interfaces and Anthropic implementation."""
 
-Stub for M1; full implementation in M2.
-"""
+from ._interface import (
+    LLMPlugin,
+    Message,
+    StreamEvent,
+    TokenDelta,
+    ToolCallEvent,
+    ToolSpec,
+    TurnEnd,
+    Usage,
+)
 
-__all__: list[str] = []
+__all__ = [
+    "LLMPlugin",
+    "Message",
+    "ToolSpec",
+    "Usage",
+    "StreamEvent",
+    "TokenDelta",
+    "ToolCallEvent",
+    "TurnEnd",
+]

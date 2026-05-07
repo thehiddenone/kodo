@@ -1,6 +1,12 @@
-"""Anthropic LLM plugin — Claude streaming, caching, retries, and usage.
+"""Anthropic LLM plugin — Claude streaming, caching, retries, and usage."""
 
-Stub for M1; full implementation in M2.
-"""
+from ._claude import ClaudePlugin, UnrecoverableError
+from ._retry import RetryExhaustedError
+from ._usage import compute_cost
 
-__all__: list[str] = []
+__all__ = [
+    "ClaudePlugin",
+    "UnrecoverableError",
+    "RetryExhaustedError",
+    "compute_cost",
+]
