@@ -58,8 +58,8 @@ This is the only acceptance criterion that gates MVP release. Per-feature requir
 - **FR-VSIX-01.** The extension SHALL be implemented in TypeScript and packaged as a `.vsix`.
 - **FR-VSIX-02.** On activation, the extension SHALL ensure a Kodo Server binary is present under `~/.kodo/bin/` and matches the version expected by the extension; if missing or mismatched, the extension SHALL download the matching binary from the published GitHub release for the current OS/arch and store it under `~/.kodo/bin/`.
 - **FR-VSIX-03.** The extension SHALL activate automatically on VS Code window startup (not on first user command), launch one Kodo Server subprocess per VS Code window, passing the project root and a freshly-picked free loopback port as CLI arguments. Multiple VS Code windows SHALL be able to run Kodo concurrently without coordination.
-- **FR-VSIX-04.** The extension SHALL read the Anthropic API token from VS Code SecretStorage and pass it to the server via a non-persisted handshake (env var on subprocess spawn).
-- **FR-VSIX-05.** The extension SHALL provide a `Kodo: Init Project` command that creates `kodo.md`, `src/`, `gen/`, and `.kodo/` in the workspace root if absent.
+- **FR-VSIX-04.** The extension SHALL obtain the Anthropic API token as follows: on activation, read the `KODO_ANTHROPIC_API_KEY` environment variable; if it is non-empty, persist it to VS Code SecretStorage (overwriting any prior value) and use it; if the env var is absent or empty, fall back to whatever is already stored in SecretStorage; if neither source yields a key, display a warning instructing the Dev to set `KODO_ANTHROPIC_API_KEY` and restart VS Code, then continue with no key. The token SHALL be passed to the server subprocess via `ANTHROPIC_API_KEY` in the child process environment and SHALL NOT be written to any file by the extension or the server.
+- **FR-VSIX-05.** The extension SHALL provide a `Kodo: Init Project` command that opens a folder-picker dialog; upon folder selection it SHALL create `kodo.md`, `src/`, `gen/`, and `.kodo/` in the chosen directory, add that directory to the current VS Code workspace (if not already present), and open `kodo.md` in the editor.
 - **FR-VSIX-06.** The extension SHALL provide a `Kodo: Open Panel` command that opens (or reveals) a WebView showing the conversation, file events, approval prompts, and usage panel. The WebView SHALL be a view onto extension-host-resident state: while the panel is closed the WebSocket connection MUST remain open, agent state MUST keep updating, and reopening the panel MUST rehydrate the UI from the cached state without forcing a server-side reconnect.
 - **FR-VSIX-07.** The extension SHALL provide a globally visible **STOP** control inside the WebView that cancels all running agent work for the project.
 - **FR-VSIX-08.** The extension SHALL register URL handlers for diff and file links so that clicking a diff link in the WebView opens VS Code's native diff editor, and clicking a file link opens the file in the editor.
@@ -240,7 +240,7 @@ This section is load-bearing. The Test Designer, Test Design Critic, Test Coder,
 The following procedure SHALL be runnable on a clean machine and result in a working E\*TRADE sandbox bot:
 
 1. Install VSIX from a packaged release. First activation downloads the server binary.
-2. Set Anthropic API token via VS Code SecretStorage prompt.
+2. Set `KODO_ANTHROPIC_API_KEY` in the shell environment before launching VS Code. On first activation the extension reads the env var, stores it in SecretStorage, and passes it to the server subprocess.
 3. Open an empty workspace, run `Kodo: Init Project`.
 4. Submit prompt: *"Build an algorithmic stock trading bot for E\*TRADE that places orders based on a configurable strategy."*
 5. Iterate with Kodo through Narrative, Responsibilities, per-component Requirements / Design / Test Plan stages — Approval Gates are reached and Dev approves them.

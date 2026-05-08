@@ -134,7 +134,7 @@ kodo-vsix/
 
 ## 2. Process model & startup (FR-SRV, FR-VSIX)
 
-1. VS Code window starts → extension activates on `onStartupFinished` (no command needed). Extension reads token from `SecretStorage` (prompts if absent).
+1. VS Code window starts → extension activates on `onStartupFinished` (no command needed). Extension resolves the Anthropic token: reads `KODO_ANTHROPIC_API_KEY` from the process environment — if non-empty, writes it to VS Code SecretStorage and uses it; otherwise falls back to the value already in SecretStorage; if neither source yields a key, shows a warning ("set `KODO_ANTHROPIC_API_KEY` and restart") and continues with an empty key (server starts but LLM calls will fail with a clear error).
 2. Extension checks `~/.kodo/bin/kodo-server-<os>-<arch>` against expected version. Downloads from GitHub release if mismatched. Verifies SHA-256 against the release manifest.
 3. Extension reads `<workspace>/.kodo/server.pid`. If a process is alive, attempts a clean handshake; if it's a stale or foreign PID, kills it and removes the file.
 4. Extension picks a free loopback TCP port (binds `127.0.0.1:0`, reads the OS-assigned port, releases it) and launches the server with: `kodo-server --project <root> --port <picked>` and `ANTHROPIC_API_KEY` in env.

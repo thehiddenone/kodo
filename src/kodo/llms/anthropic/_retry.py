@@ -39,9 +39,16 @@ class UnrecoverableError(Exception):
 
 
 def _is_unrecoverable(exc: Exception) -> bool:
+    # 400 BadRequestError covers billing/credit errors ("credit balance too low")
+    # which must never be retried — surface immediately to the Dev (FR-LLM-06).
     return isinstance(
         exc,
-        (anthropic.AuthenticationError, anthropic.PermissionDeniedError, anthropic.RateLimitError),
+        (
+            anthropic.AuthenticationError,
+            anthropic.PermissionDeniedError,
+            anthropic.RateLimitError,
+            anthropic.BadRequestError,
+        ),
     )
 
 
@@ -89,12 +96,9 @@ async def with_retry[T](
             return await factory()
         except Exception as exc:
             if _is_unrecoverable(exc):
-                status = (
-                    exc.status_code
-                    if hasattr(exc, "status_code")
-                    else 0
-                )
-                raise UnrecoverableError(str(exc), status) from exc
+                if isinstance(exc, anthropic.APIStatusError):
+                    raise UnrecoverableError(exc.message, exc.status_code) from exc
+                raise UnrecoverableError(str(exc), 0) from exc
             if _is_retryable(exc):
                 last_exc = exc
                 continue
@@ -144,12 +148,9 @@ async def with_retry_iter[T](
             return
         except Exception as exc:
             if _is_unrecoverable(exc):
-                status = (
-                    exc.status_code
-                    if hasattr(exc, "status_code")
-                    else 0
-                )
-                raise UnrecoverableError(str(exc), status) from exc
+                if isinstance(exc, anthropic.APIStatusError):
+                    raise UnrecoverableError(exc.message, exc.status_code) from exc
+                raise UnrecoverableError(str(exc), 0) from exc
             if _is_retryable(exc):
                 last_exc = exc
                 continue
