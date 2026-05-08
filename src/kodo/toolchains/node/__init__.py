@@ -1,6 +1,5 @@
-"""Node.js toolchain plugin (npm + vitest).
+"""Node.js toolchain plugin (npm + vitest)."""
 
-Stub for M1; full implementation in M4.
-"""
+from ._plugin import NodePlugin
 
-__all__: list[str] = []
+__all__ = ["NodePlugin"]

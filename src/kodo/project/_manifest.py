@@ -55,6 +55,7 @@ def parse_manifest(path: Path) -> Manifest:
 # Private helpers
 # ------------------------------------------------------------------
 
+
 def _validate_headings(text: str, path: Path) -> None:
     for heading in _REQUIRED_HEADINGS:
         if heading not in text:
@@ -79,10 +80,7 @@ def _extract_toolchain(text: str, path: Path) -> str:
 def _extract_components(text: str) -> list[str]:
     section = _section_text(text, "## Components")
     # Each component is a list item: "- component_name"
-    return [
-        m.group(1)
-        for m in re.finditer(r"^\s*-\s+(\w[\w-]*)\s*$", section, re.MULTILINE)
-    ]
+    return [m.group(1) for m in re.finditer(r"^\s*-\s+(\w[\w-]*)\s*$", section, re.MULTILINE)]
 
 
 def _section_text(text: str, heading: str) -> str:

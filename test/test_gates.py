@@ -68,9 +68,7 @@ async def test_gate_fire_and_agree() -> None:
 
     async def _fire_and_resolve() -> ApprovalResponse:
         # Need the gate_id, so start fire, let asyncio run once, then resolve
-        fire_task = asyncio.create_task(
-            gate.fire("test_gate", summary="test summary")
-        )
+        fire_task = asyncio.create_task(gate.fire("test_gate", summary="test summary"))
         await asyncio.sleep(0)  # let fire() emit the event
         if gate_id is not None:
             gate.resolve(gate_id, "agree", "")
@@ -98,9 +96,7 @@ async def test_gate_fire_and_feedback() -> None:
     state.send = capture_send
 
     async def _fire_and_resolve() -> ApprovalResponse:
-        fire_task = asyncio.create_task(
-            gate.fire("narrative", summary="a narrative")
-        )
+        fire_task = asyncio.create_task(gate.fire("narrative", summary="a narrative"))
         await asyncio.sleep(0)
         if gate_id is not None:
             gate.resolve(gate_id, "feedback", "Please add success criteria.")
@@ -127,9 +123,7 @@ async def test_gate_fire_and_stop() -> None:
     state.send = capture_send
 
     async def _fire_and_resolve() -> ApprovalResponse:
-        fire_task = asyncio.create_task(
-            gate.fire("narrative", summary="a narrative")
-        )
+        fire_task = asyncio.create_task(gate.fire("narrative", summary="a narrative"))
         await asyncio.sleep(0)
         if gate_id is not None:
             gate.resolve(gate_id, "stop", "")

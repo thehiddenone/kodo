@@ -12,6 +12,7 @@ Each stage follows the same shape:
    times on ``FEEDBACK`` responses.
 3. Run any post-author hook (e.g. scaffold component dirs after architecture).
 4. Fire approval gate → Agree / Feedback / Stop.
+   In autonomous mode the Dev Proxy answers the gate instead of the human.
 5. On Agree: mirror checkpoint, advance.  On Feedback: re-run from step 1
    with Dev feedback appended.  On Stop: raise :exc:`_GateStoppedError`.
 """
@@ -36,17 +37,19 @@ from kodo.llms._interface import (
     TurnEnd,
 )
 from kodo.llms.anthropic import UnrecoverableError
+from kodo.state._transient import load_session_prompt
 from kodo.transport._envelope import Envelope
 from kodo.transport._messages import (
     EVT_AGENT_FINISHED,
     EVT_AGENT_STARTED,
     EVT_ERROR,
     EVT_FILE_CHANGE,
+    EVT_SHELL_RUN,
     EVT_STATE,
     EVT_USAGE_UPDATE,
 )
 
-from ._gates import GateOrchestrator
+from ._gates import ApprovalResponse, GateOrchestrator
 from ._session import SessionState
 from ._spec import PROJECT_STAGES, StageSpec, build_component_stages
 from ._stages import Stage
@@ -65,14 +68,11 @@ __all__ = ["WorkflowEngine"]
 _log = logging.getLogger(__name__)
 
 _MAX_AR_ITER = 5  # max Author/Critic iterations before forcing a gate
-
-
-class _GateStoppedError(Exception):
-    """Raised when the developer clicks Stop at an approval gate."""
+_SHELL_TIMEOUT = 120  # seconds before a shell command is killed
 
 
 # ---------------------------------------------------------------------------
-# Inline file-I/O tool specs (pre-MCP; replaced by full MCP in M4)
+# Inline tool specs
 # ---------------------------------------------------------------------------
 
 _FILEIO_READ = ToolSpec(
@@ -115,10 +115,38 @@ _FILEIO_WRITE = ToolSpec(
     },
 )
 
+_SHELL_RUN = ToolSpec(
+    name="shell_run_command",
+    description=(
+        "Execute a shell command in the project root and return its exit code, "
+        "stdout, and stderr. Use this to run tests, formatters, or build tools."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "Shell command to execute (e.g. 'python -m pytest tests/ -v').",
+            },
+            "working_dir": {
+                "type": "string",
+                "description": (
+                    "Working directory relative to the project root. "
+                    "Defaults to the project root if omitted."
+                ),
+            },
+        },
+        "required": ["command"],
+    },
+)
+
 _TOOLS_BY_NAME: dict[str, ToolSpec] = {
     _FILEIO_READ.name: _FILEIO_READ,
     _FILEIO_WRITE.name: _FILEIO_WRITE,
+    _SHELL_RUN.name: _SHELL_RUN,
 }
+
+_DEV_PROXY_MODEL = "claude-haiku-4-5-20251001"
 
 
 class WorkflowEngine:
@@ -146,6 +174,8 @@ class WorkflowEngine:
     __session: SessionState
     __worker: asyncio.Task[None] | None
     __cumulative_usd: float
+    # Stored prompt so resume can reconstruct context
+    __last_prompt: str
 
     def __init__(
         self,
@@ -169,6 +199,7 @@ class WorkflowEngine:
         self.__session = SessionState()
         self.__worker = None
         self.__cumulative_usd = 0.0
+        self.__last_prompt = ""
 
     @property
     def session(self) -> SessionState:
@@ -180,12 +211,15 @@ class WorkflowEngine:
         """Gate orchestrator (needed by the approval handler in _app.py)."""
         return self.__gate
 
+    @property
+    def last_prompt(self) -> str:
+        """Most recent prompt submitted, used for resume."""
+        return self.__last_prompt
+
     async def start(self) -> None:
         """Start the single worker coroutine and initialise the mirror."""
         await self.__mirror.ensure_initialized()
-        self.__worker = asyncio.create_task(
-            self.__run_worker(), name="kodo-worker"
-        )
+        self.__worker = asyncio.create_task(self.__run_worker(), name="kodo-worker")
         _log.info("Workflow worker started (session=%s)", self.__session.session_id)
 
     async def stop(self) -> None:
@@ -201,6 +235,8 @@ class WorkflowEngine:
 
     async def handle_prompt_submit(self, text: str, request_id: str) -> None:
         """Enqueue a user prompt for processing."""
+        self.__last_prompt = text
+        self.__transient.meta.update(prompt=text)
         await self.__queue.put({"text": text, "request_id": request_id})
 
     async def handle_mode_set(self, autonomous: bool) -> None:
@@ -208,6 +244,22 @@ class WorkflowEngine:
         self.__session.autonomous = autonomous
         self.__transient.meta.update(autonomous=autonomous)
         await self.__emit_state()
+
+    async def handle_resume(self, session_id: str) -> None:
+        """Resume the most recent interrupted session.
+
+        Loads the original prompt from the prior session's persisted JSON,
+        then re-queues the workflow.  The engine's ``__process_prompt`` skips
+        stages whose output artifacts already exist on disk.
+        """
+        _log.info("Resume requested for session %s", session_id)
+        prompt = self.__last_prompt or load_session_prompt(self.__layout.root, session_id)
+        if not prompt:
+            _log.warning("Cannot resume — no stored prompt for session %s", session_id)
+            await self.__emit_error("Cannot resume: original prompt not found.", recoverable=True)
+            return
+        self.__last_prompt = prompt
+        await self.__queue.put({"text": prompt, "request_id": uuid.uuid4().hex, "resume": True})
 
     # ------------------------------------------------------------------
     # Worker
@@ -251,7 +303,6 @@ class WorkflowEngine:
         self.__layout.gen_dir.mkdir(parents=True, exist_ok=True)
 
         # Context grows as stages complete: artifact path → file text.
-        # The original prompt is always available under the "prompt" key.
         context: dict[str, str] = {"prompt": text}
 
         # Queue-based dispatch: after ARCHITECTURE completes, per-component
@@ -259,9 +310,20 @@ class WorkflowEngine:
         pending: list[StageSpec] = list(PROJECT_STAGES)
         while pending:
             spec = pending.pop(0)
-            await self.__run_stage(spec, context)
+
+            # Skip stages whose artifact already exists on disk (resume path).
             artifact = self.__layout.root / spec.artifact
             if artifact.exists():
+                if artifact.is_file():
+                    context[spec.artifact] = artifact.read_text(encoding="utf-8")
+                _log.info("Skipping completed stage %s (artifact exists)", spec.stage)
+                if spec.stage == Stage.ARCHITECTURE:
+                    component_specs = self.__build_component_stages_from_dag()
+                    pending = list(component_specs) + pending
+                continue
+
+            await self.__run_stage(spec, context)
+            if artifact.exists() and artifact.is_file():
                 context[spec.artifact] = artifact.read_text(encoding="utf-8")
 
             if spec.stage == Stage.ARCHITECTURE:
@@ -286,14 +348,10 @@ class WorkflowEngine:
         artifact_path = self.__layout.root / spec.artifact
         author_agent = self.__registry.get(spec.author, self.__default_model)
         critic_agent = (
-            self.__registry.get(spec.critic, self.__default_model)
-            if spec.critic
-            else None
+            self.__registry.get(spec.critic, self.__default_model) if spec.critic else None
         )
 
-        messages: list[Message] = [
-            Message(role="user", content=spec.build_task_message(context))
-        ]
+        messages: list[Message] = [Message(role="user", content=spec.build_task_message(context))]
 
         approved = False
         while not approved:
@@ -307,17 +365,10 @@ class WorkflowEngine:
             await self.__post_stage_hook(spec)
 
             summary = _first_line(artifact_path)
-            gate_response = await self.__gate.fire(
-                spec.gate_type,
-                artifact_path=artifact_path,
-                summary=summary,
-                component=spec.component,
-            )
+            gate_response = await self.__fire_gate(spec, artifact_path, summary)
 
             if gate_response.action == "agree":
-                sha = await self.__mirror.create_checkpoint(
-                    spec.gate_type, spec.component
-                )
+                sha = await self.__mirror.create_checkpoint(spec.gate_type, spec.component)
                 _log.info("Checkpoint [%s]: %s", spec.gate_type, sha[:8])
                 approved = True
             elif gate_response.action == "stop":
@@ -331,6 +382,103 @@ class WorkflowEngine:
                 ]
 
     # ------------------------------------------------------------------
+    # Gate dispatch (human vs Dev Proxy)
+    # ------------------------------------------------------------------
+
+    async def __fire_gate(
+        self,
+        spec: StageSpec,
+        artifact_path: Path,
+        summary: str,
+    ) -> ApprovalResponse:
+        """Fire an approval gate — human in interactive mode, Dev Proxy in autonomous."""
+        if self.__session.autonomous:
+            return await self.__dev_proxy_gate(spec, summary)
+        return await self.__gate.fire(
+            spec.gate_type,
+            artifact_path=artifact_path,
+            summary=summary,
+            component=spec.component,
+        )
+
+    async def __dev_proxy_gate(self, spec: StageSpec, summary: str) -> ApprovalResponse:
+        """Invoke the Dev Proxy agent to answer an approval gate autonomously."""
+        try:
+            proxy = self.__registry.get("dev_proxy", _DEV_PROXY_MODEL)
+        except Exception as exc:
+            _log.warning("Dev Proxy not available (%s) — auto-agreeing", exc)
+            return ApprovalResponse(action="agree", feedback="")
+
+        rules_text = self.__transient.meta.dev_proxy_rules or "(none — default to agree)"
+        # Substitute rules placeholder in the system prompt
+        system = proxy.system_prompt.replace("{{RULES}}", rules_text)
+
+        event_payload = json.dumps(
+            {
+                "event_kind": "approval_request",
+                "gate_type": spec.gate_type,
+                "summary": summary,
+                "component": spec.component,
+                "stage": spec.stage.value,
+            },
+            indent=2,
+        )
+        messages: list[Message] = [
+            Message(role="user", content=f"## Event\n\n```json\n{event_payload}\n```")
+        ]
+
+        stream_id = uuid.uuid4().hex
+        text_parts: list[str] = []
+        call_start = datetime.now(tz=UTC).isoformat()
+
+        async for event in self.__llm.stream_query(
+            stream_id=stream_id,
+            model=proxy.model,
+            system=system,
+            messages=messages,
+            tools=[],
+            cache_breakpoints=[],
+        ):
+            if isinstance(event, TokenDelta):
+                text_parts.append(event.text)
+            elif isinstance(event, TurnEnd):
+                self.__cumulative_usd += event.usage.usd_cost
+                await self.__emit_usage(event)
+                await self.__transient.write_agent_record(
+                    "dev_proxy",
+                    {
+                        "call_start": call_start,
+                        "call_end": datetime.now(tz=UTC).isoformat(),
+                        "model": proxy.model,
+                        "usd_cost": event.usage.usd_cost,
+                        "cumulative_usd": self.__cumulative_usd,
+                    },
+                )
+
+        raw = "".join(text_parts).strip()
+        try:
+            decision = json.loads(raw)
+        except json.JSONDecodeError:
+            # If we can't parse JSON, extract action keyword as fallback
+            raw_lower = raw.lower()
+            if "deny" in raw_lower:
+                return ApprovalResponse(action="stop", feedback=raw)
+            if "feedback" in raw_lower:
+                return ApprovalResponse(action="feedback", feedback=raw)
+            return ApprovalResponse(action="agree", feedback="")
+
+        action = str(decision.get("action", "agree"))
+        feedback = str(decision.get("feedback", ""))
+        reasoning = str(decision.get("reasoning", ""))
+        _log.info("Dev Proxy decision: action=%s reasoning=%s", action, reasoning)
+
+        if action == "deny":
+            return ApprovalResponse(action="stop", feedback=feedback)
+        if action == "feedback":
+            return ApprovalResponse(action="feedback", feedback=feedback)
+        return ApprovalResponse(action="agree", feedback="")
+
+    # ------------------------------------------------------------------
     # Author / Critic loop
     # ------------------------------------------------------------------
 
@@ -342,15 +490,7 @@ class WorkflowEngine:
         artifact_path: Path,
         messages: list[Message],
     ) -> list[Message]:
-        """Run Author → Critic up to ``_MAX_AR_ITER`` times.
-
-        * If the Author's turn ends without writing the artifact, a reminder
-          is injected and the Author is re-run (no Critic involved).
-        * If ``critic_agent`` is ``None``, the loop exits as soon as the
-          artifact exists — no review phase.
-
-        Returns the updated messages list.
-        """
+        """Run Author → Critic up to ``_MAX_AR_ITER`` times."""
         try:
             rel_path = artifact_path.relative_to(self.__layout.root).as_posix()
         except ValueError:
@@ -406,7 +546,6 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     async def __post_stage_hook(self, spec: StageSpec) -> None:
-        """Run any side-effects needed after an author/critic loop completes."""
         if spec.stage == Stage.ARCHITECTURE:
             await self.__scaffold_components()
 
@@ -420,7 +559,7 @@ class WorkflowEngine:
         messages: list[Message],
         stream_id: str,
     ) -> tuple[list[Message], list[Path]]:
-        """Run ``agent`` to completion, handling file-I/O tool calls inline."""
+        """Run ``agent`` to completion, handling tool calls inline."""
         tools = [_TOOLS_BY_NAME[t] for t in agent.tools if t in _TOOLS_BY_NAME]
         files_written: list[Path] = []
 
@@ -517,11 +656,7 @@ class WorkflowEngine:
         messages: list[Message] = [
             Message(
                 role="user",
-                content=(
-                    f"## Artifact to Review\n\n"
-                    f"**File:** `{artifact_path.name}`\n\n"
-                    f"{content}"
-                ),
+                content=(f"## Artifact to Review\n\n**File:** `{artifact_path.name}`\n\n{content}"),
             )
         ]
 
@@ -565,19 +700,17 @@ class WorkflowEngine:
     # Inline tool executor
     # ------------------------------------------------------------------
 
-    async def __execute_tool(
-        self, event: ToolCallEvent
-    ) -> tuple[str, list[Path]]:
+    async def __execute_tool(self, event: ToolCallEvent) -> tuple[str, list[Path]]:
         if event.tool_name == _FILEIO_WRITE.name:
             return await self.__tool_write_file(event)
         if event.tool_name == _FILEIO_READ.name:
             return self.__tool_read_file(event), []
+        if event.tool_name == _SHELL_RUN.name:
+            return await self.__tool_shell_run(event), []
         _log.warning("Unknown tool requested: %s", event.tool_name)
         return f"Error: unknown tool '{event.tool_name}'", []
 
-    async def __tool_write_file(
-        self, event: ToolCallEvent
-    ) -> tuple[str, list[Path]]:
+    async def __tool_write_file(self, event: ToolCallEvent) -> tuple[str, list[Path]]:
         rel_path = str(event.tool_input.get("path", "")).strip()
         content = str(event.tool_input.get("content", ""))
         if not rel_path:
@@ -607,6 +740,58 @@ class WorkflowEngine:
             return f"Error: file '{rel_path}' does not exist"
         return target.read_text(encoding="utf-8")
 
+    async def __tool_shell_run(self, event: ToolCallEvent) -> str:
+        """Execute a shell command and return a combined result string."""
+        command = str(event.tool_input.get("command", "")).strip()
+        if not command:
+            return "Error: 'command' is required"
+
+        working_dir_rel = str(event.tool_input.get("working_dir", "")).strip()
+        if working_dir_rel:
+            cwd = (self.__layout.root / working_dir_rel).resolve()
+            if not cwd.is_relative_to(self.__layout.root.resolve()):
+                return "Error: working_dir is outside the project root"
+        else:
+            cwd = self.__layout.root.resolve()
+
+        _log.info("Shell: %s (cwd=%s)", command, cwd)
+
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=_SHELL_TIMEOUT
+            )
+            exit_code = proc.returncode or 0
+        except TimeoutError:
+            _log.warning("Shell command timed out: %s", command)
+            return f"Error: command timed out after {_SHELL_TIMEOUT}s"
+        except Exception as exc:
+            _log.warning("Shell command failed to start: %s — %s", command, exc)
+            return f"Error: {exc}"
+
+        stdout = stdout_bytes.decode("utf-8", errors="replace")
+        stderr = stderr_bytes.decode("utf-8", errors="replace")
+
+        await self.__app_state.send(
+            Envelope.make_event(
+                EVT_SHELL_RUN,
+                {
+                    "command": command,
+                    "cwd": str(cwd),
+                    "exit_code": exit_code,
+                    "stdout": stdout[:4096],
+                    "stderr": stderr[:4096],
+                },
+            )
+        )
+
+        return f"exit_code: {exit_code}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+
     # ------------------------------------------------------------------
     # Component scaffolding (post-architecture hook)
     # ------------------------------------------------------------------
@@ -625,7 +810,6 @@ class WorkflowEngine:
             name = str(comp.get("name", "")).strip()
             if not name:
                 continue
-            # Create directory only — agents write the .kd files themselves.
             (self.__layout.src_dir / name).mkdir(exist_ok=True)
 
     def __build_component_stages_from_dag(self) -> tuple[StageSpec, ...]:
@@ -650,18 +834,12 @@ class WorkflowEngine:
     # Event emitters
     # ------------------------------------------------------------------
 
-    async def __handle_stream_event(
-        self, event: StreamEvent, stream_id: str
-    ) -> None:
+    async def __handle_stream_event(self, event: StreamEvent, stream_id: str) -> None:
         if isinstance(event, TokenDelta):
-            await self.__app_state.send(
-                Envelope.make_stream_chunk(stream_id, event.text)
-            )
+            await self.__app_state.send(Envelope.make_stream_chunk(stream_id, event.text))
 
     async def __emit_state(self) -> None:
-        await self.__app_state.send(
-            Envelope.make_event(EVT_STATE, self.__session.to_dict())
-        )
+        await self.__app_state.send(Envelope.make_event(EVT_STATE, self.__session.to_dict()))
         self.__transient.meta.update(stage=self.__session.stage.value)
 
     async def __emit_usage(self, turn_end: TurnEnd) -> None:
@@ -724,6 +902,15 @@ class WorkflowEngine:
                 {"kind": "add", "path": rel.as_posix()},
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# Internal exceptions
+# ---------------------------------------------------------------------------
+
+
+class _GateStoppedError(Exception):
+    """Raised when the developer clicks Stop at an approval gate."""
 
 
 # ---------------------------------------------------------------------------

@@ -24,9 +24,9 @@ class Stage(StrEnum):
     NARRATIVE = "NARRATIVE"
     ARCHITECTURE = "ARCHITECTURE"
     REQUIREMENTS = "REQUIREMENTS"  # per-component
-    DESIGN = "DESIGN"             # per-component
-    TEST_PLAN = "TEST_PLAN"       # per-component
-    TEST_CODING = "TEST_CODING"   # per-component
+    DESIGN = "DESIGN"  # per-component
+    TEST_PLAN = "TEST_PLAN"  # per-component
+    TEST_CODING = "TEST_CODING"  # per-component
     IMPLEMENTATION = "IMPLEMENTATION"  # per-component
     INTEGRATION_TEST = "INTEGRATION_TEST"
     E2E_TEST = "E2E_TEST"

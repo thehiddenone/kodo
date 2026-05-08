@@ -33,8 +33,7 @@ class AgentRegistry:
             if key in self.__agents:
                 existing = self.__agents[key].source_path
                 raise AgentLoadError(
-                    f"Duplicate agent ({agent.name!r}, {agent.model!r}): "
-                    f"{existing} and {path}"
+                    f"Duplicate agent ({agent.name!r}, {agent.model!r}): {existing} and {path}"
                 )
             self.__agents[key] = agent
 
@@ -54,8 +53,7 @@ class AgentRegistry:
         key = (name, model)
         if key not in self.__agents:
             raise AgentLoadError(
-                f"No agent file for ({name!r}, {model!r}). "
-                f"Expected: agents/{name}.{model}.md"
+                f"No agent file for ({name!r}, {model!r}). Expected: agents/{name}.{model}.md"
             )
         return self.__agents[key]
 

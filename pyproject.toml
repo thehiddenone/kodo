@@ -25,9 +25,9 @@ packages = ["src/kodo"]
 
 [tool.hatch.envs.default]
 dependencies = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "pytest-cov>=5.0",
+    "pytest>=9.0",
+    "pytest-asyncio>=1.0",
+    "pytest-cov>=7.0",
     "ruff>=0.9",
     "mypy>=1.13",
     "aiohttp",
@@ -58,6 +58,7 @@ files = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["test"]
 addopts = "--cov=kodo --cov-report=term-missing"
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["src"]

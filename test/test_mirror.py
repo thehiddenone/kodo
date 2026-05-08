@@ -124,9 +124,7 @@ async def test_checkpoint_manager_two_gates_two_commits(tmp_path: Path) -> None:
 
     (layout.src_dir / "responsibilities.kd").write_text("# Responsibilities", encoding="utf-8")
     dag = {"components": [{"name": "core", "description": "Core", "depends_on": []}]}
-    (layout.src_dir / "responsibilities.dag.json").write_text(
-        json.dumps(dag), encoding="utf-8"
-    )
+    (layout.src_dir / "responsibilities.dag.json").write_text(json.dumps(dag), encoding="utf-8")
     await manager.create_checkpoint("responsibilities")
 
     commits = await manager.list_checkpoints()

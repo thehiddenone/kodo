@@ -173,7 +173,7 @@ class ClaudePlugin(LLMPlugin):
             model=model,
             max_tokens=_DEFAULT_MAX_TOKENS,
             system=system_blocks,  # type: ignore[arg-type]
-            messages=msg_params,   # type: ignore[arg-type]
+            messages=msg_params,  # type: ignore[arg-type]
             **({"tools": tool_defs} if tool_defs else {}),  # type: ignore[arg-type]
         ) as stream:
             async for raw_event in stream:
@@ -199,9 +199,7 @@ class ClaudePlugin(LLMPlugin):
                     if current_tool_use_id is not None and current_tool_name is not None:
                         raw_json = "".join(current_tool_input_parts)
                         try:
-                            tool_input: dict[str, object] = (
-                                json.loads(raw_json) if raw_json else {}
-                            )
+                            tool_input: dict[str, object] = json.loads(raw_json) if raw_json else {}
                         except json.JSONDecodeError:
                             tool_input = {"_raw": raw_json}
                         yield ToolCallEvent(
@@ -219,12 +217,8 @@ class ClaudePlugin(LLMPlugin):
                 usage = Usage(
                     input_tokens=raw_usage.input_tokens,
                     output_tokens=raw_usage.output_tokens,
-                    cache_write_tokens=(
-                        getattr(raw_usage, "cache_creation_input_tokens", 0) or 0
-                    ),
-                    cache_read_tokens=(
-                        getattr(raw_usage, "cache_read_input_tokens", 0) or 0
-                    ),
+                    cache_write_tokens=(getattr(raw_usage, "cache_creation_input_tokens", 0) or 0),
+                    cache_read_tokens=(getattr(raw_usage, "cache_read_input_tokens", 0) or 0),
                     model=model,
                 )
                 yield TurnEnd(usage=usage, stop_reason=str(final.stop_reason or "end_turn"))

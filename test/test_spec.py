@@ -16,23 +16,29 @@ def test_build_component_stages_empty_returns_empty() -> None:
     assert build_component_stages([]) == ()
 
 
-def test_build_component_stages_creates_three_specs_per_component() -> None:
+def test_build_component_stages_creates_five_specs_per_component() -> None:
     specs = build_component_stages(["core", "api"])
-    assert len(specs) == 6
+    assert len(specs) == 10  # 5 stages per component
 
 
 def test_build_component_stages_stage_order() -> None:
     specs = build_component_stages(["core"])
     stages = [s.stage for s in specs]
-    assert stages == [Stage.REQUIREMENTS, Stage.DESIGN, Stage.TEST_PLAN]
+    assert stages == [
+        Stage.REQUIREMENTS,
+        Stage.DESIGN,
+        Stage.TEST_PLAN,
+        Stage.TEST_CODING,
+        Stage.IMPLEMENTATION,
+    ]
 
 
 def test_build_component_stages_sorted_alphabetically() -> None:
     specs = build_component_stages(["zeta", "alpha"])
     components = [s.component for s in specs]
-    # alpha comes first (3 specs), then zeta (3 specs)
-    assert components[:3] == ["alpha", "alpha", "alpha"]
-    assert components[3:] == ["zeta", "zeta", "zeta"]
+    # alpha comes first (5 specs), then zeta (5 specs)
+    assert components[:5] == ["alpha"] * 5
+    assert components[5:] == ["zeta"] * 5
 
 
 def test_build_component_stages_artifact_paths() -> None:
@@ -42,13 +48,15 @@ def test_build_component_stages_artifact_paths() -> None:
         "src/api/requirements.kd",
         "src/api/design.kd",
         "src/api/test_plan.kd",
+        "gen/api/tests/test_api.py",
+        "gen/api/src/api.py",
     ]
 
 
 def test_build_component_stages_gate_types() -> None:
     specs = build_component_stages(["core"])
     gate_types = [s.gate_type for s in specs]
-    assert gate_types == ["requirements", "design", "test_plan"]
+    assert gate_types == ["requirements", "design", "test_plan", "test_coding", "implementation"]
 
 
 def test_build_component_stages_component_field_set() -> None:
@@ -58,13 +66,17 @@ def test_build_component_stages_component_field_set() -> None:
 
 def test_build_component_stages_agents_assigned() -> None:
     specs = build_component_stages(["core"])
-    reqs, design, plan = specs
+    reqs, design, plan, test_coding, impl = specs
     assert reqs.author == "requirements_author"
     assert reqs.critic == "requirements_reviewer"
     assert design.author == "functional_designer"
     assert design.critic == "functional_design_critic"
     assert plan.author == "test_designer"
     assert plan.critic == "test_design_critic"
+    assert test_coding.author == "test_coder"
+    assert test_coding.critic is None
+    assert impl.author == "coder"
+    assert impl.critic == "code_reviewer"
 
 
 def test_build_component_stages_returns_frozen_tuple() -> None:

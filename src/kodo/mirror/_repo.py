@@ -157,9 +157,7 @@ class MirrorRepo:
         for line in stdout.decode().splitlines():
             parts = line.split("|", 2)
             if len(parts) == 3:  # noqa: PLR2004
-                results.append(
-                    CheckpointInfo(sha=parts[0], message=parts[1], timestamp=parts[2])
-                )
+                results.append(CheckpointInfo(sha=parts[0], message=parts[1], timestamp=parts[2]))
         return results
 
     # ------------------------------------------------------------------
@@ -177,7 +175,6 @@ class MirrorRepo:
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
             raise MirrorRepoError(
-                f"git {' '.join(args)} failed (rc={proc.returncode}): "
-                f"{stderr.decode().strip()}"
+                f"git {' '.join(args)} failed (rc={proc.returncode}): {stderr.decode().strip()}"
             )
         _log.debug("git %s → %s", " ".join(args), stdout.decode().strip()[:80])

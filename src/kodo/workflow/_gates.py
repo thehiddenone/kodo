@@ -122,13 +122,9 @@ class GateOrchestrator:
             ``gate_id`` did not match any pending gate.
         """
         if self.__pending_id != gate_id or self.__pending_future is None:
-            _log.warning(
-                "Stale gate_id %r (pending: %r)", gate_id, self.__pending_id
-            )
+            _log.warning("Stale gate_id %r (pending: %r)", gate_id, self.__pending_id)
             return False
         if not self.__pending_future.done():
-            self.__pending_future.set_result(
-                ApprovalResponse(action=action, feedback=feedback)
-            )
+            self.__pending_future.set_result(ApprovalResponse(action=action, feedback=feedback))
             _log.info("Gate resolved: id=%s action=%s", gate_id, action)
         return True

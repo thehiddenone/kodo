@@ -15,7 +15,9 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-__all__ = ["TransientStore", "SessionMeta"]
+__all__ = ["TransientStore", "SessionMeta", "find_unfinished_session", "load_session_prompt"]
+
+_TERMINAL_STAGES = frozenset({"IDLE", "STOPPED", "DONE", "ERROR"})
 
 _log = logging.getLogger(__name__)
 
@@ -42,14 +44,18 @@ class SessionMeta:
         project_hash: 12-char hash of the project root path.
         started_at: ISO-8601 timestamp when the session began.
         last_stage: Most recent workflow stage name.
+        last_prompt: Original developer prompt (needed for resume).
         autonomous: Whether autonomous mode was active.
+        dev_proxy_rules: Newline-joined Dev Proxy rules from project settings.
     """
 
     __session_id: str
     __project_hash: str
     __started_at: str
     __last_stage: str
+    __last_prompt: str
     __autonomous: bool
+    __dev_proxy_rules: str
     __path: Path
 
     def __init__(self, session_dir: Path, session_id: str, project_hash: str) -> None:
@@ -64,7 +70,9 @@ class SessionMeta:
         self.__project_hash = project_hash
         self.__started_at = datetime.now(tz=UTC).isoformat()
         self.__last_stage = "IDLE"
+        self.__last_prompt = ""
         self.__autonomous = False
+        self.__dev_proxy_rules = ""
         self.__path = session_dir / "session.json"
 
     @property
@@ -83,21 +91,44 @@ class SessionMeta:
         return self.__last_stage
 
     @property
+    def last_prompt(self) -> str:
+        """Original developer prompt stored for resume support."""
+        return self.__last_prompt
+
+    @property
     def autonomous(self) -> bool:
         """Whether autonomous mode is active."""
         return self.__autonomous
 
-    def update(self, *, stage: str | None = None, autonomous: bool | None = None) -> None:
+    @property
+    def dev_proxy_rules(self) -> str:
+        """Newline-joined Dev Proxy rule strings from project settings."""
+        return self.__dev_proxy_rules
+
+    def update(
+        self,
+        *,
+        stage: str | None = None,
+        prompt: str | None = None,
+        autonomous: bool | None = None,
+        dev_proxy_rules: str | None = None,
+    ) -> None:
         """Update mutable fields and flush to disk.
 
         Args:
             stage (str | None): New stage name if changed.
+            prompt (str | None): Developer prompt to persist for resume.
             autonomous (bool | None): New autonomous flag if changed.
+            dev_proxy_rules (str | None): Updated Dev Proxy rules string.
         """
         if stage is not None:
             self.__last_stage = stage
+        if prompt is not None:
+            self.__last_prompt = prompt
         if autonomous is not None:
             self.__autonomous = autonomous
+        if dev_proxy_rules is not None:
+            self.__dev_proxy_rules = dev_proxy_rules
         self.__flush()
 
     def __flush(self) -> None:
@@ -106,9 +137,72 @@ class SessionMeta:
             "project_hash": self.__project_hash,
             "started_at": self.__started_at,
             "last_stage": self.__last_stage,
+            "last_prompt": self.__last_prompt,
             "autonomous": self.__autonomous,
+            "dev_proxy_rules": self.__dev_proxy_rules,
         }
         self.__path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def load_session_prompt(project_root: Path, session_id: str) -> str:
+    """Return the stored developer prompt for a specific session, or empty string.
+
+    Args:
+        project_root (Path): Absolute path to the Kodo project root.
+        session_id (str): Session ID returned by :func:`find_unfinished_session`.
+
+    Returns:
+        str: The original prompt, or ``""`` if not found.
+    """
+    proj_hash = _project_hash(project_root)
+    proj_dir = _TRANSIENT_BASE / proj_hash
+    if not proj_dir.exists():
+        return ""
+    for session_dir in proj_dir.iterdir():
+        session_json = session_dir / "session.json"
+        if not session_json.exists():
+            continue
+        try:
+            data = json.loads(session_json.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if str(data.get("session_id", "")) == session_id:
+            return str(data.get("last_prompt", ""))
+    return ""
+
+
+def find_unfinished_session(project_root: Path) -> str | None:
+    """Return the most recent unfinished session ID for a project, or ``None``.
+
+    Scans ``~/.kodo/transient/<project-hash>/`` for session directories whose
+    ``session.json`` records a non-terminal stage.  The most recently created
+    session wins (directory names are sortable ISO timestamps).
+
+    Args:
+        project_root (Path): Absolute path to the Kodo project root.
+
+    Returns:
+        str | None: Session ID to offer for resume, or ``None`` if nothing pending.
+    """
+    proj_hash = _project_hash(project_root)
+    proj_dir = _TRANSIENT_BASE / proj_hash
+    if not proj_dir.exists():
+        return None
+
+    candidates = sorted(proj_dir.iterdir(), reverse=True)
+    for session_dir in candidates:
+        session_json = session_dir / "session.json"
+        if not session_json.exists():
+            continue
+        try:
+            data = json.loads(session_json.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        last_stage = str(data.get("last_stage", "IDLE"))
+        prompt = str(data.get("last_prompt", ""))
+        if last_stage not in _TERMINAL_STAGES and prompt:
+            return str(data.get("session_id", session_dir.name))
+    return None
 
 
 class TransientStore:

@@ -15,14 +15,17 @@ from kodo.agents._registry import AgentRegistry
 from kodo.llms.anthropic import ClaudePlugin
 from kodo.mirror._checkpoints import CheckpointManager
 from kodo.project._layout import ProjectLayout, ProjectLayoutError
-from kodo.state._transient import TransientStore
+from kodo.state._transient import TransientStore, find_unfinished_session
 from kodo.transport._envelope import Envelope
 from kodo.transport._messages import (
+    EVT_RESUME_OFFER,
     MSG_APPROVAL_RESPOND,
     MSG_HELLO,
     MSG_MODE_SET,
     MSG_PING,
     MSG_PROMPT_SUBMIT,
+    MSG_SESSION_RESUME,
+    MSG_STOP,
 )
 from kodo.transport._outbox import Outbox
 from kodo.transport._ws import AppState, HandlerFn
@@ -42,6 +45,7 @@ _AGENTS_DIR = Path(__file__).parent.parent / "agents"
 # Startup validation (FR-SRV-05)
 # ------------------------------------------------------------------
 
+
 def _check_git_on_path() -> None:
     if shutil.which("git") is None:
         _log.error("'git' is not on PATH.  Kōdo requires git.")
@@ -51,6 +55,7 @@ def _check_git_on_path() -> None:
 # ------------------------------------------------------------------
 # Logging setup (NFR-05)
 # ------------------------------------------------------------------
+
 
 def _setup_log_file(layout: ProjectLayout, log_level: str) -> None:
     layout.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -70,7 +75,10 @@ def _setup_log_file(layout: ProjectLayout, log_level: str) -> None:
 # Message handlers
 # ------------------------------------------------------------------
 
-def _make_hello_handler(config: Config, engine: WorkflowEngine) -> HandlerFn:
+
+def _make_hello_handler(
+    config: Config, engine: WorkflowEngine, unfinished_session_id: str | None
+) -> HandlerFn:
     async def _handle_hello(state: AppState, env: Envelope) -> None:
         payload = env.payload
         client = str(payload.get("client", "unknown"))
@@ -83,13 +91,21 @@ def _make_hello_handler(config: Config, engine: WorkflowEngine) -> HandlerFn:
                 "type": "hello",
                 "server_version": _SERVER_VERSION,
                 "project_root": str(config.project),
-                "last_session": None,
+                "last_session": unfinished_session_id,
             },
         )
         await state.send(resp)
 
         state_evt = Envelope.make_event("state", engine.session.to_dict())
         await state.send(state_evt)
+
+        if unfinished_session_id:
+            await state.send(
+                Envelope.make_event(
+                    EVT_RESUME_OFFER,
+                    {"session_id": unfinished_session_id},
+                )
+            )
 
     return _handle_hello
 
@@ -155,17 +171,39 @@ def _make_approval_handler(engine: WorkflowEngine) -> HandlerFn:
             return
 
         resolved = engine.gate.resolve(gate_id, action, feedback)
-        _log.info(
-            "approval.respond: gate_id=%s action=%s resolved=%s", gate_id, action, resolved
-        )
+        _log.info("approval.respond: gate_id=%s action=%s resolved=%s", gate_id, action, resolved)
         await state.send(Envelope.make_response(env.id, {"type": "approval.accepted"}))
 
     return _handle_approval
 
 
+def _make_stop_handler(engine: WorkflowEngine) -> HandlerFn:
+    """Return a ``stop`` handler (FR-WF-07)."""
+
+    async def _handle_stop(state: AppState, env: Envelope) -> None:
+        _log.info("Stop requested (id=%s)", env.id)
+        await engine.stop()
+        await state.send(Envelope.make_response(env.id, {"type": "stop.accepted"}))
+
+    return _handle_stop
+
+
+def _make_resume_handler(engine: WorkflowEngine) -> HandlerFn:
+    """Return a ``session.resume`` handler (FR-STA-02)."""
+
+    async def _handle_resume(state: AppState, env: Envelope) -> None:
+        session_id = str(env.payload.get("session_id", "")).strip()
+        _log.info("Resume requested: session_id=%s", session_id)
+        await engine.handle_resume(session_id)
+        await state.send(Envelope.make_response(env.id, {"type": "session.resume.accepted"}))
+
+    return _handle_resume
+
+
 # ------------------------------------------------------------------
 # App factory
 # ------------------------------------------------------------------
+
 
 async def _start_background(app: web.Application) -> None:
     engine: WorkflowEngine = cast(WorkflowEngine, app["engine"])
@@ -210,6 +248,8 @@ def create_app(config: Config) -> web.Application:
             "Set the key in VS Code SecretStorage."
         )
 
+    unfinished_session = find_unfinished_session(config.project)
+
     llm = ClaudePlugin(api_key=config.anthropic_api_key)
     transient = TransientStore(config.project)
     registry = AgentRegistry(_AGENTS_DIR)
@@ -228,11 +268,13 @@ def create_app(config: Config) -> web.Application:
         default_model=config.default_model,
     )
 
-    state.register_handler(MSG_HELLO, _make_hello_handler(config, engine))
+    state.register_handler(MSG_HELLO, _make_hello_handler(config, engine, unfinished_session))
     state.register_handler(MSG_PING, _handle_ping)
     state.register_handler(MSG_PROMPT_SUBMIT, _make_prompt_handler(engine))
     state.register_handler(MSG_MODE_SET, _make_mode_handler(engine))
     state.register_handler(MSG_APPROVAL_RESPOND, _make_approval_handler(engine))
+    state.register_handler(MSG_STOP, _make_stop_handler(engine))
+    state.register_handler(MSG_SESSION_RESUME, _make_resume_handler(engine))
 
     app = web.Application()
     app["state"] = state

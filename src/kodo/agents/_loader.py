@@ -78,10 +78,8 @@ def load_agent(path: Path) -> Agent:
     stem = path.stem  # removes .md
     prefix = name + "."
     if not stem.startswith(prefix):
-        raise AgentLoadError(
-            f"{path}: filename stem {stem!r} does not start with {prefix!r}"
-        )
-    model = stem[len(prefix):]
+        raise AgentLoadError(f"{path}: filename stem {stem!r} does not start with {prefix!r}")
+    model = stem[len(prefix) :]
     if not model:
         raise AgentLoadError(f"{path}: cannot extract model from filename {path.name!r}")
 
@@ -102,7 +100,7 @@ def _parse_frontmatter(text: str, path: Path) -> tuple[dict[str, object], str]:
         raise AgentLoadError(f"{path}: missing --- frontmatter delimiters")
 
     fm_text = m.group(1)
-    body = text[m.end():].strip()
+    body = text[m.end() :].strip()
 
     result: dict[str, object] = {}
     current_key: str | None = None

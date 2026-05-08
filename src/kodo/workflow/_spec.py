@@ -129,6 +129,44 @@ class StageSpec:
                 f"{design}"
             )
 
+        if self.stage == Stage.TEST_CODING:
+            component = self.component or ""
+            test_plan = context.get(f"src/{component}/test_plan.kd", "(test plan not available)")
+            design = context.get(f"src/{component}/design.kd", "(design not available)")
+            return (
+                "## Task\n\n"
+                f"Write the test code for the `{component}` component.\n\n"
+                f"Write the main test file to `gen/{component}/tests/test_{component}.py`.\n"
+                f"Also create `gen/{component}/tests/__init__.py` (empty) and "
+                f"`gen/{component}/src/__init__.py` (empty) and "
+                f"`gen/{component}/src/{component}.py` (stub with comment "
+                f"'# Implementation placeholder') so imports resolve.\n\n"
+                "All tests MUST be expected-to-fail until the implementation is written.\n\n"
+                "## Test Plan\n\n"
+                f"{test_plan}\n\n"
+                "## Design\n\n"
+                f"{design}"
+            )
+
+        if self.stage == Stage.IMPLEMENTATION:
+            component = self.component or ""
+            design = context.get(f"src/{component}/design.kd", "(design not available)")
+            requirements = context.get(
+                f"src/{component}/requirements.kd", "(requirements not available)"
+            )
+            return (
+                "## Task\n\n"
+                f"Implement the `{component}` component until all its tests pass.\n\n"
+                f"Tests are in `gen/{component}/tests/`. "
+                f"Write the implementation to `gen/{component}/src/{component}.py` "
+                f"(and sub-modules if the design requires it).\n\n"
+                f"Run tests with: `python -m pytest gen/{component}/tests/ -v`\n\n"
+                "## Design\n\n"
+                f"{design}\n\n"
+                "## Requirements\n\n"
+                f"{requirements}"
+            )
+
         # Fallback: pass the raw prompt (future stages will add their own branch)
         return context.get("prompt", "")
 
@@ -202,6 +240,22 @@ def build_component_stages(components: list[str]) -> tuple[StageSpec, ...]:
                     critic="test_design_critic",
                     artifact=f"src/{name}/test_plan.kd",
                     gate_type="test_plan",
+                    component=name,
+                ),
+                StageSpec(
+                    stage=Stage.TEST_CODING,
+                    author="test_coder",
+                    critic=None,
+                    artifact=f"gen/{name}/tests/test_{name}.py",
+                    gate_type="test_coding",
+                    component=name,
+                ),
+                StageSpec(
+                    stage=Stage.IMPLEMENTATION,
+                    author="coder",
+                    critic="code_reviewer",
+                    artifact=f"gen/{name}/src/{name}.py",
+                    gate_type="implementation",
                     component=name,
                 ),
             ]

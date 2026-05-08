@@ -1,6 +1,5 @@
-"""Python toolchain plugin (pytest + uv/pip + ruff).
+"""Python toolchain plugin (pytest + uv/pip + ruff)."""
 
-Stub for M1; full implementation in M4.
-"""
+from ._plugin import PythonPlugin
 
-__all__: list[str] = []
+__all__ = ["PythonPlugin"]
