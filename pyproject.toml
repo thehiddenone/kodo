@@ -22,6 +22,7 @@ kodo-server = "kodo.server.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kodo"]
+include = ["src/kodo/**/*.md"]
 
 [tool.hatch.envs.default]
 dependencies = [

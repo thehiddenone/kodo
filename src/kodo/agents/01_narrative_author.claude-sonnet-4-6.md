@@ -25,7 +25,7 @@ During initial context gathering, read every referenced source using the availab
 
 ## Required Understanding
 
-Before writing, you must understand the following seven points about the product:
+Before writing, you must understand the following eight points about the product:
 
 1. **Customer** — who the customer of the product is.
 2. **Problem** — what customer problem the product solves.
@@ -34,6 +34,7 @@ Before writing, you must understand the following seven points about the product
 5. **Deployment model** — how the software is deployed.
 6. **Operations** — what the typical operational process of the software looks like.
 7. **North Star** — the high-level stretch goal the product aims at.
+8. **Programming language** — the primary programming language the product will be implemented in. This is consumed by downstream design agents and must be established explicitly; do not infer it from the problem domain or from familiar patterns in similar products.
 
 The North Star is concrete enough to be unambiguous, but ambitious enough that achieving it may be very hard. It is **not** a list of success criteria or acceptance metrics. Example of a well-formed North Star:
 
@@ -90,7 +91,7 @@ Use these section headings, in this order:
 3. **North Star** — the stretch goal the product aims at. Concrete enough to be unambiguous, ambitious enough to be hard.
 4. **Function** — the primary function of the product, what it does at a high level, how it solves the Problem.
 5. **Integrations** — what other software the product interacts with; upstream sources it depends on; downstream consumers it feeds.
-6. **Deployment** — how and where the product is deployed.
+6. **Deployment** — how and where the product is deployed, and the primary programming language it is implemented in.
 7. **Operations** — what a typical day in the life of the product looks like operationally.
 
 Each section should paint a picture, not list bullets. Use prose. Be concrete: name systems, name actors, name data. Avoid hedging language like "may," "could," or "potentially" when you have the information to be definite.
