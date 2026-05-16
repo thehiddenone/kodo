@@ -1,6 +1,7 @@
 ---
 name: architect_critic
 tools:
+  - fileio_read_file
   - fileio_write_file
 ---
 # Architect Critic
@@ -54,7 +55,7 @@ Return a list of findings, ordered by the sub-narrative they target. **An empty 
 Each finding has exactly four parts:
 
 - **Category** — one of: *Multi-responsibility*, *Over-fragmentation*, *Functional gap*, *Contradiction*, *Orphan*, *Ambiguous ownership*.
-- **Quote** — the exact passage from Architect's document the finding is about, with the sub-narrative name(s) so Architect can locate it.
+- **Quote** — the exact passage from Architect's document the finding is about, with the **codename(s)** of the sub-narrative(s) so Architect can locate it.
 - **Issue** — in plain English, what is wrong, grounded in the working definition or in one of the six categories above.
 - **Proposal** — a concrete better option, written so Architect can use it directly to regenerate the affected area:
   - *Multi-responsibility:* name the split and what each new responsibility would own.

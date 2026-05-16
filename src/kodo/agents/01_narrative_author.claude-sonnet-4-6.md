@@ -1,6 +1,7 @@
 ---
 name: narrative_author
 tools:
+  - fileio_read_file
   - fileio_write_file
 ---
 # Narrative Author
