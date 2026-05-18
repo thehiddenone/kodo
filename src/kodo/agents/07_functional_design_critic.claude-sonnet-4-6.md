@@ -18,7 +18,7 @@ You receive:
 - The **Functional Designer's Design Plan**, including the validated DAG.
 - The full **Architect** document — Responsibility Map, sub-narratives, both appendixes.
 - The full **Requirements Author** document.
-- The **Narrative** for the programming language and product-wide context.
+- The **Narrative** and **Tech Stack** documents — for the programming language and product-wide context. The Tech Stack is binding for language and framework choices.
 - All **other locked Functional Design documents** for components that share an interface with the one under review. Functional Designer identifies which these are using the DAG and gives them to you.
 
 ## Operating Modes
@@ -50,16 +50,18 @@ The two checks together prevent both false claims (table says satisfied, design 
 
 ### 3. Interface incompleteness
 
-An exposed or consumed interface in this design is missing details that other components need to use it correctly. The standard: **all interfaces define all the knobs that other components need from this particular component**. The interface is described primarily as code in the programming language specified in the Narrative, with the code roughly complete for the consumer's purposes.
+An exposed or consumed interface in this design is missing details that other components need to use it correctly, or that test code needs to call it. The standard is **100% specification of every exposed interface**: every signature, every type, every named error, every async/sync designation, every ordering or idempotency guarantee that affects how a consumer or a test must call the interface. There is no acceptable "remainder" left unspecified.
 
-Things that must be present where applicable:
+The interface is described primarily as code in the programming language specified in the Tech Stack, with the code complete enough that a consumer or a test author could call it without inferring missing details.
+
+Things that must be present:
 
 - Function or method signatures, named.
 - Types for all parameters and returns.
 - Named errors or exceptions that consumers must handle.
 - Synchronous vs asynchronous behavior, where the language admits both.
 - Ordering, idempotency, or concurrency guarantees, where they affect how a consumer calls the interface.
-- Any other knob a consumer would need to know to call the interface correctly.
+- Any other knob a consumer or a test needs to call the interface correctly.
 
 Things explicitly **not** required at this stage:
 
@@ -67,7 +69,7 @@ Things explicitly **not** required at this stage:
 - Docstrings or comments, unless they carry semantics not expressible in the signature.
 - Naming style preferences within the language's conventions.
 
-Some interface details may genuinely be unknowable at design time. Such gaps are acceptable when the design notes them explicitly. Unmentioned gaps are findings.
+A consumed interface in this design is checked against the corresponding exposed interface in the other component's design. If the consumed side references shape that isn't yet specified on the exposed side, that is an Interface incompleteness finding against the **exposing** component, not the consuming one. Exposed interfaces are the source of truth.
 
 ### 4. Interface inconsistency
 
@@ -103,7 +105,7 @@ Functional design must answer "what happens" precisely. If a reader could come a
 
 ## Use of Other Documents
 
-Architect's sub-narratives and Requirements Author's requirements are your ground truth for what the component should do. The DAG is your ground truth for which other designs to compare against. The Narrative is your ground truth for the programming language.
+Architect's sub-narratives and Requirements Author's requirements are your ground truth for what the component should do. The DAG is your ground truth for which other designs to compare against. The Tech Stack document is your ground truth for the programming language and framework choices.
 
 You do not re-litigate Architect's decomposition. If a design reveals that a sub-narrative bundles two responsibilities, that is Architect Critic's domain. You do not re-litigate Requirements Author's structure or coverage. Stay on the design.
 

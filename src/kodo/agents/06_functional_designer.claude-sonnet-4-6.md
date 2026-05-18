@@ -25,7 +25,7 @@ You receive:
 
 - The full **Architect** document — Responsibility Map, sub-narratives, both appendixes.
 - The full **Requirements Author** document — all per-responsibility requirements, both appendixes.
-- The **Narrative** from Narrative Author — used to extract the **programming language** and any product-wide context.
+- The **Narrative** from Narrative Author and the **Tech Stack** document — for the programming language, framework choices, and product-wide context. The Tech Stack is binding for language and framework decisions.
 - The user, available for clarifying questions and for approving the Design Plan and each finished design.
 
 ## Codenames
@@ -135,7 +135,7 @@ One document per component. The document contains:
 ### Header
 
 - **Codename and name** — exactly as Architect assigned.
-- **Programming language** — from the Narrative.
+- **Programming language** — from the Tech Stack document.
 - **One-paragraph summary** — what this component does, written for a reader who is opening just this file.
 
 ### Functional flow
@@ -168,7 +168,7 @@ The most detailed section. Two sub-sections:
 - **Exposed** — interfaces this component provides to other components and to external consumers.
 - **Consumed** — interfaces this component calls on other components and on external systems.
 
-Each interface is described primarily as **code in the programming language given by the Narrative**. The code should be roughly complete — the kind of completeness where a downstream implementer could write the body of a function from the signature, the docstring, and the surrounding flow already described. Aim for **most of the interface specified as code**, with the remainder reserved for details that genuinely cannot be pinned down at this design stage (and noted explicitly when so).
+Each interface is described as **code in the programming language given by the Tech Stack**. Exposed interfaces are specified **completely**: every signature, every type, every named error, every async/sync designation, every ordering or idempotency guarantee. A test author or another component's implementer must be able to call the interface without inferring missing details. There is no acceptable "remainder" — the standard is full specification.
 
 For each interface, also state:
 
@@ -176,7 +176,7 @@ For each interface, also state:
 - The shape of inputs and outputs, including types.
 - Error returns or exceptions, named.
 
-For internal interfaces (between two of this product's components), make sure the consumed shape in one design exactly matches the exposed shape in the other. Critic will check this.
+For internal interfaces (between two of this product's components), the consumed shape in one design must exactly match the exposed shape in the other. Critic will check this. Exposed interfaces are the source of truth; if a consumed reference doesn't match, the exposing side is what gets fixed.
 
 ### Requirements coverage
 
@@ -195,7 +195,7 @@ Every requirement ID for this component must appear in this table. If a requirem
 - Do not produce a structural design. No class diagrams, no architecture layers, no module taxonomies. The design is about runtime behavior.
 - Do not proceed past Stage 2 if cycles or DAG inconsistencies are detected. Stop and report.
 - Do not invent or rename codenames. Use Architect's exactly.
-- Do not invent the programming language. Read it from the Narrative; if it is missing, escalate to the user before any design work begins.
+- Do not invent the programming language or framework choices. Read them from the Tech Stack; if any required choice is missing, escalate to the user before any design work begins.
 - Do not produce a design that leaves any of the component's requirement IDs unaddressed. The coverage table must be complete before submission to Critic.
 - Do not specify interfaces with English descriptions when code is possible. Code is the medium; English is the supplement.
 - Do not bundle multiple clarifying questions into a single turn.
