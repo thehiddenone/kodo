@@ -18,7 +18,7 @@ Out of scope: teams, multi-tenant deployments, hosted/cloud variants, non-develo
 ## 3. Glossary
 
 | Term | Definition |
-|---|---|
+| --- | --- |
 | Project | A directory containing `kodo.md`, `src/`, `gen/`, and `.kodo/`. The unit of work. |
 | `.kd` file | Markdown file under `src/` describing some aspect of the project (narrative, responsibilities, requirements, design, test plan). For MVP, `.kd` is plain Markdown. |
 | `kodo.md` | Project manifest at the project root. Required headings declare a Kodo project. |
@@ -39,6 +39,13 @@ Out of scope: teams, multi-tenant deployments, hosted/cloud variants, non-develo
 | MCP | Model Context Protocol. MVP ships in-process `tools/fileio` and `tools/shell` MCP servers. |
 | Security layer | The single mediator for every tool call request, governed by user-defined and built-in regex rules. |
 | STOP | An always-available control that immediately cancels all in-flight agent work for the project. |
+| Workspace | The virtual artifact store through which agents exclusively publish and retrieve named artifacts; backed by `.kodo/workspace/` on disk. Replaces agent-facing filesystem access for all artifact types. |
+| Artifact | A named piece of content produced or consumed by an agent, uniquely identified by a UUID and tagged with codename(s). Each artifact is a file on disk. |
+| Live artifact | An artifact currently active in the workspace and returnable by `read_artifact`. |
+| Retired artifact | An artifact that has been superseded; removed from the live workspace but preserved on disk under `.kodo/workspace/.retired/` for audit. |
+| PROJECTCODE | A short mnemonic uppercase identifier for the project as a whole, assigned by Architect (e.g. `ETRD`). First segment of all requirement IDs. |
+| RESPONSIBILITYCODE | A short mnemonic uppercase identifier for a single responsibility, assigned by Architect (e.g. `AUTH`). Second segment of requirement IDs. |
+| REQUIREMENTCODE | A short mnemonic uppercase identifier for an individual requirement within a responsibility, assigned by Requirements Author (e.g. `LOGIN`). Third segment of requirement IDs. |
 
 ## 4. MVP exit ticket
 
@@ -183,7 +190,7 @@ For each agent below, MVP SHALL include one markdown file under `kodo/agents/` f
 - **FR-STA-01.** Transient per-agent state SHALL live at `~/.kodo/transient/<project-hash>/<session-id>/<agent>.jsonl`. Each agent appends one record per LLM call (request hash, response hash, usage).
 - **FR-STA-02.** On server crash, on restart, the workflow engine SHALL detect the most recent transient state and offer to resume the interrupted agent's last call.
 - **FR-STA-03.** "Memory" SHALL live as `.kd` files under `<project>/src/.memory/`. These are committed to the main repo by Dev.
-- **FR-STA-04.** Agents SHALL be able to propose memory updates as ordinary file writes (subject to security layer); the writes appear in the WebView as file events for Dev review.
+- **FR-STA-04.** Agents SHALL be able to propose memory updates as ordinary file writes (reviewed_artifact_id to security layer); the writes appear in the WebView as file events for Dev review.
 - **FR-STA-05.** Settings SHALL load with precedence: project `<project>/.kodo/settings.json` > user `~/.kodo/settings.json` > built-in defaults.
 - **FR-STA-06.** VS Code workspace settings SHALL only carry VSIX-side concerns (server binary path override, log level).
 
@@ -210,6 +217,40 @@ This section is load-bearing. The Test Designer, Test Design Critic, Test Coder,
 - **FR-TST-02.** Mocks SHALL be used only at clearly identified system boundaries (external HTTP services, the broker API, the wall clock). Mocks of internal collaborators are forbidden.
 - **FR-TST-03.** The Test Design Critic SHALL reject any test plan that contains call-count assertions or internal-mock-based scenarios, with feedback referencing this requirement.
 - **FR-TST-04.** The end-to-end test SHALL exercise the full system against the highest-fidelity sandboxed boundary available (E\*TRADE sandbox for the MVP exit-ticket project). It SHALL NOT mock internal components.
+
+### 5.16 Virtual workspace (FR-WKS)
+
+The virtual workspace is the exclusive mechanism through which agents produce and consume named artifacts. It replaces agent-facing use of `fileio_write_file` and `fileio_read_file` for all artifact types, providing codename tagging, supersession semantics, and a complete audit trail.
+
+- **FR-WKS-01.** The workspace SHALL be the exclusive mechanism through which agents publish and retrieve artifacts. Agents SHALL NOT hold `fileio_write_file` or `fileio_read_file` in their declared tool lists. The workspace tools (`publish_artifact`, `read_artifact`) supersede agent-facing fileio for all artifact types defined in FR-WKS-03.
+
+- **FR-WKS-02.** The workspace SHALL expose two MCP tools — `publish_artifact` and `read_artifact` — whose JSON schemas are the authoritative specification maintained at `schemas/publish_artifact.json` and `schemas/read_artifact.json` in the Kodo source tree.
+
+- **FR-WKS-03.** The known artifact types are: `narrative`, `architecture`, `requirements`, `functional-design`, `design-plan`, `tech-stack`, `test-plan`, `code`, `test`, `feedback`. New types may be introduced by adding an enum value to both schemas; no other registration step is required.
+
+- **FR-WKS-04.** Each artifact SHALL carry: a UUID v4 (`id`), `type`, `author` (the name of the agent that published it), `project_code` (PROJECTCODE), `responsibility_code` (RESPONSIBILITYCODE), optional `requirement_ids` list (each formatted `PROJECTCODE_RESPONSIBILITYCODE_REQUIREMENTCODE`), text `content`, optional `filename_hint` (leaf filename only, no path), optional `supersedes` list (IDs of artifacts being retired), optional `reviewed_artifact_id` (for type `feedback`: the ID of the artifact being reviewed), optional `verdict` (for type `feedback`: `accepted` or `rejected`), optional `concerns` (for type `feedback` with `verdict=rejected`: a list of structured concern objects — see FR-WKS-07), optional `metadata` (string key-value pairs for supplementary context), and a `created_at` timestamp assigned by the workspace engine at publish time. `author` is required on every `publish_artifact` call. `reviewed_artifact_id`, `verdict`, and `concerns` are required on every `feedback` artifact with `verdict=rejected`.
+
+- **FR-WKS-05.** Project-wide artifacts (`narrative`, `architecture`, `design-plan`, `tech-stack`) SHALL set `responsibility_code` equal to `project_code`. Per-responsibility artifacts SHALL set `responsibility_code` to the RESPONSIBILITYCODE of the responsibility they belong to.
+
+- **FR-WKS-06.** On `publish_artifact`, the workspace engine SHALL: assign a UUID, record `created_at`, persist the artifact to `.kodo/workspace/{project_code}/{responsibility_code}/{artifact_id}_{filename_hint}` (using the artifact ID alone when `filename_hint` is absent), update the live index, append an event-log entry, and return the artifact ID. If `supersedes` is non-empty, each listed artifact SHALL be retired atomically in the same operation (see FR-WKS-09).
+
+- **FR-WKS-07.** Artifacts of type `feedback` SHALL always carry `reviewed_artifact_id` (a live artifact ID), `verdict` (`accepted` or `rejected`), and — when `verdict` is `rejected` — a non-empty `concerns` list. The workspace engine SHALL reject any `feedback` publish that violates these rules, returning a structured error before writing anything. Each concern object SHALL carry at minimum `kind` and `description`; `first_line`, `last_line`, and `excerpt` are optional locators that identify the problematic block within the artifact content by line range and quoted text. Valid `kind` values are defined per critic agent in its prompt; the shared base vocabulary is: `ambiguity`, `contradiction`, `gap`, `compound`, `uncaptured_assumption`, `unmeasurable`, `missing_actor`, `requirement_uncovered`, `interface_mismatch`, `multiple_responsibilities`. Critic agents SHALL NOT invent kinds outside their defined vocabulary.
+
+- **FR-WKS-07a.** Review state for any artifact SHALL be derivable from the artifact graph without mutable fields. Specifically: (a) an artifact has been reviewed if at least one `feedback` artifact exists with `reviewed_artifact_id` equal to its ID; (b) it passed review if that feedback's `verdict` is `accepted`; (c) the review count for a lineage is the total number of `feedback` artifacts whose `reviewed_artifact_id` field traces through the supersession chain (feedback on R1, R2, and R3 all count toward the lineage's review history). No artifact's fields are modified after publication.
+
+- **FR-WKS-08.** `read_artifact` SHALL accept the following filters: `artifact_id`, `author`, `project_code`, `responsibility_code`, `requirement_id`, `type`. All supplied filters are combined with AND. At least one filter SHALL be required; a call with no filters SHALL be rejected. Only live artifacts are returned. An optional `include_content` flag (default `true`) omits the `content` field when `false`, for efficient large-listing use cases.
+
+- **FR-WKS-09.** Retiring an artifact SHALL: remove it from the live index, move its on-disk file to `.kodo/workspace/.retired/{artifact_id}`, and append a `retired` entry to the event log. Retirement is permanent through the workspace API; there is no un-retire operation. A `supersedes` list of `[A, B]` in a single `publish_artifact` call retires A and B atomically with the creation of the new artifact; this covers 1-to-1 replacement, 1-to-N splits (multiple calls each listing the same old ID), and N-to-1 merges (one call listing multiple old IDs).
+
+- **FR-WKS-10.** For `code` and `test` artifacts, the workspace engine SHALL additionally materialize the artifact content at the corresponding path under `gen/` so toolchain plugins can locate it through the standard project layout (FR-PRJ-04). When such an artifact is retired with no successor, the `gen/` file SHALL be deleted; when retired with a superseding artifact, the `gen/` file SHALL be overwritten atomically.
+
+- **FR-WKS-11.** For specification artifacts (`narrative`, `architecture`, `requirements`, `functional-design`, `design-plan`, `tech-stack`), the workspace engine SHALL additionally write content to the conventional `src/` paths defined by FR-PRJ-03. Retirement with no successor deletes the `src/` file; retirement with a successor overwrites it atomically.
+
+- **FR-WKS-12.** The workspace SHALL maintain an append-only event log at `.kodo/workspace/events.jsonl`. Each JSON line SHALL record: `timestamp`, `event` (`published` or `retired`), `artifact_id`, `type`, `author`, `project_code`, `responsibility_code`, `requirement_ids`, `supersedes`, `reviewed_artifact_id`, `verdict`, and `filename_hint`. The `concerns` list is not duplicated in the event log; it is retrievable from the artifact file itself. The event log combined with the on-disk artifacts SHALL be sufficient to reconstruct the full sequence of artifact lifecycle events for any session.
+
+- **FR-WKS-13.** The workspace SHALL maintain a live index at `.kodo/workspace/index.json` listing each live artifact's `id`, `type`, `project_code`, `responsibility_code`, `requirement_ids`, `filename_hint`, and `created_at`. The index SHALL be updated via atomic write-then-rename on every publish and retirement to prevent corruption on crash.
+
+- **FR-WKS-14.** On server startup, the workspace engine SHALL validate the live index against the event log. If the index is absent or any inconsistency is detected, the workspace SHALL rebuild the index from the event log before accepting any workspace tool calls.
 
 ## 6. Non-functional requirements
 

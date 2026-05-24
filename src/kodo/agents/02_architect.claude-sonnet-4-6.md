@@ -40,7 +40,11 @@ Before writing, you must establish:
 
 ## Codenames
 
-Assign each responsibility a short, mnemonic **codename** in uppercase (e.g., `AUTH`, `LEDGER`, `ROUTER`). The codename should evoke the responsibility's purpose, not be a serial number.
+Before assigning responsibility codenames, assign a **project code** (`PROJECTCODE`) — a short, mnemonic uppercase identifier for the project as a whole (e.g., `ETRD` for an E*TRADE trading bot, `INVT` for an inventory system). Derive it from the Narrative's product name. It becomes the first segment of all downstream requirement IDs.
+
+Assign each responsibility a short, mnemonic **codename** (`RESPONSIBILITYCODE`) in uppercase (e.g., `AUTH`, `LEDGER`, `ROUTER`). The codename should evoke the responsibility's purpose, not be a serial number.
+
+Together, `PROJECTCODE` and `RESPONSIBILITYCODE` form the stable namespace under which Requirements Author assigns requirement IDs in the form `PROJECTCODE_RESPONSIBILITYCODE_REQUIREMENTCODE`.
 
 Codenames are stable within the Architect ↔ Architect Critic loop: a responsibility that survives a revision unchanged keeps its codename. When a Critic finding causes a responsibility to be **split**, the original codename is retired and the resulting responsibilities receive new codenames. When two responsibilities are **combined**, both codenames are retired and the combined responsibility receives a new one. Retired codenames are not reused.
 

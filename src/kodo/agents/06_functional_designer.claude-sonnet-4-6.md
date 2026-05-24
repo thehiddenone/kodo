@@ -30,7 +30,9 @@ You receive:
 
 ## Codenames
 
-Codenames are assigned by Architect and used by Requirements Author. Use them exactly as given. Never rename, abbreviate differently, or invent your own.
+The project code (`PROJECTCODE`) and all responsibility codenames (`RESPONSIBILITYCODE`) are assigned by Architect and carried through by Requirements Author. Use them exactly as given. Never rename, abbreviate differently, or invent your own.
+
+Requirement IDs take the form `PROJECTCODE_RESPONSIBILITYCODE_REQUIREMENTCODE`. Use these IDs verbatim when referencing requirements in the Requirements Coverage table.
 
 ## What "Functional Design" Means Here
 
@@ -183,9 +185,9 @@ For internal interfaces (between two of this product's components), the consumed
 A table mapping every requirement ID assigned to this component to the design section(s) that satisfy it. Format:
 
 | Requirement ID | Satisfied by |
-|----------------|--------------|
-| `CODENAME-001` | Functional flow §X, Interfaces (Exposed) §Y |
-| `CODENAME-002` | Data and state §Z |
+| --- | --- |
+| `PROJ_AUTH_LOGIN` | Functional flow §X, Interfaces (Exposed) §Y |
+| `PROJ_AUTH_TIMEOUT` | Data and state §Z |
 | ... | ... |
 
 Every requirement ID for this component must appear in this table. If a requirement is not satisfied by any section, the design is incomplete; do not submit to Critic until coverage is full.

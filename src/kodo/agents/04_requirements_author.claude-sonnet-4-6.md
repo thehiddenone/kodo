@@ -32,11 +32,11 @@ Requirements come in two kinds:
 
 Acceptance criteria must be measurable. A criterion that cannot be verified by inspection, test, or measurement is not acceptable — rewrite or flag it.
 
-## Codenames
+## Codenames and Requirement IDs
 
-Assign each responsibility a short, mnemonic **codename** in uppercase (e.g., `AUTH`, `LEDGER`, `ROUTER`). The codename should evoke the responsibility's purpose, not be a serial number.
+Responsibility codenames (`RESPONSIBILITYCODE`) and the project code (`PROJECTCODE`) are assigned by **Architect** — do not reassign or change them.
 
-Each requirement under a responsibility gets an **ID** in the form `CODENAME-NNN`, numbered sequentially within the responsibility. IDs are stable: once assigned, they do not change across iterations, even when requirements are added, removed, or reordered. Removed requirement IDs are retired and not reused.
+Each requirement gets an **ID** in the form `PROJECTCODE_RESPONSIBILITYCODE_REQUIREMENTCODE`, where `REQUIREMENTCODE` is a short, mnemonic uppercase label that evokes the requirement's subject (e.g., `LOGIN`, `TIMEOUT`, `AUDIT`). It must be unique within its responsibility. IDs are stable: once assigned, they do not change across iterations, even when requirements are added, removed, or reordered. Removed requirement IDs are retired and not reused.
 
 ## Actors
 
@@ -52,9 +52,8 @@ If a requirement's actor is internal, name the codename. If external, name the s
 
 ### 1. Initial reading
 
-- Read Architect's document end to end, including both appendixes.
+- Read Architect's document end to end, including both appendixes. Note the `PROJECTCODE` and each responsibility's `RESPONSIBILITYCODE`.
 - Read the source Narrative for the North Star and any product-wide context.
-- Assign a codename to each responsibility in Architect's Responsibility Map.
 
 ### 2. Iterative clarification
 
@@ -133,7 +132,7 @@ One section per responsibility, in the same order Architect used. Each section o
 
 Then the requirements for that responsibility, each with the following structured fields:
 
-- **ID** — `CODENAME-NNN`.
+- **ID** — `PROJECTCODE_RESPONSIBILITYCODE_REQUIREMENTCODE`.
 - **Type** — *Functional*, or *Non-functional* with a subtype (e.g., *Non-functional / Performance*).
 - **Actor** — human role, internal codename, or external system name.
 - **Intent** — what the actor wants to do.
