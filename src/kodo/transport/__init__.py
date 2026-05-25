@@ -24,8 +24,10 @@ from ._messages import (
     MSG_STOP,
 )
 from ._outbox import Outbox
+from ._ws import AppState
 
 __all__ = [
+    "AppState",
     "Envelope",
     "MessageKind",
     "Outbox",

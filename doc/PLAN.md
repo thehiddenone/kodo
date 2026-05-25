@@ -121,7 +121,7 @@ Completed
 Not Started
 
 **Deliverables**
-- `kodo.agents.{_loader,_registry}` (markdown frontmatter parser + `(name, model) -> Agent` lookup) plus the Narrative Author and Architect agent files (`narrative_author.claude-sonnet-4-6.md`, `architect.claude-sonnet-4-6.md`).
+- `kodo.subagents.{_loader,_registry}` (markdown frontmatter parser + `(name, model) -> Agent` lookup) plus the Narrative Author and Architect agent files (`narrative_author.claude-sonnet-4-6.md`, `architect.claude-sonnet-4-6.md`).
 - Author/Reviewer iteration loop (5-iter limit); for M3 use a single critic stub for both agents until M5.
 - `kodo.workflow._gates`: approval gate orchestration with feedback re-runs.
 - `kodo.mirror.{_repo,_checkpoints}`: git mirror init + checkpoint-on-gate.
@@ -154,7 +154,7 @@ Not Started
 - `kodo.security.{_layer,_rules,_store,_defaults}`: rule schema, default ruleset, session/global stores, prompt event emission.
 - `kodo.toolchains.python.{_plugin,_pytest}`: init, add_dependency (uv), build, test (pytest), format (ruff).
 - WebView: Security prompt card, ShellEvent card.
-- Add agent markdown files: `requirements_author`, `requirements_reviewer`, `functional_designer`, `functional_design_critic`, `test_designer`, `test_design_critic`, `test_coder` (each as a `.claude-sonnet-4-6.md` file under `kodo/agents/`). Prompts authored interactively with M3's Kodo if dogfooding milestone is hit.
+- Add agent markdown files: `requirements_author`, `requirements_reviewer`, `functional_designer`, `functional_design_critic`, `test_designer`, `test_design_critic`, `test_coder` (each as a `.claude-sonnet-4-6.md` file under `kodo/subagents/`). Prompts authored interactively with M3's Kodo if dogfooding milestone is hit.
 
 **Exit criteria**
 - Build a tiny throwaway sample project with Kodo: prompt → narrative → architecture → 1 component (a calculator) → requirements → design → test plan → tests written → tests fail (no impl yet). All artifacts present.
@@ -272,7 +272,7 @@ Total estimate: ~10–12 weeks of focused solo work. Pad by 30% for unknowns: ~1
 
 From M3 onward, every agent's system prompt is itself a Kodo artifact: write a small "kodo-of-kodo" subproject under `dogfood/agents/` containing one component per agent. Use it to:
 
-- Generate the system prompt files (`*.txt`) under `src/kodo/agents/`.
+- Generate the system prompt files (`*.txt`) under `src/kodo/subagents/`.
 - Iterate on prompts via Kodo's own approval-gate UX.
 
 This guarantees the workflow is exercised by its author daily and surfaces UX issues that would otherwise be invisible.

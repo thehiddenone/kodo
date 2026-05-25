@@ -6,6 +6,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from kodo.toolchains import ToolchainPlugin
 from kodo.workspace import Artifact, ArtifactType, Concern, Verdict, Workspace
 
 
@@ -20,13 +21,14 @@ class WorkspaceTool:
     __workspace: Workspace
     __app: FastMCP
 
-    def __init__(self, project_root: str | Path) -> None:
+    def __init__(self, project_root: str | Path, toolchain: ToolchainPlugin) -> None:
         """Initialise the server and register workspace tools.
 
         Args:
             project_root (str | Path): Root directory of the Kodo project.
+            toolchain (ToolchainPlugin): Active toolchain for file name derivation.
         """
-        self.__workspace = Workspace(Path(project_root))
+        self.__workspace = Workspace(Path(project_root), toolchain)
         self.__app = FastMCP("kodo-workspace")
 
         self.__app.tool(

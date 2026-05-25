@@ -145,3 +145,29 @@ class ToolchainPlugin(ABC):
         Args:
             paths (list[Path]): Files or directories to format.
         """
+
+    @abstractmethod
+    def source_filename(self, filename_hint: str) -> str:
+        """Derive a language-appropriate source file name from a hint.
+
+        Args:
+            filename_hint (str): Stem or description of the intended file,
+                e.g. ``'order_manager'``.
+
+        Returns:
+            str: Normalised file name including extension,
+                e.g. ``'order_manager.py'``.
+        """
+
+    @abstractmethod
+    def test_filename(self, filename_hint: str) -> str:
+        """Derive a language-appropriate test suite file name from a hint.
+
+        Args:
+            filename_hint (str): Stem or description of the module under test,
+                e.g. ``'order_manager'``.
+
+        Returns:
+            str: Normalised test file name including extension,
+                e.g. ``'test_order_manager.py'``.
+        """

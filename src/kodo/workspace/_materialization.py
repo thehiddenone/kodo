@@ -5,18 +5,29 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from kodo.toolchains._interface import ToolchainPlugin
+
 from ._models import Artifact, ArtifactType
 
 
-def materialization_path(artifact: Artifact, project_root: Path) -> Path | None:
+def materialization_path(
+    artifact: Artifact,
+    project_root: Path,
+    toolchain: ToolchainPlugin,
+) -> Path | None:
     """Return the path where content should be materialized, or None.
 
     Feedback artifacts are not materialized. All other types write into
     ``src/`` (specification artifacts) or ``gen/`` (code and test artifacts).
+    File names for ``CODE`` and ``TEST`` artifacts are derived via the
+    supplied toolchain so that extensions and naming conventions are
+    language-appropriate.
 
     Args:
         artifact (Artifact): The artifact to place.
         project_root (Path): Root directory of the Kodo project.
+        toolchain (ToolchainPlugin): Active toolchain, used to derive
+            language-appropriate file names for code and test artifacts.
 
     Returns:
         Path | None: Destination path, or ``None`` for types that are not
@@ -38,16 +49,20 @@ def materialization_path(artifact: Artifact, project_root: Path) -> Path | None:
         case ArtifactType.TEST_PLAN:
             return project_root / "src" / artifact.responsibility_code / "test_plan.kd"
         case ArtifactType.CODE:
-            leaf = artifact.filename_hint or f"{artifact.id}.py"
+            leaf = toolchain.source_filename(artifact.filename_hint or artifact.id)
             return project_root / "gen" / artifact.responsibility_code / leaf
         case ArtifactType.TEST:
-            leaf = artifact.filename_hint or f"{artifact.id}_test.py"
+            leaf = toolchain.test_filename(artifact.filename_hint or artifact.id)
             return project_root / "gen" / artifact.responsibility_code / "tests" / leaf
         case _:
             return None
 
 
-async def materialize(artifact: Artifact, project_root: Path) -> None:
+async def materialize(
+    artifact: Artifact,
+    project_root: Path,
+    toolchain: ToolchainPlugin,
+) -> None:
     """Write artifact content to its conventional src/ or gen/ path.
 
     Does nothing for artifact types that are not materialized or when
@@ -56,14 +71,19 @@ async def materialize(artifact: Artifact, project_root: Path) -> None:
     Args:
         artifact (Artifact): The artifact to write. Must have content loaded.
         project_root (Path): Root directory of the Kodo project.
+        toolchain (ToolchainPlugin): Active toolchain for file name derivation.
     """
-    target = materialization_path(artifact, project_root)
+    target = materialization_path(artifact, project_root, toolchain)
     if target is None or artifact.content is None:
         return
     await asyncio.to_thread(_write, target, artifact.content)
 
 
-async def dematerialize(artifact: Artifact, project_root: Path) -> None:
+async def dematerialize(
+    artifact: Artifact,
+    project_root: Path,
+    toolchain: ToolchainPlugin,
+) -> None:
     """Remove the materialized file for a retiring artifact.
 
     Does nothing for artifact types that are not materialized.
@@ -71,8 +91,9 @@ async def dematerialize(artifact: Artifact, project_root: Path) -> None:
     Args:
         artifact (Artifact): The artifact being retired.
         project_root (Path): Root directory of the Kodo project.
+        toolchain (ToolchainPlugin): Active toolchain for file name derivation.
     """
-    target = materialization_path(artifact, project_root)
+    target = materialization_path(artifact, project_root, toolchain)
     if target is None:
         return
     await asyncio.to_thread(_delete_if_exists, target)

@@ -10,6 +10,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from kodo.toolchains._interface import ToolchainPlugin
+
 from ._errors import ArtifactNotFoundError, WorkspaceValidationError
 from ._materialization import dematerialize, materialize
 from ._models import Artifact, ArtifactType, Concern, Verdict
@@ -41,8 +43,9 @@ class Workspace:
     __index: dict[str, Artifact]
     __lock: asyncio.Lock
     __loaded: bool
+    __toolchain: ToolchainPlugin
 
-    def __init__(self, project_root: Path) -> None:
+    def __init__(self, project_root: Path, toolchain: ToolchainPlugin) -> None:
         """Initialise workspace paths for the given project root.
 
         No I/O is performed here. Disk initialisation is deferred to the
@@ -51,8 +54,12 @@ class Workspace:
         Args:
             project_root (Path): Root directory of the Kodo project. The
                 workspace lives at ``<project_root>/.kodo/workspace/``.
+            toolchain (ToolchainPlugin): Active toolchain, used to derive
+                language-appropriate file names when materializing code and
+                test artifacts.
         """
         self.__project_root = project_root.resolve()
+        self.__toolchain = toolchain
         self.__workspace_dir = self.__project_root / ".kodo" / "workspace"
         self.__retired_dir = self.__workspace_dir / ".retired"
         self.__index_path = self.__workspace_dir / "index.json"
@@ -169,7 +176,7 @@ class Workspace:
             # Dematerialize retired artifacts before writing the new one so
             # a successor at the same path always wins cleanly.
             for ret in retired:
-                await dematerialize(ret, self.__project_root)
+                await dematerialize(ret, self.__project_root, self.__toolchain)
 
             # Move retired artifact files to .retired/.
             for ret in retired:
@@ -181,7 +188,7 @@ class Workspace:
             await asyncio.to_thread(self.__write_artifact, artifact)
 
             # Materialize content to src/ or gen/.
-            await materialize(artifact, self.__project_root)
+            await materialize(artifact, self.__project_root, self.__toolchain)
 
             # Atomically persist the updated index.
             await asyncio.to_thread(self.__save_index)
@@ -367,13 +374,9 @@ class Workspace:
                     "'reviewed_artifact_id' is only valid on feedback artifacts."
                 )
             if verdict is not None:
-                raise WorkspaceValidationError(
-                    "'verdict' is only valid on feedback artifacts."
-                )
+                raise WorkspaceValidationError("'verdict' is only valid on feedback artifacts.")
             if concerns_list:
-                raise WorkspaceValidationError(
-                    "'concerns' is only valid on feedback artifacts."
-                )
+                raise WorkspaceValidationError("'concerns' is only valid on feedback artifacts.")
 
     def __matches(self, artifact: Artifact, filters: dict[str, object]) -> bool:
         if "artifact_id" in filters and artifact.id != filters["artifact_id"]:
@@ -458,12 +461,7 @@ class Workspace:
                 continue
             project_code = str(pub_event["project_code"])
             responsibility_code = str(pub_event["responsibility_code"])
-            path = (
-                self.__workspace_dir
-                / project_code
-                / responsibility_code
-                / f"{artifact_id}.json"
-            )
+            path = self.__workspace_dir / project_code / responsibility_code / f"{artifact_id}.json"
             artifact = self.__read_artifact_file(path)
             if artifact is None:
                 continue
@@ -548,16 +546,12 @@ class Workspace:
             filename_hint=str(data["filename_hint"]) if data.get("filename_hint") else None,
             supersedes=[str(s) for s in sup_raw] if isinstance(sup_raw, list) else [],
             reviewed_artifact_id=(
-                str(data["reviewed_artifact_id"])
-                if data.get("reviewed_artifact_id")
-                else None
+                str(data["reviewed_artifact_id"]) if data.get("reviewed_artifact_id") else None
             ),
             verdict=Verdict(str(verdict_raw)) if verdict_raw else None,
             concerns=concerns,
             metadata=(
-                {str(k): str(v) for k, v in meta_raw.items()}
-                if isinstance(meta_raw, dict)
-                else {}
+                {str(k): str(v) for k, v in meta_raw.items()} if isinstance(meta_raw, dict) else {}
             ),
         )
 
@@ -594,9 +588,7 @@ class Workspace:
             filename_hint=str(entry["filename_hint"]) if entry.get("filename_hint") else None,
             supersedes=[str(s) for s in sup_raw] if isinstance(sup_raw, list) else [],
             reviewed_artifact_id=(
-                str(entry["reviewed_artifact_id"])
-                if entry.get("reviewed_artifact_id")
-                else None
+                str(entry["reviewed_artifact_id"]) if entry.get("reviewed_artifact_id") else None
             ),
             verdict=Verdict(str(verdict_raw)) if verdict_raw else None,
             concerns=[],

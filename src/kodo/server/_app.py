@@ -11,11 +11,11 @@ from typing import cast
 
 from aiohttp import web
 
-from kodo.agents._registry import AgentRegistry
 from kodo.llms.anthropic import ClaudePlugin
 from kodo.mirror._checkpoints import CheckpointManager
 from kodo.project._layout import ProjectLayout, ProjectLayoutError
 from kodo.state._transient import TransientStore, find_unfinished_session
+from kodo.subagents._registry import AgentRegistry
 from kodo.transport._envelope import Envelope
 from kodo.transport._messages import (
     EVT_RESUME_OFFER,
@@ -37,8 +37,8 @@ _log = logging.getLogger(__name__)
 
 _SERVER_VERSION: str = "0.1.0b1"
 
-# Agents directory: kodo/agents/ next to kodo/server/
-_AGENTS_DIR = Path(__file__).parent.parent / "agents"
+# Subagents directory: kodo/subagents/ next to kodo/server/
+_AGENTS_DIR = Path(__file__).parent.parent / "subagents"
 
 
 # ------------------------------------------------------------------

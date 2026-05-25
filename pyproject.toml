@@ -40,7 +40,7 @@ lint     = "ruff check src test"
 typecheck = "mypy"
 test     = "pytest"
 check-version = "python scripts/check_version.py"
-check    = ["ruff format src test", "ruff check src test", "mypy", "python scripts/check_version.py", "pytest"]
+check    = ["ruff format src test", "ruff check src test --fix", "mypy", "python scripts/check_version.py", "pytest"]
 build    = ["python scripts/pre_build.py", "ruff format src test", "ruff check src test", "mypy", "python scripts/check_version.py", "pytest", "hatch build", "python scripts/post_build.py"]
 
 [tool.ruff]

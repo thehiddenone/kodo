@@ -142,6 +142,30 @@ class PythonPlugin(ToolchainPlugin):
             if report_path.exists():
                 report_path.unlink(missing_ok=True)
 
+    def source_filename(self, filename_hint: str) -> str:
+        """Derive a Python source file name from a hint.
+
+        Args:
+            filename_hint (str): Stem or description, e.g. ``'order_manager'``.
+
+        Returns:
+            str: Snake-case ``.py`` file name, e.g. ``'order_manager.py'``.
+        """
+        stem = filename_hint.strip().lower().replace(" ", "_").replace("-", "_")
+        return f"{stem}.py"
+
+    def test_filename(self, filename_hint: str) -> str:
+        """Derive a pytest test file name from a hint.
+
+        Args:
+            filename_hint (str): Stem or description of the module under test.
+
+        Returns:
+            str: Snake-case file name with ``test_`` prefix, e.g. ``'test_order_manager.py'``.
+        """
+        stem = filename_hint.strip().lower().replace(" ", "_").replace("-", "_")
+        return f"test_{stem}.py"
+
     async def format(self, paths: list[Path]) -> None:
         """Format Python files using ruff.
 

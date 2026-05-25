@@ -104,7 +104,7 @@ This is the only acceptance criterion that gates MVP release. Per-feature requir
 
 #### 5.5.1 Agent definition
 
-- **FR-AGT-01.** An agent SHALL be defined by a single Markdown file at `kodo/agents/<name>.<model>.md`. The file SHALL have YAML frontmatter declaring `name` and `tools` (a list of MCP tool names the agent may invoke), and a body containing the full system prompt for the named model. Agents are not Python classes or plugins — they have no `role`, no typed `inputs`/`outputs`, and no capability set beyond the tool list.
+- **FR-AGT-01.** An agent SHALL be defined by a single Markdown file at `kodo/subagents/<name>.<model>.md`. The file SHALL have YAML frontmatter declaring `name` and `tools` (a list of MCP tool names the agent may invoke), and a body containing the full system prompt for the named model. Agents are not Python classes or plugins — they have no `role`, no typed `inputs`/`outputs`, and no capability set beyond the tool list.
 - **FR-AGT-02.** Each agent file SHALL be a complete, self-contained prompt for the model encoded in its filename. Multiple files MAY exist for a single `name` (one per model variant); each file is independent — there is no shared "common" body across variants.
 - **FR-AGT-03.** Agents SHALL be looked up by `(name, model)` at runtime. Looking up an agent for a model with no matching file SHALL be a hard error.
 - **FR-AGT-04.** Agents SHALL be invoked only by workflow code; no direct agent-to-agent calls. The workflow function is the sole orchestration mechanism.
@@ -113,7 +113,7 @@ This is the only acceptance criterion that gates MVP release. Per-feature requir
 
 #### 5.5.2 Required agents for MVP
 
-For each agent below, MVP SHALL include one markdown file under `kodo/agents/` for the default model (`claude-sonnet-4-6` for all agents except Dev Proxy, which uses `claude-haiku-4-5-20251001`). The "reads / writes" annotations describe what the workflow function passes the agent and where its output lands; they are documentation, not declared types.
+For each agent below, MVP SHALL include one markdown file under `kodo/subagents/` for the default model (`claude-sonnet-4-6` for all agents except Dev Proxy, which uses `claude-haiku-4-5-20251001`). The "reads / writes" annotations describe what the workflow function passes the agent and where its output lands; they are documentation, not declared types.
 
 - **FR-AGT-NA.** **Narrative Author** — reads: Dev prompt. Writes: `src/narrative.kd`.
 - **FR-AGT-AR.** **Architect** — reads: narrative. Writes: `src/responsibilities.kd` (list with names + brief descriptions) and component scaffolding (one directory per component under `src/<component>/` with empty `requirements.kd`, `design.kd`, `test_plan.kd`).

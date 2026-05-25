@@ -1,6 +1,6 @@
-"""Agent markdown file parser — frontmatter + system-prompt body.
+"""Subagent markdown file parser — frontmatter + system-prompt body.
 
-Each agent file is a Markdown document with YAML frontmatter:
+Each subagent file is a Markdown document with YAML frontmatter:
 
     ---
     name: narrative_author
@@ -8,8 +8,6 @@ Each agent file is a Markdown document with YAML frontmatter:
       - fileio_write_file
     ---
     <system prompt body>
-
-The model is encoded in the filename: ``<name>.<model>.md``.
 """
 
 from __future__ import annotations
@@ -18,42 +16,40 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-__all__ = ["Agent", "AgentLoadError", "load_agent"]
+__all__ = ["SubAgent", "AgentLoadError", "load_agent"]
 
 _FRONT_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 
 
 class AgentLoadError(Exception):
-    """Raised when an agent file cannot be parsed or lacks required fields."""
+    """Raised when a subagent file cannot be parsed or lacks required fields."""
 
 
 @dataclass(frozen=True)
-class Agent:
-    """A loaded agent definition.
+class SubAgent:
+    """A loaded subagent definition.
 
     Attributes:
-        name: Agent name from frontmatter (e.g. ``'narrative_author'``).
-        model: Model identifier from filename (e.g. ``'claude-sonnet-4-6'``).
-        tools: MCP tool names this agent may invoke.
+        name: Subagent name from frontmatter (e.g. ``'narrative_author'``).
+        tools: MCP tool names this subagent may invoke.
         system_prompt: Full system prompt body.
         source_path: Absolute path to the source ``.md`` file.
     """
 
     name: str
-    model: str
     tools: frozenset[str]
     system_prompt: str
     source_path: Path
 
 
-def load_agent(path: Path) -> Agent:
-    """Parse a single agent markdown file.
+def load_agent(path: Path) -> SubAgent:
+    """Parse a single subagent markdown file.
 
     Args:
         path: Absolute path to the ``.md`` file.
 
     Returns:
-        Agent: Fully populated agent dataclass.
+        SubAgent: Fully populated subagent dataclass.
 
     Raises:
         AgentLoadError: File is missing frontmatter, a required field, or has an
@@ -74,19 +70,16 @@ def load_agent(path: Path) -> Agent:
     else:
         tools = frozenset()
 
-    # Extract model from filename stem: <name>.<model>
-    stem = path.stem  # removes .md
-    prefix = name + "."
-    if not stem.startswith(prefix):
-        raise AgentLoadError(f"{path}: filename stem {stem!r} does not start with {prefix!r}")
-    model = stem[len(prefix) :]
-    if not model:
-        raise AgentLoadError(f"{path}: cannot extract model from filename {path.name!r}")
+    expected_stem = f"subagent_{name}"
+    if path.stem != expected_stem:
+        raise AgentLoadError(
+            f"{path}: filename stem {path.stem!r} does not match expected {expected_stem!r}"
+        )
 
     if not body:
         raise AgentLoadError(f"{path}: system-prompt body is empty")
 
-    return Agent(name=name, model=model, tools=tools, system_prompt=body, source_path=path)
+    return SubAgent(name=name, tools=tools, system_prompt=body, source_path=path)
 
 
 # ---------------------------------------------------------------------------

@@ -3,4 +3,7 @@
 Stub for M1; full implementation in M3.
 """
 
-__all__: list[str] = []
+from ._checkpoints import CheckpointManager
+from ._repo import CheckpointInfo, MirrorRepo, MirrorRepoError
+
+__all__: list[str] = ["CheckpointInfo", "CheckpointManager", "MirrorRepo", "MirrorRepoError"]

@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from kodo.toolchains import PythonPlugin
+
 from ._server import WorkspaceTool
 
 
@@ -18,7 +20,9 @@ def main() -> None:
         help="Root directory of the Kodo project.",
     )
     args = parser.parse_args()
-    WorkspaceTool(project_root=Path(args.project_root)).run()
+    WorkspaceTool(
+        project_root=Path(args.project_root), toolchain=PythonPlugin(Path(args.project_root))
+    ).run()
 
 
 if __name__ == "__main__":

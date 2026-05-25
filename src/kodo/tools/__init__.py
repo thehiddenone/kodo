@@ -1,3 +1,17 @@
 """Kōdo built-in MCP tool servers."""
 
-__all__: list[str] = []
+from ._report_tools import (
+    ESCALATE_TO_USER,
+    NARRATIVE_ASK_USER_QUESTION,
+    NARRATIVE_PRESENT_FOR_ACCEPTANCE,
+    NARRATIVE_REPORT_COMPLETED,
+    REPORT_TOOLS_BY_NAME,
+)
+
+__all__: list[str] = [
+    "ESCALATE_TO_USER",
+    "NARRATIVE_ASK_USER_QUESTION",
+    "NARRATIVE_PRESENT_FOR_ACCEPTANCE",
+    "NARRATIVE_REPORT_COMPLETED",
+    "REPORT_TOOLS_BY_NAME",
+]

@@ -26,8 +26,8 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+from kodo.llms import LLMPlugin
 from kodo.llms._interface import (
     Message,
     StreamEvent,
@@ -37,7 +37,12 @@ from kodo.llms._interface import (
     TurnEnd,
 )
 from kodo.llms.anthropic import UnrecoverableError
+from kodo.mirror import CheckpointManager
+from kodo.project import ProjectLayout
+from kodo.state import TransientStore
 from kodo.state._transient import load_session_prompt
+from kodo.subagents import AgentRegistry, SubAgent
+from kodo.transport import AppState
 from kodo.transport._envelope import Envelope
 from kodo.transport._messages import (
     EVT_AGENT_FINISHED,
@@ -53,15 +58,6 @@ from ._gates import ApprovalResponse, GateOrchestrator
 from ._session import SessionState
 from ._spec import PROJECT_STAGES, StageSpec, build_component_stages
 from ._stages import Stage
-
-if TYPE_CHECKING:
-    from kodo.agents._loader import Agent
-    from kodo.agents._registry import AgentRegistry
-    from kodo.llms._interface import LLMPlugin
-    from kodo.mirror._checkpoints import CheckpointManager
-    from kodo.project._layout import ProjectLayout
-    from kodo.state._transient import TransientStore
-    from kodo.transport._ws import AppState
 
 __all__ = ["WorkflowEngine"]
 
@@ -145,8 +141,6 @@ _TOOLS_BY_NAME: dict[str, ToolSpec] = {
     _FILEIO_WRITE.name: _FILEIO_WRITE,
     _SHELL_RUN.name: _SHELL_RUN,
 }
-
-_DEV_PROXY_MODEL = "claude-haiku-4-5-20251001"
 
 
 class WorkflowEngine:
@@ -346,10 +340,8 @@ class WorkflowEngine:
         await self.__emit_state()
 
         artifact_path = self.__layout.root / spec.artifact
-        author_agent = self.__registry.get(spec.author, self.__default_model)
-        critic_agent = (
-            self.__registry.get(spec.critic, self.__default_model) if spec.critic else None
-        )
+        author_agent = self.__registry.get(spec.author)
+        critic_agent = self.__registry.get(spec.critic) if spec.critic else None
 
         messages: list[Message] = [Message(role="user", content=spec.build_task_message(context))]
 
@@ -404,7 +396,7 @@ class WorkflowEngine:
     async def __dev_proxy_gate(self, spec: StageSpec, summary: str) -> ApprovalResponse:
         """Invoke the Dev Proxy agent to answer an approval gate autonomously."""
         try:
-            proxy = self.__registry.get("dev_proxy", _DEV_PROXY_MODEL)
+            proxy = self.__registry.get("dev_proxy")
         except Exception as exc:
             _log.warning("Dev Proxy not available (%s) — auto-agreeing", exc)
             return ApprovalResponse(action="agree", feedback="")
@@ -433,7 +425,7 @@ class WorkflowEngine:
 
         async for event in self.__llm.stream_query(
             stream_id=stream_id,
-            model=proxy.model,
+            model=self.__default_model,
             system=system,
             messages=messages,
             tools=[],
@@ -449,7 +441,7 @@ class WorkflowEngine:
                     {
                         "call_start": call_start,
                         "call_end": datetime.now(tz=UTC).isoformat(),
-                        "model": proxy.model,
+                        "model": self.__default_model,
                         "usd_cost": event.usage.usd_cost,
                         "cumulative_usd": self.__cumulative_usd,
                     },
@@ -485,8 +477,8 @@ class WorkflowEngine:
     async def __author_reviewer_loop(
         self,
         *,
-        author_agent: Agent,
-        critic_agent: Agent | None,
+        author_agent: SubAgent,
+        critic_agent: SubAgent | None,
         artifact_path: Path,
         messages: list[Message],
     ) -> list[Message]:
@@ -550,12 +542,12 @@ class WorkflowEngine:
             await self.__scaffold_components()
 
     # ------------------------------------------------------------------
-    # Agent execution (multi-turn tool-use loop)
+    # SubAgent execution (multi-turn tool-use loop)
     # ------------------------------------------------------------------
 
     async def __run_agent(
         self,
-        agent: Agent,
+        agent: SubAgent,
         messages: list[Message],
         stream_id: str,
     ) -> tuple[list[Message], list[Path]]:
@@ -572,7 +564,7 @@ class WorkflowEngine:
             try:
                 async for event in self.__llm.stream_query(
                     stream_id=stream_id,
-                    model=agent.model,
+                    model=self.__default_model,
                     system=agent.system_prompt,
                     messages=messages,
                     tools=tools,
@@ -597,7 +589,7 @@ class WorkflowEngine:
                     {
                         "call_start": call_start,
                         "call_end": datetime.now(tz=UTC).isoformat(),
-                        "model": agent.model,
+                        "model": self.__default_model,
                         "input_tokens": turn_end.usage.input_tokens,
                         "output_tokens": turn_end.usage.output_tokens,
                         "cache_write_tokens": turn_end.usage.cache_write_tokens,
@@ -647,7 +639,7 @@ class WorkflowEngine:
     # Silent critic run
     # ------------------------------------------------------------------
 
-    async def __run_critic(self, agent: Agent, artifact_path: Path) -> str:
+    async def __run_critic(self, agent: SubAgent, artifact_path: Path) -> str:
         """Run the critic agent silently; return ``'ACCEPT'`` or feedback."""
         if not artifact_path.exists():
             return "ACCEPT"
@@ -666,7 +658,7 @@ class WorkflowEngine:
 
         async for event in self.__llm.stream_query(
             stream_id=stream_id,
-            model=agent.model,
+            model=self.__default_model,
             system=agent.system_prompt,
             messages=messages,
             tools=[],
@@ -682,7 +674,7 @@ class WorkflowEngine:
                     {
                         "call_start": call_start,
                         "call_end": datetime.now(tz=UTC).isoformat(),
-                        "model": agent.model,
+                        "model": self.__default_model,
                         "input_tokens": event.usage.input_tokens,
                         "output_tokens": event.usage.output_tokens,
                         "cache_write_tokens": event.usage.cache_write_tokens,
@@ -722,7 +714,7 @@ class WorkflowEngine:
 
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        _log.info("Agent wrote file: %s", rel_path)
+        _log.info("SubAgent wrote file: %s", rel_path)
 
         await self.__emit_file_change(target)
         return "File written successfully.", [target]

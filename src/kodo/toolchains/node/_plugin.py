@@ -149,6 +149,32 @@ class NodePlugin(ToolchainPlugin):
         _log.info("vitest exit=%d component=%s", code, scope.component)
         return parse_vitest_stdout(stdout, stderr)
 
+    def source_filename(self, filename_hint: str) -> str:
+        """Derive a TypeScript source file name from a hint.
+
+        Args:
+            filename_hint (str): Stem or description, e.g. ``'order_manager'``.
+
+        Returns:
+            str: camelCase ``.ts`` file name, e.g. ``'orderManager.ts'``.
+        """
+        words = filename_hint.strip().replace("-", "_").replace(" ", "_").split("_")
+        camel = words[0].lower() + "".join(w.capitalize() for w in words[1:])
+        return f"{camel}.ts"
+
+    def test_filename(self, filename_hint: str) -> str:
+        """Derive a Vitest test file name from a hint.
+
+        Args:
+            filename_hint (str): Stem or description of the module under test.
+
+        Returns:
+            str: camelCase file name with ``.test.ts`` suffix, e.g. ``'orderManager.test.ts'``.
+        """
+        words = filename_hint.strip().replace("-", "_").replace(" ", "_").split("_")
+        camel = words[0].lower() + "".join(w.capitalize() for w in words[1:])
+        return f"{camel}.test.ts"
+
     async def format(self, paths: list[Path]) -> None:
         """Format JS/TS files using prettier if available.
 

@@ -52,7 +52,7 @@ src/kodo/
 │   ├── _gates.py           # approval gate orchestration
 │   ├── _scheduler.py       # component scheduling, integration DAG
 │   └── _session.py         # per-session metadata, resume logic
-├── agents/                 # markdown agent files; one file per (name, model)
+├── subagents/              # markdown subagent files; one file per (name, model)
 │   ├── _loader.py          # parses frontmatter + body into Agent dataclass
 │   ├── _registry.py        # (name, model) -> Agent
 │   ├── narrative_author.claude-sonnet-4-6.md
@@ -230,7 +230,7 @@ class LLMPlugin(ABC):
 
 ### 4.2 Agents (FR-AGT)
 
-Agents are not Python classes. They are markdown files at `kodo/agents/<name>.<model>.md`, parsed into a small data type at startup:
+Agents are not Python classes. They are markdown files at `kodo/subagents/<name>.<model>.md`, parsed into a small data type at startup:
 
 ```python
 @dataclass(frozen=True)
@@ -376,7 +376,7 @@ Notable agent constraints:
 
 ### 6.3 Dev Proxy (LLM agent with rules)
 
-The Dev Proxy is an ordinary agent (per §4.2) — a markdown file at `kodo/agents/dev_proxy.<model>.md` whose system prompt establishes the role of "autonomous-mode proxy." User-defined rules from project settings are interpolated into the prompt at invocation time.
+The Dev Proxy is an ordinary agent (per §4.2) — a markdown file at `kodo/subagents/dev_proxy.<model>.md` whose system prompt establishes the role of "autonomous-mode proxy." User-defined rules from project settings are interpolated into the prompt at invocation time.
 
 Configuration in `<project>/.kodo/settings.json`:
 
