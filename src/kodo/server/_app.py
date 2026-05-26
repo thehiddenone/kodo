@@ -7,7 +7,6 @@ import logging.handlers
 import shutil
 import sys
 from pathlib import Path
-from typing import cast
 
 from aiohttp import web
 
@@ -28,7 +27,7 @@ from kodo.transport._messages import (
     MSG_STOP,
 )
 from kodo.transport._outbox import Outbox
-from kodo.transport._ws import AppState, HandlerFn
+from kodo.transport._ws import APP_STATE_KEY, AppState, HandlerFn
 from kodo.workflow._engine import WorkflowEngine
 
 from ._config import Config
@@ -36,6 +35,7 @@ from ._config import Config
 _log = logging.getLogger(__name__)
 
 _SERVER_VERSION: str = "0.1.0b1"
+_ENGINE_KEY: web.AppKey[WorkflowEngine] = web.AppKey("engine")
 
 # Subagents directory: kodo/subagents/ next to kodo/server/
 _AGENTS_DIR = Path(__file__).parent.parent / "subagents"
@@ -206,18 +206,15 @@ def _make_resume_handler(engine: WorkflowEngine) -> HandlerFn:
 
 
 async def _start_background(app: web.Application) -> None:
-    engine: WorkflowEngine = cast(WorkflowEngine, app["engine"])
-    await engine.start()
+    await app[_ENGINE_KEY].start()
 
 
 async def _stop_background(app: web.Application) -> None:
-    engine: WorkflowEngine = cast(WorkflowEngine, app["engine"])
-    await engine.stop()
+    await app[_ENGINE_KEY].stop()
 
 
 async def _ws_endpoint(request: web.Request) -> web.WebSocketResponse:
-    state = cast(AppState, request.app["state"])
-    return await state.run_ws(request)
+    return await request.app[APP_STATE_KEY].run_ws(request)
 
 
 def create_app(config: Config) -> web.Application:
@@ -277,8 +274,8 @@ def create_app(config: Config) -> web.Application:
     state.register_handler(MSG_SESSION_RESUME, _make_resume_handler(engine))
 
     app = web.Application()
-    app["state"] = state
-    app["engine"] = engine
+    app[APP_STATE_KEY] = state
+    app[_ENGINE_KEY] = engine
     app.router.add_get("/ws", _ws_endpoint)
     app.on_startup.append(_start_background)
     app.on_shutdown.append(_stop_background)

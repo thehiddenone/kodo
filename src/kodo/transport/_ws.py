@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Coroutine
-from typing import cast
 
 from aiohttp import WSMsgType, web
 
@@ -15,6 +14,9 @@ _log = logging.getLogger(__name__)
 
 # Async handler: (app_state, envelope) -> None
 HandlerFn = Callable[["AppState", Envelope], Coroutine[None, None, None]]
+
+# Typed app-level key — avoids NotAppKeyWarning from aiohttp
+APP_STATE_KEY: web.AppKey[AppState] = web.AppKey("state")
 
 
 class AppState:
@@ -134,4 +136,4 @@ def get_state(app: web.Application) -> AppState:
     Returns:
         AppState: The attached application state.
     """
-    return cast(AppState, app["state"])
+    return app[APP_STATE_KEY]
