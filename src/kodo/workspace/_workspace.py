@@ -10,10 +10,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kodo.toolchains._interface import ToolchainPlugin
-
 from ._errors import ArtifactNotFoundError, WorkspaceValidationError
-from ._materialization import dematerialize, materialize
 from ._models import Artifact, ArtifactType, Concern, Verdict
 
 _PROJECT_CODE_RE = re.compile(r"^[A-Z][A-Z0-9]{1,7}$")
@@ -43,9 +40,8 @@ class Workspace:
     __index: dict[str, Artifact]
     __lock: asyncio.Lock
     __loaded: bool
-    __toolchain: ToolchainPlugin
 
-    def __init__(self, project_root: Path, toolchain: ToolchainPlugin) -> None:
+    def __init__(self, project_root: Path) -> None:
         """Initialise workspace paths for the given project root.
 
         No I/O is performed here. Disk initialisation is deferred to the
@@ -54,12 +50,8 @@ class Workspace:
         Args:
             project_root (Path): Root directory of the Kodo project. The
                 workspace lives at ``<project_root>/.kodo/workspace/``.
-            toolchain (ToolchainPlugin): Active toolchain, used to derive
-                language-appropriate file names when materializing code and
-                test artifacts.
         """
         self.__project_root = project_root.resolve()
-        self.__toolchain = toolchain
         self.__workspace_dir = self.__project_root / ".kodo" / "workspace"
         self.__retired_dir = self.__workspace_dir / ".retired"
         self.__index_path = self.__workspace_dir / "index.json"
@@ -87,6 +79,7 @@ class Workspace:
         verdict: Verdict | None = None,
         concerns: list[Concern] | None = None,
         metadata: dict[str, str] | None = None,
+        session_id: str | None = None,
     ) -> str:
         """Publish a new artifact and return its assigned UUID.
 
@@ -159,6 +152,7 @@ class Workspace:
                 verdict=verdict,
                 concerns=concerns_list,
                 metadata=meta,
+                session_id=session_id,
             )
 
             # Pop superseded artifacts from the in-memory index first so the
@@ -173,11 +167,6 @@ class Workspace:
             # --- Disk I/O (all outside the critical section for index state,
             #     but still inside the lock to serialise file operations) ---
 
-            # Dematerialize retired artifacts before writing the new one so
-            # a successor at the same path always wins cleanly.
-            for ret in retired:
-                await dematerialize(ret, self.__project_root, self.__toolchain)
-
             # Move retired artifact files to .retired/.
             for ret in retired:
                 src = self.__artifact_path(ret)
@@ -186,9 +175,6 @@ class Workspace:
 
             # Persist the new artifact JSON.
             await asyncio.to_thread(self.__write_artifact, artifact)
-
-            # Materialize content to src/ or gen/.
-            await materialize(artifact, self.__project_root, self.__toolchain)
 
             # Atomically persist the updated index.
             await asyncio.to_thread(self.__save_index)
@@ -211,6 +197,7 @@ class Workspace:
         verdict: Verdict | None = None,
         concern_kind: str | None = None,
         include_content: bool = True,
+        version: str | None = None,
     ) -> list[Artifact]:
         """Query live artifacts from the workspace.
 
@@ -235,12 +222,18 @@ class Workspace:
             concern_kind (str | None): Filter feedback artifacts that contain
                 at least one concern of this kind.
             include_content (bool): When ``False``, omit content and concerns.
+            version (str | None): Required when ``artifact_id`` is absent.
+                ``'in_flight'`` returns the in-progress workspace version;
+                ``'stable'`` returns the last accepted (promoted) version.
+                Must be ``None`` when ``artifact_id`` is supplied.
 
         Returns:
             list[Artifact]: Matching live artifacts.
 
         Raises:
-            WorkspaceValidationError: If no filter is supplied.
+            WorkspaceValidationError: If no filter is supplied, if
+                ``version`` is absent on a filter-form call, or if
+                ``version`` is supplied alongside ``artifact_id``.
         """
         active_filters: dict[str, object] = {}
         if artifact_id is not None:
@@ -262,6 +255,16 @@ class Workspace:
 
         if not active_filters:
             raise WorkspaceValidationError("At least one filter must be supplied to read().")
+
+        if artifact_id is not None and version is not None:
+            raise WorkspaceValidationError(
+                "version must not be specified when artifact_id is supplied."
+            )
+        if artifact_id is None and version is None:
+            raise WorkspaceValidationError(
+                "version is required for filter-form read() calls; "
+                "pass version='in_flight' or version='stable'."
+            )
 
         async with self.__lock:
             await self.__ensure_loaded()
@@ -509,6 +512,7 @@ class Workspace:
                 for c in artifact.concerns
             ],
             "metadata": artifact.metadata,
+            "session_id": artifact.session_id,
         }
 
     @staticmethod
@@ -553,6 +557,7 @@ class Workspace:
             metadata=(
                 {str(k): str(v) for k, v in meta_raw.items()} if isinstance(meta_raw, dict) else {}
             ),
+            session_id=str(data["session_id"]) if data.get("session_id") else None,
         )
 
     @staticmethod
@@ -569,6 +574,7 @@ class Workspace:
             "supersedes": artifact.supersedes,
             "reviewed_artifact_id": artifact.reviewed_artifact_id,
             "verdict": artifact.verdict.value if artifact.verdict else None,
+            "session_id": artifact.session_id,
         }
 
     @staticmethod
@@ -593,6 +599,7 @@ class Workspace:
             verdict=Verdict(str(verdict_raw)) if verdict_raw else None,
             concerns=[],
             metadata={},
+            session_id=str(entry["session_id"]) if entry.get("session_id") else None,
         )
 
     @staticmethod
@@ -610,6 +617,7 @@ class Workspace:
             "reviewed_artifact_id": artifact.reviewed_artifact_id,
             "verdict": artifact.verdict.value if artifact.verdict else None,
             "filename_hint": artifact.filename_hint,
+            "session_id": artifact.session_id,
         }
 
     @staticmethod

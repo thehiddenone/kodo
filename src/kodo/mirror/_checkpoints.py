@@ -50,11 +50,7 @@ class CheckpointManager:
         """
         label = gate_type if component is None else f"{gate_type}/{component}"
         message = f"[{label}] approved"
-        sha = await self.__repo.sync_and_commit(
-            src_dir=self.__layout.src_dir,
-            gen_dir=self.__layout.gen_dir,
-            message=message,
-        )
+        sha = await self.__repo.stage_and_commit(message)
         _log.info("Checkpoint: %s → %s", message, sha[:8])
         return sha
 

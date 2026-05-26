@@ -64,3 +64,4 @@ class Artifact:
     verdict: Verdict | None = None
     concerns: list[Concern] = field(default_factory=list)
     metadata: dict[str, str] = field(default_factory=dict)
+    session_id: str | None = None

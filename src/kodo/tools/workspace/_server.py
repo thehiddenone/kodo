@@ -6,7 +6,6 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from kodo.toolchains import ToolchainPlugin
 from kodo.workspace import Artifact, ArtifactType, Concern, Verdict, Workspace
 
 
@@ -21,14 +20,13 @@ class WorkspaceTool:
     __workspace: Workspace
     __app: FastMCP
 
-    def __init__(self, project_root: str | Path, toolchain: ToolchainPlugin) -> None:
+    def __init__(self, project_root: str | Path) -> None:
         """Initialise the server and register workspace tools.
 
         Args:
             project_root (str | Path): Root directory of the Kodo project.
-            toolchain (ToolchainPlugin): Active toolchain for file name derivation.
         """
-        self.__workspace = Workspace(Path(project_root), toolchain)
+        self.__workspace = Workspace(Path(project_root))
         self.__app = FastMCP("kodo-workspace")
 
         self.__app.tool(
@@ -65,6 +63,7 @@ class WorkspaceTool:
         verdict: str | None = None,
         concerns: list[dict[str, object]] | None = None,
         metadata: dict[str, str] | None = None,
+        session_id: str | None = None,
     ) -> str:
         """Publish a new artifact and return its UUID.
 
@@ -103,6 +102,7 @@ class WorkspaceTool:
             verdict=Verdict(verdict) if verdict else None,
             concerns=concern_objects,
             metadata=metadata,
+            session_id=session_id,
         )
 
     async def __read_artifact(
@@ -116,6 +116,7 @@ class WorkspaceTool:
         verdict: str | None = None,
         concern_kind: str | None = None,
         include_content: bool = True,
+        version: str | None = None,
     ) -> list[dict[str, object]]:
         """Query live artifacts from the workspace.
 
@@ -131,6 +132,8 @@ class WorkspaceTool:
             concern_kind (str | None): Filter feedback artifacts containing at
                 least one concern of this kind.
             include_content (bool): When False, omit content and concerns.
+            version (str | None): Required when artifact_id is absent.
+                'in_flight' or 'stable'.
 
         Returns:
             list[dict]: Matching live artifacts as plain dicts.
@@ -145,6 +148,7 @@ class WorkspaceTool:
             verdict=Verdict(verdict) if verdict else None,
             concern_kind=concern_kind,
             include_content=include_content,
+            version=version,
         )
         return [self.__serialize(a) for a in artifacts]
 
@@ -194,4 +198,5 @@ class WorkspaceTool:
                 for c in artifact.concerns
             ],
             "metadata": artifact.metadata,
+            "session_id": artifact.session_id,
         }

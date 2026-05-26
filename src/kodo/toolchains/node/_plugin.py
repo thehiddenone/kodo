@@ -9,10 +9,10 @@ import shutil
 from pathlib import Path
 
 from kodo.toolchains._interface import (
-    BuildResult,
-    TestResult,
-    TestScope,
+    ToolchainBuildResult,
     ToolchainPlugin,
+    ToolchainTestResult,
+    ToolchainTestScope,
 )
 
 from ._vitest import parse_vitest_stdout
@@ -108,18 +108,18 @@ class NodePlugin(ToolchainPlugin):
         else:
             _log.info("Installed %s", pkg)
 
-    async def build(self, component_dir: Path) -> BuildResult:
+    async def build(self, component_dir: Path) -> ToolchainBuildResult:
         """Run ``npm run build`` for the component.
 
         Args:
             component_dir (Path): Component directory.
 
         Returns:
-            BuildResult: Success flag and tool output.
+            ToolchainBuildResult: Success flag and tool output.
         """
         pkg_json = self.__project_root / "package.json"
         if not pkg_json.exists():
-            return BuildResult(success=True, output="(no package.json — skipping build)")
+            return ToolchainBuildResult(success=True, output="(no package.json — skipping build)")
 
         scripts: dict[str, str] = {}
         try:
@@ -129,19 +129,19 @@ class NodePlugin(ToolchainPlugin):
             pass
 
         if "build" not in scripts:
-            return BuildResult(success=True, output="(no build script defined)")
+            return ToolchainBuildResult(success=True, output="(no build script defined)")
 
         code, stdout, stderr = await _run("npm run build", self.__project_root)
-        return BuildResult(success=code == 0, output=stdout + stderr)
+        return ToolchainBuildResult(success=code == 0, output=stdout + stderr)
 
-    async def test(self, scope: TestScope) -> TestResult:
+    async def test(self, scope: ToolchainTestScope) -> ToolchainTestResult:
         """Run vitest for the given scope.
 
         Args:
-            scope (TestScope): Selects component and test kind.
+            scope (ToolchainTestScope): Selects component and test kind.
 
         Returns:
-            TestResult: Pass/fail counts and per-test details.
+            ToolchainTestResult: Pass/fail counts and per-test details.
         """
         test_pattern = f"gen/{scope.component}/tests" if scope.component else "gen"
 

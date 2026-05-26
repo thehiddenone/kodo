@@ -8,15 +8,15 @@ from pathlib import Path
 
 __all__ = [
     "ToolchainPlugin",
-    "BuildResult",
-    "TestResult",
-    "TestCase",
-    "TestScope",
+    "ToolchainBuildResult",
+    "ToolchainTestResult",
+    "ToolchainTestCase",
+    "ToolchainTestScope",
 ]
 
 
 @dataclass(frozen=True)
-class TestCase:
+class ToolchainTestCase:
     """Result for a single test case.
 
     Attributes:
@@ -31,7 +31,7 @@ class TestCase:
 
 
 @dataclass(frozen=True)
-class TestResult:
+class ToolchainTestResult:
     """Aggregated test run outcome.
 
     Attributes:
@@ -43,7 +43,7 @@ class TestResult:
 
     passed: int
     failed: int
-    cases: list[TestCase] = field(default_factory=list)
+    cases: list[ToolchainTestCase] = field(default_factory=list)
     coverage_path: Path | None = None
 
     @property
@@ -53,7 +53,7 @@ class TestResult:
 
 
 @dataclass(frozen=True)
-class BuildResult:
+class ToolchainBuildResult:
     """Outcome of a build operation.
 
     Attributes:
@@ -66,7 +66,7 @@ class BuildResult:
 
 
 @dataclass(frozen=True)
-class TestScope:
+class ToolchainTestScope:
     """Scope selector for :meth:`ToolchainPlugin.test`.
 
     Attributes:
@@ -117,25 +117,25 @@ class ToolchainPlugin(ABC):
         """
 
     @abstractmethod
-    async def build(self, component_dir: Path) -> BuildResult:
+    async def build(self, component_dir: Path) -> ToolchainBuildResult:
         """Build a component.
 
         Args:
             component_dir (Path): Directory containing the component source.
 
         Returns:
-            BuildResult: Success flag and tool output.
+            ToolchainBuildResult: Success flag and tool output.
         """
 
     @abstractmethod
-    async def test(self, scope: TestScope) -> TestResult:
+    async def test(self, scope: ToolchainTestScope) -> ToolchainTestResult:
         """Run tests for the given scope.
 
         Args:
-            scope (TestScope): Selects which tests to run.
+            scope (ToolchainTestScope): Selects which tests to run.
 
         Returns:
-            TestResult: Aggregated pass/fail counts and per-test details.
+            ToolchainTestResult: Aggregated pass/fail counts and per-test details.
         """
 
     @abstractmethod

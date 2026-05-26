@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -69,44 +68,27 @@ class MirrorRepo:
         await self.__git("commit", "--allow-empty", "-m", "init: kodo mirror")
         _log.info("Mirror initialised at %s", self.__repo_dir)
 
-    async def sync_and_commit(
-        self,
-        src_dir: Path,
-        gen_dir: Path,
-        message: str,
-    ) -> str:
-        """Copy ``src/`` and ``gen/`` into the mirror and commit.
+    async def stage_and_commit(self, message: str) -> str:
+        """Stage all changes in the mirror working tree and commit.
+
+        The caller is responsible for writing files into the mirror working
+        tree before calling this method.  ``MirrorRepo`` does not copy files;
+        it only performs git operations.
+
+        If the index is clean (nothing to stage) the method skips the commit
+        and returns the current HEAD SHA — no-op checkpoints are valid.
 
         Args:
-            src_dir: Project ``src/`` directory to snapshot.
-            gen_dir: Project ``gen/`` directory to snapshot.
             message: Commit message.
 
         Returns:
-            str: The new commit SHA.
+            str: The commit SHA (new or existing HEAD on no-op).
 
         Raises:
             MirrorRepoError: Any git command fails.
         """
-        mirror_src = self.__repo_dir / "src"
-        mirror_gen = self.__repo_dir / "gen"
-
-        if src_dir.exists():
-            if mirror_src.exists():
-                shutil.rmtree(mirror_src)
-            shutil.copytree(src_dir, mirror_src)
-
-        gen_has_files = gen_dir.exists() and any(gen_dir.iterdir())
-        if gen_has_files:
-            if mirror_gen.exists():
-                shutil.rmtree(mirror_gen)
-            shutil.copytree(gen_dir, mirror_gen)
-
         await self.__git("add", "-A")
 
-        # Check whether anything was staged before committing — git exits 1
-        # with "nothing to commit" when the index is clean, which is not an
-        # error for our use case (no-op checkpoints are still valid).
         diff_proc = await asyncio.create_subprocess_exec(
             "git",
             "diff",
@@ -118,11 +100,21 @@ class MirrorRepo:
         )
         await diff_proc.communicate()
         if diff_proc.returncode == 0:
-            # Nothing staged — return current HEAD sha without creating a commit.
             _log.info("Mirror: nothing to commit for %r, reusing HEAD", message)
         else:
-            await self.__git("commit", "--allow-empty", "-m", message)
+            await self.__git("commit", "-m", message)
 
+        return await self.head_sha()
+
+    async def head_sha(self) -> str:
+        """Return the SHA of the current HEAD commit.
+
+        Returns:
+            str: 40-character hex SHA.
+
+        Raises:
+            MirrorRepoError: git command fails.
+        """
         proc = await asyncio.create_subprocess_exec(
             "git",
             "rev-parse",
@@ -132,9 +124,22 @@ class MirrorRepo:
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await proc.communicate()
-        sha = stdout.decode().strip()
-        _log.info("Mirror commit %s: %s", sha[:8], message)
-        return sha
+        return stdout.decode().strip()
+
+    async def checkout(self, sha: str) -> None:
+        """Check out the mirror working tree to the given commit SHA.
+
+        Used by rollback to restore the mirror to a prior checkpoint.
+        The working tree is updated; the HEAD is detached at ``sha``.
+
+        Args:
+            sha: Target commit SHA (full or abbreviated).
+
+        Raises:
+            MirrorRepoError: git command fails or SHA is unknown.
+        """
+        await self.__git("checkout", sha, "--")
+        _log.info("Mirror checked out to %s", sha[:8])
 
     async def log(self) -> list[CheckpointInfo]:
         """Return all commits in reverse chronological order (newest first).

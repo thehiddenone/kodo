@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from kodo.toolchains._interface import TestCase, TestResult
+from kodo.toolchains._interface import ToolchainTestCase, ToolchainTestResult
 
 __all__ = ["parse_vitest_stdout"]
 
 
-def parse_vitest_stdout(stdout: str, stderr: str) -> TestResult:
-    """Parse vitest terminal output into a :class:`TestResult`.
+def parse_vitest_stdout(stdout: str, stderr: str) -> ToolchainTestResult:
+    """Parse vitest terminal output into a :class:`ToolchainTestResult`.
 
     Reads the summary line (e.g. ``Tests  5 passed | 2 failed``) and
     individual ``✓``/``×`` lines from the combined output.
@@ -18,12 +18,12 @@ def parse_vitest_stdout(stdout: str, stderr: str) -> TestResult:
         stderr (str): Standard error from the vitest process.
 
     Returns:
-        TestResult: Best-effort structured outcome.
+        ToolchainTestResult: Best-effort structured outcome.
     """
     combined = stdout + "\n" + stderr
     passed = 0
     failed = 0
-    cases: list[TestCase] = []
+    cases: list[ToolchainTestCase] = []
 
     for line in combined.splitlines():
         stripped = line.strip()
@@ -47,9 +47,9 @@ def parse_vitest_stdout(stdout: str, stderr: str) -> TestResult:
         # Individual pass/fail markers
         if stripped.startswith("✓") or stripped.startswith("√"):
             name = stripped[1:].strip()
-            cases.append(TestCase(name=name, passed=True))
+            cases.append(ToolchainTestCase(name=name, passed=True))
         elif stripped.startswith("×") or stripped.startswith("✗") or stripped.startswith("FAIL"):
             name = stripped[1:].strip()
-            cases.append(TestCase(name=name, passed=False, message=stripped))
+            cases.append(ToolchainTestCase(name=name, passed=False, message=stripped))
 
-    return TestResult(passed=passed, failed=failed, cases=cases)
+    return ToolchainTestResult(passed=passed, failed=failed, cases=cases)

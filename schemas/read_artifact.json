@@ -1,6 +1,6 @@
 {
   "name": "read_artifact",
-  "description": "Query live (non-retired) artifacts from the workspace. At least one filter must be supplied. All supplied filters are combined with AND. Returns an array of matching artifacts; if artifact_id is used, the array contains at most one entry. Each entry includes: id, type, author, project_code, responsibility_code, requirement_ids, filename_hint, reviewed_artifact_id, concerns, verdict, supersedes, metadata, created_at. Content is included by default; set include_content to false to retrieve metadata only.",
+  "description": "Query live (non-retired) artifacts from the workspace. At least one filter must be supplied. All supplied filters are combined with AND. Returns an array of matching artifacts; if artifact_id is used, the array contains at most one entry. Each entry includes: id, type, author, project_code, responsibility_code, requirement_ids, filename_hint, reviewed_artifact_id, concerns, verdict, supersedes, metadata, created_at. Content is included by default; set include_content to false to retrieve metadata only. The version parameter is required on every call that does NOT specify artifact_id: pass version='stable' to read the last accepted (promoted) version of matching artifacts — used by every sub-agent that consumes a neighbouring artifact as a contract — or version='in_flight' to read the in-progress workspace version — used by critics reviewing the artifact under work. Calls that filter by artifact_id MUST NOT pass version, because the ID identifies one specific artifact regardless of state.",
   "input_schema": {
     "type": "object",
     "additionalProperties": false,
@@ -62,7 +62,30 @@
         "type": "boolean",
         "default": true,
         "description": "When false, content is omitted from results. Useful when querying a large codename to enumerate artifacts before fetching content selectively."
+      },
+      "version": {
+        "type": "string",
+        "enum": ["stable", "in_flight"],
+        "description": "Required on every call that does NOT pass artifact_id. 'stable' returns the last accepted (promoted) version of each matching artifact — what every sub-agent uses to consume a neighbouring artifact as a contract. 'in_flight' returns the in-progress workspace version of each matching artifact — what critics use to review the artifact under work. Calls that filter by artifact_id MUST NOT pass version; the ID identifies one specific artifact regardless of state. The workspace rejects calls without artifact_id that also omit version."
       }
-    }
+    },
+    "allOf": [
+      {
+        "if": {
+          "not": { "required": ["artifact_id"] }
+        },
+        "then": {
+          "required": ["version"]
+        }
+      },
+      {
+        "if": {
+          "required": ["artifact_id"]
+        },
+        "then": {
+          "not": { "required": ["version"] }
+        }
+      }
+    ]
   }
 }

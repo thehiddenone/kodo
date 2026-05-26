@@ -9,10 +9,10 @@ import tempfile
 from pathlib import Path
 
 from kodo.toolchains._interface import (
-    BuildResult,
-    TestResult,
-    TestScope,
+    ToolchainBuildResult,
     ToolchainPlugin,
+    ToolchainTestResult,
+    ToolchainTestScope,
 )
 
 from ._pytest import parse_pytest_stdout
@@ -108,25 +108,25 @@ class PythonPlugin(ToolchainPlugin):
         else:
             _log.info("Installed %s", pkg)
 
-    async def build(self, component_dir: Path) -> BuildResult:
+    async def build(self, component_dir: Path) -> ToolchainBuildResult:
         """No-op build for pure-Python components.
 
         Args:
             component_dir (Path): Component directory (unused for Python).
 
         Returns:
-            BuildResult: Always succeeds; no compilation needed.
+            ToolchainBuildResult: Always succeeds; no compilation needed.
         """
-        return BuildResult(success=True, output="(no build step for Python)")
+        return ToolchainBuildResult(success=True, output="(no build step for Python)")
 
-    async def test(self, scope: TestScope) -> TestResult:
+    async def test(self, scope: ToolchainTestScope) -> ToolchainTestResult:
         """Run pytest for the given scope.
 
         Args:
-            scope (TestScope): Selects component and test kind.
+            scope (ToolchainTestScope): Selects component and test kind.
 
         Returns:
-            TestResult: Pass/fail counts and per-test details.
+            ToolchainTestResult: Pass/fail counts and per-test details.
         """
         test_path = f"gen/{scope.component}/tests" if scope.component else "gen"
 
