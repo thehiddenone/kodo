@@ -31,18 +31,19 @@ def parse_vitest_stdout(stdout: str, stderr: str) -> ToolchainTestResult:
         # Summary line: "Tests  5 passed | 2 failed"
         if stripped.startswith("Tests") and ("passed" in stripped or "failed" in stripped):
             for segment in stripped.split("|"):
-                seg = segment.strip()
-                parts = seg.split()
-                if len(parts) >= 2:
+                parts = segment.strip().split()
+                for i, token in enumerate(parts[:-1]):
                     try:
-                        count = int(parts[0])
+                        count = int(token)
                     except ValueError:
                         continue
-                    label = parts[1].lower()
+                    label = parts[i + 1].lower()
                     if "passed" in label:
                         passed = count
+                        break
                     elif "failed" in label:
                         failed = count
+                        break
 
         # Individual pass/fail markers
         if stripped.startswith("✓") or stripped.startswith("√"):

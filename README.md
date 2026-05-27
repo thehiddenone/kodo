@@ -4,9 +4,15 @@
 
 ## Concept
 
-Most AI coding tools treat code generation as one big prompt: hand the LLM a problem, hope it produces something usable. Kōdo decomposes the work the way a team of engineers would. A Narrative Author captures the goal, an Architect breaks it into components, Requirements and Functional Designers specify each component, a Test Designer writes a test plan that defines "done", a Coder implements until those tests pass, and Reviewers gate every step. Specification stages produce versioned `.kd` artefacts under `src/`; the test-coding and implementation stages produce source code under `gen/`. Every stage is reviewed and approved before the next runs.
+Most AI coding tools live or die by the quality of your prompt — if you know exactly what you want and how to ask for it, they shine; if you don't, you get something that looks plausible but misses the mark. Kōdo is built on the belief that the bar shouldn't be that high.
 
-The result is **specs as source code**: humans own the natural-language spec, Kōdo owns the translation from spec to running code. TDD is built in — tests are designed and written from requirements *before* implementation begins, and the Coder's only job is to satisfy them.
+Rather than expecting users to front-load all the right details, Kōdo asks. A structured multi-agent workflow interviews you, probes your goals, and surfaces the decisions you didn't know you needed to make — turning a rough idea into a rich, precise specification before a single line of code is written. Those specs are first-class artefacts, versioned and owned by you, living alongside your source code.
+
+That's the core idea: the spec is the source of truth. Kōdo's job is to help you build a good one, then translate it into running code automatically. Want to change how something works? Update the spec — Kōdo handles the rest. No manual code edits, no prompt re-engineering. The conversation you had upfront keeps paying dividends every time requirements evolve.
+
+A Narrative Author captures intent, an Architect decomposes the problem, Requirements and Functional Designers flesh out each component, and a Test Designer defines exactly what "done" looks like — all before implementation begins. The Coder's only job is to satisfy those tests. Every stage is reviewed before the next begins.
+
+To keep that promise reliable, Kōdo currently focuses on backend software — logic, APIs, data pipelines — where correctness can be verified without simulating a user interface. It's a deliberate constraint that makes automated testing tractable and results consistently trustworthy.
 
 Kōdo runs as a Visual Studio Code extension talking to a local Python server. Both ship together; nothing leaves your machine except the LLM API call.
 

@@ -227,3 +227,142 @@ async def test_unknown_message_returns_error(ws: aiohttp.ClientWebSocketResponse
 
     assert resp.payload["type"] == "error"
     assert resp.payload["code"] == "unknown_message"
+
+
+# ---------------------------------------------------------------------------
+# prompt.submit
+# ---------------------------------------------------------------------------
+
+
+async def test_prompt_submit_with_text_returns_accepted(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """
+    Given a connected client,
+    when a prompt.submit request with non-empty text is sent,
+    then the server responds with type='prompt.accepted'.
+    """
+    req = _make_request("prompt.submit", text="Build me a trading bot.")
+    await ws.send_str(req.to_json())
+
+    resp = await _recv_response(ws, req.id)
+
+    assert resp.payload["type"] == "prompt.accepted"
+
+
+async def test_prompt_submit_with_empty_text_returns_error(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """
+    Given a connected client,
+    when a prompt.submit request with empty text is sent,
+    then the server responds with type='error' and code='empty_prompt'.
+    """
+    req = _make_request("prompt.submit", text="")
+    await ws.send_str(req.to_json())
+
+    resp = await _recv_response(ws, req.id)
+
+    assert resp.payload["type"] == "error"
+    assert resp.payload["code"] == "empty_prompt"
+
+
+# ---------------------------------------------------------------------------
+# mode.set
+# ---------------------------------------------------------------------------
+
+
+async def test_mode_set_autonomous_returns_accepted(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """
+    Given a connected client,
+    when a mode.set request with autonomous=True is sent,
+    then the server responds with type='mode.accepted'.
+    """
+    req = _make_request("mode.set", autonomous=True)
+    await ws.send_str(req.to_json())
+
+    resp = await _recv_response(ws, req.id)
+
+    assert resp.payload["type"] == "mode.accepted"
+
+
+# ---------------------------------------------------------------------------
+# approval.respond
+# ---------------------------------------------------------------------------
+
+
+async def test_approval_respond_with_empty_gate_id_returns_error(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """
+    Given a connected client,
+    when an approval.respond request with empty gate_id is sent,
+    then the server responds with type='error' and code='missing_gate_id'.
+    """
+    req = _make_request("approval.respond", gate_id="", action="agree", feedback="")
+    await ws.send_str(req.to_json())
+
+    resp = await _recv_response(ws, req.id)
+
+    assert resp.payload["type"] == "error"
+    assert resp.payload["code"] == "missing_gate_id"
+
+
+async def test_approval_respond_with_unknown_gate_id_returns_accepted(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """
+    Given a connected client,
+    when an approval.respond request with a gate_id that has no pending gate is sent,
+    then the server responds with type='approval.accepted' (stale gate_id is logged
+    and accepted gracefully).
+    """
+    req = _make_request("approval.respond", gate_id="no-such-gate", action="agree", feedback="")
+    await ws.send_str(req.to_json())
+
+    resp = await _recv_response(ws, req.id)
+
+    assert resp.payload["type"] == "approval.accepted"
+
+
+# ---------------------------------------------------------------------------
+# stop
+# ---------------------------------------------------------------------------
+
+
+async def test_stop_returns_accepted(ws: aiohttp.ClientWebSocketResponse) -> None:
+    """
+    Given a connected client,
+    when a stop request is sent,
+    then the server responds with type='stop.accepted'.
+    """
+    req = _make_request("stop")
+    await ws.send_str(req.to_json())
+
+    resp = await _recv_response(ws, req.id)
+
+    assert resp.payload["type"] == "stop.accepted"
+
+
+# ---------------------------------------------------------------------------
+# session.resume
+# ---------------------------------------------------------------------------
+
+
+async def test_session_resume_with_unknown_session_returns_accepted(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """
+    Given a connected client,
+    when a session.resume request is sent for an unknown session_id,
+    then the server responds with type='session.resume.accepted' (the engine
+    emits an error event for the missing prompt, then the handler responds).
+    """
+    req = _make_request("session.resume", session_id="nonexistent-session-xyz")
+    await ws.send_str(req.to_json())
+
+    resp = await _recv_response(ws, req.id)
+
+    assert resp.payload["type"] == "session.resume.accepted"
