@@ -92,6 +92,58 @@ One exception for the "no Any" rule: you are ALLOWED to use `Any` in definitions
 
 You MUST use `typename | None` instead of `Optional`.
 
+## Windows-specific pitfalls
+
+### `os.kill(pid, 0)` fires a real Ctrl+C on Windows
+
+On Unix, `os.kill(pid, 0)` is the standard idiom for checking whether a process is alive: signal 0 is never delivered, it just probes for the process.
+
+On Windows the semantics are completely different. Python maps `os.kill` to `GenerateConsoleCtrlEvent` for `CTRL_C_EVENT` and `CTRL_BREAK_EVENT`, and to `TerminateProcess` for `SIGTERM`. Critically, `signal.CTRL_C_EVENT == 0`, so `os.kill(pid, 0)` is identical to `os.kill(pid, signal.CTRL_C_EVENT)`. This calls `GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid)`, which broadcasts a real Ctrl+C event to every process sharing the current console session. Python's console control handler receives it, calls `PyErr_SetInterrupt()`, and the interrupt flag sits armed. The call returns True (success), so the caller never sees an exception — the damage is invisible. The queued interrupt fires later, at the next I/O checkpoint inside any `read()` or `write()` call, raising `KeyboardInterrupt` in an apparently unrelated location.
+
+__Rule:__ Never use `os.kill(pid, 0)` to check process liveness. On Windows use `ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)` instead: a non-NULL return value means the process exists; no signal is sent.
+
+```python
+@staticmethod
+def __is_running(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(
+            _PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+```
+
+### Signal-handler tests must not touch the real signal table
+
+Tests that exercise `signal.signal()`-based code (e.g. `install_signal_handlers`) must mock `signal.signal` via `monkeypatch` rather than calling the real function. The real function changes the process-wide signal table for the entire pytest session. On Windows, replacing the `SIGINT` handler removes asyncio's Ctrl+C wakeup path, causing async tests that run after the signal-handler tests to hang indefinitely inside `asyncio.to_thread` or similar I/O waits.
+
+```python
+def test_install_signal_handlers_sets_shutdown_requested(
+    lifecycle: Lifecycle,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed: dict[int, object] = {}
+    monkeypatch.setattr(signal, "signal", lambda signum, h: installed.update({signum: h}))
+
+    lifecycle.install_signal_handlers(lambda: None)
+
+    handler = installed.get(signal.SIGTERM)
+    assert callable(handler)
+    handler(signal.SIGTERM, None)  # type: ignore[operator]
+    assert lifecycle.shutdown_requested is True
+```
+
+`monkeypatch` is automatically undone after each test with no global side-effects.
+
 ## Test implementation
 
 Design tests and classes such that unit tests validate behavior, not implementation details. It should not matter how many times a mock was called if the behavior is correct.

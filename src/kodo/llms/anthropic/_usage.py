@@ -12,11 +12,12 @@ _PRICING: list[tuple[str, tuple[float, float, float, float]]] = [
     ("claude-opus-4", (15.0, 75.0, 18.75, 1.50)),
     ("claude-sonnet-4", (3.0, 15.0, 3.75, 0.30)),
     ("claude-haiku-4", (0.80, 4.0, 1.0, 0.08)),
-    # Fallback for unknown models — use Sonnet-tier pricing
+    # Fallback for any other claude-* variant — use Sonnet-tier pricing
     ("claude", (3.0, 15.0, 3.75, 0.30)),
 ]
 
-_FALLBACK: tuple[float, float, float, float] = (3.0, 15.0, 3.75, 0.30)
+# Non-Claude models (e.g. local llama.cpp inference) have no API cost.
+_FALLBACK: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
 
 
 def _get_pricing(model: str) -> tuple[float, float, float, float]:

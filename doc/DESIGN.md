@@ -41,32 +41,33 @@ src/kodo/
 │   ├── _app.py             # asyncio app + WS handler
 │   ├── _lifecycle.py       # PID file, graceful shutdown, signal handling
 │   └── _config.py          # CLI args, settings loader, precedence
-├── transport/              # wire protocol
+├── transport/              # wire protocol (WS_PROTOCOL.md)
 │   ├── _envelope.py        # {kind, id, correlation_id, payload}
-│   ├── _messages.py        # message catalog (typed payloads)
+│   ├── _messages.py        # typed payload-type constants per WS_PROTOCOL.md
 │   ├── _outbox.py          # disconnect-tolerant outbound queue
 │   └── _ws.py              # aiohttp WebSocket binding
-├── workflow/
-│   ├── _engine.py          # async queue, single worker, stage machine
-│   ├── _stages.py          # stage definitions + transitions
-│   ├── _gates.py           # approval gate orchestration
-│   ├── _scheduler.py       # component scheduling, integration DAG
+├── runtime/                # thin substrate that hosts the Orchestrator session
+│   ├── _engine.py          # single worker, dispatches Orchestrator tool calls
+│   ├── _tool_surface.py    # Orchestrator's tools (FR-ORCH-03) wired to engine
+│   ├── _gates.py           # request_user_approval / ask_user blocking machinery
+│   ├── _compaction.py      # Orchestrator-session compaction (FR-ORCH-05)
 │   └── _session.py         # per-session metadata, resume logic
 ├── subagents/              # markdown subagent files; one file per (name, model)
 │   ├── _loader.py          # parses frontmatter + body into Agent dataclass
 │   ├── _registry.py        # (name, model) -> Agent
+│   ├── orchestrator.claude-sonnet-4-6.md
 │   ├── narrative_author.claude-sonnet-4-6.md
 │   ├── architect.claude-sonnet-4-6.md
 │   ├── requirements_author.claude-sonnet-4-6.md
-│   ├── requirements_reviewer.claude-sonnet-4-6.md
+│   ├── requirements_critic.claude-sonnet-4-6.md
+│   ├── planner.claude-sonnet-4-6.md
 │   ├── functional_designer.claude-sonnet-4-6.md
 │   ├── functional_design_critic.claude-sonnet-4-6.md
 │   ├── test_designer.claude-sonnet-4-6.md
 │   ├── test_design_critic.claude-sonnet-4-6.md
 │   ├── test_coder.claude-sonnet-4-6.md
 │   ├── coder.claude-sonnet-4-6.md
-│   ├── code_reviewer.claude-sonnet-4-6.md
-│   └── dev_proxy.claude-haiku-4-5-20251001.md
+│   └── code_reviewer.claude-sonnet-4-6.md
 ├── llms/
 │   ├── _interface.py       # LLMPlugin ABC
 │   └── anthropic/
@@ -117,9 +118,10 @@ kodo-vsix/
 │   │   ├── App.tsx
 │   │   ├── components/
 │   │   │   ├── Conversation.tsx
-│   │   │   ├── ApprovalGate.tsx
-│   │   │   ├── FileEvent.tsx
-│   │   │   ├── ShellEvent.tsx
+│   │   │   ├── PromptCard.tsx        # question / approval / permission
+│   │   │   ├── ArtifactCard.tsx      # artifact.published / removed
+│   │   │   ├── ToolCallCard.tsx      # agent.tool_call (incl. shell)
+│   │   │   ├── ReviewStatus.tsx      # review.started / verdict
 │   │   │   ├── UsagePanel.tsx
 │   │   │   └── StopButton.tsx
 │   │   └── lib/
@@ -139,8 +141,8 @@ kodo-vsix/
 3. Extension reads `<workspace>/.kodo/server.pid`. If a process is alive, attempts a clean handshake; if it's a stale or foreign PID, kills it and removes the file.
 4. Extension picks a free loopback TCP port (binds `127.0.0.1:0`, reads the OS-assigned port, releases it) and launches the server with: `kodo-server --project <root> --port <picked>` and `ANTHROPIC_API_KEY` in env.
 5. Server: validates `git` on PATH; ensures project layout (`kodo.md` exists OR errors with init hint); writes PID file; opens WS listener on the supplied port (loopback only).
-6. Extension opens WebSocket, sends `request{kind:"hello", payload:{client:"vsix", version:...}}`. Server responds with `response{payload:{server_version, project_root, last_session?}}`. The WS connection persists for the lifetime of the VS Code window; the Kodo panel may open and close many times against the same connection.
-7. If `last_session` exists and is not in a clean terminal state, server emits `event{kind:"resume_offer"}` so the WebView can prompt Dev to resume.
+6. Extension opens WebSocket, sends `hello` request per WS_PROTOCOL.md §4.1. Server responds with `hello.ack` embedding the current `state` snapshot. The WS connection persists for the lifetime of the VS Code window; the Kodo panel may open and close many times against the same connection.
+7. Bootstrap runs ([STATE_AND_LIFECYCLE.md §3](STATE_AND_LIFECYCLE.md)): scans mirror, scans workspace, locates the Orchestrator session and any sub-agent sessions it had in flight, queues them for resume. No user prompt is required — resume is automatic. The state snapshot embedded in `hello.ack` reflects the post-bootstrap world.
 
 Graceful shutdown is triggered by VS Code window close, an explicit `shutdown` request, or SIGTERM. The server flushes transient state, closes the WS, terminates child processes started under tools/shell, removes PID file, exits.
 
@@ -148,56 +150,14 @@ Graceful shutdown is triggered by VS Code window close, an explicit `shutdown` r
 
 ## 3. Wire protocol (FR-WS)
 
-### 3.1 Envelope
+The wire protocol — envelope shape, message catalogue, request/response correlation, server-initiated user prompts, reconnect semantics, non-goals — is specified in [WS_PROTOCOL.md](WS_PROTOCOL.md). This section describes only the server-side implementation choices that are not protocol-level.
 
-Every WebSocket frame is JSON:
+### 3.1 Implementation
 
-```json
-{
-  "kind": "request" | "response" | "event" | "stream_chunk" | "stream_end",
-  "id": "<ulid>",
-  "correlation_id": "<id of the request this responds to>",
-  "payload": { ... message-specific ... }
-}
-```
-
-- `kind=request`: client→server or server→client invocation.
-- `kind=response`: terminates a request; carries `correlation_id`.
-- `kind=event`: unsolicited push (state changes, file events, usage updates).
-- `kind=stream_chunk`: a fragment of a streamed response. Multiple chunks share a `correlation_id` with `kind=stream_end` closing the stream.
-
-Errors are `kind=response` with `payload.error = { code, message, details? }`.
-
-### 3.2 Message catalog (initial)
-
-| Direction | kind | payload type | purpose |
-|---|---|---|---|
-| C→S | request | `prompt.submit { text }` | Dev typed a free-form prompt |
-| C→S | request | `approval.respond { gate_id, action: "agree"\|"feedback", feedback?: string }` | response to an approval gate |
-| C→S | request | `stop {}` | global STOP |
-| C→S | request | `session.resume { session_id }` | continue a prior session |
-| C→S | request | `checkpoint.list {}` | list mirror commits |
-| C→S | request | `checkpoint.rollback { commit_sha }` | restore to a checkpoint |
-| C→S | request | `security.add_rule { scope, rule }` | session/global rule add |
-| C→S | request | `mode.set { autonomous: bool }` | toggle autonomous |
-| S→C | event | `agent.started { agent, component? }` | stage transitions |
-| S→C | event | `agent.finished { agent, component?, status }` |  |
-| S→C | stream_chunk + stream_end | `agent.tokens { text }` | streamed LLM output |
-| S→C | event | `file.change { kind: "add"\|"modify"\|"delete", path, diff_uri? }` | file change happened |
-| S→C | event | `shell.run { command, cwd, exit_code, stdout, stderr }` | shell tool result |
-| S→C | event | `approval.request { gate_id, gate_type, artifact_path?, summary }` | needs Dev decision |
-| S→C | event | `security.prompt { rule_match, command, decision_id }` | needs Dev decision for a tool call |
-| S→C | event | `usage.update { cumulative_usd, last_call_tokens, breakdown }` | cost update |
-| S→C | event | `error { code, message, recoverable }` | surface a server error |
-| S→C | event | `state { stage, agent?, component?, autonomous }` | full state snapshot |
-
-### 3.3 Streaming & backpressure
-
-LLM token streams use `stream_chunk` frames. The extension is the only consumer; if it disconnects, the server's outbound queue (`transport/_outbox.py`) buffers events. On reconnect, the server replays the queued frames in order. No flow-control protocol is implemented in MVP (FR-WS-04 / out-of-scope buffer caps); the queue is bounded at a generous default (50 MB) and overflows are logged.
-
-### 3.4 Request/response correlation
-
-`id` is generated by the sender (ULID). `correlation_id` is the `id` of the originating request. The receiver maintains a pending-request map and times out after 60s with an error response.
+- **Envelope and message types.** Defined in `src/kodo/transport/_envelope.py` and `_messages.py`. Constants are grouped by frame role (`MSG_*` for client requests, `SREQ_*` for server-initiated user prompts, `EVT_*` for events) per WS_PROTOCOL.md §5–§7.
+- **Outbound queue.** `src/kodo/transport/_outbox.py` buffers envelopes while the client is disconnected. Cap: 50 MB. On reconnect: replay in arrival order, then push a fresh `state` event (WS_PROTOCOL.md §8). Overflow drops the oldest frames and logs the discard.
+- **Request timeout.** The receiver maintains a pending-request map keyed on `id`. Client-initiated requests time out at 60s with an `error` response. Server-initiated user prompts (WS_PROTOCOL.md §6) do not time out — they block the Orchestrator's tool call until the user responds or the connection drops.
+- **Streaming.** `agent.tokens` chunks carry `correlation_id` equal to a server-generated per-LLM-call stream id. `stream_end` closes the stream. One agent invocation may produce multiple consecutive streams (multiple LLM calls within one sub-agent run); each gets its own stream id.
 
 ---
 
@@ -248,14 +208,19 @@ Frontmatter schema:
 ---
 name: requirements_author
 tools:
-  - tools/fileio.read_file
-  - tools/fileio.write_file
+  - workspace.publish_artifact
+  - workspace.read_artifact
 ---
 ```
 
 The body is the full system prompt for the model encoded in the filename. There is no inheritance, no shared common section: each (name, model) file is self-contained and independently editable. Looking up a name with no variant for the active model is a hard error — adding a model means authoring a new variant file.
 
-Agents are invoked by the workflow, not by each other. Per agent invocation the workflow function: collects inputs (reads `.kd` files, gathers prior turns), constructs the user message, calls the LLM plugin with the agent's `system_prompt` plus the constructed messages plus the `tools` filter (a hard pre-filter the security layer reads before its own rule evaluation), and interprets the response (writing files via `tools/fileio`, parsing accept/feedback output for reviewer agents, etc.).
+Two role groups within the `Agent` shape:
+
+- **Orchestrator.** A single sub-agent (`kodo/subagents/orchestrator.<model>.md`) whose tool list is the Orchestrator tool surface (FR-ORCH-03): `compute_frontier`, `list_artifacts`, `start_subagent`, `run_author_critic_iteration`, `request_user_approval`, `ask_user`, `rollback`, `finalize_project`. The Orchestrator is the sole entity authorized to invoke other sub-agents (FR-ORCH-02).
+- **Leaf sub-agents.** The remaining markdown files (Narrative Author, Architect, Requirements Author / Critic, Planner, Functional Designer / Critic, Test Designer / Critic, Test Coder, Coder, Code Reviewer). Their tool lists are the workspace tools plus, for the agents that need them, the user-dialog tools (`narrative_ask_user_question`, `narrative_present_for_acceptance`, `narrative_report_completed`) and `escalate_to_user`. Sub-agents do not invoke each other; they reach the user only through the dialog/escalation tools and produce their contributions only through the workspace.
+
+Per leaf sub-agent invocation, the runtime: assembles the task message from input artifact IDs the Orchestrator passed in (resolving them through the workspace MCP server), calls the LLM plugin with the agent's `system_prompt` plus the task message plus the `tools` filter, and persists the resulting session JSONL per [STATE_AND_LIFECYCLE.md §4](STATE_AND_LIFECYCLE.md). The Orchestrator's own invocation is identical in shape; its tool surface is just larger.
 
 ### 4.3 ToolchainPlugin (FR-TC)
 
@@ -275,145 +240,118 @@ class ToolchainPlugin(ABC):
 
 ---
 
-## 5. Workflow engine (FR-WF)
+## 5. Orchestrator runtime (FR-ORCH, FR-WF)
 
-### 5.1 Stage machine
+The runtime is a thin substrate. It does not contain a stage machine, a scheduler, or a workflow DAG. It hosts the Orchestrator's LLM session, dispatches the Orchestrator's tool calls, and runs the leaf sub-agent sessions the Orchestrator spawns. Every decision about *what* runs *when* is the Orchestrator's, encoded in its system prompt (FR-ORCH-06) and carried out via its tool surface (FR-ORCH-03).
 
-```
-PROJECT_INIT
-    ↓
-NARRATIVE         → gate("narrative")
-    ↓
-ARCHITECTURE      → gate("responsibilities")        # also fixes component list
-    ↓
-REQUIREMENTS_*    → gate per component
-    ↓
-DESIGN_*          → gate per component
-    ↓
-TEST_PLAN_*       → gate per component
-    ↓
-TEST_CODING_*     → produces failing tests
-    ↓
-IMPLEMENTATION_*  → gate per component
-    ↓
-INTEGRATION_TEST  → DAG-driven from architect's component graph
-    ↓
-E2E_TEST          → must pass
-    ↓
-FINAL             → gate("final")
-    ↓
-DONE
-```
+### 5.1 Engine internals
 
-`*` denotes per-component fan-out. With one worker, fan-out is a serial loop in alphabetical order (FR-WF-03). Integration test scheduling honors the dependency DAG (FR-WF-04): an integration test for components `{A, B}` runs only after both components are in `IMPLEMENTATION` complete.
+- One `asyncio.Queue[Task]`. Task is `OrchestratorTurn` or `SubAgentInvocation`.
+- One worker coroutine per FR-WF-02. The worker runs whichever task is on the queue; the Orchestrator's blocking tool calls (every tool in FR-ORCH-03 is `async` and can `await`) cooperate with the worker's serial nature.
+- The Orchestrator session is a single long-lived `Session` object. Its LLM call is the same shape as any sub-agent's, but its tool list is the FR-ORCH-03 surface.
+- STOP cancels the worker coroutine. `CancelledError` propagates into every awaited LLM stream, every pending tool call, every blocking user prompt (FR-LLM-07, FR-WF-07). On STOP, all sessions are flushed and the engine transitions wire `state.phase` to `stopped`.
 
-### 5.2 Engine internals
+### 5.2 Tool surface implementation
 
-- One `asyncio.Queue[Task]`. Task = `(stage, component?, agent_chain)`.
-- One worker coroutine consumes tasks and runs the relevant agent(s).
-- Author/Reviewer pairs live as a sub-state inside a single task: the worker loops `Author.run() → Reviewer.run()` up to 5 iterations until accept (FR-AGT-03).
-- An approval gate enqueues an `approval.request` event and `await`s a `Future` resolved by the matching `approval.respond`.
-- STOP cancels the worker coroutine, which propagates `CancelledError` into all in-flight `await`s including LLM streams (FR-LLM-07).
-- Resume: the engine replays the stage machine to the most recent gate, plus the most recent transient state for the in-flight agent (FR-STA-02).
+Each tool in FR-ORCH-03 is implemented in `src/kodo/runtime/_tool_surface.py` as an async function with a JSON Schema declared as a `ToolSpec`. Dispatch happens through the same MCP path leaf sub-agents use for workspace tools, so the Orchestrator's tool calls are persisted in its session log identically to any other tool call.
 
-### 5.3 Approval gate semantics
+- `compute_frontier()` / `list_artifacts(filters)` — read-only queries against the in-memory workspace index ([STATE_AND_LIFECYCLE.md §2](STATE_AND_LIFECYCLE.md)).
+- `start_subagent(name, task_message, input_artifact_ids)` — generates a fresh `session_id`, looks up the agent in the registry, builds the LLM call, runs it through the worker, persists the session log, returns the IDs of artifacts the sub-agent published. Blocks until the sub-agent's LLM loop terminates.
+- `run_author_critic_iteration(...)` — composite tool. Internally invokes `start_subagent` for the Author, reads the resulting artifact, invokes `start_subagent` for the Critic with the Author's artifact ID injected into the task, reads the Critic's `feedback` artifact, returns `{artifact_id, verdict, concerns[]}`. The two underlying sub-agent invocations are visible on the wire as ordinary `agent.started`/`agent.finished` pairs.
+- `request_user_approval` / `ask_user` — surface a `kind=request` frame per WS_PROTOCOL.md §6. The worker `await`s a `Future` keyed on the request's envelope `id`; the WS dispatcher resolves the Future when a `kind=response` with the matching `correlation_id` arrives. In autonomous mode the gate handler (`runtime/_gates.py`) resolves the Future immediately with `agree` for approval gates; `ask_user` is never auto-resolved.
+- `rollback(target_sha)` — invokes the procedure in [STATE_AND_LIFECYCLE.md §8.3](STATE_AND_LIFECYCLE.md), then terminates the current Orchestrator session and starts a fresh one (since the rollback discards in-flight workspace state the Orchestrator was reasoning about).
+- `finalize_project()` — flushes state, transitions wire `state.phase` to `done`, ends the Orchestrator session normally.
 
-- A gate is identified by `gate_id = sha1(stage|component|artifact_path)`.
-- `approval.request` carries: `gate_type`, `artifact_path` (so the WebView can render or link), and a one-paragraph `summary` produced by the responsible Author.
-- Two affirmative actions: `agree`, `feedback`. There is no `reject` (FR-WF-06).
-- On `feedback`: the engine re-runs the responsible Author/Reviewer pair with the feedback text injected as a new user message in their conversation. The gate fires again with the regenerated artifact.
-- On `agree`: a checkpoint is committed in the mirror (FR-MIR-03), and the next stage starts.
-- In autonomous mode, Dev Proxy intercepts the gate and answers `agree` (FR-AUT-02).
+### 5.3 Iteration cap and bail logic
 
-### 5.4 Component DAG
+The Author/Critic iteration cap (default 5, FR-AGT-05) lives in the Orchestrator's system prompt as a non-negotiable rule. The runtime does not enforce it — it just dispatches whatever `run_author_critic_iteration` calls the Orchestrator makes. When the Orchestrator decides to bail, it calls `ask_user` to surface the situation; the user replies with guidance or an accept-as-is decision.
 
-The Architect emits, alongside `responsibilities.kd`, a `responsibilities.dag.json` listing `{component, depends_on: [...]}`. The scheduler topologically sorts only for the integration-test phase. Component-internal stages (Requirements/Design/Test Plan/Test Coding/Implementation) do not consult the DAG since components are independent at that level.
+### 5.4 Component dependency DAG
+
+The Architect publishes a project-wide `architecture` artifact whose content includes the component dependency DAG (responsibility codename → depends_on list). The Planner consumes this when authoring the Plan; the Plan encodes ordering and dependency information as task metadata. The runtime does not topologically sort anything — that responsibility is in Planner's prompt, and the Orchestrator follows the resulting Plan task order.
+
+### 5.5 Compaction
+
+When the Orchestrator session's accumulated token usage crosses a threshold (initial value: 75% of the model's context window), `runtime/_compaction.py` triggers:
+
+1. The engine spawns a compaction LLM call with the Orchestrator's full transcript and a summarization prompt. Output is a compact "prior-context block" capturing decisions made, artifacts produced, current Plan position, and outstanding user-blocking moments.
+2. A fresh Orchestrator session is created with `{orchestrator system prompt + compacted block + current index snapshot}` as initial messages. The new session's `session_id` is recorded.
+3. A wire event surfaces the transition to the user (`orchestrator.compacted {from_session_id, to_session_id, summary_excerpt}`); see WS_PROTOCOL.md §5 (the WS_PROTOCOL.md catalogue needs this event added).
+4. The Orchestrator resumes work transparently. The prior session log remains on disk per [STATE_AND_LIFECYCLE.md §5](STATE_AND_LIFECYCLE.md) (no deletion of audit history).
+
+Compaction does not cross a checkpoint moment — if a checkpoint commit is pending when the threshold is crossed, the engine completes the checkpoint first.
 
 ---
 
 ## 6. Agent design
 
-### 6.1 Common prompt structure
+### 6.1 Leaf sub-agent prompt structure
 
-Every agent's LLM call is structured as:
+Every leaf sub-agent's LLM call is structured as:
 
-```
+```text
 system:
-  [agent role + responsibilities + the behavior-testing principle (FR-TST) if test-related]
-  [global conventions from src/.memory/*.kd if any]
+  [agent role + purpose + behavior-testing principle (FR-TST) if test-related]
+  [global conventions from project memory artifacts if any]
 
 user (cached block):
-  ## Project narrative
-  {{src/narrative.kd}}
-
-  ## Responsibilities
-  {{src/responsibilities.kd}}
-
-  ## Component context (only for component-scoped agents)
-  - requirements: {{src/<component>/requirements.kd}}
-  - design: {{src/<component>/design.kd}}
-  - test_plan: {{src/<component>/test_plan.kd}}
+  ## Project narrative          (from the narrative artifact)
+  ## Architecture               (from the architecture artifact)
+  ## Responsibility context     (per-responsibility agents only)
+  - requirements                (the relevant requirements artifact)
+  - functional-design           (when an Author/Critic stage downstream of it)
+  - test-plan                   (Test Coder, Coder, Code Reviewer)
 
 user (uncached):
   ## Task
-  {{stage-specific instructions}}
+  {{task message assembled by the runtime from the Orchestrator's start_subagent inputs}}
 
-  ## Prior turn (if iterating with Reviewer feedback)
-  {{feedback}}
+  ## Prior revision (revisions only)
+  {{previous_artifact_id resolved to content; passed when the Orchestrator
+    is re-running the Author after a critic verdict or user feedback}}
 ```
 
-`cache_control` breakpoints are placed after the system prompt and after the cached user block, so the next call in the same agent's turn (typical Author→Reviewer iteration) reads the cache.
+`cache_control` breakpoints sit after the system prompt and after the cached user block, so successive calls in the same sub-agent's loop reuse the cache. Artifact content is pulled from the workspace MCP server at task-assembly time; the runtime never embeds disk paths in the prompt.
 
-### 6.2 Per-agent specifics
+### 6.2 Orchestrator prompt structure
 
-Each agent is a single markdown file (see §4.2). The body of the file is the system prompt; constraints below are encoded directly in that prompt. Detailed prompts are authored during the M3 milestone (see [PLAN.md](PLAN.md)).
+The Orchestrator's call is similar in shape but its cached user block carries the *index summary* instead of fixed neighbour artifacts:
 
-Notable agent constraints:
-
-- **Test Designer & Test Design Critic**: prompts include explicit guard-rails against call-count assertions, internal mocks, and tautological tests. The Critic is required to reject any test plan containing those, with a feedback template that cites FR-TST-01..03.
-- **Coder**: receives only the failing tests + design + requirements. Has access to `tools/shell` (to run tests) and `tools/fileio`. Loops "edit → run tests" until all green or iteration limit. Behavior-testing principle keeps the tests stable under refactoring.
-- **Code Reviewer**: receives diff + tests + design. May request behavior changes only via feedback that maps to a requirement.
-
-### 6.3 Dev Proxy (LLM agent with rules)
-
-The Dev Proxy is an ordinary agent (per §4.2) — a markdown file at `kodo/subagents/dev_proxy.<model>.md` whose system prompt establishes the role of "autonomous-mode proxy." User-defined rules from project settings are interpolated into the prompt at invocation time.
-
-Configuration in `<project>/.kodo/settings.json`:
-
-```json
-{
-  "dev_proxy": {
-    "model": "claude-haiku-4-5-20251001",
-    "default_action": "agree",
-    "rules": [
-      "If a shell command starts with 'rm -rf', return feedback asking for confirmation instead of agreeing.",
-      "Approve narrative drafts that include both a 'risk' and a 'success criteria' section; otherwise return feedback.",
-      "Allow curl/wget against *.etrade.com; deny against any other host."
-    ]
-  }
-}
-```
-
-Prompt structure:
-
-```
+```text
 system:
-  You are the autonomous-mode proxy for the Dev. Your job is to answer prompts the
-  Dev would otherwise be interrupted by, applying the rules below with judgement.
-  Return JSON: {"action": "agree" | "feedback" | "deny", "feedback"?: string, "reasoning": string}.
-  When no rule clearly applies, default to "agree" (FR-AGT-DP-02).
+  [Orchestrator role and purpose]
+  [The canonical sequence (FR-ORCH-06) as a non-negotiable default]
+  [Approval-gate rules (FR-WF-05): the exact moments at which
+   request_user_approval MUST be called]
+  [Author/Critic iteration cap (5) and the bail/escalate judgment]
+  [Tool surface reference: names only, no schemas (CLAUDE.md "transport-agnostic
+   tool contract"); schemas live in code]
+  [Discovery vs execution sub-mode rules (FR-ORCH-07)]
 
-  Rules:
-  - {{rule 1}}
-  - {{rule 2}}
-  - ...
+user (cached block):
+  ## Project index summary       (live artifacts per responsibility/type)
+  ## Frontier                    (per-responsibility next-stage hint)
+  ## Plan                        (when accepted; full Plan content)
+  ## Pending prompts             (any outstanding user-blocking moments)
 
-user:
-  Event:
-  {{kind, payload, agent, stage, component, recent context}}
+user (uncached):
+  ## Most recent event
+  {{e.g., a sub-agent just finished and published artifact X;
+        or user just answered a question; or this is a cold-start}}
 ```
 
-The proxy intercepts both `approval.request` events (workflow gates) and `security.prompt` events (tool-call prompts) when autonomous mode is on. Each invocation is one LLM call; cost is reported through the standard usage stream so autonomous runs remain visible (FR-COS, FR-AGT-DP-04). The proxy is single-turn — no Author/Reviewer iteration.
+The Orchestrator decides its next tool call from this context. Its output is interpreted by the runtime as ordinary tool-use content blocks; there is no special prose parsing.
+
+### 6.3 Per-agent constraints
+
+Each leaf sub-agent's markdown file encodes its constraints in the system prompt. Detailed prompts are authored during the M3 milestone (see [PLAN.md](PLAN.md)).
+
+Notable constraints:
+
+- **Test Designer & Test Design Critic** — guard-rails against call-count assertions, internal mocks, tautological tests. The Critic publishes `feedback` with `verdict: "rejected"` citing FR-TST-01..03 when violations appear.
+- **Planner** — produces a structured `plan` artifact: markdown narrative for the user plus a machine-readable task list (`task_id`, target sub-agent, responsibility_code, input artifact references, depends_on). Task status is *not* stored in the Plan; the Orchestrator derives it from the index (a task is done when its expected output artifact has been accepted). This avoids mutating a published artifact.
+- **Coder** — receives only the failing tests + functional-design + requirements artifact IDs. Has access to `tools/shell` (to run tests) and the workspace tools. Loops "publish revision → run tests" until all green or the Orchestrator bails.
+- **Code Reviewer** — publishes `feedback`; concerns may request behavior changes only when they map to a requirement.
 
 ---
 
@@ -454,9 +392,9 @@ security.layer.evaluate(call)
 [allow] → execute → return result to agent
 [deny ] → synthesise error result, log → return to agent (no Dev interruption)
 [prompt] →
-    emit event security.prompt{decision_id, ...}
-    await Dev decision (or Dev Proxy if autonomous)
-    on "agree" → execute and optionally add a session rule for "remember this answer"
+    emit prompt.permission (kind=request, WS_PROTOCOL.md §6.3)
+    await Dev response (or auto-allow if autonomous, §12.3)
+    on "allow" → execute and, if response.remember != "no", install a matching rule at the requested scope
     on "feedback" → treat as deny + pass feedback string back to agent as the tool result
 ```
 
@@ -466,16 +404,14 @@ security.layer.evaluate(call)
 
 The mirror at `<project>/.kodo/checkpoints/` is initialised by `Kodo: Init Project` with a single empty commit and a fixed branch `kodo`. The mirror is *not* a git worktree of the main repo; it is a separate repository whose working tree contains a copy of `src/` and `gen/`.
 
-Checkpoint flow at every approval gate:
+`MirrorRepo` is a pure git wrapper (`init`, `stage_and_commit(message) → sha`, `checkout(sha)`, `log()`, `head_sha()`) and owns no file copying. Promotion of accepted artifacts and checkpoint commits are sequenced by `Promoter`, defined in [STATE_AND_LIFECYCLE.md §8.1](STATE_AND_LIFECYCLE.md):
 
-1. Gate fires; Dev clicks Agree.
-2. Server `rsync`-style copies `<project>/src` and `<project>/gen` into the mirror's working tree (excluding `.kodo/`, `.git/`, and node/python build artefacts that the toolchain plugin declares ignorable).
-3. `git add -A`, `git commit -m "[<gate_type>] <component_or_artifact>"`.
-4. Returns the new SHA in the `approval.respond` response so the WebView can show "checkpoint <sha>".
+- Each Promoter run reads one accepted workspace artifact, writes it to its `src/`/`gen/` destination and into the mirror's working tree, calls `MirrorRepo.stage_and_commit(message)`, deletes the workspace file, and updates the in-memory index. Commit message format: `<project_code>/<responsibility_code>/<type>: <session_id> → <artifact_id>`.
+- The Promoter run is what `request_user_approval` resolution triggers (when the gate's verdict is `agree`); the wire surfaces the result as an `artifact.published` event carrying `checkpoint_sha` (WS_PROTOCOL.md §5.6).
 
-Rollback (`checkpoint.rollback`) does the inverse copy from a prior commit's tree back to `src/` and `gen/`, after creating a safety checkpoint of the current state.
+Rollback (`checkpoint.rollback`, FR-MIR-04) follows the procedure in [STATE_AND_LIFECYCLE.md §8.3](STATE_AND_LIFECYCLE.md): terminate sessions, clear workspace, `MirrorRepo.checkout(target_sha)`, replace `src/`/`gen/` from the mirror tree, rebuild the index, resume.
 
-The mirror never contains uncommitted changes between gates: gates are the only commit moment.
+Checkpoints are produced one per accepted artifact (not one per gate). A gate covers acceptance of one or more artifacts; each accepted artifact produces its own Promoter run and its own checkpoint commit.
 
 ---
 
@@ -498,9 +434,9 @@ ws-outbox.jsonl               # disconnect-tolerant outbound queue
 
 ### 9.2 Memory
 
-Memory lives in the main repo as `.kd` files under `<project>/src/.memory/`. Naming is by topic: `architecture-decisions.kd`, `conventions.kd`, `external-systems.kd`, etc. Agents may write to memory through the standard fileio MCP path. Writes appear in the WebView as ordinary `file.change` events; security rules apply.
+Memory lives as artifacts under `<project>/src/.memory/`. The Orchestrator may instruct a sub-agent to publish a memory artifact; promotion lands it in `src/.memory/` with a mirror checkpoint, surfacing as an `artifact.published` wire event like any other promoted artifact (WS_PROTOCOL.md §5.6). Security rules apply at the sub-agent's tool call.
 
-Memory is loaded into the cached user block of every agent's LLM call (Section 6.1), keeping it inexpensive on subsequent calls.
+Memory artifacts are included in the cached user block of every leaf sub-agent's LLM call (§6.1) and in the Orchestrator's index snapshot (§6.2), keeping them inexpensive on subsequent calls.
 
 ### 9.3 Settings precedence
 
@@ -527,20 +463,20 @@ Schema is documented in `src/kodo/server/_config.py` as a `pydantic` model. VS C
 
 ### 10.2 Components
 
-- **Conversation**: vertical timeline of `agent.tokens`, `file.change`, `shell.run`, `approval.request` cards in arrival order.
-- **ApprovalGate card**: shows `gate_type`, `summary`, link to artifact, two buttons (Agree, Feedback) and a textarea.
-- **FileEvent card**: filename, change kind, link "Open diff" → host command.
-- **ShellEvent card**: command, cwd, collapsed stdout/stderr (expandable), exit code colour.
+- **Conversation**: vertical timeline rendering `agent.*`, `review.*`, `artifact.*`, `prompt.*` cards in arrival order (WS_PROTOCOL.md §5–§6).
+- **PromptCard**: one card class with three variants — `prompt.question` (free-text or choice), `prompt.approval` (gate, agree/feedback), `prompt.permission` (security, allow/deny + remember).
+- **ArtifactCard**: filename, type, "Open" link (`view: "full"`) or "Open diff" link (`view: "diff"` → `vscode.diff` host command with the mirror's prior version).
+- **ToolCallCard**: tool name, one-line summary, expandable details (shell stdout/stderr, exit code colour).
+- **ReviewStatus**: low-fi inline status lines (`review.started`, `review.verdict`) — no card chrome.
 - **UsagePanel**: cumulative cost; drawer for per-agent breakdown.
 - **StopButton**: pinned top-right; sends `stop {}` request.
 - **AutonomousToggle**: pinned top-left; sends `mode.set`.
-- **ResumeBanner**: shown when server reports `resume_offer`.
 
 ### 10.3 State
 
-- The **extension host** owns persistent state (connection status, current stage, conversation buffer, usage totals, autonomous flag, etc.) for the lifetime of the VS Code window. The WS client maintains it in memory; closing the panel does not affect it.
+- The **extension host** owns persistent state (connection status, current phase, current sub-agent, conversation buffer, usage totals, autonomous flag, etc.) for the lifetime of the VS Code window. The WS client maintains it in memory; closing the panel does not affect it.
 - The WebView is a stateless view onto that state. On mount the Preact app posts `{type:"ready"}` to the host; the host replies with the current cached state, and live envelopes flow into both the cache and the WebView from then on.
-- WebView-side state is managed with `@preact/signals`; one signal per top-level slice (conversation, usage, stage, autonomous). It is purely UI-mirror state — the source of truth is the extension host's cache, which in turn mirrors the server.
+- WebView-side state is managed with `@preact/signals`; one signal per top-level slice (conversation, usage, phase, autonomous). It is purely UI-mirror state — the source of truth is the extension host's cache, which in turn mirrors the server.
 - WebView local-storage is used only for ephemeral draft text in the prompt input across panel close/open.
 
 ---
@@ -549,35 +485,33 @@ Schema is documented in `src/kodo/server/_config.py` as a `pydantic` model. VS C
 
 ### 11.1 Filesystem
 
-```
+```text
 <project>/
 ├── kodo.md
-├── src/
-│   ├── narrative.kd
-│   ├── responsibilities.kd
-│   ├── responsibilities.dag.json     # emitted alongside, machine-readable
-│   ├── .memory/
-│   │   └── *.kd
-│   └── <component>/
-│       ├── requirements.kd
-│       ├── design.kd
-│       └── test_plan.kd
-├── gen/
-│   ├── <component>/
-│   │   └── ... (toolchain-shaped: pyproject.toml or package.json + sources + unit tests)
-│   └── tests/
-│       ├── integration/
-│       └── e2e/
+├── src/                              # specification artifacts (FR-WKS-11 via Promoter)
+│   ├── narrative/
+│   ├── architecture/                 # includes the component dependency DAG
+│   ├── requirements/<responsibility>/
+│   ├── plan/                         # the execution plan (FR-AGT-PL, FR-WKS-03)
+│   ├── design/<responsibility>/      # functional-design + design-plan
+│   ├── tech_stack/
+│   ├── test_design/<responsibility>/
+│   └── .memory/                      # project memory artifacts
+├── gen/                              # generated artifacts (FR-WKS-10 via Promoter)
+│   ├── src/<responsibility>/
+│   └── test/<responsibility>/
 └── .kodo/
     ├── checkpoints/                  # mirror git repo
+    ├── workspace/                    # in-flight artifacts + .retired/ audit (STATE_AND_LIFECYCLE.md §1)
+    ├── sessions/                     # Orchestrator and sub-agent session JSONL
     ├── settings.json
     ├── security.json
     ├── server.pid
-    ├── logs/
-    │   └── server.log
-    └── sessions/
-        └── <session-id>.json
+    └── logs/
+        └── server.log
 ```
+
+The leaf-filename rules per artifact type are defined in [STATE_AND_LIFECYCLE.md §1.1](STATE_AND_LIFECYCLE.md). Promoter is the only writer to `src/` and `gen/`; the workspace MCP server is the only writer to `.kodo/workspace/`.
 
 ### 11.2 `kodo.md` minimal template
 
@@ -617,7 +551,10 @@ Tool errors are returned as the tool result content with an error flag. The agen
 
 ### 12.3 Autonomous mode behaviour
 
-- `mode.set { autonomous: true }` causes the Dev Proxy to intercept `approval.request` and `security.prompt` events.
+- `mode.set { autonomous: true }` flips a flag on `AppState`. The Orchestrator's behaviour does not change; the flag is consumed by the gate handler (`runtime/_gates.py`) and by the security layer.
+- Gate handler: `request_user_approval` resolves immediately with `{action: "agree"}` without emitting a `prompt.approval` to the wire. Autonomous-mode auto-resolution is recorded in the Orchestrator's session log (so audit shows which gates were auto-approved) and surfaced as a low-fi `state` event field rather than a per-gate event.
+- Security layer: rules whose action is `prompt` are treated as `allow` while autonomous is on. `deny` rules are still enforced.
+- `ask_user` is never auto-resolved — questions always reach the user. If the Orchestrator needs a free-form answer it pages the Dev regardless of mode.
 - LLM rate-limit pauses become silent: the worker waits, no Dev notification, STOP still works.
 - Hard errors (auth, billing, NFR-04 violations) page the Dev regardless.
 
@@ -636,33 +573,44 @@ Tool errors are returned as the tool result content with an error flag. The agen
 
 ## 14. Sequence diagrams
 
-### 14.1 Happy-path approval
+### 14.1 Happy-path Narrative gate
 
-```
-Dev (WebView)         Server (workflow worker)         LLM plugin
+```text
+Dev (WebView)       Server (runtime worker)            LLM plugin
        │                       │                            │
        │  prompt.submit ──────►│                            │
-       │                       │  start NarrativeAuthor ──► │
-       │                       │                            │── stream tokens ─┐
-       │ ◄─── stream_chunk × N (tokens)                                        │
-       │ ◄─── stream_end                                                       │
-       │                       │ ◄─ artifact written ───────────────────────── │
-       │ ◄─── file.change                                                      │
-       │                       │  start NarrativeReviewer ──► (accepts)        │
-       │ ◄─── agent.finished                                                   │
-       │                       │  commit checkpoint                            │
-       │ ◄─── approval.request (gate=narrative)                                │
-       │  approval.respond {agree} ►│                                          │
-       │                       │  next stage: ARCHITECTURE                     │
+       │                       │  Orchestrator turn ──────► │── stream tokens ──┐
+       │ ◄─── stream_chunk × N (Orchestrator decides)                           │
+       │ ◄─── stream_end                                                        │
+       │                       │ ◄─ tool_use: start_subagent("narrative_author")│
+       │                       │  spawn NarrativeAuthor ──► │── stream tokens ──┤
+       │ ◄─── agent.started (narrative_author)                                  │
+       │ ◄─── stream_chunk × N                                                  │
+       │                       │ ◄─ tool_use: publish_artifact(narrative) ──────│
+       │                       │  workspace records; Promoter NOT triggered yet │
+       │                       │  (no critic configured for narrative)          │
+       │ ◄─── agent.finished (narrative_author)                                 │
+       │                       │  return artifact_id to Orchestrator            │
+       │                       │  Orchestrator continues ──►│── stream tokens ──┤
+       │                       │ ◄─ tool_use: request_user_approval(narrative)  │
+       │ ◄─── prompt.approval (kind=request, gate_type="narrative")             │
+       │  response {agree} ────►│                                               │
+       │                       │  resolve approval Future; Promoter fires;      │
+       │                       │  mirror commit; artifact.published wire event  │
+       │ ◄─── artifact.published (path=src/narrative/narrative.md, checkpoint)  │
+       │                       │  Orchestrator continues ──►│── stream tokens ──┘
+       │                       │ ◄─ tool_use: start_subagent("architect")
+       │                       │  ...
 ```
 
 ### 14.2 STOP
 
-```
+```text
 Dev: stop {} ─► Server: cancel worker task
                        cancel current LLM stream (LLM plugin .cancel)
+                       cancel any pending prompt.* Future (re-emits as error)
                        finalise transient state
-                       emit event state{stage: STOPPED}
+                       emit event state{phase: "stopped"}
 ```
 
 ### 14.3 Reconnect
@@ -681,15 +629,15 @@ Extension reconnects → request hello
 | Section | Covers |
 |---|---|
 | 1, 2 | FR-VSIX-01..09, FR-SRV-01..08 |
-| 3 | FR-WS-01..04 |
-| 4 | FR-LLM-01..07, FR-AGT-01..03, FR-TC-01..05 |
-| 5 | FR-WF-01..08 |
-| 6 | FR-AGT-NA..CR, FR-AGT-DP-01..03, FR-TST-01..04 |
+| 3 | FR-WS-01..04 (full protocol spec lives in WS_PROTOCOL.md) |
+| 4 | FR-LLM-01..07, FR-AGT-01..06, FR-TC-01..05 |
+| 5 | FR-ORCH-01..08, FR-WF-02/05/06/07/08 |
+| 6 | FR-AGT-OR, FR-AGT-NA..CR, FR-AGT-PL, FR-TST-01..04 |
 | 7 | FR-SEC-01..07, FR-MCP-01..05 |
 | 8 | FR-MIR-01..05 |
 | 9 | FR-STA-01..06 |
 | 10 | FR-VSIX-06..08, FR-COS-01..03 |
-| 11 | FR-PRJ-01..06 |
+| 11 | FR-PRJ-01..06, FR-WKS-10/11 |
 | 12 | FR-LLM-05..07, FR-AUT-01..03 |
 | 13 | NFR-02 |
 | 14 | (illustrative) |

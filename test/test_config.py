@@ -10,8 +10,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from kodo.server._config import Config
 
 # ---------------------------------------------------------------------------
@@ -90,54 +88,23 @@ def test_from_args_custom_log_level(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# from_args — ANTHROPIC_API_KEY from environment
-# ---------------------------------------------------------------------------
-
-
-def test_from_args_reads_api_key_from_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """
-    Given ANTHROPIC_API_KEY set in the environment,
-    when from_args() is called,
-    then config.anthropic_api_key equals the environment value.
-    """
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
-    config = Config.from_args(["--project", str(tmp_path)])
-    assert config.anthropic_api_key == "sk-test-key"
-
-
-def test_from_args_api_key_empty_when_not_set(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """
-    Given ANTHROPIC_API_KEY absent from the environment,
-    when from_args() is called,
-    then config.anthropic_api_key is an empty string.
-    """
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    config = Config.from_args(["--project", str(tmp_path)])
-    assert config.anthropic_api_key == ""
-
-
-# ---------------------------------------------------------------------------
 # from_args — layered settings files
 # ---------------------------------------------------------------------------
 
 
-def test_from_args_project_settings_override_default_model(tmp_path: Path) -> None:
+def test_from_args_project_settings_override_mode(tmp_path: Path) -> None:
     """
-    Given a project settings.json that sets 'default_model',
+    Given a project settings.json that sets 'mode',
     when from_args() is called,
-    then config.default_model reflects the project setting.
+    then config.extra['mode'] reflects the project setting.
     """
     kodo_dir = tmp_path / ".kodo"
     kodo_dir.mkdir()
-    settings = {"default_model": "claude-opus-4-7"}
+    settings = {"mode": "cloud"}
     (kodo_dir / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
 
     config = Config.from_args(["--project", str(tmp_path)])
-    assert config.default_model == "claude-opus-4-7"
+    assert config.extra.get("mode") == "cloud"
 
 
 def test_from_args_project_settings_override_log_level(tmp_path: Path) -> None:
@@ -168,14 +135,18 @@ def test_from_args_invalid_settings_json_does_not_crash(tmp_path: Path) -> None:
     assert config.port == 9042  # default intact
 
 
-def test_from_args_default_model_is_set(tmp_path: Path) -> None:
+def test_from_args_mode_is_set(tmp_path: Path) -> None:
     """
-    Given no settings file,
+    Given a project settings.json with 'mode',
     when from_args() is called,
-    then config.default_model is a non-empty string.
+    then config.extra contains 'mode'.
     """
+    kodo_dir = tmp_path / ".kodo"
+    kodo_dir.mkdir()
+    (kodo_dir / "settings.json").write_text(json.dumps({"mode": "local"}), encoding="utf-8")
+
     config = Config.from_args(["--project", str(tmp_path)])
-    assert config.default_model != ""
+    assert config.extra.get("mode") == "local"
 
 
 # ---------------------------------------------------------------------------

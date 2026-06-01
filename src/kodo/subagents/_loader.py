@@ -34,12 +34,15 @@ class SubAgent:
         tools: MCP tool names this subagent may invoke.
         system_prompt: Full system prompt body.
         source_path: Absolute path to the source ``.md`` file.
+        capability: Preferred LLM capability tier — ``'high'``, ``'medium'``,
+            or ``'low'``.  Defaults to ``'medium'`` when not set in frontmatter.
     """
 
     name: str
     tools: frozenset[str]
     system_prompt: str
     source_path: Path
+    capability: str = "medium"
 
 
 def load_agent(path: Path) -> SubAgent:
@@ -79,7 +82,14 @@ def load_agent(path: Path) -> SubAgent:
     if not body:
         raise AgentLoadError(f"{path}: system-prompt body is empty")
 
-    return SubAgent(name=name, tools=tools, system_prompt=body, source_path=path)
+    capability_raw = fm_dict.get("capability", "medium")
+    capability = str(capability_raw) if isinstance(capability_raw, str) else "medium"
+    if capability not in ("high", "medium", "low"):
+        capability = "medium"
+
+    return SubAgent(
+        name=name, tools=tools, system_prompt=body, source_path=path, capability=capability
+    )
 
 
 # ---------------------------------------------------------------------------

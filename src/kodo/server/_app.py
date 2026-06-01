@@ -10,27 +10,26 @@ from pathlib import Path
 
 from aiohttp import web
 
-from kodo.llms.anthropic import ClaudePlugin
+from kodo.common import Envelope
 from kodo.mirror._checkpoints import CheckpointManager
 from kodo.project._layout import ProjectLayout, ProjectLayoutError
-from kodo.state._transient import TransientStore, find_unfinished_session
+from kodo.runtime._engine import WorkflowEngine
+from kodo.runtime._gates import GateOrchestrator
+from kodo.state._transient import TransientStore
 from kodo.subagents._registry import AgentRegistry
-from kodo.transport._envelope import Envelope
-from kodo.transport._messages import (
-    EVT_RESUME_OFFER,
-    MSG_APPROVAL_RESPOND,
+from kodo.transport import (
+    MSG_CONFIG_RELOAD,
     MSG_HELLO,
     MSG_MODE_SET,
     MSG_PING,
     MSG_PROMPT_SUBMIT,
-    MSG_SESSION_RESUME,
     MSG_STOP,
 )
 from kodo.transport._outbox import Outbox
-from kodo.transport._ws import APP_STATE_KEY, AppState, HandlerFn
-from kodo.workflow._engine import WorkflowEngine
+from kodo.transport._ws import APP_STATE_KEY, HandlerFn, WebSocketDispatcher
 
 from ._config import Config
+from ._key_broker import KeyBroker
 
 _log = logging.getLogger(__name__)
 
@@ -76,10 +75,8 @@ def _setup_log_file(layout: ProjectLayout, log_level: str) -> None:
 # ------------------------------------------------------------------
 
 
-def _make_hello_handler(
-    config: Config, engine: WorkflowEngine, unfinished_session_id: str | None
-) -> HandlerFn:
-    async def _handle_hello(state: AppState, env: Envelope) -> None:
+def _make_hello_handler(config: Config, engine: WorkflowEngine) -> HandlerFn:
+    async def _handle_hello(state: WebSocketDispatcher, env: Envelope) -> None:
         payload = env.payload
         client = str(payload.get("client", "unknown"))
         version = str(payload.get("version", "unknown"))
@@ -88,10 +85,10 @@ def _make_hello_handler(
         resp = Envelope.make_response(
             env.id,
             {
-                "type": "hello",
+                "type": "hello.ack",
                 "server_version": _SERVER_VERSION,
                 "project_root": str(config.project),
-                "last_session": unfinished_session_id,
+                "state": engine.session.to_dict(),
             },
         )
         await state.send(resp)
@@ -99,24 +96,16 @@ def _make_hello_handler(
         state_evt = Envelope.make_event("state", engine.session.to_dict())
         await state.send(state_evt)
 
-        if unfinished_session_id:
-            await state.send(
-                Envelope.make_event(
-                    EVT_RESUME_OFFER,
-                    {"session_id": unfinished_session_id},
-                )
-            )
-
     return _handle_hello
 
 
-async def _handle_ping(state: AppState, env: Envelope) -> None:
+async def _handle_ping(state: WebSocketDispatcher, env: Envelope) -> None:
     _log.debug("Ping id=%s", env.id)
     await state.send(Envelope.make_response(env.id, {"type": "pong"}))
 
 
 def _make_prompt_handler(engine: WorkflowEngine) -> HandlerFn:
-    async def _handle_prompt(state: AppState, env: Envelope) -> None:
+    async def _handle_prompt(state: WebSocketDispatcher, env: Envelope) -> None:
         text = str(env.payload.get("text", "")).strip()
         if not text:
             await state.send(
@@ -140,7 +129,7 @@ def _make_prompt_handler(engine: WorkflowEngine) -> HandlerFn:
 
 
 def _make_mode_handler(engine: WorkflowEngine) -> HandlerFn:
-    async def _handle_mode(state: AppState, env: Envelope) -> None:
+    async def _handle_mode(state: WebSocketDispatcher, env: Envelope) -> None:
         autonomous = bool(env.payload.get("autonomous", False))
         await engine.handle_mode_set(autonomous)
         await state.send(Envelope.make_response(env.id, {"type": "mode.accepted"}))
@@ -148,56 +137,38 @@ def _make_mode_handler(engine: WorkflowEngine) -> HandlerFn:
     return _handle_mode
 
 
-def _make_approval_handler(engine: WorkflowEngine) -> HandlerFn:
-    """Return an ``approval.respond`` handler (FR-WF-05/06)."""
-
-    async def _handle_approval(state: AppState, env: Envelope) -> None:
-        gate_id = str(env.payload.get("gate_id", "")).strip()
-        action = str(env.payload.get("action", "agree")).strip()
-        feedback = str(env.payload.get("feedback", "")).strip()
-
-        if not gate_id:
+def _make_config_reload_handler(config: Config) -> HandlerFn:
+    async def _handle_config_reload(state: WebSocketDispatcher, env: Envelope) -> None:
+        # Validate the settings file is still parseable; the engine reads
+        # fresh settings on each dispatch so no further action is needed.
+        try:
+            config.reload_settings()
+            _log.info("Config reload acknowledged — new settings apply to next dispatch")
+            await state.send(Envelope.make_response(env.id, {"type": "config.reload.ack"}))
+        except Exception as exc:
+            _log.warning("Config reload failed: %s", exc)
             await state.send(
                 Envelope.make_response(
                     env.id,
                     {
                         "type": "error",
-                        "code": "missing_gate_id",
-                        "message": "gate_id is required.",
+                        "code": "config_reload_failed",
+                        "message": str(exc),
                         "recoverable": True,
                     },
                 )
             )
-            return
 
-        resolved = engine.gate.resolve(gate_id, action, feedback)
-        _log.info("approval.respond: gate_id=%s action=%s resolved=%s", gate_id, action, resolved)
-        await state.send(Envelope.make_response(env.id, {"type": "approval.accepted"}))
-
-    return _handle_approval
+    return _handle_config_reload
 
 
 def _make_stop_handler(engine: WorkflowEngine) -> HandlerFn:
-    """Return a ``stop`` handler (FR-WF-07)."""
-
-    async def _handle_stop(state: AppState, env: Envelope) -> None:
+    async def _handle_stop(state: WebSocketDispatcher, env: Envelope) -> None:
         _log.info("Stop requested (id=%s)", env.id)
         await engine.stop()
         await state.send(Envelope.make_response(env.id, {"type": "stop.accepted"}))
 
     return _handle_stop
-
-
-def _make_resume_handler(engine: WorkflowEngine) -> HandlerFn:
-    """Return a ``session.resume`` handler (FR-STA-02)."""
-
-    async def _handle_resume(state: AppState, env: Envelope) -> None:
-        session_id = str(env.payload.get("session_id", "")).strip()
-        _log.info("Resume requested: session_id=%s", session_id)
-        await engine.handle_resume(session_id)
-        await state.send(Envelope.make_response(env.id, {"type": "session.resume.accepted"}))
-
-    return _handle_resume
 
 
 # ------------------------------------------------------------------
@@ -239,42 +210,35 @@ def create_app(config: Config) -> web.Application:
     except ProjectLayoutError as exc:
         _log.warning("Project layout warning: %s", exc)
 
-    if not config.anthropic_api_key:
-        _log.warning(
-            "ANTHROPIC_API_KEY is not set — LLM calls will fail. "
-            "Set the key in VS Code SecretStorage."
-        )
+    outbox = Outbox()
+    dispatcher = WebSocketDispatcher(outbox)
+    key_broker = KeyBroker(dispatcher)
+    gate = GateOrchestrator(dispatcher)
 
-    unfinished_session = find_unfinished_session(config.project)
-
-    llm = ClaudePlugin(api_key=config.anthropic_api_key)
     transient = TransientStore(config.project)
     registry = AgentRegistry(_AGENTS_DIR)
     mirror = CheckpointManager(layout)
 
-    outbox = Outbox()
-    state = AppState(outbox)
-
     engine = WorkflowEngine(
-        app_state=state,
-        llm=llm,
+        sink=dispatcher,
+        gate=gate,
+        key_provider=key_broker,
+        get_settings=config.reload_settings,
         transient=transient,
         layout=layout,
         registry=registry,
         mirror=mirror,
-        default_model=config.default_model,
     )
 
-    state.register_handler(MSG_HELLO, _make_hello_handler(config, engine, unfinished_session))
-    state.register_handler(MSG_PING, _handle_ping)
-    state.register_handler(MSG_PROMPT_SUBMIT, _make_prompt_handler(engine))
-    state.register_handler(MSG_MODE_SET, _make_mode_handler(engine))
-    state.register_handler(MSG_APPROVAL_RESPOND, _make_approval_handler(engine))
-    state.register_handler(MSG_STOP, _make_stop_handler(engine))
-    state.register_handler(MSG_SESSION_RESUME, _make_resume_handler(engine))
+    dispatcher.register_handler(MSG_HELLO, _make_hello_handler(config, engine))
+    dispatcher.register_handler(MSG_PING, _handle_ping)
+    dispatcher.register_handler(MSG_PROMPT_SUBMIT, _make_prompt_handler(engine))
+    dispatcher.register_handler(MSG_MODE_SET, _make_mode_handler(engine))
+    dispatcher.register_handler(MSG_STOP, _make_stop_handler(engine))
+    dispatcher.register_handler(MSG_CONFIG_RELOAD, _make_config_reload_handler(config))
 
     app = web.Application()
-    app[APP_STATE_KEY] = state
+    app[APP_STATE_KEY] = dispatcher
     app[_ENGINE_KEY] = engine
     app.router.add_get("/ws", _ws_endpoint)
     app.on_startup.append(_start_background)

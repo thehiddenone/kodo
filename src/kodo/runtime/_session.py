@@ -1,33 +1,34 @@
-"""Per-session workflow metadata and resume detection."""
+"""Per-session runtime metadata."""
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
 
-from ._stages import Stage
-
 __all__ = ["SessionState"]
+
+# Valid phase values per WS_PROTOCOL.md §5.1
+Phase = str  # "intake" | "running" | "awaiting_user" | "stopped" | "done" | "error"
 
 
 @dataclass
 class SessionState:
-    """Mutable workflow state for one Kodo session.
+    """Mutable state for one Kodo session.
 
-    The workflow engine owns this object and updates it as stages progress.
+    The runtime engine owns this object and updates it as work progresses.
     It is intentionally mutable (not frozen) because the engine writes it
     frequently.
 
     Attributes:
         session_id: Unique session identifier.
-        stage: Current workflow stage.
-        agent: Name of the currently active agent, if any.
-        component: Component currently being processed, if any.
+        phase: Current wire-protocol phase (WS_PROTOCOL.md §5.1).
+        agent: Name of the currently active sub-agent, if any.
+        component: Responsibility code currently under work, if any.
         autonomous: Whether autonomous mode is active.
     """
 
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    stage: Stage = Stage.IDLE
+    phase: Phase = "intake"
     agent: str | None = None
     component: str | None = None
     autonomous: bool = False
@@ -39,8 +40,9 @@ class SessionState:
             dict[str, object]: JSON-serialisable state snapshot.
         """
         return {
-            "stage": self.stage.value,
-            "agent": self.agent,
-            "component": self.component,
+            "phase": self.phase,
+            "current_agent": {"name": self.agent, "component": self.component}
+            if self.agent
+            else None,
             "autonomous": self.autonomous,
         }

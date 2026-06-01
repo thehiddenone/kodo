@@ -9,6 +9,8 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from kodo.project._layout import ProjectLayout
+
 _log = logging.getLogger(__name__)
 
 
@@ -28,7 +30,7 @@ class Lifecycle:
         Args:
             project_root (Path): Absolute path to the Kodo project root.
         """
-        self.__pid_path = project_root / ".kodo" / "server.pid"
+        self.__pid_path = ProjectLayout(project_root).server_pid
         self.__shutdown_requested = False
 
     @property
@@ -98,6 +100,21 @@ class Lifecycle:
 
     @staticmethod
     def __is_running(pid: int) -> bool:
+        # On Windows, os.kill(pid, 0) resolves to os.kill(pid, CTRL_C_EVENT)
+        # because CTRL_C_EVENT == 0.  That calls GenerateConsoleCtrlEvent which
+        # fires a real Ctrl+C into the process group and queues KeyboardInterrupt.
+        # Use OpenProcess instead: any successful open means the process exists.
+        if sys.platform == "win32":
+            import ctypes
+
+            _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(
+                _PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return True
+            return False
         try:
             os.kill(pid, 0)
             return True

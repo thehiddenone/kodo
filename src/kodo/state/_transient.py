@@ -11,15 +11,16 @@ import asyncio
 import hashlib
 import json
 import logging
-import os
 from datetime import UTC, datetime
 from pathlib import Path
+
+from kodo.project._layout import kodo_user_dir
 
 _TERMINAL_STAGES = frozenset({"IDLE", "STOPPED", "DONE", "ERROR"})
 
 _log = logging.getLogger(__name__)
 
-_KODO_HOME = Path(os.path.expanduser("~")) / ".kodo"
+_KODO_HOME = kodo_user_dir()
 _TRANSIENT_BASE = _KODO_HOME / "transient"
 
 

@@ -13,15 +13,26 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from kodo.project._layout import ProjectLayout, kodo_user_dir
 
 __all__ = ["Config"]
 
 _DEFAULT_PORT: int = 9042
 _DEFAULT_LOG_LEVEL: str = "INFO"
-_DEFAULT_MODEL: str = "claude-sonnet-4-6"
+
+_DEFAULT_USER_SETTINGS: dict[str, object] = {
+    "log_level": "INFO",
+    "mode": "local",
+    "models": {
+        "high": "claude-opus-4-6",
+        "medium": "claude-sonnet-4-6",
+        "low": "claude-haiku-4-5",
+        "local": "llamacpp-qwen36-27b",
+    },
+}
 
 _log = logging.getLogger(__name__)
 
@@ -34,24 +45,20 @@ class Config:
         project: Absolute path to the Kodo project root.
         port: TCP port for the WebSocket listener (loopback only).
         log_level: Python logging level name.
-        anthropic_api_key: Anthropic API key from the environment.
-        default_model: Default Claude model identifier.
+        extra: Full merged settings dict for use by the engine.
     """
 
     project: Path
     port: int = _DEFAULT_PORT
     log_level: str = _DEFAULT_LOG_LEVEL
-    anthropic_api_key: str = ""
-    default_model: str = _DEFAULT_MODEL
     extra: dict[str, object] = field(default_factory=dict)
 
     @classmethod
     def from_args(cls, argv: list[str] | None = None) -> Config:
         """Parse CLI arguments and layer in settings files.
 
-        Reads ``ANTHROPIC_API_KEY`` from the environment.  Settings from
-        ``<project>/.kodo/settings.json`` override ``~/.kodo/settings.json``
-        which override compiled-in defaults.
+        Settings from ``<project>/.kodo/settings.json`` override
+        ``~/.kodo/settings.json`` which override compiled-in defaults.
 
         Args:
             argv (list[str] | None): Argument list; defaults to ``sys.argv[1:]``.
@@ -78,29 +85,43 @@ class Config:
         )
         parser.add_argument(
             "--log-level",
-            default=_DEFAULT_LOG_LEVEL,
+            default=None,  # None = not explicitly set; settings file wins over built-in default
             choices=["DEBUG", "INFO", "WARNING", "ERROR"],
             metavar="LEVEL",
-            help=f"Logging level (default: {_DEFAULT_LOG_LEVEL}).",
+            help=f"Logging level (default: {_DEFAULT_LOG_LEVEL}; overrides settings.json).",
         )
         args = parser.parse_args(argv)
         project = Path(args.project).resolve()
 
-        # Layer settings: defaults → user → project
+        _ensure_user_settings()
         settings = _load_settings(project)
-        log_level = str(settings.get("log_level", args.log_level))
-        default_model = str(settings.get("default_model", _DEFAULT_MODEL))
-
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        settings_log_level = str(settings.get("log_level", _DEFAULT_LOG_LEVEL))
+        log_level = args.log_level if args.log_level is not None else settings_log_level
 
         return cls(
             project=project,
             port=args.port,
             log_level=log_level,
-            anthropic_api_key=api_key,
-            default_model=default_model,
             extra=settings,
         )
+
+    def reload_settings(self) -> dict[str, object]:
+        """Re-read and merge settings files from disk.
+
+        Returns:
+            dict[str, object]: Fresh merged settings (project overrides user).
+        """
+        return _load_settings(self.project)
+
+
+def _ensure_user_settings() -> None:
+    """Write ``~/.kodo/settings.json`` with defaults if it does not exist."""
+    path = kodo_user_dir() / "settings.json"
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_DEFAULT_USER_SETTINGS, indent=2), encoding="utf-8")
+    _log.info("Created default user settings: %s", path)
 
 
 def _load_settings(project: Path) -> dict[str, object]:
@@ -114,8 +135,8 @@ def _load_settings(project: Path) -> dict[str, object]:
     """
     merged: dict[str, object] = {}
 
-    user_settings = Path(os.path.expanduser("~")) / ".kodo" / "settings.json"
-    project_settings = project / ".kodo" / "settings.json"
+    user_settings = kodo_user_dir() / "settings.json"
+    project_settings = ProjectLayout(project).settings_json
 
     for path in (user_settings, project_settings):
         if path.exists():

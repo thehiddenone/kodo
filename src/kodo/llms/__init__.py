@@ -10,6 +10,7 @@ from ._interface import (
     TurnEnd,
     Usage,
 )
+from ._registry import get_llm_registry
 
 __all__ = [
     "LLMPlugin",
@@ -20,4 +21,5 @@ __all__ = [
     "TokenDelta",
     "ToolCallEvent",
     "TurnEnd",
+    "get_llm_registry",
 ]

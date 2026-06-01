@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kodo.transport._envelope import Envelope
-from kodo.transport._outbox import Outbox
-from kodo.transport._ws import APP_STATE_KEY, AppState, get_state
+from kodo.common import Envelope
+from kodo.transport import Outbox, WebSocketDispatcher
+from kodo.transport._ws import APP_STATE_KEY, get_state
 
 # ---------------------------------------------------------------------------
 # Envelope — construction and serialization
@@ -273,7 +273,7 @@ async def test_appstate_send_buffers_when_no_ws() -> None:
     then the envelope is buffered in the outbox.
     """
     outbox = Outbox()
-    state = AppState(outbox)
+    state = WebSocketDispatcher(outbox)
     env = Envelope(kind="event", payload={"type": "state"})
     await state.send(env)
     assert outbox.pending == 1
@@ -286,7 +286,7 @@ def test_appstate_outbox_property_returns_the_outbox() -> None:
     then it returns the Outbox passed at construction.
     """
     outbox = Outbox()
-    state = AppState(outbox)
+    state = WebSocketDispatcher(outbox)
     assert state.outbox is outbox
 
 
@@ -296,7 +296,7 @@ def test_appstate_ws_is_none_initially() -> None:
     when ws is accessed,
     then it is None.
     """
-    state = AppState(Outbox())
+    state = WebSocketDispatcher(Outbox())
     assert state.ws is None
 
 
@@ -310,10 +310,10 @@ def test_appstate_register_handler_allows_dispatch() -> None:
     minimal asyncio trick to call the dispatch path).
     """
     # Just verify registration doesn't error — dispatch is tested in integration
-    state = AppState(Outbox())
+    state = WebSocketDispatcher(Outbox())
     invoked: list[str] = []
 
-    async def _handler(s: AppState, env: Envelope) -> None:
+    async def _handler(s: WebSocketDispatcher, env: Envelope) -> None:
         invoked.append("called")
 
     state.register_handler("ping", _handler)
@@ -337,7 +337,7 @@ def test_get_state_returns_app_state() -> None:
 
     app = web.Application()
     outbox = Outbox()
-    state = AppState(outbox)
+    state = WebSocketDispatcher(outbox)
     app[APP_STATE_KEY] = state
     result = get_state(app)
     assert result is state

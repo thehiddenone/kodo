@@ -175,18 +175,22 @@ def test_remove_pid_does_not_delete_pid_file_owned_by_other_process(
 
 def test_install_signal_handlers_sets_shutdown_requested_on_sigterm(
     lifecycle: Lifecycle,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     Given installed signal handlers,
     when the SIGTERM handler is triggered,
     then shutdown_requested becomes True and the callback is invoked.
     """
-    called: list[bool] = []
+    installed: dict[int, object] = {}
+    monkeypatch.setattr(signal, "signal", lambda signum, h: installed.update({signum: h}))
 
+    called: list[bool] = []
     lifecycle.install_signal_handlers(lambda: called.append(True))
-    handler = signal.getsignal(signal.SIGTERM)
+
+    handler = installed.get(signal.SIGTERM)
     assert callable(handler)
-    handler(signal.SIGTERM, None)  # type: ignore[call-arg]
+    handler(signal.SIGTERM, None)  # type: ignore[operator]
 
     assert lifecycle.shutdown_requested is True
     assert called == [True]
@@ -194,17 +198,21 @@ def test_install_signal_handlers_sets_shutdown_requested_on_sigterm(
 
 def test_install_signal_handlers_invokes_callback_on_sigint(
     lifecycle: Lifecycle,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     Given installed signal handlers,
     when the SIGINT handler is triggered,
     then the stop callback is invoked.
     """
-    invocations: list[int] = []
+    installed: dict[int, object] = {}
+    monkeypatch.setattr(signal, "signal", lambda signum, h: installed.update({signum: h}))
 
+    invocations: list[int] = []
     lifecycle.install_signal_handlers(lambda: invocations.append(1))
-    handler = signal.getsignal(signal.SIGINT)
+
+    handler = installed.get(signal.SIGINT)
     assert callable(handler)
-    handler(signal.SIGINT, None)  # type: ignore[call-arg]
+    handler(signal.SIGINT, None)  # type: ignore[operator]
 
     assert len(invocations) == 1

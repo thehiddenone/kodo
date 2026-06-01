@@ -13,6 +13,7 @@ class ArtifactType(StrEnum):
     NARRATIVE = "narrative"
     ARCHITECTURE = "architecture"
     REQUIREMENTS = "requirements"
+    PLAN = "plan"
     FUNCTIONAL_DESIGN = "functional-design"
     DESIGN_PLAN = "design-plan"
     TECH_STACK = "tech-stack"

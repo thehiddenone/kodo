@@ -10,6 +10,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from kodo.project._layout import ProjectLayout
+
 from ._errors import ArtifactNotFoundError, WorkspaceValidationError
 from ._models import Artifact, ArtifactType, Concern, Verdict
 
@@ -52,7 +54,7 @@ class Workspace:
                 workspace lives at ``<project_root>/.kodo/workspace/``.
         """
         self.__project_root = project_root.resolve()
-        self.__workspace_dir = self.__project_root / ".kodo" / "workspace"
+        self.__workspace_dir = ProjectLayout(self.__project_root).workspace_dir
         self.__retired_dir = self.__workspace_dir / ".retired"
         self.__index_path = self.__workspace_dir / "index.json"
         self.__events_path = self.__workspace_dir / "events.jsonl"

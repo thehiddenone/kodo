@@ -54,6 +54,11 @@ class CheckpointManager:
         _log.info("Checkpoint: %s → %s", message, sha[:8])
         return sha
 
+    @property
+    def repo(self) -> MirrorRepo:
+        """The underlying :class:`MirrorRepo` instance."""
+        return self.__repo
+
     async def list_checkpoints(self) -> list[CheckpointInfo]:
         """Return all checkpoint commits newest-first."""
         return await self.__repo.log()

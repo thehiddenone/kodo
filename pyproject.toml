@@ -12,7 +12,9 @@ requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9",
     "anthropic>=0.97.0",
+    "huggingface_hub>=1.17.0",
     "mcp>=1.27.0",
+    "openai>=2.32.0"
 ]
 
 [project.scripts]
@@ -40,7 +42,7 @@ lint     = "ruff check src test"
 typecheck = "mypy"
 test     = "pytest"
 check-version = "python scripts/check_version.py"
-check    = ["ruff format src test", "ruff check src test --fix", "mypy", "python scripts/check_version.py", "pytest"]
+check    = ["ruff format src test", "ruff check src test --fix", "mypy", "python scripts/check_version.py", "pytest --full-trace"]
 build    = ["python scripts/pre_build.py", "ruff format src test", "ruff check src test", "mypy", "python scripts/check_version.py", "pytest", "hatch build", "python scripts/post_build.py"]
 
 [tool.ruff]

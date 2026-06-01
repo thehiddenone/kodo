@@ -14,9 +14,9 @@ import aiohttp
 import pytest
 from aiohttp.test_utils import TestServer
 
+from kodo.common import Envelope
 from kodo.server._app import create_app
 from kodo.server._config import Config
-from kodo.transport._envelope import Envelope
 
 _RECV_TIMEOUT = 5.0  # seconds per frame
 
@@ -109,25 +109,28 @@ async def test_hello_returns_server_version(
 
     resp = await _recv_response(ws, req.id)
 
-    assert resp.payload["type"] == "hello"
+    assert resp.payload["type"] == "hello.ack"
     assert resp.payload["server_version"] == "0.1.0b1"
     assert str(project_dir) == str(resp.payload["project_root"])
 
 
-async def test_hello_fresh_project_has_no_last_session(
+async def test_hello_ack_embeds_state_snapshot(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
     """
-    Given a fresh project with no prior sessions,
+    Given a connected client,
     when a hello request is sent,
-    then last_session in the response is None.
+    then the hello.ack response embeds a state snapshot (WS_PROTOCOL.md §4.1).
     """
     req = _make_request("hello", client="vsix", version="0.1.0")
     await ws.send_str(req.to_json())
 
     resp = await _recv_response(ws, req.id)
 
-    assert resp.payload["last_session"] is None
+    assert "state" in resp.payload
+    state = resp.payload["state"]
+    assert isinstance(state, dict)
+    assert "phase" in state
 
 
 async def test_hello_triggers_state_event(
@@ -289,42 +292,50 @@ async def test_mode_set_autonomous_returns_accepted(
 
 
 # ---------------------------------------------------------------------------
-# approval.respond
+# approval.respond was removed (WS_PROTOCOL.md §6.2)
+# Gates now use kind=request / kind=response with correlation_id.
 # ---------------------------------------------------------------------------
 
 
-async def test_approval_respond_with_empty_gate_id_returns_error(
+async def test_approval_respond_is_now_unknown_message(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
     """
     Given a connected client,
-    when an approval.respond request with empty gate_id is sent,
-    then the server responds with type='error' and code='missing_gate_id'.
+    when the old approval.respond message type is sent,
+    then the server returns unknown_message (the handler was removed).
     """
-    req = _make_request("approval.respond", gate_id="", action="agree", feedback="")
+    req = _make_request("approval.respond", gate_id="x", action="agree")
     await ws.send_str(req.to_json())
 
     resp = await _recv_response(ws, req.id)
 
     assert resp.payload["type"] == "error"
-    assert resp.payload["code"] == "missing_gate_id"
+    assert resp.payload["code"] == "unknown_message"
 
 
-async def test_approval_respond_with_unknown_gate_id_returns_accepted(
+async def test_kind_response_with_no_pending_future_is_silently_dropped(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
     """
     Given a connected client,
-    when an approval.respond request with a gate_id that has no pending gate is sent,
-    then the server responds with type='approval.accepted' (stale gate_id is logged
-    and accepted gracefully).
+    when a kind=response frame arrives with a correlation_id that has no
+    pending future registered,
+    then the server silently drops it (no error, no crash).
     """
-    req = _make_request("approval.respond", gate_id="no-such-gate", action="agree", feedback="")
-    await ws.send_str(req.to_json())
+    orphan = Envelope(
+        kind="response",
+        correlation_id="no-such-request",
+        payload={"action": "agree"},
+    )
+    await ws.send_str(orphan.to_json())
 
-    resp = await _recv_response(ws, req.id)
-
-    assert resp.payload["type"] == "approval.accepted"
+    # Send a ping afterwards; if the server crashed or errored on the orphan
+    # response we would not get a pong back.
+    ping = _make_request("ping")
+    await ws.send_str(ping.to_json())
+    resp = await _recv_response(ws, ping.id)
+    assert resp.payload["type"] == "pong"
 
 
 # ---------------------------------------------------------------------------
@@ -347,22 +358,5 @@ async def test_stop_returns_accepted(ws: aiohttp.ClientWebSocketResponse) -> Non
 
 
 # ---------------------------------------------------------------------------
-# session.resume
-# ---------------------------------------------------------------------------
-
-
-async def test_session_resume_with_unknown_session_returns_accepted(
-    ws: aiohttp.ClientWebSocketResponse,
-) -> None:
-    """
-    Given a connected client,
-    when a session.resume request is sent for an unknown session_id,
-    then the server responds with type='session.resume.accepted' (the engine
-    emits an error event for the missing prompt, then the handler responds).
-    """
-    req = _make_request("session.resume", session_id="nonexistent-session-xyz")
-    await ws.send_str(req.to_json())
-
-    resp = await _recv_response(ws, req.id)
-
-    assert resp.payload["type"] == "session.resume.accepted"
+# session.resume was removed — resume is now automatic on bootstrap
+# (STATE_AND_LIFECYCLE.md §3 Phase 4; STATE_AND_LIFECYCLE.md §7)

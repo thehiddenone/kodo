@@ -7,6 +7,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
+__all__ = ["Envelope", "MessageKind"]
+
 MessageKind = Literal["request", "response", "event", "stream_chunk", "stream_end"]
 
 

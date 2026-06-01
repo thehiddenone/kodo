@@ -7,7 +7,7 @@ import logging
 
 from aiohttp import web
 
-from ._envelope import Envelope
+from kodo.common import Envelope
 
 _log = logging.getLogger(__name__)
 

@@ -256,7 +256,20 @@ Fires when an artifact is retired without a successor, causing Promoter to delet
   "checkpoint_sha": "<sha>" }
 ```
 
-### 5.8 `usage.update` — cost accounting
+### 5.8 `orchestrator.compacted` — Orchestrator session rotated
+
+Fires when [STATE_AND_LIFECYCLE.md §4.5](STATE_AND_LIFECYCLE.md) compaction completes: the prior Orchestrator session was summarised, a fresh session was started with the compacted block as initial context, and work is resuming transparently.
+
+```json
+{ "type": "orchestrator.compacted",
+  "from_session_id": "<uuid>",
+  "to_session_id": "<uuid>",
+  "summary_excerpt": "...first ~280 chars of the compacted prior-context block, for display..." }
+```
+
+The panel renders a low-fi banner ("Kodo compacted its memory at $X.YZ — work is continuing") so the user understands cost spikes and the slight conversational reset. No user action is required.
+
+### 5.9 `usage.update` — cost accounting
 
 Pushed after each LLM call.
 
@@ -274,7 +287,7 @@ Pushed after each LLM call.
   } }
 ```
 
-### 5.9 `error` — unsolicited server error
+### 5.10 `error` — unsolicited server error
 
 For errors not tied to a specific request. Errors tied to a request are returned as `response` payloads with an `error` field (§2.2).
 
@@ -461,6 +474,44 @@ Response:
 ```
 
 A `state` event with the updated `autonomous` field follows.
+
+### 7.7 `config.reload` — apply settings.json changes
+
+Tells the server to re-read `settings.json` (both user and project layers) and apply whatever changed.  The primary use case is model switching: the VSIX edits the `models` dict in `<project>/.kodo/settings.json` (toggling `"active"` on the desired entry) and then sends this message.  The server resolves the new active plugin and replaces the engine's LLM plugin in-place.
+
+The message carries no payload fields; all configuration comes from disk.
+
+```json
+{ "type": "config.reload" }
+```
+
+Response:
+
+```json
+{ "type": "config.reload.ack" }
+```
+
+The full `models` schema is documented in [SETTINGS.md](SETTINGS.md) §2.2.
+
+**Model registration** is equivalent to adding an entry to this dict and sending `config.reload`.  No separate registration message exists.
+
+### 7.8 `credentials.set` — deliver an API key
+
+Sends a vendor API key to the server.  Keys are held in memory only and never written to disk.  The VSIX stores keys in VS Code SecretStorage and delivers them over the loopback WebSocket immediately after `hello.ack`.  Sending a key for a vendor that already has one replaces the prior value.
+
+After storing the key the server resolves the active plugin (same logic as `config.reload`) so that a freshly delivered Anthropic key takes effect immediately without a separate `config.reload`.
+
+```json
+{ "type": "credentials.set", "vendor": "anthropic", "api_key": "sk-ant-..." }
+```
+
+Supported vendors: `"anthropic"`, `"huggingface"`.  Additional vendors are added as new plugins are introduced.
+
+Response:
+
+```json
+{ "type": "credentials.set.ack" }
+```
 
 ### 7.6 `security.add_rule` — install a security rule
 

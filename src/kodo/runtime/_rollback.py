@@ -1,13 +1,19 @@
 """Rollback: restore the project to a prior checkpoint commit.
 
-Rollback procedure (§8.3 of STATE_AND_LIFECYCLE.md):
+Rollback procedure (STATE_AND_LIFECYCLE.md §8.3):
 
-1. Terminate all active sessions — append a termination event to each session log.
-2. Clear ``.kodo/workspace/`` entirely.
-3. ``MirrorRepo.checkout(target_sha)`` — mirror working tree reflects the target snapshot.
-4. Delete ``<project>/src/`` and ``<project>/gen/``.
-5. Copy mirror's ``src/`` and ``gen/`` into the project, skipping sidecar files.
-6. Rebuild the in-memory index via :class:`ProjectBootstrap`.
+1. Terminate all active sessions (sub-agent + Orchestrator) — append a
+   termination event to each session log.
+2. Clear the Orchestrator session marker (Phase 4 of bootstrap will create
+   a fresh session).
+3. Clear ``.kodo/workspace/`` entirely.
+4. ``MirrorRepo.checkout(target_sha)`` — mirror working tree reflects the
+   target snapshot.
+5. Delete ``<project>/src/`` and ``<project>/gen/``.
+6. Copy mirror's ``src/`` and ``gen/`` into the project, skipping sidecar files.
+7. Rebuild the full index via :class:`ProjectBootstrap` (all four phases).
+   Phase 4 creates a fresh Orchestrator session because the marker was cleared
+   in step 2.
 
 The caller is responsible for halting any running sub-agent processes before
 calling :meth:`Rollback.execute`.
@@ -21,10 +27,11 @@ import shutil
 from pathlib import Path
 
 from kodo.mirror._repo import MirrorRepo
-from kodo.workflow._session_log import SessionLog
+from kodo.project._layout import ProjectLayout
 
-from ._bootstrap import ProjectBootstrap
-from ._index import ProjectIndex
+from ._bootstrap import BootstrapResult, ProjectBootstrap
+from ._orchestrator import OrchestratorMarker
+from ._session_log import SessionLog
 
 _log = logging.getLogger(__name__)
 
@@ -57,35 +64,41 @@ class Rollback:
         self,
         target_sha: str,
         active_session_logs: list[SessionLog] | None = None,
-    ) -> ProjectIndex:
-        """Execute the full rollback procedure and return the rebuilt index.
+    ) -> BootstrapResult:
+        """Execute the full rollback procedure and return a fresh BootstrapResult.
 
         Args:
             target_sha (str): Commit SHA to roll back to (full or abbreviated).
-            active_session_logs (list[SessionLog] | None): Session logs of
-                all currently active sub-agent sessions.  Each is closed with
-                a termination event before the rollback proceeds.
+            active_session_logs (list[SessionLog] | None): Session logs of all
+                currently active sessions (sub-agent and Orchestrator).  Each is
+                closed with a termination event before the rollback proceeds.
 
         Returns:
-            ProjectIndex: Rebuilt index from the restored on-disk state.
+            BootstrapResult: Rebuilt index and fresh Orchestrator session info.
         """
+        layout = ProjectLayout(self.__project_root)
         sessions = active_session_logs or []
 
         self.__step1_terminate_sessions(sessions, target_sha)
 
-        workspace_dir = self.__project_root / ".kodo" / "workspace"
-        await asyncio.to_thread(self.__step2_clear_workspace, workspace_dir)
+        OrchestratorMarker(layout.kodo_dir).clear()
+        _log.info("Rollback: Orchestrator session marker cleared")
+
+        await asyncio.to_thread(self.__step3_clear_workspace, layout.workspace_dir)
 
         await self.__mirror.checkout(target_sha)
         _log.info("Rollback: mirror checked out to %s", target_sha[:8])
 
-        await asyncio.to_thread(self.__step4_delete_project_trees)
+        await asyncio.to_thread(self.__step5_delete_project_trees)
+        await asyncio.to_thread(self.__step6_copy_from_mirror)
 
-        await asyncio.to_thread(self.__step5_copy_from_mirror)
-
-        index = await asyncio.to_thread(self.__step6_rebuild_index, workspace_dir)
-        _log.info("Rollback complete: %d completed entries", len(index.completed_entries()))
-        return index
+        result = await asyncio.to_thread(self.__step7_rebuild, layout)
+        _log.info(
+            "Rollback complete: %d completed entries, new orchestrator session=%s",
+            len(result.index.completed_entries()),
+            result.orchestrator_session_id[:8],
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Steps
@@ -104,19 +117,19 @@ class Rollback:
             _log.info("Rollback: terminated session %s", session.session_id)
 
     @staticmethod
-    def __step2_clear_workspace(workspace_dir: Path) -> None:
+    def __step3_clear_workspace(workspace_dir: Path) -> None:
         if workspace_dir.exists():
             shutil.rmtree(workspace_dir)
             _log.info("Rollback: workspace cleared")
 
-    def __step4_delete_project_trees(self) -> None:
+    def __step5_delete_project_trees(self) -> None:
         for name in ("src", "gen"):
             tree = self.__project_root / name
             if tree.exists():
                 shutil.rmtree(tree)
                 _log.info("Rollback: deleted %s/", name)
 
-    def __step5_copy_from_mirror(self) -> None:
+    def __step6_copy_from_mirror(self) -> None:
         mirror_root = self.__mirror.repo_dir
         for name in ("src", "gen"):
             mirror_tree = mirror_root / name
@@ -135,10 +148,10 @@ class Rollback:
                 shutil.copy2(src_file, dst)
         _log.info("Rollback: project trees restored from mirror")
 
-    def __step6_rebuild_index(self, workspace_dir: Path) -> ProjectIndex:
-        bootstrap = ProjectBootstrap(
+    def __step7_rebuild(self, layout: ProjectLayout) -> BootstrapResult:
+        return ProjectBootstrap(
             mirror_dir=self.__mirror.repo_dir,
-            workspace_dir=workspace_dir,
-            sessions_dir=self.__project_root / ".kodo" / "sessions",
-        )
-        return bootstrap.run()
+            workspace_dir=layout.workspace_dir,
+            sessions_dir=layout.sessions_dir,
+            kodo_dir=layout.kodo_dir,
+        ).run()

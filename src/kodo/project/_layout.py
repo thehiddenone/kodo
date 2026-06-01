@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def kodo_user_dir() -> Path:
+    """``~/.kodo/`` — user-level Kodo configuration and cache directory."""
+    return Path.home() / ".kodo"
+
+
 class ProjectLayoutError(Exception):
     """Raised when the project directory does not conform to the expected layout."""
 
@@ -81,6 +86,11 @@ class ProjectLayout:
     def sessions_dir(self) -> Path:
         """``<root>/.kodo/sessions/`` — per-session metadata files."""
         return self.kodo_dir / "sessions"
+
+    @property
+    def workspace_dir(self) -> Path:
+        """``<root>/.kodo/workspace/`` — virtual artifact workspace."""
+        return self.kodo_dir / "workspace"
 
     # ------------------------------------------------------------------
     # Validation

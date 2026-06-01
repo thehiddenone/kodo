@@ -14,14 +14,14 @@ import pytest
 
 from kodo.mirror._promoter import Promoter
 from kodo.mirror._repo import MirrorRepo
+from kodo.runtime._rollback import Rollback
+from kodo.runtime._session_log import SessionLog
 from kodo.toolchains._interface import (
     ToolchainBuildResult,
     ToolchainPlugin,
     ToolchainTestResult,
     ToolchainTestScope,
 )
-from kodo.workflow._rollback import Rollback
-from kodo.workflow._session_log import SessionLog
 from kodo.workspace._models import Artifact, ArtifactType
 
 # ---------------------------------------------------------------------------
@@ -271,9 +271,9 @@ async def test_rollback_returns_index_with_completed_entries(tmp_path: Path) -> 
     )
     sha = await mirror.head_sha()
 
-    index = await rollback.execute(sha)
+    result = await rollback.execute(sha)
 
-    completed = index.completed_entries()
+    completed = result.index.completed_entries()
     assert any(e.artifact_id == "art-narr" for e in completed)
 
 
@@ -312,6 +312,6 @@ async def test_rollback_index_has_no_in_flight_entries(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    index = await rollback.execute(sha)
+    result = await rollback.execute(sha)
 
-    assert index.in_flight_entries() == []
+    assert result.index.in_flight_entries() == []

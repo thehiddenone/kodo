@@ -14,14 +14,14 @@ import pytest
 
 from kodo.mirror._promoter import Promoter
 from kodo.mirror._repo import MirrorRepo
+from kodo.runtime._bootstrap import ProjectBootstrap
+from kodo.runtime._index import IndexEntry, ProjectIndex
 from kodo.toolchains._interface import (
     ToolchainBuildResult,
     ToolchainPlugin,
     ToolchainTestResult,
     ToolchainTestScope,
 )
-from kodo.workflow._bootstrap import ProjectBootstrap
-from kodo.workflow._index import IndexEntry, ProjectIndex
 from kodo.workspace._models import Artifact, ArtifactType
 
 # ---------------------------------------------------------------------------
@@ -97,6 +97,7 @@ def _bootstrap(tmp_path: Path) -> ProjectBootstrap:
         mirror_dir=tmp_path / ".kodo" / "checkpoints",
         workspace_dir=tmp_path / ".kodo" / "workspace",
         sessions_dir=tmp_path / ".kodo" / "sessions",
+        kodo_dir=tmp_path / ".kodo",
     )
 
 
@@ -250,7 +251,7 @@ async def test_bootstrap_phase1_completed_entry_from_promoted_artifact(tmp_path:
     a = _artifact("art-1", ArtifactType.NARRATIVE, filename_hint="narrative.md")
     await _promoted_mirror(tmp_path, a)
 
-    index = _bootstrap(tmp_path).run()
+    index = _bootstrap(tmp_path).run().index
 
     entries = index.completed_entries()
     assert len(entries) == 1
@@ -278,7 +279,7 @@ async def test_bootstrap_phase1_multiple_artifacts_all_appear(tmp_path: Path) ->
     await promoter.promote(a1, "narrative approved")
     await promoter.promote(a2, "requirements approved")
 
-    index = _bootstrap(tmp_path).run()
+    index = _bootstrap(tmp_path).run().index
 
     ids = {e.artifact_id for e in index.completed_entries()}
     assert "art-1" in ids
@@ -295,7 +296,7 @@ async def test_bootstrap_phase1_empty_mirror_gives_empty_index(tmp_path: Path) -
     mirror = MirrorRepo(tmp_path / ".kodo" / "checkpoints")
     await mirror.init()
 
-    index = _bootstrap(tmp_path).run()
+    index = _bootstrap(tmp_path).run().index
 
     assert index.completed_entries() == []
 
@@ -317,7 +318,7 @@ def test_bootstrap_phase2_in_flight_entry_from_workspace(tmp_path: Path) -> None
     _write_workspace_artifact(tmp_path, a)
     _write_session_log(tmp_path, "sess-99")
 
-    index = _bootstrap(tmp_path).run()
+    index = _bootstrap(tmp_path).run().index
 
     entries = index.in_flight_entries()
     assert len(entries) == 1
@@ -348,7 +349,7 @@ def test_bootstrap_phase3_orphan_is_removed_from_index(tmp_path: Path) -> None:
     ws_path = _write_workspace_artifact(tmp_path, a)
     # No session log written.
 
-    index = _bootstrap(tmp_path).run()
+    index = _bootstrap(tmp_path).run().index
 
     assert index.get_by_id("art-orphan") is None
     assert not ws_path.exists()
@@ -365,7 +366,7 @@ def test_bootstrap_phase3_orphan_with_no_session_id_is_removed(tmp_path: Path) -
     )
     ws_path = _write_workspace_artifact(tmp_path, a)
 
-    index = _bootstrap(tmp_path).run()
+    index = _bootstrap(tmp_path).run().index
 
     assert index.get_by_id("art-nosess") is None
     assert not ws_path.exists()
@@ -383,7 +384,7 @@ def test_bootstrap_phase3_resumable_entry_remains_in_index(tmp_path: Path) -> No
     _write_workspace_artifact(tmp_path, a)
     _write_session_log(tmp_path, "sess-ok")
 
-    index = _bootstrap(tmp_path).run()
+    index = _bootstrap(tmp_path).run().index
 
     assert index.get_by_id("art-ok") is not None
 
@@ -418,7 +419,7 @@ async def test_bootstrap_phase3_broken_lineage_drops_in_flight(tmp_path: Path) -
     _write_workspace_artifact(tmp_path, a_inflight)
     _write_session_log(tmp_path, "sess-ok")
 
-    index = _bootstrap(tmp_path).run()
+    index = _bootstrap(tmp_path).run().index
 
     assert index.get_by_id("art-completed") is not None
     assert index.get_by_id("art-inflight") is None
@@ -446,7 +447,91 @@ async def test_bootstrap_phase3_correct_lineage_keeps_in_flight(tmp_path: Path) 
     _write_workspace_artifact(tmp_path, a_inflight)
     _write_session_log(tmp_path, "sess-ok")
 
-    index = _bootstrap(tmp_path).run()
+    index = _bootstrap(tmp_path).run().index
 
     assert index.get_by_id("art-v1") is not None
     assert index.get_by_id("art-v2") is not None
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Orchestrator session
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_phase4_fresh_project_creates_marker(tmp_path: Path) -> None:
+    """
+    Given a project with no orchestrator.session marker,
+    when bootstrap runs,
+    then a marker file is created and orchestrator_resumed is False.
+    """
+    result = _bootstrap(tmp_path).run()
+    marker_path = tmp_path / ".kodo" / "orchestrator.session"
+
+    assert not result.orchestrator_resumed
+    assert result.orchestrator_session_id != ""
+    assert marker_path.exists()
+    assert marker_path.read_text(encoding="utf-8").strip() == result.orchestrator_session_id
+
+
+def test_bootstrap_phase4_existing_session_log_is_resumed(tmp_path: Path) -> None:
+    """
+    Given a marker pointing to an existing session log,
+    when bootstrap runs,
+    then the same session_id is returned and orchestrator_resumed is True.
+    """
+    # Simulate a prior run: write marker + create a session log
+    kodo_dir = tmp_path / ".kodo"
+    sessions_dir = kodo_dir / "sessions"
+    sessions_dir.mkdir(parents=True)
+    session_id = "prior-session-id"
+    (kodo_dir / "orchestrator.session").write_text(session_id + "\n", encoding="utf-8")
+    (sessions_dir / f"{session_id}.jsonl").write_text("{}\n", encoding="utf-8")
+
+    result = _bootstrap(tmp_path).run()
+
+    assert result.orchestrator_resumed
+    assert result.orchestrator_session_id == session_id
+
+
+def test_bootstrap_phase4_missing_session_log_starts_fresh(tmp_path: Path) -> None:
+    """
+    Given a marker pointing to a session ID with no matching log file,
+    when bootstrap runs,
+    then the anomaly is handled: marker is cleared, a fresh session is created,
+    and orchestrator_resumed is False.
+    """
+    kodo_dir = tmp_path / ".kodo"
+    kodo_dir.mkdir(parents=True)
+    stale_id = "stale-session-id"
+    (kodo_dir / "orchestrator.session").write_text(stale_id + "\n", encoding="utf-8")
+    # NOTE: no matching sessions/stale-session-id.jsonl
+
+    result = _bootstrap(tmp_path).run()
+
+    assert not result.orchestrator_resumed
+    assert result.orchestrator_session_id != stale_id
+    # Marker was overwritten with the fresh session id
+    marker_path = kodo_dir / "orchestrator.session"
+    assert marker_path.read_text(encoding="utf-8").strip() == result.orchestrator_session_id
+
+
+def test_bootstrap_phase4_two_consecutive_runs_resume(tmp_path: Path) -> None:
+    """
+    Given two consecutive bootstrap runs on the same project,
+    when the second run finds the marker + log from the first,
+    then the second run reports orchestrator_resumed=True with the same id.
+    """
+    # First run — creates the marker
+    first = _bootstrap(tmp_path).run()
+    # Simulate a session log being created for the orchestrator
+    sessions_dir = tmp_path / ".kodo" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    (sessions_dir / f"{first.orchestrator_session_id}.jsonl").write_text(
+        '{"init": true}\n', encoding="utf-8"
+    )
+
+    # Second run — should resume
+    second = _bootstrap(tmp_path).run()
+
+    assert second.orchestrator_resumed
+    assert second.orchestrator_session_id == first.orchestrator_session_id

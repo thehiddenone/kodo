@@ -25,11 +25,14 @@ Out of scope: teams, multi-tenant deployments, hosted/cloud variants, non-develo
 | Narrative | Top-level natural-language description of the end product. The "north star". One per project. |
 | Responsibility | A single, named area of behavior the product must deliver. |
 | Component | The implementation unit for one responsibility — typically one package/module containing a main class plus satellites. |
-| Workflow | The full sequence of stages that take a project from idea to working code. MVP ships exactly one workflow. |
-| Stage | A coarse phase of the workflow (Narrative, Architecture, Requirements, Design, Test Plan, Test Coding, Implementation, Final). |
+| Orchestrator | The sub-agent that decides what runs next. Holds the tool surface used to spawn other sub-agents, surface approval gates and user questions, trigger rollback, and finalize the project. The sole entity authorized to invoke any other sub-agent. |
+| Orchestrator session | The session log of the Orchestrator sub-agent. Persists across the project's lifetime; compacted into a fresh session when context-window usage approaches exhaustion. |
+| Canonical sequence | The default order in which the Orchestrator drives a project when no user-driven re-entry is in flight: Narrative → Architecture → Requirements → Plan → [Plan-driven execution] → Final. The Orchestrator MAY deviate when responding to user feedback or escalations. |
+| Plan | A project-wide artifact authored by Planner that enumerates the remaining work as discrete tasks (sub-agent, component, inputs, dependencies). The Orchestrator consults the Plan to pick the next unfinished task after the Plan gate is approved. |
+| Planner | The sub-agent that produces the Plan after Requirements have been accepted for every responsibility. |
 | Agent | A pluggable component with a declared role, a system prompt, declared capabilities, and a model preference. |
-| Author / Reviewer pair | Two agents collaborating on a stage: the Author produces an artifact, the Reviewer accepts or returns feedback. |
-| Approval Gate | A point in the workflow where the Dev must Agree (or provide feedback) before the next stage starts. |
+| Author / Critic pair | Two agents collaborating on an artifact: the Author produces it, the Critic publishes a `feedback` artifact carrying `verdict` and `concerns`. The Orchestrator runs one iteration at a time and decides whether to iterate further, escalate, or accept. |
+| Approval Gate | A moment in the canonical sequence where the Orchestrator surfaces an artifact to Dev via `prompt.approval` and waits for `agree` or `feedback`. In autonomous mode the gate is auto-resolved to `agree`. |
 | Mirror | A `git` repository inside `<project>/.kodo/checkpoints/` used to checkpoint generated artifacts. |
 | Checkpoint | A commit in the mirror representing a coherent state Dev can return to. |
 | Memory | Distilled long-term project context written as `.kd` files in the main repo. Committed by Dev. |
@@ -51,7 +54,7 @@ Out of scope: teams, multi-tenant deployments, hosted/cloud variants, non-develo
 
 **Kodo MVP is "done" when Kodo can be used to build, end-to-end, an algorithmic stock trading bot that interacts with the E\*TRADE API, with all generated tests passing.** This includes:
 
-- A complete narrative, set of responsibilities, per-component requirements, functional designs, and test plans authored interactively with Kodo.
+- A complete narrative, set of responsibilities, per-component requirements, an execution Plan, functional designs, and test plans authored interactively with Kodo.
 - All tests written by Kodo's Test Coder pass when executed by the Python toolchain plugin.
 - The end-to-end test exercises the bot against an E\*TRADE sandbox endpoint (no real-money trades during Kodo validation).
 - Dev can replay the full session via mirror checkpoints.
@@ -107,43 +110,58 @@ This is the only acceptance criterion that gates MVP release. Per-feature requir
 - **FR-AGT-01.** An agent SHALL be defined by a single Markdown file at `kodo/subagents/<name>.<model>.md`. The file SHALL have YAML frontmatter declaring `name` and `tools` (a list of MCP tool names the agent may invoke), and a body containing the full system prompt for the named model. Agents are not Python classes or plugins — they have no `role`, no typed `inputs`/`outputs`, and no capability set beyond the tool list.
 - **FR-AGT-02.** Each agent file SHALL be a complete, self-contained prompt for the model encoded in its filename. Multiple files MAY exist for a single `name` (one per model variant); each file is independent — there is no shared "common" body across variants.
 - **FR-AGT-03.** Agents SHALL be looked up by `(name, model)` at runtime. Looking up an agent for a model with no matching file SHALL be a hard error.
-- **FR-AGT-04.** Agents SHALL be invoked only by workflow code; no direct agent-to-agent calls. The workflow function is the sole orchestration mechanism.
-- **FR-AGT-05.** Each Author/Reviewer pair SHALL iterate until the Reviewer signals acceptance or a configurable iteration limit is reached (default 5). On limit reached: in interactive mode, the Dev is alerted and asked to intervene; in autonomous mode, the Author's last output is accepted as-is and the event is logged.
+- **FR-AGT-04.** Agents SHALL be invoked only by the Orchestrator's tool surface (see FR-ORCH-02); no direct agent-to-agent calls and no engine-level invocation outside Orchestrator-tool dispatch.
+- **FR-AGT-05.** Each Author/Critic pair SHALL iterate one round per `run_author_critic_iteration` tool call (FR-ORCH-03). The Orchestrator's prompt SHALL encode an iteration cap of 5 rounds and the judgment rules for accepting the last output, escalating to the user, or continuing. There is no engine-enforced iteration cap.
 - **FR-AGT-06.** Agents SHALL ask clarifying questions liberally. Disambiguation is preferred over assumption.
 
 #### 5.5.2 Required agents for MVP
 
-For each agent below, MVP SHALL include one markdown file under `kodo/subagents/` for the default model (`claude-sonnet-4-6` for all agents except Dev Proxy, which uses `claude-haiku-4-5-20251001`). The "reads / writes" annotations describe what the workflow function passes the agent and where its output lands; they are documentation, not declared types.
+For each agent below, MVP SHALL include one markdown file under `kodo/subagents/` for the default model (`claude-sonnet-4-6` for all agents). The "reads / writes" annotations describe what the Orchestrator passes the agent and where its output lands; they are documentation, not declared types. All artifact production goes through the workspace (FR-WKS), so the path columns below describe the post-promotion location (FR-WKS-10/11).
 
-- **FR-AGT-NA.** **Narrative Author** — reads: Dev prompt. Writes: `src/narrative.kd`.
-- **FR-AGT-AR.** **Architect** — reads: narrative. Writes: `src/responsibilities.kd` (list with names + brief descriptions) and component scaffolding (one directory per component under `src/<component>/` with empty `requirements.kd`, `design.kd`, `test_plan.kd`).
-- **FR-AGT-RA.** **Requirements Author** — reads: narrative + responsibility description. Writes: `src/<component>/requirements.kd`.
-- **FR-AGT-RR.** **Requirements Reviewer** — reads: same. Verifies for ambiguity, contradiction, and gaps; produces feedback or "accept".
-- **FR-AGT-FD.** **Functional Designer** — reads: requirements. Writes: `src/<component>/design.kd` with interfaces and behaviors.
-- **FR-AGT-FC.** **Functional Design Critic** — verifies against requirements and SOLID; produces feedback or "accept".
-- **FR-AGT-TD.** **Test Designer** — reads: requirements + design. Writes: `src/<component>/test_plan.kd` plus a flag identifying which test belongs to the end-to-end suite.
-- **FR-AGT-TC.** **Test Design Critic** — verifies test plan for contradictions, coverage gaps, and behavior-vs-implementation focus (FR-TST).
-- **FR-AGT-TX.** **Test Coder** — reads: test plan + design. Writes: test source files under `gen/<component>/tests/` and `gen/tests/e2e/`. All tests SHALL be expected-to-fail when first generated.
-- **FR-AGT-CO.** **Coder** — reads: design + failing tests. Writes: implementation files under `gen/<component>/`. Iterates until tests pass.
-- **FR-AGT-CR.** **Code Reviewer** — gate-keeps Coder output; signals accept or feedback.
+- **FR-AGT-OR.** **Orchestrator** — reads: full index, current workflow state, user input. Writes: no artifacts directly (the Orchestrator does not call `publish_artifact`). Drives every other sub-agent invocation via its tool surface (FR-ORCH-03). The Orchestrator's prompt encodes the canonical sequence (FR-ORCH-06), the iteration cap and bail rules for Author/Critic loops (FR-AGT-05), and the rule for when to surface approval gates (FR-WF-05).
+- **FR-AGT-NA.** **Narrative Author** — reads: Dev prompt. Writes: artifact of type `narrative`.
+- **FR-AGT-AR.** **Architect** — reads: narrative. Writes: artifact of type `architecture` (responsibility list with codenames and display names plus component dependency DAG).
+- **FR-AGT-RA.** **Requirements Author** — reads: narrative + one responsibility's description. Writes: artifact of type `requirements` scoped to that responsibility.
+- **FR-AGT-RR.** **Requirements Critic** — reads: same as Requirements Author. Publishes `feedback` with `verdict` and `concerns`.
+- **FR-AGT-PL.** **Planner** — reads: narrative + architecture + every accepted `requirements` artifact. Writes: artifact of type `plan` enumerating the remaining work as discrete tasks. Each task carries at minimum `task_id`, target sub-agent, responsibility_code (when applicable), input artifact references, and `depends_on`. Task status is not stored in the Plan; it is derived from the workspace index (a task is "done" when its expected output artifact is accepted).
+- **FR-AGT-FD.** **Functional Designer** — reads: requirements (for one responsibility). Writes: artifact of type `functional-design`.
+- **FR-AGT-FC.** **Functional Design Critic** — verifies design against requirements and SOLID; publishes `feedback`.
+- **FR-AGT-TD.** **Test Designer** — reads: requirements + functional-design. Writes: artifact of type `test-plan` plus a flag identifying which test belongs to the end-to-end suite.
+- **FR-AGT-TC.** **Test Design Critic** — verifies test plan for contradictions, coverage gaps, and behavior-vs-implementation focus (FR-TST); publishes `feedback`.
+- **FR-AGT-TX.** **Test Coder** — reads: test-plan + functional-design. Writes: artifacts of type `test`. All tests SHALL be expected-to-fail when first generated.
+- **FR-AGT-CO.** **Coder** — reads: functional-design + failing tests. Writes: artifacts of type `code`. Iterates until tests pass.
+- **FR-AGT-CR.** **Code Reviewer** — gate-keeps Coder output; publishes `feedback`.
 
-#### 5.5.3 Dev Proxy (autonomous mode)
+### 5.6 Orchestration & approval (FR-ORCH, FR-WF)
 
-- **FR-AGT-DP-01.** Dev Proxy SHALL be defined as an agent markdown file (per FR-AGT-01) whose system prompt establishes the role of "autonomous-mode proxy" and accepts a list of user-defined rules at runtime. It SHALL respond to events that would otherwise interrupt the user when autonomous mode is active. Rules are natural-language statements that the proxy applies to the event with contextual judgement (pattern matching against event content, prior decisions, project state).
-- **FR-AGT-DP-02.** Default action for events not clearly covered by any rule: **Allow / Agree**.
-- **FR-AGT-DP-03.** Dev Proxy rules and (optionally) its preferred model SHALL be configurable per project in `.kodo/settings.json` under `dev_proxy`.
-- **FR-AGT-DP-04.** Dev Proxy LLM calls SHALL be reported through the standard usage stream (FR-COS), so the cost of autonomous runs is visible.
+#### 5.6.1 Agentic orchestration (FR-ORCH)
 
-### 5.6 Workflow & approval (FR-WF)
+MVP replaces the prior hardcoded stage machine with an agentic Orchestrator. The Orchestrator is an LLM-driven sub-agent (FR-AGT-OR) that decides what runs next by calling tools.
 
-- **FR-WF-01.** MVP SHALL implement exactly one workflow that runs all eleven agents in the sequence: Narrative → Architecture → (per component: Requirements → Design → Test Plan) → Test Coding → Implementation → Final.
-- **FR-WF-02.** The workflow engine SHALL use a single async task queue with **exactly one worker** for MVP.
-- **FR-WF-03.** Components are independent during the per-component stages and during their own implementation. The workflow SHALL serialise their work in a deterministic order (alphabetical by component name) for MVP.
-- **FR-WF-04.** Integration test scheduling SHALL respect a dependency graph emitted by the Architect: an integration test runs only after every component it depends on has been implemented and unit-tested.
-- **FR-WF-05.** Approval Gates SHALL exist at the following points: after Narrative; after Responsibilities/components list; after each component's Requirements; after each component's Design; after each component's Test Plan; after each component's implementation diff is produced; one final approval after E2E test passes.
-- **FR-WF-06.** An approval prompt presented to the Dev SHALL offer exactly two affirmative actions: **Agree** (no comments), or **Provide Feedback** (free-form text). There SHALL be no explicit Reject button. Submitting feedback SHALL re-run only the responsible Author/Reviewer pair for that artifact.
-- **FR-WF-07.** A globally visible **STOP** control SHALL cancel all in-flight agent work, abort streaming LLM calls, kill child MCP processes, and leave the workflow in a `STOPPED` state from which Dev can resume by re-running the last incomplete stage.
-- **FR-WF-08.** The workflow engine SHALL expose, via the wire protocol, the current stage, the current agent, and the current target component.
+- **FR-ORCH-01.** The Orchestrator SHALL be a sub-agent per FR-AGT-01 (single markdown file per model under `kodo/subagents/orchestrator.<model>.md`). It uses the same `Agent` shape, registry, and session model as every other sub-agent.
+- **FR-ORCH-02.** The Orchestrator SHALL be the sole entity authorized to spawn a sub-agent. No code path outside its tool dispatch may invoke `start_subagent` or `run_author_critic_iteration`. The engine refuses to drive a sub-agent invocation initiated by any other caller.
+- **FR-ORCH-03.** The Orchestrator's tool surface for MVP SHALL be:
+  - `compute_frontier()` — return the per-responsibility frontier view derived from the workspace index.
+  - `list_artifacts(filters)` — query the index by `artifact_id`, `type`, `responsibility_code`, `requirement_id`, etc. At least one filter is required.
+  - `start_subagent(name, task_message, input_artifact_ids)` — invoke a sub-agent. Blocks until the spawned session completes (single-worker constraint, FR-WF-02). Returns the IDs of artifacts the sub-agent published.
+  - `run_author_critic_iteration(author_name, critic_name, input_artifact_ids, previous_artifact_id?)` — execute one round of the Author/Critic loop. Spawns the Author (passing `previous_artifact_id` as feedback context when set), then spawns the Critic, then returns `{artifact_id, verdict, concerns[]}`. The Orchestrator decides whether to iterate, escalate, or accept.
+  - `request_user_approval(gate_type, artifact_id, summary)` — surface an approval gate to the user via WS_PROTOCOL.md §6.2. Blocks until the user (or auto-resolver in autonomous mode) responds. Returns `{action, feedback?}`.
+  - `ask_user(question, mode, choices?)` — surface a free-form or choice question via WS_PROTOCOL.md §6.1. Blocks until the user responds.
+  - `rollback(target_sha)` — invoke the rollback procedure in [STATE_AND_LIFECYCLE.md §8.3](STATE_AND_LIFECYCLE.md). The Orchestrator MUST confirm with the user via `ask_user` before calling this.
+  - `finalize_project()` — terminal call. Transitions wire `state.phase` to `done` and ends the Orchestrator session.
+- **FR-ORCH-04.** The Orchestrator session SHALL persist for the project's lifetime, surviving cold starts and resumes per [STATE_AND_LIFECYCLE.md §4](STATE_AND_LIFECYCLE.md). It is terminated only by `finalize_project()`, by rollback (§8.3), or by user-initiated STOP that includes a session-end choice.
+- **FR-ORCH-05.** When the Orchestrator session approaches context-window exhaustion, the engine SHALL trigger compaction: summarize the current session into a compact prior-context block, start a fresh Orchestrator session whose initial messages are `{system prompt + compacted summary + fresh index snapshot}`, and surface the transition to the user via the wire (WS_PROTOCOL.md §5). The compaction threshold is a design-level constant, not a requirement.
+- **FR-ORCH-06.** When no user-driven re-entry is active, the Orchestrator's prompt SHALL drive the canonical sequence: **Narrative → Architecture → Requirements (per responsibility) → Plan → [Plan execution: Functional Design / Test Plan / Test Coding / Coding per responsibility, then integration tests, then E2E] → Final**. The Orchestrator MAY deviate from this sequence when responding to user feedback or escalations, but the deviation is its own judgment, not an engine override.
+- **FR-ORCH-07.** Bootstrap decides whether the Orchestrator is in "discovery" or "execution" sub-mode by checking for an accepted `plan` artifact in the index. No accepted Plan → discovery; the Orchestrator's prompt focuses on driving the canonical sequence up to and including Plan acceptance. Accepted Plan present → execution; the Orchestrator selects the next unfinished Plan task (status derived from the index) and dispatches the corresponding sub-agent.
+- **FR-ORCH-08.** The Orchestrator's activity SHALL be visible on the wire as ordinary `agent.*` events (WS_PROTOCOL.md §5.2/§5.3) so the user can observe its reasoning and tool calls. The panel MAY style Orchestrator cards distinctly from leaf sub-agent cards, but the wire shape is the same.
+
+#### 5.6.2 Workflow invariants (FR-WF)
+
+- **FR-WF-02.** The engine SHALL use a single async task queue with **exactly one worker** for MVP. This applies to the Orchestrator's session and any sub-agent session it spawns; concurrent execution is not supported in MVP.
+- **FR-WF-05.** The Orchestrator's prompt SHALL surface an approval gate at each of the following moments: after Narrative; after Architecture (responsibilities + project code + dependency DAG); after each responsibility's Requirements; after Plan; after each responsibility's Functional Design; after each responsibility's Test Plan; after each responsibility's Implementation (with its tests passing); one final approval after E2E tests pass. In autonomous mode, the engine's gate handler auto-resolves each gate to `agree` without surfacing it to the user; the Orchestrator's behavior does not change between modes.
+- **FR-WF-06.** An approval prompt presented to the user SHALL offer exactly two affirmative actions: **Agree** (no comments), or **Provide Feedback** (free-form text). There SHALL be no explicit Reject button. On feedback, the Orchestrator decides how to respond — typically re-running the responsible Author/Critic pair via `run_author_critic_iteration` with the feedback injected, but free to also re-spawn upstream sub-agents when feedback indicates an earlier artifact is wrong.
+- **FR-WF-07.** A globally visible **STOP** control SHALL cancel all in-flight agent work, abort streaming LLM calls, kill child MCP processes, and leave the workflow in a `STOPPED` state. Resume after STOP rehydrates the Orchestrator session per [STATE_AND_LIFECYCLE.md §4.3](STATE_AND_LIFECYCLE.md); pending tool calls are re-executed with request-ID dedup per §4.4.
+- **FR-WF-08.** The Orchestrator's current activity (its current tool call, the sub-agent it most recently spawned, the responsibility under work) SHALL be exposed via the wire protocol in `state` events (WS_PROTOCOL.md §5.1). The engine does not maintain a separate "stage" concept; the wire's `phase` field is engine-level (intake / running / awaiting_user / stopped / done), not a workflow stage.
 
 ### 5.7 Toolchain plugins (FR-TC)
 
@@ -182,7 +200,7 @@ For each agent below, MVP SHALL include one markdown file under `kodo/subagents/
 ### 5.11 Autonomous mode (FR-AUT)
 
 - **FR-AUT-01.** Autonomous mode is a per-session toggle in the WebView.
-- **FR-AUT-02.** When active: Dev Proxy auto-handles approval requests and tool-call prompts (default Allow); LLM rate-limit pauses become silent waits instead of paging the Dev; STOP remains available.
+- **FR-AUT-02.** When active: the engine's gate handler auto-resolves every `request_user_approval` call from the Orchestrator with `agree` and never surfaces a `prompt.approval` to the user; the security layer auto-allows tool calls whose rule evaluation would otherwise yield `prompt`; LLM rate-limit pauses become silent waits instead of paging the Dev; STOP remains available. The Orchestrator's behavior does not change between modes — the autonomous-mode behavior lives in the gate and security plumbing.
 - **FR-AUT-03.** Errors that cannot be auto-resolved (auth failures, billing) SHALL still page the Dev.
 
 ### 5.12 State, settings, memory (FR-STA)
@@ -226,7 +244,7 @@ The virtual workspace is the exclusive mechanism through which agents produce an
 
 - **FR-WKS-02.** The workspace SHALL expose two MCP tools — `publish_artifact` and `read_artifact` — whose JSON schemas are the authoritative specification maintained at `schemas/publish_artifact.json` and `schemas/read_artifact.json` in the Kodo source tree.
 
-- **FR-WKS-03.** The known artifact types are: `narrative`, `architecture`, `requirements`, `functional-design`, `design-plan`, `tech-stack`, `test-plan`, `code`, `test`, `feedback`. New types may be introduced by adding an enum value to both schemas; no other registration step is required.
+- **FR-WKS-03.** The known artifact types are: `narrative`, `architecture`, `requirements`, `plan`, `functional-design`, `design-plan`, `tech-stack`, `test-plan`, `code`, `test`, `feedback`. The `plan` type is project-wide and authored by Planner (FR-AGT-PL); its base directory is `src/plan/`. New types may be introduced by adding an enum value to both schemas; no other registration step is required.
 
 - **FR-WKS-04.** Each artifact SHALL carry: a UUID v4 (`id`), `type`, `author` (the name of the agent that published it), `project_code` (PROJECTCODE), `responsibility_code` (RESPONSIBILITYCODE), optional `requirement_ids` list (each formatted `PROJECTCODE_RESPONSIBILITYCODE_REQUIREMENTCODE`), text `content`, optional `filename_hint` (leaf filename only, no path), optional `supersedes` list (IDs of artifacts being retired), optional `reviewed_artifact_id` (for type `feedback`: the ID of the artifact being reviewed), optional `verdict` (for type `feedback`: `accepted` or `rejected`), optional `concerns` (for type `feedback` with `verdict=rejected`: a list of structured concern objects — see FR-WKS-07), optional `metadata` (string key-value pairs for supplementary context), and a `created_at` timestamp assigned by the workspace engine at publish time. `author` is required on every `publish_artifact` call. `reviewed_artifact_id`, `verdict`, and `concerns` are required on every `feedback` artifact with `verdict=rejected`.
 
@@ -240,11 +258,11 @@ The virtual workspace is the exclusive mechanism through which agents produce an
 
 - **FR-WKS-08.** `read_artifact` SHALL accept the following filters: `artifact_id`, `author`, `project_code`, `responsibility_code`, `requirement_id`, `type`. All supplied filters are combined with AND. At least one filter SHALL be required; a call with no filters SHALL be rejected. Only live artifacts are returned. An optional `include_content` flag (default `true`) omits the `content` field when `false`, for efficient large-listing use cases.
 
-- **FR-WKS-09.** Retiring an artifact SHALL: remove it from the live index, move its on-disk file to `.kodo/workspace/.retired/{artifact_id}`, and append a `retired` entry to the event log. Retirement is permanent through the workspace API; there is no un-retire operation. A `supersedes` list of `[A, B]` in a single `publish_artifact` call retires A and B atomically with the creation of the new artifact; this covers 1-to-1 replacement, 1-to-N splits (multiple calls each listing the same old ID), and N-to-1 merges (one call listing multiple old IDs).
+- **FR-WKS-09.** Retiring an artifact SHALL: remove it from the live index, move its on-disk file to `.kodo/workspace/.retired/{artifact_id}/{exact_filename_with_extension}` (the per-id directory preserves the original leaf filename so audit tooling and diff viewers can key off the extension), and append a `retired` entry to the event log. Retirement is permanent through the workspace API; there is no un-retire operation. A `supersedes` list of `[A, B]` in a single `publish_artifact` call retires A and B atomically with the creation of the new artifact; this covers 1-to-1 replacement, 1-to-N splits (multiple calls each listing the same old ID), and N-to-1 merges (one call listing multiple old IDs).
 
-- **FR-WKS-10.** For `code` and `test` artifacts, the workspace engine SHALL additionally materialize the artifact content at the corresponding path under `gen/` so toolchain plugins can locate it through the standard project layout (FR-PRJ-04). When such an artifact is retired with no successor, the `gen/` file SHALL be deleted; when retired with a superseding artifact, the `gen/` file SHALL be overwritten atomically.
+- **FR-WKS-10.** Materialization of an artifact at its `src/` or `gen/` path defined by FR-PRJ-03 / FR-PRJ-04 SHALL occur only on acceptance, via the Promoter mechanism specified in [STATE_AND_LIFECYCLE.md §8](STATE_AND_LIFECYCLE.md). Before acceptance the artifact exists only under `.kodo/workspace/`; toolchain plugins, sub-agents, and the wire protocol SHALL NOT assume any presence under `src/`/`gen/` for in-flight artifacts. Acceptance for an artifact under critic review is defined by FR-WKS-07a; for an artifact without a critic, acceptance is publication.
 
-- **FR-WKS-11.** For specification artifacts (`narrative`, `architecture`, `requirements`, `functional-design`, `design-plan`, `tech-stack`), the workspace engine SHALL additionally write content to the conventional `src/` paths defined by FR-PRJ-03. Retirement with no successor deletes the `src/` file; retirement with a successor overwrites it atomically.
+- **FR-WKS-11.** Promoter SHALL also propagate retirement of accepted artifacts to `src/`/`gen/`. When an accepted artifact is later retired with a superseding artifact, Promoter overwrites the corresponding `src/`/`gen/` file with the successor's content and commits the change to the mirror. When retired with no successor, Promoter deletes the file and commits the deletion. The detailed sequence is in STATE_AND_LIFECYCLE.md §8.1.
 
 - **FR-WKS-12.** The workspace SHALL maintain an append-only event log at `.kodo/workspace/events.jsonl`. Each JSON line SHALL record: `timestamp`, `event` (`published` or `retired`), `artifact_id`, `type`, `author`, `project_code`, `responsibility_code`, `requirement_ids`, `supersedes`, `reviewed_artifact_id`, `verdict`, and `filename_hint`. The `concerns` list is not duplicated in the event log; it is retrievable from the artifact file itself. The event log combined with the on-disk artifacts SHALL be sufficient to reconstruct the full sequence of artifact lifecycle events for any session.
 
@@ -267,7 +285,7 @@ The virtual workspace is the exclusive mechanism through which agents produce an
 - Adopting an existing codebase (Kodo only builds green-field).
 - Front-end / UI generation. Back-end only.
 - LLM providers other than Anthropic.
-- Workflow selection — only the full eleven-agent workflow ships.
+- Multiple workflows or user-selectable orchestration — only one Orchestrator prompt ships in MVP, driving the canonical sequence (FR-ORCH-06).
 - Multi-worker concurrency; one worker only.
 - Cost caps, budgets, hard limits.
 - Telemetry, analytics, error reporting to a remote service.
@@ -284,7 +302,7 @@ The following procedure SHALL be runnable on a clean machine and result in a wor
 2. Set `KODO_ANTHROPIC_API_KEY` in the shell environment before launching VS Code. On first activation the extension reads the env var, stores it in SecretStorage, and passes it to the server subprocess.
 3. Open an empty workspace, run `Kodo: Init Project`.
 4. Submit prompt: *"Build an algorithmic stock trading bot for E\*TRADE that places orders based on a configurable strategy."*
-5. Iterate with Kodo through Narrative, Responsibilities, per-component Requirements / Design / Test Plan stages — Approval Gates are reached and Dev approves them.
+5. Iterate with Kodo through Narrative, Responsibilities, per-responsibility Requirements, Plan, and the per-responsibility Design / Test Plan moments — Approval Gates are reached and Dev approves them.
 6. Test Coder produces failing tests; Coder iterates until they pass; Code Reviewer accepts.
 7. End-to-end test passes against E\*TRADE sandbox credentials (Dev-supplied).
 8. Final approval; mirror history shows checkpoints for every gate.
