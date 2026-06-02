@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import logging.handlers
 import shutil
@@ -11,15 +12,19 @@ from pathlib import Path
 from aiohttp import web
 
 from kodo.common import Envelope
+from kodo.llm_utils import find_installed, install_llamacpp
+from kodo.llms import get_llm_registry
 from kodo.mirror._checkpoints import CheckpointManager
-from kodo.project._layout import ProjectLayout, ProjectLayoutError
+from kodo.project import ProjectLayout, ProjectLayoutError, kodo_user_dir
 from kodo.runtime._engine import WorkflowEngine
 from kodo.runtime._gates import GateOrchestrator
 from kodo.state._transient import TransientStore
 from kodo.subagents._registry import AgentRegistry
 from kodo.transport import (
+    EVT_LLAMACPP_INSTALL_PROGRESS,
     MSG_CONFIG_RELOAD,
     MSG_HELLO,
+    MSG_LLAMACPP_INSTALL,
     MSG_MODE_SET,
     MSG_PING,
     MSG_PROMPT_SUBMIT,
@@ -82,6 +87,20 @@ def _make_hello_handler(config: Config, engine: WorkflowEngine) -> HandlerFn:
         version = str(payload.get("version", "unknown"))
         _log.info("Hello from client=%s version=%s", client, version)
 
+        llm_registry = get_llm_registry()
+        models_payload = [
+            {
+                "name": e.name,
+                "residence": e.residence,
+                "description": e.description,
+                "model_id": e.model_id,
+                "repo_id": e.repo_id,
+                "filename": e.filename,
+            }
+            for e in llm_registry.values()
+        ]
+
+        llama = find_installed(kodo_user_dir())
         resp = Envelope.make_response(
             env.id,
             {
@@ -89,6 +108,9 @@ def _make_hello_handler(config: Config, engine: WorkflowEngine) -> HandlerFn:
                 "server_version": _SERVER_VERSION,
                 "project_root": str(config.project),
                 "state": engine.session.to_dict(),
+                "models": models_payload,
+                "llama_installed": llama is not None,
+                "llama_version": f"b{llama.build}" if llama is not None else None,
             },
         )
         await state.send(resp)
@@ -102,6 +124,33 @@ def _make_hello_handler(config: Config, engine: WorkflowEngine) -> HandlerFn:
 async def _handle_ping(state: WebSocketDispatcher, env: Envelope) -> None:
     _log.debug("Ping id=%s", env.id)
     await state.send(Envelope.make_response(env.id, {"type": "pong"}))
+
+
+async def _handle_llamacpp_install(state: WebSocketDispatcher, _env: Envelope) -> None:
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()
+
+    def progress_cb(pct: int, msg: str) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, (pct, msg))
+
+    async def run() -> None:
+        try:
+            await asyncio.to_thread(install_llamacpp, kodo_user_dir(), progress_cb=progress_cb)
+        except Exception:
+            pass
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    asyncio.create_task(run())
+
+    while True:
+        item = await queue.get()
+        if item is None:
+            break
+        pct, msg = item
+        await state.send(
+            Envelope.make_event(EVT_LLAMACPP_INSTALL_PROGRESS, {"percent": pct, "message": msg})
+        )
 
 
 def _make_prompt_handler(engine: WorkflowEngine) -> HandlerFn:
@@ -215,7 +264,7 @@ def create_app(config: Config) -> web.Application:
     key_broker = KeyBroker(dispatcher)
     gate = GateOrchestrator(dispatcher)
 
-    transient = TransientStore(config.project)
+    transient = TransientStore(layout.kodo_dir)
     registry = AgentRegistry(_AGENTS_DIR)
     mirror = CheckpointManager(layout)
 
@@ -232,6 +281,7 @@ def create_app(config: Config) -> web.Application:
 
     dispatcher.register_handler(MSG_HELLO, _make_hello_handler(config, engine))
     dispatcher.register_handler(MSG_PING, _handle_ping)
+    dispatcher.register_handler(MSG_LLAMACPP_INSTALL, _handle_llamacpp_install)
     dispatcher.register_handler(MSG_PROMPT_SUBMIT, _make_prompt_handler(engine))
     dispatcher.register_handler(MSG_MODE_SET, _make_mode_handler(engine))
     dispatcher.register_handler(MSG_STOP, _make_stop_handler(engine))

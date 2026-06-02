@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from kodo.state._transient import _new_session_id
 from kodo.workspace._models import ArtifactType
 
 from ._index import IndexEntry, ProjectIndex
@@ -248,24 +248,24 @@ class ProjectBootstrap:
 
         Returns:
             tuple[str, bool]: ``(session_id, resumed)`` where ``resumed``
-            is ``True`` if an existing session log was found.
+            is ``True`` if an existing session directory was found.
         """
         marker = OrchestratorMarker(self.__kodo_dir)
         existing = marker.read()
 
         if existing:
-            session_file = self.__sessions_dir / f"{existing}.jsonl"
-            if session_file.exists():
-                _log.info("Phase 4: Orchestrator session resumed: %s", existing[:8])
+            session_dir = self.__sessions_dir / existing
+            if session_dir.is_dir():
+                _log.info("Phase 4: Orchestrator session resumed: %s", existing)
                 return existing, True
             _log.warning(
-                "Phase 4: Orchestrator marker points to missing session log %s "
+                "Phase 4: Orchestrator marker points to missing session dir %s "
                 "— discarding marker and starting fresh",
-                existing[:8],
+                existing,
             )
             marker.clear()
 
-        session_id = uuid.uuid4().hex
+        session_id = _new_session_id()
         marker.write(session_id)
-        _log.info("Phase 4: Orchestrator session started: %s", session_id[:8])
+        _log.info("Phase 4: Orchestrator session started: %s", session_id)
         return session_id, False

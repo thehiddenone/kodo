@@ -1,33 +1,36 @@
 """Local inference utilities for kodo.
 
-Provides four capabilities:
+Provides three capabilities:
 
-* **Registry** — a built-in catalogue of known GGUF models
-  (:data:`REGISTRY`, :func:`get_model`).
 * **Installer** — platform-aware download and extraction of the latest
   llama.cpp release into ``~/.kodo/llama.cpp/b{N}/``
-  (:func:`install`, :func:`find_installed`, :func:`server_executable`).
+  (:func:`install_llamacpp`, :func:`check_llamacpp_update`,
+  :func:`find_installed`, :func:`server_executable`).
 * **Downloader** — thin :mod:`huggingface_hub` wrapper that fetches a
-  specific GGUF from a multi-model HF repository into
-  ``~/.kodo/llmcache/`` (:func:`download_model`).
+  specific GGUF from a HuggingFace repository into the configured models
+  directory (:func:`download_model`, :func:`get_model_path`).
 * **Server** — async process manager for ``llama-server``
   (:class:`LlamaServer`, :class:`LlamaServerConfig`).
 """
 
-from ._downloader import download_model, get_llm_cache_index
-from ._installer import find_installed, install, server_executable
+from ._downloader import download_model, get_model_path
+from ._installer import (
+    LlamaInstall,
+    check_llamacpp_update,
+    find_installed,
+    install_llamacpp,
+    server_executable,
+)
 from ._llama_server import LlamaServer, LlamaServerConfig
-from ._registry import LLM_REGISTRY, ModelEntry, get_model
 
 __all__ = [
-    "LLM_REGISTRY",
+    "LlamaInstall",
     "LlamaServer",
     "LlamaServerConfig",
-    "ModelEntry",
+    "check_llamacpp_update",
     "download_model",
-    "get_llm_cache_index",
     "find_installed",
-    "get_model",
-    "install",
+    "get_model_path",
+    "install_llamacpp",
     "server_executable",
 ]

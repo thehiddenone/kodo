@@ -33,6 +33,7 @@ MSG_CHECKPOINT_ROLLBACK = "checkpoint.rollback"
 MSG_MODE_SET = "mode.set"
 MSG_SECURITY_ADD_RULE = "security.add_rule"
 MSG_CONFIG_RELOAD = "config.reload"
+MSG_LLAMACPP_INSTALL = "llamacpp.install"
 
 # ---------------------------------------------------------------------------
 # Server → Client request payload types — API key management  (WS_PROTOCOL.md §6)
@@ -72,6 +73,7 @@ EVT_ARTIFACT_REMOVED = "artifact.removed"
 EVT_ORCHESTRATOR_COMPACTED = "orchestrator.compacted"
 EVT_USAGE_UPDATE = "usage.update"
 EVT_ERROR = "error"
+EVT_LLAMACPP_INSTALL_PROGRESS = "llamacpp.install.progress"
 
 # ---------------------------------------------------------------------------
 # DEPRECATED — legacy constants retained until handler/event wiring is migrated

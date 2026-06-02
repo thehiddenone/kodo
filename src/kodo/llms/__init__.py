@@ -10,9 +10,10 @@ from ._interface import (
     TurnEnd,
     Usage,
 )
-from ._registry import get_llm_registry
+from ._registry import LLMEntry, get_llm_registry
 
 __all__ = [
+    "LLMEntry",
     "LLMPlugin",
     "Message",
     "ToolSpec",

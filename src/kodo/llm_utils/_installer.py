@@ -2,33 +2,116 @@
 
 Downloads the latest llama.cpp release from GitHub and installs it into
 ``~/.kodo/llama.cpp/b{N}/`` for the running platform.  Supports Windows
-(x64), macOS (arm64 and x64), and Linux (all glibc-based distros via the
-Ubuntu build).
+(x64), macOS (arm64 and x64), and Linux (x64 via the Ubuntu build).
+
+Installation state is recorded in ``~/.kodo/llama.cpp/llama-meta.json``
+which is the single source of truth for installed build, executable path,
+and download URLs.  :func:`find_installed` reads this file; filesystem
+directory scanning is not used.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import platform
 import re
+import subprocess
 import urllib.request
 import zipfile
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-__all__ = ["find_installed", "install", "server_executable"]
+__all__ = [
+    "LlamaInstall",
+    "check_llamacpp_update",
+    "find_installed",
+    "install_llamacpp",
+    "server_executable",
+]
+
+_log = logging.getLogger(__name__)
 
 _GITHUB_RELEASES_LATEST = "https://api.github.com/repos/ggerganov/llama.cpp/releases/latest"
-_USER_AGENT = "kodo-llm-utils/0.1 (github.com/kodo-ai/kodo)"
+_RELEASE_BASE = "https://github.com/ggerganov/llama.cpp/releases/download"
+_USER_AGENT = "kodo-llm-utils/0.1 (github.com/thehiddenone/kodo)"
+_META_FILE = "llama-meta.json"
 
-# Priority-ordered asset-name substrings for each platform key.
-# The first substring that appears anywhere in an asset's filename wins.
-_ASSET_CANDIDATES: dict[str, list[str]] = {
-    "win-x64": ["win-cuda-cu12", "win-avx2-x64", "win-avx-x64", "win-x64"],
-    "macos-arm64": ["macos-arm64"],
-    "macos-x64": ["macos-x64"],
-    "linux-x64": ["ubuntu-x64", "linux-x64"],
+# Asset filename templates per platform. {N} is replaced with the build number.
+_ASSET_NAMES: dict[str, str] = {
+    "win-x64": "llama-b{N}-bin-win-cuda-13.3-x64.zip",
+    "macos-arm64": "llama-b{N}-bin-macos-arm64.zip",
+    "macos-x64": "llama-b{N}-bin-macos-x64.zip",
+    "linux-x64": "llama-b{N}-bin-ubuntu-x64.zip",
 }
+
+_WINDOWS_CUDA_DLLS_URL = "https://github.com/ggml-org/llama.cpp/releases/download/b{N}/cudart-llama-bin-win-cuda-13.3-x64.zip"
+
+ProgressCb = Callable[[int, str], None]
+
+
+@dataclass(frozen=True)
+class LlamaInstall:
+    """Metadata for an installed llama.cpp build.
+
+    Attributes:
+        build: Build number (e.g. ``5143`` for tag ``b5143``).
+        install_dir: Directory containing the extracted build.
+        executable: Path to the ``llama-server`` binary.
+    """
+
+    build: int
+    install_dir: Path
+    executable: Path
+
+
+# ---------------------------------------------------------------------------
+# Meta-file I/O
+# ---------------------------------------------------------------------------
+
+
+def _meta_path(kodo_dir: Path) -> Path:
+    return kodo_dir / "llama.cpp" / _META_FILE
+
+
+def _read_llama_meta(kodo_dir: Path) -> dict[str, object] | None:
+    p = _meta_path(kodo_dir)
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return cast(dict[str, object], data)
+    except Exception:
+        pass
+    return None
+
+
+def _write_llama_meta(
+    kodo_dir: Path,
+    build: int,
+    executable: Path,
+    binary_url: str,
+    cuda_dlls_url: str | None,
+) -> None:
+    urls: dict[str, str] = {"binary": binary_url}
+    if cuda_dlls_url is not None:
+        urls["cuda_dlls"] = cuda_dlls_url
+    data: dict[str, object] = {
+        "build": build,
+        "executable": str(executable),
+        "urls": urls,
+    }
+    p = _meta_path(kodo_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Platform helpers
+# ---------------------------------------------------------------------------
 
 
 def _current_platform_key() -> str:
@@ -43,7 +126,26 @@ def _current_platform_key() -> str:
     raise RuntimeError(f"Unsupported platform: {system!r}")
 
 
-def _fetch_latest_release() -> dict[str, object]:
+def _asset_url(build_number: int, platform_key: str) -> tuple[str, str]:
+    asset_name = _ASSET_NAMES[platform_key].format(N=build_number)
+    url = f"{_RELEASE_BASE}/b{build_number}/{asset_name}"
+    return asset_name, url
+
+
+# ---------------------------------------------------------------------------
+# GitHub API
+# ---------------------------------------------------------------------------
+
+
+def _fetch_latest_build_number() -> int:
+    """Fetch the latest llama.cpp build number from GitHub Releases.
+
+    Returns:
+        int: Build number (e.g. ``5143`` for tag ``b5143``).
+
+    Raises:
+        RuntimeError: If the tag name cannot be parsed.
+    """
     req = urllib.request.Request(
         _GITHUB_RELEASES_LATEST,
         headers={
@@ -53,38 +155,25 @@ def _fetch_latest_release() -> dict[str, object]:
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         data: object = json.loads(resp.read())
-        return cast(dict[str, object], data)
-
-
-def _parse_build_number(tag_name: str) -> int:
-    match = re.match(r"^b(\d+)$", tag_name)
+    tag = str(cast(dict[str, object], data)["tag_name"])
+    match = re.match(r"^b(\d+)$", tag)
     if not match:
-        raise ValueError(f"Cannot parse build number from tag {tag_name!r}")
+        raise RuntimeError(f"Cannot parse build number from GitHub tag {tag!r}")
     return int(match.group(1))
 
 
-def _select_asset(assets: list[object], platform_key: str) -> tuple[str, str]:
-    candidates = _ASSET_CANDIDATES[platform_key]
-    zip_assets: dict[str, str] = {}
-    for item in assets:
-        asset = cast(dict[str, object], item)
-        name = str(asset.get("name", ""))
-        url = str(asset.get("browser_download_url", ""))
-        if name.endswith(".zip") and url:
-            zip_assets[name] = url
-
-    for candidate in candidates:
-        for name, url in zip_assets.items():
-            if candidate in name:
-                return name, url
-
-    raise RuntimeError(
-        f"No suitable llama.cpp release asset for platform {platform_key!r}. "
-        f"Available .zip assets: {sorted(zip_assets)}"
-    )
+# ---------------------------------------------------------------------------
+# Download
+# ---------------------------------------------------------------------------
 
 
-def _download(url: str, dest: Path) -> None:
+def _download(
+    url: str,
+    dest: Path,
+    progress_cb: ProgressCb | None = None,
+    pct_start: int = 0,
+    pct_end: int = 100,
+) -> None:
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     with urllib.request.urlopen(req, timeout=600) as resp:
         content_length = resp.headers.get("Content-Length")
@@ -97,51 +186,53 @@ def _download(url: str, dest: Path) -> None:
                     break
                 f.write(chunk)
                 downloaded += len(chunk)
-                if total:
-                    pct = downloaded * 100 // total
+                if total and progress_cb:
+                    raw_pct = downloaded * 100 // total
+                    scaled = pct_start + (pct_end - pct_start) * raw_pct // 100
                     mb_done = downloaded // 1_048_576
                     mb_total = total // 1_048_576
-                    print(f"\r  {pct:3d}%  {mb_done} / {mb_total} MB", end="", flush=True)
-    if total:
-        print()
+                    progress_cb(scaled, f"{mb_done} / {mb_total} MB")
+    _log.info("Downloaded %d bytes to %s", downloaded, dest)
 
 
-def find_installed(kodo_dir: Path) -> Path | None:
-    """Return the most recently installed llama.cpp build directory.
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
-    Scans ``kodo_dir/llama.cpp/`` for directories whose names match the
-    ``b{N}`` pattern and returns the one with the highest build number.
+
+def find_installed(kodo_dir: Path) -> LlamaInstall | None:
+    """Return metadata for the currently installed llama.cpp build.
+
+    Reads ``~/.kodo/llama.cpp/llama-meta.json``; does not scan the filesystem.
 
     Args:
-        kodo_dir (Path): The ``~/.kodo`` base directory.
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
 
     Returns:
-        Path | None: Build directory (e.g. ``~/.kodo/llama.cpp/b4000``),
-        or ``None`` if nothing is installed yet.
+        LlamaInstall | None: Install metadata, or ``None`` if not installed.
     """
-    base = kodo_dir / "llama.cpp"
-    if not base.is_dir():
+    meta = _read_llama_meta(kodo_dir)
+    if meta is None:
         return None
-    builds = sorted(
-        (d for d in base.iterdir() if d.is_dir() and re.match(r"^b\d+$", d.name)),
-        key=lambda d: int(d.name[1:]),
-        reverse=True,
-    )
-    return builds[0] if builds else None
+    try:
+        build = int(cast(int, meta["build"]))
+        executable = Path(str(meta["executable"]))
+        install_dir = kodo_dir / "llama.cpp" / f"b{build}"
+        return LlamaInstall(build=build, install_dir=install_dir, executable=executable)
+    except (KeyError, ValueError):
+        return None
 
 
 def server_executable(install_dir: Path) -> Path | None:
     """Find the ``llama-server`` executable inside an install directory.
 
-    Uses :meth:`Path.rglob` so the executable is found regardless of whether
-    the archive placed it at the top level or inside a subdirectory.
+    Used during installation to locate the binary before writing the meta file.
 
     Args:
         install_dir (Path): A llama.cpp build directory.
 
     Returns:
-        Path | None: Absolute path to the executable, or ``None`` if the
-        binary is not present in the directory tree.
+        Path | None: Absolute path to the executable, or ``None`` if not found.
     """
     exe_name = "llama-server.exe" if platform.system() == "Windows" else "llama-server"
     for candidate in install_dir.rglob(exe_name):
@@ -149,51 +240,138 @@ def server_executable(install_dir: Path) -> Path | None:
     return None
 
 
-def install(kodo_dir: Path, *, force: bool = False) -> Path:
-    """Download and install the latest llama.cpp release for the current platform.
+def verify_executable(executable: Path) -> bool:
+    """Verify that a ``llama-server`` binary is functional.
 
-    Fetches release metadata from the GitHub API, selects the most suitable
-    pre-built binary archive, downloads it, and extracts it into
-    ``kodo_dir/llama.cpp/b{N}/``.
-
-    If the same build is already installed and *force* is ``False``, the
-    network download is skipped and the existing directory is returned.
+    Runs ``llama-server --version`` and checks for exit code 0.
 
     Args:
-        kodo_dir (Path): The ``~/.kodo`` base directory.
-        force (bool): Re-download and re-extract even if the build already exists.
+        executable (Path): Path to the ``llama-server`` binary.
 
     Returns:
-        Path: The build directory (e.g. ``~/.kodo/llama.cpp/b4000``).
+        bool: ``True`` if the binary runs successfully.
     """
-    print("Fetching llama.cpp release info…")
-    release = _fetch_latest_release()
-    tag = str(release["tag_name"])
-    build_num = _parse_build_number(tag)
-    install_dir = kodo_dir / "llama.cpp" / tag
+    try:
+        result = subprocess.run(
+            [str(executable), "--version"],
+            capture_output=True,
+            timeout=15,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 
-    if install_dir.exists() and not force:
-        print(f"  Already installed: {install_dir}")
-        return install_dir
 
-    platform_key = _current_platform_key()
-    assets = cast(list[object], release["assets"])
-    asset_name, download_url = _select_asset(assets, platform_key)
+def check_llamacpp_update(kodo_dir: Path) -> bool:
+    """Check whether a newer llama.cpp build is available on GitHub.
 
-    print(f"  Build:    b{build_num}")
-    print(f"  Platform: {platform_key}")
-    print(f"  Asset:    {asset_name}")
+    Args:
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
 
-    install_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = install_dir / asset_name
+    Returns:
+        bool: ``True`` if a newer build is available or nothing is installed.
+    """
+    latest = _fetch_latest_build_number()
+    installed = find_installed(kodo_dir)
+    installed_build = installed.build if installed is not None else None
+    _log.info(
+        "llama.cpp: latest=b%d  installed=%s",
+        latest,
+        f"b{installed_build}" if installed_build is not None else "none",
+    )
+    return installed_build is None or installed_build < latest
 
-    print("Downloading…")
-    _download(download_url, zip_path)
 
-    print("Extracting…")
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(install_dir)
-    zip_path.unlink()
+def install_llamacpp(
+    kodo_dir: Path,
+    *,
+    force: bool = False,
+    progress_cb: ProgressCb | None = None,
+) -> LlamaInstall:
+    """Download and install the latest llama.cpp release for the current platform.
 
-    print(f"  Done: {install_dir}")
-    return install_dir
+    Fetches the latest build number from GitHub, downloads and extracts the
+    platform binary, verifies it runs, then writes ``llama-meta.json``.
+
+    Progress is reported via *progress_cb* as ``(percent: int, message: str)``
+    calls.  ``percent == 100`` signals success; ``percent == -1`` signals an
+    error (the message contains the reason).
+
+    Args:
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
+        force (bool): Re-download even if the same build is already installed.
+        progress_cb (ProgressCb | None): Optional progress callback.
+
+    Returns:
+        LlamaInstall: Metadata for the newly installed build.
+
+    Raises:
+        RuntimeError: If download, extraction, or verification fails.
+    """
+
+    def _progress(pct: int, msg: str) -> None:
+        _log.info("[%3d%%] %s", pct, msg)
+        if progress_cb is not None:
+            progress_cb(pct, msg)
+
+    def _fail(msg: str) -> RuntimeError:
+        _progress(-1, msg)
+        return RuntimeError(msg)
+
+    try:
+        _progress(0, "Fetching latest release info from GitHub…")
+        build_number = _fetch_latest_build_number()
+
+        existing = find_installed(kodo_dir)
+        if existing is not None and existing.build == build_number and not force:
+            _progress(100, f"llama.cpp b{build_number} already installed")
+            return existing
+
+        platform_key = _current_platform_key()
+        asset_name, binary_url = _asset_url(build_number, platform_key)
+        _progress(5, f"Installing llama.cpp b{build_number} ({platform_key})")
+
+        install_dir = kodo_dir / "llama.cpp" / f"b{build_number}"
+        install_dir.mkdir(parents=True, exist_ok=True)
+        zip_path = install_dir / asset_name
+
+        _progress(10, f"Downloading {asset_name}…")
+        _download(binary_url, zip_path, progress_cb, pct_start=10, pct_end=75)
+
+        _progress(75, "Extracting binary archive…")
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(install_dir)
+        zip_path.unlink()
+
+        cuda_dlls_url: str | None = None
+        if platform_key == "win-x64":
+            cuda_dlls_url = _WINDOWS_CUDA_DLLS_URL.format(N=build_number)
+            cuda_zip_name = cuda_dlls_url.rsplit("/", 1)[-1]
+            cuda_zip_path = install_dir / cuda_zip_name
+            _progress(80, "Downloading CUDA runtime DLLs…")
+            _download(cuda_dlls_url, cuda_zip_path, progress_cb, pct_start=80, pct_end=88)
+            _progress(88, "Extracting CUDA DLLs…")
+            with zipfile.ZipFile(cuda_zip_path, "r") as zf:
+                zf.extractall(install_dir)
+            cuda_zip_path.unlink()
+
+        _progress(90, "Locating llama-server executable…")
+        exe = server_executable(install_dir)
+        if exe is None:
+            raise _fail("llama-server executable not found after extraction")
+
+        _progress(95, "Verifying llama-server --version…")
+        if not verify_executable(exe):
+            raise _fail("llama-server --version returned non-zero exit code")
+
+        _progress(98, "Writing installation metadata…")
+        _write_llama_meta(kodo_dir, build_number, exe, binary_url, cuda_dlls_url)
+
+        result = LlamaInstall(build=build_number, install_dir=install_dir, executable=exe)
+        _progress(100, f"llama.cpp b{build_number} installed successfully")
+        return result
+
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise _fail(f"Installation failed: {exc}") from exc

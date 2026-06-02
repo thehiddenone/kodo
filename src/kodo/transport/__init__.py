@@ -16,6 +16,7 @@ from ._messages import (
     EVT_ARTIFACT_REMOVED,
     EVT_ERROR,
     EVT_FILE_CHANGE,
+    EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_ORCHESTRATOR_COMPACTED,
     EVT_RESUME_OFFER,
     EVT_REVIEW_STARTED,
@@ -30,6 +31,7 @@ from ._messages import (
     MSG_CHECKPOINT_ROLLBACK,
     MSG_CONFIG_RELOAD,
     MSG_HELLO,
+    MSG_LLAMACPP_INSTALL,
     MSG_MODE_SET,
     MSG_PING,
     MSG_PROMPT_SUBMIT,
@@ -57,6 +59,7 @@ __all__ = [
     "MSG_CHECKPOINT_LIST",
     "MSG_CHECKPOINT_ROLLBACK",
     "MSG_CONFIG_RELOAD",
+    "MSG_LLAMACPP_INSTALL",
     "MSG_MODE_SET",
     "MSG_SECURITY_ADD_RULE",
     # WS_PROTOCOL.md §6 — server-initiated requests
@@ -79,6 +82,7 @@ __all__ = [
     "EVT_ORCHESTRATOR_COMPACTED",
     "EVT_USAGE_UPDATE",
     "EVT_ERROR",
+    "EVT_LLAMACPP_INSTALL_PROGRESS",
     # Deprecated / legacy
     "MSG_PING",
     "MSG_SESSION_RESUME",

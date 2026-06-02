@@ -178,11 +178,17 @@ class WorkflowEngine:
         self.__orch_session_id = result.orchestrator_session_id
         self.__tool_surface = self.__make_tool_surface()
 
+        self.__transient.attach_session(result.orchestrator_session_id, result.orchestrator_resumed)
+
+        if result.orchestrator_resumed:
+            self.__orch_messages = self.__load_orch_messages()
+
         self.__worker = asyncio.create_task(self.__run_worker(), name="kodo-worker")
         _log.info(
-            "Runtime worker started (orchestrator_session=%s resumed=%s)",
-            self.__orch_session_id[:8],
+            "Runtime worker started (orchestrator_session=%s resumed=%s messages=%d)",
+            self.__orch_session_id,
             result.orchestrator_resumed,
+            len(self.__orch_messages),
         )
 
     async def stop(self) -> None:
@@ -204,7 +210,7 @@ class WorkflowEngine:
             text: The user's prompt text.
             request_id: Envelope ID of the originating request.
         """
-        self.__transient.meta.update(prompt=text)
+        self.__transient.update(prompt=text)
         await self.__queue.put({"text": text, "request_id": request_id})
 
     async def handle_mode_set(self, autonomous: bool) -> None:
@@ -214,7 +220,7 @@ class WorkflowEngine:
             autonomous: New autonomous mode value.
         """
         self.__session.autonomous = autonomous
-        self.__transient.meta.update(autonomous=autonomous)
+        self.__transient.update(autonomous=autonomous)
         await self.__emit_state()
 
     # ------------------------------------------------------------------
@@ -245,15 +251,16 @@ class WorkflowEngine:
             model_key = str(models_map.get(capability, models_map.get("medium", capability)))
 
         registry = get_llm_registry()
-        spec = registry.get(model_key, {})
-        module = str(spec.get("module", "kodo.llms.anthropic"))
+        entry = registry.get(model_key)
+        module = entry.module if entry is not None else "kodo.llms.anthropic"
 
         if module == "kodo.llms.llamacpp":
-            base_url = str(spec.get("base_url", _DEFAULT_LLAMACPP_BASE_URL))
             self.__current_vendor = None
-            return LlamaPlugin(base_url=base_url, model_names=[model_key]), model_key
+            return LlamaPlugin(
+                base_url=_DEFAULT_LLAMACPP_BASE_URL, model_names=[model_key]
+            ), model_key
 
-        model_id = str(spec.get("model_id", model_key))
+        model_id = entry.model_id if entry is not None else model_key
         vendor = module.rsplit(".", 1)[-1]
         self.__current_vendor = vendor
 
@@ -343,6 +350,7 @@ class WorkflowEngine:
         agent = self.__registry.get(_ORCHESTRATOR_AGENT_NAME)
         plugin, model_id = await self.__resolve_plugin(agent.capability)
 
+        pre_turn_len = len(self.__orch_messages)
         if text:
             self.__orch_messages = self.__orch_messages + [Message(role="user", content=text)]
 
@@ -363,6 +371,9 @@ class WorkflowEngine:
         )
         await self.__sink.send(Envelope.make_stream_end(stream_id))
         await self.__emit_agent_finished(_ORCHESTRATOR_AGENT_NAME)
+
+        for msg in self.__orch_messages[pre_turn_len:]:
+            self.__transient.append_message(msg.role, msg.content)
 
         if self.__session.phase != "done":
             self.__session.phase = "awaiting_user"
@@ -673,7 +684,21 @@ class WorkflowEngine:
         self.__orch_session_id = result.orchestrator_session_id
         self.__orch_messages = []
         self.__tool_surface = self.__make_tool_surface()
-        _log.info("Post-rollback Orchestrator session: %s", self.__orch_session_id[:8])
+        self.__transient.attach_session(result.orchestrator_session_id, result.orchestrator_resumed)
+        _log.info("Post-rollback Orchestrator session: %s", self.__orch_session_id)
+
+    def __load_orch_messages(self) -> list[Message]:
+        raw = self.__transient.read_messages()
+        messages: list[Message] = []
+        for item in raw:
+            try:
+                role = str(item["role"])
+                content = item["content"]
+                if isinstance(content, (str, list)):
+                    messages.append(Message(role=role, content=content))
+            except (KeyError, TypeError):
+                _log.warning("Skipping malformed message in session.jsonl")
+        return messages
 
     # ------------------------------------------------------------------
     # Event emitters

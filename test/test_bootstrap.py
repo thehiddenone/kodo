@@ -485,7 +485,7 @@ def test_bootstrap_phase4_existing_session_log_is_resumed(tmp_path: Path) -> Non
     sessions_dir.mkdir(parents=True)
     session_id = "prior-session-id"
     (kodo_dir / "orchestrator.session").write_text(session_id + "\n", encoding="utf-8")
-    (sessions_dir / f"{session_id}.jsonl").write_text("{}\n", encoding="utf-8")
+    (sessions_dir / session_id).mkdir()
 
     result = _bootstrap(tmp_path).run()
 
@@ -523,12 +523,10 @@ def test_bootstrap_phase4_two_consecutive_runs_resume(tmp_path: Path) -> None:
     """
     # First run — creates the marker
     first = _bootstrap(tmp_path).run()
-    # Simulate a session log being created for the orchestrator
+    # Simulate the session directory being created (as TransientStore does via attach_session)
     sessions_dir = tmp_path / ".kodo" / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
-    (sessions_dir / f"{first.orchestrator_session_id}.jsonl").write_text(
-        '{"init": true}\n', encoding="utf-8"
-    )
+    (sessions_dir / first.orchestrator_session_id).mkdir()
 
     # Second run — should resume
     second = _bootstrap(tmp_path).run()

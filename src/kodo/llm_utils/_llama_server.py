@@ -10,13 +10,10 @@ from __future__ import annotations
 import asyncio
 import asyncio.subprocess
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import aiohttp
-
-from ._downloader import get_llm_cache_index
-from ._registry import ModelEntry
 
 __all__ = ["LlamaServer", "LlamaServerConfig"]
 
@@ -33,21 +30,22 @@ class LlamaServerConfig:
 
     Attributes:
         executable: Path to the ``llama-server`` binary.
-        kodo_dir: Path to the ``~/.kodo`` directory.
         model_path: Path to the ``.gguf`` model file.
         host: Bind address.  Defaults to ``'127.0.0.1'``.
         port: TCP port.  Defaults to ``8080``.
-        context_size: Model context window in tokens.  Defaults to ``4096``.
-        n_gpu_layers: Layers to offload to GPU; ``0`` means CPU-only.
-        extra_args: Additional CLI arguments appended verbatim to the command.
+        context_size: Model context window in tokens.  Defaults to ``262144``.
+        n_gpu_layers: Layers to offload to GPU; ``-1`` means all layers.
+        llama_args: Extra CLI flags passed verbatim to ``llama-server``.
+        extra_args: Additional CLI arguments appended after all other flags.
     """
 
     executable: Path
-    kodo_dir: Path
+    model_path: Path
     host: str = "127.0.0.1"
     port: int = 8080
-    context_size: int = 4096
+    context_size: int = 262144
     n_gpu_layers: int = -1
+    llama_args: dict[str, str] = field(default_factory=dict)
     extra_args: tuple[str, ...] = ()
 
 
@@ -90,11 +88,8 @@ class LlamaServer:
         """Base URL of the OpenAI-compatible REST API."""
         return f"http://{self.__config.host}:{self.__config.port}"
 
-    async def start(self, model: ModelEntry) -> None:
+    async def start(self) -> None:
         """Start the server process and wait until it reports healthy.
-
-        Args:
-            model (ModelEntry): LLM to run.
 
         Raises:
             RuntimeError: If the server is already running, or if the process
@@ -105,7 +100,7 @@ class LlamaServer:
         if self.is_running:
             raise RuntimeError("llama-server is already running")
 
-        cmd = self.__build_command(model)
+        cmd = self.__build_command()
         _log.debug("Starting llama-server: %s", " ".join(cmd))
 
         self.__process = await asyncio.create_subprocess_exec(
@@ -149,17 +144,12 @@ class LlamaServer:
 
         _log.info("llama-server stopped")
 
-    def __build_command(self, model: ModelEntry) -> list[str]:
-        llm_index = get_llm_cache_index(self.__config.kodo_dir)
-        if model.repo_id not in llm_index:
-            raise KeyError(
-                f"Model {model.name} [{model.repo_id}] is not found in local cache index."
-            )
+    def __build_command(self) -> list[str]:
         cfg = self.__config
         cmd: list[str] = [
             str(cfg.executable),
             "--model",
-            llm_index[model.repo_id],
+            str(cfg.model_path),
             "--host",
             cfg.host,
             "--port",
@@ -169,7 +159,7 @@ class LlamaServer:
             "--n-gpu-layers",
             str(cfg.n_gpu_layers),
         ]
-        for k, v in model.llama_args.items():
+        for k, v in cfg.llama_args.items():
             cmd.append(k)
             cmd.append(v)
         cmd.extend(cfg.extra_args)
