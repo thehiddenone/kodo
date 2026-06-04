@@ -439,6 +439,7 @@ def uninstall_llamacpp(kodo_dir: Path) -> None:
     _log.info("Uninstalling llama.cpp b%d from %s", installed.build, installed.install_dir)
     if installed.install_dir.exists():
         import shutil
+
         shutil.rmtree(installed.install_dir)
         _log.info("Removed %s", installed.install_dir)
 

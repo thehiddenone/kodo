@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import asyncio.subprocess
+import ctypes
 import json
 import logging
 import os
 import signal
 import sys
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
@@ -29,11 +31,14 @@ _log = logging.getLogger(__name__)
 _HEALTH_POLL_INTERVAL: float = 0.5
 _HEALTH_TIMEOUT: float = 120.0
 _STOP_GRACE: float = 5.0
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_PROCESS_TERMINATE = 0x0001
 
 
 # ---------------------------------------------------------------------------
 # Runtime state file
 # ---------------------------------------------------------------------------
+
 
 def _runtime_path(kodo_dir: Path) -> Path:
     return kodo_dir / "llama.cpp" / "llama-server.json"
@@ -56,13 +61,10 @@ def _remove_runtime(kodo_dir: Path) -> None:
 # PID helpers — platform-safe (see kodo/CLAUDE.md §Windows pitfalls)
 # ---------------------------------------------------------------------------
 
+
 def _is_pid_alive(pid: int) -> bool:
     if sys.platform == "win32":
-        import ctypes
-        _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        handle = ctypes.windll.kernel32.OpenProcess(
-            _PROCESS_QUERY_LIMITED_INFORMATION, False, pid
-        )
+        handle = ctypes.windll.kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if handle:
             ctypes.windll.kernel32.CloseHandle(handle)
             return True
@@ -75,23 +77,25 @@ def _is_pid_alive(pid: int) -> bool:
 
 
 def _terminate_pid(pid: int) -> None:
-    try:
+    with suppress(OSError):
         os.kill(pid, signal.SIGTERM)
-    except OSError:
-        pass
 
 
 def _kill_pid(pid: int) -> None:
-    if sys.platform != "win32":
-        try:
+    if sys.platform == "win32":
+        handle = ctypes.windll.kernel32.OpenProcess(_PROCESS_TERMINATE, False, pid)
+        if handle:
+            ctypes.windll.kernel32.TerminateProcess(handle, 1)
+            ctypes.windll.kernel32.CloseHandle(handle)
+    else:
+        with suppress(OSError):
             os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
 
 
 # ---------------------------------------------------------------------------
 # Public types
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class RunningServer:
@@ -142,6 +146,7 @@ class LlamaServerConfig:
 # ---------------------------------------------------------------------------
 # Server manager
 # ---------------------------------------------------------------------------
+
 
 class LlamaServer:
     """Manages a ``llama-server`` process by PID.
@@ -235,8 +240,10 @@ class LlamaServer:
         await self.__wait_ready()
 
         _write_runtime(
-            self.__config.kodo_dir, self.__pid,
-            self.__active_host, self.__active_port,
+            self.__config.kodo_dir,
+            self.__pid,
+            self.__active_host,
+            self.__active_port,
             self.__config.model_name,
         )
         _log.info("llama-server ready at %s (pid=%d)", self.base_url, self.__pid)
@@ -272,11 +279,16 @@ class LlamaServer:
         cfg = self.__config
         cmd: list[str] = [
             str(cfg.executable),
-            "--model", str(cfg.model_path),
-            "--host", cfg.host,
-            "--port", str(cfg.port),
-            "--ctx-size", str(cfg.context_size),
-            "--n-gpu-layers", str(cfg.n_gpu_layers),
+            "--model",
+            str(cfg.model_path),
+            "--host",
+            cfg.host,
+            "--port",
+            str(cfg.port),
+            "--ctx-size",
+            str(cfg.context_size),
+            "--n-gpu-layers",
+            str(cfg.n_gpu_layers),
         ]
         for k, v in cfg.llama_args.items():
             cmd.append(k)
@@ -309,6 +321,7 @@ class LlamaServer:
 # ---------------------------------------------------------------------------
 # Startup detection
 # ---------------------------------------------------------------------------
+
 
 def find_running_server(kodo_dir: Path) -> RunningServer | None:
     """Detect a llama-server process left running from a previous kodo session.

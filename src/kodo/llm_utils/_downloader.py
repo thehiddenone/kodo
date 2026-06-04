@@ -96,6 +96,7 @@ def download_model(
     Raises:
         ValueError: If *model* has no ``repo_id`` or ``filename`` (i.e. not local).
     """
+
     def _progress(pct: int, msg: str) -> None:
         _log.info("[%3d%%] %s", pct, msg)
         if progress_cb is not None:

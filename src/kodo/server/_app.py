@@ -29,16 +29,16 @@ from kodo.runtime._gates import GateOrchestrator
 from kodo.state._transient import TransientStore
 from kodo.subagents._registry import AgentRegistry
 from kodo.transport import (
-    EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_LLAMA_STATE,
+    EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_MODEL_INSTALL_PROGRESS,
     MSG_CONFIG_RELOAD,
     MSG_HELLO,
-    MSG_LLAMACPP_INSTALL,
     MSG_LLAMA_START,
     MSG_LLAMA_STOP,
-    MSG_MODEL_INSTALL,
+    MSG_LLAMACPP_INSTALL,
     MSG_MODE_SET,
+    MSG_MODEL_INSTALL,
     MSG_PING,
     MSG_PROMPT_SUBMIT,
     MSG_STOP,
@@ -228,25 +228,38 @@ def _make_llama_start_handler(config: Config) -> HandlerFn:
 
         llama_install = find_installed(user_dir)
         if llama_install is None:
-            await state.send(Envelope.make_event(
-                EVT_LLAMA_STATE, {"running": False, "model": None, "error": "llama.cpp not installed"}
-            ))
+            await state.send(
+                Envelope.make_event(
+                    EVT_LLAMA_STATE,
+                    {"running": False, "model": None, "error": "llama.cpp not installed"},
+                )
+            )
             return
 
         settings = config.reload_settings()
         models_map = settings.get("models", {})
         model_name = str(models_map.get("local", "") if isinstance(models_map, dict) else "")
         if not model_name:
-            await state.send(Envelope.make_event(
-                EVT_LLAMA_STATE, {"running": False, "model": None, "error": "No local model selected"}
-            ))
+            await state.send(
+                Envelope.make_event(
+                    EVT_LLAMA_STATE,
+                    {"running": False, "model": None, "error": "No local model selected"},
+                )
+            )
             return
 
         model_path = get_model_path(model_name, user_dir)
         if model_path is None:
-            await state.send(Envelope.make_event(
-                EVT_LLAMA_STATE, {"running": False, "model": None, "error": f"Model {model_name!r} is not installed"}
-            ))
+            await state.send(
+                Envelope.make_event(
+                    EVT_LLAMA_STATE,
+                    {
+                        "running": False,
+                        "model": None,
+                        "error": f"Model {model_name!r} is not installed",
+                    },
+                )
+            )
             return
 
         registry = get_llm_registry()
@@ -271,14 +284,23 @@ def _make_llama_start_handler(config: Config) -> HandlerFn:
         except Exception as exc:
             _llama_server = None
             _llama_running_model = ""
-            await state.send(Envelope.make_event(
-                EVT_LLAMA_STATE, {"running": False, "model": None, "error": str(exc)}
-            ))
+            await state.send(
+                Envelope.make_event(
+                    EVT_LLAMA_STATE, {"running": False, "model": None, "error": str(exc)}
+                )
+            )
             return
 
-        await state.send(Envelope.make_event(
-            EVT_LLAMA_STATE, {"running": True, "model": _llama_running_model, "port": _llama_server.port if _llama_server else 8080}
-        ))
+        await state.send(
+            Envelope.make_event(
+                EVT_LLAMA_STATE,
+                {
+                    "running": True,
+                    "model": _llama_running_model,
+                    "port": _llama_server.port if _llama_server else 8080,
+                },
+            )
+        )
 
     return _handle_llama_start
 
@@ -291,9 +313,7 @@ async def _handle_llama_stop(state: WebSocketDispatcher, _env: Envelope) -> None
         _llama_server = None
     _llama_running_model = ""
 
-    await state.send(Envelope.make_event(
-        EVT_LLAMA_STATE, {"running": False, "model": None}
-    ))
+    await state.send(Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "model": None}))
 
 
 def _make_prompt_handler(engine: WorkflowEngine) -> HandlerFn:
