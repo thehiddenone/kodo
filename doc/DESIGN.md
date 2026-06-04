@@ -24,7 +24,7 @@ Two processes, one project:
                                                              |    * tools/shell            |
                                                              +-----------------------------+
                                                                           |
-                                                                  ~/.kodo/transient/
+                                                                  ~/.kodo/
                                                                   <project>/.kodo/
 ```
 
@@ -98,7 +98,7 @@ src/kodo/
 │   ├── _repo.py            # git porcelain wrapper
 │   └── _checkpoints.py     # checkpoint commit logic
 ├── state/
-│   ├── _transient.py       # ~/.kodo/transient/...
+│   ├── _transient.py       # .kodo/sessions/<posix-ts>/ per-session store
 │   └── _memory.py          # src/.memory/*.kd helpers
 └── project/
     ├── _layout.py          # path conventions (kodo.md, src/, gen/, .kodo/)
@@ -419,18 +419,21 @@ Checkpoints are produced one per accepted artifact (not one per gate). A gate co
 
 ### 9.1 Transient state
 
-`~/.kodo/transient/<project-hash>/<session-id>/`:
+Session data lives at `<project>/.kodo/sessions/<session-id>/`, co-located with the sub-agent session logs (§4 of STATE_AND_LIFECYCLE.md). `<session-id>` is a POSIX timestamp string (e.g. `1748792400`), naturally sortable so the most recent session is the last one. The Orchestrator marker file at `<project>/.kodo/orchestrator.session` records the active session ID.
 
 ```
-session.json                  # session metadata: started_at, last_stage, autonomous_mode, ...
-agents/<agent-name>.jsonl     # one record per LLM call
-mcp/<tool>.jsonl              # one record per MCP call
-ws-outbox.jsonl               # disconnect-tolerant outbound queue
+.kodo/sessions/<posix-timestamp>/
+    meta.json         # human-readable: session_name ("Unnamed Session"), created_at
+    transient.json    # mutable runtime state: stage, last_prompt, autonomous
+    session.jsonl     # append-only orchestrator LLM context (all messages)
+    agents/           # one JSONL per sub-agent invocation
+    mcp/              # one JSONL per MCP tool call
 ```
 
-- `<project-hash>` is `sha1(absolute_project_root)[:12]`.
-- Records are append-only; rotation/compaction is post-MVP.
-- Resume reads the latest session.json + the agent JSONL to reconstruct the active agent's conversation.
+- `transient.json` is overwritten in place on every state change (not append-only).
+- `session.jsonl` is append-only; each line is a `{role, content}` message.
+- On resume, the engine loads `transient.json` for phase/prompt/autonomous state and replays `session.jsonl` to reconstruct `__orch_messages` for the Orchestrator LLM call.
+- A new session directory is created only when no prior session exists or the prior session reached a terminal phase; otherwise the existing directory is reused across restarts.
 
 ### 9.2 Memory
 
@@ -503,7 +506,14 @@ Schema is documented in `src/kodo/server/_config.py` as a `pydantic` model. VS C
 └── .kodo/
     ├── checkpoints/                  # mirror git repo
     ├── workspace/                    # in-flight artifacts + .retired/ audit (STATE_AND_LIFECYCLE.md §1)
-    ├── sessions/                     # Orchestrator and sub-agent session JSONL
+    ├── sessions/                     # session directories + sub-agent JSONL logs
+    │   ├── <posix-timestamp>/        # one dir per Orchestrator session
+    │   │   ├── meta.json
+    │   │   ├── transient.json
+    │   │   ├── session.jsonl
+    │   │   ├── agents/
+    │   │   └── mcp/
+    │   └── <uuid>.jsonl              # flat JSONL for each sub-agent invocation
     ├── settings.json
     ├── security.json
     ├── server.pid

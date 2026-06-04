@@ -12,8 +12,16 @@ from pathlib import Path
 from aiohttp import web
 
 from kodo.common import Envelope
-from kodo.llm_utils import find_installed, install_llamacpp
-from kodo.llms import get_llm_registry
+from kodo.llm_utils import (
+    LlamaServer,
+    LlamaServerConfig,
+    download_model,
+    find_installed,
+    find_running_server,
+    get_model_path,
+    install_llamacpp,
+)
+from kodo.llms import LLMEntry, get_llm_registry
 from kodo.mirror._checkpoints import CheckpointManager
 from kodo.project import ProjectLayout, ProjectLayoutError, kodo_user_dir
 from kodo.runtime._engine import WorkflowEngine
@@ -22,9 +30,14 @@ from kodo.state._transient import TransientStore
 from kodo.subagents._registry import AgentRegistry
 from kodo.transport import (
     EVT_LLAMACPP_INSTALL_PROGRESS,
+    EVT_LLAMA_STATE,
+    EVT_MODEL_INSTALL_PROGRESS,
     MSG_CONFIG_RELOAD,
     MSG_HELLO,
     MSG_LLAMACPP_INSTALL,
+    MSG_LLAMA_START,
+    MSG_LLAMA_STOP,
+    MSG_MODEL_INSTALL,
     MSG_MODE_SET,
     MSG_PING,
     MSG_PROMPT_SUBMIT,
@@ -40,6 +53,13 @@ _log = logging.getLogger(__name__)
 
 _SERVER_VERSION: str = "0.1.0b1"
 _ENGINE_KEY: web.AppKey[WorkflowEngine] = web.AppKey("engine")
+
+# ---------------------------------------------------------------------------
+# llama-server runtime state (module-level; one server per process)
+# ---------------------------------------------------------------------------
+
+_llama_server: LlamaServer | None = None
+_llama_running_model: str = ""
 
 # Subagents directory: kodo/subagents/ next to kodo/server/
 _AGENTS_DIR = Path(__file__).parent.parent / "subagents"
@@ -101,6 +121,7 @@ def _make_hello_handler(config: Config, engine: WorkflowEngine) -> HandlerFn:
         ]
 
         llama = find_installed(kodo_user_dir())
+        llama_is_running = _llama_server is not None and _llama_server.is_running
         resp = Envelope.make_response(
             env.id,
             {
@@ -111,6 +132,8 @@ def _make_hello_handler(config: Config, engine: WorkflowEngine) -> HandlerFn:
                 "models": models_payload,
                 "llama_installed": llama is not None,
                 "llama_version": f"b{llama.build}" if llama is not None else None,
+                "llama_running": llama_is_running,
+                "llama_model": _llama_running_model if llama_is_running else None,
             },
         )
         await state.send(resp)
@@ -151,6 +174,126 @@ async def _handle_llamacpp_install(state: WebSocketDispatcher, _env: Envelope) -
         await state.send(
             Envelope.make_event(EVT_LLAMACPP_INSTALL_PROGRESS, {"percent": pct, "message": msg})
         )
+
+
+async def _handle_model_install(state: WebSocketDispatcher, env: Envelope) -> None:
+    name = str(env.payload.get("name", "")).strip()
+    if not name:
+        return
+
+    registry = get_llm_registry()
+    entry: LLMEntry | None = registry.get(name)
+    if entry is None or entry.residence != "local":
+        await state.send(
+            Envelope.make_event(
+                EVT_MODEL_INSTALL_PROGRESS,
+                {"name": name, "percent": -1, "message": f"Unknown local model: {name!r}"},
+            )
+        )
+        return
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()
+
+    def progress_cb(pct: int, msg: str) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, (pct, msg))
+
+    async def run() -> None:
+        try:
+            await asyncio.to_thread(download_model, entry, kodo_user_dir(), progress_cb=progress_cb)
+        except Exception:
+            pass
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    asyncio.create_task(run())
+
+    while True:
+        item = await queue.get()
+        if item is None:
+            break
+        pct, msg = item
+        await state.send(
+            Envelope.make_event(
+                EVT_MODEL_INSTALL_PROGRESS, {"name": name, "percent": pct, "message": msg}
+            )
+        )
+
+
+def _make_llama_start_handler(config: Config) -> HandlerFn:
+    async def _handle_llama_start(state: WebSocketDispatcher, _env: Envelope) -> None:
+        global _llama_server, _llama_running_model
+
+        user_dir = kodo_user_dir()
+
+        llama_install = find_installed(user_dir)
+        if llama_install is None:
+            await state.send(Envelope.make_event(
+                EVT_LLAMA_STATE, {"running": False, "model": None, "error": "llama.cpp not installed"}
+            ))
+            return
+
+        settings = config.reload_settings()
+        models_map = settings.get("models", {})
+        model_name = str(models_map.get("local", "") if isinstance(models_map, dict) else "")
+        if not model_name:
+            await state.send(Envelope.make_event(
+                EVT_LLAMA_STATE, {"running": False, "model": None, "error": "No local model selected"}
+            ))
+            return
+
+        model_path = get_model_path(model_name, user_dir)
+        if model_path is None:
+            await state.send(Envelope.make_event(
+                EVT_LLAMA_STATE, {"running": False, "model": None, "error": f"Model {model_name!r} is not installed"}
+            ))
+            return
+
+        registry = get_llm_registry()
+        entry: LLMEntry | None = registry.get(model_name)
+        llama_args = entry.llama_args if entry is not None else {}
+
+        if _llama_server is not None and _llama_server.is_running:
+            await _llama_server.stop()
+
+        cfg = LlamaServerConfig(
+            executable=llama_install.executable,
+            model_path=model_path,
+            kodo_dir=user_dir,
+            model_name=model_name,
+            llama_args=llama_args,
+        )
+        _llama_server = LlamaServer(cfg)
+
+        try:
+            await _llama_server.start()
+            _llama_running_model = model_name
+        except Exception as exc:
+            _llama_server = None
+            _llama_running_model = ""
+            await state.send(Envelope.make_event(
+                EVT_LLAMA_STATE, {"running": False, "model": None, "error": str(exc)}
+            ))
+            return
+
+        await state.send(Envelope.make_event(
+            EVT_LLAMA_STATE, {"running": True, "model": _llama_running_model, "port": _llama_server.port if _llama_server else 8080}
+        ))
+
+    return _handle_llama_start
+
+
+async def _handle_llama_stop(state: WebSocketDispatcher, _env: Envelope) -> None:
+    global _llama_server, _llama_running_model
+
+    if _llama_server is not None:
+        await _llama_server.stop()
+        _llama_server = None
+    _llama_running_model = ""
+
+    await state.send(Envelope.make_event(
+        EVT_LLAMA_STATE, {"running": False, "model": None}
+    ))
 
 
 def _make_prompt_handler(engine: WorkflowEngine) -> HandlerFn:
@@ -226,10 +369,42 @@ def _make_stop_handler(engine: WorkflowEngine) -> HandlerFn:
 
 
 async def _start_background(app: web.Application) -> None:
+    global _llama_server, _llama_running_model
     await app[_ENGINE_KEY].start()
+
+    user_dir = kodo_user_dir()
+    running = find_running_server(user_dir)
+    if running is not None:
+        llama_install = find_installed(user_dir)
+        model_path = get_model_path(running.model, user_dir) if running.model else None
+        if llama_install is not None and model_path is not None:
+            cfg = LlamaServerConfig(
+                executable=llama_install.executable,
+                model_path=model_path,
+                kodo_dir=user_dir,
+                model_name=running.model,
+                host=running.host,
+                port=running.port,
+            )
+            _llama_server = LlamaServer(cfg)
+            _llama_server.adopt(running)
+            _llama_running_model = running.model
+        else:
+            _log.warning(
+                "Detected running llama-server pid=%d but cannot reconstruct config "
+                "(install=%s model_path=%s) — treating as unmanaged",
+                running.pid,
+                llama_install,
+                model_path,
+            )
 
 
 async def _stop_background(app: web.Application) -> None:
+    global _llama_server, _llama_running_model
+    if _llama_server is not None and _llama_server.is_running:
+        await _llama_server.stop()
+        _llama_server = None
+        _llama_running_model = ""
     await app[_ENGINE_KEY].stop()
 
 
@@ -282,6 +457,9 @@ def create_app(config: Config) -> web.Application:
     dispatcher.register_handler(MSG_HELLO, _make_hello_handler(config, engine))
     dispatcher.register_handler(MSG_PING, _handle_ping)
     dispatcher.register_handler(MSG_LLAMACPP_INSTALL, _handle_llamacpp_install)
+    dispatcher.register_handler(MSG_MODEL_INSTALL, _handle_model_install)
+    dispatcher.register_handler(MSG_LLAMA_START, _make_llama_start_handler(config))
+    dispatcher.register_handler(MSG_LLAMA_STOP, _handle_llama_stop)
     dispatcher.register_handler(MSG_PROMPT_SUBMIT, _make_prompt_handler(engine))
     dispatcher.register_handler(MSG_MODE_SET, _make_mode_handler(engine))
     dispatcher.register_handler(MSG_STOP, _make_stop_handler(engine))

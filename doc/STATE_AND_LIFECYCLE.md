@@ -22,8 +22,14 @@ Kodo owns one directory per project:
     ├── workspace/            ← in-flight artifacts (messy table)
     │   ├── <project_code>/<responsibility_code>/<type>/<artifact_id>.{md,json,…}
     │   └── .retired/<artifact_id>/<exact_filename_with_extension>    ← audit-only
-    ├── sessions/             ← LLM audit log (append-only, never cleaned)
-    │   └── <session_id>.jsonl
+    ├── sessions/             ← session state and LLM audit logs
+    │   ├── <posix-timestamp>/         ← one directory per Orchestrator session
+    │   │   ├── meta.json              ← session_name, created_at
+    │   │   ├── transient.json         ← mutable: stage, last_prompt, autonomous
+    │   │   ├── session.jsonl          ← append-only Orchestrator LLM context
+    │   │   ├── agents/                ← per-sub-agent invocation JSONL call logs
+    │   │   └── mcp/                   ← per-MCP-tool JSONL call logs
+    │   └── <session_id>.jsonl         ← flat log per sub-agent invocation (UUID)
     └── orchestrator.session  ← marker file: current Orchestrator session_id
 ```
 
@@ -154,18 +160,18 @@ Where a completed entry and an in-flight entry share the same `(project_code, re
 
 ### Phase 3 — classify in-flight sub-agent entries by session presence
 
-For each in-flight entry the engine checks whether `<project>/.kodo/sessions/<session_id>.jsonl` exists.
+For each in-flight entry the engine checks whether the sub-agent session log `<project>/.kodo/sessions/<session_id>.jsonl` (flat file, UUID-keyed) exists.
 
 - **Session log present** → entry is resumable. The engine queues the session for rehydration (see §4).
 - **Session log absent** → entry is *orphan*. The engine deletes the orphan file from the workspace and logs the deletion. Orphan artifacts can only arise from a crash between the workspace write and the session log append; the session-log append-before-respond invariant (§4.2) makes this rare but not impossible (e.g., disk full mid-write).
 
 ### Phase 4 — locate the Orchestrator session
 
-The Orchestrator's session is recorded by a marker file at `<project>/.kodo/orchestrator.session` containing the current Orchestrator `session_id`. The engine reads it:
+The Orchestrator's session is recorded by a marker file at `<project>/.kodo/orchestrator.session` containing the current Orchestrator `session_id`. Session IDs are POSIX timestamps (e.g. `1748792400`). The engine reads the marker and checks for the corresponding session directory:
 
-- **Marker present and the named session log exists** → resume. The engine queues the Orchestrator session for rehydration per §4.3. Sub-agent sessions queued in Phase 3 are subordinate: they finish first (the Orchestrator was blocked on whichever `start_subagent` tool call spawned them); their results then flow back into the Orchestrator's resumed loop via the request-ID dedup mechanism (§4.4).
-- **Marker present but the named session log is missing** → the previous Orchestrator session was lost (rare; e.g., disk corruption). The engine logs the anomaly, discards the marker, and falls through to "no marker".
-- **No marker** → no prior Orchestrator session. The engine creates a fresh Orchestrator session (new `session_id`, fresh marker file). Its first turn is constructed with `{system prompt + index summary + an explicit "cold start" event in the uncached user block}`. The Orchestrator decides what to do based on the index — typically, "no narrative artifact exists, drive intake".
+- **Marker present and `sessions/<session_id>/` directory exists** → resume. The engine loads `transient.json` for phase/prompt/autonomous state, replays `session.jsonl` to reconstruct the Orchestrator's message history, and queues its next turn per §4.3. Sub-agent sessions queued in Phase 3 are subordinate: they finish first (the Orchestrator was blocked on whichever `start_subagent` tool call spawned them); their results then flow back into the Orchestrator's resumed loop via the request-ID dedup mechanism (§4.4).
+- **Marker present but the named session directory is missing** → the previous Orchestrator session was lost (rare; e.g., disk corruption). The engine logs the anomaly, discards the marker, and falls through to "no marker".
+- **No marker** → no prior Orchestrator session. The engine creates a fresh session directory (new POSIX-timestamp `session_id`, writes `meta.json` with `session_name: "Unnamed Session"`, `transient.json` with initial state, updates the marker file). The Orchestrator's first turn is constructed with `{system prompt + index summary + an explicit "cold start" event in the uncached user block}`. The Orchestrator decides what to do based on the index — typically, "no narrative artifact exists, drive intake".
 
 Bootstrap is complete when phases 1–4 finish. The engine now has a populated index, a set of sub-agent sessions to resume, and an Orchestrator session ready to drive.
 
@@ -185,7 +191,14 @@ Every sub-agent invocation runs inside a *session*. A session is a sequence of m
 
 ### 4.1 What is persisted
 
-Session state is persisted as a JSONL file at `<project>/.kodo/sessions/<session_id>.jsonl`. Each line is one message envelope:
+**Orchestrator session** — persisted as a directory at `<project>/.kodo/sessions/<posix-timestamp>/` containing:
+
+- `meta.json` — `session_name` and `created_at` (written once at session creation).
+- `transient.json` — mutable runtime state (`stage`, `last_prompt`, `autonomous`); overwritten in place on each state change.
+- `session.jsonl` — append-only LLM context: every message (`role`, `content`) exchanged with the Orchestrator LLM in order.
+- `agents/` and `mcp/` — one JSONL call log per sub-agent invocation and per MCP tool call respectively.
+
+**Sub-agent sessions** — persisted as flat JSONL files at `<project>/.kodo/sessions/<session_id>.jsonl` (UUID-keyed). Each line is one message envelope:
 
 ```
 {
@@ -216,9 +229,9 @@ A crash at any point between steps 1 and 5 leaves the session log either at step
 
 ### 4.3 Resume on cold start
 
-For each resumable in-flight entry identified in Phase 3 of bootstrap, the engine:
+For each resumable in-flight sub-agent entry identified in Phase 3 of bootstrap, the engine:
 
-1. Loads `<project>/.kodo/sessions/<session_id>.jsonl` into memory as the message array.
+1. Loads `<project>/.kodo/sessions/<session_id>.jsonl` (flat JSONL) into memory as the message array.
 2. Identifies the resume point — the last logged message and whether any tool call in that message has no matching tool result.
 3. If a tool call is pending (no result logged), re-executes it per §4.4 and appends the result.
 4. Issues the next API call with the full message array.
@@ -250,7 +263,7 @@ The Orchestrator session may run for arbitrarily long — across an entire proje
 
 1. **Quiesce.** The engine waits for the Orchestrator's current tool call to complete and for any in-flight sub-agent session it spawned to finish. Compaction does not happen mid-tool-call.
 2. **Summarize.** The engine issues a dedicated compaction LLM call: input is the full Orchestrator transcript plus a summarization prompt; output is a compact "prior-context block" capturing decisions made, artifacts produced (by `artifact_id`), current Plan position, outstanding user-blocking moments, and the current responsibility/component under work.
-3. **Rotate.** The engine generates a fresh `session_id`, writes a new session log starting with `{Orchestrator system prompt + the compacted prior-context block + the current index snapshot + a "compaction completed" event in the uncached user block}`, and updates the `<project>/.kodo/orchestrator.session` marker to point at the new session.
+3. **Rotate.** The engine generates a fresh POSIX-timestamp `session_id`, creates a new session directory (`meta.json`, `transient.json`, `session.jsonl`) starting with `{Orchestrator system prompt + the compacted prior-context block + the current index snapshot + a "compaction completed" event in the uncached user block}`, and updates the `<project>/.kodo/orchestrator.session` marker to point at the new session.
 4. **Surface.** The engine emits `orchestrator.compacted {from_session_id, to_session_id, summary_excerpt}` over the wire (WS_PROTOCOL.md §5) so the user sees the transition.
 5. **Resume.** The Orchestrator's next turn begins from the fresh session. Sub-agent sessions are unaffected — they belong to their own session logs and are referenced by `artifact_id` and `session_id` from the compacted summary, not by message-array content.
 
@@ -278,7 +291,7 @@ Every workspace artifact carries the `session_id` of the sub-agent invocation th
 
 ### 5.3 Storage
 
-Session logs live at `<project>/.kodo/sessions/<session_id>.jsonl`. They are not exported, rotated, or compressed by Kodo. A future enhancement may add an external sink (S3, a database) for long-lived projects, but MVP keeps them local.
+Sub-agent session logs live at `<project>/.kodo/sessions/<session_id>.jsonl` (flat files). Orchestrator session logs live at `<project>/.kodo/sessions/<posix-timestamp>/session.jsonl`. Neither is exported, rotated, or compressed by Kodo. A future enhancement may add an external sink (S3, a database) for long-lived projects, but MVP keeps them local.
 
 ---
 
@@ -293,7 +306,7 @@ This is the happy path: user opens a project in VS Code with a previously initia
 5. Extension sends `hello`; server responds with `hello.ack` embedding the current state snapshot (WS_PROTOCOL.md §4.1). Pending sub-agent sessions are queued for rehydration; the Orchestrator session is queued to take its next turn.
 6. Extension renders the Kodo panel from the state snapshot.
 7. The engine drives whatever Phase 4 produced:
-   - **Orchestrator session existed and was resumed** — the engine resumes its message array per §4.3, re-executing any pending tool call with dedup per §4.4. The Orchestrator's next turn happens automatically; the user sees its `agent.tokens` stream and whichever side effect it produces (a sub-agent spawning, a prompt appearing, an artifact landing).
+   - **Orchestrator session existed and was resumed** — the engine loads `transient.json` and replays `session.jsonl` to restore the message history (§4.1), then resumes the next turn, re-executing any pending tool call with dedup per §4.4. The Orchestrator's next turn happens automatically; the user sees its `agent.tokens` stream and whichever side effect it produces (a sub-agent spawning, a prompt appearing, an artifact landing).
    - **Orchestrator session was freshly created** — the engine issues its first turn with the index summary in the cached user block and a "cold start" event in the uncached block. The Orchestrator decides what to do: most commonly, no `narrative` artifact present → drive intake by sending a `prompt.question` asking the user to describe what to build (WS_PROTOCOL.md §6.1, §7.1).
 
 No engine-level branch table selects "what to do next" — that table lives in the Orchestrator's prompt. The engine's job at startup is just to put the Orchestrator in a position to decide.
@@ -313,7 +326,7 @@ On any cold start, regardless of the reason for the previous shutdown:
 1. Bootstrap runs as in §3 (phases 1–4).
 2. Index is constructed.
 3. Sub-agent sessions are rehydrated per §4.3.
-4. The Orchestrator session is rehydrated (Phase 4 located it; §4.3 reads its log).
+4. The Orchestrator session is rehydrated (Phase 4 located it; engine loads `transient.json` + replays `session.jsonl` per §4.1).
 5. Interrupted tool calls in any session are re-executed with dedup per §4.4.
 6. Sub-agent sessions finish their pending tool calls; their results flow back into the Orchestrator's tool-call dedup ledger; the Orchestrator's next turn resumes.
 
@@ -376,7 +389,7 @@ Rollback restores the project and mirror to a prior checkpoint commit. It is tri
 5. Delete `<project>/src/` and `<project>/gen/` (the directories Kodo owns; the user's broader repo is untouched).
 6. Copy `<project>/.kodo/checkpoints/src/` and `<project>/.kodo/checkpoints/gen/` into `<project>/src/` and `<project>/gen/`.
 7. Rebuild the in-memory index from the new on-disk state (§3 phases 1 and 2 only; phase 3 finds no in-flight entries because the workspace is empty).
-8. **Create a fresh Orchestrator session.** Generate a new `session_id`, write a new session log with `{Orchestrator system prompt + the rebuilt index snapshot + a "post-rollback start" event in the uncached user block}`, update the `<project>/.kodo/orchestrator.session` marker. The fresh Orchestrator decides what to do based on the restored state; from its perspective, this is a cold start at `target_sha`.
+8. **Create a fresh Orchestrator session.** Generate a new POSIX-timestamp `session_id`, create a new session directory (`meta.json`, `transient.json`, `session.jsonl`) with `{Orchestrator system prompt + the rebuilt index snapshot + a "post-rollback start" event in the uncached user block}`, update the `<project>/.kodo/orchestrator.session` marker. The fresh Orchestrator decides what to do based on the restored state; from its perspective, this is a cold start at `target_sha`.
 9. Wire surfaces the rollback completion via a `state` event (the user already knows it happened because they confirmed the `ask_user` prompt that preceded the Orchestrator's `rollback` call).
 
 Post-rollback behaviour is indistinguishable from a clean bootstrap whose mirror happens to be at `target_sha`. There is no "rollback mode" the engine subsequently operates in; the rollback is complete the moment the new Orchestrator session takes its first turn.

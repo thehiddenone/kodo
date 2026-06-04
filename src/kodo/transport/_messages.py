@@ -34,6 +34,9 @@ MSG_MODE_SET = "mode.set"
 MSG_SECURITY_ADD_RULE = "security.add_rule"
 MSG_CONFIG_RELOAD = "config.reload"
 MSG_LLAMACPP_INSTALL = "llamacpp.install"
+MSG_MODEL_INSTALL = "model.install"
+MSG_LLAMA_START = "llama.start"
+MSG_LLAMA_STOP = "llama.stop"
 
 # ---------------------------------------------------------------------------
 # Server → Client request payload types — API key management  (WS_PROTOCOL.md §6)
@@ -74,6 +77,8 @@ EVT_ORCHESTRATOR_COMPACTED = "orchestrator.compacted"
 EVT_USAGE_UPDATE = "usage.update"
 EVT_ERROR = "error"
 EVT_LLAMACPP_INSTALL_PROGRESS = "llamacpp.install.progress"
+EVT_MODEL_INSTALL_PROGRESS = "model.install.progress"
+EVT_LLAMA_STATE = "llama.state"
 
 # ---------------------------------------------------------------------------
 # DEPRECATED — legacy constants retained until handler/event wiring is migrated

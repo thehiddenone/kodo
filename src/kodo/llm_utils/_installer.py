@@ -30,6 +30,8 @@ __all__ = [
     "find_installed",
     "install_llamacpp",
     "server_executable",
+    "uninstall_llamacpp",
+    "update_llamacpp",
 ]
 
 _log = logging.getLogger(__name__)
@@ -167,6 +169,27 @@ def _fetch_latest_build_number() -> int:
 # ---------------------------------------------------------------------------
 
 
+def _url_accessible(url: str) -> bool:
+    """Return ``True`` if *url* responds to an HTTP HEAD request with 2xx status.
+
+    Args:
+        url (str): URL to probe.
+
+    Returns:
+        bool: ``True`` if the server returns a 2xx response, ``False`` otherwise.
+    """
+    req = urllib.request.Request(
+        url,
+        method="HEAD",
+        headers={"User-Agent": _USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return bool(200 <= int(resp.status) < 300)
+    except Exception:
+        return False
+
+
 def _download(
     url: str,
     dest: Path,
@@ -265,11 +288,18 @@ def verify_executable(executable: Path) -> bool:
 def check_llamacpp_update(kodo_dir: Path) -> bool:
     """Check whether a newer llama.cpp build is available on GitHub.
 
+    Fetches the latest build number, compares it to the installed build, and —
+    only when a newer build is found — validates that all platform-specific
+    download URLs are accessible via HTTP HEAD.  Returns ``True`` only when
+    both conditions hold: a newer build exists *and* every required URL
+    responds with 2xx.
+
     Args:
         kodo_dir (Path): User-level ``~/.kodo`` directory.
 
     Returns:
-        bool: ``True`` if a newer build is available or nothing is installed.
+        bool: ``True`` if an update is available and all download URLs are
+        reachable.  ``False`` if already up to date or any URL is unreachable.
     """
     latest = _fetch_latest_build_number()
     installed = find_installed(kodo_dir)
@@ -279,19 +309,34 @@ def check_llamacpp_update(kodo_dir: Path) -> bool:
         latest,
         f"b{installed_build}" if installed_build is not None else "none",
     )
-    return installed_build is None or installed_build < latest
+
+    if installed_build is not None and installed_build >= latest:
+        return False
+
+    platform_key = _current_platform_key()
+    _, binary_url = _asset_url(latest, platform_key)
+    urls: list[str] = [binary_url]
+    if platform_key == "win-x64":
+        urls.append(_WINDOWS_CUDA_DLLS_URL.format(N=latest))
+
+    for url in urls:
+        if not _url_accessible(url):
+            _log.warning("llama.cpp b%d URL not accessible: %s", latest, url)
+            return False
+
+    return True
 
 
 def install_llamacpp(
     kodo_dir: Path,
     *,
-    force: bool = False,
     progress_cb: ProgressCb | None = None,
 ) -> LlamaInstall:
     """Download and install the latest llama.cpp release for the current platform.
 
     Fetches the latest build number from GitHub, downloads and extracts the
-    platform binary, verifies it runs, then writes ``llama-meta.json``.
+    platform binary, verifies it runs, then writes ``llama-meta.json``.  If
+    the same build is already installed the download is skipped.
 
     Progress is reported via *progress_cb* as ``(percent: int, message: str)``
     calls.  ``percent == 100`` signals success; ``percent == -1`` signals an
@@ -299,11 +344,10 @@ def install_llamacpp(
 
     Args:
         kodo_dir (Path): User-level ``~/.kodo`` directory.
-        force (bool): Re-download even if the same build is already installed.
         progress_cb (ProgressCb | None): Optional progress callback.
 
     Returns:
-        LlamaInstall: Metadata for the newly installed build.
+        LlamaInstall: Metadata for the installed build.
 
     Raises:
         RuntimeError: If download, extraction, or verification fails.
@@ -323,7 +367,7 @@ def install_llamacpp(
         build_number = _fetch_latest_build_number()
 
         existing = find_installed(kodo_dir)
-        if existing is not None and existing.build == build_number and not force:
+        if existing is not None and existing.build == build_number:
             _progress(100, f"llama.cpp b{build_number} already installed")
             return existing
 
@@ -375,3 +419,55 @@ def install_llamacpp(
         raise
     except Exception as exc:
         raise _fail(f"Installation failed: {exc}") from exc
+
+
+def uninstall_llamacpp(kodo_dir: Path) -> None:
+    """Remove the current llama.cpp installation from ``~/.kodo``.
+
+    Deletes the build directory recorded in ``llama-meta.json`` and then
+    removes ``llama-meta.json`` itself.  Does nothing if llama.cpp is not
+    installed.
+
+    Args:
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
+    """
+    installed = find_installed(kodo_dir)
+    if installed is None:
+        _log.info("llama.cpp is not installed — nothing to uninstall")
+        return
+
+    _log.info("Uninstalling llama.cpp b%d from %s", installed.build, installed.install_dir)
+    if installed.install_dir.exists():
+        import shutil
+        shutil.rmtree(installed.install_dir)
+        _log.info("Removed %s", installed.install_dir)
+
+    meta = _meta_path(kodo_dir)
+    if meta.exists():
+        meta.unlink()
+        _log.info("Removed %s", meta)
+
+
+def update_llamacpp(
+    kodo_dir: Path,
+    *,
+    progress_cb: ProgressCb | None = None,
+) -> LlamaInstall:
+    """Uninstall the current llama.cpp build and install the latest one.
+
+    Equivalent to calling :func:`uninstall_llamacpp` followed by
+    :func:`install_llamacpp`.
+
+    Args:
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
+        progress_cb (ProgressCb | None): Optional progress callback forwarded
+            to :func:`install_llamacpp`.
+
+    Returns:
+        LlamaInstall: Metadata for the newly installed build.
+
+    Raises:
+        RuntimeError: If the installation step fails.
+    """
+    uninstall_llamacpp(kodo_dir)
+    return install_llamacpp(kodo_dir, progress_cb=progress_cb)

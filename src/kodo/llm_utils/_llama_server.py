@@ -1,27 +1,113 @@
 """llama-server process manager.
 
-Starts a ``llama-server`` subprocess, waits for it to pass its health check,
-and provides clean shutdown.  The server exposes an OpenAI-compatible REST
-API accessible via :attr:`LlamaServer.base_url`.
+Starts ``llama-server`` as a detached subprocess and manages it by PID.
+No stdout/stderr is captured — llama-server logs to its own output.
+
+On kodo restart, call :func:`find_running_server` to detect a surviving
+process, then pass the result to :meth:`LlamaServer.adopt`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import asyncio.subprocess
+import json
 import logging
+import os
+import signal
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 import aiohttp
 
-__all__ = ["LlamaServer", "LlamaServerConfig"]
+__all__ = ["LlamaServer", "LlamaServerConfig", "RunningServer", "find_running_server"]
 
 _log = logging.getLogger(__name__)
 
-_HEALTH_POLL_INTERVAL: float = 0.5  # seconds between /health polls
-_HEALTH_TIMEOUT: float = 120.0  # seconds before giving up on startup
-_STOP_GRACE: float = 5.0  # seconds between SIGTERM and SIGKILL
+_HEALTH_POLL_INTERVAL: float = 0.5
+_HEALTH_TIMEOUT: float = 120.0
+_STOP_GRACE: float = 5.0
+
+
+# ---------------------------------------------------------------------------
+# Runtime state file
+# ---------------------------------------------------------------------------
+
+def _runtime_path(kodo_dir: Path) -> Path:
+    return kodo_dir / "llama.cpp" / "llama-server.json"
+
+
+def _write_runtime(kodo_dir: Path, pid: int, host: str, port: int, model: str) -> None:
+    p = _runtime_path(kodo_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        json.dumps({"pid": pid, "host": host, "port": port, "model": model}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _remove_runtime(kodo_dir: Path) -> None:
+    _runtime_path(kodo_dir).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# PID helpers — platform-safe (see kodo/CLAUDE.md §Windows pitfalls)
+# ---------------------------------------------------------------------------
+
+def _is_pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(
+            _PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _terminate_pid(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+def _kill_pid(pid: int) -> None:
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Public types
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RunningServer:
+    """Metadata for a llama-server process detected at startup.
+
+    Attributes:
+        pid: OS process ID.
+        host: Bind address the server is listening on.
+        port: TCP port the server is listening on.
+        model: Registry name of the model the server is running.
+    """
+
+    pid: int
+    host: str
+    port: int
+    model: str
 
 
 @dataclass(frozen=True)
@@ -31,6 +117,8 @@ class LlamaServerConfig:
     Attributes:
         executable: Path to the ``llama-server`` binary.
         model_path: Path to the ``.gguf`` model file.
+        kodo_dir: User-level ``~/.kodo`` directory; used to write/remove the
+            runtime state file that enables cross-restart detection.
         host: Bind address.  Defaults to ``'127.0.0.1'``.
         port: TCP port.  Defaults to ``8080``.
         context_size: Model context window in tokens.  Defaults to ``262144``.
@@ -41,6 +129,8 @@ class LlamaServerConfig:
 
     executable: Path
     model_path: Path
+    kodo_dir: Path
+    model_name: str = ""
     host: str = "127.0.0.1"
     port: int = 8080
     context_size: int = 262144
@@ -49,19 +139,25 @@ class LlamaServerConfig:
     extra_args: tuple[str, ...] = ()
 
 
+# ---------------------------------------------------------------------------
+# Server manager
+# ---------------------------------------------------------------------------
+
 class LlamaServer:
-    """Manages a ``llama-server`` subprocess.
+    """Manages a ``llama-server`` process by PID.
 
     Lifecycle: create → :meth:`start` → use :attr:`base_url` → :meth:`stop`.
-    Re-starting after a stop is supported.
+    After a kodo restart, call :meth:`adopt` with a :func:`find_running_server`
+    result to take ownership of a surviving process.
 
     Args:
         config (LlamaServerConfig): Server configuration.
     """
 
     __config: LlamaServerConfig
-    __process: asyncio.subprocess.Process | None
-    __drain_task: asyncio.Task[None] | None
+    __pid: int | None
+    __active_host: str
+    __active_port: int
 
     def __init__(self, config: LlamaServerConfig) -> None:
         """Initialise without starting the subprocess.
@@ -70,110 +166,123 @@ class LlamaServer:
             config (LlamaServerConfig): Server configuration.
         """
         self.__config = config
-        self.__process = None
-        self.__drain_task = None
+        self.__pid = None
+        self.__active_host = config.host
+        self.__active_port = config.port
 
     @property
     def is_running(self) -> bool:
         """``True`` if the server process is alive."""
-        return self.__process is not None and self.__process.returncode is None
+        return self.__pid is not None and _is_pid_alive(self.__pid)
 
     @property
     def port(self) -> int:
         """TCP port the server is (or will be) listening on."""
-        return self.__config.port
+        return self.__active_port
 
     @property
     def base_url(self) -> str:
         """Base URL of the OpenAI-compatible REST API."""
-        return f"http://{self.__config.host}:{self.__config.port}"
+        return f"http://{self.__active_host}:{self.__active_port}"
 
-    async def start(self) -> None:
-        """Start the server process and wait until it reports healthy.
+    def adopt(self, running: RunningServer) -> None:
+        """Take ownership of a running llama-server detected at startup.
+
+        After adoption, :attr:`is_running` returns ``True`` and
+        :meth:`stop` will gracefully terminate the process.
+
+        Args:
+            running (RunningServer): Result from :func:`find_running_server`.
 
         Raises:
-            RuntimeError: If the server is already running, or if the process
-                exits before passing the health check.
+            RuntimeError: If a process is already managed by this instance.
+        """
+        if self.is_running:
+            raise RuntimeError("llama-server is already running")
+        self.__pid = running.pid
+        self.__active_host = running.host
+        self.__active_port = running.port
+        _log.info("Adopted llama-server pid=%d at %s", running.pid, self.base_url)
+
+    async def start(self) -> None:
+        """Launch llama-server and wait until it passes the health check.
+
+        The process is launched with stdout/stderr discarded; use llama-server's
+        own log flags if output is needed.  The PID is written to the runtime
+        state file for cross-restart detection.
+
+        Raises:
+            RuntimeError: If already running or the process exits prematurely.
             TimeoutError: If the server does not become ready within
                 ``_HEALTH_TIMEOUT`` seconds.
         """
         if self.is_running:
             raise RuntimeError("llama-server is already running")
 
+        self.__active_host = self.__config.host
+        self.__active_port = self.__config.port
+
         cmd = self.__build_command()
         _log.debug("Starting llama-server: %s", " ".join(cmd))
 
-        self.__process = await asyncio.create_subprocess_exec(
+        proc = await asyncio.create_subprocess_exec(
             *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
         )
-        self.__drain_task = asyncio.get_running_loop().create_task(
-            self.__drain_logs(),
-            name="llama-server-logs",
-        )
+        self.__pid = proc.pid
 
         await self.__wait_ready()
-        _log.info("llama-server ready at %s (pid=%d)", self.base_url, self.__process.pid)
+
+        _write_runtime(
+            self.__config.kodo_dir, self.__pid,
+            self.__active_host, self.__active_port,
+            self.__config.model_name,
+        )
+        _log.info("llama-server ready at %s (pid=%d)", self.base_url, self.__pid)
 
     async def stop(self) -> None:
-        """Stop the server process.
+        """Stop the managed llama-server process.
 
-        Sends SIGTERM (or ``TerminateProcess`` on Windows) and waits up to
-        ``_STOP_GRACE`` seconds before issuing SIGKILL.
+        Sends SIGTERM and polls until the process exits, then SIGKILL if it
+        does not exit within ``_STOP_GRACE`` seconds.
         """
-        proc = self.__process
-        if proc is None or proc.returncode is not None:
+        pid = self.__pid
+        if pid is None or not _is_pid_alive(pid):
+            self.__pid = None
             return
 
-        _log.debug("Stopping llama-server (pid=%d)", proc.pid)
-        proc.terminate()
+        _log.debug("Stopping llama-server (pid=%d)", pid)
+        _terminate_pid(pid)
 
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=_STOP_GRACE)
-        except TimeoutError:
-            _log.warning("llama-server did not stop gracefully; killing")
-            proc.kill()
-            await proc.wait()
+        elapsed = 0.0
+        while elapsed < _STOP_GRACE and _is_pid_alive(pid):
+            await asyncio.sleep(0.5)
+            elapsed += 0.5
 
-        self.__process = None
+        if _is_pid_alive(pid):
+            _log.warning("llama-server pid=%d did not stop gracefully; killing", pid)
+            _kill_pid(pid)
 
-        if self.__drain_task is not None and not self.__drain_task.done():
-            self.__drain_task.cancel()
-        self.__drain_task = None
-
+        self.__pid = None
+        _remove_runtime(self.__config.kodo_dir)
         _log.info("llama-server stopped")
 
     def __build_command(self) -> list[str]:
         cfg = self.__config
         cmd: list[str] = [
             str(cfg.executable),
-            "--model",
-            str(cfg.model_path),
-            "--host",
-            cfg.host,
-            "--port",
-            str(cfg.port),
-            "--ctx-size",
-            str(cfg.context_size),
-            "--n-gpu-layers",
-            str(cfg.n_gpu_layers),
+            "--model", str(cfg.model_path),
+            "--host", cfg.host,
+            "--port", str(cfg.port),
+            "--ctx-size", str(cfg.context_size),
+            "--n-gpu-layers", str(cfg.n_gpu_layers),
         ]
         for k, v in cfg.llama_args.items():
             cmd.append(k)
             cmd.append(v)
         cmd.extend(cfg.extra_args)
         return cmd
-
-    async def __drain_logs(self) -> None:
-        proc = self.__process
-        if proc is None or proc.stdout is None:
-            return
-        while True:
-            line_bytes = await proc.stdout.readline()
-            if not line_bytes:
-                break
-            _log.debug("[llama-server] %s", line_bytes.decode(errors="replace").rstrip())
 
     async def __wait_ready(self) -> None:
         url = f"{self.base_url}/health"
@@ -182,9 +291,8 @@ class LlamaServer:
         async with aiohttp.ClientSession() as session:
             while elapsed < _HEALTH_TIMEOUT:
                 if not self.is_running:
-                    rc = self.__process.returncode if self.__process is not None else "?"
                     raise RuntimeError(
-                        f"llama-server exited before becoming ready (returncode={rc})"
+                        f"llama-server (pid={self.__pid}) exited before becoming ready"
                     )
                 try:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=1.0)) as resp:
@@ -196,3 +304,46 @@ class LlamaServer:
                 elapsed += _HEALTH_POLL_INTERVAL
 
         raise TimeoutError(f"llama-server did not become ready within {_HEALTH_TIMEOUT:.0f} s")
+
+
+# ---------------------------------------------------------------------------
+# Startup detection
+# ---------------------------------------------------------------------------
+
+def find_running_server(kodo_dir: Path) -> RunningServer | None:
+    """Detect a llama-server process left running from a previous kodo session.
+
+    Three outcomes:
+
+    - No runtime file → returns ``None``.
+    - Runtime file present, PID alive → returns :class:`RunningServer`.
+    - Runtime file present, PID stale → removes the file, returns ``None``.
+
+    Args:
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
+
+    Returns:
+        RunningServer | None: Running server metadata, or ``None``.
+    """
+    path = _runtime_path(kodo_dir)
+    if not path.is_file():
+        return None
+
+    try:
+        data = cast(dict[str, object], json.loads(path.read_text(encoding="utf-8")))
+        pid = int(cast(int, data["pid"]))
+        host = str(data.get("host", "127.0.0.1"))
+        port = int(cast(int, data["port"]))
+        model = str(data.get("model", ""))
+    except Exception:
+        _log.warning("Could not parse llama-server runtime file — removing")
+        path.unlink(missing_ok=True)
+        return None
+
+    if _is_pid_alive(pid):
+        _log.info("Detected running llama-server pid=%d at %s:%d model=%r", pid, host, port, model)
+        return RunningServer(pid=pid, host=host, port=port, model=model)
+
+    _log.info("Stale llama-server runtime file (pid=%d no longer alive) — removing", pid)
+    path.unlink(missing_ok=True)
+    return None

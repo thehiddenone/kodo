@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -20,6 +21,8 @@ import huggingface_hub
 from kodo.llms import LLMEntry
 
 __all__ = ["download_model", "get_model_path"]
+
+ProgressCb = Callable[[int, str], None]
 
 _log = logging.getLogger(__name__)
 
@@ -64,18 +67,28 @@ def _write_index(kodo_dir: Path, index: dict[str, str]) -> None:
     index_file.write_text(json.dumps(index, indent=2), encoding="utf-8")
 
 
-def download_model(model: LLMEntry, kodo_dir: Path) -> Path:
+def download_model(
+    model: LLMEntry,
+    kodo_dir: Path,
+    *,
+    progress_cb: ProgressCb | None = None,
+) -> Path:
     """Download a GGUF model file from HuggingFace Hub.
 
     Delegates to :func:`huggingface_hub.hf_hub_download`, which handles
     resumable downloads, integrity verification, and caching.  Subsequent
     calls with the same *model* skip the network round-trip and return the
-    cached path.  The resolved path is recorded in ``~/.kodo/llm_index.json``
+    cached path.  The resolved path is recorded in ``~/.kodo/local-llm-index.json``
     keyed by the model's registry name.
+
+    Progress is reported via *progress_cb* as ``(percent: int, message: str)``
+    calls.  ``percent == 100`` signals success; ``percent == -1`` signals an
+    error (the message contains the reason).
 
     Args:
         model (LLMEntry): Registry entry for the model to download.
         kodo_dir (Path): User-level ``~/.kodo`` directory.
+        progress_cb (ProgressCb | None): Optional progress callback.
 
     Returns:
         Path: Local path to the downloaded ``.gguf`` file.
@@ -83,26 +96,44 @@ def download_model(model: LLMEntry, kodo_dir: Path) -> Path:
     Raises:
         ValueError: If *model* has no ``repo_id`` or ``filename`` (i.e. not local).
     """
+    def _progress(pct: int, msg: str) -> None:
+        _log.info("[%3d%%] %s", pct, msg)
+        if progress_cb is not None:
+            progress_cb(pct, msg)
+
+    def _fail(msg: str) -> RuntimeError:
+        _progress(-1, msg)
+        return RuntimeError(msg)
+
     if not model.repo_id or not model.filename:
-        raise ValueError(f"Model {model.name!r} has no repo_id/filename — not a local model")
+        raise _fail(f"Model {model.name!r} has no repo_id/filename — not a local model")
 
-    dest_dir = _models_dir(kodo_dir)
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        dest_dir = _models_dir(kodo_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
 
-    _log.info("Downloading model %r from %s", model.name, model.repo_id)
-    local_path = huggingface_hub.hf_hub_download(
-        repo_id=model.repo_id,
-        filename=model.filename,
-        cache_dir=str(dest_dir),
-    )
-    result = Path(local_path)
-    _log.info("Model %r available at %s", model.name, result)
+        _progress(0, f"Locating {model.filename} on HuggingFace…")
+        _progress(5, f"Downloading {model.filename} from {model.repo_id}…")
+        local_path = huggingface_hub.hf_hub_download(
+            repo_id=model.repo_id,
+            filename=model.filename,
+            cache_dir=str(dest_dir),
+        )
+        result = Path(local_path)
+        _log.info("Model %r available at %s", model.name, result)
 
-    index = _read_index(kodo_dir)
-    index[model.name] = str(result.absolute())
-    _write_index(kodo_dir, index)
+        _progress(95, "Updating model index…")
+        index = _read_index(kodo_dir)
+        index[model.name] = str(result.absolute())
+        _write_index(kodo_dir, index)
 
-    return result
+        _progress(100, f"{model.name} installed successfully")
+        return result
+
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise _fail(f"Download failed: {exc}") from exc
 
 
 def get_model_path(name: str, kodo_dir: Path) -> Path | None:
