@@ -25,12 +25,14 @@ from ._installer import (
     update_llamacpp,
 )
 from ._llama_server import LlamaServer, LlamaServerConfig, RunningServer, find_running_server
+from ._manager import ensure_llama_running
 
 __all__ = [
     "LlamaInstall",
     "LlamaServer",
     "LlamaServerConfig",
     "RunningServer",
+    "ensure_llama_running",
     "find_running_server",
     "check_llamacpp_update",
     "download_model",

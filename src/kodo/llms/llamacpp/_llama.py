@@ -2,6 +2,11 @@
 
 Uses the OpenAI-compatible REST API exposed by llama-server.
 Local inference has no prompt cache and zero dollar cost.
+
+On first use, if llama-server is not running, the plugin starts it
+automatically via :func:`kodo.llm_utils.ensure_llama_running` and emits
+:data:`kodo.transport.EVT_LLAMA_STATE` events so the VSIX sidebar reflects
+the updated state.
 """
 
 from __future__ import annotations
@@ -10,10 +15,13 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import openai
 
-from kodo.llms._interface import (
+from kodo.common import Envelope, MessageSink
+from kodo.llm_utils import LlamaServer, ensure_llama_running
+from kodo.llms import (
     LLMPlugin,
     Message,
     StreamEvent,
@@ -22,7 +30,9 @@ from kodo.llms._interface import (
     ToolSpec,
     TurnEnd,
     Usage,
+    get_llm_registry,
 )
+from kodo.transport import EVT_LLAMA_STATE
 
 __all__ = ["LlamaPlugin"]
 
@@ -132,24 +142,28 @@ class LlamaPlugin(LLMPlugin):
     """llama.cpp (llama-server) implementation of :class:`~kodo.llms._interface.LLMPlugin`.
 
     Connects to a running llama-server via its OpenAI-compatible REST API.
-    Prompt caching is not available; token cost is always zero.
+    If llama-server is not running when :meth:`stream_query` is called, it is
+    started automatically.  Prompt caching is not available; token cost is
+    always zero.
     """
 
-    __client: openai.AsyncOpenAI
-    __model_names: list[str]
+    __sink: MessageSink
+    __kodo_dir: Path
+    __client: openai.AsyncOpenAI | None
     __cancel_events: dict[str, asyncio.Event]
 
-    def __init__(self, base_url: str, model_names: list[str] | None = None) -> None:
+    def __init__(self, sink: MessageSink, kodo_dir: Path) -> None:
         """Initialise the plugin.
 
         Args:
-            base_url (str): Full base URL of the llama-server ``/v1`` endpoint
-                (e.g. ``'http://127.0.0.1:8080/v1'``).
-            model_names (list[str] | None): Names reported by :attr:`supported_models`.
-                Defaults to ``['local']``.
+            sink (MessageSink): Channel for emitting :data:`EVT_LLAMA_STATE`
+                events to the VSIX client.
+            kodo_dir (Path): User-level ``~/.kodo`` directory used to locate
+                the llama.cpp install and downloaded models.
         """
-        self.__client = openai.AsyncOpenAI(api_key=_API_KEY, base_url=base_url)
-        self.__model_names = list(model_names) if model_names else ["local"]
+        self.__sink = sink
+        self.__kodo_dir = kodo_dir
+        self.__client = None
         self.__cancel_events = {}
 
     @property
@@ -158,9 +172,12 @@ class LlamaPlugin(LLMPlugin):
 
     @property
     def supported_models(self) -> list[str]:
-        return list(self.__model_names)
+        server = LlamaServer.get_active_llama_server()
+        if server is not None and server.is_running and server.model_name:
+            return [server.model_name]
+        return ["local"]
 
-    def stream_query(
+    async def stream_query(
         self,
         *,
         stream_id: str,
@@ -170,12 +187,11 @@ class LlamaPlugin(LLMPlugin):
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
     ) -> AsyncIterator[StreamEvent]:
-        """Stream a llama-server response.
+        """Stream a llama-server response, starting the server if needed.
 
         Args:
             stream_id (str): Caller-supplied ID; pass to :meth:`cancel` to abort.
-            model (str): Model identifier forwarded to llama-server (the server ignores
-                it but the value is preserved in the returned :class:`Usage`).
+            model (str): Model registry name (e.g. ``'llamacpp-qwen36-27b'``).
             system (str): System prompt text.
             messages (list[Message]): Conversation history.
             tools (list[ToolSpec]): Tools the model may invoke.
@@ -183,14 +199,20 @@ class LlamaPlugin(LLMPlugin):
 
         Yields:
             StreamEvent: Token deltas, tool calls, then :class:`TurnEnd`.
+
+        Raises:
+            RuntimeError: If llama-server cannot be started (not installed,
+                model not downloaded, or startup timeout).
         """
-        return self.__stream(
+        await self.__ensure_running(model)
+        async for event in self.__stream(
             stream_id=stream_id,
             model=model,
             system=system,
             messages=messages,
             tools=tools,
-        )
+        ):
+            yield event
 
     async def cancel(self, stream_id: str) -> None:
         """Signal an in-flight stream to stop within 1 second.
@@ -206,6 +228,41 @@ class LlamaPlugin(LLMPlugin):
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    async def __ensure_running(self, model_name: str) -> None:
+        server = LlamaServer.get_active_llama_server()
+        if server is not None and server.is_running:
+            if self.__client is None:
+                self.__client = openai.AsyncOpenAI(
+                    api_key=_API_KEY, base_url=f"{server.base_url}/v1"
+                )
+            return
+
+        await self.__sink.send(
+            Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "starting": True})
+        )
+
+        registry = get_llm_registry()
+        entry = registry.get(model_name)
+        llama_args = entry.llama_args if entry is not None else {}
+
+        try:
+            server = await ensure_llama_running(model_name, self.__kodo_dir, llama_args=llama_args)
+        except Exception as exc:
+            await self.__sink.send(
+                Envelope.make_event(
+                    EVT_LLAMA_STATE, {"running": False, "model": None, "error": str(exc)}
+                )
+            )
+            raise
+
+        self.__client = openai.AsyncOpenAI(api_key=_API_KEY, base_url=f"{server.base_url}/v1")
+        await self.__sink.send(
+            Envelope.make_event(
+                EVT_LLAMA_STATE,
+                {"running": True, "model": server.model_name, "port": server.port},
+            )
+        )
 
     async def __stream(
         self,
@@ -239,6 +296,7 @@ class LlamaPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
     ) -> AsyncIterator[StreamEvent]:
+        assert self.__client is not None
         oai_messages = _build_oai_messages(system, messages)
         oai_tools: list[dict[str, object]] = [
             {

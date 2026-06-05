@@ -39,7 +39,7 @@ from kodo.llms._interface import (
 from kodo.llms.anthropic import ClaudePlugin, UnrecoverableError
 from kodo.llms.llamacpp import LlamaPlugin
 from kodo.mirror import CheckpointManager
-from kodo.project import ProjectLayout
+from kodo.project import ProjectLayout, kodo_user_dir
 from kodo.state import TransientStore
 from kodo.subagents import AgentRegistry
 from kodo.subagents._loader import AgentLoadError
@@ -71,7 +71,6 @@ __all__ = ["WorkflowEngine"]
 _log = logging.getLogger(__name__)
 
 _ORCHESTRATOR_AGENT_NAME = "orchestrator"
-_DEFAULT_LLAMACPP_BASE_URL = "http://127.0.0.1:8080/v1"
 
 
 class WorkflowEngine:
@@ -256,9 +255,7 @@ class WorkflowEngine:
 
         if module == "kodo.llms.llamacpp":
             self.__current_vendor = None
-            return LlamaPlugin(
-                base_url=_DEFAULT_LLAMACPP_BASE_URL, model_names=[model_key]
-            ), model_key
+            return LlamaPlugin(sink=self.__sink, kodo_dir=kodo_user_dir()), model_key
 
         model_id = entry.model_id if entry is not None else model_key
         vendor = module.rsplit(".", 1)[-1]

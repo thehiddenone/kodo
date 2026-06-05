@@ -124,7 +124,7 @@ class LlamaServerConfig:
         kodo_dir: User-level ``~/.kodo`` directory; used to write/remove the
             runtime state file that enables cross-restart detection.
         host: Bind address.  Defaults to ``'127.0.0.1'``.
-        port: TCP port.  Defaults to ``8080``.
+        port: TCP port.  Defaults to `8042``.
         context_size: Model context window in tokens.  Defaults to ``262144``.
         n_gpu_layers: Layers to offload to GPU; ``-1`` means all layers.
         llama_args: Extra CLI flags passed verbatim to ``llama-server``.
@@ -136,7 +136,7 @@ class LlamaServerConfig:
     kodo_dir: Path
     model_name: str = ""
     host: str = "127.0.0.1"
-    port: int = 8080
+    port: int = 8042
     context_size: int = 262144
     n_gpu_layers: int = -1
     llama_args: dict[str, str] = field(default_factory=dict)
@@ -159,6 +159,8 @@ class LlamaServer:
         config (LlamaServerConfig): Server configuration.
     """
 
+    __active_llama_server: LlamaServer | None = None
+
     __config: LlamaServerConfig
     __pid: int | None
     __active_host: str
@@ -174,6 +176,7 @@ class LlamaServer:
         self.__pid = None
         self.__active_host = config.host
         self.__active_port = config.port
+        LlamaServer.__active_llama_server = self
 
     @property
     def is_running(self) -> bool:
@@ -189,6 +192,15 @@ class LlamaServer:
     def base_url(self) -> str:
         """Base URL of the OpenAI-compatible REST API."""
         return f"http://{self.__active_host}:{self.__active_port}"
+
+    @property
+    def model_name(self) -> str:
+        """Registry name of the model the server is configured to serve."""
+        return self.__config.model_name
+
+    @classmethod
+    def get_active_llama_server(cls) -> LlamaServer | None:
+        return cls.__active_llama_server
 
     def adopt(self, running: RunningServer) -> None:
         """Take ownership of a running llama-server detected at startup.
