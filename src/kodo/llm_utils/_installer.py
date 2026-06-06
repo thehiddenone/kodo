@@ -17,6 +17,7 @@ import logging
 import platform
 import re
 import subprocess
+import tarfile
 import urllib.request
 import zipfile
 from collections.abc import Callable
@@ -36,17 +37,17 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-_GITHUB_RELEASES_LATEST = "https://api.github.com/repos/ggerganov/llama.cpp/releases/latest"
-_RELEASE_BASE = "https://github.com/ggerganov/llama.cpp/releases/download"
+_GITHUB_RELEASES_LATEST = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+_RELEASE_BASE = "https://github.com/ggml-org/llama.cpp/releases/download"
 _USER_AGENT = "kodo-llm-utils/0.1 (github.com/thehiddenone/kodo)"
 _META_FILE = "llama-meta.json"
 
 # Asset filename templates per platform. {N} is replaced with the build number.
 _ASSET_NAMES: dict[str, str] = {
     "win-x64": "llama-b{N}-bin-win-cuda-13.3-x64.zip",
-    "macos-arm64": "llama-b{N}-bin-macos-arm64.zip",
-    "macos-x64": "llama-b{N}-bin-macos-x64.zip",
-    "linux-x64": "llama-b{N}-bin-ubuntu-x64.zip",
+    "macos-arm64": "llama-b{N}-bin-macos-arm64.tar.gz",
+    "macos-x64": "llama-b{N}-bin-macos-x64.tar.gz",
+    "linux-x64": "llama-b{N}-bin-ubuntu-x64.tar.gz",
 }
 
 _WINDOWS_CUDA_DLLS_URL = "https://github.com/ggml-org/llama.cpp/releases/download/b{N}/cudart-llama-bin-win-cuda-13.3-x64.zip"
@@ -197,6 +198,7 @@ def _download(
     pct_start: int = 0,
     pct_end: int = 100,
 ) -> None:
+    _log.info(f"Starting download from {url}")
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     with urllib.request.urlopen(req, timeout=600) as resp:
         content_length = resp.headers.get("Content-Length")
@@ -377,15 +379,19 @@ def install_llamacpp(
 
         install_dir = kodo_dir / "llama.cpp" / f"b{build_number}"
         install_dir.mkdir(parents=True, exist_ok=True)
-        zip_path = install_dir / asset_name
+        archive_path = install_dir / asset_name
 
         _progress(10, f"Downloading {asset_name}…")
-        _download(binary_url, zip_path, progress_cb, pct_start=10, pct_end=75)
+        _download(binary_url, archive_path, progress_cb, pct_start=10, pct_end=75)
 
         _progress(75, "Extracting binary archive…")
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(install_dir)
-        zip_path.unlink()
+        if asset_name.endswith(".tar.gz"):
+            with tarfile.open(archive_path, "r:gz") as tf:
+                tf.extractall(install_dir)
+        else:
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                zf.extractall(install_dir)
+        archive_path.unlink()
 
         cuda_dlls_url: str | None = None
         if platform_key == "win-x64":

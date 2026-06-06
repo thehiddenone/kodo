@@ -36,6 +36,7 @@ from kodo.llms._interface import (
     ToolSpec,
     TurnEnd,
 )
+from kodo.llms._logger import LoggingLLMPlugin
 from kodo.llms.anthropic import ClaudePlugin, UnrecoverableError
 from kodo.llms.llamacpp import LlamaPlugin
 from kodo.mirror import CheckpointManager
@@ -255,7 +256,8 @@ class WorkflowEngine:
 
         if module == "kodo.llms.llamacpp":
             self.__current_vendor = None
-            return LlamaPlugin(sink=self.__sink, kodo_dir=kodo_user_dir()), model_key
+            plugin: LLMPlugin = LlamaPlugin(sink=self.__sink, kodo_dir=kodo_user_dir())
+            return LoggingLLMPlugin(plugin, self.__layout.llm_requests_dir), model_key
 
         model_id = entry.model_id if entry is not None else model_key
         vendor = module.rsplit(".", 1)[-1]
@@ -265,7 +267,8 @@ class WorkflowEngine:
         if key_result.error:
             raise RuntimeError(f"API key request rejected: {key_result.error}")
 
-        return ClaudePlugin(api_key=key_result.api_key), model_id
+        plugin = ClaudePlugin(api_key=key_result.api_key)
+        return LoggingLLMPlugin(plugin, self.__layout.llm_requests_dir), model_id
 
     # ------------------------------------------------------------------
     # Worker

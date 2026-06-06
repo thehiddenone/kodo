@@ -1,5 +1,6 @@
 .trash/
 .claude/
+uv.lock
 
 # mise
 mise.toml

@@ -78,6 +78,11 @@ class ProjectLayout:
         return self.logs_dir / "server.log"
 
     @property
+    def llm_requests_dir(self) -> Path:
+        """``<root>/.kodo/logs/llm_requests/`` — per-call LLM request/response logs."""
+        return self.logs_dir / "llm_requests"
+
+    @property
     def checkpoints_dir(self) -> Path:
         """``<root>/.kodo/checkpoints/`` — git mirror repository."""
         return self.kodo_dir / "checkpoints"
