@@ -4,6 +4,7 @@ from ._interface import (
     LLMPlugin,
     Message,
     StreamEvent,
+    ThinkingDelta,
     TokenDelta,
     ToolCallEvent,
     ToolSpec,
@@ -11,11 +12,14 @@ from ._interface import (
     Usage,
 )
 from ._registry import LLMEntry, get_llm_registry
+from ._tool_logger import ToolCallLogger
 
 __all__ = [
     "LLMEntry",
     "LLMPlugin",
     "Message",
+    "ThinkingDelta",
+    "ToolCallLogger",
     "ToolSpec",
     "Usage",
     "StreamEvent",

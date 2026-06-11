@@ -16,6 +16,7 @@ __all__ = [
     "ToolSpec",
     "Usage",
     "StreamEvent",
+    "ThinkingDelta",
     "TokenDelta",
     "ToolCallEvent",
     "TurnEnd",
@@ -83,6 +84,21 @@ class Usage:
 @dataclass(frozen=True)
 class StreamEvent:
     """Base class for events emitted by :meth:`LLMPlugin.stream_query`."""
+
+
+@dataclass(frozen=True)
+class ThinkingDelta(StreamEvent):
+    """A chain-of-thought text fragment emitted during extended thinking.
+
+    Stripped from conversation history by default; displayed to the user
+    separately.  Provider-agnostic — any plugin that supports extended
+    thinking yields this event type.
+
+    Attributes:
+        text: The thinking text fragment.
+    """
+
+    text: str
 
 
 @dataclass(frozen=True)

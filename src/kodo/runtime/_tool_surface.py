@@ -98,8 +98,7 @@ START_SUBAGENT = ToolSpec(
     name="start_subagent",
     description=(
         "Invoke a leaf sub-agent by name.  Blocks until the sub-agent session "
-        "completes (single-worker constraint FR-WF-02).  Returns the artifact IDs "
-        "the sub-agent published."
+        "completes.  Returns the artifact IDs the sub-agent published."
     ),
     input_schema={
         "type": "object",
@@ -126,7 +125,7 @@ START_SUBAGENT = ToolSpec(
 RUN_AUTHOR_CRITIC_ITERATION = ToolSpec(
     name="run_author_critic_iteration",
     description=(
-        "Execute one round of the Author/Critic loop (FR-AGT-05).  "
+        "Execute one round of the Author/Critic loop.  "
         "Spawns the Author (with previous_artifact_id as feedback context when provided), "
         "then spawns the Critic against the Author's output.  "
         "Returns the artifact ID, verdict, and concerns.  "
@@ -157,9 +156,9 @@ RUN_AUTHOR_CRITIC_ITERATION = ToolSpec(
 REQUEST_USER_APPROVAL = ToolSpec(
     name="request_user_approval",
     description=(
-        "Surface an approval gate to the user (WS_PROTOCOL.md §6.2, FR-WF-05).  "
+        "Surface an approval gate to the user.  "
         "Blocks until the user responds with agree or feedback.  "
-        "In autonomous mode the engine auto-resolves to agree (FR-AUT-02)."
+        "In autonomous mode the engine auto-resolves to agree."
     ),
     input_schema={
         "type": "object",
@@ -194,8 +193,8 @@ REQUEST_USER_APPROVAL = ToolSpec(
 ASK_USER = ToolSpec(
     name="ask_user",
     description=(
-        "Surface a free-form or choice question to the user (WS_PROTOCOL.md §6.1).  "
-        "Blocks until the user responds.  "
+        "Surface a free-form or choice question to the user. "
+        "Blocks until the user responds. "
         "Use for clarification, confirmation before destructive operations, and intake."
     ),
     input_schema={
@@ -227,7 +226,7 @@ ASK_USER = ToolSpec(
 ROLLBACK = ToolSpec(
     name="rollback",
     description=(
-        "Invoke the rollback procedure (STATE_AND_LIFECYCLE.md §8.3).  "
+        "Invoke the rollback procedure.  "
         "Restores src/ and gen/ from the target mirror commit, clears the workspace, "
         "and starts a fresh Orchestrator session.  "
         "The Orchestrator MUST confirm with the user via ask_user before calling this."

@@ -25,6 +25,7 @@ from kodo.llms import (
     LLMPlugin,
     Message,
     StreamEvent,
+    ThinkingDelta,
     TokenDelta,
     ToolCallEvent,
     ToolSpec,
@@ -131,6 +132,76 @@ def _map_finish_reason(reason: str | None) -> str:
     if reason == "length":
         return "max_tokens"
     return reason or "end_turn"
+
+
+# ---------------------------------------------------------------------------
+# Thinking stream parser
+# ---------------------------------------------------------------------------
+
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+class ThinkingStreamParser:
+    """Splits a streamed text into ThinkingDelta and TokenDelta events.
+
+    Qwen3 (and similar models) embed chain-of-thought reasoning inside
+    ``<think>...</think>`` tags in the assistant text.  Because tag
+    boundaries can fall in the middle of a streamed chunk, the parser
+    buffers up to ``len(tag) - 1`` characters while deciding whether an
+    upcoming ``<`` starts a tag or is plain text.
+    """
+
+    def __init__(self) -> None:
+        self._in_thinking = False
+        self._buffer = ""
+
+    def feed(self, text: str) -> list[StreamEvent]:
+        """Process an incoming chunk and return zero or more stream events."""
+        self._buffer += text
+        events: list[StreamEvent] = []
+        while True:
+            if self._in_thinking:
+                idx = self._buffer.find(_THINK_CLOSE)
+                if idx >= 0:
+                    if idx > 0:
+                        events.append(ThinkingDelta(text=self._buffer[:idx]))
+                    self._buffer = self._buffer[idx + len(_THINK_CLOSE):]
+                    self._in_thinking = False
+                else:
+                    hold = min(len(_THINK_CLOSE) - 1, len(self._buffer))
+                    safe = len(self._buffer) - hold
+                    if safe > 0:
+                        events.append(ThinkingDelta(text=self._buffer[:safe]))
+                        self._buffer = self._buffer[safe:]
+                    break
+            else:
+                idx = self._buffer.find(_THINK_OPEN)
+                if idx >= 0:
+                    if idx > 0:
+                        events.append(TokenDelta(text=self._buffer[:idx]))
+                    self._buffer = self._buffer[idx + len(_THINK_OPEN):]
+                    self._in_thinking = True
+                else:
+                    hold = min(len(_THINK_OPEN) - 1, len(self._buffer))
+                    safe = len(self._buffer) - hold
+                    if safe > 0:
+                        events.append(TokenDelta(text=self._buffer[:safe]))
+                        self._buffer = self._buffer[safe:]
+                    break
+        return events
+
+    def flush(self) -> list[StreamEvent]:
+        """Emit any buffered remainder at end of stream."""
+        if not self._buffer:
+            return []
+        event: StreamEvent = (
+            ThinkingDelta(text=self._buffer)
+            if self._in_thinking
+            else TokenDelta(text=self._buffer)
+        )
+        self._buffer = ""
+        return [event]
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +387,7 @@ class LlamaPlugin(LLMPlugin):
         finish_reason: str | None = None
         input_tokens = 0
         output_tokens = 0
+        parser = ThinkingStreamParser()
 
         response = await self.__client.chat.completions.create(  # type: ignore[call-overload]
             model=model,
@@ -343,7 +415,8 @@ class LlamaPlugin(LLMPlugin):
 
             delta = choice.delta
             if delta.content:
-                yield TokenDelta(text=delta.content)
+                for event in parser.feed(delta.content):
+                    yield event
 
             if delta.tool_calls:
                 for tc in delta.tool_calls:
@@ -357,6 +430,9 @@ class LlamaPlugin(LLMPlugin):
 
         if cancel_event.is_set():
             return
+
+        for event in parser.flush():
+            yield event
 
         for idx in sorted(tool_ids):
             raw_json = "".join(tool_arg_parts.get(idx, []))

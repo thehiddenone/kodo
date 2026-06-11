@@ -31,12 +31,14 @@ from kodo.llms import LLMPlugin, get_llm_registry
 from kodo.llms._interface import (
     Message,
     StreamEvent,
+    ThinkingDelta,
     TokenDelta,
     ToolCallEvent,
     ToolSpec,
     TurnEnd,
 )
 from kodo.llms._logger import LoggingLLMPlugin
+from kodo.llms._tool_logger import ToolCallLogger
 from kodo.llms.anthropic import ClaudePlugin, UnrecoverableError
 from kodo.llms.llamacpp import LlamaPlugin
 from kodo.mirror import CheckpointManager
@@ -47,8 +49,10 @@ from kodo.subagents._loader import AgentLoadError
 from kodo.transport import (
     EVT_AGENT_FINISHED,
     EVT_AGENT_STARTED,
+    EVT_AGENT_TOOL_CALL,
     EVT_API_KEY_REVOKE,
     EVT_ERROR,
+    EVT_LLM_TURN_START,
     EVT_REVIEW_STARTED,
     EVT_REVIEW_VERDICT,
     EVT_STATE,
@@ -419,12 +423,19 @@ class WorkflowEngine:
             tuple[list[Message], list[Path]]: Updated messages and (unused) files.
         """
         files_written: list[Path] = []
+        tool_desc = {t.name: t.description for t in tools}
+        tool_logger = ToolCallLogger(self.__layout.llm_requests_dir)
 
         while True:
-            call_start = datetime.now(tz=UTC).isoformat()
+            call_start_dt = datetime.now(tz=UTC)
+            call_start = call_start_dt.isoformat()
             text_parts: list[str] = []
             tool_calls: list[ToolCallEvent] = []
             turn_end: TurnEnd | None = None
+
+            await self.__sink.send(
+                Envelope.make_event(EVT_LLM_TURN_START, {"agent": agent_name, "model": model})
+            )
 
             try:
                 async for event in llm.stream_query(
@@ -448,12 +459,14 @@ class WorkflowEngine:
 
             if turn_end is not None:
                 self.__cumulative_usd += turn_end.usage.usd_cost
-                await self.__emit_usage(turn_end, model)
+                call_end_dt = datetime.now(tz=UTC)
+                duration_seconds = (call_end_dt - call_start_dt).total_seconds()
+                await self.__emit_usage(turn_end, model, duration_seconds)
                 await self.__transient.write_agent_record(
                     agent_name,
                     {
                         "call_start": call_start,
-                        "call_end": datetime.now(tz=UTC).isoformat(),
+                        "call_end": call_end_dt.isoformat(),
                         "model": model,
                         "input_tokens": turn_end.usage.input_tokens,
                         "output_tokens": turn_end.usage.output_tokens,
@@ -487,7 +500,15 @@ class WorkflowEngine:
 
             tool_results: list[dict[str, object]] = []
             for tc in tool_calls:
+                await self.__sink.send(
+                    Envelope.make_event(
+                        EVT_AGENT_TOOL_CALL,
+                        {"tool_name": tc.tool_name, "description": tool_desc.get(tc.tool_name, "")},
+                    )
+                )
+                tc_n = tool_logger.log_invocation(tc.tool_name, tc.tool_input)
                 result_text = await tool_dispatch(tc.tool_name, tc.tool_input)
+                tool_logger.log_result(tc.tool_name, tc_n, result_text)
                 tool_results.append(
                     {
                         "type": "tool_result",
@@ -705,18 +726,21 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     async def __handle_stream_event(self, event: StreamEvent, stream_id: str) -> None:
-        if isinstance(event, TokenDelta):
+        if isinstance(event, ThinkingDelta):
+            await self.__sink.send(Envelope.make_thinking_chunk(stream_id, event.text))
+        elif isinstance(event, TokenDelta):
             await self.__sink.send(Envelope.make_stream_chunk(stream_id, event.text))
 
     async def __emit_state(self) -> None:
         await self.__sink.send(Envelope.make_event(EVT_STATE, self.__session.to_dict()))
 
-    async def __emit_usage(self, turn_end: TurnEnd, model: str) -> None:
+    async def __emit_usage(self, turn_end: TurnEnd, model: str, duration_seconds: float) -> None:
         await self.__sink.send(
             Envelope.make_event(
                 EVT_USAGE_UPDATE,
                 {
                     "cumulative_usd": round(self.__cumulative_usd, 6),
+                    "duration_seconds": round(duration_seconds, 3),
                     "last_call_tokens": {
                         "input": turn_end.usage.input_tokens,
                         "output": turn_end.usage.output_tokens,

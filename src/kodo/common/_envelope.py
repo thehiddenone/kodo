@@ -9,7 +9,7 @@ from typing import Literal, cast
 
 __all__ = ["Envelope", "MessageKind"]
 
-MessageKind = Literal["request", "response", "event", "stream_chunk", "stream_end"]
+MessageKind = Literal["request", "response", "event", "stream_chunk", "thinking_chunk", "stream_end"]
 
 
 def _new_id() -> str:
@@ -109,6 +109,23 @@ class Envelope:
         return cls(
             kind="stream_chunk",
             payload={"type": "agent.tokens", "text": text},
+            correlation_id=correlation_id,
+        )
+
+    @classmethod
+    def make_thinking_chunk(cls, correlation_id: str, text: str) -> Envelope:
+        """Create a thinking-token chunk envelope.
+
+        Args:
+            correlation_id (str): Stream identifier.
+            text (str): Thinking text fragment.
+
+        Returns:
+            Envelope: A ``thinking_chunk`` envelope.
+        """
+        return cls(
+            kind="thinking_chunk",
+            payload={"type": "agent.thinking", "text": text},
             correlation_id=correlation_id,
         )
 

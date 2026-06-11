@@ -16,12 +16,14 @@ import itertools
 import json
 import logging
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ._interface import (
     LLMPlugin,
     Message,
     StreamEvent,
+    ThinkingDelta,
     TokenDelta,
     ToolCallEvent,
     ToolSpec,
@@ -84,8 +86,11 @@ class LoggingLLMPlugin(LLMPlugin):
         self._log_dir.mkdir(parents=True, exist_ok=True)
         prefix = f"{n:04d}"
 
+        request_dt = datetime.now(UTC)
+        request_ts = request_dt.strftime("%Y-%m-%d %H:%M:%S")
         request_data: dict[str, object] = {
             "n": n,
+            "request_timestamp": request_ts,
             "stream_id": stream_id,
             "model": model,
             "system": system,
@@ -116,8 +121,12 @@ class LoggingLLMPlugin(LLMPlugin):
                 yield event
         finally:
             response_path = self._log_dir / f"{prefix}_response.json"
+            response_dt = datetime.now(UTC)
             response_data: dict[str, object] = {
                 "n": n,
+                "request_timestamp": request_ts,
+                "response_timestamp": response_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "duration": (response_dt - request_dt).total_seconds(),
                 "stream_id": stream_id,
                 "model": model,
                 "events": events,
@@ -132,6 +141,8 @@ class LoggingLLMPlugin(LLMPlugin):
 
 
 def _event_to_dict(event: StreamEvent) -> dict[str, object]:
+    if isinstance(event, ThinkingDelta):
+        return {"type": "thinking_delta", "text": event.text}
     if isinstance(event, TokenDelta):
         return {"type": "token_delta", "text": event.text}
     if isinstance(event, ToolCallEvent):
