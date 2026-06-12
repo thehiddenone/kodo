@@ -64,7 +64,7 @@ def _make_surface(
         index = ProjectIndex()
     session = SessionState()
     session.autonomous = autonomous
-    gate = GateOrchestrator(_make_app_state())
+    gate = GateOrchestrator(_make_app_state(), MagicMock())
 
     async def _stub_run_subagent(name: str, task: str, ids: list[str]) -> list[str]:
         return [f"stub-artifact-{name}"]
@@ -336,7 +336,7 @@ async def test_finalize_project_sets_session_phase_to_done() -> None:
     """
     index = ProjectIndex()
     session = SessionState()
-    gate = GateOrchestrator(_make_app_state())
+    gate = GateOrchestrator(_make_app_state(), MagicMock())
 
     async def _stub(name: str, task: str, ids: list[str]) -> list[str]:
         return []
@@ -391,7 +391,7 @@ async def test_rollback_calls_rollback_fn() -> None:
 
     index = ProjectIndex()
     session = SessionState()
-    gate = GateOrchestrator(_make_app_state())
+    gate = GateOrchestrator(_make_app_state(), MagicMock())
 
     async def _stub(name: str, task: str, ids: list[str]) -> list[str]:
         return []

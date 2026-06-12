@@ -166,7 +166,7 @@ class ThinkingStreamParser:
                 if idx >= 0:
                     if idx > 0:
                         events.append(ThinkingDelta(text=self._buffer[:idx]))
-                    self._buffer = self._buffer[idx + len(_THINK_CLOSE):]
+                    self._buffer = self._buffer[idx + len(_THINK_CLOSE) :]
                     self._in_thinking = False
                 else:
                     hold = min(len(_THINK_CLOSE) - 1, len(self._buffer))
@@ -180,7 +180,7 @@ class ThinkingStreamParser:
                 if idx >= 0:
                     if idx > 0:
                         events.append(TokenDelta(text=self._buffer[:idx]))
-                    self._buffer = self._buffer[idx + len(_THINK_OPEN):]
+                    self._buffer = self._buffer[idx + len(_THINK_OPEN) :]
                     self._in_thinking = True
                 else:
                     hold = min(len(_THINK_OPEN) - 1, len(self._buffer))
@@ -196,9 +196,7 @@ class ThinkingStreamParser:
         if not self._buffer:
             return []
         event: StreamEvent = (
-            ThinkingDelta(text=self._buffer)
-            if self._in_thinking
-            else TokenDelta(text=self._buffer)
+            ThinkingDelta(text=self._buffer) if self._in_thinking else TokenDelta(text=self._buffer)
         )
         self._buffer = ""
         return [event]
@@ -414,6 +412,10 @@ class LlamaPlugin(LLMPlugin):
                 finish_reason = choice.finish_reason
 
             delta = choice.delta
+            reasoning_content = getattr(delta, "reasoning_content", None)
+            if reasoning_content:
+                yield ThinkingDelta(text=reasoning_content)
+
             if delta.content:
                 for event in parser.feed(delta.content):
                     yield event

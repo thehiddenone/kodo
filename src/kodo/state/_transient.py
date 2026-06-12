@@ -25,6 +25,8 @@ __all__ = ["TransientStore"]
 
 _log = logging.getLogger(__name__)
 
+_UNSET: object = object()
+
 
 def _new_session_id() -> str:
     """Return a new session ID based on the current POSIX timestamp."""
@@ -72,6 +74,7 @@ class TransientStore:
     __stage: str
     __last_prompt: str
     __autonomous: bool
+    __pending_prompt: dict[str, object] | None
     __lock: asyncio.Lock
 
     def __init__(self, kodo_dir: Path) -> None:
@@ -86,6 +89,7 @@ class TransientStore:
         self.__stage = "IDLE"
         self.__last_prompt = ""
         self.__autonomous = False
+        self.__pending_prompt = None
         self.__lock = asyncio.Lock()
 
     @property
@@ -120,6 +124,15 @@ class TransientStore:
         """Whether autonomous mode is active."""
         return self.__autonomous
 
+    @property
+    def pending_prompt(self) -> dict[str, object] | None:
+        """The outstanding ``prompt.question``/``prompt.approval`` request, if any.
+
+        Persisted so that a server restart with an unanswered prompt can
+        re-surface it to the user instead of silently dropping it.
+        """
+        return self.__pending_prompt
+
     def attach_session(self, session_id: str, resumed: bool) -> None:
         """Attach to an existing session or create a new one.
 
@@ -150,6 +163,7 @@ class TransientStore:
         stage: str | None = None,
         prompt: str | None = None,
         autonomous: bool | None = None,
+        pending_prompt: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
     ) -> None:
         """Update mutable fields and flush ``transient.json`` to disk.
 
@@ -157,6 +171,9 @@ class TransientStore:
             stage (str | None): New stage name if changed.
             prompt (str | None): Developer prompt to persist for resume.
             autonomous (bool | None): New autonomous flag if changed.
+            pending_prompt (dict[str, object] | None): Outstanding
+                ``prompt.question``/``prompt.approval`` request to persist,
+                or ``None`` to clear it. Left unchanged if omitted.
         """
         if stage is not None:
             self.__stage = stage
@@ -164,6 +181,8 @@ class TransientStore:
             self.__last_prompt = prompt
         if autonomous is not None:
             self.__autonomous = autonomous
+        if pending_prompt is not _UNSET:
+            self.__pending_prompt = pending_prompt
         if self.__paths is not None:
             self.__flush(self.__paths)
 
@@ -238,6 +257,8 @@ class TransientStore:
             self.__stage = str(data.get("stage", "IDLE"))
             self.__last_prompt = str(data.get("last_prompt", ""))
             self.__autonomous = bool(data.get("autonomous", False))
+            pending = data.get("pending_prompt")
+            self.__pending_prompt = pending if isinstance(pending, dict) else None
         except Exception:
             _log.warning("Could not parse transient.json — using defaults")
 
@@ -253,5 +274,6 @@ class TransientStore:
             "stage": self.__stage,
             "last_prompt": self.__last_prompt,
             "autonomous": self.__autonomous,
+            "pending_prompt": self.__pending_prompt,
         }
         paths.transient.write_text(json.dumps(data, indent=2), encoding="utf-8")

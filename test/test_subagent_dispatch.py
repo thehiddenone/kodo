@@ -44,7 +44,7 @@ def _make_app_state() -> MagicMock:
 def _make_gate(answer: str = "") -> GateOrchestrator:
     """Return a GateOrchestrator whose fire_question always resolves to answer."""
     state = _make_app_state()
-    gate = GateOrchestrator(state)
+    gate = GateOrchestrator(state, MagicMock())
 
     # Override fire_question to resolve immediately
     async def _instant_question(question: str, mode: str, choices=None) -> QuestionResponse:

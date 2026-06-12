@@ -138,6 +138,10 @@ def _make_hello_handler(config: Config, engine: WorkflowEngine) -> HandlerFn:
         state_evt = Envelope.make_event("state", engine.session.to_dict())
         await state.send(state_evt)
 
+        history = engine.history_entries()
+        if history:
+            await state.send(Envelope.make_event("session.history", {"entries": history}))
+
     return _handle_hello
 
 
@@ -401,9 +405,9 @@ def create_app(config: Config) -> web.Application:
     outbox = Outbox()
     dispatcher = WebSocketDispatcher(outbox)
     key_broker = KeyBroker(dispatcher)
-    gate = GateOrchestrator(dispatcher)
-
     transient = TransientStore(layout.kodo_dir)
+    gate = GateOrchestrator(dispatcher, transient)
+
     registry = AgentRegistry(_AGENTS_DIR)
     mirror = CheckpointManager(layout)
 

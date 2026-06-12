@@ -26,6 +26,7 @@ import uuid
 from dataclasses import dataclass
 
 from kodo.common import Envelope
+from kodo.state import TransientStore
 from kodo.transport import SREQ_PROMPT_APPROVAL, SREQ_PROMPT_QUESTION, WebSocketDispatcher
 
 __all__ = ["ApprovalResponse", "GateOrchestrator", "QuestionResponse"]
@@ -73,15 +74,20 @@ class GateOrchestrator:
     Args:
         app_state: WebSocket application state used to send frames and
             register response futures.
+        transient: Session store used to persist the outstanding prompt so
+            it can be re-surfaced if the server restarts before the user
+            responds.
     """
 
-    def __init__(self, app_state: WebSocketDispatcher) -> None:
+    def __init__(self, app_state: WebSocketDispatcher, transient: TransientStore) -> None:
         """Initialise with the application state.
 
         Args:
             app_state (AppState): WebSocket application state.
+            transient (TransientStore): Session store for pending-prompt persistence.
         """
         self.__app_state = app_state
+        self.__transient = transient
 
     async def fire_approval(
         self,
@@ -108,25 +114,36 @@ class GateOrchestrator:
         future: asyncio.Future[dict[str, object]] = loop.create_future()
         self.__app_state.register_response_future(req_id, future)
 
-        await self.__app_state.send(
-            Envelope(
-                kind="request",
-                id=req_id,
-                payload={
-                    "type": SREQ_PROMPT_APPROVAL,
-                    "gate_type": gate_type,
-                    "artifact_id": artifact_id,
-                    "summary": summary,
-                },
-            )
+        self.__transient.update(
+            pending_prompt={
+                "kind": "approval",
+                "gate_type": gate_type,
+                "artifact_id": artifact_id,
+                "summary": summary,
+            }
         )
-        _log.info("Approval gate fired: type=%s req_id=%s", gate_type, req_id[:8])
+        try:
+            await self.__app_state.send(
+                Envelope(
+                    kind="request",
+                    id=req_id,
+                    payload={
+                        "type": SREQ_PROMPT_APPROVAL,
+                        "gate_type": gate_type,
+                        "artifact_id": artifact_id,
+                        "summary": summary,
+                    },
+                )
+            )
+            _log.info("Approval gate fired: type=%s req_id=%s", gate_type, req_id[:8])
 
-        response_payload = await future
-        action = str(response_payload.get("action", "agree"))
-        feedback = str(response_payload.get("feedback_text") or "")
-        _log.info("Approval gate resolved: req_id=%s action=%s", req_id[:8], action)
-        return ApprovalResponse(action=action, feedback=feedback)
+            response_payload = await future
+            action = str(response_payload.get("action", "agree"))
+            feedback = str(response_payload.get("feedback_text") or "")
+            _log.info("Approval gate resolved: req_id=%s action=%s", req_id[:8], action)
+            return ApprovalResponse(action=action, feedback=feedback)
+        finally:
+            self.__transient.update(pending_prompt=None)
 
     async def fire_question(
         self,
@@ -159,14 +176,25 @@ class GateOrchestrator:
         if choices:
             payload["choices"] = choices
 
-        await self.__app_state.send(Envelope(kind="request", id=req_id, payload=payload))
-        _log.info("Question fired: mode=%s req_id=%s", mode, req_id[:8])
+        self.__transient.update(
+            pending_prompt={
+                "kind": "question",
+                "question": question,
+                "mode": mode,
+                "choices": choices,
+            }
+        )
+        try:
+            await self.__app_state.send(Envelope(kind="request", id=req_id, payload=payload))
+            _log.info("Question fired: mode=%s req_id=%s", mode, req_id[:8])
 
-        response_payload = await future
-        answer_text = str(response_payload.get("answer_text") or "")
-        choice_key = str(response_payload.get("choice_key") or "")
-        _log.info("Question resolved: req_id=%s", req_id[:8])
-        return QuestionResponse(answer_text=answer_text, choice_key=choice_key)
+            response_payload = await future
+            answer_text = str(response_payload.get("answer_text") or "")
+            choice_key = str(response_payload.get("choice_key") or "")
+            _log.info("Question resolved: req_id=%s", req_id[:8])
+            return QuestionResponse(answer_text=answer_text, choice_key=choice_key)
+        finally:
+            self.__transient.update(pending_prompt=None)
 
     # Alias so ToolSurface and existing call sites use fire() unchanged.
     fire = fire_approval

@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import shutil
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -170,6 +171,7 @@ class WorkflowEngine:
         the worker task.
         """
         await self.__mirror.ensure_initialized()
+        self.__clear_llm_request_logs()
 
         result = ProjectBootstrap(
             mirror_dir=self.__layout.checkpoints_dir,
@@ -186,6 +188,11 @@ class WorkflowEngine:
 
         if result.orchestrator_resumed:
             self.__orch_messages = self.__load_orch_messages()
+            pending = self.__transient.pending_prompt
+            if pending is not None:
+                asyncio.create_task(
+                    self.__resume_pending_prompt(pending), name="kodo-resume-prompt"
+                )
 
         self.__worker = asyncio.create_task(self.__run_worker(), name="kodo-worker")
         _log.info(
@@ -194,6 +201,69 @@ class WorkflowEngine:
             result.orchestrator_resumed,
             len(self.__orch_messages),
         )
+
+    async def __resume_pending_prompt(self, pending: dict[str, object]) -> None:
+        """Re-surface a ``prompt.question``/``prompt.approval`` lost to a server restart.
+
+        The original LLM turn that issued the prompt was never persisted (it
+        only lands in ``session.jsonl`` once the turn completes), so it
+        cannot be resumed in place. Instead, re-fire the same prompt to the
+        client and feed the user's answer back to the Orchestrator as a new
+        input describing what was asked and how it was answered.
+        """
+        self.__session.phase = "awaiting_user"
+        await self.__emit_state()
+
+        kind = pending.get("kind")
+        try:
+            if kind == "question":
+                question = str(pending.get("question", ""))
+                mode = str(pending.get("mode", "free_text"))
+                raw_choices = pending.get("choices")
+                choices: list[dict[str, str]] | None = None
+                if isinstance(raw_choices, list):
+                    choices = [
+                        {"key": str(c.get("key", "")), "label": str(c.get("label", ""))}
+                        for c in raw_choices
+                        if isinstance(c, dict)
+                    ]
+                response = await self.__gate.fire_question(question, mode, choices)
+                answer = response.choice_key or response.answer_text
+                text = (
+                    f'(Resuming after restart) You previously asked the user: "{question}". '
+                    f"Their answer: {answer}"
+                )
+            elif kind == "approval":
+                gate_type = str(pending.get("gate_type", ""))
+                artifact_id = pending.get("artifact_id")
+                summary = str(pending.get("summary", ""))
+                approval = await self.__gate.fire_approval(
+                    gate_type,
+                    artifact_id=artifact_id if isinstance(artifact_id, str) else None,
+                    summary=summary,
+                )
+                text = f'(Resuming after restart) You previously requested approval: "{summary}". '
+                text += f"The user responded: {approval.action}"
+                if approval.feedback:
+                    text += f" — feedback: {approval.feedback}"
+            else:
+                return
+        except Exception:
+            _log.exception("Failed to resume pending prompt")
+            return
+
+        await self.__queue.put({"text": text, "request_id": ""})
+
+    def __clear_llm_request_logs(self) -> None:
+        """Remove all previously logged LLM requests/responses on (re)start."""
+        logs_dir = self.__layout.llm_requests_dir
+        if not logs_dir.is_dir():
+            return
+        for entry in logs_dir.iterdir():
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
 
     async def stop(self) -> None:
         """Cancel the worker and transition the session to stopped state."""
@@ -707,6 +777,46 @@ class WorkflowEngine:
         self.__tool_surface = self.__make_tool_surface()
         self.__transient.attach_session(result.orchestrator_session_id, result.orchestrator_resumed)
         _log.info("Post-rollback Orchestrator session: %s", self.__orch_session_id)
+
+    def history_entries(self) -> list[dict[str, object]]:
+        """Convert the resumed Orchestrator message history into client-facing entries.
+
+        Returns:
+            list[dict[str, object]]: ``user_message`` / ``assistant_response`` /
+            ``tool_call`` entries in the shape expected by the VSIX webview's
+            ``session.history`` handler.
+        """
+        tool_desc = {t.name: t.description for t in ORCHESTRATOR_TOOLS}
+        entries: list[dict[str, object]] = []
+        for msg in self.__orch_messages:
+            if isinstance(msg.content, str):
+                if msg.role in ("user", "assistant") and msg.content:
+                    kind = "user_message" if msg.role == "user" else "assistant_response"
+                    entries.append({"type": kind, "content": msg.content})
+                continue
+            if msg.role == "assistant":
+                text = "".join(
+                    str(b.get("text", "")) for b in msg.content if b.get("type") == "text"
+                )
+                if text:
+                    entries.append({"type": "assistant_response", "content": text})
+                for block in msg.content:
+                    if block.get("type") == "tool_use":
+                        name = str(block.get("name", ""))
+                        entries.append(
+                            {
+                                "type": "tool_call",
+                                "toolName": name,
+                                "description": tool_desc.get(name, ""),
+                            }
+                        )
+            elif msg.role == "user":
+                text = "".join(
+                    str(b.get("text", "")) for b in msg.content if b.get("type") == "text"
+                )
+                if text:
+                    entries.append({"type": "user_message", "content": text})
+        return entries
 
     def __load_orch_messages(self) -> list[Message]:
         raw = self.__transient.read_messages()

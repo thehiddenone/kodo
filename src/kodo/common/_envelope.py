@@ -9,7 +9,9 @@ from typing import Literal, cast
 
 __all__ = ["Envelope", "MessageKind"]
 
-MessageKind = Literal["request", "response", "event", "stream_chunk", "thinking_chunk", "stream_end"]
+MessageKind = Literal[
+    "request", "response", "event", "stream_chunk", "thinking_chunk", "stream_end"
+]
 
 
 def _new_id() -> str:

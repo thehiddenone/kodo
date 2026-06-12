@@ -35,6 +35,13 @@ def _make_app_state() -> MagicMock:
     return state
 
 
+def _make_transient() -> MagicMock:
+    """Mock TransientStore that no-ops pending-prompt persistence."""
+    transient = MagicMock()
+    transient.update = MagicMock()
+    return transient
+
+
 def _get_sent_payloads(state: MagicMock) -> list[dict[str, object]]:
     return [call.args[0].payload for call in state.send.call_args_list]
 
@@ -83,7 +90,7 @@ async def test_fire_approval_sends_kind_request() -> None:
     then a kind=request frame with type=prompt.approval is emitted.
     """
     state = _make_app_state()
-    gate = GateOrchestrator(state)
+    gate = GateOrchestrator(state, _make_transient())
 
     async def _fire_and_resolve() -> ApprovalResponse:
         task = asyncio.create_task(gate.fire_approval("narrative", summary="Ready"))
@@ -111,7 +118,7 @@ async def test_fire_approval_agree_returns_empty_feedback() -> None:
     then ApprovalResponse.feedback is empty.
     """
     state = _make_app_state()
-    gate = GateOrchestrator(state)
+    gate = GateOrchestrator(state, _make_transient())
 
     async def _run() -> ApprovalResponse:
         task = asyncio.create_task(gate.fire_approval("requirements", summary="s"))
@@ -132,7 +139,7 @@ async def test_fire_approval_feedback_carries_text() -> None:
     then ApprovalResponse.feedback contains the text.
     """
     state = _make_app_state()
-    gate = GateOrchestrator(state)
+    gate = GateOrchestrator(state, _make_transient())
 
     async def _run() -> ApprovalResponse:
         task = asyncio.create_task(gate.fire_approval("design", summary="s"))
@@ -154,7 +161,7 @@ async def test_fire_approval_request_id_matches_registered_future() -> None:
     The request envelope id must match the key registered in register_response_future.
     """
     state = _make_app_state()
-    gate = GateOrchestrator(state)
+    gate = GateOrchestrator(state, _make_transient())
 
     async def _run() -> None:
         task = asyncio.create_task(gate.fire_approval("plan", summary="s"))
@@ -182,7 +189,7 @@ async def test_fire_question_free_text_sends_kind_request() -> None:
     then a kind=request frame with type=prompt.question is emitted.
     """
     state = _make_app_state()
-    gate = GateOrchestrator(state)
+    gate = GateOrchestrator(state, _make_transient())
 
     async def _run() -> QuestionResponse:
         task = asyncio.create_task(gate.fire_question("What should we build?", "free_text"))
@@ -207,7 +214,7 @@ async def test_fire_question_choice_mode_returns_choice_key() -> None:
     then QuestionResponse.choice_key carries the selection.
     """
     state = _make_app_state()
-    gate = GateOrchestrator(state)
+    gate = GateOrchestrator(state, _make_transient())
     choices = [{"key": "yes", "label": "Yes"}, {"key": "no", "label": "No"}]
 
     async def _run() -> QuestionResponse:
@@ -229,7 +236,7 @@ async def test_fire_question_choices_included_in_payload() -> None:
     then the emitted payload includes the choices list.
     """
     state = _make_app_state()
-    gate = GateOrchestrator(state)
+    gate = GateOrchestrator(state, _make_transient())
     choices = [{"key": "a", "label": "A"}, {"key": "b", "label": "B"}]
 
     async def _run() -> None:
@@ -253,7 +260,7 @@ async def test_fire_question_choices_included_in_payload() -> None:
 async def test_fire_alias_behaves_like_fire_approval() -> None:
     """gate.fire() is an alias for gate.fire_approval()."""
     state = _make_app_state()
-    gate = GateOrchestrator(state)
+    gate = GateOrchestrator(state, _make_transient())
 
     async def _run() -> ApprovalResponse:
         task = asyncio.create_task(gate.fire("implementation", summary="s"))
