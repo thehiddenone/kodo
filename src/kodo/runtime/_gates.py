@@ -141,9 +141,16 @@ class GateOrchestrator:
             action = str(response_payload.get("action", "agree"))
             feedback = str(response_payload.get("feedback_text") or "")
             _log.info("Approval gate resolved: req_id=%s action=%s", req_id[:8], action)
-            return ApprovalResponse(action=action, feedback=feedback)
-        finally:
             self.__transient.update(pending_prompt=None)
+            return ApprovalResponse(action=action, feedback=feedback)
+        except asyncio.CancelledError:
+            # Leave pending_prompt persisted — the worker is being cancelled
+            # (e.g. server shutdown) with the prompt still unanswered, so it
+            # can be re-surfaced on resume.
+            raise
+        except Exception:
+            self.__transient.update(pending_prompt=None)
+            raise
 
     async def fire_question(
         self,
@@ -192,9 +199,16 @@ class GateOrchestrator:
             answer_text = str(response_payload.get("answer_text") or "")
             choice_key = str(response_payload.get("choice_key") or "")
             _log.info("Question resolved: req_id=%s", req_id[:8])
-            return QuestionResponse(answer_text=answer_text, choice_key=choice_key)
-        finally:
             self.__transient.update(pending_prompt=None)
+            return QuestionResponse(answer_text=answer_text, choice_key=choice_key)
+        except asyncio.CancelledError:
+            # Leave pending_prompt persisted — the worker is being cancelled
+            # (e.g. server shutdown) with the prompt still unanswered, so it
+            # can be re-surfaced on resume.
+            raise
+        except Exception:
+            self.__transient.update(pending_prompt=None)
+            raise
 
     # Alias so ToolSurface and existing call sites use fire() unchanged.
     fire = fire_approval
