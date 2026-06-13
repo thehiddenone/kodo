@@ -16,6 +16,24 @@ from kodo.subagents._registry import AgentRegistry
 
 _PREAMBLE_TEXT = "# Security Preamble\n\nThese rules apply to every sub-agent."
 
+_TOOLS_TEXT = (
+    "# Kodo Tools\n"
+    "\n"
+    "## fileio_write_file\n"
+    "\n"
+    "- **External name:** Write File\n"
+    "- **Description:** Writes a file to the workspace.\n"
+    "- **When to use:**\n"
+    "  - Saving generated content.\n"
+    "\n"
+    "## fileio_read_file\n"
+    "\n"
+    "- **External name:** Read File\n"
+    "- **Description:** Reads a file from the workspace.\n"
+    "- **When to use:**\n"
+    "  - Loading existing content.\n"
+)
+
 
 def _write_agent(tmp_path: Path, name: str, frontmatter: str, body: str) -> Path:
     content = f"---\n{frontmatter}---\n{body}"
@@ -26,6 +44,12 @@ def _write_agent(tmp_path: Path, name: str, frontmatter: str, body: str) -> Path
 
 def _write_preamble(tmp_path: Path, text: str = _PREAMBLE_TEXT) -> Path:
     p = tmp_path / "preamble.md"
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def _write_tools(tmp_path: Path, text: str = _TOOLS_TEXT) -> Path:
+    p = tmp_path / "tools_kodo.md"
     p.write_text(text, encoding="utf-8")
     return p
 
@@ -99,6 +123,7 @@ def test_load_agent_empty_body(tmp_path: Path) -> None:
 
 def test_registry_get_returns_agent(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
+    _write_tools(tmp_path)
     _write_agent(tmp_path, "narrative_author", "name: narrative_author\n", "Narrative Author.")
     registry = AgentRegistry(tmp_path)
     agent = registry.get("narrative_author")
@@ -108,6 +133,7 @@ def test_registry_get_returns_agent(tmp_path: Path) -> None:
 
 def test_registry_missing_agent_raises(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
+    _write_tools(tmp_path)
     registry = AgentRegistry(tmp_path)
     with pytest.raises(AgentLoadError, match="No subagent file"):
         registry.get("nonexistent")
@@ -115,6 +141,7 @@ def test_registry_missing_agent_raises(tmp_path: Path) -> None:
 
 def test_registry_all_agents_returns_loaded(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
+    _write_tools(tmp_path)
     _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
     _write_agent(tmp_path, "agent_b", "name: agent_b\n", "Prompt B.")
     registry = AgentRegistry(tmp_path)
@@ -124,6 +151,7 @@ def test_registry_all_agents_returns_loaded(tmp_path: Path) -> None:
 
 def test_registry_prepends_preamble_to_every_prompt(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
+    _write_tools(tmp_path)
     _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
     _write_agent(tmp_path, "agent_b", "name: agent_b\n", "Prompt B.")
     registry = AgentRegistry(tmp_path)
@@ -133,6 +161,7 @@ def test_registry_prepends_preamble_to_every_prompt(tmp_path: Path) -> None:
 
 
 def test_registry_missing_preamble_raises(tmp_path: Path) -> None:
+    _write_tools(tmp_path)
     _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
     with pytest.raises(AgentLoadError, match="preamble"):
         AgentRegistry(tmp_path)
@@ -140,6 +169,75 @@ def test_registry_missing_preamble_raises(tmp_path: Path) -> None:
 
 def test_registry_empty_preamble_raises(tmp_path: Path) -> None:
     _write_preamble(tmp_path, "   \n")
+    _write_tools(tmp_path)
     _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
     with pytest.raises(AgentLoadError, match="empty"):
+        AgentRegistry(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Tools section rendering
+# ---------------------------------------------------------------------------
+
+
+def test_registry_missing_tools_file_raises(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
+    with pytest.raises(AgentLoadError, match="tools reference file is missing"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_renders_tools_section_for_agent_tools(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_tools(tmp_path)
+    _write_agent(
+        tmp_path,
+        "agent_a",
+        "name: agent_a\ntools:\n  - fileio_write_file\n  - fileio_read_file\n",
+        "Prompt A.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
+    )
+    registry = AgentRegistry(tmp_path)
+    prompt = registry.get("agent_a").system_prompt
+    assert "{PLACEHOLDER:TOOLS}" not in prompt
+    assert "### Read File (`fileio_read_file`)" in prompt
+    assert "### Write File (`fileio_write_file`)" in prompt
+    assert "- **Description:** Reads a file from the workspace." in prompt
+    assert "- **External name:**" not in prompt
+    # Tools are rendered in a stable, sorted order.
+    assert prompt.index("Read File") < prompt.index("Write File")
+
+
+def test_registry_renders_empty_tools_section_for_agent_with_no_tools(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_tools(tmp_path)
+    _write_agent(
+        tmp_path,
+        "agent_a",
+        "name: agent_a\n",
+        "Prompt A.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
+    )
+    registry = AgentRegistry(tmp_path)
+    prompt = registry.get("agent_a").system_prompt
+    assert "{PLACEHOLDER:TOOLS}" not in prompt
+    assert "## Tools\n\n\n\n## What to Avoid" in prompt
+
+
+def test_registry_unknown_tool_raises(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_tools(tmp_path)
+    _write_agent(
+        tmp_path,
+        "agent_a",
+        "name: agent_a\ntools:\n  - nonexistent_tool\n",
+        "Prompt A.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
+    )
+    with pytest.raises(AgentLoadError, match="nonexistent_tool"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_tools_file_with_no_sections_raises(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_tools(tmp_path, "# Kodo Tools\n\nNo tool sections here.\n")
+    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
+    with pytest.raises(AgentLoadError, match="no tool sections"):
         AgentRegistry(tmp_path)

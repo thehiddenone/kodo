@@ -173,6 +173,10 @@ Be a strict reviewer, but disciplined.
 - For Not functional, the test is whether the section answers "what happens at runtime" vs "how is this assembled." Sections that briefly mention structure as context for behavior are acceptable; sections whose primary content is structure are findings.
 - For Requirements coverage incomplete, every claim must be traceable to a specific cell of the coverage table or a specific requirement ID. Vague coverage complaints are not findings.
 
+## Tools
+
+{PLACEHOLDER:TOOLS}
+
 ## What to Avoid
 
 - Do not produce free-form text. Your sole output is one `publish_artifact` call with `type: "feedback"`.
