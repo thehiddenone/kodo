@@ -14,10 +14,19 @@ from kodo.subagents._registry import AgentRegistry
 # ---------------------------------------------------------------------------
 
 
+_PREAMBLE_TEXT = "# Security Preamble\n\nThese rules apply to every sub-agent."
+
+
 def _write_agent(tmp_path: Path, name: str, frontmatter: str, body: str) -> Path:
     content = f"---\n{frontmatter}---\n{body}"
     p = tmp_path / f"subagent_{name}.md"
     p.write_text(content, encoding="utf-8")
+    return p
+
+
+def _write_preamble(tmp_path: Path, text: str = _PREAMBLE_TEXT) -> Path:
+    p = tmp_path / "preamble.md"
+    p.write_text(text, encoding="utf-8")
     return p
 
 
@@ -89,6 +98,7 @@ def test_load_agent_empty_body(tmp_path: Path) -> None:
 
 
 def test_registry_get_returns_agent(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
     _write_agent(tmp_path, "narrative_author", "name: narrative_author\n", "Narrative Author.")
     registry = AgentRegistry(tmp_path)
     agent = registry.get("narrative_author")
@@ -97,14 +107,39 @@ def test_registry_get_returns_agent(tmp_path: Path) -> None:
 
 
 def test_registry_missing_agent_raises(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
     registry = AgentRegistry(tmp_path)
     with pytest.raises(AgentLoadError, match="No subagent file"):
         registry.get("nonexistent")
 
 
 def test_registry_all_agents_returns_loaded(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
     _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
     _write_agent(tmp_path, "agent_b", "name: agent_b\n", "Prompt B.")
     registry = AgentRegistry(tmp_path)
     names = {a.name for a in registry.all_agents()}
     assert names == {"agent_a", "agent_b"}
+
+
+def test_registry_prepends_preamble_to_every_prompt(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
+    _write_agent(tmp_path, "agent_b", "name: agent_b\n", "Prompt B.")
+    registry = AgentRegistry(tmp_path)
+    for agent in registry.all_agents():
+        assert agent.system_prompt.startswith(_PREAMBLE_TEXT)
+    assert registry.get("agent_a").system_prompt == f"{_PREAMBLE_TEXT}\n\nPrompt A."
+
+
+def test_registry_missing_preamble_raises(tmp_path: Path) -> None:
+    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
+    with pytest.raises(AgentLoadError, match="preamble"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_empty_preamble_raises(tmp_path: Path) -> None:
+    _write_preamble(tmp_path, "   \n")
+    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
+    with pytest.raises(AgentLoadError, match="empty"):
+        AgentRegistry(tmp_path)

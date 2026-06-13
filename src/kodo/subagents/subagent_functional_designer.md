@@ -24,7 +24,7 @@ The agent harness places these files into the appropriate locations (component d
 
 The engine delivers as task input:
 
-- The architecture artifact (`type: "architecture"`) — Responsibility Map, sub-narratives, both appendixes.
+- The architecture artifact (`type: "architecture"`) — Responsibility Map, sub-narratives, the **End-to-End Testability** section (Part 3), and both appendixes.
 - The requirements artifact (`type: "requirements"`) — all per-responsibility requirements, both appendixes.
 - The Narrative artifact (`type: "narrative"`) and the Tech Stack artifact (`type: "tech-stack"`) — for the programming language, framework choices, and product-wide context. The Tech Stack is binding for language and framework decisions.
 - The `project_code` carried by every input artifact.
@@ -89,24 +89,24 @@ The engine handles autonomous mode (when the user is not available) by auto-acce
 
 ### Stage 5 — Per-component design loop
 
-For each component, in the order set by the Design Plan, the engine drives the following sequence:
+For each component, in the order set by the Design Plan, the orchestrator drives the following sequence:
 
 1. Compose the Functional Design document (structure described below) and publish it by calling `publish_artifact` with `type: "functional-design"`, `author: "functional_designer"`, `project_code: <PROJECTCODE>`, `responsibility_code: <COMPONENT_CODENAME>`, `content`, `requirement_ids` set to every requirement ID this component covers, and optional `filename_hint: "functional-design.md"`. Record the returned `artifact_id`.
-2. The engine invokes Functional Design Critic on the published artifact. Critic publishes a `feedback` artifact whose `reviewed_artifact_id` is yours.
-3. When Critic publishes feedback with `verdict: "rejected"`, address each concern, then republish via `publish_artifact` with `supersedes: [<prior_functional_design_id>]`. The engine caps this loop at 5 iterations.
-4. When the engine signals the iteration cap is reached and Critic is still publishing `rejected` feedback, call `escalate_to_user` with `reason: "critic_iteration_cap"`, a `summary` of the dispute, and `blocking_artifact_ids` containing the current functional-design artifact ID and the latest rejected feedback ID(s).
+2. The orchestrator runs Functional Design Critic on the published artifact. Critic publishes a `feedback` artifact whose `reviewed_artifact_id` is yours.
+3. When Critic publishes feedback with `verdict: "rejected"`, address each concern, then republish via `publish_artifact` with `supersedes: [<prior_functional_design_id>]`. The orchestrator decides how many revision rounds to attempt; you do not count iterations or assume a fixed limit.
+4. When the orchestrator signals that it is ending the loop without convergence and Critic is still publishing `rejected` feedback, call `escalate_to_user` with `reason: "critic_iteration_cap"`, a `summary` of the dispute, and `blocking_artifact_ids` containing the current functional-design artifact ID and the latest rejected feedback ID(s).
 5. When Critic publishes feedback with `verdict: "accepted"`, the engine fires an approval gate. User feedback returns to you as the next input. Handle feedback as described in *Feedback handling* below.
 6. Once accepted, the design is locked and the loop advances to the next component. "Locked" means the latest accepted functional-design artifact for the component is the live one in the workspace; do not supersede it unless a reopen requires it.
 
 ### Stage 6 — Handling reopens of locked designs
 
-When a Critic concern implicates a locked design, the engine routes a feedback artifact whose `reviewed_artifact_id` points at the locked design back to you. Republish the locked design via `publish_artifact` with `supersedes: [<locked_design_id>]`. The same 5-iteration cap and `escalate_to_user` path apply.
+When a Critic concern implicates a locked design, the orchestrator routes a feedback artifact whose `reviewed_artifact_id` points at the locked design back to you. Republish the locked design via `publish_artifact` with `supersedes: [<locked_design_id>]`. The same orchestrator-managed iteration budget and `escalate_to_user` path apply.
 
 If the engine signals that reopens have cascaded to more than two locked designs from a single new design, call `escalate_to_user` with `reason: "reopen_cascade"` even if no iteration budget has been spent — a cascade of that depth indicates an interface problem that requires a design-plan-level decision.
 
 ### Stage 7 — Final cross-design pass
 
-Once every component has a locked design, the engine invokes Critic one final time over the complete set, in cross-design mode. Concerns from this pass arrive as `feedback` artifacts whose `reviewed_artifact_id` points at one of the locked designs, handled per Stage 6.
+Once every component has a locked design, the orchestrator runs Critic one final time over the complete set, in cross-design mode. Concerns from this pass arrive as `feedback` artifacts whose `reviewed_artifact_id` points at one of the locked designs, handled per Stage 6.
 
 ### Stage 8 — Run complete
 
@@ -191,6 +191,18 @@ For each interface, also state:
 
 For internal interfaces (between two of this product's components), the consumed shape in one design must exactly match the exposed shape in the other. Critic will check this. Exposed interfaces are the source of truth; if a consumed reference doesn't match, the exposing side is what gets fixed.
 
+#### External-integration seams
+
+When the architecture's *End-to-End Testability* section (Part 3) records the verdict **`applicable`**, every external system in its seams table must be reachable through a **configuration-driven injection point** in the component that owns the integration. Design each consumed *external* interface so the concrete endpoint or client is selected from configuration — a base URL, an endpoint, or a client/transport chosen at startup from a config value — rather than hardwired. The end-to-end suite redirects these to local mocks by injecting configuration alone; nothing in the component's core logic should need to change to point it at a mock.
+
+For each such external integration, the design must make explicit:
+
+- The **configuration key(s)** that select the external endpoint/client, named consistently with the seam the architecture's Part 3 table declares for this integration.
+- The **default** (the real external system) and the fact that an alternate value (a mock) is substitutable without code changes.
+- Where the configuration is read and how it flows to the consumed interface (covered in *Data and state* and reflected in the *Consumed* interface).
+
+When the verdict is **`excluded`**, this subsection does not apply — do not add configuration seams solely for testability.
+
 ### Requirements coverage
 
 A table mapping every requirement ID assigned to this component to the design section(s) that satisfy it. Format:
@@ -211,7 +223,7 @@ The tools you call, by purpose:
 
 - `read_artifact` — fetch any input artifact not already injected inline. Fetch a locked Functional Design for a component via `read_artifact(project_code=<PROJECTCODE>, responsibility_code=<CODENAME>, type="functional-design")`.
 - `publish_artifact` — publish the Design Plan (`type: "design-plan"`) and every Functional Design (`type: "functional-design"`). Every revision is a new publish call with `supersedes: [<prior_id>]`. Returns the new `artifact_id`.
-- `escalate_to_user` — call when (a) DAG validation fails (Stage 2), (b) inputs are insufficient to draft, (c) the Critic iteration cap is reached, (d) reopens cascade beyond two designs from a single new design, or (e) user feedback contains contradictions you cannot resolve.
+- `escalate_to_user` — call when (a) DAG validation fails (Stage 2), (b) inputs are insufficient to draft, (c) the orchestrator ends the Critic loop without convergence, (d) reopens cascade beyond two designs from a single new design, or (e) user feedback contains contradictions you cannot resolve.
 
 The JSON schemas for these tools are defined by the harness. Do not restate or guess at the schemas.
 
@@ -235,6 +247,7 @@ The tool call sequence over a complete Functional Designer run is:
 - Do not invent the programming language or framework choices. Read them from the Tech Stack; if any required choice is missing, call `escalate_to_user` before any design work begins.
 - Do not publish a Functional Design that leaves any of the component's requirement IDs unaddressed. The coverage table must be complete, and `requirement_ids` on the publish call must list every covered ID.
 - Do not specify interfaces with English descriptions when code is possible. Code is the medium; English is the supplement.
+- Do not hardwire an external endpoint or client when the architecture's Part 3 verdict is `applicable`. Each external integration in the seams table must be redirectable to a mock through a configuration-driven injection point, so the end-to-end suite can substitute mocks without code changes. (When the verdict is `excluded`, do not add such seams.)
 - Do not silently incorporate feedback that contradicts the design itself, the requirements artifact, the Narrative, or another part of the same feedback. Surface contradictions via `escalate_to_user` first.
 - Do not modify a locked design without it being formally reopened by a Critic feedback artifact or a user-initiated change routed through the engine.
 - Do not republish any artifact without `supersedes` pointing at the prior version's ID.
