@@ -7,6 +7,7 @@ from ._interface import (
     ToolchainTestResult,
     ToolchainTestScope,
 )
+from ._select import select_toolchain
 from .node._plugin import NodePlugin
 from .python._plugin import PythonPlugin
 
@@ -18,4 +19,5 @@ __all__ = [
     "ToolchainTestScope",
     "PythonPlugin",
     "NodePlugin",
+    "select_toolchain",
 ]

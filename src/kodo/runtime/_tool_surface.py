@@ -1,4 +1,4 @@
-"""Orchestrator tool surface — the 8 tools the Orchestrator may call (FR-ORCH-03).
+"""Orchestrator tool surface — the tools the Orchestrator may call (FR-ORCH-03).
 
 Each tool is defined as a :class:`~kodo.llms._interface.ToolSpec` whose JSON
 schema is the contract the Orchestrator LLM sees.  The :class:`ToolSurface`
@@ -17,10 +17,10 @@ import logging
 from collections.abc import Awaitable, Callable
 
 from kodo.llms._interface import ToolSpec
+from kodo.workspace import ProjectIndex
 from kodo.workspace._models import ArtifactType
 
-from ._gates import ApprovalResponse, GateOrchestrator
-from ._index import ProjectIndex
+from ._gates import GateOrchestrator
 from ._session import SessionState
 
 __all__ = [
@@ -29,6 +29,7 @@ __all__ = [
     "RunAuthorCriticFn",
     "RunSubagentFn",
     "ToolSurface",
+    "orchestrator_tools",
 ]
 
 _log = logging.getLogger(__name__)
@@ -48,13 +49,16 @@ _PER_RESPONSIBILITY_ORDER: tuple[ArtifactType, ...] = (
 # ToolSpec definitions — one per FR-ORCH-03 tool
 # ---------------------------------------------------------------------------
 
-COMPUTE_FRONTIER = ToolSpec(
-    name="compute_frontier",
+QUERY_FRONTIER = ToolSpec(
+    name="query_frontier",
     description=(
-        "Return the per-responsibility frontier: for each responsibility_code, "
-        "the earliest artifact type in the canonical execution order "
+        "Query the most recent status of every artifact and return the "
+        "per-responsibility frontier: for each responsibility_code, the "
+        "earliest artifact type in the canonical execution order "
         "(functional-design → test-plan → test → code) that has zero completed "
-        "entries.  A responsibility absent from the result has all four types completed."
+        "entries.  A responsibility absent from the result has all four types "
+        "completed.  An artifact counts as completed only once an agent marks it "
+        "so via report_artifact_completed; this tool never decides completion."
     ),
     input_schema={"type": "object", "properties": {}, "required": []},
 )
@@ -153,43 +157,6 @@ RUN_AUTHOR_CRITIC_ITERATION = ToolSpec(
     },
 )
 
-REQUEST_USER_APPROVAL = ToolSpec(
-    name="request_user_approval",
-    description=(
-        "Surface an approval gate to the user.  "
-        "Blocks until the user responds with agree or feedback.  "
-        "In autonomous mode the engine auto-resolves to agree."
-    ),
-    input_schema={
-        "type": "object",
-        "properties": {
-            "gate_type": {
-                "type": "string",
-                "enum": [
-                    "narrative",
-                    "architecture",
-                    "requirements",
-                    "plan",
-                    "design",
-                    "test_plan",
-                    "implementation",
-                    "final",
-                ],
-                "description": "Gate type matching the canonical sequence moment.",
-            },
-            "artifact_id": {
-                "type": "string",
-                "description": "ID of the artifact the user should review.",
-            },
-            "summary": {
-                "type": "string",
-                "description": "One-paragraph summary shown to the user.",
-            },
-        },
-        "required": ["gate_type", "summary"],
-    },
-)
-
 ASK_USER = ToolSpec(
     name="ask_user",
     description=(
@@ -219,7 +186,7 @@ ASK_USER = ToolSpec(
                 "description": "Required when mode='choice'.",
             },
         },
-        "required": ["question", "mode"],
+        "required": ["question"],
     },
 )
 
@@ -229,7 +196,9 @@ ROLLBACK = ToolSpec(
         "Invoke the rollback procedure.  "
         "Restores src/ and gen/ from the target mirror commit, clears the workspace, "
         "and starts a fresh Orchestrator session.  "
-        "The Orchestrator MUST confirm with the user via ask_user before calling this."
+        "In interactive mode the Orchestrator MUST confirm with the user via ask_user "
+        "before calling this.  In autonomous mode it decides and documents via post_update; "
+        "there is no user to confirm with."
     ),
     input_schema={
         "type": "object",
@@ -253,17 +222,35 @@ FINALIZE_PROJECT = ToolSpec(
 )
 
 ORCHESTRATOR_TOOLS: list[ToolSpec] = [
-    COMPUTE_FRONTIER,
+    QUERY_FRONTIER,
     LIST_ARTIFACTS,
     START_SUBAGENT,
     RUN_AUTHOR_CRITIC_ITERATION,
-    REQUEST_USER_APPROVAL,
     ASK_USER,
     ROLLBACK,
     FINALIZE_PROJECT,
 ]
 
 ORCHESTRATOR_TOOLS_BY_NAME: dict[str, ToolSpec] = {t.name: t for t in ORCHESTRATOR_TOOLS}
+
+# Orchestrator tools withheld in autonomous mode — kept in sync with the
+# "Autonomous mode: unavailable" markers in tools_kodo.md.
+_AUTONOMOUS_DISABLED: frozenset[str] = frozenset({ASK_USER.name})
+
+
+def orchestrator_tools(autonomous: bool) -> list[ToolSpec]:
+    """Return the Orchestrator's tool list for the current mode.
+
+    Args:
+        autonomous: When ``True``, tools the user must answer (``ask_user``)
+            are withheld, mirroring the leaf-agent registry's autonomous filter.
+
+    Returns:
+        list[ToolSpec]: The tools the Orchestrator may call in this mode.
+    """
+    if autonomous:
+        return [t for t in ORCHESTRATOR_TOOLS if t.name not in _AUTONOMOUS_DISABLED]
+    return list(ORCHESTRATOR_TOOLS)
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +275,7 @@ class ToolSurface:
 
     Args:
         index: Live in-memory artifact index.
-        gate: Approval-gate orchestrator (handles request_user_approval blocking).
+        gate: Gate orchestrator (handles ask_user blocking).
         session: Mutable session state (finalize_project writes phase here).
         run_subagent_fn: Callback to spawn a leaf sub-agent.
         run_author_critic_fn: Callback to run one Author/Critic iteration.
@@ -338,16 +325,14 @@ class ToolSurface:
         Returns:
             str: JSON-encoded tool result the engine returns to the LLM.
         """
-        if tool_name == COMPUTE_FRONTIER.name:
-            return await self.__compute_frontier()
+        if tool_name == QUERY_FRONTIER.name:
+            return await self.__query_frontier()
         if tool_name == LIST_ARTIFACTS.name:
             return await self.__list_artifacts(tool_input)
         if tool_name == START_SUBAGENT.name:
             return await self.__start_subagent(tool_input)
         if tool_name == RUN_AUTHOR_CRITIC_ITERATION.name:
             return await self.__run_author_critic_iteration(tool_input)
-        if tool_name == REQUEST_USER_APPROVAL.name:
-            return await self.__request_user_approval(tool_input)
         if tool_name == ASK_USER.name:
             return await self.__ask_user(tool_input)
         if tool_name == ROLLBACK.name:
@@ -357,10 +342,10 @@ class ToolSurface:
         return json.dumps({"error": f"Unknown orchestrator tool: {tool_name!r}"})
 
     # ------------------------------------------------------------------
-    # compute_frontier
+    # query_frontier
     # ------------------------------------------------------------------
 
-    async def __compute_frontier(self) -> str:
+    async def __query_frontier(self) -> str:
         frontier: list[dict[str, str]] = []
         completed = self.__index.completed_entries()
 
@@ -468,33 +453,7 @@ class ToolSurface:
         return json.dumps(result)
 
     # ------------------------------------------------------------------
-    # request_user_approval
-    # ------------------------------------------------------------------
-
-    async def __request_user_approval(self, tool_input: dict[str, object]) -> str:
-        gate_type = str(tool_input.get("gate_type", ""))
-        artifact_id = tool_input.get("artifact_id")
-        summary = str(tool_input.get("summary", ""))
-
-        _log.info("request_user_approval: gate_type=%s", gate_type)
-
-        # Autonomous mode: auto-agree without surfacing to the user (FR-AUT-02)
-        if self.__session.autonomous:
-            _log.info("Autonomous mode: auto-agreeing gate %s", gate_type)
-            return json.dumps({"action": "agree", "feedback_text": None})
-
-        response: ApprovalResponse = await self.__gate.fire(
-            gate_type,
-            summary=summary,
-            component=str(artifact_id) if artifact_id else None,
-        )
-        result: dict[str, object] = {"action": response.action}
-        if response.feedback:
-            result["feedback_text"] = response.feedback
-        return json.dumps(result)
-
-    # ------------------------------------------------------------------
-    # ask_user (stub — Step 3 wires the real prompt.question machinery)
+    # ask_user
     # ------------------------------------------------------------------
 
     async def __ask_user(self, tool_input: dict[str, object]) -> str:

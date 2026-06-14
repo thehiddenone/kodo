@@ -13,7 +13,6 @@ dependencies = [
     "aiohttp>=3.9",
     "anthropic>=0.97.0",
     "huggingface_hub>=1.17.0",
-    "mcp>=1.27.0",
     "openai>=2.32.0"
 ]
 

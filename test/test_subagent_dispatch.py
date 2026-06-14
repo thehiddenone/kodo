@@ -3,8 +3,9 @@
 Tests verify that SubagentDispatcher:
 - Routes publish_artifact to the Workspace and tracks published IDs.
 - Routes read_artifact to the Workspace and returns serialized results.
-- Routes narrative_report_completed and sets stop_requested=True.
-- Routes escalate_to_user and sets stop_requested=True.
+- Routes report_artifact_completed without forcing a stop.
+- Routes escalate_blocker and sets stop_requested=True.
+- Auto-accepts request_user_review_artifact in autonomous mode.
 - Tools are correctly resolved for known agent tool names.
 """
 
@@ -62,12 +63,15 @@ def _make_dispatcher(
     tmp_path: Path,
     agent_name: str = "test_agent",
     answer: str = "",
+    autonomous: bool = False,
+    workspace: Workspace | None = None,
 ) -> SubagentDispatcher:
     return SubagentDispatcher(
-        workspace=_make_workspace(tmp_path),
+        workspace=workspace if workspace is not None else _make_workspace(tmp_path),
         gate=_make_gate(answer),
         agent_name=agent_name,
         session_id="sess-test",
+        autonomous=autonomous,
     )
 
 
@@ -103,10 +107,10 @@ def test_read_artifact_spec_has_correct_name() -> None:
 def test_leaf_tools_by_name_includes_workspace_and_report_tools() -> None:
     assert "publish_artifact" in LEAF_TOOLS_BY_NAME
     assert "read_artifact" in LEAF_TOOLS_BY_NAME
-    assert "escalate_to_user" in LEAF_TOOLS_BY_NAME
-    assert "narrative_ask_user_question" in LEAF_TOOLS_BY_NAME
-    assert "narrative_present_for_acceptance" in LEAF_TOOLS_BY_NAME
-    assert "narrative_report_completed" in LEAF_TOOLS_BY_NAME
+    assert "escalate_blocker" in LEAF_TOOLS_BY_NAME
+    assert "ask_user" in LEAF_TOOLS_BY_NAME
+    assert "request_user_review_artifact" in LEAF_TOOLS_BY_NAME
+    assert "report_artifact_completed" in LEAF_TOOLS_BY_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +169,8 @@ async def test_publish_artifact_forces_author_from_dispatcher(tmp_path: Path) ->
     """
     Even if the LLM provides a different author, publish uses the dispatcher's agent_name.
     """
-    dispatcher = _make_dispatcher(tmp_path, agent_name="narrative_author")
+    workspace = Workspace(tmp_path)
+    dispatcher = _make_dispatcher(tmp_path, agent_name="narrative_author", workspace=workspace)
     await dispatcher.dispatch(
         "publish_artifact",
         {
@@ -176,8 +181,7 @@ async def test_publish_artifact_forces_author_from_dispatcher(tmp_path: Path) ->
             "author": "impersonated_agent",  # should be ignored
         },
     )
-    # Read the artifact back to check author
-    workspace = Workspace(tmp_path)
+    # Read back via the same workspace (shared index).
     arts = await workspace.read(artifact_id=dispatcher.published_ids[0])
     assert arts[0].author == "narrative_author"
 
@@ -267,48 +271,71 @@ async def test_read_artifact_returns_published_artifact(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# narrative_report_completed
+# report_artifact_completed
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_narrative_report_completed_sets_stop_flag(tmp_path: Path) -> None:
+async def test_report_artifact_completed_does_not_stop(tmp_path: Path) -> None:
     """
-    When narrative_report_completed is dispatched,
-    stop_requested becomes True.
+    report_artifact_completed is a per-artifact signal and does NOT force a
+    stop — a solo agent may report several artifacts and then end naturally.
     """
     dispatcher = _make_dispatcher(tmp_path)
     assert not dispatcher.stop_requested
 
     result_str = await dispatcher.dispatch(
-        "narrative_report_completed",
-        {"narrative_artifact_id": "n1", "tech_stack_artifact_id": "ts1"},
+        "report_artifact_completed",
+        {"artifact_id": "n1"},
     )
     result = json.loads(result_str)
 
     assert result["status"] == "completed"
-    assert dispatcher.stop_requested
+    assert result["artifact_id"] == "n1"
+    assert not dispatcher.stop_requested
 
 
 # ---------------------------------------------------------------------------
-# escalate_to_user
+# escalate_blocker
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_escalate_to_user_sets_stop_flag(tmp_path: Path) -> None:
+async def test_escalate_blocker_sets_stop_flag(tmp_path: Path) -> None:
     """
-    When escalate_to_user is dispatched,
-    stop_requested becomes True.
+    When escalate_blocker is dispatched (interactive), stop_requested becomes
+    True and the user's reply is relayed back.
     """
     dispatcher = _make_dispatcher(tmp_path, answer="user reply")
     result_str = await dispatcher.dispatch(
-        "escalate_to_user",
+        "escalate_blocker",
         {"reason": "cap_reached", "summary": "Need help"},
     )
     result = json.loads(result_str)
+    assert result["status"] == "escalated"
     assert "user_response" in result
     assert dispatcher.stop_requested
+
+
+# ---------------------------------------------------------------------------
+# request_user_review_artifact
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_request_user_review_artifact_autonomous_auto_accepts(tmp_path: Path) -> None:
+    """
+    In autonomous mode, request_user_review_artifact returns an accept without
+    blocking on the user, and does not request a stop.
+    """
+    dispatcher = _make_dispatcher(tmp_path, autonomous=True)
+    result_str = await dispatcher.dispatch(
+        "request_user_review_artifact",
+        {"artifact_id": "a1"},
+    )
+    result = json.loads(result_str)
+    assert result["action"] == "agree"
+    assert not dispatcher.stop_requested
 
 
 # ---------------------------------------------------------------------------

@@ -15,13 +15,13 @@ import pytest
 from kodo.mirror._promoter import Promoter
 from kodo.mirror._repo import MirrorRepo
 from kodo.runtime._bootstrap import ProjectBootstrap
-from kodo.runtime._index import IndexEntry, ProjectIndex
 from kodo.toolchains._interface import (
     ToolchainBuildResult,
     ToolchainPlugin,
     ToolchainTestResult,
     ToolchainTestScope,
 )
+from kodo.workspace import IndexEntry, ProjectIndex
 from kodo.workspace._models import Artifact, ArtifactType
 
 # ---------------------------------------------------------------------------
@@ -174,6 +174,7 @@ def test_project_index_add_and_get_by_id(tmp_path: Path) -> None:
         requirement_ids=[],
         session_id=None,
         author="agent",
+        created_at=datetime.now(tz=UTC),
         last_modified=datetime.now(tz=UTC),
     )
     index.add(entry)
@@ -201,6 +202,7 @@ def test_project_index_get_by_key_returns_matching_entries(tmp_path: Path) -> No
             requirement_ids=[],
             session_id=None,
             author="coder",
+            created_at=datetime.now(tz=UTC),
             last_modified=datetime.now(tz=UTC),
         )
 
@@ -229,6 +231,7 @@ def test_project_index_remove_makes_entry_absent(tmp_path: Path) -> None:
         requirement_ids=[],
         session_id="sess-1",
         author="agent",
+        created_at=datetime.now(tz=UTC),
         last_modified=datetime.now(tz=UTC),
     )
     index.add(entry)

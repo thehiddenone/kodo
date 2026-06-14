@@ -21,9 +21,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from kodo.state._transient import _new_session_id
-from kodo.workspace._models import ArtifactType
+from kodo.workspace import IndexEntry, ProjectIndex
+from kodo.workspace._models import ArtifactType, Verdict
 
-from ._index import IndexEntry, ProjectIndex
 from ._orchestrator import OrchestratorMarker
 
 _log = logging.getLogger(__name__)
@@ -139,6 +139,11 @@ class ProjectBootstrap:
                 requirement_ids=[str(r) for r in req_raw] if isinstance(req_raw, list) else [],
                 session_id=str(data["session_id"]) if data.get("session_id") else None,
                 author=str(data.get("author") or ""),
+                created_at=(
+                    datetime.fromisoformat(str(data["created_at"]))
+                    if data.get("created_at")
+                    else mtime
+                ),
                 last_modified=mtime,
             )
         except Exception:
@@ -182,7 +187,16 @@ class ProjectBootstrap:
                 requirement_ids=[str(r) for r in req_raw] if isinstance(req_raw, list) else [],
                 session_id=str(data["session_id"]) if data.get("session_id") else None,
                 author=str(data.get("author") or ""),
+                created_at=(
+                    datetime.fromisoformat(str(data["created_at"]))
+                    if data.get("created_at")
+                    else mtime
+                ),
                 last_modified=mtime,
+                verdict=Verdict(str(data["verdict"])) if data.get("verdict") else None,
+                reviewed_artifact_id=(
+                    str(data["reviewed_artifact_id"]) if data.get("reviewed_artifact_id") else None
+                ),
             )
         except Exception:
             _log.exception("Phase 2: failed to parse workspace file %s — skipping", path)

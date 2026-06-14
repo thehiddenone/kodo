@@ -8,7 +8,6 @@ use and reused across restarts when the session is resumed.  Layout::
         transient.json   — mutable runtime state (stage, prompt, autonomous)
         session.jsonl    — append-only orchestrator LLM context (all messages)
         agents/          — per-sub-agent JSONL call logs
-        mcp/             — per-MCP-tool JSONL call logs
 """
 
 from __future__ import annotations
@@ -52,10 +51,6 @@ class _SessionPaths:
     @property
     def agents(self) -> Path:
         return self.root / "agents"
-
-    @property
-    def mcp(self) -> Path:
-        return self.root / "mcp"
 
 
 class TransientStore:
@@ -152,7 +147,6 @@ class TransientStore:
         else:
             paths.root.mkdir(parents=True, exist_ok=True)
             paths.agents.mkdir(exist_ok=True)
-            paths.mcp.mkdir(exist_ok=True)
             self.__write_meta(paths)
             self.__flush(paths)
             _log.info("Transient session created: %s", session_id)
@@ -226,23 +220,6 @@ class TransientStore:
         if self.__paths is None:
             return
         path = self.__paths.agents / f"{agent_name}.jsonl"
-        line = json.dumps(record, default=str) + "\n"
-        async with self.__lock:
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: path.open("a", encoding="utf-8").write(line)
-            )
-
-    async def write_mcp_record(self, tool_name: str, record: dict[str, object]) -> None:
-        """Append one JSON record to an MCP tool's JSONL log.
-
-        Args:
-            tool_name (str): Tool identifier; slashes and dots become underscores.
-            record (dict[str, object]): Arbitrary JSON-serialisable data.
-        """
-        if self.__paths is None:
-            return
-        safe_name = tool_name.replace("/", "_").replace(".", "_")
-        path = self.__paths.mcp / f"{safe_name}.jsonl"
         line = json.dumps(record, default=str) + "\n"
         async with self.__lock:
             await asyncio.get_event_loop().run_in_executor(

@@ -2,7 +2,7 @@
 
 Verifies that sessions are created under .kodo/sessions/, transient.json and
 meta.json are written correctly, state updates are persisted in place, resumed
-sessions load prior state, and agent/mcp/message logs are appended properly.
+sessions load prior state, and agent/message logs are appended properly.
 """
 
 import json
@@ -56,7 +56,6 @@ def test_meta_json_written_on_new_session(store: TransientStore) -> None:
 def test_session_dir_layout_on_new_session(store: TransientStore) -> None:
     assert store.session_dir.is_dir()
     assert (store.session_dir / "agents").is_dir()
-    assert (store.session_dir / "mcp").is_dir()
 
 
 def test_session_id_matches_attach_argument(store: TransientStore) -> None:
@@ -220,17 +219,3 @@ async def test_different_agents_get_separate_files(store: TransientStore) -> Non
     await store.write_agent_record("architect", {"x": 2})
     assert (store.session_dir / "agents" / "narrative_author.jsonl").exists()
     assert (store.session_dir / "agents" / "architect.jsonl").exists()
-
-
-# ---------------------------------------------------------------------------
-# MCP JSONL logs
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_mcp_records_are_written_separately(store: TransientStore) -> None:
-    await store.write_mcp_record("tools/fileio.read_file", {"op": "read"})
-    mcp_file = store.session_dir / "mcp" / "tools_fileio_read_file.jsonl"
-    assert mcp_file.exists()
-    record = json.loads(mcp_file.read_text(encoding="utf-8").strip())
-    assert record["op"] == "read"

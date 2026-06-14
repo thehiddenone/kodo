@@ -42,11 +42,12 @@ from kodo.llms._logger import LoggingLLMPlugin
 from kodo.llms._tool_logger import ToolCallLogger
 from kodo.llms.anthropic import ClaudePlugin, UnrecoverableError
 from kodo.llms.llamacpp import LlamaPlugin
-from kodo.mirror import CheckpointManager
+from kodo.mirror import CheckpointManager, Promoter, PromoterError
 from kodo.project import ProjectLayout, kodo_user_dir
 from kodo.state import TransientStore
 from kodo.subagents import AgentRegistry
 from kodo.subagents._loader import AgentLoadError
+from kodo.toolchains import ToolchainPlugin, select_toolchain
 from kodo.transport import (
     EVT_AGENT_FINISHED,
     EVT_AGENT_STARTED,
@@ -59,17 +60,18 @@ from kodo.transport import (
     EVT_STATE,
     EVT_USAGE_UPDATE,
 )
-from kodo.workspace import ArtifactType, Workspace
+from kodo.workspace import ArtifactType, ComponentRegistry, ProjectIndex, Workspace
+from kodo.workspace._materialization import materialization_path
 
 from ._bootstrap import ProjectBootstrap
 from ._gates import GateOrchestrator
-from ._index import ProjectIndex
 from ._rollback import Rollback
 from ._session import SessionState
 from ._subagent_dispatch import SubagentDispatcher, tools_for_agent
 from ._tool_surface import (
     ORCHESTRATOR_TOOLS,
     ToolSurface,
+    orchestrator_tools,
 )
 
 __all__ = ["WorkflowEngine"]
@@ -143,15 +145,16 @@ class WorkflowEngine:
         self.__layout = layout
         self.__registry = registry
         self.__mirror = mirror
-        self.__workspace = Workspace(layout.root)
+        self.__index = ProjectIndex()
+        self.__workspace = Workspace(layout.root, self.__index)
         self.__queue = asyncio.Queue()
         self.__session = SessionState()
-        self.__index = ProjectIndex()
         self.__worker = None
         self.__cumulative_usd = 0.0
         self.__orch_messages = []
         self.__orch_session_id = ""
         self.__current_vendor = None
+        self.__toolchain: ToolchainPlugin | None = None
         self.__tool_surface = self.__make_tool_surface()
 
     @property
@@ -181,6 +184,7 @@ class WorkflowEngine:
         ).run()
 
         self.__index = result.index
+        self.__workspace.bind_index(self.__index)
         self.__orch_session_id = result.orchestrator_session_id
         self.__tool_surface = self.__make_tool_surface()
 
@@ -421,7 +425,7 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     async def __run_orchestrator_with_input(self, text: str) -> None:
-        agent = self.__registry.get(_ORCHESTRATOR_AGENT_NAME)
+        agent = self.__registry.get(_ORCHESTRATOR_AGENT_NAME, self.__session.autonomous)
         plugin, model_id = await self.__resolve_plugin(agent.capability)
 
         pre_turn_len = len(self.__orch_messages)
@@ -439,7 +443,7 @@ class WorkflowEngine:
             model=model_id,
             system_prompt=agent.system_prompt,
             messages=self.__orch_messages,
-            tools=list(ORCHESTRATOR_TOOLS),
+            tools=orchestrator_tools(self.__session.autonomous),
             tool_dispatch=self.__dispatch_orchestrator_tool,
             stream_id=stream_id,
         )
@@ -624,7 +628,7 @@ class WorkflowEngine:
         Returns:
             list[str]: Artifact IDs published during the run.
         """
-        agent = self.__registry.get(name)
+        agent = self.__registry.get(name, self.__session.autonomous)
         plugin, model_id = await self.__resolve_plugin(agent.capability)
 
         session_id = uuid.uuid4().hex
@@ -633,6 +637,8 @@ class WorkflowEngine:
             gate=self.__gate,
             agent_name=name,
             session_id=session_id,
+            autonomous=self.__session.autonomous,
+            complete_fn=self.__complete_artifact,
         )
         leaf_tools = tools_for_agent(agent)
 
@@ -772,11 +778,88 @@ class WorkflowEngine:
         result = await rollback.execute(target_sha)
 
         self.__index = result.index
+        self.__workspace.bind_index(self.__index)
+        self.__toolchain = None  # tech-stack may differ post-rollback; re-resolve lazily
         self.__orch_session_id = result.orchestrator_session_id
         self.__orch_messages = []
         self.__tool_surface = self.__make_tool_surface()
         self.__transient.attach_session(result.orchestrator_session_id, result.orchestrator_resumed)
         _log.info("Post-rollback Orchestrator session: %s", self.__orch_session_id)
+
+    # ------------------------------------------------------------------
+    # Artifact completion (promotion)
+    # ------------------------------------------------------------------
+
+    async def __complete_artifact(self, artifact_id: str) -> None:
+        """Promote a gate-passed artifact and mark it completed.
+
+        Materializes the artifact into ``src/``/``gen/``, commits it to the
+        mirror with a sidecar, flips its index entry to ``completed`` at the
+        promoted location, and removes the workspace staging file. Non-
+        materializable artifacts (e.g. feedback) only flip state.
+
+        Args:
+            artifact_id: ID of the artifact reported complete.
+        """
+        arts = await self.__workspace.read(artifact_id=artifact_id)
+        if not arts:
+            _log.warning("complete_artifact: %s not found; flipping state only", artifact_id[:8])
+            await self.__workspace.mark_completed(artifact_id)
+            return
+        artifact = arts[0]
+
+        toolchain = await self.__resolve_toolchain()
+        registry = await self.__component_registry()
+        target = materialization_path(artifact, self.__layout.root, toolchain, registry)
+        if target is None:
+            await self.__workspace.mark_completed(artifact_id)
+            return
+
+        promoter = Promoter(self.__layout.root, self.__mirror.repo, toolchain, registry)
+        message = f"[{artifact.type.value}] {artifact.responsibility_code} completed"
+        try:
+            await promoter.promote(artifact, message)
+        except PromoterError:
+            _log.exception("complete_artifact: promote failed for %s", artifact_id[:8])
+            await self.__workspace.mark_completed(artifact_id)
+            return
+
+        await self.__workspace.mark_completed(artifact_id, location=target)
+        _log.info(
+            "complete_artifact: promoted %s (%s) -> %s",
+            artifact_id[:8],
+            artifact.type.value,
+            target,
+        )
+
+    async def __resolve_toolchain(self) -> ToolchainPlugin:
+        """Resolve the active toolchain from the Tech Stack, caching the result.
+
+        Falls back to Python until a Tech Stack artifact exists (only code/test
+        promotion needs a real toolchain, and those stages run well after the
+        Tech Stack is accepted).
+        """
+        if self.__toolchain is not None:
+            return self.__toolchain
+        content = await self.__latest_artifact_content(ArtifactType.TECH_STACK)
+        if content is not None:
+            self.__toolchain = select_toolchain(content, self.__layout.root)
+            return self.__toolchain
+        return select_toolchain("", self.__layout.root)
+
+    async def __component_registry(self) -> ComponentRegistry:
+        """Build a component registry from the architecture document, if any."""
+        content = await self.__latest_artifact_content(ArtifactType.ARCHITECTURE)
+        return ComponentRegistry(content) if content is not None else ComponentRegistry.empty()
+
+    async def __latest_artifact_content(self, artifact_type: ArtifactType) -> str | None:
+        """Return the content of the most recent artifact of *artifact_type*."""
+        entries = [e for e in self.__index.all_entries() if e.type == artifact_type]
+        if not entries:
+            return None
+        latest = max(entries, key=lambda e: e.created_at)
+        arts = await self.__workspace.read(artifact_id=latest.artifact_id)
+        return arts[0].content if arts else None
 
     def history_entries(self) -> list[dict[str, object]]:
         """Convert the resumed Orchestrator message history into client-facing entries.

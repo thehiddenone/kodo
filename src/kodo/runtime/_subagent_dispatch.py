@@ -5,8 +5,8 @@ from ``schemas/`` and provides :class:`SubagentDispatcher`, which translates
 those tool calls into direct :class:`~kodo.workspace.Workspace` method calls
 (no MCP subprocess needed — the same logic in one process).
 
-Report tools (``escalate_to_user``, ``narrative_ask_user_question``,
-``narrative_present_for_acceptance``, ``narrative_report_completed``) are
+Report tools (``escalate_blocker``, ``ask_user``,
+``request_user_review_artifact``, ``report_artifact_completed``) are
 handled here as well.
 """
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from kodo.llms._interface import ToolSpec
@@ -90,12 +91,21 @@ class SubagentDispatcher:
         gate: Gate orchestrator for user-interaction tools.
         agent_name: Name of the running sub-agent (injected as ``author``).
         session_id: Session ID to attach to every published artifact.
+        autonomous: Whether the session is in autonomous mode. When ``True``,
+            ``request_user_review_artifact`` auto-accepts and ``escalate_blocker``
+            hands back to the orchestrator without surfacing to the user.
+            (``ask_user`` is withheld from the agent entirely by the registry.)
+        complete_fn: Callback invoked on ``report_artifact_completed`` to promote
+            the artifact and mark it completed. Defaults to flipping the index
+            state via the workspace (no promotion) when not supplied.
     """
 
     __workspace: Workspace
     __gate: GateOrchestrator
     __agent_name: str
     __session_id: str
+    __autonomous: bool
+    __complete_fn: Callable[[str], Awaitable[None]]
     __published_ids: list[str]
     __stop_requested: bool
 
@@ -105,6 +115,8 @@ class SubagentDispatcher:
         gate: GateOrchestrator,
         agent_name: str,
         session_id: str,
+        autonomous: bool = False,
+        complete_fn: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         """Initialise the dispatcher.
 
@@ -113,11 +125,15 @@ class SubagentDispatcher:
             gate (GateOrchestrator): Gate/question orchestrator.
             agent_name (str): Sub-agent name (used as artifact author).
             session_id (str): Current session ID.
+            autonomous (bool): Whether autonomous mode is active.
+            complete_fn: Promotion callback for completed artifacts.
         """
         self.__workspace = workspace
         self.__gate = gate
         self.__agent_name = agent_name
         self.__session_id = session_id
+        self.__autonomous = autonomous
+        self.__complete_fn = complete_fn if complete_fn is not None else workspace.mark_completed
         self.__published_ids = []
         self.__stop_requested = False
 
@@ -128,10 +144,13 @@ class SubagentDispatcher:
 
     @property
     def stop_requested(self) -> bool:
-        """``True`` when the agent called ``narrative_report_completed``.
+        """``True`` when the agent called ``escalate_blocker``.
 
-        The engine checks this after each tool-call batch to decide whether
-        to exit the agent loop early.
+        The engine checks this after each tool-call batch to decide whether to
+        exit the agent loop early and hand control back to the orchestrator.
+        Completion (``report_artifact_completed``) does not force a stop — a
+        solo agent may report several artifacts complete and then end its turn
+        naturally.
         """
         return self.__stop_requested
 
@@ -149,14 +168,14 @@ class SubagentDispatcher:
             return await self.__publish(tool_input)
         if tool_name == READ_ARTIFACT_SPEC.name:
             return await self.__read(tool_input)
-        if tool_name == "escalate_to_user":
+        if tool_name == "escalate_blocker":
             return await self.__escalate(tool_input)
-        if tool_name == "narrative_ask_user_question":
-            return await self.__ask_question(tool_input)
-        if tool_name == "narrative_present_for_acceptance":
-            return await self.__present_for_acceptance(tool_input)
-        if tool_name == "narrative_report_completed":
-            return self.__report_completed(tool_input)
+        if tool_name == "ask_user":
+            return await self.__ask_user(tool_input)
+        if tool_name == "request_user_review_artifact":
+            return await self.__request_review(tool_input)
+        if tool_name == "report_artifact_completed":
+            return await self.__report_completed(tool_input)
         _log.warning("SubagentDispatcher: unknown tool %r from %s", tool_name, self.__agent_name)
         return json.dumps({"error": f"Unknown tool: {tool_name!r}"})
 
@@ -286,50 +305,70 @@ class SubagentDispatcher:
     # ------------------------------------------------------------------
 
     async def __escalate(self, tool_input: dict[str, object]) -> str:
+        reason = str(tool_input.get("reason", ""))
         summary = str(tool_input.get("summary", ""))
-        _log.info("escalate_to_user from %s: %s", self.__agent_name, summary[:80])
-        response = await self.__gate.fire_question(summary, "free_text")
+        _log.info("escalate_blocker from %s: reason=%s %s", self.__agent_name, reason, summary[:80])
+        # Ending the turn hands control back to the orchestrator, which owns
+        # triage. In autonomous mode there is no user to adjudicate; the
+        # orchestrator decides. In interactive mode the orchestrator may choose
+        # to ask the user, but a present user can also answer the surfaced
+        # blocker directly here.
         self.__stop_requested = True
-        return json.dumps({"user_response": response.answer_text})
-
-    async def __ask_question(self, tool_input: dict[str, object]) -> str:
-        question = str(tool_input.get("question", ""))
-        _log.info("narrative_ask_user_question from %s: %s", self.__agent_name, question[:80])
-        response = await self.__gate.fire_question(question, "free_text")
-        return json.dumps({"answer": response.answer_text})
-
-    async def __present_for_acceptance(self, tool_input: dict[str, object]) -> str:
-        artifact_kind = str(tool_input.get("artifact_kind", ""))
-        artifact_id = str(tool_input.get("artifact_id", ""))
-        _log.info(
-            "narrative_present_for_acceptance from %s: kind=%s id=%s",
-            self.__agent_name,
-            artifact_kind,
-            artifact_id[:8],
+        if self.__autonomous:
+            return json.dumps({"status": "escalated", "reason": reason})
+        response = await self.__gate.fire_question(summary, "free_text")
+        return json.dumps(
+            {"status": "escalated", "reason": reason, "user_response": response.answer_text}
         )
+
+    async def __ask_user(self, tool_input: dict[str, object]) -> str:
+        question = str(tool_input.get("question", ""))
+        mode = str(tool_input.get("mode", "free_text"))
+        choices_raw = tool_input.get("choices")
+        choices: list[dict[str, str]] | None = None
+        if isinstance(choices_raw, list):
+            choices = [
+                {"key": str(c.get("key", "")), "label": str(c.get("label", ""))}
+                for c in choices_raw
+                if isinstance(c, dict)
+            ]
+        _log.info("ask_user from %s: %s", self.__agent_name, question[:80])
+        response = await self.__gate.fire_question(question, mode, choices)
+        if mode == "choice":
+            return json.dumps({"choice_key": response.choice_key})
+        return json.dumps({"answer_text": response.answer_text})
+
+    async def __request_review(self, tool_input: dict[str, object]) -> str:
+        artifact_id = str(tool_input.get("artifact_id", ""))
+        summary = str(tool_input.get("summary", "")) or "Please review this artifact."
+        _log.info("request_user_review_artifact from %s: id=%s", self.__agent_name, artifact_id[:8])
+        # Autonomous mode: the user is away, so the engine auto-accepts.
+        if self.__autonomous:
+            return json.dumps({"action": "agree", "feedback": ""})
+        gate_type = "review"
+        try:
+            arts = await self.__workspace.read(artifact_id=artifact_id, include_content=False)
+            if arts:
+                gate_type = arts[0].type.value
+        except Exception:  # pragma: no cover - label derivation is best-effort
+            pass
         response = await self.__gate.fire_approval(
-            artifact_kind,
-            artifact_id=artifact_id,
-            summary=f"Please review the {artifact_kind} artifact.",
+            gate_type, artifact_id=artifact_id, summary=summary
         )
         return json.dumps({"action": response.action, "feedback": response.feedback})
 
-    def __report_completed(self, tool_input: dict[str, object]) -> str:
-        narrative_id = str(tool_input.get("narrative_artifact_id", ""))
-        tech_stack_id = str(tool_input.get("tech_stack_artifact_id", ""))
-        _log.info("narrative_report_completed from %s", self.__agent_name)
-        self.__stop_requested = True
-        return json.dumps(
-            {
-                "status": "completed",
-                "narrative_artifact_id": narrative_id,
-                "tech_stack_artifact_id": tech_stack_id,
-            }
-        )
+    async def __report_completed(self, tool_input: dict[str, object]) -> str:
+        artifact_id = str(tool_input.get("artifact_id", ""))
+        _log.info("report_artifact_completed from %s: id=%s", self.__agent_name, artifact_id[:8])
+        # Promote (materialize + mirror commit + move out of staging) and flip
+        # the index entry to completed so query_frontier sees it. The default
+        # callback only flips state (used by isolated tests with no engine).
+        await self.__complete_fn(artifact_id)
+        return json.dumps({"status": "completed", "artifact_id": artifact_id})
 
 
 # ---------------------------------------------------------------------------
-# Serialization helper (mirrors WorkspaceTool.__serialize)
+# Serialization helper
 # ---------------------------------------------------------------------------
 
 

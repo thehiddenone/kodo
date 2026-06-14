@@ -1,7 +1,7 @@
 """Behavior tests for kodo.runtime._tool_surface.
 
 Tests verify that ToolSurface handlers produce correct JSON responses for the
-two read-only tools (compute_frontier, list_artifacts) and the terminal tool
+two read-only tools (query_frontier, list_artifacts) and the terminal tool
 (finalize_project).  Approval and ask_user are tested via the session.autonomous
 fast-path.  Stub tools (start_subagent, run_author_critic_iteration) are
 tested to confirm they return the expected shape.
@@ -17,9 +17,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kodo.runtime._gates import GateOrchestrator
-from kodo.runtime._index import IndexEntry, ProjectIndex
 from kodo.runtime._session import SessionState
 from kodo.runtime._tool_surface import ToolSurface
+from kodo.workspace import IndexEntry, ProjectIndex
 from kodo.workspace._models import ArtifactType
 
 # ---------------------------------------------------------------------------
@@ -46,6 +46,7 @@ def _make_entry(
         requirement_ids=[],
         session_id=None,
         author=author,
+        created_at=datetime.now(tz=UTC),
         last_modified=datetime.now(tz=UTC),
     )
 
@@ -88,34 +89,34 @@ def _make_surface(
 
 
 # ---------------------------------------------------------------------------
-# compute_frontier
+# query_frontier
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_compute_frontier_empty_index_returns_empty_list() -> None:
+async def test_query_frontier_empty_index_returns_empty_list() -> None:
     """
     Given an empty index,
-    when compute_frontier is called,
+    when query_frontier is called,
     then the result has an empty frontier.
     """
     surface = _make_surface()
-    result = json.loads(await surface.dispatch("compute_frontier", {}))
+    result = json.loads(await surface.dispatch("query_frontier", {}))
     assert result == {"frontier": []}
 
 
 @pytest.mark.asyncio
-async def test_compute_frontier_reports_first_missing_type() -> None:
+async def test_query_frontier_reports_first_missing_type() -> None:
     """
     Given a responsibility with a completed functional-design but no test-plan,
-    when compute_frontier is called,
+    when query_frontier is called,
     then the frontier shows test-plan as the next type.
     """
     index = ProjectIndex()
     index.add(_make_entry("a1", "AUTH", ArtifactType.FUNCTIONAL_DESIGN))
 
     surface = _make_surface(index)
-    result = json.loads(await surface.dispatch("compute_frontier", {}))
+    result = json.loads(await surface.dispatch("query_frontier", {}))
 
     assert len(result["frontier"]) == 1
     entry = result["frontier"][0]
@@ -124,10 +125,10 @@ async def test_compute_frontier_reports_first_missing_type() -> None:
 
 
 @pytest.mark.asyncio
-async def test_compute_frontier_skips_fully_complete_responsibilities() -> None:
+async def test_query_frontier_skips_fully_complete_responsibilities() -> None:
     """
     Given a responsibility with all four execution types completed,
-    when compute_frontier is called,
+    when query_frontier is called,
     then that responsibility does not appear in the frontier.
     """
     index = ProjectIndex()
@@ -140,16 +141,16 @@ async def test_compute_frontier_skips_fully_complete_responsibilities() -> None:
         index.add(_make_entry(f"x-{artifact_type.value}", "TRADE", artifact_type))
 
     surface = _make_surface(index)
-    result = json.loads(await surface.dispatch("compute_frontier", {}))
+    result = json.loads(await surface.dispatch("query_frontier", {}))
     codes = [e["responsibility_code"] for e in result["frontier"]]
     assert "TRADE" not in codes
 
 
 @pytest.mark.asyncio
-async def test_compute_frontier_multiple_responsibilities() -> None:
+async def test_query_frontier_multiple_responsibilities() -> None:
     """
     Given two responsibilities at different stages,
-    when compute_frontier is called,
+    when query_frontier is called,
     then each appears with its correct next type.
     """
     index = ProjectIndex()
@@ -158,7 +159,7 @@ async def test_compute_frontier_multiple_responsibilities() -> None:
     index.add(_make_entry("b1", "TRADE", ArtifactType.FUNCTIONAL_DESIGN))
 
     surface = _make_surface(index)
-    result = json.loads(await surface.dispatch("compute_frontier", {}))
+    result = json.loads(await surface.dispatch("query_frontier", {}))
 
     by_code = {e["responsibility_code"]: e["next_type"] for e in result["frontier"]}
     assert by_code["AUTH"] == "test"
@@ -299,28 +300,6 @@ async def test_run_author_critic_iteration_returns_verdict() -> None:
     assert "verdict" in result
     assert "concerns" in result
     assert isinstance(result["concerns"], list)
-
-
-# ---------------------------------------------------------------------------
-# request_user_approval — autonomous mode fast-path
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_request_user_approval_autonomous_auto_agrees() -> None:
-    """
-    Given autonomous mode is on,
-    when request_user_approval is called,
-    then the result is agree without blocking.
-    """
-    surface = _make_surface(autonomous=True)
-    result = json.loads(
-        await surface.dispatch(
-            "request_user_approval",
-            {"gate_type": "narrative", "summary": "Ready for review"},
-        )
-    )
-    assert result["action"] == "agree"
 
 
 # ---------------------------------------------------------------------------

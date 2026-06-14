@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from kodo.workspace import ArtifactType, Workspace
+from kodo.workspace import ArtifactType, ProjectIndex, Workspace
 from kodo.workspace._errors import ArtifactNotFoundError, WorkspaceValidationError
 
 
-def _workspace(tmp_path: Path) -> Workspace:
-    return Workspace(tmp_path)
+def _workspace(tmp_path: Path, index: ProjectIndex | None = None) -> Workspace:
+    return Workspace(tmp_path, index)
 
 
 # ---------------------------------------------------------------------------
@@ -66,13 +66,14 @@ async def test_session_id_is_none_when_not_supplied(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_session_id_survives_index_rebuild(tmp_path: Path) -> None:
+async def test_session_id_persisted_and_readable(tmp_path: Path) -> None:
     """
-    Given a workspace where an artifact was published with a session_id,
-    when the workspace is rebuilt from its event log (simulating cold start),
+    Given an artifact published with a session_id,
+    when a second Workspace over the same shared index reads it,
     then the session_id is still present on the artifact.
     """
-    ws = _workspace(tmp_path)
+    index = ProjectIndex()
+    ws = _workspace(tmp_path, index)
     artifact_id = await ws.publish(
         artifact_type=ArtifactType.ARCHITECTURE,
         author="architect",
@@ -82,8 +83,7 @@ async def test_session_id_survives_index_rebuild(tmp_path: Path) -> None:
         session_id="session-rebuild-test",
     )
 
-    ws2 = _workspace(tmp_path)
-    await ws2.rebuild_index()
+    ws2 = _workspace(tmp_path, index)
     results = await ws2.read(artifact_id=artifact_id)
     assert results[0].session_id == "session-rebuild-test"
 
@@ -584,18 +584,19 @@ async def test_publish_non_feedback_with_verdict_raises(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Second workspace cold-start read (loads index.json)
+# Second workspace over the shared index
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_second_workspace_reads_existing_artifacts(tmp_path: Path) -> None:
     """
-    Given an artifact published in workspace1,
-    when a fresh Workspace is created for the same path and read() is called,
-    then the artifact is found (index.json is loaded from disk).
+    Given an artifact published via workspace1,
+    when a second Workspace over the same shared index reads it,
+    then the artifact is found.
     """
-    ws1 = _workspace(tmp_path)
+    index = ProjectIndex()
+    ws1 = _workspace(tmp_path, index)
     artifact_id = await ws1.publish(
         artifact_type=ArtifactType.NARRATIVE,
         author="agent",
@@ -604,23 +605,23 @@ async def test_second_workspace_reads_existing_artifacts(tmp_path: Path) -> None
         content="content",
     )
 
-    ws2 = _workspace(tmp_path)  # fresh instance, loads index.json
+    ws2 = _workspace(tmp_path, index)
     results = await ws2.read(artifact_id=artifact_id)
     assert len(results) == 1
     assert results[0].id == artifact_id
 
 
 # ---------------------------------------------------------------------------
-# rebuild_index with retired artifacts
+# Superseding removes the prior artifact from the index
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_rebuild_index_excludes_retired_artifacts(tmp_path: Path) -> None:
+async def test_superseded_artifact_removed_from_index(tmp_path: Path) -> None:
     """
     Given artifact A that is superseded by artifact B,
-    when rebuild_index() is run on a fresh workspace,
-    then only B is live (A was retired).
+    when in-flight artifacts are read,
+    then only B is live (A was retired and removed from the index).
     """
     ws = _workspace(tmp_path)
     id_a = await ws.publish(
@@ -639,9 +640,7 @@ async def test_rebuild_index_excludes_retired_artifacts(tmp_path: Path) -> None:
         supersedes=[id_a],
     )
 
-    ws2 = _workspace(tmp_path)
-    await ws2.rebuild_index()
-    results = await ws2.read(
+    results = await ws.read(
         project_code="PROJ",
         artifact_type=ArtifactType.NARRATIVE,
         version="in_flight",
@@ -649,3 +648,73 @@ async def test_rebuild_index_excludes_retired_artifacts(tmp_path: Path) -> None:
     ids = {a.id for a in results}
     assert id_b in ids
     assert id_a not in ids
+
+
+# ---------------------------------------------------------------------------
+# Completion flips the index entry to completed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mark_completed_moves_entry_to_completed(tmp_path: Path) -> None:
+    """
+    Given a published (in-flight) artifact,
+    when mark_completed is called,
+    then the index reports it completed and version='stable' reads return it
+    while version='in_flight' does not.
+    """
+    index = ProjectIndex()
+    ws = _workspace(tmp_path, index)
+    artifact_id = await ws.publish(
+        artifact_type=ArtifactType.NARRATIVE,
+        author="agent",
+        project_code="PROJ",
+        responsibility_code="PROJ",
+        content="content",
+    )
+    assert {e.artifact_id for e in index.in_flight_entries()} == {artifact_id}
+
+    await ws.mark_completed(artifact_id)
+
+    assert {e.artifact_id for e in index.completed_entries()} == {artifact_id}
+    assert index.in_flight_entries() == []
+
+    stable = await ws.read(
+        project_code="PROJ", artifact_type=ArtifactType.NARRATIVE, version="stable"
+    )
+    assert artifact_id in {a.id for a in stable}
+    in_flight = await ws.read(
+        project_code="PROJ", artifact_type=ArtifactType.NARRATIVE, version="in_flight"
+    )
+    assert artifact_id not in {a.id for a in in_flight}
+
+
+@pytest.mark.asyncio
+async def test_mark_completed_with_location_removes_staging_file(tmp_path: Path) -> None:
+    """
+    Given a published artifact with a staging file,
+    when mark_completed is called with a promoted location,
+    then the staging file is deleted and the entry records the new location.
+    """
+    index = ProjectIndex()
+    ws = _workspace(tmp_path, index)
+    artifact_id = await ws.publish(
+        artifact_type=ArtifactType.NARRATIVE,
+        author="agent",
+        project_code="PROJ",
+        responsibility_code="PROJ",
+        content="content",
+    )
+    before = index.get_by_id(artifact_id)
+    assert before is not None
+    staging_path = before.location
+    assert staging_path.exists()
+
+    promoted = tmp_path / "src" / "narrative" / "narrative.md"
+    await ws.mark_completed(artifact_id, location=promoted)
+
+    assert not staging_path.exists()
+    entry = index.get_by_id(artifact_id)
+    assert entry is not None
+    assert entry.state == "completed"
+    assert entry.location == promoted

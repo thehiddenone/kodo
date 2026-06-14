@@ -174,7 +174,7 @@ Every sub-agent MUST have three things defined in its prompt:
 
 Authoritative schema locations:
 
-- `publish_artifact`, `read_artifact` — [schemas/publish_artifact.json](../../schemas/publish_artifact.json), [schemas/read_artifact.json](../../schemas/read_artifact.json), served by the workspace MCP server in [src/kodo/tools/workspace/](src/kodo/tools/workspace/).
+- `publish_artifact`, `read_artifact` — [schemas/publish_artifact.json](../../schemas/publish_artifact.json), [schemas/read_artifact.json](../../schemas/read_artifact.json), dispatched in-process by [src/kodo/runtime/_subagent_dispatch.py](src/kodo/runtime/_subagent_dispatch.py).
 - `escalate_to_user`, `narrative_ask_user_question`, `narrative_present_for_acceptance`, `narrative_report_completed` — [src/kodo/tools/_report_tools.py](src/kodo/tools/_report_tools.py).
 
 The agent's frontmatter `tools:` list MUST include every tool the agent calls.
@@ -207,7 +207,7 @@ Intermediate reasoning text the agent emits between tool calls is allowed but un
 
 ### Transport-agnostic tool contract
 
-Every tool a sub-agent calls MUST be defined in code as a `ToolSpec` with a JSON Schema, or in the canonical schema files under [schemas/](../../schemas/). The engine exposes tools through whatever transport it currently supports (today: inline in [src/kodo/workflow/_engine.py](src/kodo/workflow/_engine.py) for the simple tools, MCP stdio server for the workspace tools under [src/kodo/tools/workspace/](src/kodo/tools/workspace/); planned: all tools served via MCP). The sub-agent prompt MUST name the tool but MUST NOT restate the schema, so prompts remain valid when the transport changes.
+Every tool a sub-agent calls MUST be defined in code as a `ToolSpec` with a JSON Schema, or in the canonical schema files under [schemas/](../../schemas/). All built-in tools run in-process, dispatched by [src/kodo/runtime/_subagent_dispatch.py](src/kodo/runtime/_subagent_dispatch.py) and [src/kodo/runtime/_engine.py](src/kodo/runtime/_engine.py); external MCP tool support is planned post-MVP. The sub-agent prompt MUST name the tool but MUST NOT restate the schema, so prompts remain valid when the transport changes.
 
 ### Authoring a new sub-agent prompt — checklist
 

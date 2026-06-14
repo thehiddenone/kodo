@@ -1,18 +1,30 @@
-"""In-memory artifact index maintained by the workflow engine.
+"""Project artifact index — the single in-memory source of truth.
 
-The index covers both completed artifacts (promoted to the project tree and
-mirrored) and in-flight artifacts (living in the workspace).  It is rebuilt
-on every cold start from on-disk state by :class:`ProjectBootstrap`.
+``ProjectIndex`` is the authoritative catalog of every artifact in a project
+and its lifecycle ``state`` (``in_flight`` while authors/critics work on it in
+the workspace staging area; ``completed`` once it has passed all gates and been
+moved out). It is constructed once at bootstrap by scanning what is on disk and
+then maintained in memory at runtime — the :class:`~kodo.workspace.Workspace`
+updates it on every mutation, and the orchestrator reads it (``query_frontier``,
+``list_artifacts``).
+
+The index itself is **never persisted**: it is a reflection of on-disk state.
+Everything needed to reconstruct it must live on disk — in-flight artifacts as
+JSON files under ``.kodo/workspace/``, completed artifacts as committed files
+plus sidecars in the mirror tree. It holds artifact **metadata only**; content
+stays on disk at :attr:`IndexEntry.location` and is read on demand.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from kodo.workspace._models import ArtifactType
+from ._models import ArtifactType, Verdict
+
+__all__ = ["ArtifactState", "IndexEntry", "ProjectIndex"]
 
 ArtifactState = Literal["completed", "in_flight"]
 
@@ -27,12 +39,16 @@ class IndexEntry:
         responsibility_code: Component codename (e.g. ``AUTH``).
         type: Artifact type.
         state: Whether the artifact is completed or in-flight.
-        location: Absolute path to the artifact file on disk.
+        location: Absolute path to the artifact file on disk (content lives
+            here; the index never holds content).
         filename_hint: Leaf filename (stable across superseding revisions).
         supersedes: Prior artifact IDs replaced by this one.
         requirement_ids: Requirements covered by this artifact.
         session_id: Session that produced this artifact (set for in-flight).
         author: Sub-agent name that published the artifact.
+        created_at: Artifact creation timestamp (from the artifact record).
+        verdict: Feedback verdict, when the artifact is a feedback artifact.
+        reviewed_artifact_id: Target artifact, when this is a feedback artifact.
         last_modified: File modification time.
     """
 
@@ -47,7 +63,10 @@ class IndexEntry:
     requirement_ids: list[str]
     session_id: str | None
     author: str
+    created_at: datetime
     last_modified: datetime
+    verdict: Verdict | None = None
+    reviewed_artifact_id: str | None = None
 
 
 class ProjectIndex:
@@ -80,6 +99,28 @@ class ProjectIndex:
             artifact_id (str): ID of the entry to remove.
         """
         self.__by_id.pop(artifact_id, None)
+
+    def mark_completed(self, artifact_id: str, location: Path | None = None) -> IndexEntry | None:
+        """Transition an entry to ``completed`` state, optionally relocating it.
+
+        Args:
+            artifact_id (str): ID of the entry to complete.
+            location (Path | None): New on-disk location after promotion. When
+                ``None``, the existing location is kept.
+
+        Returns:
+            IndexEntry | None: The updated entry, or ``None`` if no such entry.
+        """
+        entry = self.__by_id.get(artifact_id)
+        if entry is None:
+            return None
+        updated = replace(
+            entry,
+            state="completed",
+            location=location if location is not None else entry.location,
+        )
+        self.__by_id[artifact_id] = updated
+        return updated
 
     def get_by_id(self, artifact_id: str) -> IndexEntry | None:
         """Return the entry for the given artifact ID, or ``None``.
@@ -139,6 +180,9 @@ class ProjectIndex:
             list[IndexEntry]: In-flight entries.
         """
         return [e for e in self.__by_id.values() if e.state == "in_flight"]
+
+    def __contains__(self, artifact_id: object) -> bool:
+        return artifact_id in self.__by_id
 
     def __len__(self) -> int:
         return len(self.__by_id)
