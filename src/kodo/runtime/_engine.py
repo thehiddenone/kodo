@@ -497,7 +497,7 @@ class WorkflowEngine:
             tuple[list[Message], list[Path]]: Updated messages and (unused) files.
         """
         files_written: list[Path] = []
-        tool_desc = {t.name: t.description for t in tools}
+        tool_desc = {t.name: t.user_description for t in tools}
         tool_logger = ToolCallLogger(self.__layout.llm_requests_dir)
 
         while True:
@@ -672,7 +672,7 @@ class WorkflowEngine:
         await self.__sink.send(Envelope.make_stream_end(stream_id))
         await self.__emit_agent_finished(name)
         _log.info(
-            "start_subagent completed: name=%s published=%s",
+            "run_subagent completed: name=%s published=%s",
             name,
             dispatcher.published_ids,
         )
@@ -869,7 +869,7 @@ class WorkflowEngine:
             ``tool_call`` entries in the shape expected by the VSIX webview's
             ``session.history`` handler.
         """
-        tool_desc = {t.name: t.description for t in ORCHESTRATOR_TOOLS}
+        tool_desc = {t.name: t.user_description for t in ORCHESTRATOR_TOOLS}
         entries: list[dict[str, object]] = []
         for msg in self.__orch_messages:
             if isinstance(msg.content, str):

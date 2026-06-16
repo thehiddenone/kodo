@@ -10,6 +10,8 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+from kodo.toolspecs import ToolSpec
+
 __all__ = [
     "LLMPlugin",
     "Message",
@@ -34,21 +36,6 @@ class Message:
 
     role: str
     content: str | list[dict[str, object]]
-
-
-@dataclass(frozen=True)
-class ToolSpec:
-    """Specification for a tool the model may invoke.
-
-    Attributes:
-        name: Tool name (e.g. ``'tools/fileio.read_file'``).
-        description: Human-readable description shown to the model.
-        input_schema: JSON Schema dict for the tool's input parameters.
-    """
-
-    name: str
-    description: str
-    input_schema: dict[str, object]
 
 
 @dataclass(frozen=True)

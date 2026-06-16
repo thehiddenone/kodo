@@ -21,11 +21,10 @@ import pytest
 from kodo.runtime._gates import GateOrchestrator, QuestionResponse
 from kodo.runtime._subagent_dispatch import (
     LEAF_TOOLS_BY_NAME,
-    PUBLISH_ARTIFACT_SPEC,
-    READ_ARTIFACT_SPEC,
     SubagentDispatcher,
     tools_for_agent,
 )
+from kodo.toolspecs import PUBLISH_ARTIFACT, READ_ARTIFACT
 from kodo.workspace import Artifact, ArtifactType, Workspace
 
 # ---------------------------------------------------------------------------
@@ -97,11 +96,11 @@ def _make_artifact(
 
 
 def test_publish_artifact_spec_has_correct_name() -> None:
-    assert PUBLISH_ARTIFACT_SPEC.name == "publish_artifact"
+    assert PUBLISH_ARTIFACT.name == "publish_artifact"
 
 
 def test_read_artifact_spec_has_correct_name() -> None:
-    assert READ_ARTIFACT_SPEC.name == "read_artifact"
+    assert READ_ARTIFACT.name == "read_artifact"
 
 
 def test_leaf_tools_by_name_includes_workspace_and_report_tools() -> None:
@@ -111,6 +110,15 @@ def test_leaf_tools_by_name_includes_workspace_and_report_tools() -> None:
     assert "ask_user" in LEAF_TOOLS_BY_NAME
     assert "request_user_review_artifact" in LEAF_TOOLS_BY_NAME
     assert "report_artifact_completed" in LEAF_TOOLS_BY_NAME
+
+
+def test_leaf_tools_by_name_includes_fileio_and_shell_tools() -> None:
+    assert "create_file" in LEAF_TOOLS_BY_NAME
+    assert "edit_file" in LEAF_TOOLS_BY_NAME
+    assert "delete_file" in LEAF_TOOLS_BY_NAME
+    assert "copy_file" in LEAF_TOOLS_BY_NAME
+    assert "move_file" in LEAF_TOOLS_BY_NAME
+    assert "run_command" in LEAF_TOOLS_BY_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +344,117 @@ async def test_request_user_review_artifact_autonomous_auto_accepts(tmp_path: Pa
     result = json.loads(result_str)
     assert result["action"] == "agree"
     assert not dispatcher.stop_requested
+
+
+# ---------------------------------------------------------------------------
+# Native file I/O tools
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_file_writes_new_file(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("create_file", {"path": "out.txt", "content": "hello"})
+    )
+    assert result["status"] == "created"
+    assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "hello"
+
+
+@pytest.mark.asyncio
+async def test_create_file_fails_if_already_exists(tmp_path: Path) -> None:
+    (tmp_path / "out.txt").write_text("existing", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("create_file", {"path": "out.txt", "content": "hello"})
+    )
+    assert "error" in result
+    assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "existing"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_replaces_content(tmp_path: Path) -> None:
+    (tmp_path / "out.txt").write_text("old", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("edit_file", {"path": "out.txt", "content": "new"})
+    )
+    assert result["status"] == "edited"
+    assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "new"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_fails_if_missing(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("edit_file", {"path": "missing.txt", "content": "new"})
+    )
+    assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_delete_file_removes_file(tmp_path: Path) -> None:
+    (tmp_path / "out.txt").write_text("content", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(await dispatcher.dispatch("delete_file", {"path": "out.txt"}))
+    assert result["status"] == "deleted"
+    assert not (tmp_path / "out.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_copy_file_copies_content(tmp_path: Path) -> None:
+    (tmp_path / "src.txt").write_text("content", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("copy_file", {"source": "src.txt", "destination": "dst.txt"})
+    )
+    assert result["status"] == "copied"
+    assert (tmp_path / "src.txt").read_text(encoding="utf-8") == "content"
+    assert (tmp_path / "dst.txt").read_text(encoding="utf-8") == "content"
+
+
+@pytest.mark.asyncio
+async def test_move_file_renames_file(tmp_path: Path) -> None:
+    (tmp_path / "src.txt").write_text("content", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("move_file", {"source": "src.txt", "destination": "dst.txt"})
+    )
+    assert result["status"] == "moved"
+    assert not (tmp_path / "src.txt").exists()
+    assert (tmp_path / "dst.txt").read_text(encoding="utf-8") == "content"
+
+
+@pytest.mark.asyncio
+async def test_fileio_rejects_path_outside_project_root(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("create_file", {"path": "../escape.txt", "content": "nope"})
+    )
+    assert "error" in result
+    assert not (tmp_path.parent / "escape.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# Native shell tool
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_command_returns_exit_code_and_output(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(await dispatcher.dispatch("run_command", {"command": "echo hello"}))
+    assert result["exit_code"] == 0
+    assert "hello" in result["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_run_command_rejects_working_dir_outside_project_root(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("run_command", {"command": "pwd", "working_dir": ".."})
+    )
+    assert "error" in result
 
 
 # ---------------------------------------------------------------------------

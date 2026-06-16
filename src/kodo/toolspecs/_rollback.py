@@ -1,0 +1,40 @@
+"""``rollback`` tool spec — orchestrator tool (FR-ORCH-03).
+
+Dispatch lives in :class:`~kodo.runtime._tool_surface.ToolSurface`.
+"""
+
+from __future__ import annotations
+
+from ._spec import ToolSpec
+
+__all__ = ["ROLLBACK"]
+
+
+ROLLBACK: ToolSpec = ToolSpec(
+    name="rollback",
+    external_name="Rollback Project",
+    user_description="Roll back to a checkpoint",
+    description=(
+        "Invoke the rollback procedure.  "
+        "Restores src/ and gen/ from the target mirror commit, clears the workspace, "
+        "and starts a fresh Orchestrator session.  "
+        "In interactive mode the Orchestrator MUST confirm with the user via ask_user "
+        "before calling this.  In autonomous mode it decides and documents via post_update; "
+        "there is no user to confirm with."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "target_sha": {
+                "type": "string",
+                "description": "Mirror commit SHA to roll back to.",
+            },
+        },
+        "required": ["target_sha"],
+    },
+    when_to_use=(
+        "Rework-in-place would be worse than starting a stage over — "
+        "typically after a root-cause resolution invalidates a large "
+        "frontier and a checkpoint predates the contaminated work.",
+    ),
+)

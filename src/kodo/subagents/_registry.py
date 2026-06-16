@@ -2,34 +2,64 @@
 
 Loads all ``.md`` files from the subagents package directory at construction time.
 The security preamble (``preamble.md`` in the same directory) is mandatory and is
-prepended to every subagent's system prompt. The tools reference (``tools_kodo.md``
-in the same directory) is mandatory and is used to render each subagent's ``## Tools``
-section, replacing the ``PLACEHOLDER`` token with descriptions for the tools listed
-in its frontmatter.
+prepended to every subagent's system prompt.
+
+Each subagent's ``## Tools`` section is rendered lazily by replacing the
+``{PLACEHOLDER:TOOLS}`` token with one block per tool listed in its frontmatter
+``tools:``. Every part of that block — the heading (``external_name``), the
+``Autonomous mode`` line, and the ``When to use`` bullets — comes from that
+tool's :class:`~kodo.toolspecs.ToolSpec`; no separate prompt file is involved.
+``when_to_use`` bullets are written generically (they describe a situation, not
+which agent is in it), since the same spec may be rendered into multiple
+agents' prompts.
+
+The ``ask_user`` tool has two specs — :data:`~kodo.toolspecs._ask_user.ASK_USER`
+(leaf agents) and :data:`~kodo.toolspecs._ask_user_orchestrator.ORCHESTRATOR_ASK_USER`
+(the orchestrator) — with the same tool name but different guidance. The
+registry picks between them based on which subagent is being rendered.
 
 Rendering is performed lazily by :meth:`AgentRegistry.get` so it can honour the
-current ``autonomous`` flag: tools whose ``tools_kodo.md`` entry marks them
-``Autonomous mode: unavailable`` are excluded — from both the rendered ``## Tools``
-section and the returned :attr:`SubAgent.tools` set — when ``autonomous=True``.
+current ``autonomous`` flag: tools whose :class:`~kodo.toolspecs.ToolSpec`
+marks ``autonomous_mode`` as ``unavailable`` are excluded — from both the
+rendered ``## Tools`` section and the returned :attr:`SubAgent.tools` set —
+when ``autonomous=True``.
 
-Raises :class:`~._loader.AgentLoadError` on duplicate names or missing entries.
+Raises :class:`~._loader.AgentLoadError` on duplicate names, missing entries,
+or a tool with no matching :class:`~kodo.toolspecs.ToolSpec`.
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import replace
 from pathlib import Path
+
+from kodo.toolspecs import ALL_TOOLS, ToolSpec
+from kodo.toolspecs._ask_user import ASK_USER
+from kodo.toolspecs._ask_user_orchestrator import ORCHESTRATOR_ASK_USER
 
 from ._loader import AgentLoadError, SubAgent, load_agent
 
 _PREAMBLE_FILENAME = "preamble.md"
-_TOOLS_FILENAME = "tools_kodo.md"
 _TOOLS_PLACEHOLDER = "{PLACEHOLDER:TOOLS}"
 
-_TOOL_HEADING_RE = re.compile(r"^## (\S+)[ \t]*$", re.MULTILINE)
-_EXTERNAL_NAME_RE = re.compile(r"^- \*\*External name:\*\* (.+)$", re.MULTILINE)
-_AUTONOMOUS_FIELD_RE = re.compile(r"^- \*\*Autonomous mode:\*\* (.+)$", re.MULTILINE)
+# The only subagent that uses the orchestrator variant of `ask_user`. Must
+# match kodo.runtime._engine._ORCHESTRATOR_AGENT_NAME.
+_ORCHESTRATOR_AGENT_NAME = "orchestrator"
+
+# Tool specs available to leaf sub-agents, keyed by tool name.
+_LEAF_SPECS_BY_NAME: dict[str, ToolSpec] = {
+    t.name: t for t in ALL_TOOLS if t is not ORCHESTRATOR_ASK_USER
+}
+
+# Tool specs available to the orchestrator, keyed by tool name.
+_ORCHESTRATOR_SPECS_BY_NAME: dict[str, ToolSpec] = {
+    t.name: t for t in ALL_TOOLS if t is not ASK_USER
+}
+
+# Tools withheld entirely in autonomous mode.
+_AUTONOMOUS_DISABLED: frozenset[str] = frozenset(
+    t.name for t in ALL_TOOLS if t.autonomous_mode and "unavailable" in t.autonomous_mode.lower()
+)
 
 
 class AgentRegistry:
@@ -40,26 +70,24 @@ class AgentRegistry:
     tools, filtered for the requested mode.
 
     Args:
-        agents_dir: Directory containing ``preamble.md``, ``tools_kodo.md``, and
-            ``subagent_*.md`` files.
+        agents_dir: Directory containing ``preamble.md`` and ``subagent_*.md``
+            files.
 
     Raises:
-        AgentLoadError: ``preamble.md`` or ``tools_kodo.md`` is missing or empty,
-            or an agent references a tool not defined in ``tools_kodo.md``.
+        AgentLoadError: ``preamble.md`` is missing or empty, or an agent
+            references a tool with no matching :class:`~kodo.toolspecs.ToolSpec`.
     """
 
-    __slots__ = ("__agents", "__preamble", "__tools", "__autonomous_disabled")
+    __slots__ = ("__agents", "__preamble")
 
     def __init__(self, agents_dir: Path) -> None:
         self.__preamble = self.__load_preamble(agents_dir)
-        self.__tools = self.__load_tools(agents_dir)
-        self.__autonomous_disabled = self.__compute_autonomous_disabled(self.__tools)
         self.__agents: dict[str, SubAgent] = {}
         for path in sorted(agents_dir.glob("subagent_*.md")):
             agent = load_agent(path)
             # Validate every declared tool resolves now, at load time, so a bad
             # frontmatter reference fails fast rather than at first render.
-            self.__render_tools_section(agent.tools, path)
+            self.__render_tools_section(agent.tools, agent.name, path)
             self.__agents[agent.name] = agent
 
     @staticmethod
@@ -73,56 +101,23 @@ class AgentRegistry:
         return preamble
 
     @staticmethod
-    def __load_tools(agents_dir: Path) -> dict[str, str]:
-        path = agents_dir / _TOOLS_FILENAME
-        if not path.is_file():
-            raise AgentLoadError(f"{path}: tools reference file is missing")
-        text = path.read_text(encoding="utf-8")
-
-        matches = list(_TOOL_HEADING_RE.finditer(text))
-        if not matches:
-            raise AgentLoadError(f"{path}: no tool sections found")
-
-        tools: dict[str, str] = {}
-        for i, m in enumerate(matches):
-            name = m.group(1)
-            start = m.end()
-            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-            body = text[start:end].strip()
-            if not body:
-                raise AgentLoadError(f"{path}: tool {name!r} has an empty description")
-            tools[name] = body
-        return tools
-
-    @staticmethod
-    def __compute_autonomous_disabled(tools: dict[str, str]) -> frozenset[str]:
-        """Return the names of tools withheld in autonomous mode.
-
-        A tool opts out of autonomous mode by carrying an
-        ``- **Autonomous mode:** unavailable ...`` line in its ``tools_kodo.md``
-        body (see that file's header for the field contract).
-        """
-        disabled: set[str] = set()
-        for name, body in tools.items():
-            m = _AUTONOMOUS_FIELD_RE.search(body)
-            if m and "unavailable" in m.group(1).lower():
-                disabled.add(name)
-        return frozenset(disabled)
-
-    def __render_tools_section(self, agent_tools: frozenset[str], path: Path) -> str:
+    def __render_tools_section(agent_tools: frozenset[str], agent_name: str, path: Path) -> str:
+        specs = (
+            _ORCHESTRATOR_SPECS_BY_NAME
+            if agent_name == _ORCHESTRATOR_AGENT_NAME
+            else _LEAF_SPECS_BY_NAME
+        )
         blocks: list[str] = []
         for name in sorted(agent_tools):
-            body = self.__tools.get(name)
-            if body is None:
-                raise AgentLoadError(f"{path}: tool {name!r} is not defined in {_TOOLS_FILENAME}")
-            m = _EXTERNAL_NAME_RE.search(body)
-            if not m:
-                raise AgentLoadError(
-                    f"tool {name!r} in {_TOOLS_FILENAME}: missing 'External name' field"
-                )
-            external_name = m.group(1).strip()
-            remainder = _EXTERNAL_NAME_RE.sub("", body, count=1).strip()
-            blocks.append(f"### {external_name} (`{name}`)\n\n{remainder}")
+            spec = specs.get(name)
+            if spec is None:
+                raise AgentLoadError(f"{path}: tool {name!r} has no ToolSpec in kodo.toolspecs")
+            lines = []
+            if spec.autonomous_mode:
+                lines.append(f"- **Autonomous mode:** {spec.autonomous_mode}")
+            lines.append("- **When to use:**")
+            lines.extend(f"  - {bullet}" for bullet in spec.when_to_use)
+            blocks.append(f"### {spec.external_name} (`{name}`)\n\n" + "\n".join(lines))
         return "\n\n".join(blocks)
 
     def __finalize(self, agent: SubAgent, autonomous: bool) -> SubAgent:
@@ -132,11 +127,9 @@ class AgentRegistry:
         the rendered ``## Tools`` section, then prepends the preamble.
         """
         effective_tools = agent.tools
-        if autonomous and self.__autonomous_disabled:
-            effective_tools = frozenset(
-                t for t in agent.tools if t not in self.__autonomous_disabled
-            )
-        tools_section = self.__render_tools_section(effective_tools, agent.source_path)
+        if autonomous and _AUTONOMOUS_DISABLED:
+            effective_tools = frozenset(t for t in agent.tools if t not in _AUTONOMOUS_DISABLED)
+        tools_section = self.__render_tools_section(effective_tools, agent.name, agent.source_path)
         system_prompt = agent.system_prompt.replace(_TOOLS_PLACEHOLDER, tools_section)
         system_prompt = f"{self.__preamble}\n\n{system_prompt}"
         return replace(agent, tools=effective_tools, system_prompt=system_prompt)
@@ -146,9 +139,9 @@ class AgentRegistry:
 
         Args:
             name: Subagent name (e.g. ``'narrative_author'``).
-            autonomous: When ``True``, tools marked ``Autonomous mode:
-                unavailable`` in ``tools_kodo.md`` are excluded from the agent's
-                tool set and its rendered ``## Tools`` section.
+            autonomous: When ``True``, tools whose ``ToolSpec.autonomous_mode``
+                is ``unavailable`` are excluded from the agent's tool set and
+                its rendered ``## Tools`` section.
 
         Returns:
             SubAgent: The matching subagent definition.

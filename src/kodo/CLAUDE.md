@@ -172,10 +172,11 @@ Every sub-agent MUST have three things defined in its prompt:
 2. __The task__ — the per-invocation user message the engine sends, carrying the workspace artifact IDs and inline content the agent reads as input.
 3. __The reporting tools__ — the workspace tools (`publish_artifact`, `read_artifact`) and, where applicable, the user-dialog and escalation tools. Tool names are named in the prompt; their JSON schemas live in code. The prompt MUST NOT restate any schema, so the prompt and the schema cannot drift.
 
-Authoritative schema locations:
+Authoritative locations:
 
-- `publish_artifact`, `read_artifact` — [schemas/publish_artifact.json](../../schemas/publish_artifact.json), [schemas/read_artifact.json](../../schemas/read_artifact.json), dispatched in-process by [src/kodo/runtime/_subagent_dispatch.py](src/kodo/runtime/_subagent_dispatch.py).
-- `escalate_to_user`, `narrative_ask_user_question`, `narrative_present_for_acceptance`, `narrative_report_completed` — [src/kodo/tools/_report_tools.py](src/kodo/tools/_report_tools.py).
+- The agent-facing tool catalog — internal/external names, descriptions, autonomous-mode behavior, and when-to-use guidance for every tool — lives in each tool's `ToolSpec` under [src/kodo/toolspecs/](src/kodo/toolspecs/) (`external_name`, `user_description`, `description`, `autonomous_mode`, `when_to_use`), rendered into the `## Tools` section of every agent prompt by [src/kodo/subagents/_registry.py](src/kodo/subagents/_registry.py). Prompts name tools; they never restate schemas.
+- `publish_artifact`, `read_artifact` — `ToolSpec`s in [src/kodo/toolspecs/_publish_artifact.py](src/kodo/toolspecs/_publish_artifact.py) and [src/kodo/toolspecs/_read_artifact.py](src/kodo/toolspecs/_read_artifact.py), dispatched in-process by [src/kodo/runtime/_subagent_dispatch.py](src/kodo/runtime/_subagent_dispatch.py).
+- `escalate_blocker`, `ask_user`, `request_user_review_artifact`, `report_artifact_completed` — `ToolSpec`s in [src/kodo/toolspecs/](src/kodo/toolspecs/), one module per tool (`_escalate_blocker.py`, `_ask_user.py`, `_request_user_review_artifact.py`, `_report_artifact_completed.py`).
 
 The agent's frontmatter `tools:` list MUST include every tool the agent calls.
 
@@ -184,10 +185,10 @@ The agent's frontmatter `tools:` list MUST include every tool the agent calls.
 Sub-agents MUST NOT touch the filesystem directly. There is no `fileio_read_file` or `fileio_write_file` on any sub-agent's frontmatter. All artifact production, reading, revision, and cross-agent routing flows through the workspace.
 
 - __Production__ — authors call `publish_artifact` with the artifact `type` (drawn from the workspace's type enum: `narrative`, `architecture`, `requirements`, `functional-design`, `design-plan`, `tech-stack`, `code`, `test-plan`, `test`, `feedback`), the `project_code` and `responsibility_code` assigned by Architect, and the `content`. There is no separate "I'm done" tool call — the agent simply publishes its best work. The workspace owns directory placement based on (project_code, responsibility_code); `filename_hint` is optional and names only the leaf file.
-- __Completion__ — what counts as "this author's contribution is done" is determined by the orchestration, not by the agent. The agent never reasons about completion. Two rules apply at the orchestration level:
-  - For an author with a critic, the contribution is complete when the critic publishes a `feedback` artifact with `verdict: "accepted"` targeting the author's published artifact. The author may publish many superseding revisions before that happens.
-  - For an author without a critic, the published artifact is the contribution; the orchestration advances the workflow on publish.
-  - Narrative Author is a special case: it has no critic but does have user dialog, so its run ends with an explicit `narrative_report_completed` call once both phases are user-accepted.
+- __Completion__ — completion is an explicit, authoritative signal, not an inference. The agent that owns the convergence verdict — a critic in an author/critic pair, or a solo agent that has no critic — calls `report_artifact_completed` once an artifact has passed __all__ of its gates: critic acceptance and, in interactive mode, the user's review. From that call the engine promotes the artifact (materialize to `src/`/`gen/`, mirror commit, mark `completed` in the index, move out of the workspace; see [STATE_AND_LIFECYCLE.md §8](../../doc/STATE_AND_LIFECYCLE.md)). The signal is per artifact and is never fired by an author about its own work. Concretely:
+  - For an author with a critic, the critic reports completion after its verdict is `accepted` and (interactive mode) the user has accepted the artifact via `request_user_review_artifact`. The author may publish many superseding revisions before the critic accepts.
+  - For an author without a critic, the agent is its own owner: it fires `request_user_review_artifact` for the artifact it produced and, on acceptance, `report_artifact_completed`.
+  - Narrative Author is a solo agent: it elicits and validates user input via `ask_user`, then for each artifact it produces (the Narrative, then the Tech Stack) fires `request_user_review_artifact` followed by `report_artifact_completed` — one pair per artifact, never bundled.
 - __Reading inputs__ — when the engine has not already injected an input artifact's content into the task message, agents call `read_artifact` with filters (`artifact_id`, `responsibility_code`, `type`, `requirement_id`, etc.). At least one filter is required.
 - __Revisions__ — when an author addresses critic feedback or user feedback, the new artifact is published with `supersedes: [<old_id>, ...]`. The workspace retires the old artifact; it remains on disk for audit.
 - __Critic verdicts__ — critics publish a `feedback` artifact with `reviewed_artifact_id` pointing at the artifact under review, `verdict: "accepted"` or `"rejected"`, and (when rejected) a non-empty `concerns` array. Each concern uses a `kind` from the critic's defined vocabulary; the shared base vocabulary lives in the `publish_artifact` schema description and each critic prompt may extend it.
@@ -198,16 +199,16 @@ Sub-agents MUST NOT touch the filesystem directly. There is no `fileio_read_file
 A sub-agent MUST NOT use free-form text for any output the harness has to interpret or that is delivered to the user. Specifically:
 
 - __Verdicts__ — every verdict is a `publish_artifact(type="feedback", verdict=...)` call. Critics MUST NOT signal accept/revise via prose or via convention substrings.
-- __Completion__ — every completion is a `publish_artifact` call for the produced artifact (or the final `narrative_report_completed` call for Narrative Author). There is no separate completion tool.
+- __Completion__ — production is a `publish_artifact` call; completion is a separate, explicit `report_artifact_completed` call made by the artifact's owner (the critic of an author/critic pair, or a solo agent) once every gate has passed. Authors never report their own work complete, and completion MUST NOT be signalled via prose.
 - __Cross-agent routings__ — every routing is a `publish_artifact(type="feedback", reviewed_artifact_id=...)` call. Routings MUST NOT be expressed as embedded prose or markdown blocks.
-- __Escalations to the user__ — when an iteration cap is reached or a back-and-forth cannot be reconciled, the agent calls `escalate_to_user` with a structured `summary` and `blocking_artifact_ids` array.
-- __User dialog__ — sub-agents that talk to the user (today, only Narrative Author) MUST do so through dedicated dialog tools (`narrative_ask_user_question`, `narrative_present_for_acceptance`, `narrative_report_completed`). No other sub-agent calls a user-dialog tool — they reach the user only via `escalate_to_user`.
+- __Escalations to the user__ — when an author cannot defensibly make a call (an iteration cap is reached, or a back-and-forth cannot be reconciled), it calls `escalate_blocker` with a structured `reason`, `summary`, and `blocking_artifact_ids` array. This relinquishes the decision to the orchestrator; it is an author/coder-side tool, never held by critics.
+- __User dialog__ — agents reach the user only through the common dialog tools, never free-form. `ask_user` elicits or validates a single piece of user-supplied information the agent then acts on itself (used by Narrative Author and by critics gap-filling against user input); `request_user_review_artifact` is a structured sign-off on a finished `artifact_id` (held by critics and solo agents); `report_artifact_completed` marks an artifact done. Which agents hold which tool is set by each agent's frontmatter; `ask_user` is withheld entirely in autonomous mode (no answer to synthesize), and `request_user_review_artifact` auto-accepts.
 
 Intermediate reasoning text the agent emits between tool calls is allowed but unused; the harness ignores it. Sub-agent prompts SHOULD direct the agent to be terse in such text.
 
 ### Transport-agnostic tool contract
 
-Every tool a sub-agent calls MUST be defined in code as a `ToolSpec` with a JSON Schema, or in the canonical schema files under [schemas/](../../schemas/). All built-in tools run in-process, dispatched by [src/kodo/runtime/_subagent_dispatch.py](src/kodo/runtime/_subagent_dispatch.py) and [src/kodo/runtime/_engine.py](src/kodo/runtime/_engine.py); external MCP tool support is planned post-MVP. The sub-agent prompt MUST name the tool but MUST NOT restate the schema, so prompts remain valid when the transport changes.
+Every tool a sub-agent calls MUST be defined as a `ToolSpec` with a JSON Schema in [src/kodo/toolspecs/](src/kodo/toolspecs/), one module per tool. All built-in tools run in-process, dispatched by [src/kodo/runtime/_subagent_dispatch.py](src/kodo/runtime/_subagent_dispatch.py) and [src/kodo/runtime/_engine.py](src/kodo/runtime/_engine.py); external MCP tool support is planned post-MVP. The sub-agent prompt MUST name the tool but MUST NOT restate the schema, so prompts remain valid when the transport changes.
 
 ### Authoring a new sub-agent prompt — checklist
 

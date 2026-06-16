@@ -181,7 +181,7 @@ A single agent invocation may produce multiple streams (multiple LLM calls withi
 
 ### 5.4 `agent.tool_call` — visible tool invocations
 
-Surfaced only for tools the user benefits from seeing: shell, escalation, narrative dialog. **Workspace tools (`publish_artifact`, `read_artifact`) and the internal report tools are not surfaced as `agent.tool_call`** — their effects are conveyed by `artifact.published` (§5.6) and `review.*` (§5.5).
+Surfaced only for tools the user benefits from seeing: shell, escalation, user dialog. **Workspace tools (`publish_artifact`, `read_artifact`) and the internal report tools are not surfaced as `agent.tool_call`** — their effects are conveyed by `artifact.published` (§5.6), `review.*` (§5.5), and the `prompt.*` requests (§6).
 
 ```json
 { "type": "agent.tool_call",
@@ -311,7 +311,7 @@ While a prompt is outstanding it also appears in `state.pending_prompts` (§5.1)
 
 ### 6.1 `prompt.question` — free-form or choice
 
-Used by the engine to ask the user a clarifying question. Covers narrative dialog (`narrative_ask_user_question` internally; not exposed as a distinct wire message), the intake "ready or more?" question, and any `escalate_to_user` that requests a written or chosen reply.
+Used by the engine to ask the user a clarifying question. Covers any agent's `ask_user` call (e.g. Narrative Author or a critic eliciting or validating user-supplied input, or the Orchestrator's own judgment-call questions; not exposed as a distinct wire message), the intake "ready or more?" question, and any `escalate_blocker` the Orchestrator chooses to surface to the user as a written or chosen reply.
 
 Request payload:
 
@@ -335,9 +335,9 @@ Response payload (`mode: "choice"`):
 { "type": "prompt.question.response", "choice_key": "yes" }
 ```
 
-### 6.2 `prompt.approval` — workflow gate or acceptance
+### 6.2 `prompt.approval` — review gate
 
-Used at FR-WF-05 approval gates and for Narrative Author's acceptance presentation. The two affirmative actions defined by FR-WF-06 (`agree` / `feedback`) are the only valid responses.
+Surfaced when a critic or solo agent calls `request_user_review_artifact` at an FR-WF-05 review gate, presenting a converged artifact for the user's sign-off. The two affirmative actions defined by FR-WF-06 (`agree` / `feedback`) are the only valid responses. In autonomous mode the gate is auto-accepted and no `prompt.approval` is emitted (FR-AUT-02).
 
 Request payload:
 
@@ -359,7 +359,7 @@ Response payload:
   "feedback_text": "..." | null }
 ```
 
-`feedback_text` is required when `action = "feedback"`. On `agree`, the engine advances; on `feedback`, the engine re-runs the responsible Author/Reviewer pair with the feedback injected.
+`feedback_text` is required when `action = "feedback"`. On `agree`, the reviewing agent reports the artifact completed (`report_artifact_completed`) and the engine promotes it; on `feedback`, the reviewing agent opens a revision round on the same artifact, escalating to the Orchestrator via `escalate_blocker` only when the feedback implicates an upstream artifact.
 
 ### 6.3 `prompt.permission` — security-layer prompt
 

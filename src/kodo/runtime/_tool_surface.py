@@ -1,11 +1,12 @@
 """Orchestrator tool surface — the tools the Orchestrator may call (FR-ORCH-03).
 
-Each tool is defined as a :class:`~kodo.llms._interface.ToolSpec` whose JSON
-schema is the contract the Orchestrator LLM sees.  The :class:`ToolSurface`
-class holds the async handlers that the engine dispatches to when the
-Orchestrator calls one of these tools.
+Each tool is defined as a :class:`~kodo.toolspecs.ToolSpec` whose JSON schema
+is the contract the Orchestrator LLM sees; the specs themselves live in
+:mod:`kodo.toolspecs`.  The :class:`ToolSurface` class holds the async
+handlers that the engine dispatches to when the Orchestrator calls one of
+these tools.
 
-Tools that spawn sub-agents (``start_subagent``, ``run_author_critic_iteration``)
+Tools that spawn sub-agents (``run_subagent``, ``run_author_critic_iteration``)
 are stubs in this step; full implementation arrives in Step 5.  All other tools
 are fully implemented.
 """
@@ -16,7 +17,14 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 
-from kodo.llms._interface import ToolSpec
+from kodo.toolspecs import ToolSpec
+from kodo.toolspecs._ask_user_orchestrator import ORCHESTRATOR_ASK_USER as ASK_USER
+from kodo.toolspecs._finalize_project import FINALIZE_PROJECT
+from kodo.toolspecs._list_artifacts import LIST_ARTIFACTS
+from kodo.toolspecs._query_frontier import QUERY_FRONTIER
+from kodo.toolspecs._rollback import ROLLBACK
+from kodo.toolspecs._run_author_critic_iteration import RUN_AUTHOR_CRITIC_ITERATION
+from kodo.toolspecs._run_subagent import RUN_SUBAGENT
 from kodo.workspace import ProjectIndex
 from kodo.workspace._models import ArtifactType
 
@@ -46,185 +54,13 @@ _PER_RESPONSIBILITY_ORDER: tuple[ArtifactType, ...] = (
 )
 
 # ---------------------------------------------------------------------------
-# ToolSpec definitions — one per FR-ORCH-03 tool
+# Orchestrator tool catalog — specs live in kodo.toolspecs
 # ---------------------------------------------------------------------------
-
-QUERY_FRONTIER = ToolSpec(
-    name="query_frontier",
-    description=(
-        "Query the most recent status of every artifact and return the "
-        "per-responsibility frontier: for each responsibility_code, the "
-        "earliest artifact type in the canonical execution order "
-        "(functional-design → test-plan → test → code) that has zero completed "
-        "entries.  A responsibility absent from the result has all four types "
-        "completed.  An artifact counts as completed only once an agent marks it "
-        "so via report_artifact_completed; this tool never decides completion."
-    ),
-    input_schema={"type": "object", "properties": {}, "required": []},
-)
-
-LIST_ARTIFACTS = ToolSpec(
-    name="list_artifacts",
-    description=(
-        "Query the workspace index.  All supplied filters are combined with AND. "
-        "At least one filter is required."
-    ),
-    input_schema={
-        "type": "object",
-        "properties": {
-            "artifact_id": {"type": "string", "description": "Exact artifact UUID."},
-            "type": {
-                "type": "string",
-                "enum": [t.value for t in ArtifactType],
-                "description": "Artifact type filter.",
-            },
-            "responsibility_code": {"type": "string", "description": "Responsibility codename."},
-            "requirement_id": {
-                "type": "string",
-                "description": "Requirement ID that must be in requirement_ids.",
-            },
-            "author": {
-                "type": "string",
-                "description": "Sub-agent name that published the artifact.",
-            },
-            "state": {
-                "type": "string",
-                "enum": ["completed", "in_flight"],
-                "description": "Lifecycle state filter.",
-            },
-        },
-        "required": [],
-        "minProperties": 1,
-    },
-)
-
-START_SUBAGENT = ToolSpec(
-    name="start_subagent",
-    description=(
-        "Invoke a leaf sub-agent by name.  Blocks until the sub-agent session "
-        "completes.  Returns the artifact IDs the sub-agent published."
-    ),
-    input_schema={
-        "type": "object",
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "Sub-agent name from the registry (e.g. 'narrative_author').",
-            },
-            "task_message": {
-                "type": "string",
-                "description": "Task message injected as the initial uncached user turn.",
-            },
-            "input_artifact_ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "default": [],
-                "description": "Artifact IDs the sub-agent may read via read_artifact.",
-            },
-        },
-        "required": ["name", "task_message"],
-    },
-)
-
-RUN_AUTHOR_CRITIC_ITERATION = ToolSpec(
-    name="run_author_critic_iteration",
-    description=(
-        "Execute one round of the Author/Critic loop.  "
-        "Spawns the Author (with previous_artifact_id as feedback context when provided), "
-        "then spawns the Critic against the Author's output.  "
-        "Returns the artifact ID, verdict, and concerns.  "
-        "Call again to iterate; the Orchestrator decides when to stop."
-    ),
-    input_schema={
-        "type": "object",
-        "properties": {
-            "author_name": {"type": "string", "description": "Author sub-agent name."},
-            "critic_name": {"type": "string", "description": "Critic sub-agent name."},
-            "input_artifact_ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Input artifact IDs passed to the Author.",
-            },
-            "previous_artifact_id": {
-                "type": "string",
-                "description": (
-                    "Artifact ID of the prior Author output.  When set, the Author "
-                    "receives it as revision context alongside the Critic's concerns."
-                ),
-            },
-        },
-        "required": ["author_name", "critic_name", "input_artifact_ids"],
-    },
-)
-
-ASK_USER = ToolSpec(
-    name="ask_user",
-    description=(
-        "Surface a free-form or choice question to the user. "
-        "Blocks until the user responds. "
-        "Use for clarification, confirmation before destructive operations, and intake."
-    ),
-    input_schema={
-        "type": "object",
-        "properties": {
-            "question": {"type": "string", "description": "The question to display."},
-            "mode": {
-                "type": "string",
-                "enum": ["free_text", "choice"],
-                "description": "free_text: user types a reply; choice: user picks from choices.",
-            },
-            "choices": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "key": {"type": "string"},
-                        "label": {"type": "string"},
-                    },
-                    "required": ["key", "label"],
-                },
-                "description": "Required when mode='choice'.",
-            },
-        },
-        "required": ["question"],
-    },
-)
-
-ROLLBACK = ToolSpec(
-    name="rollback",
-    description=(
-        "Invoke the rollback procedure.  "
-        "Restores src/ and gen/ from the target mirror commit, clears the workspace, "
-        "and starts a fresh Orchestrator session.  "
-        "In interactive mode the Orchestrator MUST confirm with the user via ask_user "
-        "before calling this.  In autonomous mode it decides and documents via post_update; "
-        "there is no user to confirm with."
-    ),
-    input_schema={
-        "type": "object",
-        "properties": {
-            "target_sha": {
-                "type": "string",
-                "description": "Mirror commit SHA to roll back to.",
-            },
-        },
-        "required": ["target_sha"],
-    },
-)
-
-FINALIZE_PROJECT = ToolSpec(
-    name="finalize_project",
-    description=(
-        "Terminal call: the project is complete.  "
-        "Transitions state.phase to 'done' and ends the Orchestrator session."
-    ),
-    input_schema={"type": "object", "properties": {}, "required": []},
-)
 
 ORCHESTRATOR_TOOLS: list[ToolSpec] = [
     QUERY_FRONTIER,
     LIST_ARTIFACTS,
-    START_SUBAGENT,
+    RUN_SUBAGENT,
     RUN_AUTHOR_CRITIC_ITERATION,
     ASK_USER,
     ROLLBACK,
@@ -233,8 +69,8 @@ ORCHESTRATOR_TOOLS: list[ToolSpec] = [
 
 ORCHESTRATOR_TOOLS_BY_NAME: dict[str, ToolSpec] = {t.name: t for t in ORCHESTRATOR_TOOLS}
 
-# Orchestrator tools withheld in autonomous mode — kept in sync with the
-# "Autonomous mode: unavailable" markers in tools_kodo.md.
+# Orchestrator tools withheld in autonomous mode — kept in sync with
+# ToolSpec.autonomous_mode == "unavailable" (see kodo.subagents._registry).
 _AUTONOMOUS_DISABLED: frozenset[str] = frozenset({ASK_USER.name})
 
 
@@ -329,8 +165,8 @@ class ToolSurface:
             return await self.__query_frontier()
         if tool_name == LIST_ARTIFACTS.name:
             return await self.__list_artifacts(tool_input)
-        if tool_name == START_SUBAGENT.name:
-            return await self.__start_subagent(tool_input)
+        if tool_name == RUN_SUBAGENT.name:
+            return await self.__run_subagent(tool_input)
         if tool_name == RUN_AUTHOR_CRITIC_ITERATION.name:
             return await self.__run_author_critic_iteration(tool_input)
         if tool_name == ASK_USER.name:
@@ -414,16 +250,16 @@ class ToolSurface:
         return json.dumps({"artifacts": result})
 
     # ------------------------------------------------------------------
-    # start_subagent (stub — Step 5 wires the real invocation)
+    # run_subagent (stub — Step 5 wires the real invocation)
     # ------------------------------------------------------------------
 
-    async def __start_subagent(self, tool_input: dict[str, object]) -> str:
+    async def __run_subagent(self, tool_input: dict[str, object]) -> str:
         name = str(tool_input.get("name", ""))
         task_message = str(tool_input.get("task_message", ""))
         input_ids_raw = tool_input.get("input_artifact_ids", [])
         input_ids = [str(i) for i in input_ids_raw] if isinstance(input_ids_raw, list) else []
 
-        _log.info("start_subagent: name=%s input_ids=%s", name, input_ids)
+        _log.info("run_subagent: name=%s input_ids=%s", name, input_ids)
         artifact_ids = await self.__run_subagent_fn(name, task_message, input_ids)
         return json.dumps({"artifact_ids": artifact_ids})
 

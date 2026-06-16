@@ -1,0 +1,144 @@
+"""``read_artifact`` tool spec — leaf sub-agent workspace tool."""
+
+from __future__ import annotations
+
+from ._spec import ToolSpec
+
+__all__ = ["READ_ARTIFACT"]
+
+
+READ_ARTIFACT: ToolSpec = ToolSpec(
+    name="read_artifact",
+    external_name="Read Artifact",
+    user_description="Read a workspace artifact",
+    description=(
+        "Query live (non-retired) artifacts from the workspace. At least one filter must be "
+        "supplied. All supplied filters are combined with AND. Returns an array of matching "
+        "artifacts; if artifact_id is used, the array contains at most one entry. Each entry "
+        "includes: id, type, author, project_code, responsibility_code, requirement_ids, "
+        "filename_hint, reviewed_artifact_id, concerns, verdict, supersedes, metadata, "
+        "created_at. Content is included by default; set include_content to false to "
+        "retrieve metadata only. The version parameter is required on every call that does "
+        "NOT specify artifact_id: pass version='stable' to read the last accepted (promoted) "
+        "version of matching artifacts — used by every sub-agent that consumes a "
+        "neighbouring artifact as a contract — or version='in_flight' to read the "
+        "in-progress workspace version — used by critics reviewing the artifact under work. "
+        "Calls that filter by artifact_id MUST NOT pass version, because the ID identifies "
+        "one specific artifact regardless of state."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "minProperties": 1,
+        "properties": {
+            "artifact_id": {
+                "type": "string",
+                "description": "Return the single artifact with this exact ID.",
+            },
+            "author": {
+                "type": "string",
+                "description": "Filter to artifacts published by this agent name.",
+            },
+            "project_code": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9]{1,7}$",
+                "description": "Filter to artifacts carrying this PROJECTCODE.",
+            },
+            "responsibility_code": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9]{1,15}$",
+                "description": "Filter to artifacts tagged with this RESPONSIBILITYCODE.",
+            },
+            "requirement_id": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9]{1,7}_[A-Z][A-Z0-9]{1,15}_[A-Z][A-Z0-9]{1,31}$",
+                "description": "Filter to artifacts whose requirement_ids list contains this ID.",
+            },
+            "type": {
+                "type": "string",
+                "description": "Filter to artifacts of this type.",
+                "enum": [
+                    "narrative",
+                    "architecture",
+                    "requirements",
+                    "plan",
+                    "functional-design",
+                    "design-plan",
+                    "tech-stack",
+                    "code",
+                    "test-plan",
+                    "test",
+                    "feedback",
+                ],
+            },
+            "reviewed_artifact_id": {
+                "type": "string",
+                "description": (
+                    "Filter to feedback artifacts whose reviewed_artifact_id is this "
+                    "artifact ID. Returns all feedback (across iterations) that reviewed a "
+                    "specific artifact."
+                ),
+            },
+            "verdict": {
+                "type": "string",
+                "enum": ["accepted", "rejected"],
+                "description": (
+                    "Filter to feedback artifacts with this verdict. Only meaningful "
+                    "combined with type='feedback'."
+                ),
+            },
+            "concern_kind": {
+                "type": "string",
+                "description": (
+                    "Filter to feedback artifacts that contain at least one concern of this "
+                    "kind (e.g. 'ambiguity', 'gap'). Only meaningful combined with "
+                    "type='feedback'."
+                ),
+            },
+            "include_content": {
+                "type": "boolean",
+                "default": True,
+                "description": (
+                    "When false, content is omitted from results. Useful when querying a "
+                    "large codename to enumerate artifacts before fetching content "
+                    "selectively."
+                ),
+            },
+            "version": {
+                "type": "string",
+                "enum": ["stable", "in_flight"],
+                "description": (
+                    "Required on every call that does NOT pass artifact_id. 'stable' returns "
+                    "the last accepted (promoted) version of each matching artifact — what "
+                    "every sub-agent uses to consume a neighbouring artifact as a contract. "
+                    "'in_flight' returns the in-progress workspace version of each matching "
+                    "artifact — what critics use to review the artifact under work. Calls "
+                    "that filter by artifact_id MUST NOT pass version; the ID identifies one "
+                    "specific artifact regardless of state. The workspace rejects calls "
+                    "without artifact_id that also omit version."
+                ),
+            },
+        },
+        "allOf": [
+            {
+                "if": {"not": {"required": ["artifact_id"]}},
+                "then": {"required": ["version"]},
+            },
+            {
+                "if": {"required": ["artifact_id"]},
+                "then": {"not": {"required": ["version"]}},
+            },
+        ],
+    },
+    when_to_use=(
+        "An input artifact that wasn't delivered inline is needed — e.g., "
+        "fetching another component's artifact via "
+        "`read_artifact(project_code=<PROJECTCODE>, "
+        "responsibility_code=<CODENAME>, type=<artifact_type>)`.",
+        "Checking consistency with prior feedback on a predecessor "
+        "artifact, e.g. `read_artifact(reviewed_artifact_id=<predecessor_id>, "
+        "author=<this_agent_name>)`.",
+        "Re-examining a previously published artifact while handling "
+        "feedback or revising a related artifact.",
+    ),
+)

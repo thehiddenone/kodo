@@ -16,24 +16,6 @@ from kodo.subagents._registry import AgentRegistry
 
 _PREAMBLE_TEXT = "# Security Preamble\n\nThese rules apply to every sub-agent."
 
-_TOOLS_TEXT = (
-    "# Kodo Tools\n"
-    "\n"
-    "## fileio_write_file\n"
-    "\n"
-    "- **External name:** Write File\n"
-    "- **Description:** Writes a file to the workspace.\n"
-    "- **When to use:**\n"
-    "  - Saving generated content.\n"
-    "\n"
-    "## fileio_read_file\n"
-    "\n"
-    "- **External name:** Read File\n"
-    "- **Description:** Reads a file from the workspace.\n"
-    "- **When to use:**\n"
-    "  - Loading existing content.\n"
-)
-
 
 def _write_agent(tmp_path: Path, name: str, frontmatter: str, body: str) -> Path:
     content = f"---\n{frontmatter}---\n{body}"
@@ -44,12 +26,6 @@ def _write_agent(tmp_path: Path, name: str, frontmatter: str, body: str) -> Path
 
 def _write_preamble(tmp_path: Path, text: str = _PREAMBLE_TEXT) -> Path:
     p = tmp_path / "preamble.md"
-    p.write_text(text, encoding="utf-8")
-    return p
-
-
-def _write_tools(tmp_path: Path, text: str = _TOOLS_TEXT) -> Path:
-    p = tmp_path / "tools_kodo.md"
     p.write_text(text, encoding="utf-8")
     return p
 
@@ -123,7 +99,6 @@ def test_load_agent_empty_body(tmp_path: Path) -> None:
 
 def test_registry_get_returns_agent(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
-    _write_tools(tmp_path)
     _write_agent(tmp_path, "narrative_author", "name: narrative_author\n", "Narrative Author.")
     registry = AgentRegistry(tmp_path)
     agent = registry.get("narrative_author")
@@ -133,7 +108,6 @@ def test_registry_get_returns_agent(tmp_path: Path) -> None:
 
 def test_registry_missing_agent_raises(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
-    _write_tools(tmp_path)
     registry = AgentRegistry(tmp_path)
     with pytest.raises(AgentLoadError, match="No subagent file"):
         registry.get("nonexistent")
@@ -141,7 +115,6 @@ def test_registry_missing_agent_raises(tmp_path: Path) -> None:
 
 def test_registry_all_agents_returns_loaded(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
-    _write_tools(tmp_path)
     _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
     _write_agent(tmp_path, "agent_b", "name: agent_b\n", "Prompt B.")
     registry = AgentRegistry(tmp_path)
@@ -151,7 +124,6 @@ def test_registry_all_agents_returns_loaded(tmp_path: Path) -> None:
 
 def test_registry_prepends_preamble_to_every_prompt(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
-    _write_tools(tmp_path)
     _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
     _write_agent(tmp_path, "agent_b", "name: agent_b\n", "Prompt B.")
     registry = AgentRegistry(tmp_path)
@@ -161,7 +133,6 @@ def test_registry_prepends_preamble_to_every_prompt(tmp_path: Path) -> None:
 
 
 def test_registry_missing_preamble_raises(tmp_path: Path) -> None:
-    _write_tools(tmp_path)
     _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
     with pytest.raises(AgentLoadError, match="preamble"):
         AgentRegistry(tmp_path)
@@ -169,7 +140,6 @@ def test_registry_missing_preamble_raises(tmp_path: Path) -> None:
 
 def test_registry_empty_preamble_raises(tmp_path: Path) -> None:
     _write_preamble(tmp_path, "   \n")
-    _write_tools(tmp_path)
     _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
     with pytest.raises(AgentLoadError, match="empty"):
         AgentRegistry(tmp_path)
@@ -180,36 +150,28 @@ def test_registry_empty_preamble_raises(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_registry_missing_tools_file_raises(tmp_path: Path) -> None:
-    _write_preamble(tmp_path)
-    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
-    with pytest.raises(AgentLoadError, match="tools reference file is missing"):
-        AgentRegistry(tmp_path)
-
-
 def test_registry_renders_tools_section_for_agent_tools(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
-    _write_tools(tmp_path)
     _write_agent(
         tmp_path,
         "agent_a",
-        "name: agent_a\ntools:\n  - fileio_write_file\n  - fileio_read_file\n",
+        "name: agent_a\ntools:\n  - create_file\n  - read_artifact\n",
         "Prompt A.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
     )
     registry = AgentRegistry(tmp_path)
     prompt = registry.get("agent_a").system_prompt
     assert "{PLACEHOLDER:TOOLS}" not in prompt
-    assert "### Read File (`fileio_read_file`)" in prompt
-    assert "### Write File (`fileio_write_file`)" in prompt
-    assert "- **Description:** Reads a file from the workspace." in prompt
+    assert "### Create File (`create_file`)" in prompt
+    assert "### Read Artifact (`read_artifact`)" in prompt
+    assert "- **When to use:**" in prompt
     assert "- **External name:**" not in prompt
+    assert "- **Description:**" not in prompt
     # Tools are rendered in a stable, sorted order.
-    assert prompt.index("Read File") < prompt.index("Write File")
+    assert prompt.index("Create File") < prompt.index("Read Artifact")
 
 
 def test_registry_renders_empty_tools_section_for_agent_with_no_tools(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
-    _write_tools(tmp_path)
     _write_agent(
         tmp_path,
         "agent_a",
@@ -224,7 +186,6 @@ def test_registry_renders_empty_tools_section_for_agent_with_no_tools(tmp_path: 
 
 def test_registry_unknown_tool_raises(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
-    _write_tools(tmp_path)
     _write_agent(
         tmp_path,
         "agent_a",
@@ -235,9 +196,41 @@ def test_registry_unknown_tool_raises(tmp_path: Path) -> None:
         AgentRegistry(tmp_path)
 
 
-def test_registry_tools_file_with_no_sections_raises(tmp_path: Path) -> None:
+def test_registry_ask_user_variant_depends_on_agent(tmp_path: Path) -> None:
+    """The orchestrator gets the orchestrator `ask_user` guidance; leaf agents don't."""
     _write_preamble(tmp_path)
-    _write_tools(tmp_path, "# Kodo Tools\n\nNo tool sections here.\n")
-    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
-    with pytest.raises(AgentLoadError, match="no tool sections"):
-        AgentRegistry(tmp_path)
+    _write_agent(
+        tmp_path,
+        "orchestrator",
+        "name: orchestrator\ntools:\n  - ask_user\n",
+        "Prompt O.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
+    )
+    _write_agent(
+        tmp_path,
+        "agent_a",
+        "name: agent_a\ntools:\n  - ask_user\n",
+        "Prompt A.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
+    )
+    registry = AgentRegistry(tmp_path)
+    orchestrator_prompt = registry.get("orchestrator").system_prompt
+    leaf_prompt = registry.get("agent_a").system_prompt
+
+    assert "Confirming a rollback" in orchestrator_prompt
+    assert "Confirming a rollback" not in leaf_prompt
+    assert "gap-filling" in orchestrator_prompt
+    assert "gap-filling" in leaf_prompt
+
+
+def test_registry_ask_user_unavailable_in_autonomous_mode(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(
+        tmp_path,
+        "agent_a",
+        "name: agent_a\ntools:\n  - ask_user\n  - read_artifact\n",
+        "Prompt A.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
+    )
+    registry = AgentRegistry(tmp_path)
+    agent = registry.get("agent_a", autonomous=True)
+    assert agent.tools == frozenset(["read_artifact"])
+    assert "ask_user" not in agent.system_prompt
+    assert "### Read Artifact" in agent.system_prompt

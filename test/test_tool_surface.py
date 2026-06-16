@@ -3,7 +3,7 @@
 Tests verify that ToolSurface handlers produce correct JSON responses for the
 two read-only tools (query_frontier, list_artifacts) and the terminal tool
 (finalize_project).  Approval and ask_user are tested via the session.autonomous
-fast-path.  Stub tools (start_subagent, run_author_critic_iteration) are
+fast-path.  Stub tools (run_subagent, run_author_critic_iteration) are
 tested to confirm they return the expected shape.
 """
 
@@ -252,21 +252,21 @@ async def test_list_artifacts_filters_by_artifact_id() -> None:
 
 
 # ---------------------------------------------------------------------------
-# start_subagent (stub)
+# run_subagent (stub)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_start_subagent_returns_artifact_ids() -> None:
+async def test_run_subagent_returns_artifact_ids() -> None:
     """
     Given a valid sub-agent name,
-    when start_subagent is called,
+    when run_subagent is called,
     then the result contains an artifact_ids list.
     """
     surface = _make_surface()
     result = json.loads(
         await surface.dispatch(
-            "start_subagent",
+            "run_subagent",
             {"name": "narrative_author", "task_message": "Build a trading bot"},
         )
     )

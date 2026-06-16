@@ -1,63 +1,57 @@
 """Leaf sub-agent tool dispatch.
 
-Loads the canonical ``publish_artifact`` and ``read_artifact`` tool schemas
-from ``schemas/`` and provides :class:`SubagentDispatcher`, which translates
-those tool calls into direct :class:`~kodo.workspace.Workspace` method calls
-(no MCP subprocess needed — the same logic in one process).
+Provides :class:`SubagentDispatcher`, which translates ``publish_artifact``
+and ``read_artifact`` tool calls into direct :class:`~kodo.workspace.Workspace`
+method calls (no MCP subprocess needed — the same logic in one process).
 
 Report tools (``escalate_blocker``, ``ask_user``,
 ``request_user_review_artifact``, ``report_artifact_completed``) are
-handled here as well.
+handled here as well, along with the native file I/O tools (``create_file``,
+``edit_file``, ``delete_file``, ``copy_file``, ``move_file``) and the native
+shell tool (``run_command``) — direct, scoped filesystem/process access with
+no MCP subprocess involved.
+
+The specs for all of these tools live in :mod:`kodo.toolspecs`; this module
+only contains dispatch logic.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from kodo.llms._interface import ToolSpec
 from kodo.subagents._loader import SubAgent
-from kodo.tools._report_tools import REPORT_TOOLS_BY_NAME
+from kodo.toolspecs import (
+    ASK_USER,
+    COPY_FILE,
+    CREATE_FILE,
+    DELETE_FILE,
+    EDIT_FILE,
+    LEAF_TOOLS_BY_NAME,
+    MOVE_FILE,
+    PUBLISH_ARTIFACT,
+    READ_ARTIFACT,
+    RUN_COMMAND,
+    ToolSpec,
+)
 from kodo.workspace import Artifact, ArtifactType, Concern, Verdict, Workspace
 
 from ._gates import GateOrchestrator
 
 __all__ = [
     "LEAF_TOOLS_BY_NAME",
-    "PUBLISH_ARTIFACT_SPEC",
-    "READ_ARTIFACT_SPEC",
     "SubagentDispatcher",
 ]
 
 _log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# ToolSpec definitions loaded from the canonical schema files
-# ---------------------------------------------------------------------------
-
-_SCHEMAS_DIR = Path(__file__).parent.parent.parent.parent / "schemas"
-
-
-def _load_spec(filename: str) -> ToolSpec:
-    data = json.loads((_SCHEMAS_DIR / filename).read_text(encoding="utf-8"))
-    return ToolSpec(
-        name=str(data["name"]),
-        description=str(data["description"]),
-        input_schema=data["input_schema"],
-    )
-
-
-PUBLISH_ARTIFACT_SPEC: ToolSpec = _load_spec("publish_artifact.json")
-READ_ARTIFACT_SPEC: ToolSpec = _load_spec("read_artifact.json")
-
-# All tool specs a leaf sub-agent may be granted, keyed by name.
-LEAF_TOOLS_BY_NAME: dict[str, ToolSpec] = {
-    PUBLISH_ARTIFACT_SPEC.name: PUBLISH_ARTIFACT_SPEC,
-    READ_ARTIFACT_SPEC.name: READ_ARTIFACT_SPEC,
-    **REPORT_TOOLS_BY_NAME,
-}
+_FILEIO_TOOL_NAMES: frozenset[str] = frozenset(
+    {CREATE_FILE.name, EDIT_FILE.name, DELETE_FILE.name, COPY_FILE.name, MOVE_FILE.name}
+)
 
 
 def tools_for_agent(agent: SubAgent) -> list[ToolSpec]:
@@ -164,18 +158,22 @@ class SubagentDispatcher:
         Returns:
             str: JSON-encoded result returned to the LLM as a tool result.
         """
-        if tool_name == PUBLISH_ARTIFACT_SPEC.name:
+        if tool_name == PUBLISH_ARTIFACT.name:
             return await self.__publish(tool_input)
-        if tool_name == READ_ARTIFACT_SPEC.name:
+        if tool_name == READ_ARTIFACT.name:
             return await self.__read(tool_input)
         if tool_name == "escalate_blocker":
             return await self.__escalate(tool_input)
-        if tool_name == "ask_user":
+        if tool_name == ASK_USER.name:
             return await self.__ask_user(tool_input)
         if tool_name == "request_user_review_artifact":
             return await self.__request_review(tool_input)
         if tool_name == "report_artifact_completed":
             return await self.__report_completed(tool_input)
+        if tool_name in _FILEIO_TOOL_NAMES:
+            return self.__fileio(tool_name, tool_input)
+        if tool_name == RUN_COMMAND.name:
+            return await self.__run_command(tool_input)
         _log.warning("SubagentDispatcher: unknown tool %r from %s", tool_name, self.__agent_name)
         return json.dumps({"error": f"Unknown tool: {tool_name!r}"})
 
@@ -365,6 +363,119 @@ class SubagentDispatcher:
         # callback only flips state (used by isolated tests with no engine).
         await self.__complete_fn(artifact_id)
         return json.dumps({"status": "completed", "artifact_id": artifact_id})
+
+    # ------------------------------------------------------------------
+    # Native file I/O tools
+    # ------------------------------------------------------------------
+
+    def __resolve_path(self, path: str) -> Path:
+        root = self.__workspace.project_root
+        candidate = Path(path)
+        resolved = (
+            (root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+        )
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            raise PermissionError(
+                f"Path {path!r} is outside the project root {str(root)!r}"
+            ) from None
+        return resolved
+
+    def __fileio(self, tool_name: str, tool_input: dict[str, object]) -> str:
+        try:
+            if tool_name == "create_file":
+                return self.__create_file(tool_input)
+            if tool_name == "edit_file":
+                return self.__edit_file(tool_input)
+            if tool_name == "delete_file":
+                return self.__delete_file(tool_input)
+            if tool_name == "copy_file":
+                return self.__copy_file(tool_input)
+            return self.__move_file(tool_input)
+        except OSError as exc:
+            _log.info("%s from %s failed: %s", tool_name, self.__agent_name, exc)
+            return json.dumps({"error": str(exc)})
+
+    def __create_file(self, tool_input: dict[str, object]) -> str:
+        path = str(tool_input.get("path", ""))
+        content = str(tool_input.get("content", ""))
+        target = self.__resolve_path(path)
+        if target.exists():
+            raise FileExistsError(f"File already exists: {path!r}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return json.dumps({"status": "created", "path": path})
+
+    def __edit_file(self, tool_input: dict[str, object]) -> str:
+        path = str(tool_input.get("path", ""))
+        content = str(tool_input.get("content", ""))
+        target = self.__resolve_path(path)
+        if not target.exists():
+            raise FileNotFoundError(f"File not found: {path!r}")
+        target.write_text(content, encoding="utf-8")
+        return json.dumps({"status": "edited", "path": path})
+
+    def __delete_file(self, tool_input: dict[str, object]) -> str:
+        path = str(tool_input.get("path", ""))
+        target = self.__resolve_path(path)
+        if not target.exists():
+            raise FileNotFoundError(f"File not found: {path!r}")
+        target.unlink()
+        return json.dumps({"status": "deleted", "path": path})
+
+    def __copy_file(self, tool_input: dict[str, object]) -> str:
+        source = str(tool_input.get("source", ""))
+        destination = str(tool_input.get("destination", ""))
+        src = self.__resolve_path(source)
+        dst = self.__resolve_path(destination)
+        if not src.exists():
+            raise FileNotFoundError(f"Source not found: {source!r}")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        return json.dumps({"status": "copied", "source": source, "destination": destination})
+
+    def __move_file(self, tool_input: dict[str, object]) -> str:
+        source = str(tool_input.get("source", ""))
+        destination = str(tool_input.get("destination", ""))
+        src = self.__resolve_path(source)
+        dst = self.__resolve_path(destination)
+        if not src.exists():
+            raise FileNotFoundError(f"Source not found: {source!r}")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), dst)
+        return json.dumps({"status": "moved", "source": source, "destination": destination})
+
+    # ------------------------------------------------------------------
+    # Native shell tool
+    # ------------------------------------------------------------------
+
+    async def __run_command(self, tool_input: dict[str, object]) -> str:
+        command = str(tool_input.get("command", ""))
+        working_dir_raw = tool_input.get("working_dir")
+        try:
+            cwd = (
+                self.__resolve_path(str(working_dir_raw))
+                if working_dir_raw
+                else self.__workspace.project_root
+            )
+        except PermissionError as exc:
+            return json.dumps({"error": str(exc)})
+        _log.info("run_command from %s: %s (cwd=%s)", self.__agent_name, command[:120], cwd)
+        process = await asyncio.create_subprocess_shell(
+            command,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        return json.dumps(
+            {
+                "exit_code": process.returncode,
+                "stdout": stdout.decode("utf-8", errors="replace"),
+                "stderr": stderr.decode("utf-8", errors="replace"),
+            }
+        )
 
 
 # ---------------------------------------------------------------------------

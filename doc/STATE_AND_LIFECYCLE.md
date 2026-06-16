@@ -80,32 +80,34 @@ Architect MUST ensure normalised display names are unique across components — 
 
 **Why `feedback` is not promoted:**
 
-`feedback` artifacts are workflow scaffolding: they exist to drive critic loops and cross-agent routings. Their final state (accepted or rejected) is recorded in the session logs of both the critic that produced them and the author that received them, and the latest accepted feedback is what triggers promotion of the artifact under review. The feedback artifact itself adds no value to the project after that point. It is deleted from the workspace when the artifact it reviewed is promoted, and the audit story is carried entirely by the session logs (§5).
+`feedback` artifacts are workflow scaffolding: they exist to drive critic loops and cross-agent routings. Their final state (accepted or rejected) is recorded in the session logs of both the critic that produced them and the author that received them. Critic acceptance is a precondition for completion, but promotion itself is triggered by the critic's (or solo agent's) explicit `report_artifact_completed` call once the artifact has also cleared its user review gate (§8). The feedback artifact itself adds no value to the project after that point. It is deleted from the workspace when the artifact it reviewed is promoted, and the audit story is carried entirely by the session logs (§5).
 
 ---
 
-## 2. Internal index
+## 2. Project index
 
-The engine maintains an in-memory index covering both completed and in-flight artifacts. The index is the single structure the engine consults to decide what to schedule next.
+`ProjectIndex` is the single runtime source of truth for the catalog and lifecycle state of every artifact, completed and in-flight. The engine consults it to decide what to schedule next; the Workspace maintains it on every publish, supersession, and completion, and reads it to locate an artifact. It lives in memory and is never persisted as its own file — it is a reflection of on-disk state, reconstructed on every cold start (§3).
 
 ### 2.1 Shape
 
-The index is a collection of `IndexEntry` records, one per artifact. The primary key is `artifact_id`; secondary lookup indexes are maintained over `(project_code, responsibility_code, type)`, `requirement_id`, and `session_id`.
+The index is a collection of `IndexEntry` records, one per artifact. Each entry holds **metadata only**; the artifact's content lives solely on disk at `location`. The primary key is `artifact_id`; secondary lookup indexes are maintained over `(project_code, responsibility_code, type)`, `requirement_id`, and `session_id`.
 
 ```
 IndexEntry:
-    artifact_id:         str            # primary key
-    project_code:        str
-    responsibility_code: str
-    type:                ArtifactType
-    state:               "completed" | "in_flight"
-    location:            Path           # absolute path on disk
-    filename_hint:       str            # leaf name (stable across revisions)
-    supersedes:          list[str]      # prior artifact IDs
-    requirement_ids:     list[str]      # requirements this artifact covers
-    session_id:          str | None     # set when in_flight
-    author:              str            # sub-agent name
-    last_modified:       datetime
+    artifact_id:          str            # primary key
+    project_code:         str
+    responsibility_code:  str
+    type:                 ArtifactType
+    state:                "completed" | "in_flight"
+    location:             Path           # absolute path on disk
+    filename_hint:        str            # leaf name (stable across revisions)
+    supersedes:           list[str]      # prior artifact IDs
+    requirement_ids:      list[str]      # requirements this artifact covers
+    session_id:           str | None     # set when in_flight
+    author:               str            # sub-agent name
+    created_at:           datetime
+    verdict:              Verdict | None # set on reviewed artifacts
+    reviewed_artifact_id: str | None     # set on feedback artifacts
 ```
 
 A single `(project_code, responsibility_code, type)` may yield **multiple** entries — a component typically has more than one `code` file (a service plus helpers), more than one `test` file (one per logical unit), and so on. Per-component artifacts (`functional-design`, `test-plan`, `test`, `code`) are looked up as a list keyed on the triple. Project-wide artifacts (`narrative`, `architecture`, `requirements`, `tech-stack`, `design-plan`) carry `responsibility_code = project_code` and produce a single entry per triple.
@@ -129,7 +131,7 @@ The `version` parameter is required on filter-form `read_artifact` calls; there 
 
 Four views are derived from the index. Each is exposed to the Orchestrator through a tool in its tool surface (FR-ORCH-03); none drive any engine-internal scheduling decision. The Orchestrator consults them as inputs to its reasoning.
 
-- **Frontier per component** — for each `responsibility_code`, the earliest artifact type in the canonical workflow order (`functional-design → test-plan → test → code`) that has zero completed entries. Exposed through `compute_frontier()`. The Orchestrator uses the frontier as a hint when in execution sub-mode (FR-ORCH-07); it MAY deviate when responding to user-driven re-entry. A component with at least one completed `code` entry is treated as code-complete for that component's part of the canonical workflow, even though more code files could be added later by revision.
+- **Frontier per component** — for each `responsibility_code`, the earliest artifact type in the canonical workflow order (`functional-design → test-plan → test → code`) that has zero completed entries. Exposed through `query_frontier()`, a read-only query: an entry counts as completed only once an agent has marked it so via `report_artifact_completed`, not by any inference inside the query. The Orchestrator uses the frontier as a hint when in execution sub-mode (FR-ORCH-07); it MAY deviate when responding to user-driven re-entry. A component with at least one completed `code` entry is treated as code-complete for that component's part of the canonical workflow, even though more code files could be added later by revision.
 - **Requirements coverage** — for each requirement ID declared in the current `requirements` artifact, the set of artifacts (per type) whose `requirement_ids` include it. Exposed through `list_artifacts(filters)` queries the Orchestrator composes. Surfaces gaps such as "REQ-AUTH-003 has a `functional-design` entry but no `test-plan` entry covering it" — the Orchestrator's prompt instructs it to detect these and either schedule the missing work or escalate.
 - **Artifact lineage** — for each `filename_hint` within `(project_code, responsibility_code, type)`, the chain of `artifact_id`s linked by `supersedes`. Used by the rollback UI and by the Orchestrator when it needs to reason about the most recent accepted version of a revised artifact.
 - **Active sessions** — every in-flight entry's `session_id`, mapped to the sub-agent and artifact context. Used by the engine to decide which session to resume on a tool result and by the Orchestrator (through its index snapshot) to know what work is still outstanding from a prior turn.
@@ -146,7 +148,7 @@ Bootstrap runs on every server start. The procedure has four deterministic phase
 
 `MirrorRepo` is in a clean committed state by invariant (every successful checkpoint produced a commit; nothing else writes to `.kodo/checkpoints/`). The mirror's working tree is therefore an authoritative snapshot of "what was completed as of the last checkpoint".
 
-Bootstrap walks `<project>/.kodo/checkpoints/src/` and `<project>/.kodo/checkpoints/gen/`, deriving `(project_code, responsibility_code, type)` from the directory layout and reading each file's metadata header for `artifact_id`, `filename_hint`, `supersedes`, `requirement_ids`, and `author`. Each file produces one `IndexEntry` with `state = "completed"`. Where a component contributes multiple files of the same type (e.g., AUTH has `auth_service.py` and `auth_helpers.py`), each file produces its own entry — the index is artifact-granular, not type-granular.
+Bootstrap walks `<project>/.kodo/checkpoints/src/` and `<project>/.kodo/checkpoints/gen/`, deriving `(project_code, responsibility_code, type)` from the directory layout and reading the artifact's `.kodo.json` sidecar (written alongside each promoted file by the Promoter, §8.1) for `artifact_id`, `filename_hint`, `supersedes`, `requirement_ids`, and `author`. Each promoted file produces one `IndexEntry` with `state = "completed"` whose `location` points at the materialized file under `src/`/`gen/`. Where a component contributes multiple files of the same type (e.g., AUTH has `auth_service.py` and `auth_helpers.py`), each file produces its own entry — the index is artifact-granular, not type-granular.
 
 If a completed `requirements` artifact exists, its content is parsed to extract the universe of declared requirement IDs. This universe is what the *Requirements coverage* view (§2.2) compares each artifact's `requirement_ids` against. Without a completed `requirements` artifact, the coverage view is empty and the engine treats coverage gaps as not-yet-detectable.
 
@@ -169,7 +171,7 @@ For each in-flight entry the engine checks whether the sub-agent session log `<p
 
 The Orchestrator's session is recorded by a marker file at `<project>/.kodo/orchestrator.session` containing the current Orchestrator `session_id`. Session IDs are POSIX timestamps (e.g. `1748792400`). The engine reads the marker and checks for the corresponding session directory:
 
-- **Marker present and `sessions/<session_id>/` directory exists** → resume. The engine loads `transient.json` for phase/prompt/autonomous state, replays `session.jsonl` to reconstruct the Orchestrator's message history, and queues its next turn per §4.3. Sub-agent sessions queued in Phase 3 are subordinate: they finish first (the Orchestrator was blocked on whichever `start_subagent` tool call spawned them); their results then flow back into the Orchestrator's resumed loop via the request-ID dedup mechanism (§4.4).
+- **Marker present and `sessions/<session_id>/` directory exists** → resume. The engine loads `transient.json` for phase/prompt/autonomous state, replays `session.jsonl` to reconstruct the Orchestrator's message history, and queues its next turn per §4.3. Sub-agent sessions queued in Phase 3 are subordinate: they finish first (the Orchestrator was blocked on whichever `run_subagent` tool call spawned them); their results then flow back into the Orchestrator's resumed loop via the request-ID dedup mechanism (§4.4).
 - **Marker present but the named session directory is missing** → the previous Orchestrator session was lost (rare; e.g., disk corruption). The engine logs the anomaly, discards the marker, and falls through to "no marker".
 - **No marker** → no prior Orchestrator session. The engine creates a fresh session directory (new POSIX-timestamp `session_id`, writes `meta.json` with `session_name: "Unnamed Session"`, `transient.json` with initial state, updates the marker file). The Orchestrator's first turn is constructed with `{system prompt + index summary + an explicit "cold start" event in the uncached user block}`. The Orchestrator decides what to do based on the index — typically, "no narrative artifact exists, drive intake".
 
@@ -244,16 +246,16 @@ Every tool call carries a `request_id` (UUID) assigned by the engine before disp
 
 On resume, if the last logged message contains a tool call whose `request_id` has no matching result:
 
-- For **idempotent tools** (`read_artifact`, `toolchain_build`, `toolchain_test`, all `narrative_*` dialog tools when no user reply was received): the engine re-runs the tool unconditionally and logs the result.
-- For **effectful tools** (`publish_artifact`, `toolchain_deps`, `escalate_to_user`): the engine consults the receiving subsystem's request-ID ledger. The workspace MCP server records the `request_id` of every successful `publish_artifact` call before returning; on re-execution it detects the duplicate and returns the prior result. `toolchain_deps` and `escalate_to_user` carry the same pattern — the receiver dedupes, never the caller.
+- For **idempotent tools** (`read_artifact`, `toolchain_build`, `toolchain_test`, `query_frontier`, `list_artifacts`, and `ask_user`/`request_user_review_artifact` when no user reply was received): the engine re-runs the tool unconditionally and logs the result.
+- For **effectful tools** (`publish_artifact`, `toolchain_deps`, `escalate_blocker`, `report_artifact_completed`): the engine consults the receiving subsystem's request-ID ledger. The workspace records the `request_id` of every successful `publish_artifact` call before returning; on re-execution it detects the duplicate and returns the prior result. `toolchain_deps` and `escalate_blocker` carry the same pattern — the receiver dedupes, never the caller. `report_artifact_completed` is idempotent at the receiver: a re-run finds the entry already `completed` (the staging file already moved out) and returns without re-promoting.
 
 This makes "always re-run, dedupe by request ID" the universal resume policy. The engine does not branch on tool identity; it re-runs, and the receiver decides whether the side effect has already occurred.
 
 The dedup rules extend to Orchestrator tools (FR-ORCH-03):
 
-- `compute_frontier`, `list_artifacts` — idempotent reads of the index. Re-run unconditionally.
-- `start_subagent`, `run_author_critic_iteration` — effectful. Dedup key is the Orchestrator's tool-call `request_id` against existence of the spawned sub-agent's `session_id`. If the spawned session exists, the engine waits for it to finish (or, if it had already finished, returns its result) instead of spawning a duplicate.
-- `request_user_approval`, `ask_user` — effectful (the user's response is the side effect of interest). Dedup key is the `request_id` against the wire's pending-prompt ledger. A re-run after crash finds the pending prompt still outstanding and returns the user's eventual response when it arrives; or if the user already answered before the crash, the response is in the session log and no re-run is needed.
+- `query_frontier`, `list_artifacts` — idempotent reads of the index. Re-run unconditionally.
+- `run_subagent`, `run_author_critic_iteration` — effectful. Dedup key is the Orchestrator's tool-call `request_id` against existence of the spawned sub-agent's `session_id`. If the spawned session exists, the engine waits for it to finish (or, if it had already finished, returns its result) instead of spawning a duplicate.
+- `ask_user`, `request_user_review_artifact` — effectful (the user's response is the side effect of interest). Dedup key is the `request_id` against the wire's pending-prompt ledger. A re-run after crash finds the pending prompt still outstanding and returns the user's eventual response when it arrives; or if the user already answered before the crash, the response is in the session log and no re-run is needed. In autonomous mode `request_user_review_artifact` resolves immediately with a synthesized acceptance and `ask_user` is not in the tool set at all.
 - `rollback` — effectful and destructive. Dedup key is the `request_id` against the mirror commit reached by `MirrorRepo.head_sha()`; if the head already matches `target_sha`, the rollback already happened.
 - `finalize_project` — effectful and terminal. Dedup key is the `request_id` against the wire's `state.phase`; if already `done`, return immediately.
 
@@ -353,21 +355,23 @@ The Orchestrator's marker file (§3 Phase 4) pointing at a missing session log i
 
 ## 8. Promotion — workspace to project + mirror
 
-Promotion fires per artifact, on acceptance. Acceptance is one of:
+Promotion fires per artifact, on completion. Completion is the explicit `report_artifact_completed` call made by the artifact's owner — the critic of an author/critic pair, or a solo agent with no critic — once the artifact has passed every gate:
 
-- A critic publishes `feedback` with `verdict: "accepted"` targeting the artifact.
-- The artifact has no critic and is published (Narrative Author's final state; Architect when no critic loop is configured).
+- A critic has published `feedback` with `verdict: "accepted"` targeting the artifact, **and**
+- in interactive mode, the user has accepted the artifact at the review gate (`request_user_review_artifact`); in autonomous mode that gate is auto-accepted.
+
+`report_artifact_completed` routes to the engine, which resolves the toolchain from the Tech Stack (`select_toolchain`, parsing the "Primary programming language" line → Python or Node plugin), builds a `ComponentRegistry` from the architecture artifact, and runs the Promoter below. Publication alone never promotes; an author never reports its own work complete.
 
 ### 8.1 Mechanism
 
 Promotion is a separate concern from `MirrorRepo`. The promotion mechanism (call it `Promoter`) performs the following atomic-as-possible sequence:
 
-1. Read the accepted artifact from the workspace.
+1. Read the completed artifact from the workspace.
 2. Write the artifact to its destination under `<project>/src/` or `<project>/gen/`, per the `(responsibility_code, type)` → directory mapping; the leaf filename is the artifact's `filename_hint`. Multiple files per component are normal — each artifact lands at its own path determined by its `filename_hint` within the component's directory.
-3. Write the same file into `<project>/.kodo/checkpoints/src/` or `<project>/.kodo/checkpoints/gen/`.
+3. Write the same file into `<project>/.kodo/checkpoints/src/` or `<project>/.kodo/checkpoints/gen/`, alongside a `<filename>.kodo.json` sidecar carrying the artifact's metadata (`artifact_id`, `filename_hint`, `supersedes`, `requirement_ids`, `author`) — the durable record bootstrap reads to reconstruct the completed entry (§3, Phase 1).
 4. Call `MirrorRepo.stage_and_commit(message)` with a commit message of the form `<project_code>/<responsibility_code>/<type>: <session_id> → <artifact_id>`.
-5. Delete the workspace artifact file.
-6. Update the in-memory index: remove the in-flight entry, replace/insert the completed entry.
+5. Delete the workspace staging file (the artifact moves out of the workspace).
+6. Update `ProjectIndex`: flip the entry's `state` to `completed` and set its `location` to the materialized `src/`/`gen/` path.
 
 A crash between steps 2 and 5 leaves the project and mirror inconsistent with the workspace. The next bootstrap detects this — a workspace artifact whose corresponding project file already matches the workspace content — and completes the promotion by resuming from the failed step. This makes promotion crash-safe at the cost of one extra check per in-flight entry on bootstrap.
 
@@ -403,16 +407,16 @@ The user's VCS sees a large file-change set and decides how to record it. Kodo d
 | Concern | Owner | Notes |
 |---|---|---|
 | Deciding what runs next | Orchestrator sub-agent | Drives every sub-agent invocation via its tool surface (FR-ORCH-02/03). |
-| Hosting the Orchestrator's tool surface | Runtime (`src/kodo/runtime/_tool_surface.py`) | Implements `compute_frontier`, `list_artifacts`, `start_subagent`, `run_author_critic_iteration`, `request_user_approval`, `ask_user`, `rollback`, `finalize_project`. |
+| Hosting the Orchestrator's tool surface | Runtime (`src/kodo/runtime/_tool_surface.py`) | Implements `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `ask_user`, `rollback`, `finalize_project`. `ask_user` is dropped from the surface in autonomous mode. |
 | Author/Critic iteration cap and bail logic | Orchestrator's system prompt | Cap (5) and judgment rules live in the prompt, not the engine. |
 | Git history of checkpoints | `MirrorRepo` | Pure git wrapper, no file I/O beyond git's own. |
-| Move accepted artifacts to project + mirror | `Promoter` | Owns the §8.1 sequence; one Promoter run per accepted artifact. |
-| In-memory artifact index | Runtime | Rebuilt on every bootstrap from on-disk state. |
-| Workspace artifact storage | Workspace MCP server | Writes under `.kodo/workspace/`, dedupes by `request_id`. |
+| Move completed artifacts to project + mirror | `Promoter` | Owns the §8.1 sequence; one Promoter run per completed artifact, driven by the engine on `report_artifact_completed`. |
+| Project index (`ProjectIndex`) | Workspace + engine | Single runtime source of truth; held in memory, reconstructed on every bootstrap from mirror sidecars (completed) + workspace staging files (in-flight). Workspace maintains it on publish/supersede/complete. |
+| Workspace staging storage | Workspace | Writes in-flight artifacts under `.kodo/workspace/`, dedupes by `request_id`, moves them out on completion. |
 | Session log append (Orchestrator and sub-agents) | Engine (LLM call wrapper) | Append-before-respond invariant (§4.2). |
 | Session rehydration | Engine | Reads session log, computes resume point, re-runs pending tool call. |
 | Orchestrator-session compaction | Runtime (`runtime/_compaction.py`) | Triggers at the context-window threshold; surfaces `orchestrator.compacted` (§4.5). |
 | Bootstrap orchestration | Engine startup hook | Runs §3 phases 1–4, populates index, queues session resumes, ensures the Orchestrator marker is current. |
-| Approval-gate and user-prompt blocking | Runtime (`runtime/_gates.py`) | Resolves `request_user_approval` / `ask_user` Futures; in autonomous mode auto-resolves approval gates with `agree`. |
+| Review-gate and user-prompt blocking | Runtime (`runtime/_gates.py`) | Resolves `ask_user` / `request_user_review_artifact` Futures; in autonomous mode auto-accepts review gates and withholds `ask_user`. |
 | Rollback UI trigger | Extension / Kodo panel | User triggers via the panel; the engine accepts the request and reports completion. |
-| Rollback execution | Orchestrator + engine | Orchestrator calls `rollback(target_sha)` (after `ask_user` confirmation); engine performs the §8.3 sequence; a fresh Orchestrator session resumes. |
+| Rollback execution | Orchestrator + engine | Orchestrator calls `rollback(target_sha)` (after `ask_user` confirmation in interactive mode; directly in autonomous mode); engine performs the §8.3 sequence; a fresh Orchestrator session resumes. |

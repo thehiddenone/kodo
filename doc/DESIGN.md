@@ -49,7 +49,7 @@ src/kodo/
 ├── runtime/                # thin substrate that hosts the Orchestrator session
 │   ├── _engine.py          # single worker, dispatches Orchestrator tool calls
 │   ├── _tool_surface.py    # Orchestrator's tools (FR-ORCH-03) wired to engine
-│   ├── _gates.py           # request_user_approval / ask_user blocking machinery
+│   ├── _gates.py           # ask_user / request_user_review_artifact blocking machinery
 │   ├── _compaction.py      # Orchestrator-session compaction (FR-ORCH-05)
 │   └── _session.py         # per-session metadata, resume logic
 ├── subagents/              # markdown subagent files; one file per (name, model)
@@ -217,8 +217,8 @@ The body is the full system prompt for the model encoded in the filename. There 
 
 Two role groups within the `Agent` shape:
 
-- **Orchestrator.** A single sub-agent (`kodo/subagents/orchestrator.<model>.md`) whose tool list is the Orchestrator tool surface (FR-ORCH-03): `compute_frontier`, `list_artifacts`, `start_subagent`, `run_author_critic_iteration`, `request_user_approval`, `ask_user`, `rollback`, `finalize_project`. The Orchestrator is the sole entity authorized to invoke other sub-agents (FR-ORCH-02).
-- **Leaf sub-agents.** The remaining markdown files (Narrative Author, Architect, Requirements Author / Critic, Planner, Functional Designer / Critic, Test Designer / Critic, Test Coder, Coder, Code Reviewer). Their tool lists are the workspace tools plus, for the agents that need them, the user-dialog tools (`narrative_ask_user_question`, `narrative_present_for_acceptance`, `narrative_report_completed`) and `escalate_to_user`. Sub-agents do not invoke each other; they reach the user only through the dialog/escalation tools and produce their contributions only through the workspace.
+- **Orchestrator.** A single sub-agent (`kodo/subagents/orchestrator.<model>.md`) whose tool list is the Orchestrator tool surface (FR-ORCH-03): `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `ask_user`, `rollback`, `finalize_project`. The Orchestrator is the sole entity authorized to invoke other sub-agents (FR-ORCH-02). It does not hold the user sign-off or completion tools — those are leaf tools.
+- **Leaf sub-agents.** The remaining markdown files (Narrative Author, Architect, Requirements Author / Critic, Planner, Functional Designer / Critic, Test Designer / Critic, Test Coder, Coder, Code Reviewer). Their tool lists are the workspace tools plus, for the agents that need them, the common user tools: `ask_user` (elicit/validate user input, used by Narrative Author and critics), `request_user_review_artifact` and `report_artifact_completed` (the user review gate and completion signal, held by critics and solo agents), and `escalate_blocker` (authors/coders relinquishing a decision to the Orchestrator). Sub-agents do not invoke each other; they reach the user only through these tools and produce their contributions only through the workspace. The agent registry renders each agent's `## Tools` section and tool set per mode, withholding `ask_user` in autonomous mode (FR-AUT-02).
 
 Per leaf sub-agent invocation, the runtime: assembles the task message from input artifact IDs the Orchestrator passed in (resolving them through the workspace MCP server), calls the LLM plugin with the agent's `system_prompt` plus the task message plus the `tools` filter, and persists the resulting session JSONL per [STATE_AND_LIFECYCLE.md §4](STATE_AND_LIFECYCLE.md). The Orchestrator's own invocation is identical in shape; its tool surface is just larger.
 
@@ -255,10 +255,10 @@ The runtime is a thin substrate. It does not contain a stage machine, a schedule
 
 Each tool in FR-ORCH-03 is implemented in `src/kodo/runtime/_tool_surface.py` as an async function with a JSON Schema declared as a `ToolSpec`. Dispatch happens through the same MCP path leaf sub-agents use for workspace tools, so the Orchestrator's tool calls are persisted in its session log identically to any other tool call.
 
-- `compute_frontier()` / `list_artifacts(filters)` — read-only queries against the in-memory workspace index ([STATE_AND_LIFECYCLE.md §2](STATE_AND_LIFECYCLE.md)).
-- `start_subagent(name, task_message, input_artifact_ids)` — generates a fresh `session_id`, looks up the agent in the registry, builds the LLM call, runs it through the worker, persists the session log, returns the IDs of artifacts the sub-agent published. Blocks until the sub-agent's LLM loop terminates.
-- `run_author_critic_iteration(...)` — composite tool. Internally invokes `start_subagent` for the Author, reads the resulting artifact, invokes `start_subagent` for the Critic with the Author's artifact ID injected into the task, reads the Critic's `feedback` artifact, returns `{artifact_id, verdict, concerns[]}`. The two underlying sub-agent invocations are visible on the wire as ordinary `agent.started`/`agent.finished` pairs.
-- `request_user_approval` / `ask_user` — surface a `kind=request` frame per WS_PROTOCOL.md §6. The worker `await`s a `Future` keyed on the request's envelope `id`; the WS dispatcher resolves the Future when a `kind=response` with the matching `correlation_id` arrives. In autonomous mode the gate handler (`runtime/_gates.py`) resolves the Future immediately with `agree` for approval gates; `ask_user` is never auto-resolved.
+- `query_frontier()` / `list_artifacts(filters)` — read-only queries against the in-memory `ProjectIndex` ([STATE_AND_LIFECYCLE.md §2](STATE_AND_LIFECYCLE.md)). `query_frontier` reports an artifact completed only once it has been marked so via `report_artifact_completed`.
+- `run_subagent(name, task_message, input_artifact_ids)` — generates a fresh `session_id`, looks up the agent in the registry, builds the LLM call, runs it through the worker, persists the session log, returns the IDs of artifacts the sub-agent published. Blocks until the sub-agent's LLM loop terminates.
+- `run_author_critic_iteration(...)` — composite tool. Internally invokes `run_subagent` for the Author, reads the resulting artifact, invokes `run_subagent` for the Critic with the Author's artifact ID injected into the task, reads the Critic's `feedback` artifact, returns `{artifact_id, verdict, concerns[]}`. The two underlying sub-agent invocations are visible on the wire as ordinary `agent.started`/`agent.finished` pairs.
+- `ask_user` — surface a `prompt.question` `kind=request` frame per WS_PROTOCOL.md §6.1 for the Orchestrator's own judgment calls. The worker `await`s a `Future` keyed on the request's envelope `id`; the WS dispatcher resolves the Future when a `kind=response` with the matching `correlation_id` arrives. In autonomous mode `ask_user` is withheld from the Orchestrator's tool set entirely (FR-AUT-02), so there is nothing to resolve. The user **review gate** is not an Orchestrator tool: it is surfaced by a critic or solo agent's `request_user_review_artifact` leaf call, which the engine routes through the same `prompt.approval` machinery (`runtime/_gates.py`) and auto-accepts in autonomous mode.
 - `rollback(target_sha)` — invokes the procedure in [STATE_AND_LIFECYCLE.md §8.3](STATE_AND_LIFECYCLE.md), then terminates the current Orchestrator session and starts a fresh one (since the rollback discards in-flight workspace state the Orchestrator was reasoning about).
 - `finalize_project()` — flushes state, transitions wire `state.phase` to `done`, ends the Orchestrator session normally.
 
@@ -304,7 +304,7 @@ user (cached block):
 
 user (uncached):
   ## Task
-  {{task message assembled by the runtime from the Orchestrator's start_subagent inputs}}
+  {{task message assembled by the runtime from the Orchestrator's run_subagent inputs}}
 
   ## Prior revision (revisions only)
   {{previous_artifact_id resolved to content; passed when the Orchestrator
@@ -321,8 +321,8 @@ The Orchestrator's call is similar in shape but its cached user block carries th
 system:
   [Orchestrator role and purpose]
   [The canonical sequence (FR-ORCH-06) as a non-negotiable default]
-  [Approval-gate rules (FR-WF-05): the exact moments at which
-   request_user_approval MUST be called]
+  [Review-gate handling (FR-WF-05/06): critics and solo agents own the gate;
+   how the Orchestrator responds when feedback or an escalation comes back]
   [Author/Critic iteration cap (5) and the bail/escalate judgment]
   [Tool surface reference: names only, no schemas (CLAUDE.md "transport-agnostic
    tool contract"); schemas live in code]
@@ -406,12 +406,12 @@ The mirror at `<project>/.kodo/checkpoints/` is initialised by `Kodo: Init Proje
 
 `MirrorRepo` is a pure git wrapper (`init`, `stage_and_commit(message) → sha`, `checkout(sha)`, `log()`, `head_sha()`) and owns no file copying. Promotion of accepted artifacts and checkpoint commits are sequenced by `Promoter`, defined in [STATE_AND_LIFECYCLE.md §8.1](STATE_AND_LIFECYCLE.md):
 
-- Each Promoter run reads one accepted workspace artifact, writes it to its `src/`/`gen/` destination and into the mirror's working tree, calls `MirrorRepo.stage_and_commit(message)`, deletes the workspace file, and updates the in-memory index. Commit message format: `<project_code>/<responsibility_code>/<type>: <session_id> → <artifact_id>`.
-- The Promoter run is what `request_user_approval` resolution triggers (when the gate's verdict is `agree`); the wire surfaces the result as an `artifact.published` event carrying `checkpoint_sha` (WS_PROTOCOL.md §5.6).
+- Each Promoter run reads one completed workspace artifact, writes it to its `src/`/`gen/` destination and into the mirror's working tree (alongside a `.kodo.json` metadata sidecar), calls `MirrorRepo.stage_and_commit(message)`, deletes the workspace staging file, and updates `ProjectIndex` (flips the entry to `completed`). Commit message format: `<project_code>/<responsibility_code>/<type>: <session_id> → <artifact_id>`.
+- The Promoter run is what `report_artifact_completed` triggers: the engine resolves the toolchain from the Tech Stack, builds a `ComponentRegistry` from the architecture artifact, and runs the Promoter; the wire surfaces the result as an `artifact.published` event carrying `checkpoint_sha` (WS_PROTOCOL.md §5.6).
 
 Rollback (`checkpoint.rollback`, FR-MIR-04) follows the procedure in [STATE_AND_LIFECYCLE.md §8.3](STATE_AND_LIFECYCLE.md): terminate sessions, clear workspace, `MirrorRepo.checkout(target_sha)`, replace `src/`/`gen/` from the mirror tree, rebuild the index, resume.
 
-Checkpoints are produced one per accepted artifact (not one per gate). A gate covers acceptance of one or more artifacts; each accepted artifact produces its own Promoter run and its own checkpoint commit.
+Checkpoints are produced one per completed artifact (not one per gate). Each `report_artifact_completed` call produces its own Promoter run and its own checkpoint commit; a review gate covering several artifacts yields one completion call and one checkpoint per artifact.
 
 ---
 
@@ -561,10 +561,11 @@ Tool errors are returned as the tool result content with an error flag. The agen
 
 ### 12.3 Autonomous mode behaviour
 
-- `mode.set { autonomous: true }` flips a flag on `AppState`. The Orchestrator's behaviour does not change; the flag is consumed by the gate handler (`runtime/_gates.py`) and by the security layer.
-- Gate handler: `request_user_approval` resolves immediately with `{action: "agree"}` without emitting a `prompt.approval` to the wire. Autonomous-mode auto-resolution is recorded in the Orchestrator's session log (so audit shows which gates were auto-approved) and surfaced as a low-fi `state` event field rather than a per-gate event.
+- `mode.set { autonomous: true }` flips the `autonomous` flag on the session. The flag is consumed by the agent registry (per-mode tool rendering), the gate handler (`runtime/_gates.py`), and the security layer.
+- Agent registry: tools whose `ToolSpec.autonomous_mode` is `"unavailable"` (currently `ask_user`) are excluded from both the rendered `## Tools` section and the returned tool set, for every agent including the Orchestrator. An agent that would have asked must assume-and-document or `escalate_blocker`.
+- Gate handler: `request_user_review_artifact` resolves immediately with a synthesized acceptance without emitting a `prompt.approval` to the wire. Auto-acceptance is recorded in the reviewing agent's session log (so audit shows which gates were auto-accepted) and surfaced as a low-fi `state` event field rather than a per-gate event.
+- Rollback: the Orchestrator calls `rollback` directly, without the interactive `ask_user` confirmation, and documents it via `post_update`.
 - Security layer: rules whose action is `prompt` are treated as `allow` while autonomous is on. `deny` rules are still enforced.
-- `ask_user` is never auto-resolved — questions always reach the user. If the Orchestrator needs a free-form answer it pages the Dev regardless of mode.
 - LLM rate-limit pauses become silent: the worker waits, no Dev notification, STOP still works.
 - Hard errors (auth, billing, NFR-04 violations) page the Dev regardless.
 
@@ -592,24 +593,23 @@ Dev (WebView)       Server (runtime worker)            LLM plugin
        │                       │  Orchestrator turn ──────► │── stream tokens ──┐
        │ ◄─── stream_chunk × N (Orchestrator decides)                           │
        │ ◄─── stream_end                                                        │
-       │                       │ ◄─ tool_use: start_subagent("narrative_author")│
+       │                       │ ◄─ tool_use: run_subagent("narrative_author")│
        │                       │  spawn NarrativeAuthor ──► │── stream tokens ──┤
        │ ◄─── agent.started (narrative_author)                                  │
        │ ◄─── stream_chunk × N                                                  │
        │                       │ ◄─ tool_use: publish_artifact(narrative) ──────│
-       │                       │  workspace records; Promoter NOT triggered yet │
-       │                       │  (no critic configured for narrative)          │
+       │                       │  workspace records (in-flight)                 │
+       │                       │ ◄─ tool_use: request_user_review_artifact(id) ─│
+       │ ◄─── prompt.approval (kind=request, artifact_id=narrative)             │
+       │  response {agree} ────►│                                               │
+       │                       │  resolve gate Future; return accept to agent ──│
+       │                       │ ◄─ tool_use: report_artifact_completed(id) ────│
+       │                       │  engine promotes: Promoter fires; mirror commit│
+       │ ◄─── artifact.published (path=src/narrative/narrative.md, checkpoint)  │
        │ ◄─── agent.finished (narrative_author)                                 │
        │                       │  return artifact_id to Orchestrator            │
-       │                       │  Orchestrator continues ──►│── stream tokens ──┤
-       │                       │ ◄─ tool_use: request_user_approval(narrative)  │
-       │ ◄─── prompt.approval (kind=request, gate_type="narrative")             │
-       │  response {agree} ────►│                                               │
-       │                       │  resolve approval Future; Promoter fires;      │
-       │                       │  mirror commit; artifact.published wire event  │
-       │ ◄─── artifact.published (path=src/narrative/narrative.md, checkpoint)  │
        │                       │  Orchestrator continues ──►│── stream tokens ──┘
-       │                       │ ◄─ tool_use: start_subagent("architect")
+       │                       │ ◄─ tool_use: run_subagent("architect")
        │                       │  ...
 ```
 
