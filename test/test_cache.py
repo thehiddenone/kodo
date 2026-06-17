@@ -6,7 +6,7 @@ build_system_blocks and build_message_params without touching any network.
 
 from __future__ import annotations
 
-from kodo.llms._interface import Message
+from kodo.llms import Message
 from kodo.llms.anthropic._cache import build_message_params, build_system_blocks
 
 # ---------------------------------------------------------------------------

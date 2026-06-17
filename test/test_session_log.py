@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kodo.runtime._session_log import SessionLog
+from kodo.runtime import SessionLog
 
 
 def _log(tmp_path: Path, session_id: str = "sess-1") -> SessionLog:

@@ -5,7 +5,7 @@ Dispatch lives in :class:`~kodo.runtime._tool_surface.ToolSurface`.
 
 from __future__ import annotations
 
-from kodo.workspace._models import ArtifactType
+from kodo.workspace import ArtifactType
 
 from ._spec import ToolSpec
 

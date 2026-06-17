@@ -12,17 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from kodo.mirror._promoter import Promoter
-from kodo.mirror._repo import MirrorRepo
-from kodo.runtime._bootstrap import ProjectBootstrap
-from kodo.toolchains._interface import (
+from kodo.runtime import ProjectBootstrap
+from kodo.toolchains import (
     ToolchainBuildResult,
     ToolchainPlugin,
     ToolchainTestResult,
     ToolchainTestScope,
 )
-from kodo.workspace import IndexEntry, ProjectIndex
-from kodo.workspace._models import Artifact, ArtifactType
+from kodo.workspace import Artifact, ArtifactType, IndexEntry, MirrorRepo, ProjectIndex, Promoter
 
 # ---------------------------------------------------------------------------
 # Stub toolchain

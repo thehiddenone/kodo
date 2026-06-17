@@ -8,8 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from kodo.project._layout import ProjectLayout, ProjectLayoutError
-from kodo.project._manifest import ManifestError, parse_manifest  # noqa: I001
+from kodo.project import (  # noqa: I001
+    ManifestError,
+    ProjectLayout,
+    ProjectLayoutError,
+    parse_manifest,
+)
 
 # ------------------------------------------------------------------
 # parse_manifest — success paths

@@ -4,7 +4,7 @@ Uses the OpenAI-compatible REST API exposed by llama-server.
 Local inference has no prompt cache and zero dollar cost.
 
 On first use, if llama-server is not running, the plugin starts it
-automatically via :func:`kodo.llm_utils.ensure_llama_running` and emits
+automatically via :func:`._manager.ensure_llama_running` and emits
 :data:`kodo.transport.EVT_LLAMA_STATE` events so the VSIX sidebar reflects
 the updated state.
 """
@@ -20,7 +20,6 @@ from pathlib import Path
 import openai
 
 from kodo.common import Envelope, MessageSink
-from kodo.llm_utils import LlamaServer, ensure_llama_running
 from kodo.llms import (
     LLMPlugin,
     Message,
@@ -34,6 +33,9 @@ from kodo.llms import (
     get_llm_registry,
 )
 from kodo.transport import EVT_LLAMA_STATE
+
+from ._llama_server import LlamaServer
+from ._manager import ensure_llama_running
 
 __all__ = ["LlamaPlugin"]
 

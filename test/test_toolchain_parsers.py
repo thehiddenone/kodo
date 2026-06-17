@@ -11,7 +11,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from kodo.toolchains._interface import ToolchainTestResult
+from kodo.toolchains import ToolchainTestResult
 from kodo.toolchains.node._vitest import parse_vitest_stdout
 from kodo.toolchains.python._pytest import parse_pytest_json, parse_pytest_stdout
 

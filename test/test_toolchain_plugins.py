@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from kodo.toolchains._interface import ToolchainBuildResult
+from kodo.toolchains import ToolchainBuildResult
 from kodo.toolchains.node._plugin import NodePlugin
 from kodo.toolchains.python._plugin import PythonPlugin
 
@@ -491,7 +491,7 @@ async def test_python_test_returns_toolchain_result_when_no_gen_dir(
     when test() is called with no component,
     then a ToolchainTestResult is returned without raising.
     """
-    from kodo.toolchains._interface import ToolchainTestResult, ToolchainTestScope
+    from kodo.toolchains import ToolchainTestResult, ToolchainTestScope
 
     plugin = PythonPlugin(tmp_path)
     scope = ToolchainTestScope(component=None)
@@ -539,7 +539,7 @@ async def test_node_test_returns_toolchain_result(tmp_path: Path) -> None:
     when test() is called (even if npx/vitest is absent),
     then a ToolchainTestResult is returned without raising.
     """
-    from kodo.toolchains._interface import ToolchainTestResult, ToolchainTestScope
+    from kodo.toolchains import ToolchainTestResult, ToolchainTestScope
 
     plugin = NodePlugin(tmp_path)
     scope = ToolchainTestScope(component=None)

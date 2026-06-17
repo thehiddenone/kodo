@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kodo.common import Envelope
-from kodo.runtime._gates import ApprovalResponse, GateOrchestrator, QuestionResponse
+from kodo.runtime import ApprovalResponse, GateOrchestrator, QuestionResponse
 from kodo.transport import SREQ_PROMPT_APPROVAL, SREQ_PROMPT_QUESTION
 
 # ---------------------------------------------------------------------------

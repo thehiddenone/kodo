@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from kodo.state._transient import TransientStore
+from kodo.state import TransientStore
 
 # ---------------------------------------------------------------------------
 # Fixtures

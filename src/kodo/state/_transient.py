@@ -20,14 +20,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-__all__ = ["TransientStore"]
+__all__ = ["TransientStore", "new_session_id"]
 
 _log = logging.getLogger(__name__)
 
 _UNSET: object = object()
 
 
-def _new_session_id() -> str:
+def new_session_id() -> str:
     """Return a new session ID based on the current POSIX timestamp."""
     return str(int(time.time()))
 

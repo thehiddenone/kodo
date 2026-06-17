@@ -24,7 +24,7 @@ import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from kodo.subagents._loader import SubAgent
+from kodo.subagents import SubAgent
 from kodo.toolspecs import (
     ASK_USER,
     COPY_FILE,

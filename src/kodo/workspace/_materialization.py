@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from kodo.toolchains._interface import ToolchainPlugin
+from kodo.toolchains import ToolchainPlugin
 
 from ._component_registry import ComponentRegistry
 from ._models import Artifact, ArtifactType

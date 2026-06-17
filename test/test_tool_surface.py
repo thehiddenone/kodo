@@ -16,11 +16,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kodo.runtime._gates import GateOrchestrator
-from kodo.runtime._session import SessionState
-from kodo.runtime._tool_surface import ToolSurface
-from kodo.workspace import IndexEntry, ProjectIndex
-from kodo.workspace._models import ArtifactType
+from kodo.runtime import GateOrchestrator, SessionState, ToolSurface
+from kodo.workspace import ArtifactType, IndexEntry, ProjectIndex
 
 # ---------------------------------------------------------------------------
 # Helpers

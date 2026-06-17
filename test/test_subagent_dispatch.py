@@ -18,9 +18,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kodo.runtime._gates import GateOrchestrator, QuestionResponse
-from kodo.runtime._subagent_dispatch import (
+from kodo.runtime import (
     LEAF_TOOLS_BY_NAME,
+    GateOrchestrator,
+    QuestionResponse,
     SubagentDispatcher,
     tools_for_agent,
 )

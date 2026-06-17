@@ -28,25 +28,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from kodo.common import ApiKey, ApiKeyProvider, Envelope, MessageSink
-from kodo.llms import LLMPlugin, get_llm_registry
-from kodo.llms._interface import (
+from kodo.llms import (
+    LLMPlugin,
+    LoggingLLMPlugin,
     Message,
     StreamEvent,
     ThinkingDelta,
     TokenDelta,
     ToolCallEvent,
+    ToolCallLogger,
     ToolSpec,
     TurnEnd,
+    get_llm_registry,
 )
-from kodo.llms._logger import LoggingLLMPlugin
-from kodo.llms._tool_logger import ToolCallLogger
 from kodo.llms.anthropic import ClaudePlugin, UnrecoverableError
 from kodo.llms.llamacpp import LlamaPlugin
-from kodo.mirror import CheckpointManager, Promoter, PromoterError
 from kodo.project import ProjectLayout, kodo_user_dir
 from kodo.state import TransientStore
-from kodo.subagents import AgentRegistry
-from kodo.subagents._loader import AgentLoadError
+from kodo.subagents import AgentLoadError, AgentRegistry
 from kodo.toolchains import ToolchainPlugin, select_toolchain
 from kodo.transport import (
     EVT_AGENT_FINISHED,
@@ -60,8 +59,16 @@ from kodo.transport import (
     EVT_STATE,
     EVT_USAGE_UPDATE,
 )
-from kodo.workspace import ArtifactType, ComponentRegistry, ProjectIndex, Workspace
-from kodo.workspace._materialization import materialization_path
+from kodo.workspace import (
+    ArtifactType,
+    CheckpointManager,
+    ComponentRegistry,
+    ProjectIndex,
+    Promoter,
+    PromoterError,
+    Workspace,
+    materialization_path,
+)
 
 from ._bootstrap import ProjectBootstrap
 from ._gates import GateOrchestrator
@@ -92,7 +99,7 @@ class WorkflowEngine:
         transient: Append-only JSONL session store.
         layout: Project filesystem layout.
         registry: Loaded subagent file registry.
-        mirror: Mirror checkpoint manager.
+        checkpoints: Mirror checkpoint manager.
     """
 
     __sink: MessageSink
@@ -102,7 +109,7 @@ class WorkflowEngine:
     __transient: TransientStore
     __layout: ProjectLayout
     __registry: AgentRegistry
-    __mirror: CheckpointManager
+    __checkpoints: CheckpointManager
     __workspace: Workspace
     __queue: asyncio.Queue[dict[str, object]]
     __session: SessionState
@@ -123,7 +130,7 @@ class WorkflowEngine:
         transient: TransientStore,
         layout: ProjectLayout,
         registry: AgentRegistry,
-        mirror: CheckpointManager,
+        checkpoints: CheckpointManager,
     ) -> None:
         """Initialise the runtime engine.
 
@@ -135,7 +142,7 @@ class WorkflowEngine:
             transient (TransientStore): Append-only JSONL session store.
             layout (ProjectLayout): Project filesystem layout.
             registry (AgentRegistry): Loaded subagent file registry.
-            mirror (CheckpointManager): Mirror checkpoint manager.
+            checkpoints (CheckpointManager): Mirror checkpoint manager.
         """
         self.__sink = sink
         self.__gate = gate
@@ -144,7 +151,7 @@ class WorkflowEngine:
         self.__transient = transient
         self.__layout = layout
         self.__registry = registry
-        self.__mirror = mirror
+        self.__checkpoints = checkpoints
         self.__index = ProjectIndex()
         self.__workspace = Workspace(layout.root, self.__index)
         self.__queue = asyncio.Queue()
@@ -173,7 +180,7 @@ class WorkflowEngine:
         Initialises the mirror, runs the four-phase bootstrap, and starts
         the worker task.
         """
-        await self.__mirror.ensure_initialized()
+        await self.__checkpoints.ensure_initialized()
         self.__clear_llm_request_logs()
 
         result = ProjectBootstrap(
@@ -774,7 +781,7 @@ class WorkflowEngine:
             target_sha: Mirror commit SHA to roll back to.
         """
         _log.info("Rollback initiated: target_sha=%s", target_sha[:12])
-        rollback = Rollback(self.__layout.root, self.__mirror.repo)
+        rollback = Rollback(self.__layout.root, self.__checkpoints.repo)
         result = await rollback.execute(target_sha)
 
         self.__index = result.index
@@ -815,7 +822,7 @@ class WorkflowEngine:
             await self.__workspace.mark_completed(artifact_id)
             return
 
-        promoter = Promoter(self.__layout.root, self.__mirror.repo, toolchain, registry)
+        promoter = Promoter(self.__layout.root, self.__checkpoints.repo, toolchain, registry)
         message = f"[{artifact.type.value}] {artifact.responsibility_code} completed"
         try:
             await promoter.promote(artifact, message)

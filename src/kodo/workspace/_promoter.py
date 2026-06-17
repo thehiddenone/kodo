@@ -6,11 +6,11 @@ import asyncio
 import json
 from pathlib import Path
 
-from kodo.toolchains._interface import ToolchainPlugin
-from kodo.workspace._component_registry import ComponentRegistry
-from kodo.workspace._materialization import materialization_path
-from kodo.workspace._models import Artifact
+from kodo.toolchains import ToolchainPlugin
 
+from ._component_registry import ComponentRegistry
+from ._materialization import materialization_path
+from ._models import Artifact
 from ._repo import MirrorRepo
 
 _SIDECAR_SUFFIX = ".kodo.json"

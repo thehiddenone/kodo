@@ -15,8 +15,7 @@ import pytest
 from aiohttp.test_utils import TestServer
 
 from kodo.common import Envelope
-from kodo.server._app import create_app
-from kodo.server._config import Config
+from kodo.server import Config, create_app
 
 _RECV_TIMEOUT = 5.0  # seconds per frame
 

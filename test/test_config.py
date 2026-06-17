@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kodo.server._config import Config
+from kodo.server import Config
 
 # ---------------------------------------------------------------------------
 # from_args — required argument

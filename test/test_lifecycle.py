@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from kodo.server._lifecycle import Lifecycle
+from kodo.server import Lifecycle
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -11,15 +11,19 @@ from pathlib import Path
 
 import pytest
 
-from kodo.toolchains._interface import (
+from kodo.toolchains import (
     ToolchainBuildResult,
     ToolchainPlugin,
     ToolchainTestResult,
     ToolchainTestScope,
 )
-from kodo.workspace import ArtifactType, ComponentRegistry
-from kodo.workspace._materialization import materialization_path, materialize
-from kodo.workspace._models import Artifact
+from kodo.workspace import (
+    Artifact,
+    ArtifactType,
+    ComponentRegistry,
+    materialization_path,
+    materialize,
+)
 
 # ---------------------------------------------------------------------------
 # Stub toolchain

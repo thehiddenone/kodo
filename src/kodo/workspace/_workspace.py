@@ -9,7 +9,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kodo.project._layout import ProjectLayout
+from kodo.project import ProjectLayout
 
 from ._errors import ArtifactNotFoundError, WorkspaceValidationError
 from ._index import IndexEntry, ProjectIndex

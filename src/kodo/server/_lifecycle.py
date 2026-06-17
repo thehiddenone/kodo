@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from kodo.project._layout import ProjectLayout
+from kodo.project import ProjectLayout
 
 _log = logging.getLogger(__name__)
 

@@ -28,35 +28,102 @@ and the wire transport.
 
 ## 2. Dependency layering
 
-Modules import strictly **downward** through these layers (no upward imports;
-`common` has zero intra-`kodo` dependencies):
+### 2.1 Import matrix
+
+Every package and the `kodo` packages it imports (real `from kodo.x` / `import
+kodo.x` statements only — docstring mentions excluded). Derived directly from the
+source:
+
+| Package | Imports from `kodo` |
+|---|---|
+| `common` | *(nothing)* |
+| `project` | *(nothing)* |
+| `toolchains` | *(nothing)* |
+| `state` | *(nothing)* |
+| `security` | *(nothing — stub)* |
+| `transport` | `common` |
+| `workspace` | `project`, `toolchains` |
+| `toolspecs` | `workspace` |
+| `llms` | `common`, `transport`, `toolspecs` |
+| `subagents` | `toolspecs` |
+| `runtime` | `common`, `transport`, `toolspecs`, `workspace`, `toolchains`, `project`, `state`, `subagents`, `llms` |
+| `server` | `common`, `transport`, `project`, `state`, `workspace`, `subagents`, `llms`, `runtime` |
+
+One edge breaks a clean strict hierarchy:
+
+- **`toolspecs → workspace`.** `toolspecs/_list_artifacts.py` imports
+  `ArtifactType` from `workspace._models`, so the otherwise "pure data" catalog
+  reaches down into `workspace` for that one enum.
+
+> **Note — two packages were merged to flatten the graph:**
+>
+> - The git **mirror** subsystem (checkpoints, promotion, the mirror git repo)
+>   was a top-level `mirror` package; it now lives inside `workspace`
+>   (`_repo.py`, `_promoter.py`, `_checkpoints.py`), as the on-disk counterpart
+>   of the in-memory `ProjectIndex`. Importers reference it via `kodo.workspace`.
+> - The local-inference utilities (installer, downloader, llama-server manager)
+>   were a top-level `llm_utils` package that formed an **import cycle** with
+>   `llms`. They now live inside `llms/llamacpp/` (`_installer.py`,
+>   `_downloader.py`, `_llama_server.py`, `_manager.py`), re-exported from
+>   `kodo.llms.llamacpp`. Since they are only used by llama.cpp inference, the
+>   former `llms ⇄ llm_utils` cycle is gone.
+
+### 2.2 Layered diagram
+
+Lowest tier = packages that import nothing from `kodo`; each tier above imports
+only from tiers below it. Lines are imports (`▼` points from importer to
+imported); the annotation on each line names the packages pulled in.
 
 ```text
-                         server/         ← composition root (wires everything)
-                            │
-        ┌───────────────────┼───────────────────────────────┐
-     runtime/            transport/                       (handlers)
-    (engine, tools,         │
-     bootstrap, gates) ─────┼──────────────┐
-        │     │     │       │              │
-   subagents/ │  mirror/  toolchains/   state/
-        │  toolspecs/  workspace/   llms/   llm_utils/
-        │     │          │           │        │
-        └─────┴──────────┴───── project/ ─────┘
-                            │
-                         common/      ← Envelope, protocols (leaf)
+ T5  ┌──────────┐
+     │  server  │  ▼ runtime · llms · workspace · subagents ·
+     └────┬─────┘    state · project · transport · common
+          │
+          ▼
+ T4  ┌──────────┐
+     │ runtime  │  ▼ llms · subagents · toolspecs · workspace ·
+     └────┬─────┘    toolchains · state · project · transport · common
+          │
+   ┌──────┴──────────┐
+   ▼                 ▼
+ ┌───────────┐   ┌────────┐
+ │ subagents │   │  llms  │                              T3   (llms ⊇ llamacpp utils)
+ └─────┬─────┘   └───┬────┘
+       │ toolspecs   │ toolspecs · transport · common
+       ▼             ▼
+ ┌───────────┐
+ │ toolspecs │                                          T2
+ └─────┬─────┘
+       │ workspace
+       ▼
+ ┌───────────┐      ┌───────────┐
+ │ transport │      │ workspace │                       T1   (workspace ⊇ mirror)
+ └─────┬─────┘      └─────┬─────┘
+       │ common           │ project · toolchains
+       ▼                  ▼
+ ┌────────┬─────────┬────────────┬───────┬──────────┐
+ │ common │ project │ toolchains │ state │ security │   T0  ← import nothing from kodo
+ └────────┴─────────┴────────────┴───────┴──────────┘
 ```
 
-- **`common/`** — wire envelope + structural `Protocol`s. No intra-`kodo` imports.
-- **`project/`** — filesystem layout + `kodo.md` manifest parsing.
-- **`toolspecs/`** — pure data: one `ToolSpec` per tool, no logic.
-- **`workspace/`, `llms/`, `llm_utils/`, `mirror/`, `toolchains/`, `state/`** — domain services.
-- **`subagents/`** — agent file loader + prompt renderer (consumes `toolspecs`).
-- **`runtime/`** — the engine and tool dispatch; composes all domain services.
-- **`transport/`** — WebSocket framing + dispatch (depends only on `common`).
-- **`server/`** — the composition root: builds the object graph and registers handlers.
+(`runtime` and `server` also reach past the tier directly below them — e.g.
+`runtime → toolspecs`/`workspace`/`common` — as the matrix in §2.1 lists in full;
+only the principal lines are drawn above to keep the figure readable.)
 
-`security/` and `state/_memory.py` are **stubs** (see §13).
+- **T0 — leaf packages** (`common`, `project`, `toolchains`, `state`,
+  `security`): import nothing from `kodo`. `security` and `state/_memory.py` are
+  **stubs** (see §13).
+- **T1**: `transport` (wire framing over `common`), `workspace` (artifact store
+  **plus the merged git mirror** — checkpoints/promotion — over `project` +
+  `toolchains`).
+- **T2**: `toolspecs` (tool catalog, dips into `workspace` for `ArtifactType`).
+- **T3**: `subagents` (prompt renderer over `toolspecs`), `llms` (LLM streaming;
+  its `llamacpp` subpackage also holds the local-inference lifecycle utilities
+  merged from the former `llm_utils`).
+- **T4 — `runtime`**: the engine and tool dispatch; composes nearly every domain
+  service.
+- **T5 — `server`**: the composition root; builds the object graph and registers
+  handlers.
 
 ---
 
@@ -157,7 +224,16 @@ The two `ask_user` specs share `name="ask_user"` but differ:
 
 ---
 
-## 7. `workspace/` — virtual artifact store (single source of truth)
+## 7. `workspace/` — virtual artifact store + git mirror (single source of truth)
+
+The `workspace` package holds two tightly-coupled halves: the **in-memory
+artifact store** (the `ProjectIndex` + staging) and the **on-disk git mirror**
+(checkpoints, promotion). The mirror was formerly a separate `kodo.mirror`
+package; it is merged here because promotion writes the durable counterpart of
+the in-memory index and rollback restores from it. All public names are exported
+from [\_\_init\_\_.py](../src/kodo/workspace/__init__.py).
+
+**Artifact store:**
 
 | Module | Defines | Role |
 |---|---|---|
@@ -168,11 +244,21 @@ The two `ask_user` specs share `name="ask_user"` but differ:
 | [_materialization.py](../src/kodo/workspace/_materialization.py) | `materialization_path()`, `materialize()`, `dematerialize()` | Pure functions mapping `Artifact` + `ToolchainPlugin` + `ComponentRegistry` → a `src/`/`gen/` path. **Imports `toolchains._interface.ToolchainPlugin`** (the one upward-looking dependency, to a sibling domain). |
 | [_errors.py](../src/kodo/workspace/_errors.py) | `WorkspaceError`, `WorkspaceValidationError`, `ArtifactNotFoundError` | Exception hierarchy. |
 
+**Git mirror (merged from the former `kodo.mirror`):**
+
+| Module | Defines | Role |
+|---|---|---|
+| [_repo.py](../src/kodo/workspace/_repo.py) | `MirrorRepo`, `MirrorRepoError`, `CheckpointInfo` (frozen) | Async git porcelain over `.kodo/checkpoints/` via `asyncio.create_subprocess_exec`: `init`, `stage_and_commit`, `head_sha`, `checkout`, `log`. No `kodo` imports. |
+| [_promoter.py](../src/kodo/workspace/_promoter.py) | `Promoter`, `PromoterError` | **Composes** `MirrorRepo` + `ToolchainPlugin` + `ComponentRegistry`. `promote()` writes an accepted artifact to its `src/`/`gen/` path **and** the mirror tree + `.kodo.json` sidecar, then commits. Imports siblings `_materialization`, `_component_registry`, `_models`, `_repo`. |
+| [_checkpoints.py](../src/kodo/workspace/_checkpoints.py) | `CheckpointManager` | **Composes** a `MirrorRepo` built from `ProjectLayout.checkpoints_dir`. `ensure_initialized`, `create_checkpoint`, `list_checkpoints`. |
+
 **Links:** `Workspace` ← composition ← `ProjectIndex` (shared, injected by the
-engine). `materialization.py` and `_component_registry.py` are used by both
-`Workspace` (indirectly) and `mirror/_promoter.py`. The **same `ProjectIndex`
-instance** is shared between `Workspace` and `ToolSurface` (engine injects one
-into both).
+engine). `_materialization.py` and `_component_registry.py` are used by both
+`Workspace` (indirectly) and `_promoter.py` — now intra-package sibling imports.
+The **same `ProjectIndex` instance** is shared between `Workspace` and
+`ToolSurface` (engine injects one into both). The engine takes a
+`CheckpointManager` (param still named `mirror`) and constructs `Promoter`s
+on demand; `Rollback` composes a `MirrorRepo`.
 
 **State:** Complete. This is the most mature subsystem (high test coverage).
 
@@ -212,24 +298,30 @@ result, resetting it on rollback.
 | [anthropic/_cache.py](../src/kodo/llms/anthropic/_cache.py) | `build_system_blocks`, `build_message_params` | Prompt-cache breakpoint construction. |
 | [anthropic/_retry.py](../src/kodo/llms/anthropic/_retry.py) | `with_retry`, `with_retry_iter`, `UnrecoverableError`, `RetryExhaustedError` | Exponential backoff (2/8/32s); classifies auth/billing as unrecoverable. |
 | [anthropic/_usage.py](../src/kodo/llms/anthropic/_usage.py) | `compute_cost` | Per-model USD pricing table. |
-| [llamacpp/_llama.py](../src/kodo/llms/llamacpp/_llama.py) | `LlamaPlugin(LLMPlugin)`, `ThinkingStreamParser` | **Subclasses** ABC. OpenAI-compatible client against `llama-server`; converts Anthropic-style content blocks ↔ OpenAI chat messages; parses `<think>` tags into `ThinkingDelta`. **Composes** `MessageSink` (to emit `EVT_LLAMA_STATE`) and calls `llm_utils.ensure_llama_running`. |
+| [llamacpp/_llama.py](../src/kodo/llms/llamacpp/_llama.py) | `LlamaPlugin(LLMPlugin)`, `ThinkingStreamParser` | **Subclasses** ABC. OpenAI-compatible client against `llama-server`; converts Anthropic-style content blocks ↔ OpenAI chat messages; parses `<think>` tags into `ThinkingDelta`. **Composes** `MessageSink` (to emit `EVT_LLAMA_STATE`) and calls its sibling `_manager.ensure_llama_running`. |
 
 **Links:** Every plugin is wrapped in `LoggingLLMPlugin` by the engine's
-`__resolve_plugin`. `LlamaPlugin` is the one plugin that reaches *up* into
-`llm_utils` and `transport` (for on-demand server start + state events).
+`__resolve_plugin`. `LlamaPlugin` reaches *up* into `transport` (for state
+events) and *sideways* into its sibling local-inference utilities (§10).
 
 **State:** Complete for both providers.
 
 ---
 
-## 10. `llm_utils/` — local inference lifecycle
+## 10. `llms/llamacpp/` — local inference lifecycle (merged from `llm_utils`)
+
+These modules were a standalone top-level `llm_utils` package that formed an
+import cycle with `llms`; they were moved under `llms/llamacpp/` (only llama.cpp
+inference uses them) and are re-exported from `kodo.llms.llamacpp`. They are
+imported by `LlamaPlugin` (siblings) and by `server/_app.py` (install/start/stop
+handlers) — via `kodo.llms.llamacpp`, never from the private modules.
 
 | Module | Defines | Links |
 |---|---|---|
-| [_installer.py](../src/kodo/llm_utils/_installer.py) | `LlamaInstall`, `install/uninstall/update_llamacpp`, `check_llamacpp_update`, `find_installed`, `server_executable` | Platform-aware llama.cpp binary install into `~/.kodo/llama.cpp/bN/`. |
-| [_downloader.py](../src/kodo/llm_utils/_downloader.py) | `download_model`, `get_model_path` | `huggingface_hub` GGUF fetch + JSON index. **Imports `llms.LLMEntry`.** |
-| [_llama_server.py](../src/kodo/llm_utils/_llama_server.py) | `LlamaServer`, `LlamaServerConfig`, `RunningServer`, `find_running_server` | PID-managed `llama-server` subprocess; class-level singleton via `get_active_llama_server()`; `adopt()` reclaims a survivor after restart. |
-| [_manager.py](../src/kodo/llm_utils/_manager.py) | `ensure_llama_running` | Composes installer + downloader + server: ensures the right model server is up. |
+| [_installer.py](../src/kodo/llms/llamacpp/_installer.py) | `LlamaInstall`, `install/uninstall/update_llamacpp`, `check_llamacpp_update`, `find_installed`, `server_executable` | Platform-aware llama.cpp binary install into `~/.kodo/llama.cpp/bN/`. No `kodo` imports. |
+| [_downloader.py](../src/kodo/llms/llamacpp/_downloader.py) | `download_model`, `get_model_path` | `huggingface_hub` GGUF fetch + JSON index. Imports `LLMEntry` from `llms._registry` (intra-`llms`, no longer a cross-package cycle). |
+| [_llama_server.py](../src/kodo/llms/llamacpp/_llama_server.py) | `LlamaServer`, `LlamaServerConfig`, `RunningServer`, `find_running_server` | PID-managed `llama-server` subprocess; class-level singleton via `get_active_llama_server()`; `adopt()` reclaims a survivor after restart. |
+| [_manager.py](../src/kodo/llms/llamacpp/_manager.py) | `ensure_llama_running` | Composes installer + downloader + server: ensures the right model server is up. |
 
 **Links:** Consumed by `llms/llamacpp/_llama.py` (runtime) and `server/_app.py`
 (install/start/stop handlers). Self-contained otherwise.
@@ -445,8 +537,8 @@ bootstrap) → engine rebinds index + starts a fresh orchestrator session.
 
 | Subsystem | State |
 |---|---|
-| `common`, `transport`, `project`, `workspace`, `state/_transient` | ✅ Complete, well-tested |
-| `llms` (Anthropic + llama.cpp), `llm_utils`, `mirror`, `toolchains` plugins | ✅ Complete |
+| `common`, `transport`, `project`, `workspace` (incl. merged git mirror), `state/_transient` | ✅ Complete, well-tested |
+| `llms` (Anthropic + llama.cpp, incl. merged local-inference utilities), `toolchains` plugins | ✅ Complete |
 | `toolspecs` catalog, `subagents` loader/registry | ✅ Complete |
 | `runtime` engine / tool surfaces / bootstrap / gates / rollback | ✅ Functional; lower branch coverage on restart/rollback |
 | Toolchain agent tools (`toolchain_build/test/deps`) | ⚠️ Spec only — no dispatch, dropped by `tools_for_agent` |

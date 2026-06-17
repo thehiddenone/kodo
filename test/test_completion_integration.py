@@ -12,16 +12,20 @@ from pathlib import Path
 
 import pytest
 
-from kodo.mirror._promoter import Promoter
-from kodo.mirror._repo import MirrorRepo
-from kodo.toolchains._interface import (
+from kodo.toolchains import (
     ToolchainBuildResult,
     ToolchainPlugin,
     ToolchainTestResult,
     ToolchainTestScope,
 )
-from kodo.workspace import ArtifactType, ProjectIndex, Workspace
-from kodo.workspace._materialization import materialization_path
+from kodo.workspace import (
+    ArtifactType,
+    MirrorRepo,
+    ProjectIndex,
+    Promoter,
+    Workspace,
+    materialization_path,
+)
 
 
 class _StubToolchain(ToolchainPlugin):

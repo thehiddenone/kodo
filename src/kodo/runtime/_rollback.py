@@ -26,8 +26,8 @@ import logging
 import shutil
 from pathlib import Path
 
-from kodo.mirror._repo import MirrorRepo
-from kodo.project._layout import ProjectLayout
+from kodo.project import ProjectLayout
+from kodo.workspace import MirrorRepo
 
 from ._bootstrap import BootstrapResult, ProjectBootstrap
 from ._orchestrator import OrchestratorMarker

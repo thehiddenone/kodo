@@ -12,7 +12,8 @@ from pathlib import Path
 from aiohttp import web
 
 from kodo.common import Envelope
-from kodo.llm_utils import (
+from kodo.llms import LLMEntry, get_llm_registry
+from kodo.llms.llamacpp import (
     LlamaServer,
     LlamaServerConfig,
     download_model,
@@ -22,14 +23,12 @@ from kodo.llm_utils import (
     get_model_path,
     install_llamacpp,
 )
-from kodo.llms import LLMEntry, get_llm_registry
-from kodo.mirror._checkpoints import CheckpointManager
 from kodo.project import ProjectLayout, ProjectLayoutError, kodo_user_dir
-from kodo.runtime._engine import WorkflowEngine
-from kodo.runtime._gates import GateOrchestrator
-from kodo.state._transient import TransientStore
-from kodo.subagents._registry import AgentRegistry
+from kodo.runtime import GateOrchestrator, WorkflowEngine
+from kodo.state import TransientStore
+from kodo.subagents import AgentRegistry
 from kodo.transport import (
+    APP_STATE_KEY,
     EVT_LLAMA_STATE,
     EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_MODEL_INSTALL_PROGRESS,
@@ -43,9 +42,11 @@ from kodo.transport import (
     MSG_PING,
     MSG_PROMPT_SUBMIT,
     MSG_STOP,
+    HandlerFn,
+    Outbox,
+    WebSocketDispatcher,
 )
-from kodo.transport._outbox import Outbox
-from kodo.transport._ws import APP_STATE_KEY, HandlerFn, WebSocketDispatcher
+from kodo.workspace import CheckpointManager
 
 from ._config import Config
 from ._key_broker import KeyBroker
@@ -409,7 +410,7 @@ def create_app(config: Config) -> web.Application:
     gate = GateOrchestrator(dispatcher, transient)
 
     registry = AgentRegistry(_AGENTS_DIR)
-    mirror = CheckpointManager(layout)
+    checkpoints = CheckpointManager(layout)
 
     engine = WorkflowEngine(
         sink=dispatcher,
@@ -419,7 +420,7 @@ def create_app(config: Config) -> web.Application:
         transient=transient,
         layout=layout,
         registry=registry,
-        mirror=mirror,
+        checkpoints=checkpoints,
     )
 
     dispatcher.register_handler(MSG_HELLO, _make_hello_handler(config, engine))

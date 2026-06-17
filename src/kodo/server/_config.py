@@ -16,7 +16,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kodo.project._layout import ProjectLayout, kodo_user_dir
+from kodo.project import ProjectLayout, kodo_user_dir
 
 __all__ = ["Config"]
 

@@ -1,6 +1,6 @@
 """Behavior tests for kodo.llms.anthropic._usage (cost computation)."""
 
-from kodo.llms._interface import Usage
+from kodo.llms import Usage
 
 
 def test_zero_tokens_costs_nothing() -> None:

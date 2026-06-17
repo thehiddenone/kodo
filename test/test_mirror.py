@@ -1,4 +1,4 @@
-"""Behavior tests for kodo.mirror._repo and ._checkpoints."""
+"""Behavior tests for kodo.workspace._repo and ._checkpoints."""
 
 from __future__ import annotations
 
@@ -6,8 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from kodo.mirror._checkpoints import CheckpointManager
-from kodo.mirror._repo import CheckpointInfo, MirrorRepo
+from kodo.workspace import CheckpointInfo, CheckpointManager, MirrorRepo
 
 # ---------------------------------------------------------------------------
 # MirrorRepo
@@ -127,7 +126,7 @@ async def test_checkpoint_manager_creates_correct_message(tmp_path: Path) -> Non
     when create_checkpoint('narrative') is called,
     then the commit message is '[narrative] approved' and a 40-char SHA is returned.
     """
-    from kodo.project._layout import ProjectLayout
+    from kodo.project import ProjectLayout
 
     layout = ProjectLayout(tmp_path)
     layout.kodo_dir.mkdir(parents=True, exist_ok=True)
@@ -149,7 +148,7 @@ async def test_checkpoint_manager_two_gates_two_commits(tmp_path: Path) -> None:
     when create_checkpoint() is called after each write,
     then both commit messages appear in the log.
     """
-    from kodo.project._layout import ProjectLayout
+    from kodo.project import ProjectLayout
 
     layout = ProjectLayout(tmp_path)
     layout.kodo_dir.mkdir(parents=True, exist_ok=True)

@@ -10,8 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from kodo.workspace import ArtifactType, ProjectIndex, Workspace
-from kodo.workspace._errors import ArtifactNotFoundError, WorkspaceValidationError
+from kodo.workspace import (
+    ArtifactNotFoundError,
+    ArtifactType,
+    ProjectIndex,
+    Workspace,
+    WorkspaceValidationError,
+)
 
 
 def _workspace(tmp_path: Path, index: ProjectIndex | None = None) -> Workspace:
@@ -327,7 +332,7 @@ async def test_read_by_verdict_returns_accepted_feedback(tmp_path: Path) -> None
     when read() is called with verdict=Verdict.ACCEPTED,
     then the feedback artifact is returned.
     """
-    from kodo.workspace._models import Verdict
+    from kodo.workspace import Verdict
 
     ws = _workspace(tmp_path)
     reviewed_id = await ws.publish(
@@ -363,7 +368,7 @@ async def test_read_by_concern_kind_returns_matching_feedback(tmp_path: Path) ->
     when read() is called with concern_kind='completeness',
     then the feedback artifact is returned.
     """
-    from kodo.workspace._models import Concern, Verdict
+    from kodo.workspace import Concern, Verdict
 
     ws = _workspace(tmp_path)
     reviewed_id = await ws.publish(
@@ -499,7 +504,7 @@ async def test_publish_feedback_rejected_without_concerns_raises(tmp_path: Path)
     when publish() is called,
     then WorkspaceValidationError is raised.
     """
-    from kodo.workspace._models import Verdict
+    from kodo.workspace import Verdict
 
     ws = _workspace(tmp_path)
     reviewed_id = await ws.publish(
@@ -528,7 +533,7 @@ async def test_publish_feedback_with_nonlive_reviewed_id_raises(tmp_path: Path) 
     when publish() is called with feedback type,
     then ArtifactNotFoundError is raised.
     """
-    from kodo.workspace._models import Verdict
+    from kodo.workspace import Verdict
 
     ws = _workspace(tmp_path)
     with pytest.raises(ArtifactNotFoundError):
@@ -569,7 +574,7 @@ async def test_publish_non_feedback_with_verdict_raises(tmp_path: Path) -> None:
     when publish() is called,
     then WorkspaceValidationError is raised.
     """
-    from kodo.workspace._models import Verdict
+    from kodo.workspace import Verdict
 
     ws = _workspace(tmp_path)
     with pytest.raises(WorkspaceValidationError):

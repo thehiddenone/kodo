@@ -7,7 +7,7 @@ from ._orchestrator import OrchestratorMarker
 from ._rollback import Rollback
 from ._session import SessionState
 from ._session_log import SessionLog
-from ._subagent_dispatch import LEAF_TOOLS_BY_NAME, SubagentDispatcher
+from ._subagent_dispatch import LEAF_TOOLS_BY_NAME, SubagentDispatcher, tools_for_agent
 from ._tool_surface import ORCHESTRATOR_TOOLS, ORCHESTRATOR_TOOLS_BY_NAME, ToolSurface
 
 __all__ = [
@@ -26,4 +26,5 @@ __all__ = [
     "SubagentDispatcher",
     "ToolSurface",
     "WorkflowEngine",
+    "tools_for_agent",
 ]

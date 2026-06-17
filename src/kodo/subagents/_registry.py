@@ -33,9 +33,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from kodo.toolspecs import ALL_TOOLS, ToolSpec
-from kodo.toolspecs._ask_user import ASK_USER
-from kodo.toolspecs._ask_user_orchestrator import ORCHESTRATOR_ASK_USER
+from kodo.toolspecs import ALL_TOOLS, ASK_USER, ORCHESTRATOR_ASK_USER, ToolSpec
 
 from ._loader import AgentLoadError, SubAgent, load_agent
 

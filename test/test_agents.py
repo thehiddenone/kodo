@@ -6,8 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from kodo.subagents._loader import AgentLoadError, SubAgent, load_agent
-from kodo.subagents._registry import AgentRegistry
+from kodo.subagents import AgentLoadError, AgentRegistry, SubAgent, load_agent
 
 # ---------------------------------------------------------------------------
 # Helpers

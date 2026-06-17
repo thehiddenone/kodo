@@ -51,10 +51,13 @@ from ._messages import (
     SREQ_PROMPT_QUESTION,
 )
 from ._outbox import Outbox
-from ._ws import WebSocketDispatcher
+from ._ws import APP_STATE_KEY, HandlerFn, WebSocketDispatcher, get_state
 
 __all__ = [
+    "APP_STATE_KEY",
+    "HandlerFn",
     "WebSocketDispatcher",
+    "get_state",
     "Envelope",
     "MessageKind",
     "Outbox",

@@ -12,8 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kodo.common import Envelope
-from kodo.transport import Outbox, WebSocketDispatcher
-from kodo.transport._ws import APP_STATE_KEY, get_state
+from kodo.transport import APP_STATE_KEY, Outbox, WebSocketDispatcher, get_state
 
 # ---------------------------------------------------------------------------
 # Envelope — construction and serialization

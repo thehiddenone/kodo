@@ -80,7 +80,9 @@ __all__ = [
 
 You MUST NOT use star imports. This is not allowed: `from module import *`.
 
-You MUST NOT import from python files. You MUST ALWAYS import from modules. This is not allowed: `from module.submodule._file import MyClass`.
+You MUST NOT import from python files. You MUST ALWAYS import from modules (packages). This is not allowed: `from module.submodule._file import MyClass`.
+
+Instead, export the public name from the package's `__init__.py` (add it to `__init__` and `__all__`) and import it from the package: `from module.submodule import MyClass`. If a name needs to be used outside its package, it MUST be part of that package's public API — promote a private `_helper` to a public name rather than reaching into the `_file` from another package. The only relative `from ._file import X` imports allowed are those a package makes about its own sibling modules (e.g. inside its `__init__.py`); consumers in other packages MUST go through the package's public surface. Tests follow the same rule.
 
 ## Type hints
 

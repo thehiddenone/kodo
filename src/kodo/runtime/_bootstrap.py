@@ -20,9 +20,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kodo.state._transient import _new_session_id
-from kodo.workspace import IndexEntry, ProjectIndex
-from kodo.workspace._models import ArtifactType, Verdict
+from kodo.state import new_session_id
+from kodo.workspace import ArtifactType, IndexEntry, ProjectIndex, Verdict
 
 from ._orchestrator import OrchestratorMarker
 
@@ -279,7 +278,7 @@ class ProjectBootstrap:
             )
             marker.clear()
 
-        session_id = _new_session_id()
+        session_id = new_session_id()
         marker.write(session_id)
         _log.info("Phase 4: Orchestrator session started: %s", session_id)
         return session_id, False

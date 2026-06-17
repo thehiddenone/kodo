@@ -11,12 +11,14 @@ from ._interface import (
     TurnEnd,
     Usage,
 )
+from ._logger import LoggingLLMPlugin
 from ._registry import LLMEntry, get_llm_registry
 from ._tool_logger import ToolCallLogger
 
 __all__ = [
     "LLMEntry",
     "LLMPlugin",
+    "LoggingLLMPlugin",
     "Message",
     "ThinkingDelta",
     "ToolCallLogger",
