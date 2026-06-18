@@ -6,15 +6,14 @@ each exporting a single module-level ``ToolSpec`` constant (e.g.
 ``_create_file.py`` exports ``CREATE_FILE``). When adding a new tool, add a
 new ``_<tool_name>.py`` module here rather than extending an existing one.
 
-No dispatch or implementation logic lives here. Orchestrator tool dispatch is
-in :mod:`kodo.runtime._tool_surface`; leaf sub-agent tool dispatch is in
-:mod:`kodo.runtime._subagent_dispatch`.
+No dispatch or implementation logic lives here. Every tool's dispatch lives in
+:mod:`kodo.tools` (one ``_<tool_name>.py`` handler module per tool), routed
+through a single :class:`kodo.tools.ToolDispatcher`.
 """
 
 from __future__ import annotations
 
 from ._ask_user import ASK_USER
-from ._ask_user_orchestrator import ORCHESTRATOR_ASK_USER
 from ._copy_file import COPY_FILE
 from ._create_file import CREATE_FILE
 from ._delete_file import DELETE_FILE
@@ -49,10 +48,8 @@ __all__ = [
     "EDIT_FILE",
     "ESCALATE_BLOCKER",
     "FINALIZE_PROJECT",
-    "LEAF_TOOLS_BY_NAME",
     "LIST_ARTIFACTS",
     "MOVE_FILE",
-    "ORCHESTRATOR_ASK_USER",
     "POST_UPDATE",
     "PUBLISH_ARTIFACT",
     "QUERY_FRONTIER",
@@ -69,32 +66,10 @@ __all__ = [
     "ToolSpec",
 ]
 
-# Tool specs a leaf sub-agent may be granted, keyed by name.
-LEAF_TOOLS_BY_NAME: dict[str, ToolSpec] = {
-    t.name: t
-    for t in (
-        PUBLISH_ARTIFACT,
-        READ_ARTIFACT,
-        ESCALATE_BLOCKER,
-        ASK_USER,
-        REQUEST_USER_REVIEW_ARTIFACT,
-        REPORT_ARTIFACT_COMPLETED,
-        CREATE_FILE,
-        EDIT_FILE,
-        DELETE_FILE,
-        COPY_FILE,
-        MOVE_FILE,
-        RUN_COMMAND,
-    )
-}
-
-# Every tool spec in the catalog, including both `ask_user` variants. Used by
-# kodo.subagents._registry to resolve external_name for the rendered
-# `## Tools` section without needing to know which specs are leaf vs.
-# orchestrator.
+# Every tool spec in the catalog. Used by kodo.subagents._registry to render
+# the `## Tools` section of each agent prompt.
 ALL_TOOLS: tuple[ToolSpec, ...] = (
     ASK_USER,
-    ORCHESTRATOR_ASK_USER,
     COPY_FILE,
     CREATE_FILE,
     DELETE_FILE,

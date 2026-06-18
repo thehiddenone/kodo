@@ -84,6 +84,10 @@ You MUST NOT import from python files. You MUST ALWAYS import from modules (pack
 
 Instead, export the public name from the package's `__init__.py` (add it to `__init__` and `__all__`) and import it from the package: `from module.submodule import MyClass`. If a name needs to be used outside its package, it MUST be part of that package's public API — promote a private `_helper` to a public name rather than reaching into the `_file` from another package. The only relative `from ._file import X` imports allowed are those a package makes about its own sibling modules (e.g. inside its `__init__.py`); consumers in other packages MUST go through the package's public surface. Tests follow the same rule.
 
+### Layering: `kodo.tools`
+
+`kodo.tools` (the dispatch implementation of every tool in `kodo.toolspecs`) is a dedicated import tier __between__ `toolspecs` (T2) and `subagents`/`llms` (T3). It MUST import only from T0/T1/T2 — in practice `workspace` + `toolspecs` — and MUST NEVER import `subagents`, `llms`, or `runtime`. Collaborators from higher tiers (the gate, the session, the sub-agent launcher) are expressed as structural Protocols inside `kodo.tools` (`GateLike`, `SessionLike`, `SubagentRunner`) and injected by `runtime`. There is one unified tool surface: every agent (orchestrator included) gets exactly the tools its frontmatter declares, dispatched through a single `ToolDispatcher`. Each tool is a `Tool` subclass (the ABC in `tools/_tool.py`) in its own `tools/_<tool_name>.py` module; its constructor binds the run's `ToolContext` and `handle(self, tool_input)` reads it via the `context` property. The `_TOOL_CLASSES` table in `tools/_dispatch.py` is the single spec→class binding. Verify the ceiling with `grep -rE "^\s*(from|import) kodo\.(subagents|llms|runtime|server)" src/kodo/tools` (must be empty).
+
 ## Type hints
 
 You MUST NOT use `Optional`, `Any`, `Dict`, `List`, `TYPE_CHECKING` etc. No loose type safety, no outdated classes.
@@ -177,7 +181,7 @@ Every sub-agent MUST have three things defined in its prompt:
 Authoritative locations:
 
 - The agent-facing tool catalog — internal/external names, descriptions, autonomous-mode behavior, and when-to-use guidance for every tool — lives in each tool's `ToolSpec` under [src/kodo/toolspecs/](src/kodo/toolspecs/) (`external_name`, `user_description`, `description`, `autonomous_mode`, `when_to_use`), rendered into the `## Tools` section of every agent prompt by [src/kodo/subagents/_registry.py](src/kodo/subagents/_registry.py). Prompts name tools; they never restate schemas.
-- `publish_artifact`, `read_artifact` — `ToolSpec`s in [src/kodo/toolspecs/_publish_artifact.py](src/kodo/toolspecs/_publish_artifact.py) and [src/kodo/toolspecs/_read_artifact.py](src/kodo/toolspecs/_read_artifact.py), dispatched in-process by [src/kodo/runtime/_subagent_dispatch.py](src/kodo/runtime/_subagent_dispatch.py).
+- `publish_artifact`, `read_artifact` — `ToolSpec`s in [src/kodo/toolspecs/_publish_artifact.py](src/kodo/toolspecs/_publish_artifact.py) and [src/kodo/toolspecs/_read_artifact.py](src/kodo/toolspecs/_read_artifact.py), dispatched in-process by their `Tool` subclasses in [src/kodo/tools/](src/kodo/tools/) (`PublishArtifactTool`, `ReadArtifactTool`).
 - `escalate_blocker`, `ask_user`, `request_user_review_artifact`, `report_artifact_completed` — `ToolSpec`s in [src/kodo/toolspecs/](src/kodo/toolspecs/), one module per tool (`_escalate_blocker.py`, `_ask_user.py`, `_request_user_review_artifact.py`, `_report_artifact_completed.py`).
 
 The agent's frontmatter `tools:` list MUST include every tool the agent calls.
@@ -210,7 +214,7 @@ Intermediate reasoning text the agent emits between tool calls is allowed but un
 
 ### Transport-agnostic tool contract
 
-Every tool a sub-agent calls MUST be defined as a `ToolSpec` with a JSON Schema in [src/kodo/toolspecs/](src/kodo/toolspecs/), one module per tool. All built-in tools run in-process, dispatched by [src/kodo/runtime/_subagent_dispatch.py](src/kodo/runtime/_subagent_dispatch.py) and [src/kodo/runtime/_engine.py](src/kodo/runtime/_engine.py); external MCP tool support is planned post-MVP. The sub-agent prompt MUST name the tool but MUST NOT restate the schema, so prompts remain valid when the transport changes.
+Every tool a sub-agent calls MUST be defined as a `ToolSpec` with a JSON Schema in [src/kodo/toolspecs/](src/kodo/toolspecs/), one module per tool. Each tool's dispatch is implemented in [src/kodo/tools/](src/kodo/tools/) — one `Tool` subclass per `_<tool_name>.py` module, routed through a single `ToolDispatcher` the engine builds per agent run (orchestrator and leaf alike). `kodo.tools` is a dedicated import tier between `toolspecs` and `subagents`/`llms`: it may import only `workspace` + `toolspecs`, and the gate/session/sub-agent-launcher it needs are injected via structural Protocols. External MCP tool support is planned post-MVP. The sub-agent prompt MUST name the tool but MUST NOT restate the schema, so prompts remain valid when the transport changes.
 
 ### Authoring a new sub-agent prompt — checklist
 

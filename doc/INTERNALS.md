@@ -44,9 +44,10 @@ source:
 | `transport` | `common` |
 | `workspace` | `project`, `toolchains` |
 | `toolspecs` | `workspace` |
+| `tools` | `workspace`, `toolspecs` |
 | `llms` | `common`, `transport`, `toolspecs` |
 | `subagents` | `toolspecs` |
-| `runtime` | `common`, `transport`, `toolspecs`, `workspace`, `toolchains`, `project`, `state`, `subagents`, `llms` |
+| `runtime` | `common`, `transport`, `toolspecs`, `tools`, `workspace`, `toolchains`, `project`, `state`, `subagents`, `llms` |
 | `server` | `common`, `transport`, `project`, `state`, `workspace`, `subagents`, `llms`, `runtime` |
 
 One edge breaks a clean strict hierarchy:
@@ -81,16 +82,18 @@ imported); the annotation on each line names the packages pulled in.
           │
           ▼
  T4  ┌──────────┐
-     │ runtime  │  ▼ llms · subagents · toolspecs · workspace ·
+     │ runtime  │  ▼ tools · llms · subagents · toolspecs · workspace ·
      └────┬─────┘    toolchains · state · project · transport · common
           │
-   ┌──────┴──────────┐
-   ▼                 ▼
- ┌───────────┐   ┌────────┐
- │ subagents │   │  llms  │                              T3   (llms ⊇ llamacpp utils)
- └─────┬─────┘   └───┬────┘
-       │ toolspecs   │ toolspecs · transport · common
-       ▼             ▼
+   ┌──────┴───────┬───────────────┐
+   ▼              ▼               ▼
+ ┌───────────┐   ┌────────┐   ┌───────────┐
+ │ subagents │   │  llms  │   │   tools   │              T3   (llms ⊇ llamacpp utils;
+ └─────┬─────┘   └───┬────┘   └─────┬─────┘                    tools imported only by runtime)
+       │ toolspecs   │ toolspecs    │ toolspecs · workspace
+       │             │ transport    │
+       │             │ common       │
+       ▼             ▼              ▼
  ┌───────────┐
  │ toolspecs │                                          T2
  └─────┬─────┘
@@ -119,9 +122,15 @@ only the principal lines are drawn above to keep the figure readable.)
 - **T2**: `toolspecs` (tool catalog, dips into `workspace` for `ArtifactType`).
 - **T3**: `subagents` (prompt renderer over `toolspecs`), `llms` (LLM streaming;
   its `llamacpp` subpackage also holds the local-inference lifecycle utilities
-  merged from the former `llm_utils`).
-- **T4 — `runtime`**: the engine and tool dispatch; composes nearly every domain
-  service.
+  merged from the former `llm_utils`), and `tools` (the **dispatch
+  implementation** of every tool in the catalog — one `Tool` subclass per tool).
+  `tools` has a hard import ceiling of T2 (it may import only `workspace` +
+  `toolspecs`); the collaborators it needs from higher tiers — the gate, the
+  session, the sub-agent launcher — are inverted via structural Protocols and
+  injected by `runtime`. It is imported only by `runtime`, never by `subagents`
+  or `llms`.
+- **T4 — `runtime`**: the engine; composes nearly every domain service and
+  builds a per-run `tools.ToolDispatcher` for each agent (orchestrator or leaf).
 - **T5 — `server`**: the composition root; builds the object graph and registers
   handlers.
 
@@ -180,7 +189,7 @@ runtime.
 ## 6. `toolspecs/` — the tool catalog (pure data)
 
 One module per tool, each exporting a single frozen `ToolSpec` constant. No
-dispatch logic lives here (that is in `runtime/`).
+dispatch logic lives here (that is in `tools/`, §6A).
 
 [_spec.py](../src/kodo/toolspecs/_spec.py) defines the `ToolSpec` dataclass:
 
@@ -193,34 +202,69 @@ input_schema, when_to_use: tuple[str, ...], autonomous_mode: str | None = None
 `## Tools` section by `AgentRegistry` (§11). `autonomous_mode` containing
 `"unavailable"` drives per-mode tool filtering.
 
-[\_\_init\_\_.py](../src/kodo/toolspecs/__init__.py) aggregates two catalogs:
+[\_\_init\_\_.py](../src/kodo/toolspecs/__init__.py) exposes one catalog:
 
-- **`LEAF_TOOLS_BY_NAME: dict[str, ToolSpec]`** — the 12 tools a leaf sub-agent
-  may be granted: `publish_artifact`, `read_artifact`, `escalate_blocker`,
-  `ask_user`, `request_user_review_artifact`, `report_artifact_completed`,
-  `create_file`, `edit_file`, `delete_file`, `copy_file`, `move_file`,
-  `run_command`. Consumed by `runtime/_subagent_dispatch.tools_for_agent`.
-- **`ALL_TOOLS: tuple[ToolSpec, ...]`** — all 24 specs including both `ask_user`
-  variants. Consumed by `subagents/_registry` to render prompts.
+- **`ALL_TOOLS: tuple[ToolSpec, ...]`** — all 23 specs (tool names are unique).
+  Consumed by `subagents/_registry` to render prompts. (Which of these specs are
+  actually *dispatchable* is a `tools/` concern — see
+  `tools.DISPATCHABLE_TOOLS_BY_NAME`, §6A. The former `LEAF_TOOLS_BY_NAME`
+  leaf/orchestrator split was removed when dispatch unified into `tools/`.)
 
-The two `ask_user` specs share `name="ask_user"` but differ:
-[_ask_user.py](../src/kodo/toolspecs/_ask_user.py) (`ASK_USER`, leaf) vs
-[_ask_user_orchestrator.py](../src/kodo/toolspecs/_ask_user_orchestrator.py)
-(`ORCHESTRATOR_ASK_USER`). Both carry `autonomous_mode="unavailable …"`, as does
-`REQUEST_USER_REVIEW_ARTIFACT` (`"auto-accepted …"`).
+[_ask_user.py](../src/kodo/toolspecs/_ask_user.py) (`ASK_USER`) carries
+`autonomous_mode="unavailable …"`, as does `REQUEST_USER_REVIEW_ARTIFACT`
+(`"auto-accepted …"`). (`ask_user` was once split into a leaf spec and a separate
+orchestrator spec; they were collapsed into one — the runtime contract was
+identical and the orchestrator-only guidance already lives in the orchestrator
+prompt body.)
 
 **Implementation state of the specs** (spec exists ≠ dispatch exists):
 
-| Spec | Dispatch site | State |
+All dispatchable specs now share one handler layer (`tools/`, §6A); the
+"dispatch site" is a per-tool `tools/_<name>.py:handle`.
+
+| Spec | Dispatch | State |
 |---|---|---|
-| `publish_artifact`, `read_artifact` | `SubagentDispatcher` | ✅ implemented |
-| `escalate_blocker`, `ask_user`, `request_user_review_artifact`, `report_artifact_completed` | `SubagentDispatcher` | ✅ implemented |
-| `create_file`/`edit_file`/`delete_file`/`copy_file`/`move_file`/`run_command` | `SubagentDispatcher` | ✅ implemented, but **granted to no agent** (not in any frontmatter) |
-| `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `rollback`, `finalize_project` | `ToolSurface` | ✅ implemented |
-| `toolchain_build`/`toolchain_test`/`toolchain_deps` | — | ⚠️ **spec only, no dispatch.** Declared by `coder`/`test_coder` frontmatter; rendered into prompts but silently dropped by `tools_for_agent` (not in `LEAF_TOOLS_BY_NAME`). |
-| `disable_autonomous_mode`, `post_update` | — | ⚠️ **spec only, no dispatch.** Declared by `orchestrator` frontmatter; rendered into its prompt but **not** in `ORCHESTRATOR_TOOLS`, so never passed to the LLM. |
+| `publish_artifact`, `read_artifact` | `tools/` | ✅ implemented |
+| `escalate_blocker`, `ask_user`, `request_user_review_artifact`, `report_artifact_completed` | `tools/` | ✅ implemented |
+| `create_file`/`edit_file`/`delete_file`/`copy_file`/`move_file`/`run_command` | `tools/` | ✅ implemented, but **granted to no agent** (not in any frontmatter) |
+| `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `rollback`, `finalize_project` | `tools/` | ✅ implemented |
+| `toolchain_build`/`toolchain_test`/`toolchain_deps` | — | ⚠️ **spec only, no dispatch.** Declared by `coder`/`test_coder` frontmatter; rendered into prompts but silently dropped by `tools_for_agent` (no handler in `DISPATCHABLE_TOOLS_BY_NAME`). |
+| `disable_autonomous_mode`, `post_update` | — | ⚠️ **spec only, no dispatch.** Declared by `orchestrator` frontmatter; rendered into its prompt but dropped by `tools_for_agent`, so never passed to the LLM. |
 
 **State:** Catalog complete; several specs are intentional placeholders ahead of dispatch.
+
+---
+
+## 6A. `tools/` — unified tool dispatch (the handler layer)
+
+A dedicated import tier **between** `toolspecs` (T2) and `subagents`/`llms`
+(T3): it may import only T0/T1/T2 (in practice `workspace` + `toolspecs`) and is
+consumed only by `runtime`. It must never import `subagents`, `llms`, or
+`runtime` — the collaborators those would supply are inverted via structural
+Protocols and injected.
+
+**There is no orchestrator-vs-leaf split.** Every agent (orchestrator included)
+is granted exactly the tools its frontmatter declares, and every tool call is
+routed through a single `ToolDispatcher` to the matching `Tool` subclass (bound
+to the run's context). This replaced the former
+`runtime/_tool_surface.ToolSurface` + `runtime/_subagent_dispatch.SubagentDispatcher`.
+
+| Module | Defines | Role |
+|---|---|---|
+| [_context.py](../src/kodo/tools/_context.py) | `ToolContext`, `GateLike`, `SessionLike`, `SubagentRunner`, `QuestionLike`, `ApprovalLike` | The injected per-run context (collaborators + mutable `published_ids`/`stop_requested`) and the structural Protocols runtime satisfies. `runtime.GateOrchestrator`/`SessionState` and an engine adapter match them by shape. |
+| [_tool.py](../src/kodo/tools/_tool.py) | `Tool` (ABC) | Binds one run's `ToolContext` (read-only `context` property) and declares the abstract `handle(self, tool_input) -> str`. |
+| `_<tool_name>.py` (18 modules) | one `Tool` subclass each | e.g. `PublishArtifactTool`, `FinalizeProjectTool`; implements `handle` reading `self.context`. Mirrors the `toolspecs` one-file-per-tool convention. |
+| [_dispatch.py](../src/kodo/tools/_dispatch.py) | `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME` | The `_TOOL_CLASSES` table pairs each dispatchable `ToolSpec` with its `Tool` subclass; `dispatch` instantiates the class bound to the run's context and calls `handle`; exposes per-run `published_ids`/`stop_requested`. `tools_for_agent(frozenset[str])` resolves an agent's declared names to specs (skipping spec-only placeholders). |
+| [_paths.py](../src/kodo/tools/_paths.py) | `resolve_within` | Project-root path guard shared by the file-I/O and shell handlers. |
+| [_serialize.py](../src/kodo/tools/_serialize.py) | `serialize_artifact` | `Artifact` → JSON dict, used by `read_artifact`. |
+
+**Links:** `runtime/_engine.py` builds one `ToolDispatcher` per agent run via
+`__make_dispatcher`, injecting `GateOrchestrator`, `SessionState`, an
+`_EngineSubagentRunner` adapter (wrapping the engine's `__run_subagent` /
+`__run_author_critic_iteration`), and the `rollback`/`complete` callbacks.
+Autonomous filtering of `ask_user` happens once, in `subagents/_registry`.
+
+**State:** Complete; mirrors the prior dispatch behavior with the two surfaces unified.
 
 ---
 
@@ -255,8 +299,9 @@ from [\_\_init\_\_.py](../src/kodo/workspace/__init__.py).
 **Links:** `Workspace` ← composition ← `ProjectIndex` (shared, injected by the
 engine). `_materialization.py` and `_component_registry.py` are used by both
 `Workspace` (indirectly) and `_promoter.py` — now intra-package sibling imports.
-The **same `ProjectIndex` instance** is shared between `Workspace` and
-`ToolSurface` (engine injects one into both). The engine takes a
+The **same `ProjectIndex` instance** is bound into `Workspace` and handed to
+each per-run `ToolDispatcher` (the read-only `query_frontier`/`list_artifacts`
+handlers consult it). The engine takes a
 `CheckpointManager` (param still named `mirror`) and constructs `Promoter`s
 on demand; `Rollback` composes a `MirrorRepo`.
 
@@ -335,17 +380,17 @@ handlers) — via `kodo.llms.llamacpp`, never from the private modules.
 | Module | Defines | Links |
 |---|---|---|
 | [_loader.py](../src/kodo/subagents/_loader.py) | `SubAgent` (frozen: `name`, `tools: frozenset[str]`, `system_prompt`, `source_path`, `capability`), `AgentLoadError`, `load_agent()` | Parses `subagent_<name>.md` frontmatter + body. |
-| [_registry.py](../src/kodo/subagents/_registry.py) | `AgentRegistry` | Loads all `subagent_*.md` + mandatory `preamble.md`. **Renders the `## Tools` section from `ToolSpec` data** (`ALL_TOOLS`), choosing leaf vs orchestrator `ask_user` by agent name, and filtering `autonomous_mode == "unavailable"` tools when `autonomous=True`. Prepends the preamble. |
+| [_registry.py](../src/kodo/subagents/_registry.py) | `AgentRegistry` | Loads all `subagent_*.md` + mandatory `preamble.md`. **Renders the `## Tools` section from `ToolSpec` data** (one `_SPECS_BY_NAME` map over `ALL_TOOLS`), filtering `autonomous_mode == "unavailable"` tools when `autonomous=True`. Prepends the preamble. |
 
-**Links:** `_registry` imports `ALL_TOOLS`, `ASK_USER`, `ORCHESTRATOR_ASK_USER`
-from `toolspecs`. `get(name, autonomous)` returns a `SubAgent` with `{PLACEHOLDER:TOOLS}`
-replaced and preamble prepended. Consumed only by `WorkflowEngine`.
+**Links:** `_registry` imports `ALL_TOOLS` from `toolspecs`. `get(name,
+autonomous)` returns a `SubAgent` with `{PLACEHOLDER:TOOLS}` replaced and
+preamble prepended. Consumed only by `WorkflowEngine`.
 
 **The 14 agents + 1 preamble** (frontmatter `tools:` lists):
 
 | Agent | Tools declared | Role |
 |---|---|---|
-| `orchestrator` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, **disable_autonomous_mode**, **post_update** | Arbiter (the only `ToolSurface` consumer). |
+| `orchestrator` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, **disable_autonomous_mode**, **post_update** | Arbiter. Resolved through the same `tools_for_agent` path as every other agent. |
 | `narrative_author` | publish, read, **ask_user**, request_review, report_completed | Solo, user-facing intake. |
 | `architect`, `requirements_author`, `functional_designer`, `e2e_test_designer`, `test_designer` | publish, read, escalate_blocker | Authors (paired with a critic). |
 | `architect_critic`, `requirements_critic`, `functional_design_critic`, `e2e_test_design_critic`, `code_critic` | publish, read, request_review, report_completed | Critics (own the review gate). |
@@ -354,11 +399,12 @@ replaced and preamble prepended. Consumed only by `WorkflowEngine`.
 
 > ⚠️ **Frontmatter ↔ surface mismatch:** `orchestrator` declares
 > `disable_autonomous_mode`/`post_update` (rendered into its prompt) but these
-> are absent from `ORCHESTRATOR_TOOLS`; conversely `finalize_project` is in
-> `ORCHESTRATOR_TOOLS` but **not** in the orchestrator frontmatter — so it is
-> dispatchable yet never described to the model. `coder`/`test_coder` declare
-> `toolchain_*` which `tools_for_agent` drops. These are the live gaps between
-> "described to the LLM" and "executable."
+> have no handler in `tools/`, so `tools_for_agent` drops them — described to the
+> LLM yet not executable. (`finalize_project` was **added to the orchestrator
+> frontmatter** during the dispatch unification, closing the former reverse gap.)
+> `coder`/`test_coder` likewise declare `toolchain_*`, which `tools_for_agent`
+> drops. These are the remaining gaps between "described to the LLM" and
+> "executable."
 
 **State:** Loader/registry complete; agent roster present; tool wiring partially complete.
 
@@ -382,14 +428,16 @@ registry: AgentRegistry      mirror: CheckpointManager
 ```
 
 It **internally constructs**: a shared `ProjectIndex`, a `Workspace` (wrapping
-that index), a `SessionState`, and a `ToolSurface` (via `__make_tool_surface`,
-re-made after bootstrap/rollback). It owns `__orch_messages` (the Orchestrator's
-running `list[Message]`), cumulative USD, and a lazily-resolved `ToolchainPlugin`.
+that index), a `SessionState`, and an `_EngineSubagentRunner` adapter. It builds
+a `tools.ToolDispatcher` **per agent run** (via `__make_dispatcher`, which reads
+the current `ProjectIndex` — no persistent surface to rebuild after
+bootstrap/rollback). It owns `__orch_messages` (the Orchestrator's running
+`list[Message]`), cumulative USD, and a lazily-resolved `ToolchainPlugin`.
 
 **Composition / call graph:**
 
 - `start()` → `CheckpointManager.ensure_initialized()` → `ProjectBootstrap(...).run()`
-  → binds returned `ProjectIndex` into `Workspace` + rebuilds `ToolSurface` →
+  → binds returned `ProjectIndex` into `Workspace` →
   `TransientStore.attach_session` → spawns `__run_worker` task. If resumed, loads
   messages and may re-fire a pending prompt.
 - `__resolve_plugin(capability)` → reads fresh settings → `get_llm_registry()` →
@@ -400,48 +448,37 @@ running `list[Message]`), cumulative USD, and a lazily-resolved `ToolchainPlugin
   `EVT_AGENT_TOOL_CALL`, `EVT_USAGE_UPDATE` → logs via `ToolCallLogger` +
   `TransientStore.write_agent_record` → dispatches each tool via an injected
   `tool_dispatch` callback → loops until no tool calls (or `stop_after_tools`).
-- `__run_orchestrator_with_input` → `tool_dispatch = ToolSurface.dispatch`,
-  `tools = orchestrator_tools(autonomous)`.
-- `__run_subagent` → builds a per-run `SubagentDispatcher`, `tools =
-  tools_for_agent(agent)`, `tool_dispatch = dispatcher.dispatch`,
+- `__run_orchestrator_with_input` → builds a `ToolDispatcher` for the
+  orchestrator, `tool_dispatch = dispatcher.dispatch`,
+  `tools = tools_for_agent(agent.tools)` (the registry already filtered the
+  agent's tools for autonomous mode).
+- `__run_subagent` → builds a per-run `ToolDispatcher`, `tools =
+  tools_for_agent(agent.tools)`, `tool_dispatch = dispatcher.dispatch`,
   `stop_after_tools = lambda: dispatcher.stop_requested`. Returns published IDs.
 - `__run_author_critic_iteration` → calls `__run_subagent` twice (author then
   critic), reads the critic's feedback artifact from `Workspace`, emits
   `EVT_REVIEW_STARTED`/`EVT_REVIEW_VERDICT`. **This is the callback the
   Orchestrator's `run_author_critic_iteration` tool invokes.**
-- `__complete_artifact` (injected into `SubagentDispatcher` as `complete_fn`) →
+- `__complete_artifact` (injected into every `ToolDispatcher` as `complete_fn`) →
   reads artifact → `__resolve_toolchain` + `__component_registry` →
   `materialization_path` → `Promoter.promote` (mirror commit + sidecar) →
   `Workspace.mark_completed(location=...)`. This is **promotion-on-completion**.
-- `__run_rollback` (injected into `ToolSurface` as `rollback_fn`) → `Rollback.execute`
-  → rebinds index, resets toolchain, fresh orchestrator session.
+- `__run_rollback` (injected into every `ToolDispatcher` as `rollback_fn`) →
+  `Rollback.execute` → rebinds index, resets toolchain, fresh orchestrator session.
 
-**Three callbacks the engine passes into `ToolSurface`:** `__run_subagent`,
-`__run_author_critic_iteration`, `__run_rollback`. **One callback into every
-`SubagentDispatcher`:** `__complete_artifact`.
+**The engine injects into every `ToolDispatcher`:** `GateOrchestrator`,
+`SessionState`, the `_EngineSubagentRunner` adapter (wrapping `__run_subagent` /
+`__run_author_critic_iteration`), and the `__run_rollback` / `__complete_artifact`
+callbacks.
 
-### 12.2 `ToolSurface` ([_tool_surface.py](../src/kodo/runtime/_tool_surface.py))
+### 12.2 Tool dispatch (`tools.ToolDispatcher`)
 
-The **Orchestrator's** tool handlers. Holds `ProjectIndex`, `GateOrchestrator`,
-`SessionState`, and the three engine callbacks (`RunSubagentFn`,
-`RunAuthorCriticFn`, `RollbackFn`). `ORCHESTRATOR_TOOLS` = 7 specs;
-`orchestrator_tools(autonomous)` drops `ask_user` (its `_AUTONOMOUS_DISABLED`).
-`dispatch(name, input)` routes to `__query_frontier`, `__list_artifacts`,
-`__run_subagent`, `__run_author_critic_iteration`, `__ask_user`, `__rollback`,
-`__finalize_project`. `query_frontier` computes the next artifact type per
-responsibility from a fixed per-responsibility order.
-
-### 12.3 `SubagentDispatcher` ([_subagent_dispatch.py](../src/kodo/runtime/_subagent_dispatch.py))
-
-The **leaf agents'** tool handlers — one instance per sub-agent run.
-**Composition:** `Workspace`, `GateOrchestrator`, plus `agent_name`,
-`session_id`, `autonomous`, and a `complete_fn` callback (defaults to
-`workspace.mark_completed`; the engine injects `__complete_artifact`).
-`dispatch()` routes `publish_artifact`/`read_artifact` to `Workspace`,
-report tools to `GateOrchestrator`, file-IO/`run_command` to direct
-(path-guarded) filesystem/subprocess calls. `stop_requested` is set by
-`escalate_blocker` (not by completion). `tools_for_agent(agent)` resolves
-declared names through `LEAF_TOOLS_BY_NAME`, skipping unknowns.
+Dispatch no longer lives in `runtime`; see §6A. The engine builds one
+`tools.ToolDispatcher` per agent run (orchestrator and leaf alike) and passes its
+`dispatch` as the `tool_dispatch` callback into `__run_agent_turn`. After the run
+it reads `dispatcher.published_ids` (leaf) and uses `dispatcher.stop_requested`
+as the `stop_after_tools` predicate. The former `ToolSurface` /
+`SubagentDispatcher` split is gone — there is one unified surface.
 
 ### 12.4 Supporting runtime modules
 
@@ -449,14 +486,14 @@ declared names through `LEAF_TOOLS_BY_NAME`, skipping unknowns.
 |---|---|---|
 | [_bootstrap.py](../src/kodo/runtime/_bootstrap.py) | `ProjectBootstrap`, `BootstrapResult` | 4-phase cold start: scan mirror sidecars (`completed`), scan workspace JSON (`in_flight`), drop orphans/broken lineage, locate/create orchestrator session via `OrchestratorMarker`. Returns a populated `ProjectIndex`. Imports `state._transient._new_session_id`. |
 | [_orchestrator.py](../src/kodo/runtime/_orchestrator.py) | `OrchestratorMarker` | Reads/writes `.kodo/orchestrator.session`. Used by bootstrap + rollback. |
-| [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse`, `QuestionResponse` | **Composes** `WebSocketDispatcher` + `TransientStore`. `fire_approval`/`fire_question` send `kind=request`, register a future, persist the pending prompt (for restart re-surface), and await. `fire = fire_approval` alias. Used by both `ToolSurface` and `SubagentDispatcher`. |
+| [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse`, `QuestionResponse` | **Composes** `WebSocketDispatcher` + `TransientStore`. `fire_approval`/`fire_question` send `kind=request`, register a future, persist the pending prompt (for restart re-surface), and await. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by every gate-backed tool handler. |
 | [_rollback.py](../src/kodo/runtime/_rollback.py) | `Rollback` | **Composes** `MirrorRepo` + `ProjectLayout`. 7-step restore; rebuilds via `ProjectBootstrap`. Imports `_session_log.SessionLog`, `_orchestrator.OrchestratorMarker`. |
-| [_session.py](../src/kodo/runtime/_session.py) | `SessionState` | Mutable phase/agent/component/autonomous. `to_dict()` for `EVT_STATE`. Shared by engine + `ToolSurface`. |
+| [_session.py](../src/kodo/runtime/_session.py) | `SessionState` | Mutable phase/agent/component/autonomous. `to_dict()` for `EVT_STATE`. Shared by the engine; satisfies `tools.SessionLike` (the `finalize_project` handler writes `phase`). |
 | [_session_log.py](../src/kodo/runtime/_session_log.py) | `SessionLog` | Append-only JSONL per session. Used by `Rollback` (termination events). |
 
-**State:** Engine, tool surfaces, bootstrap, gates, rollback are implemented and
-exercised by the orchestrator/author-critic flow. Coverage is lower here than in
-`workspace/` (many branches are restart/rollback paths).
+**State:** Engine, dispatch (now in `tools/`), bootstrap, gates, rollback are
+implemented and exercised by the orchestrator/author-critic flow. Coverage is
+lower here than in `workspace/` (many branches are restart/rollback paths).
 
 ---
 
@@ -508,13 +545,15 @@ llama-server).
 **Prompt → work:** client `prompt.submit` → `_app` handler →
 `engine.handle_prompt_submit` (enqueues) → worker → `__run_orchestrator_with_input`
 → `__run_agent_turn` streams the Orchestrator LLM → tool calls dispatch through
-`ToolSurface` → `run_subagent`/`run_author_critic_iteration` call back into the
-engine, which spawns leaf agents through `SubagentDispatcher` → artifacts land in
+the orchestrator's `tools.ToolDispatcher` → `run_subagent`/`run_author_critic_iteration`
+call back into the engine (via the injected `SubagentRunner`), which spawns leaf
+agents — each with its own `ToolDispatcher` — → artifacts land in
 `Workspace`/`ProjectIndex`.
 
 **Completion → promotion:** a critic/solo agent calls `report_artifact_completed`
-→ `SubagentDispatcher.__report_completed` → engine `__complete_artifact` →
-`Promoter.promote` writes the file into `src/`/`gen/` **and** the mirror tree +
+→ `tools/_report_artifact_completed.handle` → engine `__complete_artifact`
+(injected as `complete_fn`) → `Promoter.promote` writes the file into
+`src/`/`gen/` **and** the mirror tree +
 `.kodo.json` sidecar, commits, then `Workspace.mark_completed` flips state and
 deletes the staging file.
 
@@ -527,9 +566,10 @@ deletes the staging file.
 + `TransientStore` resume the session; an unanswered `pending_prompt` is
 re-surfaced.
 
-**Rollback:** Orchestrator `rollback` → `ToolSurface.__rollback` → engine
-`__run_rollback` → `Rollback.execute` (mirror checkout, tree restore, fresh
-bootstrap) → engine rebinds index + starts a fresh orchestrator session.
+**Rollback:** Orchestrator `rollback` → `tools/_rollback.handle` → engine
+`__run_rollback` (injected as `rollback_fn`) → `Rollback.execute` (mirror
+checkout, tree restore, fresh bootstrap) → engine rebinds index + starts a fresh
+orchestrator session.
 
 ---
 
@@ -539,12 +579,11 @@ bootstrap) → engine rebinds index + starts a fresh orchestrator session.
 |---|---|
 | `common`, `transport`, `project`, `workspace` (incl. merged git mirror), `state/_transient` | ✅ Complete, well-tested |
 | `llms` (Anthropic + llama.cpp, incl. merged local-inference utilities), `toolchains` plugins | ✅ Complete |
-| `toolspecs` catalog, `subagents` loader/registry | ✅ Complete |
-| `runtime` engine / tool surfaces / bootstrap / gates / rollback | ✅ Functional; lower branch coverage on restart/rollback |
-| Toolchain agent tools (`toolchain_build/test/deps`) | ⚠️ Spec only — no dispatch, dropped by `tools_for_agent` |
-| Orchestrator `disable_autonomous_mode` / `post_update` | ⚠️ Spec + prompt only — not in `ORCHESTRATOR_TOOLS` |
+| `toolspecs` catalog, `subagents` loader/registry, `tools` dispatch | ✅ Complete |
+| `runtime` engine / bootstrap / gates / rollback | ✅ Functional; lower branch coverage on restart/rollback |
+| Toolchain agent tools (`toolchain_build/test/deps`) | ⚠️ Spec only — no handler, dropped by `tools_for_agent` |
+| Orchestrator `disable_autonomous_mode` / `post_update` | ⚠️ Spec + prompt only — no handler, dropped by `tools_for_agent` |
 | Native file-IO / `run_command` tools | ⚠️ Implemented but granted to no agent |
-| `finalize_project` | ⚠️ Dispatchable but not in orchestrator frontmatter |
 | `security/*`, `state/_memory` | ⛔ Stubs |
 | `project/_manifest` | ◽ Implemented but unused at runtime |
 
@@ -553,13 +592,15 @@ bootstrap) → engine rebinds index + starts a fresh orchestrator session.
 ## 17. Cross-cutting observations
 
 1. **Single shared `ProjectIndex`.** Constructed by the engine, replaced by
-   bootstrap/rollback, and `bind_index`-ed into `Workspace`; `ToolSurface` holds
-   the same reference. All reads (`query_frontier`, `list_artifacts`) and all
-   writes flow through it. It is never persisted.
-2. **Two tool-dispatch surfaces, one generic loop.** `__run_agent_turn` is
+   bootstrap/rollback, and `bind_index`-ed into `Workspace`; each per-run
+   `ToolDispatcher` reads the same reference. All reads (`query_frontier`,
+   `list_artifacts`) and all writes flow through it. It is never persisted.
+2. **One tool-dispatch surface, one generic loop.** `__run_agent_turn` is
    agent-agnostic; the only difference between the Orchestrator and a leaf agent
-   is the `tools` list and the `tool_dispatch` callback. Tools never bleed across
-   agent types.
+   is the `tools` list (from each agent's frontmatter via `tools_for_agent`). Both
+   route through the same `tools.ToolDispatcher`; per-run state (`published_ids`,
+   `stop_requested`) lives on each run's `ToolContext`, so tools never bleed
+   across agent types.
 3. **Stateless LLM calls.** Tool specs are re-sent on every `stream_query`; the
    `messages` list (with `tool_use`/`tool_result` blocks) is the only memory.
 4. **Structural protocols decouple the seams.** `MessageSink`

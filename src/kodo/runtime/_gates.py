@@ -15,7 +15,8 @@ The WS dispatcher resolves the future when the matching ``kind=response``
 arrives.
 
 ``fire()`` is an alias for ``fire_approval()`` kept for call-site
-compatibility inside :class:`~kodo.runtime._tool_surface.ToolSurface`.
+compatibility. :class:`GateOrchestrator` satisfies the ``GateLike`` protocol
+in :mod:`kodo.tools`, through which the tool handlers reach it.
 """
 
 from __future__ import annotations
@@ -210,5 +211,5 @@ class GateOrchestrator:
             self.__transient.update(pending_prompt=None)
             raise
 
-    # Alias so ToolSurface and existing call sites use fire() unchanged.
+    # Alias so existing call sites use fire() unchanged.
     fire = fire_approval

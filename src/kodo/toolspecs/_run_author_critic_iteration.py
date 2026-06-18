@@ -1,6 +1,6 @@
 """``run_author_critic_iteration`` tool spec — orchestrator tool (FR-ORCH-03).
 
-Dispatch lives in :class:`~kodo.runtime._tool_surface.ToolSurface`.
+Dispatch lives in :mod:`kodo.tools` (one handler module per tool).
 """
 
 from __future__ import annotations

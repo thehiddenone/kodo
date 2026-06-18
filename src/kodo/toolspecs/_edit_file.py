@@ -1,6 +1,6 @@
 """``edit_file`` tool spec — native file I/O tool.
 
-Dispatch lives in :class:`~kodo.runtime._subagent_dispatch.SubagentDispatcher`,
+Dispatch lives in :mod:`kodo.tools` (one handler module per tool),
 which resolves the path against the project root and rejects anything that
 would escape it.
 """

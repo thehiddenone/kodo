@@ -195,31 +195,6 @@ def test_registry_unknown_tool_raises(tmp_path: Path) -> None:
         AgentRegistry(tmp_path)
 
 
-def test_registry_ask_user_variant_depends_on_agent(tmp_path: Path) -> None:
-    """The orchestrator gets the orchestrator `ask_user` guidance; leaf agents don't."""
-    _write_preamble(tmp_path)
-    _write_agent(
-        tmp_path,
-        "orchestrator",
-        "name: orchestrator\ntools:\n  - ask_user\n",
-        "Prompt O.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
-    )
-    _write_agent(
-        tmp_path,
-        "agent_a",
-        "name: agent_a\ntools:\n  - ask_user\n",
-        "Prompt A.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
-    )
-    registry = AgentRegistry(tmp_path)
-    orchestrator_prompt = registry.get("orchestrator").system_prompt
-    leaf_prompt = registry.get("agent_a").system_prompt
-
-    assert "Confirming a rollback" in orchestrator_prompt
-    assert "Confirming a rollback" not in leaf_prompt
-    assert "gap-filling" in orchestrator_prompt
-    assert "gap-filling" in leaf_prompt
-
-
 def test_registry_ask_user_unavailable_in_autonomous_mode(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
     _write_agent(

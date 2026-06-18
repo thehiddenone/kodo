@@ -7,6 +7,7 @@ tools:
   - run_author_critic_iteration
   - ask_user
   - rollback
+  - finalize_project
   - disable_autonomous_mode
   - post_update
 ---

@@ -1,6 +1,6 @@
 """``run_command`` tool spec — native shell tool.
 
-Dispatch lives in :class:`~kodo.runtime._subagent_dispatch.SubagentDispatcher`,
+Dispatch lives in :mod:`kodo.tools` (one handler module per tool),
 which resolves ``working_dir`` against the project root and rejects anything
 that would escape it, then runs the command via
 :func:`asyncio.create_subprocess_shell`. Neither this spec nor the dispatcher

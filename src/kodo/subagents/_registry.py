@@ -13,11 +13,6 @@ tool's :class:`~kodo.toolspecs.ToolSpec`; no separate prompt file is involved.
 which agent is in it), since the same spec may be rendered into multiple
 agents' prompts.
 
-The ``ask_user`` tool has two specs — :data:`~kodo.toolspecs._ask_user.ASK_USER`
-(leaf agents) and :data:`~kodo.toolspecs._ask_user_orchestrator.ORCHESTRATOR_ASK_USER`
-(the orchestrator) — with the same tool name but different guidance. The
-registry picks between them based on which subagent is being rendered.
-
 Rendering is performed lazily by :meth:`AgentRegistry.get` so it can honour the
 current ``autonomous`` flag: tools whose :class:`~kodo.toolspecs.ToolSpec`
 marks ``autonomous_mode`` as ``unavailable`` are excluded — from both the
@@ -33,26 +28,15 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from kodo.toolspecs import ALL_TOOLS, ASK_USER, ORCHESTRATOR_ASK_USER, ToolSpec
+from kodo.toolspecs import ALL_TOOLS, ToolSpec
 
 from ._loader import AgentLoadError, SubAgent, load_agent
 
 _PREAMBLE_FILENAME = "preamble.md"
 _TOOLS_PLACEHOLDER = "{PLACEHOLDER:TOOLS}"
 
-# The only subagent that uses the orchestrator variant of `ask_user`. Must
-# match kodo.runtime._engine._ORCHESTRATOR_AGENT_NAME.
-_ORCHESTRATOR_AGENT_NAME = "orchestrator"
-
-# Tool specs available to leaf sub-agents, keyed by tool name.
-_LEAF_SPECS_BY_NAME: dict[str, ToolSpec] = {
-    t.name: t for t in ALL_TOOLS if t is not ORCHESTRATOR_ASK_USER
-}
-
-# Tool specs available to the orchestrator, keyed by tool name.
-_ORCHESTRATOR_SPECS_BY_NAME: dict[str, ToolSpec] = {
-    t.name: t for t in ALL_TOOLS if t is not ASK_USER
-}
+# Every tool spec, keyed by tool name (names are unique in the catalog).
+_SPECS_BY_NAME: dict[str, ToolSpec] = {t.name: t for t in ALL_TOOLS}
 
 # Tools withheld entirely in autonomous mode.
 _AUTONOMOUS_DISABLED: frozenset[str] = frozenset(
@@ -85,7 +69,7 @@ class AgentRegistry:
             agent = load_agent(path)
             # Validate every declared tool resolves now, at load time, so a bad
             # frontmatter reference fails fast rather than at first render.
-            self.__render_tools_section(agent.tools, agent.name, path)
+            self.__render_tools_section(agent.tools, path)
             self.__agents[agent.name] = agent
 
     @staticmethod
@@ -99,15 +83,10 @@ class AgentRegistry:
         return preamble
 
     @staticmethod
-    def __render_tools_section(agent_tools: frozenset[str], agent_name: str, path: Path) -> str:
-        specs = (
-            _ORCHESTRATOR_SPECS_BY_NAME
-            if agent_name == _ORCHESTRATOR_AGENT_NAME
-            else _LEAF_SPECS_BY_NAME
-        )
+    def __render_tools_section(agent_tools: frozenset[str], path: Path) -> str:
         blocks: list[str] = []
         for name in sorted(agent_tools):
-            spec = specs.get(name)
+            spec = _SPECS_BY_NAME.get(name)
             if spec is None:
                 raise AgentLoadError(f"{path}: tool {name!r} has no ToolSpec in kodo.toolspecs")
             lines = []
@@ -127,7 +106,7 @@ class AgentRegistry:
         effective_tools = agent.tools
         if autonomous and _AUTONOMOUS_DISABLED:
             effective_tools = frozenset(t for t in agent.tools if t not in _AUTONOMOUS_DISABLED)
-        tools_section = self.__render_tools_section(effective_tools, agent.name, agent.source_path)
+        tools_section = self.__render_tools_section(effective_tools, agent.source_path)
         system_prompt = agent.system_prompt.replace(_TOOLS_PLACEHOLDER, tools_section)
         system_prompt = f"{self.__preamble}\n\n{system_prompt}"
         return replace(agent, tools=effective_tools, system_prompt=system_prompt)

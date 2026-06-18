@@ -2,18 +2,19 @@
 
 The engine is a thin substrate.  It does not contain a stage machine, a
 scheduler, or a workflow DAG.  Every decision about what runs when is the
-Orchestrator's, encoded in its system prompt and carried out via the 8-tool
-surface in :mod:`._tool_surface`.
+Orchestrator's, encoded in its system prompt and carried out via the unified
+tool surface in :mod:`kodo.tools`.
 
 Architecture (DESIGN.md §5):
 - One ``asyncio.Queue`` + one worker coroutine (FR-WF-02).
 - The worker drives the Orchestrator LLM: builds the turn, dispatches tool
-  calls to :class:`._tool_surface.ToolSurface`, appends results, repeats until
-  the model emits no more tool calls.
+  calls through a per-run :class:`kodo.tools.ToolDispatcher`, appends results,
+  repeats until the model emits no more tool calls.  Leaf sub-agents run the
+  same loop with their own dispatcher — the only difference is the tool set.
 - User prompts (via ``prompt.submit``) are fed to the Orchestrator as new user
   messages between turns.
-- Approval/question blocking happens inside ToolSurface handlers which
-  ``await`` a :class:`asyncio.Future` resolved by the WS dispatcher.
+- Approval/question blocking happens inside the gate-backed tool handlers
+  which ``await`` a :class:`asyncio.Future` resolved by the WS dispatcher.
 """
 
 from __future__ import annotations
@@ -47,6 +48,8 @@ from kodo.project import ProjectLayout, kodo_user_dir
 from kodo.state import TransientStore
 from kodo.subagents import AgentLoadError, AgentRegistry
 from kodo.toolchains import ToolchainPlugin, select_toolchain
+from kodo.tools import ToolDispatcher, tools_for_agent
+from kodo.toolspecs import ALL_TOOLS
 from kodo.transport import (
     EVT_AGENT_FINISHED,
     EVT_AGENT_STARTED,
@@ -74,18 +77,49 @@ from ._bootstrap import ProjectBootstrap
 from ._gates import GateOrchestrator
 from ._rollback import Rollback
 from ._session import SessionState
-from ._subagent_dispatch import SubagentDispatcher, tools_for_agent
-from ._tool_surface import (
-    ORCHESTRATOR_TOOLS,
-    ToolSurface,
-    orchestrator_tools,
-)
 
 __all__ = ["WorkflowEngine"]
 
 _log = logging.getLogger(__name__)
 
 _ORCHESTRATOR_AGENT_NAME = "orchestrator"
+
+
+class _EngineSubagentRunner:
+    """Adapts the engine's sub-agent methods to the tools ``SubagentRunner`` protocol.
+
+    Keeps agent loading and the LLM tool-loop in the engine while letting the
+    sub-agent-spawning tools (``run_subagent``, ``run_author_critic_iteration``)
+    depend only on the protocol declared in :mod:`kodo.tools`.
+    """
+
+    def __init__(
+        self,
+        run_subagent: Callable[[str, str, list[str]], Awaitable[list[str]]],
+        run_author_critic: Callable[
+            [str, str, list[str], str | None], Awaitable[dict[str, object]]
+        ],
+    ) -> None:
+        self.__run_subagent = run_subagent
+        self.__run_author_critic = run_author_critic
+
+    async def run_subagent(
+        self, name: str, task_message: str, input_artifact_ids: list[str]
+    ) -> list[str]:
+        """Delegate to the engine's ``__run_subagent``."""
+        return await self.__run_subagent(name, task_message, input_artifact_ids)
+
+    async def run_author_critic_iteration(
+        self,
+        author_name: str,
+        critic_name: str,
+        input_artifact_ids: list[str],
+        previous_artifact_id: str | None,
+    ) -> dict[str, object]:
+        """Delegate to the engine's ``__run_author_critic_iteration``."""
+        return await self.__run_author_critic(
+            author_name, critic_name, input_artifact_ids, previous_artifact_id
+        )
 
 
 class WorkflowEngine:
@@ -114,7 +148,7 @@ class WorkflowEngine:
     __queue: asyncio.Queue[dict[str, object]]
     __session: SessionState
     __index: ProjectIndex
-    __tool_surface: ToolSurface
+    __runner: _EngineSubagentRunner
     __worker: asyncio.Task[None] | None
     __cumulative_usd: float
     __orch_messages: list[Message]
@@ -162,7 +196,9 @@ class WorkflowEngine:
         self.__orch_session_id = ""
         self.__current_vendor = None
         self.__toolchain: ToolchainPlugin | None = None
-        self.__tool_surface = self.__make_tool_surface()
+        self.__runner = _EngineSubagentRunner(
+            self.__run_subagent, self.__run_author_critic_iteration
+        )
 
     @property
     def session(self) -> SessionState:
@@ -193,7 +229,6 @@ class WorkflowEngine:
         self.__index = result.index
         self.__workspace.bind_index(self.__index)
         self.__orch_session_id = result.orchestrator_session_id
-        self.__tool_surface = self.__make_tool_surface()
 
         self.__transient.attach_session(result.orchestrator_session_id, result.orchestrator_resumed)
 
@@ -444,14 +479,15 @@ class WorkflowEngine:
         await self.__emit_state()
         await self.__emit_agent_started(_ORCHESTRATOR_AGENT_NAME)
 
+        dispatcher = self.__make_dispatcher(_ORCHESTRATOR_AGENT_NAME, self.__orch_session_id)
         stream_id = uuid.uuid4().hex
         self.__orch_messages, _ = await self.__run_agent_turn(
             llm=plugin,
             model=model_id,
             system_prompt=agent.system_prompt,
             messages=self.__orch_messages,
-            tools=orchestrator_tools(self.__session.autonomous),
-            tool_dispatch=self.__dispatch_orchestrator_tool,
+            tools=tools_for_agent(agent.tools),
+            tool_dispatch=dispatcher.dispatch,
             stream_id=stream_id,
         )
         await self.__sink.send(Envelope.make_stream_end(stream_id))
@@ -464,11 +500,6 @@ class WorkflowEngine:
             self.__session.phase = "awaiting_user"
         self.__session.agent = None
         await self.__emit_state()
-
-    async def __dispatch_orchestrator_tool(
-        self, tool_name: str, tool_input: dict[str, object]
-    ) -> str:
-        return await self.__tool_surface.dispatch(tool_name, tool_input)
 
     # ------------------------------------------------------------------
     # Generic agent turn (single LLM call + tool loop)
@@ -605,17 +636,26 @@ class WorkflowEngine:
         return messages, files_written
 
     # ------------------------------------------------------------------
-    # ToolSurface factory
+    # ToolDispatcher factory
     # ------------------------------------------------------------------
 
-    def __make_tool_surface(self) -> ToolSurface:
-        return ToolSurface(
+    def __make_dispatcher(self, agent_name: str, session_id: str) -> ToolDispatcher:
+        """Build a per-run tool dispatcher for *agent_name*.
+
+        Reads ``self.__index`` at call time so post-bootstrap/rollback runs see
+        the current index without any persistent surface to rebuild.
+        """
+        return ToolDispatcher(
+            workspace=self.__workspace,
             index=self.__index,
             gate=self.__gate,
             session=self.__session,
-            run_subagent_fn=self.__run_subagent,
-            run_author_critic_fn=self.__run_author_critic_iteration,
+            runner=self.__runner,
             rollback_fn=self.__run_rollback,
+            complete_fn=self.__complete_artifact,
+            agent_name=agent_name,
+            session_id=session_id,
+            autonomous=self.__session.autonomous,
         )
 
     # ------------------------------------------------------------------
@@ -639,15 +679,8 @@ class WorkflowEngine:
         plugin, model_id = await self.__resolve_plugin(agent.capability)
 
         session_id = uuid.uuid4().hex
-        dispatcher = SubagentDispatcher(
-            workspace=self.__workspace,
-            gate=self.__gate,
-            agent_name=name,
-            session_id=session_id,
-            autonomous=self.__session.autonomous,
-            complete_fn=self.__complete_artifact,
-        )
-        leaf_tools = tools_for_agent(agent)
+        dispatcher = self.__make_dispatcher(name, session_id)
+        leaf_tools = tools_for_agent(agent.tools)
 
         parts = [task_message] if task_message else []
         if input_artifact_ids:
@@ -789,7 +822,6 @@ class WorkflowEngine:
         self.__toolchain = None  # tech-stack may differ post-rollback; re-resolve lazily
         self.__orch_session_id = result.orchestrator_session_id
         self.__orch_messages = []
-        self.__tool_surface = self.__make_tool_surface()
         self.__transient.attach_session(result.orchestrator_session_id, result.orchestrator_resumed)
         _log.info("Post-rollback Orchestrator session: %s", self.__orch_session_id)
 
@@ -876,7 +908,7 @@ class WorkflowEngine:
             ``tool_call`` entries in the shape expected by the VSIX webview's
             ``session.history`` handler.
         """
-        tool_desc = {t.name: t.user_description for t in ORCHESTRATOR_TOOLS}
+        tool_desc = {t.name: t.user_description for t in ALL_TOOLS}
         entries: list[dict[str, object]] = []
         for msg in self.__orch_messages:
             if isinstance(msg.content, str):

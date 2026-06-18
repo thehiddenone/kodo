@@ -1,22 +1,24 @@
-"""Behavior tests for kodo.runtime._tool_surface.
+"""Behavior tests for the orchestrator-facing tools in :mod:`kodo.tools`.
 
-Tests verify that ToolSurface handlers produce correct JSON responses for the
-two read-only tools (query_frontier, list_artifacts) and the terminal tool
-(finalize_project).  Approval and ask_user are tested via the session.autonomous
-fast-path.  Stub tools (run_subagent, run_author_critic_iteration) are
-tested to confirm they return the expected shape.
+Every agent now shares one :class:`~kodo.tools.ToolDispatcher`; these tests
+exercise the tools the orchestrator typically holds — the read-only ones
+(``query_frontier``, ``list_artifacts``), the sub-agent launchers
+(``run_subagent``, ``run_author_critic_iteration``), and the terminal tools
+(``finalize_project``, ``rollback``).
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kodo.runtime import GateOrchestrator, SessionState, ToolSurface
+from kodo.runtime import GateOrchestrator, SessionState
+from kodo.tools import ToolDispatcher
 from kodo.workspace import ArtifactType, IndexEntry, ProjectIndex
 
 # ---------------------------------------------------------------------------
@@ -54,34 +56,53 @@ def _make_app_state() -> MagicMock:
     return state
 
 
-def _make_surface(
-    index: ProjectIndex | None = None,
-    autonomous: bool = False,
-) -> ToolSurface:
-    if index is None:
-        index = ProjectIndex()
-    session = SessionState()
-    session.autonomous = autonomous
-    gate = GateOrchestrator(_make_app_state(), MagicMock())
+class _StubRunner:
+    """Sub-agent launcher stub satisfying ``kodo.tools.SubagentRunner``."""
 
-    async def _stub_run_subagent(name: str, task: str, ids: list[str]) -> list[str]:
+    async def run_subagent(
+        self, name: str, task_message: str, input_artifact_ids: list[str]
+    ) -> list[str]:
         return [f"stub-artifact-{name}"]
 
-    async def _stub_run_author_critic(
-        author: str, critic: str, ids: list[str], prev: str | None
+    async def run_author_critic_iteration(
+        self,
+        author_name: str,
+        critic_name: str,
+        input_artifact_ids: list[str],
+        previous_artifact_id: str | None,
     ) -> dict[str, object]:
-        return {"artifact_id": f"stub-{author}", "verdict": "accepted", "concerns": []}
+        return {"artifact_id": f"stub-{author_name}", "verdict": "accepted", "concerns": []}
 
-    async def _stub_rollback(target_sha: str) -> None:
-        pass
 
-    return ToolSurface(
+def _make_dispatcher(
+    index: ProjectIndex | None = None,
+    autonomous: bool = False,
+    session: SessionState | None = None,
+    rollback_fn: Callable[[str], Awaitable[None]] | None = None,
+) -> ToolDispatcher:
+    if index is None:
+        index = ProjectIndex()
+    if session is None:
+        session = SessionState()
+    session.autonomous = autonomous
+
+    async def _noop_rollback(target_sha: str) -> None:
+        return None
+
+    async def _noop_complete(artifact_id: str) -> None:
+        return None
+
+    return ToolDispatcher(
+        workspace=MagicMock(),
         index=index,
-        gate=gate,
+        gate=GateOrchestrator(_make_app_state(), MagicMock()),
         session=session,
-        run_subagent_fn=_stub_run_subagent,
-        run_author_critic_fn=_stub_run_author_critic,
-        rollback_fn=_stub_rollback,
+        runner=_StubRunner(),
+        rollback_fn=rollback_fn if rollback_fn is not None else _noop_rollback,
+        complete_fn=_noop_complete,
+        agent_name="orchestrator",
+        session_id="sess-test",
+        autonomous=autonomous,
     )
 
 
@@ -92,28 +113,18 @@ def _make_surface(
 
 @pytest.mark.asyncio
 async def test_query_frontier_empty_index_returns_empty_list() -> None:
-    """
-    Given an empty index,
-    when query_frontier is called,
-    then the result has an empty frontier.
-    """
-    surface = _make_surface()
-    result = json.loads(await surface.dispatch("query_frontier", {}))
+    dispatcher = _make_dispatcher()
+    result = json.loads(await dispatcher.dispatch("query_frontier", {}))
     assert result == {"frontier": []}
 
 
 @pytest.mark.asyncio
 async def test_query_frontier_reports_first_missing_type() -> None:
-    """
-    Given a responsibility with a completed functional-design but no test-plan,
-    when query_frontier is called,
-    then the frontier shows test-plan as the next type.
-    """
     index = ProjectIndex()
     index.add(_make_entry("a1", "AUTH", ArtifactType.FUNCTIONAL_DESIGN))
 
-    surface = _make_surface(index)
-    result = json.loads(await surface.dispatch("query_frontier", {}))
+    dispatcher = _make_dispatcher(index)
+    result = json.loads(await dispatcher.dispatch("query_frontier", {}))
 
     assert len(result["frontier"]) == 1
     entry = result["frontier"][0]
@@ -123,11 +134,6 @@ async def test_query_frontier_reports_first_missing_type() -> None:
 
 @pytest.mark.asyncio
 async def test_query_frontier_skips_fully_complete_responsibilities() -> None:
-    """
-    Given a responsibility with all four execution types completed,
-    when query_frontier is called,
-    then that responsibility does not appear in the frontier.
-    """
     index = ProjectIndex()
     for artifact_type in (
         ArtifactType.FUNCTIONAL_DESIGN,
@@ -137,26 +143,21 @@ async def test_query_frontier_skips_fully_complete_responsibilities() -> None:
     ):
         index.add(_make_entry(f"x-{artifact_type.value}", "TRADE", artifact_type))
 
-    surface = _make_surface(index)
-    result = json.loads(await surface.dispatch("query_frontier", {}))
+    dispatcher = _make_dispatcher(index)
+    result = json.loads(await dispatcher.dispatch("query_frontier", {}))
     codes = [e["responsibility_code"] for e in result["frontier"]]
     assert "TRADE" not in codes
 
 
 @pytest.mark.asyncio
 async def test_query_frontier_multiple_responsibilities() -> None:
-    """
-    Given two responsibilities at different stages,
-    when query_frontier is called,
-    then each appears with its correct next type.
-    """
     index = ProjectIndex()
     index.add(_make_entry("a1", "AUTH", ArtifactType.FUNCTIONAL_DESIGN))
     index.add(_make_entry("a2", "AUTH", ArtifactType.TEST_PLAN))
     index.add(_make_entry("b1", "TRADE", ArtifactType.FUNCTIONAL_DESIGN))
 
-    surface = _make_surface(index)
-    result = json.loads(await surface.dispatch("query_frontier", {}))
+    dispatcher = _make_dispatcher(index)
+    result = json.loads(await dispatcher.dispatch("query_frontier", {}))
 
     by_code = {e["responsibility_code"]: e["next_type"] for e in result["frontier"]}
     assert by_code["AUTH"] == "test"
@@ -170,122 +171,84 @@ async def test_query_frontier_multiple_responsibilities() -> None:
 
 @pytest.mark.asyncio
 async def test_list_artifacts_requires_at_least_one_filter() -> None:
-    """
-    Given no filters,
-    when list_artifacts is called,
-    then the result is an error.
-    """
-    surface = _make_surface()
-    result = json.loads(await surface.dispatch("list_artifacts", {}))
+    dispatcher = _make_dispatcher()
+    result = json.loads(await dispatcher.dispatch("list_artifacts", {}))
     assert "error" in result
 
 
 @pytest.mark.asyncio
 async def test_list_artifacts_filters_by_type() -> None:
-    """
-    Given entries of different types in the index,
-    when list_artifacts is called with type='code',
-    then only code entries are returned.
-    """
     index = ProjectIndex()
     index.add(_make_entry("c1", "AUTH", ArtifactType.CODE))
     index.add(_make_entry("t1", "AUTH", ArtifactType.TEST))
 
-    surface = _make_surface(index)
-    result = json.loads(await surface.dispatch("list_artifacts", {"type": "code"}))
+    dispatcher = _make_dispatcher(index)
+    result = json.loads(await dispatcher.dispatch("list_artifacts", {"type": "code"}))
     ids = [a["artifact_id"] for a in result["artifacts"]]
     assert ids == ["c1"]
 
 
 @pytest.mark.asyncio
 async def test_list_artifacts_filters_by_responsibility_code() -> None:
-    """
-    Given entries for two responsibility codes,
-    when list_artifacts is called with responsibility_code='AUTH',
-    then only AUTH entries are returned.
-    """
     index = ProjectIndex()
     index.add(_make_entry("a1", "AUTH", ArtifactType.CODE))
     index.add(_make_entry("b1", "TRADE", ArtifactType.CODE))
 
-    surface = _make_surface(index)
-    result = json.loads(await surface.dispatch("list_artifacts", {"responsibility_code": "AUTH"}))
+    dispatcher = _make_dispatcher(index)
+    result = json.loads(
+        await dispatcher.dispatch("list_artifacts", {"responsibility_code": "AUTH"})
+    )
     ids = [a["artifact_id"] for a in result["artifacts"]]
     assert ids == ["a1"]
 
 
 @pytest.mark.asyncio
 async def test_list_artifacts_filters_by_state() -> None:
-    """
-    Given completed and in-flight entries,
-    when list_artifacts is called with state='in_flight',
-    then only in-flight entries are returned.
-    """
     index = ProjectIndex()
     index.add(_make_entry("done", "AUTH", ArtifactType.CODE, state="completed"))
     index.add(_make_entry("wip", "AUTH", ArtifactType.CODE, state="in_flight"))
 
-    surface = _make_surface(index)
-    result = json.loads(await surface.dispatch("list_artifacts", {"state": "in_flight"}))
+    dispatcher = _make_dispatcher(index)
+    result = json.loads(await dispatcher.dispatch("list_artifacts", {"state": "in_flight"}))
     ids = [a["artifact_id"] for a in result["artifacts"]]
     assert ids == ["wip"]
 
 
 @pytest.mark.asyncio
 async def test_list_artifacts_filters_by_artifact_id() -> None:
-    """
-    Given multiple entries,
-    when list_artifacts is called with a specific artifact_id,
-    then exactly that entry is returned.
-    """
     index = ProjectIndex()
     index.add(_make_entry("exact", "AUTH", ArtifactType.CODE))
     index.add(_make_entry("other", "AUTH", ArtifactType.CODE))
 
-    surface = _make_surface(index)
-    result = json.loads(await surface.dispatch("list_artifacts", {"artifact_id": "exact"}))
+    dispatcher = _make_dispatcher(index)
+    result = json.loads(await dispatcher.dispatch("list_artifacts", {"artifact_id": "exact"}))
     assert len(result["artifacts"]) == 1
     assert result["artifacts"][0]["artifact_id"] == "exact"
 
 
 # ---------------------------------------------------------------------------
-# run_subagent (stub)
+# run_subagent / run_author_critic_iteration
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_run_subagent_returns_artifact_ids() -> None:
-    """
-    Given a valid sub-agent name,
-    when run_subagent is called,
-    then the result contains an artifact_ids list.
-    """
-    surface = _make_surface()
+    dispatcher = _make_dispatcher()
     result = json.loads(
-        await surface.dispatch(
+        await dispatcher.dispatch(
             "run_subagent",
             {"name": "narrative_author", "task_message": "Build a trading bot"},
         )
     )
     assert "artifact_ids" in result
-    assert isinstance(result["artifact_ids"], list)
-
-
-# ---------------------------------------------------------------------------
-# run_author_critic_iteration (stub)
-# ---------------------------------------------------------------------------
+    assert result["artifact_ids"] == ["stub-artifact-narrative_author"]
 
 
 @pytest.mark.asyncio
 async def test_run_author_critic_iteration_returns_verdict() -> None:
-    """
-    Given author and critic names,
-    when run_author_critic_iteration is called,
-    then the result contains verdict and concerns.
-    """
-    surface = _make_surface()
+    dispatcher = _make_dispatcher()
     result = json.loads(
-        await surface.dispatch(
+        await dispatcher.dispatch(
             "run_author_critic_iteration",
             {
                 "author_name": "requirements_author",
@@ -295,7 +258,6 @@ async def test_run_author_critic_iteration_returns_verdict() -> None:
         )
     )
     assert "verdict" in result
-    assert "concerns" in result
     assert isinstance(result["concerns"], list)
 
 
@@ -306,32 +268,9 @@ async def test_run_author_critic_iteration_returns_verdict() -> None:
 
 @pytest.mark.asyncio
 async def test_finalize_project_sets_session_phase_to_done() -> None:
-    """
-    When finalize_project is called,
-    then the session phase is set to 'done' and the result status is 'done'.
-    """
-    index = ProjectIndex()
     session = SessionState()
-    gate = GateOrchestrator(_make_app_state(), MagicMock())
-
-    async def _stub(name: str, task: str, ids: list[str]) -> list[str]:
-        return []
-
-    async def _stub_ac(a: str, c: str, ids: list[str], prev: str | None) -> dict[str, object]:
-        return {"artifact_id": None, "verdict": "accepted", "concerns": []}
-
-    async def _stub_rollback(sha: str) -> None:
-        pass
-
-    surface = ToolSurface(
-        index=index,
-        gate=gate,
-        session=session,
-        run_subagent_fn=_stub,
-        run_author_critic_fn=_stub_ac,
-        rollback_fn=_stub_rollback,
-    )
-    result = json.loads(await surface.dispatch("finalize_project", {}))
+    dispatcher = _make_dispatcher(session=session)
+    result = json.loads(await dispatcher.dispatch("finalize_project", {}))
     assert result["status"] == "done"
     assert session.phase == "done"
 
@@ -343,47 +282,20 @@ async def test_finalize_project_sets_session_phase_to_done() -> None:
 
 @pytest.mark.asyncio
 async def test_rollback_requires_target_sha() -> None:
-    """
-    Given an empty tool input,
-    when rollback is called,
-    then the result is an error.
-    """
-    surface = _make_surface()
-    result = json.loads(await surface.dispatch("rollback", {}))
+    dispatcher = _make_dispatcher()
+    result = json.loads(await dispatcher.dispatch("rollback", {}))
     assert "error" in result
 
 
 @pytest.mark.asyncio
 async def test_rollback_calls_rollback_fn() -> None:
-    """
-    Given a valid target_sha,
-    when rollback is called,
-    then the rollback_fn callback is invoked with the sha.
-    """
     called_with: list[str] = []
 
     async def _capture_rollback(sha: str) -> None:
         called_with.append(sha)
 
-    index = ProjectIndex()
-    session = SessionState()
-    gate = GateOrchestrator(_make_app_state(), MagicMock())
-
-    async def _stub(name: str, task: str, ids: list[str]) -> list[str]:
-        return []
-
-    async def _stub_ac(a: str, c: str, ids: list[str], prev: str | None) -> dict[str, object]:
-        return {"artifact_id": None, "verdict": "accepted", "concerns": []}
-
-    surface = ToolSurface(
-        index=index,
-        gate=gate,
-        session=session,
-        run_subagent_fn=_stub,
-        run_author_critic_fn=_stub_ac,
-        rollback_fn=_capture_rollback,
-    )
-    result = json.loads(await surface.dispatch("rollback", {"target_sha": "abc123"}))
+    dispatcher = _make_dispatcher(rollback_fn=_capture_rollback)
+    result = json.loads(await dispatcher.dispatch("rollback", {"target_sha": "abc123"}))
     assert result["status"] == "completed"
     assert called_with == ["abc123"]
 
@@ -395,10 +307,6 @@ async def test_rollback_calls_rollback_fn() -> None:
 
 @pytest.mark.asyncio
 async def test_dispatch_unknown_tool_returns_error() -> None:
-    """
-    When dispatch is called with an unknown tool name,
-    then the result contains an error.
-    """
-    surface = _make_surface()
-    result = json.loads(await surface.dispatch("nonexistent_tool", {}))
+    dispatcher = _make_dispatcher()
+    result = json.loads(await dispatcher.dispatch("nonexistent_tool", {}))
     assert "error" in result
