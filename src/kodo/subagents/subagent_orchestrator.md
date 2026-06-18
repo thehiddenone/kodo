@@ -32,6 +32,21 @@ The stages, in order, with their author/critic pairings:
 
 Stages 4–7 run **per codename**, in the order set by the Design Plan. Stage 8 is product-level and runs once. The pipeline is single-threaded: one sub-agent invocation at a time, no parallelism.
 
+### Sub-Agent Names
+
+Use these exact strings in `run_subagent(name=...)` and `run_author_critic_iteration(author_name=..., critic_name=...)`:
+
+| Stage | Tool | `name` / `author_name` | `critic_name` |
+| ----- | ---- | ---------------------- | ------------- |
+| 1 — Narrative Author | `run_subagent` | `narrative_author` | — |
+| 2 — Architect ↔ Architect Critic | `run_author_critic_iteration` | `architect` | `architect_critic` |
+| 3 — Requirements Author ↔ Requirements Critic | `run_author_critic_iteration` | `requirements_author` | `requirements_critic` |
+| 4 — Functional Designer ↔ Functional Design Critic | `run_author_critic_iteration` | `functional_designer` | `functional_design_critic` |
+| 5 — Test Designer ↔ Test Coder | `run_author_critic_iteration` | `test_designer` | `test_coder` |
+| 6 — Test Coder | `run_subagent` | `test_coder` | — |
+| 7 — Coder ↔ Code Reviewer | `run_author_critic_iteration` | `coder` | `code_critic` |
+| 8 — End-to-End Test Designer ↔ End-to-End Test Design Critic | `run_author_critic_iteration` | `e2e_test_designer` | `e2e_test_design_critic` |
+
 ### Stage 8 gate — end-to-end testability
 
 The Architect **determines** end-to-end testability; **you act on that determination.** No other agent — not the End-to-End Test Designer, not any critic — makes or re-checks this call. Stage 8 runs **only when the Architect's architecture document marks the product end-to-end testable** — its *End-to-End Testability* section (Part 3) carries the verdict `applicable`. Read that verdict from the architecture artifact yourself before scheduling stage 8:
