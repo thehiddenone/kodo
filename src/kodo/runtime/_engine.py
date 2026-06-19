@@ -55,8 +55,10 @@ from kodo.transport import (
     EVT_AGENT_STARTED,
     EVT_AGENT_TOOL_CALL,
     EVT_API_KEY_REVOKE,
+    EVT_AUTONOMOUS_CHANGED,
     EVT_ERROR,
     EVT_LLM_TURN_START,
+    EVT_POST_UPDATE,
     EVT_REVIEW_STARTED,
     EVT_REVIEW_VERDICT,
     EVT_STATE,
@@ -83,25 +85,38 @@ __all__ = ["WorkflowEngine"]
 _log = logging.getLogger(__name__)
 
 _ORCHESTRATOR_AGENT_NAME = "orchestrator"
+_PROBLEM_SOLVER_AGENT_NAME = "problem_solver"
 
 
-class _EngineSubagentRunner:
-    """Adapts the engine's sub-agent methods to the tools ``SubagentRunner`` protocol.
+class _EngineServices:
+    """Adapts the engine's operations to the tools ``EngineServices`` protocol.
 
-    Keeps agent loading and the LLM tool-loop in the engine while letting the
-    sub-agent-spawning tools (``run_subagent``, ``run_author_critic_iteration``)
-    depend only on the protocol declared in :mod:`kodo.tools`.
+    Every engine-side action a tool can trigger — spawning sub-agents, rolling
+    back, promoting a completed artifact, disabling autonomous mode, and
+    pushing client updates — is funnelled through this single adapter. It lets
+    the tools depend only on the protocol declared in :mod:`kodo.tools` while
+    agent loading and the LLM tool-loop stay in the engine. The engine builds
+    one instance and injects it into every per-run :class:`ToolDispatcher`.
     """
 
     def __init__(
         self,
+        *,
         run_subagent: Callable[[str, str, list[str]], Awaitable[list[str]]],
         run_author_critic: Callable[
             [str, str, list[str], str | None], Awaitable[dict[str, object]]
         ],
+        rollback: Callable[[str], Awaitable[None]],
+        complete_artifact: Callable[[str], Awaitable[None]],
+        disable_autonomous: Callable[[], Awaitable[None]],
+        post_update: Callable[[str], Awaitable[None]],
     ) -> None:
         self.__run_subagent = run_subagent
         self.__run_author_critic = run_author_critic
+        self.__rollback = rollback
+        self.__complete_artifact = complete_artifact
+        self.__disable_autonomous = disable_autonomous
+        self.__post_update = post_update
 
     async def run_subagent(
         self, name: str, task_message: str, input_artifact_ids: list[str]
@@ -120,6 +135,22 @@ class _EngineSubagentRunner:
         return await self.__run_author_critic(
             author_name, critic_name, input_artifact_ids, previous_artifact_id
         )
+
+    async def rollback(self, target_sha: str) -> None:
+        """Delegate to the engine's ``__run_rollback``."""
+        await self.__rollback(target_sha)
+
+    async def complete_artifact(self, artifact_id: str) -> None:
+        """Delegate to the engine's ``__complete_artifact``."""
+        await self.__complete_artifact(artifact_id)
+
+    async def disable_autonomous_mode(self) -> None:
+        """Delegate to the engine's ``__disable_autonomous``."""
+        await self.__disable_autonomous()
+
+    async def post_update(self, message: str) -> None:
+        """Delegate to the engine's ``__post_update``."""
+        await self.__post_update(message)
 
 
 class WorkflowEngine:
@@ -148,7 +179,7 @@ class WorkflowEngine:
     __queue: asyncio.Queue[dict[str, object]]
     __session: SessionState
     __index: ProjectIndex
-    __runner: _EngineSubagentRunner
+    __services: _EngineServices
     __worker: asyncio.Task[None] | None
     __cumulative_usd: float
     __orch_messages: list[Message]
@@ -193,11 +224,17 @@ class WorkflowEngine:
         self.__worker = None
         self.__cumulative_usd = 0.0
         self.__orch_messages = []
+        self.__ps_messages: list[Message] = []
         self.__orch_session_id = ""
         self.__current_vendor = None
         self.__toolchain: ToolchainPlugin | None = None
-        self.__runner = _EngineSubagentRunner(
-            self.__run_subagent, self.__run_author_critic_iteration
+        self.__services = _EngineServices(
+            run_subagent=self.__run_subagent,
+            run_author_critic=self.__run_author_critic_iteration,
+            rollback=self.__run_rollback,
+            complete_artifact=self.__complete_artifact,
+            disable_autonomous=self.__disable_autonomous,
+            post_update=self.__post_update,
         )
 
     @property
@@ -343,6 +380,17 @@ class WorkflowEngine:
         self.__transient.update(autonomous=autonomous)
         await self.__emit_state()
 
+    async def handle_workflow_set(self, mode: str) -> None:
+        """Select the top-level workflow that drives user prompts.
+
+        Args:
+            mode: ``"guided"`` (Orchestrator + full Kodo pipeline) or
+                ``"problem_solving"`` (the standalone Problem Solver agent).
+                Unknown values fall back to ``"guided"``.
+        """
+        self.__session.workflow_mode = mode if mode == "problem_solving" else "guided"
+        await self.__emit_state()
+
     # ------------------------------------------------------------------
     # Plugin resolution — per-dispatch, reads fresh settings each time
     # ------------------------------------------------------------------
@@ -395,26 +443,28 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     async def __run_worker(self) -> None:
-        try:
-            orchestrator_available = self.__orchestrator_available()
-        except Exception:
-            orchestrator_available = False
-
-        if not orchestrator_available:
-            _log.warning(
-                "Orchestrator agent %r not found in registry — "
-                "runtime will echo prompts only until the agent file is added",
-                _ORCHESTRATOR_AGENT_NAME,
-            )
-
         while True:
             task = await self.__queue.get()
             text = str(task.get("text", ""))
+            # Freeze the autonomous mode for the whole prompt (orchestrator +
+            # every sub-agent it spawns). A toggle the user sends mid-prompt
+            # updates self.__session.autonomous but takes effect only when the
+            # next prompt is dequeued here, so the in-flight prompt stays
+            # consistent end to end.
+            self.__session.effective_autonomous = self.__session.autonomous
             try:
-                if orchestrator_available:
+                # The entry agent is chosen per prompt from the current
+                # workflow mode: Problem Solver for "problem_solving", the
+                # Orchestrator (full Kodo pipeline) for "guided".
+                if self.__session.workflow_mode == "problem_solving":
+                    if self.__agent_available(_PROBLEM_SOLVER_AGENT_NAME):
+                        await self.__run_problem_solver_with_input(text)
+                    else:
+                        await self.__handle_input_no_agent(_PROBLEM_SOLVER_AGENT_NAME, text)
+                elif self.__agent_available(_ORCHESTRATOR_AGENT_NAME):
                     await self.__run_orchestrator_with_input(text)
                 else:
-                    await self.__handle_input_no_orchestrator(text)
+                    await self.__handle_input_no_agent(_ORCHESTRATOR_AGENT_NAME, text)
 
                 if self.__session.phase == "done":
                     _log.info("Project finalized — worker exiting")
@@ -444,20 +494,22 @@ class WorkflowEngine:
             finally:
                 self.__queue.task_done()
 
-    def __orchestrator_available(self) -> bool:
+    def __agent_available(self, name: str) -> bool:
         try:
-            self.__registry.get(_ORCHESTRATOR_AGENT_NAME)
+            self.__registry.get(name)
             return True
         except AgentLoadError:
             return False
 
-    async def __handle_input_no_orchestrator(self, text: str) -> None:
+    async def __handle_input_no_agent(self, name: str, text: str) -> None:
         self.__session.phase = "running"
         await self.__emit_state()
-        _log.info(
-            "Prompt received (len=%d) — no orchestrator agent; add subagent_%s.md to register one",
+        _log.warning(
+            "Prompt received (len=%d) — entry agent %r not found; "
+            "add subagent_%s.md to register one",
             len(text),
-            _ORCHESTRATOR_AGENT_NAME,
+            name,
+            name,
         )
         self.__session.phase = "intake"
         await self.__emit_state()
@@ -467,7 +519,7 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     async def __run_orchestrator_with_input(self, text: str) -> None:
-        agent = self.__registry.get(_ORCHESTRATOR_AGENT_NAME, self.__session.autonomous)
+        agent = self.__registry.get(_ORCHESTRATOR_AGENT_NAME, self.__session.effective_autonomous)
         plugin, model_id = await self.__resolve_plugin(agent.capability)
 
         pre_turn_len = len(self.__orch_messages)
@@ -495,6 +547,49 @@ class WorkflowEngine:
 
         for msg in self.__orch_messages[pre_turn_len:]:
             self.__transient.append_message(msg.role, msg.content)
+
+        if self.__session.phase != "done":
+            self.__session.phase = "awaiting_user"
+        self.__session.agent = None
+        await self.__emit_state()
+
+    # ------------------------------------------------------------------
+    # Problem Solver LLM loop (standalone, outside the Kodo pipeline)
+    # ------------------------------------------------------------------
+
+    async def __run_problem_solver_with_input(self, text: str) -> None:
+        """Drive the standalone Problem Solver agent for one user prompt.
+
+        Mirrors the Orchestrator loop but keeps its own running message
+        history (``self.__ps_messages``); the Problem Solver works the prompt
+        end to end on its own, then yields back to the user.
+        """
+        agent = self.__registry.get(_PROBLEM_SOLVER_AGENT_NAME, self.__session.effective_autonomous)
+        plugin, model_id = await self.__resolve_plugin(agent.capability)
+
+        if text:
+            self.__ps_messages = self.__ps_messages + [Message(role="user", content=text)]
+
+        self.__session.phase = "running"
+        self.__session.agent = _PROBLEM_SOLVER_AGENT_NAME
+        await self.__emit_state()
+        await self.__emit_agent_started(_PROBLEM_SOLVER_AGENT_NAME)
+
+        dispatcher = self.__make_dispatcher(_PROBLEM_SOLVER_AGENT_NAME, self.__orch_session_id)
+        stream_id = uuid.uuid4().hex
+        self.__ps_messages, _ = await self.__run_agent_turn(
+            llm=plugin,
+            model=model_id,
+            system_prompt=agent.system_prompt,
+            messages=self.__ps_messages,
+            tools=tools_for_agent(agent.tools),
+            tool_dispatch=dispatcher.dispatch,
+            stream_id=stream_id,
+            agent_name=_PROBLEM_SOLVER_AGENT_NAME,
+            stop_after_tools=lambda: dispatcher.stop_requested,
+        )
+        await self.__sink.send(Envelope.make_stream_end(stream_id))
+        await self.__emit_agent_finished(_PROBLEM_SOLVER_AGENT_NAME)
 
         if self.__session.phase != "done":
             self.__session.phase = "awaiting_user"
@@ -643,19 +738,19 @@ class WorkflowEngine:
         """Build a per-run tool dispatcher for *agent_name*.
 
         Reads ``self.__index`` at call time so post-bootstrap/rollback runs see
-        the current index without any persistent surface to rebuild.
+        the current index without any persistent surface to rebuild. The
+        autonomous mode is not snapshotted here: tools read it live from
+        ``self.__session.effective_autonomous``, which the worker freezes per
+        prompt, so the dispatcher needs no rebuild on a mode toggle.
         """
         return ToolDispatcher(
             workspace=self.__workspace,
             index=self.__index,
             gate=self.__gate,
             session=self.__session,
-            runner=self.__runner,
-            rollback_fn=self.__run_rollback,
-            complete_fn=self.__complete_artifact,
+            services=self.__services,
             agent_name=agent_name,
             session_id=session_id,
-            autonomous=self.__session.autonomous,
         )
 
     # ------------------------------------------------------------------
@@ -675,7 +770,7 @@ class WorkflowEngine:
         Returns:
             list[str]: Artifact IDs published during the run.
         """
-        agent = self.__registry.get(name, self.__session.autonomous)
+        agent = self.__registry.get(name, self.__session.effective_autonomous)
         plugin, model_id = await self.__resolve_plugin(agent.capability)
 
         session_id = uuid.uuid4().hex
@@ -996,6 +1091,23 @@ class WorkflowEngine:
                 },
             )
         )
+
+    async def __disable_autonomous(self) -> None:
+        """Disable autonomous mode and notify the client.
+
+        Unlike a user toggle, this is an Orchestrator decision that must take
+        effect immediately, so it clears the frozen ``effective_autonomous`` as
+        well — any sub-agent spawned later in this same prompt runs interactive.
+        """
+        self.__session.autonomous = False
+        self.__session.effective_autonomous = False
+        self.__transient.update(autonomous=False)
+        await self.__emit_state()
+        await self.__sink.send(Envelope.make_event(EVT_AUTONOMOUS_CHANGED, {"autonomous": False}))
+
+    async def __post_update(self, message: str) -> None:
+        """Forward a progress update message to the client."""
+        await self.__sink.send(Envelope.make_event(EVT_POST_UPDATE, {"message": message}))
 
     async def __emit_agent_started(self, agent_name: str) -> None:
         await self.__sink.send(

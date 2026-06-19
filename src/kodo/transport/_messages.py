@@ -31,6 +31,7 @@ MSG_STOP = "stop"
 MSG_CHECKPOINT_LIST = "checkpoint.list"
 MSG_CHECKPOINT_ROLLBACK = "checkpoint.rollback"
 MSG_MODE_SET = "mode.set"
+MSG_WORKFLOW_SET = "workflow.set"
 MSG_SECURITY_ADD_RULE = "security.add_rule"
 MSG_CONFIG_RELOAD = "config.reload"
 MSG_LLAMACPP_INSTALL = "llamacpp.install"
@@ -80,6 +81,8 @@ EVT_ERROR = "error"
 EVT_LLAMACPP_INSTALL_PROGRESS = "llamacpp.install.progress"
 EVT_MODEL_INSTALL_PROGRESS = "model.install.progress"
 EVT_LLAMA_STATE = "llama.state"
+EVT_AUTONOMOUS_CHANGED = "autonomous.changed"
+EVT_POST_UPDATE = "post.update"
 
 # ---------------------------------------------------------------------------
 # DEPRECATED — legacy constants retained until handler/event wiring is migrated

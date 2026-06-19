@@ -22,5 +22,5 @@ class RunSubagentTool(Tool):
         input_ids = [str(i) for i in input_ids_raw] if isinstance(input_ids_raw, list) else []
 
         _log.info("run_subagent: name=%s input_ids=%s", name, input_ids)
-        artifact_ids = await self.context.runner.run_subagent(name, task_message, input_ids)
+        artifact_ids = await self.context.services.run_subagent(name, task_message, input_ids)
         return json.dumps({"artifact_ids": artifact_ids})

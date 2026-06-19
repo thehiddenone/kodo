@@ -6,7 +6,7 @@ This package is a dedicated import tier **between** ``toolspecs`` (T2) and
 ``workspace``, ``toolspecs``) and is consumed from above by ``runtime``.  It
 must never import ``subagents``, ``llms``, or ``runtime`` — the collaborators
 those would provide are expressed here as structural Protocols
-(:class:`GateLike`, :class:`SessionLike`, :class:`SubagentRunner`) and injected.
+(:class:`GateLike`, :class:`SessionLike`, :class:`EngineServices`) and injected.
 
 There is a single unified tool surface: every agent (orchestrator included)
 gets exactly the tools its frontmatter declares, dispatched through one
@@ -20,21 +20,23 @@ from __future__ import annotations
 from ._ask_user import AskUserTool
 from ._context import (
     ApprovalLike,
+    EngineServices,
     GateLike,
     QuestionLike,
     SessionLike,
-    SubagentRunner,
     ToolContext,
 )
 from ._copy_file import CopyFileTool
 from ._create_file import CreateFileTool
 from ._delete_file import DeleteFileTool
+from ._disable_autonomous_mode import DisableAutonomousModeTool
 from ._dispatch import DISPATCHABLE_TOOLS_BY_NAME, ToolDispatcher, tools_for_agent
 from ._edit_file import EditFileTool
 from ._escalate_blocker import EscalateBlockerTool
 from ._finalize_project import FinalizeProjectTool
 from ._list_artifacts import ListArtifactsTool
 from ._move_file import MoveFileTool
+from ._post_update import PostUpdateTool
 from ._publish_artifact import PublishArtifactTool
 from ._query_frontier import QueryFrontierTool
 from ._read_artifact import ReadArtifactTool
@@ -50,15 +52,18 @@ __all__ = [
     "DISPATCHABLE_TOOLS_BY_NAME",
     "ApprovalLike",
     "AskUserTool",
+    "EngineServices",
     "CopyFileTool",
     "CreateFileTool",
     "DeleteFileTool",
+    "DisableAutonomousModeTool",
     "EditFileTool",
     "EscalateBlockerTool",
     "FinalizeProjectTool",
     "GateLike",
     "ListArtifactsTool",
     "MoveFileTool",
+    "PostUpdateTool",
     "PublishArtifactTool",
     "QueryFrontierTool",
     "QuestionLike",
@@ -70,7 +75,6 @@ __all__ = [
     "RunCommandTool",
     "RunSubagentTool",
     "SessionLike",
-    "SubagentRunner",
     "Tool",
     "ToolContext",
     "ToolDispatcher",

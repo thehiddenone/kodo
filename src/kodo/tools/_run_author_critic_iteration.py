@@ -28,7 +28,7 @@ class RunAuthorCriticIterationTool(Tool):
             critic_name,
             previous_id,
         )
-        result = await self.context.runner.run_author_critic_iteration(
+        result = await self.context.services.run_author_critic_iteration(
             author_name,
             critic_name,
             input_ids,

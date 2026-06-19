@@ -56,8 +56,21 @@ def _make_app_state() -> MagicMock:
     return state
 
 
-class _StubRunner:
-    """Sub-agent launcher stub satisfying ``kodo.tools.SubagentRunner``."""
+class _StubServices:
+    """Engine-side stub satisfying ``kodo.tools.EngineServices``.
+
+    The sub-agent launchers return canned IDs; ``rollback``/``complete_artifact``
+    default to no-ops but accept overrides so a test can assert they were
+    invoked.
+    """
+
+    def __init__(
+        self,
+        rollback: Callable[[str], Awaitable[None]] | None = None,
+        complete_artifact: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
+        self._rollback = rollback
+        self._complete = complete_artifact
 
     async def run_subagent(
         self, name: str, task_message: str, input_artifact_ids: list[str]
@@ -73,6 +86,20 @@ class _StubRunner:
     ) -> dict[str, object]:
         return {"artifact_id": f"stub-{author_name}", "verdict": "accepted", "concerns": []}
 
+    async def rollback(self, target_sha: str) -> None:
+        if self._rollback is not None:
+            await self._rollback(target_sha)
+
+    async def complete_artifact(self, artifact_id: str) -> None:
+        if self._complete is not None:
+            await self._complete(artifact_id)
+
+    async def disable_autonomous_mode(self) -> None:
+        return None
+
+    async def post_update(self, message: str) -> None:
+        return None
+
 
 def _make_dispatcher(
     index: ProjectIndex | None = None,
@@ -85,24 +112,16 @@ def _make_dispatcher(
     if session is None:
         session = SessionState()
     session.autonomous = autonomous
-
-    async def _noop_rollback(target_sha: str) -> None:
-        return None
-
-    async def _noop_complete(artifact_id: str) -> None:
-        return None
+    session.effective_autonomous = autonomous
 
     return ToolDispatcher(
         workspace=MagicMock(),
         index=index,
         gate=GateOrchestrator(_make_app_state(), MagicMock()),
         session=session,
-        runner=_StubRunner(),
-        rollback_fn=rollback_fn if rollback_fn is not None else _noop_rollback,
-        complete_fn=_noop_complete,
+        services=_StubServices(rollback=rollback_fn),
         agent_name="orchestrator",
         session_id="sess-test",
-        autonomous=autonomous,
     )
 
 

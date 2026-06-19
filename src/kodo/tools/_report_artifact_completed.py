@@ -13,9 +13,9 @@ _log = logging.getLogger(__name__)
 
 
 class ReportArtifactCompletedTool(Tool):
-    """Mark an artifact completed via the injected completion callback.
+    """Mark an artifact completed via the injected engine service.
 
-    The callback (``complete_fn``) promotes the artifact (materialize + mirror
+    ``services.complete_artifact`` promotes the artifact (materialize + mirror
     commit + move out of staging) and flips its index entry to ``completed``.
     Unlike ``escalate_blocker``, completion does not force the run to stop.
     """
@@ -24,5 +24,5 @@ class ReportArtifactCompletedTool(Tool):
         ctx = self.context
         artifact_id = str(tool_input.get("artifact_id", ""))
         _log.info("report_artifact_completed from %s: id=%s", ctx.agent_name, artifact_id[:8])
-        await ctx.complete_fn(artifact_id)
+        await ctx.services.complete_artifact(artifact_id)
         return json.dumps({"status": "completed", "artifact_id": artifact_id})

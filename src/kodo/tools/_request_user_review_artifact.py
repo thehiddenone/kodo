@@ -24,7 +24,7 @@ class RequestUserReviewArtifactTool(Tool):
         summary = str(tool_input.get("summary", "")) or "Please review this artifact."
         _log.info("request_user_review_artifact from %s: id=%s", ctx.agent_name, artifact_id[:8])
 
-        if ctx.autonomous:
+        if ctx.session.effective_autonomous:
             return json.dumps({"action": "agree", "feedback": ""})
 
         gate_type = "review"

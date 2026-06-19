@@ -20,5 +20,5 @@ class RollbackTool(Tool):
         if not target_sha:
             return json.dumps({"error": "target_sha is required"})
         _log.info("rollback: target_sha=%s", target_sha[:12])
-        await self.context.rollback_fn(target_sha)
+        await self.context.services.rollback(target_sha)
         return json.dumps({"status": "completed"})

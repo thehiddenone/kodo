@@ -3,18 +3,18 @@
 Every tool handler receives a single :class:`ToolContext` carrying the
 collaborators it may need plus the per-run mutable state (``published_ids``,
 ``stop_requested``).  The collaborators that live *above* this package in the
-import graph — the approval/question gate, the session state, and the
-sub-agent launcher — are expressed here as **structural Protocols** so that
-``kodo.tools`` never imports ``runtime`` (or any T3+ package).  The runtime's
-concrete ``GateOrchestrator`` / ``SessionState`` and a small engine adapter
-satisfy these protocols by shape and are injected by the engine.
+import graph — the approval/question gate, the session state, and every
+engine-side operation a tool can trigger — are expressed here as **structural
+Protocols** so that ``kodo.tools`` never imports ``runtime`` (or any T3+
+package).  The runtime's concrete ``GateOrchestrator`` / ``SessionState`` and a
+single :class:`EngineServices` adapter satisfy these protocols by shape and are
+injected by the engine.
 
 See [[feedback-tools-layer]]: ``kodo.tools`` may import only T0/T1/T2.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -22,10 +22,10 @@ from kodo.workspace import ProjectIndex, Workspace
 
 __all__ = [
     "ApprovalLike",
+    "EngineServices",
     "GateLike",
     "QuestionLike",
     "SessionLike",
-    "SubagentRunner",
     "ToolContext",
 ]
 
@@ -86,21 +86,30 @@ class GateLike(Protocol):
 
 
 class SessionLike(Protocol):
-    """Structural shape of the mutable session state a tool may write.
+    """Structural shape of the session state a tool may read or write.
 
     Satisfied by :class:`kodo.runtime.SessionState`.
+
+    ``effective_autonomous`` is the mode the *current prompt* runs under. It is
+    frozen by the engine at the start of each prompt and never changes mid-run,
+    so every tool in a prompt sees one consistent value (unlike the user-facing
+    ``SessionState.autonomous``, which may already reflect a toggle queued for
+    the *next* prompt).
     """
 
     phase: str
+    effective_autonomous: bool
 
 
-class SubagentRunner(Protocol):
-    """Structural shape of the sub-agent launcher injected from the engine.
+class EngineServices(Protocol):
+    """Structural shape of every engine-side operation a tool can trigger.
 
-    The tools that spawn sub-agents (``run_subagent``,
-    ``run_author_critic_iteration``) depend only on this protocol; the engine
-    provides a concrete adapter.  This keeps agent loading and the LLM loop in
-    ``runtime`` while the dispatch logic stays in ``kodo.tools``.
+    The tools live below ``runtime`` in the import graph, so the operations
+    they delegate upward — spawning sub-agents, rolling back, promoting a
+    completed artifact, and pushing client notifications — are inverted through
+    this single protocol.  The engine provides one concrete adapter
+    (``_EngineServices``) that satisfies it by shape, keeping agent loading and
+    the LLM loop in ``runtime`` while the dispatch logic stays in ``kodo.tools``.
     """
 
     async def run_subagent(
@@ -119,6 +128,22 @@ class SubagentRunner(Protocol):
         """Run one Author/Critic round and return ``{artifact_id, verdict, concerns}``."""
         ...
 
+    async def rollback(self, target_sha: str) -> None:
+        """Roll the mirror back to ``target_sha`` and rebuild session state."""
+        ...
+
+    async def complete_artifact(self, artifact_id: str) -> None:
+        """Promote a gate-passed artifact and flip its index entry to completed."""
+        ...
+
+    async def disable_autonomous_mode(self) -> None:
+        """Turn off autonomous mode and notify the client."""
+        ...
+
+    async def post_update(self, message: str) -> None:
+        """Send a non-blocking progress update to the client."""
+        ...
+
 
 @dataclass
 class ToolContext:
@@ -129,17 +154,20 @@ class ToolContext:
     ``published_ids`` and ``stop_requested``; the owning
     :class:`~kodo.tools.ToolDispatcher` exposes them back to the engine.
 
+    The autonomous mode a handler should honour is read from
+    ``session.effective_autonomous`` (frozen for the whole prompt), not stored
+    on the context, so no per-run snapshot can drift from the session.
+
     Attributes:
         workspace: Shared artifact store.
         index: Live in-memory artifact index.
         gate: Approval/question gate (protocol).
-        session: Mutable session state (protocol).
-        runner: Sub-agent launcher (protocol).
-        rollback_fn: Callback that executes the rollback procedure.
-        complete_fn: Callback that promotes and marks an artifact completed.
+        session: Session state (protocol); ``effective_autonomous`` is the
+            frozen mode for this prompt.
+        services: Engine-side operations (protocol): sub-agent launch,
+            rollback, artifact completion, mode disable, client updates.
         agent_name: Name of the running agent (used as artifact author).
         session_id: Session ID attached to published artifacts.
-        autonomous: Whether autonomous mode is active.
         published_ids: Artifact IDs published during this run (mutated by
             ``publish_artifact``).
         stop_requested: Set ``True`` by ``escalate_blocker`` to end the run.
@@ -149,11 +177,8 @@ class ToolContext:
     index: ProjectIndex
     gate: GateLike
     session: SessionLike
-    runner: SubagentRunner
-    rollback_fn: Callable[[str], Awaitable[None]]
-    complete_fn: Callable[[str], Awaitable[None]]
+    services: EngineServices
     agent_name: str
     session_id: str
-    autonomous: bool
     published_ids: list[str] = field(default_factory=list)
     stop_requested: bool = False

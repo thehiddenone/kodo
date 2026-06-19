@@ -14,6 +14,7 @@ from ._messages import (
     EVT_APPROVAL_REQUEST,
     EVT_ARTIFACT_PUBLISHED,
     EVT_ARTIFACT_REMOVED,
+    EVT_AUTONOMOUS_CHANGED,
     EVT_ERROR,
     EVT_FILE_CHANGE,
     EVT_LLAMA_STATE,
@@ -21,6 +22,7 @@ from ._messages import (
     EVT_LLM_TURN_START,
     EVT_MODEL_INSTALL_PROGRESS,
     EVT_ORCHESTRATOR_COMPACTED,
+    EVT_POST_UPDATE,
     EVT_RESUME_OFFER,
     EVT_REVIEW_STARTED,
     EVT_REVIEW_VERDICT,
@@ -44,6 +46,7 @@ from ._messages import (
     MSG_SECURITY_ADD_RULE,
     MSG_SESSION_RESUME,
     MSG_STOP,
+    MSG_WORKFLOW_SET,
     # Server → Client requests — user prompts (WS_PROTOCOL.md §6)
     SREQ_API_KEY_REQUEST,
     SREQ_PROMPT_APPROVAL,
@@ -73,6 +76,7 @@ __all__ = [
     "MSG_LLAMA_STOP",
     "MSG_MODEL_INSTALL",
     "MSG_MODE_SET",
+    "MSG_WORKFLOW_SET",
     "MSG_SECURITY_ADD_RULE",
     # WS_PROTOCOL.md §6 — server-initiated requests
     "SREQ_API_KEY_REQUEST",
@@ -82,6 +86,8 @@ __all__ = [
     # API key management events
     "EVT_API_KEY_REVOKE",
     # WS_PROTOCOL.md §5 — visibility events
+    "EVT_AUTONOMOUS_CHANGED",
+    "EVT_POST_UPDATE",
     "EVT_STATE",
     "EVT_AGENT_STARTED",
     "EVT_AGENT_FINISHED",

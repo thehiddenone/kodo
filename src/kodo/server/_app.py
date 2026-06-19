@@ -42,6 +42,7 @@ from kodo.transport import (
     MSG_PING,
     MSG_PROMPT_SUBMIT,
     MSG_STOP,
+    MSG_WORKFLOW_SET,
     HandlerFn,
     Outbox,
     WebSocketDispatcher,
@@ -302,6 +303,15 @@ def _make_mode_handler(engine: WorkflowEngine) -> HandlerFn:
     return _handle_mode
 
 
+def _make_workflow_handler(engine: WorkflowEngine) -> HandlerFn:
+    async def _handle_workflow(state: WebSocketDispatcher, env: Envelope) -> None:
+        mode = str(env.payload.get("mode", "guided"))
+        await engine.handle_workflow_set(mode)
+        await state.send(Envelope.make_response(env.id, {"type": "workflow.accepted"}))
+
+    return _handle_workflow
+
+
 def _make_config_reload_handler(config: Config) -> HandlerFn:
     async def _handle_config_reload(state: WebSocketDispatcher, env: Envelope) -> None:
         # Validate the settings file is still parseable; the engine reads
@@ -431,6 +441,7 @@ def create_app(config: Config) -> web.Application:
     dispatcher.register_handler(MSG_LLAMA_STOP, _handle_llama_stop)
     dispatcher.register_handler(MSG_PROMPT_SUBMIT, _make_prompt_handler(engine))
     dispatcher.register_handler(MSG_MODE_SET, _make_mode_handler(engine))
+    dispatcher.register_handler(MSG_WORKFLOW_SET, _make_workflow_handler(engine))
     dispatcher.register_handler(MSG_STOP, _make_stop_handler(engine))
     dispatcher.register_handler(MSG_CONFIG_RELOAD, _make_config_reload_handler(config))
 

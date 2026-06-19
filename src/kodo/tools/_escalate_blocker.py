@@ -27,7 +27,7 @@ class EscalateBlockerTool(Tool):
         _log.info("escalate_blocker from %s: reason=%s %s", ctx.agent_name, reason, summary[:80])
 
         ctx.stop_requested = True
-        if ctx.autonomous:
+        if ctx.session.effective_autonomous:
             return json.dumps({"status": "escalated", "reason": reason})
         response = await ctx.gate.fire_question(summary, "free_text")
         return json.dumps(

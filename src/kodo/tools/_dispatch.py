@@ -14,18 +14,19 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable
 
 from kodo.toolspecs import (
     ASK_USER,
     COPY_FILE,
     CREATE_FILE,
     DELETE_FILE,
+    DISABLE_AUTONOMOUS_MODE,
     EDIT_FILE,
     ESCALATE_BLOCKER,
     FINALIZE_PROJECT,
     LIST_ARTIFACTS,
     MOVE_FILE,
+    POST_UPDATE,
     PUBLISH_ARTIFACT,
     QUERY_FRONTIER,
     READ_ARTIFACT,
@@ -40,15 +41,17 @@ from kodo.toolspecs import (
 from kodo.workspace import ProjectIndex, Workspace
 
 from ._ask_user import AskUserTool
-from ._context import GateLike, SessionLike, SubagentRunner, ToolContext
+from ._context import EngineServices, GateLike, SessionLike, ToolContext
 from ._copy_file import CopyFileTool
 from ._create_file import CreateFileTool
 from ._delete_file import DeleteFileTool
+from ._disable_autonomous_mode import DisableAutonomousModeTool
 from ._edit_file import EditFileTool
 from ._escalate_blocker import EscalateBlockerTool
 from ._finalize_project import FinalizeProjectTool
 from ._list_artifacts import ListArtifactsTool
 from ._move_file import MoveFileTool
+from ._post_update import PostUpdateTool
 from ._publish_artifact import PublishArtifactTool
 from ._query_frontier import QueryFrontierTool
 from ._read_artifact import ReadArtifactTool
@@ -85,6 +88,8 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (RUN_AUTHOR_CRITIC_ITERATION, RunAuthorCriticIterationTool),
     (ROLLBACK, RollbackTool),
     (FINALIZE_PROJECT, FinalizeProjectTool),
+    (DISABLE_AUTONOMOUS_MODE, DisableAutonomousModeTool),
+    (POST_UPDATE, PostUpdateTool),
 )
 
 _CLASSES_BY_NAME: dict[str, type[Tool]] = {spec.name: cls for spec, cls in _TOOL_CLASSES}
@@ -121,17 +126,19 @@ class ToolDispatcher:
     the run's mutable state, and exposes that state (``published_ids``,
     ``stop_requested``) back to the engine after the run.
 
+    The autonomous mode is not passed in: tools read it from
+    ``session.effective_autonomous``, which the engine freezes per prompt, so
+    one dispatcher serves a prompt regardless of any mode toggle queued mid-run.
+
     Args:
         workspace: Shared artifact store.
         index: Live artifact index.
         gate: Approval/question gate.
-        session: Mutable session state.
-        runner: Sub-agent launcher.
-        rollback_fn: Rollback callback.
-        complete_fn: Artifact-completion (promotion) callback.
+        session: Session state (carries the frozen ``effective_autonomous``).
+        services: Engine-side operations (sub-agent launch, rollback,
+            completion, mode disable, client updates).
         agent_name: Name of the running agent.
         session_id: Session ID attached to published artifacts.
-        autonomous: Whether autonomous mode is active.
     """
 
     __ctx: ToolContext
@@ -143,24 +150,18 @@ class ToolDispatcher:
         index: ProjectIndex,
         gate: GateLike,
         session: SessionLike,
-        runner: SubagentRunner,
-        rollback_fn: Callable[[str], Awaitable[None]],
-        complete_fn: Callable[[str], Awaitable[None]],
+        services: EngineServices,
         agent_name: str,
         session_id: str,
-        autonomous: bool = False,
     ) -> None:
         self.__ctx = ToolContext(
             workspace=workspace,
             index=index,
             gate=gate,
             session=session,
-            runner=runner,
-            rollback_fn=rollback_fn,
-            complete_fn=complete_fn,
+            services=services,
             agent_name=agent_name,
             session_id=session_id,
-            autonomous=autonomous,
         )
 
     @property

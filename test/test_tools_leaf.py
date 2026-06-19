@@ -11,13 +11,14 @@ the shared ``tools_for_agent`` resolver.
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kodo.runtime import GateOrchestrator, QuestionResponse
+from kodo.runtime import GateOrchestrator, QuestionResponse, SessionState
 from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, ToolDispatcher, tools_for_agent
 from kodo.toolspecs import PUBLISH_ARTIFACT, READ_ARTIFACT
 from kodo.workspace import Artifact, ArtifactType, ProjectIndex, Workspace
@@ -49,8 +50,15 @@ def _make_gate(answer: str = "") -> GateOrchestrator:
     return gate
 
 
-class _StubRunner:
-    """Sub-agent launcher stub; leaf tools never invoke it."""
+class _StubServices:
+    """Engine-side stub satisfying ``kodo.tools.EngineServices``.
+
+    The sub-agent launchers are never invoked by leaf tools; ``complete_artifact``
+    delegates to the injected callback (the workspace's ``mark_completed``).
+    """
+
+    def __init__(self, complete_artifact: Callable[[str], Awaitable[None]]) -> None:
+        self._complete = complete_artifact
 
     async def run_subagent(
         self, name: str, task_message: str, input_artifact_ids: list[str]
@@ -66,6 +74,18 @@ class _StubRunner:
     ) -> dict[str, object]:
         return {"artifact_id": None, "verdict": "accepted", "concerns": []}
 
+    async def rollback(self, target_sha: str) -> None:
+        return None
+
+    async def complete_artifact(self, artifact_id: str) -> None:
+        await self._complete(artifact_id)
+
+    async def disable_autonomous_mode(self) -> None:
+        return None
+
+    async def post_update(self, message: str) -> None:
+        return None
+
 
 def _make_dispatcher(
     tmp_path: Path,
@@ -76,21 +96,18 @@ def _make_dispatcher(
 ) -> ToolDispatcher:
     index = ProjectIndex()
     ws = workspace if workspace is not None else Workspace(tmp_path, index)
-
-    async def _noop_rollback(target_sha: str) -> None:
-        return None
+    session = SessionState()
+    session.autonomous = autonomous
+    session.effective_autonomous = autonomous
 
     return ToolDispatcher(
         workspace=ws,
         index=index,
         gate=_make_gate(answer),
-        session=MagicMock(),
-        runner=_StubRunner(),
-        rollback_fn=_noop_rollback,
-        complete_fn=ws.mark_completed,
+        session=session,
+        services=_StubServices(complete_artifact=ws.mark_completed),
         agent_name=agent_name,
         session_id="sess-test",
-        autonomous=autonomous,
     )
 
 

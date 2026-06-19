@@ -226,10 +226,10 @@ All dispatchable specs now share one handler layer (`tools/`, §6A); the
 |---|---|---|
 | `publish_artifact`, `read_artifact` | `tools/` | ✅ implemented |
 | `escalate_blocker`, `ask_user`, `request_user_review_artifact`, `report_artifact_completed` | `tools/` | ✅ implemented |
-| `create_file`/`edit_file`/`delete_file`/`copy_file`/`move_file`/`run_command` | `tools/` | ✅ implemented, but **granted to no agent** (not in any frontmatter) |
+| `create_file`/`edit_file`/`delete_file`/`copy_file`/`move_file`/`run_command` | `tools/` | ✅ implemented; granted to the `problem_solver` agent (the only frontmatter that declares them — no pipeline agent does). |
 | `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `rollback`, `finalize_project` | `tools/` | ✅ implemented |
-| `toolchain_build`/`toolchain_test`/`toolchain_deps` | — | ⚠️ **spec only, no dispatch.** Declared by `coder`/`test_coder` frontmatter; rendered into prompts but silently dropped by `tools_for_agent` (no handler in `DISPATCHABLE_TOOLS_BY_NAME`). |
-| `disable_autonomous_mode`, `post_update` | — | ⚠️ **spec only, no dispatch.** Declared by `orchestrator` frontmatter; rendered into its prompt but dropped by `tools_for_agent`, so never passed to the LLM. |
+| `disable_autonomous_mode`, `post_update` | `tools/` | ✅ implemented (`DisableAutonomousModeTool`/`PostUpdateTool`, in `_TOOL_CLASSES`). Declared by `orchestrator` (both) and `problem_solver` (`post_update`); resolved by `tools_for_agent` and dispatched. |
+| `toolchain_build`/`toolchain_test`/`toolchain_deps` | — | ⚠️ **spec only, no dispatch.** Declared by `coder`/`test_coder`/`problem_solver` frontmatter; rendered into prompts but silently dropped by `tools_for_agent` (no handler in `DISPATCHABLE_TOOLS_BY_NAME`). |
 
 **State:** Catalog complete; several specs are intentional placeholders ahead of dispatch.
 
@@ -251,7 +251,7 @@ to the run's context). This replaced the former
 
 | Module | Defines | Role |
 |---|---|---|
-| [_context.py](../src/kodo/tools/_context.py) | `ToolContext`, `GateLike`, `SessionLike`, `SubagentRunner`, `QuestionLike`, `ApprovalLike` | The injected per-run context (collaborators + mutable `published_ids`/`stop_requested`) and the structural Protocols runtime satisfies. `runtime.GateOrchestrator`/`SessionState` and an engine adapter match them by shape. |
+| [_context.py](../src/kodo/tools/_context.py) | `ToolContext`, `GateLike`, `SessionLike`, `EngineServices`, `QuestionLike`, `ApprovalLike` | The injected per-run context (collaborators + mutable `published_ids`/`stop_requested`) and the structural Protocols runtime satisfies. `EngineServices` is one protocol covering every engine-side operation a tool can trigger (sub-agent launch, rollback, completion, mode disable, client updates). `runtime.GateOrchestrator`/`SessionState` and the engine's `_EngineServices` adapter match them by shape. The mode a tool honours is read live from `SessionLike.effective_autonomous` (frozen per prompt), never snapshotted onto the context. |
 | [_tool.py](../src/kodo/tools/_tool.py) | `Tool` (ABC) | Binds one run's `ToolContext` (read-only `context` property) and declares the abstract `handle(self, tool_input) -> str`. |
 | `_<tool_name>.py` (18 modules) | one `Tool` subclass each | e.g. `PublishArtifactTool`, `FinalizeProjectTool`; implements `handle` reading `self.context`. Mirrors the `toolspecs` one-file-per-tool convention. |
 | [_dispatch.py](../src/kodo/tools/_dispatch.py) | `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME` | The `_TOOL_CLASSES` table pairs each dispatchable `ToolSpec` with its `Tool` subclass; `dispatch` instantiates the class bound to the run's context and calls `handle`; exposes per-run `published_ids`/`stop_requested`. `tools_for_agent(frozenset[str])` resolves an agent's declared names to specs (skipping spec-only placeholders). |
@@ -259,10 +259,14 @@ to the run's context). This replaced the former
 | [_serialize.py](../src/kodo/tools/_serialize.py) | `serialize_artifact` | `Artifact` → JSON dict, used by `read_artifact`. |
 
 **Links:** `runtime/_engine.py` builds one `ToolDispatcher` per agent run via
-`__make_dispatcher`, injecting `GateOrchestrator`, `SessionState`, an
-`_EngineSubagentRunner` adapter (wrapping the engine's `__run_subagent` /
-`__run_author_critic_iteration`), and the `rollback`/`complete` callbacks.
-Autonomous filtering of `ask_user` happens once, in `subagents/_registry`.
+`__make_dispatcher`, injecting `GateOrchestrator`, `SessionState`, and one
+`_EngineServices` adapter (wrapping the engine's `__run_subagent` /
+`__run_author_critic_iteration` / `__run_rollback` / `__complete_artifact` /
+`__disable_autonomous` / `__post_update`). The dispatcher takes **no**
+`autonomous` flag — tools read `SessionState.effective_autonomous`, which the
+worker freezes once per prompt, so a mid-prompt mode toggle never rebuilds the
+dispatcher or splits the prompt's mode. Autonomous filtering of `ask_user`
+happens once, in `subagents/_registry`.
 
 **State:** Complete; mirrors the prior dispatch behavior with the two surfaces unified.
 
@@ -386,25 +390,25 @@ handlers) — via `kodo.llms.llamacpp`, never from the private modules.
 autonomous)` returns a `SubAgent` with `{PLACEHOLDER:TOOLS}` replaced and
 preamble prepended. Consumed only by `WorkflowEngine`.
 
-**The 14 agents + 1 preamble** (frontmatter `tools:` lists):
+**The 15 agents + 1 preamble** (frontmatter `tools:` lists):
 
 | Agent | Tools declared | Role |
 |---|---|---|
-| `orchestrator` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, **disable_autonomous_mode**, **post_update** | Arbiter. Resolved through the same `tools_for_agent` path as every other agent. |
+| `orchestrator` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode, post_update | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. |
+| `problem_solver` | create/edit/delete/move/copy_file, run_command, **toolchain_build/test/deps**, ask_user, post_update | Standalone generalist for the **problem-solving** workflow — runs *outside* the Orchestrator pipeline, talking to the user directly and editing real files on disk (see §15). |
 | `narrative_author` | publish, read, **ask_user**, request_review, report_completed | Solo, user-facing intake. |
 | `architect`, `requirements_author`, `functional_designer`, `e2e_test_designer`, `test_designer` | publish, read, escalate_blocker | Authors (paired with a critic). |
 | `architect_critic`, `requirements_critic`, `functional_design_critic`, `e2e_test_design_critic`, `code_critic` | publish, read, request_review, report_completed | Critics (own the review gate). |
 | `coder` | publish, read, **toolchain_build/test/deps**, escalate_blocker | Implements code (toolchain tools not yet dispatchable). |
 | `test_coder` | publish, read, escalate_blocker, request_review, report_completed | Writes tests. |
 
-> ⚠️ **Frontmatter ↔ surface mismatch:** `orchestrator` declares
-> `disable_autonomous_mode`/`post_update` (rendered into its prompt) but these
-> have no handler in `tools/`, so `tools_for_agent` drops them — described to the
-> LLM yet not executable. (`finalize_project` was **added to the orchestrator
-> frontmatter** during the dispatch unification, closing the former reverse gap.)
-> `coder`/`test_coder` likewise declare `toolchain_*`, which `tools_for_agent`
-> drops. These are the remaining gaps between "described to the LLM" and
-> "executable."
+> ⚠️ **Frontmatter ↔ surface mismatch:** `coder`/`test_coder`/`problem_solver`
+> declare `toolchain_build/test/deps`, which have no handler in `tools/`, so
+> `tools_for_agent` drops them — described to the LLM yet not executable. This is
+> the remaining gap between "described to the LLM" and "executable."
+> (`orchestrator`'s `disable_autonomous_mode`/`post_update` and `problem_solver`'s
+> file-I/O were the former gaps; both now have handlers in `_TOOL_CLASSES` and
+> dispatch normally.)
 
 **State:** Loader/registry complete; agent roster present; tool wiring partially complete.
 
@@ -428,7 +432,7 @@ registry: AgentRegistry      mirror: CheckpointManager
 ```
 
 It **internally constructs**: a shared `ProjectIndex`, a `Workspace` (wrapping
-that index), a `SessionState`, and an `_EngineSubagentRunner` adapter. It builds
+that index), a `SessionState`, and one `_EngineServices` adapter. It builds
 a `tools.ToolDispatcher` **per agent run** (via `__make_dispatcher`, which reads
 the current `ProjectIndex` — no persistent surface to rebuild after
 bootstrap/rollback). It owns `__orch_messages` (the Orchestrator's running
@@ -440,6 +444,19 @@ bootstrap/rollback). It owns `__orch_messages` (the Orchestrator's running
   → binds returned `ProjectIndex` into `Workspace` →
   `TransientStore.attach_session` → spawns `__run_worker` task. If resumed, loads
   messages and may re-fire a pending prompt.
+- **Public client entry points** (registered as WS handlers in `_app`, §14):
+  `handle_prompt_submit(text, request_id)` enqueues a prompt;
+  `handle_mode_set(autonomous)` sets the **Autonomous/Interactive** mode
+  (`SessionState.autonomous`, user-facing) and persists it; `handle_workflow_set(mode)`
+  sets the **Guided/Problem-Solving** workflow (`SessionState.workflow_mode`,
+  normalised to `"guided"` | `"problem_solving"`); `stop()` cancels the worker.
+  Both setters emit `EVT_STATE` and never interrupt an in-flight prompt.
+- `__run_worker()` — dequeues one task at a time. **First it freezes the
+  per-prompt autonomous mode** (`effective_autonomous = autonomous`), then
+  **routes by `workflow_mode`**: `"problem_solving"` →
+  `__run_problem_solver_with_input` (if the `problem_solver` agent is present,
+  else `__handle_input_no_agent`); otherwise → `__run_orchestrator_with_input`.
+  Exits the loop once `phase == "done"`.
 - `__resolve_plugin(capability)` → reads fresh settings → `get_llm_registry()` →
   builds `ClaudePlugin` (via `ApiKeyProvider.get_key`) or `LlamaPlugin`, wrapped
   in `LoggingLLMPlugin`.
@@ -451,7 +468,14 @@ bootstrap/rollback). It owns `__orch_messages` (the Orchestrator's running
 - `__run_orchestrator_with_input` → builds a `ToolDispatcher` for the
   orchestrator, `tool_dispatch = dispatcher.dispatch`,
   `tools = tools_for_agent(agent.tools)` (the registry already filtered the
-  agent's tools for autonomous mode).
+  agent's tools for `effective_autonomous`).
+- `__run_problem_solver_with_input` → the **problem-solving** counterpart of the
+  orchestrator loop: loads the `problem_solver` agent, keeps its own running
+  history (`__ps_messages`), and runs the same `__run_agent_turn` with its own
+  per-run `ToolDispatcher` and `stop_after_tools = lambda: dispatcher.stop_requested`.
+  It works the prompt end to end alone (no sub-agents, no critics) and yields
+  back to the user. Both loops read `effective_autonomous`, so `ask_user` is
+  withheld in autonomous mode for the Problem Solver too.
 - `__run_subagent` → builds a per-run `ToolDispatcher`, `tools =
   tools_for_agent(agent.tools)`, `tool_dispatch = dispatcher.dispatch`,
   `stop_after_tools = lambda: dispatcher.stop_requested`. Returns published IDs.
@@ -459,17 +483,21 @@ bootstrap/rollback). It owns `__orch_messages` (the Orchestrator's running
   critic), reads the critic's feedback artifact from `Workspace`, emits
   `EVT_REVIEW_STARTED`/`EVT_REVIEW_VERDICT`. **This is the callback the
   Orchestrator's `run_author_critic_iteration` tool invokes.**
-- `__complete_artifact` (injected into every `ToolDispatcher` as `complete_fn`) →
+- `__complete_artifact` (exposed via `_EngineServices.complete_artifact`) →
   reads artifact → `__resolve_toolchain` + `__component_registry` →
   `materialization_path` → `Promoter.promote` (mirror commit + sidecar) →
   `Workspace.mark_completed(location=...)`. This is **promotion-on-completion**.
-- `__run_rollback` (injected into every `ToolDispatcher` as `rollback_fn`) →
+- `__run_rollback` (exposed via `_EngineServices.rollback`) →
   `Rollback.execute` → rebinds index, resets toolchain, fresh orchestrator session.
+- `__disable_autonomous` / `__post_update` (exposed via
+  `_EngineServices.disable_autonomous_mode` / `post_update`) back the
+  orchestrator's `disable_autonomous_mode` / `post_update` tools.
 
 **The engine injects into every `ToolDispatcher`:** `GateOrchestrator`,
-`SessionState`, the `_EngineSubagentRunner` adapter (wrapping `__run_subagent` /
-`__run_author_critic_iteration`), and the `__run_rollback` / `__complete_artifact`
-callbacks.
+`SessionState`, and one `_EngineServices` adapter wrapping `__run_subagent` /
+`__run_author_critic_iteration` / `__run_rollback` / `__complete_artifact` /
+`__disable_autonomous` / `__post_update`. The per-prompt autonomous mode is read
+from `SessionState.effective_autonomous` rather than passed in.
 
 ### 12.2 Tool dispatch (`tools.ToolDispatcher`)
 
@@ -488,7 +516,7 @@ as the `stop_after_tools` predicate. The former `ToolSurface` /
 | [_orchestrator.py](../src/kodo/runtime/_orchestrator.py) | `OrchestratorMarker` | Reads/writes `.kodo/orchestrator.session`. Used by bootstrap + rollback. |
 | [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse`, `QuestionResponse` | **Composes** `WebSocketDispatcher` + `TransientStore`. `fire_approval`/`fire_question` send `kind=request`, register a future, persist the pending prompt (for restart re-surface), and await. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by every gate-backed tool handler. |
 | [_rollback.py](../src/kodo/runtime/_rollback.py) | `Rollback` | **Composes** `MirrorRepo` + `ProjectLayout`. 7-step restore; rebuilds via `ProjectBootstrap`. Imports `_session_log.SessionLog`, `_orchestrator.OrchestratorMarker`. |
-| [_session.py](../src/kodo/runtime/_session.py) | `SessionState` | Mutable phase/agent/component/autonomous. `to_dict()` for `EVT_STATE`. Shared by the engine; satisfies `tools.SessionLike` (the `finalize_project` handler writes `phase`). |
+| [_session.py](../src/kodo/runtime/_session.py) | `SessionState` | Mutable `phase`/`agent`/`component` plus the two mode fields: `autonomous` (user-facing Autonomous/Interactive, set by `handle_mode_set`, reported in `to_dict()`/`EVT_STATE`) and `effective_autonomous` (frozen per prompt by `__run_worker`; what tools/registry actually read), and `workflow_mode` (`"guided"`/`"problem_solving"`, in `to_dict()`). Shared by the engine; satisfies `tools.SessionLike` (`finalize_project` writes `phase`; tools read `effective_autonomous`). |
 | [_session_log.py](../src/kodo/runtime/_session_log.py) | `SessionLog` | Append-only JSONL per session. Used by `Rollback` (termination events). |
 
 **State:** Engine, dispatch (now in `tools/`), bootstrap, gates, rollback are
@@ -530,8 +558,11 @@ AgentRegistry(_AGENTS_DIR)   CheckpointManager(layout)
             transient, layout, registry, mirror
 ```
 
-Then it registers `HandlerFn`s on the dispatcher (`hello`, `prompt.submit`,
-`mode.set`, `stop`, `config.reload`, llama install/start/stop, model.install),
+Then it registers `HandlerFn`s on the dispatcher (`hello`, `ping`, `prompt.submit`,
+`mode.set` → `handle_mode_set` (Autonomous/Interactive), `workflow.set` →
+`handle_workflow_set` (Guided/Problem-Solving), `stop`, `config.reload`, llama
+install/start/stop, model.install) — `mode.set`/`workflow.set` each reply with a
+`mode.accepted`/`workflow.accepted` response —
 stores the engine on the app, and hooks `_start_background`/`_stop_background`
 (which call `engine.start()`/`engine.stop()` and adopt any surviving
 llama-server).
@@ -546,28 +577,51 @@ llama-server).
 `engine.handle_prompt_submit` (enqueues) → worker → `__run_orchestrator_with_input`
 → `__run_agent_turn` streams the Orchestrator LLM → tool calls dispatch through
 the orchestrator's `tools.ToolDispatcher` → `run_subagent`/`run_author_critic_iteration`
-call back into the engine (via the injected `SubagentRunner`), which spawns leaf
+call back into the engine (via the injected `EngineServices`), which spawns leaf
 agents — each with its own `ToolDispatcher` — → artifacts land in
-`Workspace`/`ProjectIndex`.
+`Workspace`/`ProjectIndex`. This is the **guided** workflow.
+
+**Prompt → work (problem-solving):** when `workflow_mode == "problem_solving"`,
+the worker routes the same prompt to `__run_problem_solver_with_input` instead.
+The standalone `problem_solver` agent runs one `__run_agent_turn` with its own
+dispatcher, reading/writing the project's real files via the file-I/O and
+`run_command` tools and talking to the user directly (`ask_user`/`post_update`) —
+no Orchestrator, no sub-agents, no critics, no artifacts.
+
+**Mode toggles (both apply to the *next* prompt):** the VSIX sidebar has two
+toggles. *Autonomous/Interactive* → `toggle_autonomous` → `mode.set {autonomous}`
+→ `handle_mode_set` sets `SessionState.autonomous` (and persists it); it does
+**not** touch the in-flight prompt — `__run_worker` copies it into
+`effective_autonomous` only when the next prompt is dequeued, so the sidebar
+shows a "applies to your next prompt" notice. *Guided/Problem-Solving* →
+`toggle_workflow_mode` → `workflow.set {mode}` → `handle_workflow_set` sets
+`SessionState.workflow_mode`, which the worker reads at the next dequeue to pick
+the entry agent. Both emit `EVT_STATE`; the Orchestrator can also drop autonomous
+mid-run via the `disable_autonomous_mode` tool (engine `__disable_autonomous`
+clears both `autonomous` and `effective_autonomous` immediately and emits
+`EVT_AUTONOMOUS_CHANGED`).
 
 **Completion → promotion:** a critic/solo agent calls `report_artifact_completed`
-→ `tools/_report_artifact_completed.handle` → engine `__complete_artifact`
-(injected as `complete_fn`) → `Promoter.promote` writes the file into
+→ `tools/_report_artifact_completed.handle` → `EngineServices.complete_artifact`
+→ engine `__complete_artifact` → `Promoter.promote` writes the file into
 `src/`/`gen/` **and** the mirror tree +
 `.kodo.json` sidecar, commits, then `Workspace.mark_completed` flips state and
 deletes the staging file.
 
 **User gate:** any `ask_user`/`request_user_review_artifact`/`escalate_blocker`
 → `GateOrchestrator.fire_*` sends a `kind=request`, registers a future, persists
-`pending_prompt`, and awaits the client's `kind=response`. In `autonomous` mode
-`ask_user` is withheld entirely and review auto-accepts.
+`pending_prompt`, and awaits the client's `kind=response`. The autonomous mode
+in force is `SessionState.effective_autonomous`, frozen by the worker when it
+dequeues the prompt; a user toggle mid-prompt updates `autonomous` (UI-facing)
+but only takes effect at the next prompt. In autonomous mode `ask_user` is
+withheld entirely and review auto-accepts.
 
 **Restart:** `ProjectBootstrap` rebuilds the index from disk; `OrchestratorMarker`
 + `TransientStore` resume the session; an unanswered `pending_prompt` is
 re-surfaced.
 
-**Rollback:** Orchestrator `rollback` → `tools/_rollback.handle` → engine
-`__run_rollback` (injected as `rollback_fn`) → `Rollback.execute` (mirror
+**Rollback:** Orchestrator `rollback` → `tools/_rollback.handle` →
+`EngineServices.rollback` → engine `__run_rollback` → `Rollback.execute` (mirror
 checkout, tree restore, fresh bootstrap) → engine rebinds index + starts a fresh
 orchestrator session.
 
@@ -582,8 +636,9 @@ orchestrator session.
 | `toolspecs` catalog, `subagents` loader/registry, `tools` dispatch | ✅ Complete |
 | `runtime` engine / bootstrap / gates / rollback | ✅ Functional; lower branch coverage on restart/rollback |
 | Toolchain agent tools (`toolchain_build/test/deps`) | ⚠️ Spec only — no handler, dropped by `tools_for_agent` |
-| Orchestrator `disable_autonomous_mode` / `post_update` | ⚠️ Spec + prompt only — no handler, dropped by `tools_for_agent` |
-| Native file-IO / `run_command` tools | ⚠️ Implemented but granted to no agent |
+| `disable_autonomous_mode` / `post_update` | ✅ Implemented and dispatched (orchestrator + problem_solver) |
+| Native file-IO / `run_command` tools | ✅ Implemented; granted to the `problem_solver` agent |
+| Two workflows (`guided` Orchestrator / `problem_solving` Problem Solver) | ✅ Implemented; selected by `workflow.set` → `SessionState.workflow_mode` |
 | `security/*`, `state/_memory` | ⛔ Stubs |
 | `project/_manifest` | ◽ Implemented but unused at runtime |
 
