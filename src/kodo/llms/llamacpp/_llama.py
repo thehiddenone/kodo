@@ -43,6 +43,13 @@ _log = logging.getLogger(__name__)
 _DEFAULT_MAX_TOKENS = 8192
 _API_KEY = "key_is_not_required_for_local_inference"
 
+# Force an uncompressed response body. llama-server talks to us over loopback,
+# so compression buys nothing — but if httpx negotiates gzip/zstd, the SSE
+# stream is delivered in whole compression blocks instead of per token, which
+# shows up as the stream stalling for a beat and then dumping many tokens at
+# once. Asking for ``identity`` keeps each chunk flushing as it is produced.
+_NO_COMPRESSION_HEADERS = {"Accept-Encoding": "identity"}
+
 
 # ---------------------------------------------------------------------------
 # Message-format conversion: kodo Message → OpenAI chat messages
@@ -305,7 +312,9 @@ class LlamaPlugin(LLMPlugin):
         if server is not None and server.is_running:
             if self.__client is None:
                 self.__client = openai.AsyncOpenAI(
-                    api_key=_API_KEY, base_url=f"{server.base_url}/v1"
+                    api_key=_API_KEY,
+                    base_url=f"{server.base_url}/v1",
+                    default_headers=_NO_COMPRESSION_HEADERS,
                 )
             return
 
@@ -327,7 +336,11 @@ class LlamaPlugin(LLMPlugin):
             )
             raise
 
-        self.__client = openai.AsyncOpenAI(api_key=_API_KEY, base_url=f"{server.base_url}/v1")
+        self.__client = openai.AsyncOpenAI(
+            api_key=_API_KEY,
+            base_url=f"{server.base_url}/v1",
+            default_headers=_NO_COMPRESSION_HEADERS,
+        )
         await self.__sink.send(
             Envelope.make_event(
                 EVT_LLAMA_STATE,

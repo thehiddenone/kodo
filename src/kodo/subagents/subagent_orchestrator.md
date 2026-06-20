@@ -1,5 +1,6 @@
 ---
 name: orchestrator
+display_name: Kōdo
 tools:
   - query_frontier
   - list_artifacts

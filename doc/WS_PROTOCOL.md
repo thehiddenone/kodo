@@ -265,6 +265,22 @@ The `post_update` tool's payload. A short progress message rendered in the sessi
 { "type": "post.update", "message": "Wrote the auth module; running tests next." }
 ```
 
+### 5.9a `session.name` — session title
+
+The human-readable name of the session, produced by the engine-driven `session_titler` sub-agent from the first prompt (and persisted to `meta.json`). Replayed once after `hello.ack` with the current name (default `"Unnamed Session"`), then pushed again when a title is generated. The client renames the editor tab and the session header.
+
+```json
+{ "type": "session.name", "session_id": "...", "name": "Library Inventory API" }
+```
+
+### 5.9b `session.naming` — titler in flight
+
+Brackets the silent titling call (which streams nothing) so the client can show a "Naming session …" indicator instead of an unexplained pause. Emitted `true` before the call and `false` when it finishes (success or failure).
+
+```json
+{ "type": "session.naming", "active": true }
+```
+
 ### 5.10 `error` — unsolicited server error
 
 For errors not tied to a specific request. Errors tied to a request are returned as `response` payloads with an `error` field (§2.2).

@@ -61,7 +61,11 @@ from kodo.transport import (
     EVT_POST_UPDATE,
     EVT_REVIEW_STARTED,
     EVT_REVIEW_VERDICT,
+    EVT_SESSION_NAME,
+    EVT_SESSION_NAMING,
     EVT_STATE,
+    EVT_SUBSESSION_ENDED,
+    EVT_SUBSESSION_STARTED,
     EVT_USAGE_UPDATE,
 )
 from kodo.workspace import (
@@ -86,6 +90,25 @@ _log = logging.getLogger(__name__)
 
 _ORCHESTRATOR_AGENT_NAME = "orchestrator"
 _PROBLEM_SOLVER_AGENT_NAME = "problem_solver"
+_SESSION_TITLER_AGENT_NAME = "session_titler"
+
+# Sub-agents that the engine drives directly and that must never be reachable
+# through the ``run_subagent`` tool (the Orchestrator/Problem Solver cannot
+# invoke them).
+_DIRECT_ONLY_AGENTS = frozenset({_SESSION_TITLER_AGENT_NAME})
+
+# The two top-level entry agents share one agent-agnostic main message history
+# (``__main_messages``); switching workflow mode only swaps the system prompt
+# and tool set, so the conversation continues seamlessly across a mode change.
+#
+# Tools whose dispatch spawns an isolated sub-agent subsession. When the main
+# agent calls one, the turn's message prefix (including the spawning assistant
+# message) is flushed to ``session.jsonl`` BEFORE dispatch, so a crash mid-
+# subagent leaves the dangling ``tool_use`` on disk and the run can be resumed.
+_SUBAGENT_SPAWNING_TOOLS = frozenset({"run_subagent", "run_author_critic_iteration"})
+
+# Maximum length of a generated session title, in characters.
+_MAX_TITLE_LEN = 60
 
 
 class _EngineServices:
@@ -182,9 +205,10 @@ class WorkflowEngine:
     __services: _EngineServices
     __worker: asyncio.Task[None] | None
     __cumulative_usd: float
-    __orch_messages: list[Message]
+    __main_messages: list[Message]
     __orch_session_id: str
     __current_vendor: str | None
+    __replay_subsessions: list[dict[str, object]] | None
 
     def __init__(
         self,
@@ -223,10 +247,10 @@ class WorkflowEngine:
         self.__session = SessionState()
         self.__worker = None
         self.__cumulative_usd = 0.0
-        self.__orch_messages = []
-        self.__ps_messages: list[Message] = []
+        self.__main_messages = []
         self.__orch_session_id = ""
         self.__current_vendor = None
+        self.__replay_subsessions = None
         self.__toolchain: ToolchainPlugin | None = None
         self.__services = _EngineServices(
             run_subagent=self.__run_subagent,
@@ -246,6 +270,16 @@ class WorkflowEngine:
     def gate(self) -> GateOrchestrator:
         """Gate orchestrator (needed by the approval handler in _app.py)."""
         return self.__gate
+
+    @property
+    def session_id(self) -> str:
+        """Identifier of the active Orchestrator session."""
+        return self.__orch_session_id
+
+    @property
+    def session_name(self) -> str:
+        """Human-readable name of the active session (from ``meta.json``)."""
+        return self.__transient.session_name
 
     async def start(self) -> None:
         """Start the worker coroutine.
@@ -269,20 +303,32 @@ class WorkflowEngine:
 
         self.__transient.attach_session(result.orchestrator_session_id, result.orchestrator_resumed)
 
+        resume_subsession = False
         if result.orchestrator_resumed:
-            self.__orch_messages = self.__load_orch_messages()
-            pending = self.__transient.pending_prompt
-            if pending is not None:
-                asyncio.create_task(
-                    self.__resume_pending_prompt(pending), name="kodo-resume-prompt"
-                )
+            self.__main_messages = self.__load_main_messages()
+            # A main turn that was interrupted while a sub-agent held the floor
+            # leaves a dangling assistant ``tool_use`` (the spawning call) on
+            # disk with no following ``tool_result``. Detect that and resume the
+            # sub-agent subsession in place, then continue the main turn.
+            if self.__has_dangling_tool_use():
+                resume_subsession = True
+            else:
+                pending = self.__transient.pending_prompt
+                if pending is not None:
+                    asyncio.create_task(
+                        self.__resume_pending_prompt(pending), name="kodo-resume-prompt"
+                    )
 
         self.__worker = asyncio.create_task(self.__run_worker(), name="kodo-worker")
+        if resume_subsession:
+            asyncio.create_task(self.__resume_main_turn(), name="kodo-resume-subsession")
         _log.info(
-            "Runtime worker started (orchestrator_session=%s resumed=%s messages=%d)",
+            "Runtime worker started (orchestrator_session=%s resumed=%s messages=%d "
+            "resume_subsession=%s)",
             self.__orch_session_id,
             result.orchestrator_resumed,
-            len(self.__orch_messages),
+            len(self.__main_messages),
+            resume_subsession,
         )
 
     async def __resume_pending_prompt(self, pending: dict[str, object]) -> None:
@@ -453,6 +499,11 @@ class WorkflowEngine:
             # consistent end to end.
             self.__session.effective_autonomous = self.__session.autonomous
             try:
+                # Name the session from its first prompt, before that prompt
+                # reaches the main agent. The titler session is invisible: it
+                # streams nothing to the client and only its cost is folded in.
+                await self.__maybe_generate_session_title(text)
+
                 # The entry agent is chosen per prompt from the current
                 # workflow mode: Problem Solver for "problem_solving", the
                 # Orchestrator (full Kodo pipeline) for "guided".
@@ -515,43 +566,166 @@ class WorkflowEngine:
         await self.__emit_state()
 
     # ------------------------------------------------------------------
+    # Session titling (engine-driven, invisible to the user)
+    # ------------------------------------------------------------------
+
+    async def __maybe_generate_session_title(self, text: str) -> None:
+        """Name the session from its first prompt, if it is still unnamed.
+
+        Runs the ``session_titler`` sub-agent directly (never via the tool
+        surface), persists the result to ``meta.json``, and pushes it to the
+        client so the editor tab can be renamed. The titler session is silent:
+        no streaming, state, or agent events are emitted — only its USD cost is
+        folded into the running session total. Any failure is swallowed so the
+        user's prompt is never blocked by titling.
+        """
+        if not text.strip():
+            return
+        if self.__transient.is_session_named:
+            return
+        if not self.__agent_available(_SESSION_TITLER_AGENT_NAME):
+            return
+
+        # Tell the client a (silent) naming call is in flight so it can show a
+        # "Naming session …" indicator — otherwise the titling round-trip looks
+        # like an unexplained stall before the main agent starts streaming.
+        await self.__emit_session_naming(True)
+        try:
+            title = await self.__generate_session_title(text)
+        except Exception:
+            _log.exception("Session title generation failed; leaving session unnamed")
+            return
+        finally:
+            await self.__emit_session_naming(False)
+
+        if not title:
+            return
+
+        self.__transient.set_session_name(title)
+        await self.__sink.send(
+            Envelope.make_event(
+                EVT_SESSION_NAME,
+                {"session_id": self.__orch_session_id, "name": title},
+            )
+        )
+        _log.info("Session %s named %r", self.__orch_session_id, title)
+
+    async def __generate_session_title(self, text: str) -> str | None:
+        """Run one silent LLM call to produce a session title from *text*.
+
+        Does not forward any stream/thinking events to the client; only the
+        title text is collected. The call's USD cost is added to the running
+        cumulative total and pushed as a cost-only ``usage.update`` (no
+        ``last_call_tokens``, so it adds no entry to the session feed).
+        """
+        agent = self.__registry.get(_SESSION_TITLER_AGENT_NAME)
+        plugin, model_id = await self.__resolve_plugin(agent.capability)
+
+        messages: list[Message] = [Message(role="user", content=text)]
+        text_parts: list[str] = []
+        turn_end: TurnEnd | None = None
+        async for event in plugin.stream_query(
+            stream_id=uuid.uuid4().hex,
+            model=model_id,
+            system=agent.system_prompt,
+            messages=messages,
+            tools=[],
+            cache_breakpoints=[0],
+        ):
+            if isinstance(event, TokenDelta):
+                text_parts.append(event.text)
+            elif isinstance(event, TurnEnd):
+                turn_end = event
+
+        if turn_end is not None:
+            self.__cumulative_usd += turn_end.usage.usd_cost
+            await self.__emit_cost_only()
+
+        return self.__sanitize_title("".join(text_parts))
+
+    @staticmethod
+    def __sanitize_title(raw: str) -> str | None:
+        """Reduce raw model output to a single clean title line.
+
+        Takes the first non-empty line, strips wrapping quotes and a leading
+        ``Title:`` label, collapses whitespace, and clamps the length. Returns
+        ``None`` if nothing usable remains.
+        """
+        line = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
+        if not line:
+            return None
+        if ":" in line:
+            head, _, tail = line.partition(":")
+            if head.strip().lower() in ("title", "session", "session title"):
+                line = tail.strip()
+        line = line.strip().strip("\"'`").strip()
+        line = " ".join(line.split())
+        if not line:
+            return None
+        if len(line) > _MAX_TITLE_LEN:
+            line = line[:_MAX_TITLE_LEN].rstrip()
+        return line or None
+
+    # ------------------------------------------------------------------
     # Orchestrator LLM loop
     # ------------------------------------------------------------------
 
     async def __run_orchestrator_with_input(self, text: str) -> None:
-        agent = self.__registry.get(_ORCHESTRATOR_AGENT_NAME, self.__session.effective_autonomous)
+        await self.__run_entry_agent(_ORCHESTRATOR_AGENT_NAME, text)
+
+    async def __run_entry_agent(self, agent_name: str, text: str) -> None:
+        """Drive a top-level entry agent (Orchestrator or Problem Solver).
+
+        Both entry agents share one agent-agnostic main message history
+        (``__main_messages``) persisted to ``session.jsonl``; the only per-mode
+        difference is the system prompt and tool set. The seed user prompt is
+        persisted immediately; the agent's own turns persist incrementally
+        through :meth:`__run_agent_turn` (the spawning-tool prefix is flushed
+        before any sub-agent dispatch so an interrupted sub-agent can resume).
+        """
+        agent = self.__registry.get(agent_name, self.__session.effective_autonomous)
         plugin, model_id = await self.__resolve_plugin(agent.capability)
 
-        pre_turn_len = len(self.__orch_messages)
         if text:
-            self.__orch_messages = self.__orch_messages + [Message(role="user", content=text)]
+            self.__main_messages = self.__main_messages + [Message(role="user", content=text)]
+            self.__transient.append_message("user", text, entry_agent=agent_name)
 
         self.__session.phase = "running"
-        self.__session.agent = _ORCHESTRATOR_AGENT_NAME
+        self.__session.agent = agent_name
         await self.__emit_state()
-        await self.__emit_agent_started(_ORCHESTRATOR_AGENT_NAME)
+        await self.__emit_agent_started(agent_name)
 
-        dispatcher = self.__make_dispatcher(_ORCHESTRATOR_AGENT_NAME, self.__orch_session_id)
+        dispatcher = self.__make_dispatcher(agent_name, self.__orch_session_id)
         stream_id = uuid.uuid4().hex
-        self.__orch_messages, _ = await self.__run_agent_turn(
+        self.__main_messages, _ = await self.__run_agent_turn(
             llm=plugin,
             model=model_id,
             system_prompt=agent.system_prompt,
-            messages=self.__orch_messages,
+            messages=self.__main_messages,
             tools=tools_for_agent(agent.tools),
             tool_dispatch=dispatcher.dispatch,
             stream_id=stream_id,
+            agent_name=agent_name,
+            stop_after_tools=lambda: dispatcher.stop_requested,
+            persist=self.__persist_main_messages(agent_name),
+            flush_before=_SUBAGENT_SPAWNING_TOOLS,
         )
         await self.__sink.send(Envelope.make_stream_end(stream_id))
-        await self.__emit_agent_finished(_ORCHESTRATOR_AGENT_NAME)
-
-        for msg in self.__orch_messages[pre_turn_len:]:
-            self.__transient.append_message(msg.role, msg.content)
+        await self.__emit_agent_finished(agent_name)
 
         if self.__session.phase != "done":
             self.__session.phase = "awaiting_user"
         self.__session.agent = None
         await self.__emit_state()
+
+    def __persist_main_messages(self, entry_agent: str) -> Callable[[list[Message]], None]:
+        """Return a persist hook that appends main messages to ``session.jsonl``."""
+
+        def _persist(batch: list[Message]) -> None:
+            for msg in batch:
+                self.__transient.append_message(msg.role, msg.content, entry_agent=entry_agent)
+
+        return _persist
 
     # ------------------------------------------------------------------
     # Problem Solver LLM loop (standalone, outside the Kodo pipeline)
@@ -560,41 +734,13 @@ class WorkflowEngine:
     async def __run_problem_solver_with_input(self, text: str) -> None:
         """Drive the standalone Problem Solver agent for one user prompt.
 
-        Mirrors the Orchestrator loop but keeps its own running message
-        history (``self.__ps_messages``); the Problem Solver works the prompt
-        end to end on its own, then yields back to the user.
+        Shares the agent-agnostic main history with the Orchestrator (see
+        :meth:`__run_entry_agent`): switching to Problem Solving only swaps the
+        system prompt and tools, so the conversation continues across the mode
+        change and — unlike before — Problem Solver turns now persist to
+        ``session.jsonl``.
         """
-        agent = self.__registry.get(_PROBLEM_SOLVER_AGENT_NAME, self.__session.effective_autonomous)
-        plugin, model_id = await self.__resolve_plugin(agent.capability)
-
-        if text:
-            self.__ps_messages = self.__ps_messages + [Message(role="user", content=text)]
-
-        self.__session.phase = "running"
-        self.__session.agent = _PROBLEM_SOLVER_AGENT_NAME
-        await self.__emit_state()
-        await self.__emit_agent_started(_PROBLEM_SOLVER_AGENT_NAME)
-
-        dispatcher = self.__make_dispatcher(_PROBLEM_SOLVER_AGENT_NAME, self.__orch_session_id)
-        stream_id = uuid.uuid4().hex
-        self.__ps_messages, _ = await self.__run_agent_turn(
-            llm=plugin,
-            model=model_id,
-            system_prompt=agent.system_prompt,
-            messages=self.__ps_messages,
-            tools=tools_for_agent(agent.tools),
-            tool_dispatch=dispatcher.dispatch,
-            stream_id=stream_id,
-            agent_name=_PROBLEM_SOLVER_AGENT_NAME,
-            stop_after_tools=lambda: dispatcher.stop_requested,
-        )
-        await self.__sink.send(Envelope.make_stream_end(stream_id))
-        await self.__emit_agent_finished(_PROBLEM_SOLVER_AGENT_NAME)
-
-        if self.__session.phase != "done":
-            self.__session.phase = "awaiting_user"
-        self.__session.agent = None
-        await self.__emit_state()
+        await self.__run_entry_agent(_PROBLEM_SOLVER_AGENT_NAME, text)
 
     # ------------------------------------------------------------------
     # Generic agent turn (single LLM call + tool loop)
@@ -611,6 +757,9 @@ class WorkflowEngine:
         stream_id: str,
         agent_name: str = _ORCHESTRATOR_AGENT_NAME,
         stop_after_tools: Callable[[], bool] | None = None,
+        persist: Callable[[list[Message]], None] | None = None,
+        flush_before: frozenset[str] = frozenset(),
+        persist_each_iteration: bool = False,
     ) -> tuple[list[Message], list[Path]]:
         """Run one LLM turn with tool-use loop until the model stops calling tools.
 
@@ -625,6 +774,17 @@ class WorkflowEngine:
             agent_name: Agent name used in usage records.
             stop_after_tools: When provided and returns ``True`` after a tool
                 batch, the loop exits without calling the LLM again.
+            persist: When provided, called with each batch of newly appended
+                messages so they can be durably logged (main ``session.jsonl``
+                or a subsession file). Messages already present on entry are
+                assumed already persisted and never re-emitted.
+            flush_before: Tool names whose dispatch must be preceded by flushing
+                the not-yet-persisted message prefix (including the spawning
+                assistant message). Used by the main turn so an interrupted
+                sub-agent leaves a recoverable dangling ``tool_use`` on disk.
+            persist_each_iteration: When ``True`` (subsession turns), flush after
+                every tool-result batch so a sub-agent's history is durable at
+                each turn boundary and can be resumed mid-run.
 
         Returns:
             tuple[list[Message], list[Path]]: Updated messages and (unused) files.
@@ -632,6 +792,13 @@ class WorkflowEngine:
         files_written: list[Path] = []
         tool_desc = {t.name: t.user_description for t in tools}
         tool_logger = ToolCallLogger(self.__layout.llm_requests_dir)
+        persisted_upto = len(messages)
+
+        def _flush() -> None:
+            nonlocal persisted_upto
+            if persist is not None and len(messages) > persisted_upto:
+                persist(messages[persisted_upto:])
+                persisted_upto = len(messages)
 
         while True:
             call_start_dt = datetime.now(tz=UTC)
@@ -689,6 +856,7 @@ class WorkflowEngine:
                 messages = messages + [
                     Message(role="assistant", content="".join(text_parts) or "(no text)")
                 ]
+                _flush()
                 break
 
             assistant_content: list[dict[str, object]] = []
@@ -705,30 +873,61 @@ class WorkflowEngine:
                 )
             messages = messages + [Message(role="assistant", content=assistant_content)]
 
-            tool_results: list[dict[str, object]] = []
-            for tc in tool_calls:
-                await self.__sink.send(
-                    Envelope.make_event(
-                        EVT_AGENT_TOOL_CALL,
-                        {"tool_name": tc.tool_name, "description": tool_desc.get(tc.tool_name, "")},
-                    )
-                )
-                tc_n = tool_logger.log_invocation(tc.tool_name, tc.tool_input)
-                result_text = await tool_dispatch(tc.tool_name, tc.tool_input)
-                tool_logger.log_result(tc.tool_name, tc_n, result_text)
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tc.tool_use_id,
-                        "content": result_text,
-                    }
-                )
+            # Persist the spawning assistant message BEFORE dispatching a
+            # sub-agent, so a crash mid-subagent leaves the dangling tool_use on
+            # disk for the resume path to pick up.
+            if any(tc.tool_name in flush_before for tc in tool_calls):
+                _flush()
+
+            calls = [(tc.tool_use_id, tc.tool_name, tc.tool_input) for tc in tool_calls]
+            tool_results = await self.__dispatch_tool_calls(
+                calls, tool_dispatch, tool_desc, tool_logger
+            )
             messages = messages + [Message(role="user", content=tool_results)]
 
+            if persist_each_iteration:
+                _flush()
+
             if stop_after_tools is not None and stop_after_tools():
+                _flush()
                 break
 
         return messages, files_written
+
+    async def __dispatch_tool_calls(
+        self,
+        calls: list[tuple[str, str, dict[str, object]]],
+        tool_dispatch: Callable[[str, dict[str, object]], Awaitable[str]],
+        tool_desc: dict[str, str],
+        tool_logger: ToolCallLogger,
+    ) -> list[dict[str, object]]:
+        """Dispatch a batch of ``(tool_use_id, name, input)`` calls in order.
+
+        Shared by the live turn loop and the crash-resume path (which replays
+        the tool calls recorded in a persisted assistant message).
+
+        Returns:
+            list[dict[str, object]]: ``tool_result`` content blocks, in order.
+        """
+        tool_results: list[dict[str, object]] = []
+        for tool_use_id, tool_name, tool_input in calls:
+            await self.__sink.send(
+                Envelope.make_event(
+                    EVT_AGENT_TOOL_CALL,
+                    {"tool_name": tool_name, "description": tool_desc.get(tool_name, "")},
+                )
+            )
+            tc_n = tool_logger.log_invocation(tool_name, tool_input)
+            result_text = await tool_dispatch(tool_name, tool_input)
+            tool_logger.log_result(tool_name, tc_n, result_text)
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": result_text,
+                }
+            )
+        return tool_results
 
     # ------------------------------------------------------------------
     # ToolDispatcher factory
@@ -770,12 +969,20 @@ class WorkflowEngine:
         Returns:
             list[str]: Artifact IDs published during the run.
         """
-        agent = self.__registry.get(name, self.__session.effective_autonomous)
-        plugin, model_id = await self.__resolve_plugin(agent.capability)
+        if name in _DIRECT_ONLY_AGENTS:
+            _log.warning("run_subagent: %r is engine-driven only and cannot be invoked", name)
+            return []
 
-        session_id = uuid.uuid4().hex
-        dispatcher = self.__make_dispatcher(name, session_id)
-        leaf_tools = tools_for_agent(agent.tools)
+        # During a crash-resume replay, each run_subagent call consumes the next
+        # subsession marker recorded before the crash instead of starting fresh.
+        # An exhausted/empty ledger means no marker was recorded for this call
+        # (crash landed before the subsession opened) — fall through to a fresh run.
+        if self.__replay_subsessions:
+            return await self.__replay_next_subsession(name)
+        self.__replay_subsessions = None
+
+        subsession_id = uuid.uuid4().hex
+        await self.__open_subsession(name, subsession_id)
 
         parts = [task_message] if task_message else []
         if input_artifact_ids:
@@ -783,7 +990,26 @@ class WorkflowEngine:
                 "\n## Input Artifact IDs\n" + "\n".join(f"- {aid}" for aid in input_artifact_ids)
             )
         initial_content = "\n".join(parts) or "(no task message)"
-        messages: list[Message] = [Message(role="user", content=initial_content)]
+        seed = Message(role="user", content=initial_content)
+        self.__transient.append_subsession_message(subsession_id, seed.role, seed.content)
+
+        published = await self.__drive_subsession(name, subsession_id, [seed])
+        await self.__close_subsession(name, subsession_id, published)
+        return published
+
+    async def __drive_subsession(
+        self, name: str, subsession_id: str, messages: list[Message]
+    ) -> list[str]:
+        """Run a sub-agent's isolated turn loop and return its published IDs.
+
+        Used for both a fresh subsession and a resumed one (``messages`` already
+        rehydrated from the subsession log). Sub-agent messages persist into the
+        subsession file at every turn boundary so the run is resumable mid-flight.
+        """
+        agent = self.__registry.get(name, self.__session.effective_autonomous)
+        plugin, model_id = await self.__resolve_plugin(agent.capability)
+        dispatcher = self.__make_dispatcher(name, subsession_id)
+        leaf_tools = tools_for_agent(agent.tools)
 
         self.__session.phase = "running"
         self.__session.agent = name
@@ -792,7 +1018,11 @@ class WorkflowEngine:
         stream_id = uuid.uuid4().hex
         await self.__emit_agent_started(name)
 
-        messages, _ = await self.__run_agent_turn(
+        def _persist(batch: list[Message]) -> None:
+            for msg in batch:
+                self.__transient.append_subsession_message(subsession_id, msg.role, msg.content)
+
+        await self.__run_agent_turn(
             llm=plugin,
             model=model_id,
             system_prompt=agent.system_prompt,
@@ -802,16 +1032,241 @@ class WorkflowEngine:
             stream_id=stream_id,
             agent_name=name,
             stop_after_tools=lambda: dispatcher.stop_requested,
+            persist=_persist,
+            persist_each_iteration=True,
         )
 
         await self.__sink.send(Envelope.make_stream_end(stream_id))
         await self.__emit_agent_finished(name)
+        # Union freshly-published IDs with any published before a crash (those
+        # are recoverable because publish_artifact stamps the subsession_id).
+        pre_crash = [
+            e.artifact_id for e in self.__index.all_entries() if e.session_id == subsession_id
+        ]
+        published = list(dict.fromkeys([*pre_crash, *dispatcher.published_ids]))
         _log.info(
-            "run_subagent completed: name=%s published=%s",
-            name,
-            dispatcher.published_ids,
+            "subsession completed: name=%s id=%s published=%s", name, subsession_id, published
         )
-        return dispatcher.published_ids
+        return published
+
+    async def __open_subsession(self, name: str, subsession_id: str) -> None:
+        """Record a subsession takeover: marker, active pointer, and UI divider."""
+        display_name = self.__display_name(name)
+        parent_display = self.__display_name(self.__session.agent or _ORCHESTRATOR_AGENT_NAME)
+        self.__transient.append_marker(
+            {
+                "type": "subsession_start",
+                "subsession_id": subsession_id,
+                "agent": name,
+                "display_name": display_name,
+                "parent_display_name": parent_display,
+            }
+        )
+        self.__transient.update(
+            active_subsession={
+                "subsession_id": subsession_id,
+                "agent": name,
+                "display_name": display_name,
+                "parent_display_name": parent_display,
+            }
+        )
+        await self.__sink.send(
+            Envelope.make_event(
+                EVT_SUBSESSION_STARTED,
+                {"subsession_id": subsession_id, "agent": name, "display_name": display_name},
+            )
+        )
+
+    async def __close_subsession(self, name: str, subsession_id: str, published: list[str]) -> None:
+        """Record a subsession handing control back: marker, clear pointer, divider."""
+        display_name = self.__display_name(name)
+        parent_display = self.__display_name(self.__session.agent or _ORCHESTRATOR_AGENT_NAME)
+        self.__transient.append_marker(
+            {
+                "type": "subsession_end",
+                "subsession_id": subsession_id,
+                "agent": name,
+                "display_name": display_name,
+                "parent_display_name": parent_display,
+                "result": list(published),
+            }
+        )
+        self.__transient.update(active_subsession=None)
+        await self.__sink.send(
+            Envelope.make_event(
+                EVT_SUBSESSION_ENDED,
+                {
+                    "subsession_id": subsession_id,
+                    "agent": name,
+                    "display_name": display_name,
+                    "parent_display_name": parent_display,
+                },
+            )
+        )
+
+    async def __replay_next_subsession(self, name: str) -> list[str]:
+        """Consume the next pre-crash subsession marker during resume replay.
+
+        Completed subsessions return their stored result immediately (the
+        artifacts are already on disk and rebuilt into the index). The single
+        active (un-closed) subsession is rehydrated from its log and driven to
+        completion live; once consumed, replay mode ends.
+        """
+        assert self.__replay_subsessions
+        rec = self.__replay_subsessions.pop(0)
+        subsession_id = str(rec["subsession_id"])
+        if not self.__replay_subsessions:
+            self.__replay_subsessions = None
+        if rec.get("completed"):
+            _log.info(
+                "Replay: subsession %s already complete; returning stored result", subsession_id
+            )
+            result = rec.get("result", [])
+            return [str(x) for x in result] if isinstance(result, list) else []
+
+        _log.info("Replay: resuming active subsession %s (%s)", subsession_id, name)
+        rehydrated = [
+            Message(role=str(m["role"]), content=m["content"])  # type: ignore[arg-type]
+            for m in self.__transient.read_subsession_messages(subsession_id)
+        ]
+        published = await self.__drive_subsession(name, subsession_id, rehydrated)
+        await self.__close_subsession(name, subsession_id, published)
+        return published
+
+    def __display_name(self, agent_name: str) -> str:
+        """User-friendly name for an agent (frontmatter ``display_name`` or derived)."""
+        try:
+            return self.__registry.get(agent_name).display_name or agent_name
+        except AgentLoadError:
+            return agent_name
+
+    # ------------------------------------------------------------------
+    # Crash resume of an interrupted sub-agent subsession
+    # ------------------------------------------------------------------
+
+    def __has_dangling_tool_use(self) -> bool:
+        """True when the last persisted main message awaits sub-agent results.
+
+        A spawning-tool turn flushes the assistant ``tool_use`` to disk before
+        dispatch; an interrupted sub-agent therefore leaves that assistant
+        message as the final persisted main message with no following
+        ``tool_result``. That is the marker of a resumable subsession.
+        """
+        if not self.__main_messages:
+            return False
+        last = self.__main_messages[-1]
+        if last.role != "assistant" or not isinstance(last.content, list):
+            return False
+        return any(isinstance(b, dict) and b.get("type") == "tool_use" for b in last.content)
+
+    async def __resume_main_turn(self) -> None:
+        """Resume a main turn that was interrupted while a sub-agent held the floor.
+
+        Rebuilds the subsession replay ledger from the markers recorded after
+        the dangling assistant message, re-dispatches the pending spawning tool
+        call(s) — completed sub-sessions return their stored result, the active
+        one is rehydrated and driven to completion — then appends the tool
+        results and continues the Orchestrator turn live.
+        """
+        last = self.__main_messages[-1]
+        if not isinstance(last.content, list):
+            return
+        tool_uses = [b for b in last.content if isinstance(b, dict) and b.get("type") == "tool_use"]
+        if not tool_uses:
+            return
+
+        self.__replay_subsessions = self.__build_replay_ledger()
+        _log.info(
+            "Resuming interrupted main turn: %d pending tool call(s), %d subsession(s) to replay",
+            len(tool_uses),
+            len(self.__replay_subsessions),
+        )
+
+        # Only the Orchestrator spawns sub-agents, so the interrupted entry agent
+        # is always the Orchestrator.
+        agent = self.__registry.get(_ORCHESTRATOR_AGENT_NAME, self.__session.effective_autonomous)
+        plugin, model_id = await self.__resolve_plugin(agent.capability)
+        dispatcher = self.__make_dispatcher(_ORCHESTRATOR_AGENT_NAME, self.__orch_session_id)
+        tools = tools_for_agent(agent.tools)
+        tool_desc = {t.name: t.user_description for t in tools}
+        tool_logger = ToolCallLogger(self.__layout.llm_requests_dir)
+
+        self.__session.phase = "running"
+        self.__session.agent = _ORCHESTRATOR_AGENT_NAME
+        await self.__emit_state()
+        await self.__emit_agent_started(_ORCHESTRATOR_AGENT_NAME)
+
+        calls: list[tuple[str, str, dict[str, object]]] = []
+        for b in tool_uses:
+            raw_input = b.get("input")
+            tool_input = raw_input if isinstance(raw_input, dict) else {}
+            calls.append((str(b["id"]), str(b["name"]), tool_input))
+        tool_results = await self.__dispatch_tool_calls(
+            calls, dispatcher.dispatch, tool_desc, tool_logger
+        )
+        self.__replay_subsessions = None
+        results_msg = Message(role="user", content=tool_results)
+        self.__main_messages = self.__main_messages + [results_msg]
+        self.__transient.append_message(
+            results_msg.role, results_msg.content, entry_agent=_ORCHESTRATOR_AGENT_NAME
+        )
+
+        stream_id = uuid.uuid4().hex
+        self.__main_messages, _ = await self.__run_agent_turn(
+            llm=plugin,
+            model=model_id,
+            system_prompt=agent.system_prompt,
+            messages=self.__main_messages,
+            tools=tools,
+            tool_dispatch=dispatcher.dispatch,
+            stream_id=stream_id,
+            agent_name=_ORCHESTRATOR_AGENT_NAME,
+            stop_after_tools=lambda: dispatcher.stop_requested,
+            persist=self.__persist_main_messages(_ORCHESTRATOR_AGENT_NAME),
+            flush_before=_SUBAGENT_SPAWNING_TOOLS,
+        )
+        await self.__sink.send(Envelope.make_stream_end(stream_id))
+        await self.__emit_agent_finished(_ORCHESTRATOR_AGENT_NAME)
+        if self.__session.phase != "done":
+            self.__session.phase = "awaiting_user"
+        self.__session.agent = None
+        await self.__emit_state()
+
+    def __build_replay_ledger(self) -> list[dict[str, object]]:
+        """Build the ordered subsession replay ledger from ``session.jsonl`` markers.
+
+        Considers only the markers after the last persisted assistant message
+        (the in-flight spawning turn). Each ``subsession_start`` becomes a ledger
+        entry; one paired with a ``subsession_end`` is ``completed`` (its stored
+        result is reused), an unpaired start is the single active subsession.
+        """
+        lines = self.__transient.read_session_lines()
+        last_assistant = -1
+        for i, ln in enumerate(lines):
+            if ln.get("role") == "assistant":
+                last_assistant = i
+        markers = [
+            ln
+            for ln in lines[last_assistant + 1 :]
+            if ln.get("type") in ("subsession_start", "subsession_end")
+        ]
+        ends = {str(m["subsession_id"]): m for m in markers if m.get("type") == "subsession_end"}
+        ledger: list[dict[str, object]] = []
+        for m in markers:
+            if m.get("type") != "subsession_start":
+                continue
+            sid = str(m["subsession_id"])
+            end = ends.get(sid)
+            end_result = end.get("result", []) if end else []
+            ledger.append(
+                {
+                    "subsession_id": sid,
+                    "agent": m.get("agent"),
+                    "completed": end is not None,
+                    "result": list(end_result) if isinstance(end_result, list) else [],
+                }
+            )
+        return ledger
 
     # ------------------------------------------------------------------
     # Author/Critic iteration
@@ -916,7 +1371,8 @@ class WorkflowEngine:
         self.__workspace.bind_index(self.__index)
         self.__toolchain = None  # tech-stack may differ post-rollback; re-resolve lazily
         self.__orch_session_id = result.orchestrator_session_id
-        self.__orch_messages = []
+        self.__main_messages = []
+        self.__replay_subsessions = None
         self.__transient.attach_session(result.orchestrator_session_id, result.orchestrator_resumed)
         _log.info("Post-rollback Orchestrator session: %s", self.__orch_session_id)
 
@@ -996,46 +1452,88 @@ class WorkflowEngine:
         return arts[0].content if arts else None
 
     def history_entries(self) -> list[dict[str, object]]:
-        """Convert the resumed Orchestrator message history into client-facing entries.
+        """Rebuild the full client-facing feed for a resumed session.
+
+        Walks the main ``session.jsonl`` in order. Message lines become
+        ``user_message`` / ``assistant_response`` / ``tool_call`` entries; a
+        ``subsession_start`` marker emits a takeover divider and splices the
+        sub-agent's full inner transcript (read from its subsession log), and a
+        ``subsession_end`` marker emits a hand-back divider. This gives the
+        WebView a faithful replay of who did what, including sub-agent work.
 
         Returns:
-            list[dict[str, object]]: ``user_message`` / ``assistant_response`` /
-            ``tool_call`` entries in the shape expected by the VSIX webview's
-            ``session.history`` handler.
+            list[dict[str, object]]: Ordered entries in the shape expected by the
+            VSIX webview's ``session.history`` handler.
         """
         tool_desc = {t.name: t.user_description for t in ALL_TOOLS}
         entries: list[dict[str, object]] = []
-        for msg in self.__orch_messages:
-            if isinstance(msg.content, str):
-                if msg.role in ("user", "assistant") and msg.content:
-                    kind = "user_message" if msg.role == "user" else "assistant_response"
-                    entries.append({"type": kind, "content": msg.content})
+        for line in self.__transient.read_session_lines():
+            if "role" in line:
+                entries.extend(self.__message_to_entries(line, tool_desc))
                 continue
-            if msg.role == "assistant":
-                text = "".join(
-                    str(b.get("text", "")) for b in msg.content if b.get("type") == "text"
-                )
-                if text:
-                    entries.append({"type": "assistant_response", "content": text})
-                for block in msg.content:
-                    if block.get("type") == "tool_use":
-                        name = str(block.get("name", ""))
-                        entries.append(
-                            {
-                                "type": "tool_call",
-                                "toolName": name,
-                                "description": tool_desc.get(name, ""),
-                            }
-                        )
-            elif msg.role == "user":
-                text = "".join(
-                    str(b.get("text", "")) for b in msg.content if b.get("type") == "text"
-                )
-                if text:
-                    entries.append({"type": "user_message", "content": text})
+            kind = line.get("type")
+            if kind == "subsession_start":
+                entries.append(self.__divider_entry("subsession_start", line))
+                sid = str(line.get("subsession_id", ""))
+                for sub in self.__transient.read_subsession_messages(sid):
+                    entries.extend(self.__message_to_entries(sub, tool_desc))
+            elif kind == "subsession_end":
+                entries.append(self.__divider_entry("subsession_end", line))
         return entries
 
-    def __load_orch_messages(self) -> list[Message]:
+    @staticmethod
+    def __divider_entry(kind: str, marker: dict[str, object]) -> dict[str, object]:
+        return {
+            "type": kind,
+            "agent": str(marker.get("agent", "")),
+            "displayName": str(marker.get("display_name", "")),
+            "parentDisplayName": str(marker.get("parent_display_name", "")),
+        }
+
+    @staticmethod
+    def __message_to_entries(
+        msg: dict[str, object], tool_desc: dict[str, str]
+    ) -> list[dict[str, object]]:
+        """Convert one persisted ``{role, content}`` line to client feed entries."""
+        role = msg.get("role")
+        content = msg.get("content")
+        out: list[dict[str, object]] = []
+        if isinstance(content, str):
+            if role in ("user", "assistant") and content:
+                kind = "user_message" if role == "user" else "assistant_response"
+                out.append({"type": kind, "content": content})
+            return out
+        if not isinstance(content, list):
+            return out
+        if role == "assistant":
+            text = "".join(
+                str(b.get("text", ""))
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+            if text:
+                out.append({"type": "assistant_response", "content": text})
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    name = str(block.get("name", ""))
+                    out.append(
+                        {
+                            "type": "tool_call",
+                            "toolName": name,
+                            "description": tool_desc.get(name, ""),
+                        }
+                    )
+        elif role == "user":
+            text = "".join(
+                str(b.get("text", ""))
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+            if text:
+                out.append({"type": "user_message", "content": text})
+        return out
+
+    def __load_main_messages(self) -> list[Message]:
         raw = self.__transient.read_messages()
         messages: list[Message] = []
         for item in raw:
@@ -1075,6 +1573,34 @@ class WorkflowEngine:
                         "cache_read": turn_end.usage.cache_read_tokens,
                     },
                     "model": model,
+                    "breakdown": {},
+                },
+            )
+        )
+
+    async def __emit_session_naming(self, active: bool) -> None:
+        """Tell the client whether the silent session-titler call is running.
+
+        Drives a transient "Naming session …" indicator in the WebView so the
+        titling round-trip (which streams nothing) does not look like a stall.
+        """
+        await self.__sink.send(Envelope.make_event(EVT_SESSION_NAMING, {"active": active}))
+
+    async def __emit_cost_only(self) -> None:
+        """Push a cost-only ``usage.update`` (no per-call token entry).
+
+        With ``last_call_tokens`` set to ``None`` the client updates the running
+        session-cost figure without appending a status entry to the feed — used
+        to fold an invisible call's cost (e.g. session titling) into the total.
+        """
+        await self.__sink.send(
+            Envelope.make_event(
+                EVT_USAGE_UPDATE,
+                {
+                    "cumulative_usd": round(self.__cumulative_usd, 6),
+                    "duration_seconds": 0.0,
+                    "last_call_tokens": None,
+                    "model": "",
                     "breakdown": {},
                 },
             )

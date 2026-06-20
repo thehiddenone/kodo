@@ -83,6 +83,12 @@ EVT_MODEL_INSTALL_PROGRESS = "model.install.progress"
 EVT_LLAMA_STATE = "llama.state"
 EVT_AUTONOMOUS_CHANGED = "autonomous.changed"
 EVT_POST_UPDATE = "post.update"
+EVT_SESSION_NAME = "session.name"
+EVT_SESSION_NAMING = "session.naming"
+# Subsession (sub-agent takeover) boundaries — drive the WebView feed dividers
+# ("Narrative Author subagent took over from Kōdo" / "Kōdo resumed").
+EVT_SUBSESSION_STARTED = "subsession.started"
+EVT_SUBSESSION_ENDED = "subsession.ended"
 
 # ---------------------------------------------------------------------------
 # DEPRECATED — legacy constants retained until handler/event wiring is migrated

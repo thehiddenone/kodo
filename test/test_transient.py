@@ -53,6 +53,32 @@ def test_meta_json_written_on_new_session(store: TransientStore) -> None:
     assert "created_at" in data
 
 
+def test_new_session_is_unnamed(store: TransientStore) -> None:
+    assert store.session_name == "Unnamed Session"
+    assert store.is_session_named is False
+
+
+def test_set_session_name_persists_to_meta(store: TransientStore) -> None:
+    store.set_session_name("Library Inventory API")
+    assert store.session_name == "Library Inventory API"
+    assert store.is_session_named is True
+    data = json.loads((store.session_dir / "meta.json").read_text(encoding="utf-8"))
+    assert data["session_name"] == "Library Inventory API"
+    assert "created_at" in data  # created_at preserved across the rewrite
+
+
+def test_resumed_session_loads_existing_name(kodo_dir: Path) -> None:
+    session_id = "1748792500"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    first.set_session_name("Search Pagination Fix")
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.session_name == "Search Pagination Fix"
+    assert second.is_session_named is True
+
+
 def test_session_dir_layout_on_new_session(store: TransientStore) -> None:
     assert store.session_dir.is_dir()
     assert (store.session_dir / "agents").is_dir()

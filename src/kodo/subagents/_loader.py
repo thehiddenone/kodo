@@ -36,6 +36,9 @@ class SubAgent:
         source_path: Absolute path to the source ``.md`` file.
         capability: Preferred LLM capability tier — ``'high'``, ``'medium'``,
             or ``'low'``.  Defaults to ``'medium'`` when not set in frontmatter.
+        display_name: User-friendly name shown in the UI (e.g. in subsession
+            takeover dividers). Falls back to a title-cased ``name`` when the
+            frontmatter does not set ``display_name``.
     """
 
     name: str
@@ -43,6 +46,7 @@ class SubAgent:
     system_prompt: str
     source_path: Path
     capability: str = "medium"
+    display_name: str = ""
 
 
 def load_agent(path: Path) -> SubAgent:
@@ -87,9 +91,29 @@ def load_agent(path: Path) -> SubAgent:
     if capability not in ("high", "medium", "low"):
         capability = "medium"
 
-    return SubAgent(
-        name=name, tools=tools, system_prompt=body, source_path=path, capability=capability
+    display_raw = fm_dict.get("display_name")
+    display_name = (
+        str(display_raw).strip()
+        if isinstance(display_raw, str) and display_raw.strip()
+        else _default_display_name(name)
     )
+
+    return SubAgent(
+        name=name,
+        tools=tools,
+        system_prompt=body,
+        source_path=path,
+        capability=capability,
+        display_name=display_name,
+    )
+
+
+def _default_display_name(name: str) -> str:
+    """Derive a user-friendly name from a snake_case agent name.
+
+    ``narrative_author`` → ``"Narrative Author"``.
+    """
+    return " ".join(part.capitalize() for part in name.split("_") if part) or name
 
 
 # ---------------------------------------------------------------------------

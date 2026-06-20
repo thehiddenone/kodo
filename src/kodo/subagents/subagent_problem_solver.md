@@ -1,5 +1,6 @@
 ---
 name: problem_solver
+display_name: Problem Solver
 capability: high
 tools:
   - create_file

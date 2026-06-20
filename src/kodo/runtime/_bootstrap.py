@@ -218,8 +218,16 @@ class ProjectBootstrap:
     def __is_orphan(self, entry: IndexEntry) -> bool:
         if entry.session_id is None:
             return True
-        session_file = self.__sessions_dir / f"{entry.session_id}.jsonl"
-        return not session_file.exists()
+        # In-flight artifacts are stamped with the subsession ID of the sub-agent
+        # that published them. The subsession log lives under the orchestrator
+        # session's ``subsessions/`` directory; an artifact whose subsession log
+        # is gone has no producing run and is an orphan.
+        if not self.__sessions_dir.is_dir():
+            return True
+        for session_dir in self.__sessions_dir.iterdir():
+            if (session_dir / "subsessions" / f"{entry.session_id}.jsonl").exists():
+                return False
+        return True
 
     def __has_broken_lineage(
         self,

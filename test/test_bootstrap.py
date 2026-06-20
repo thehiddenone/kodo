@@ -138,12 +138,17 @@ def _write_workspace_artifact(tmp_path: Path, artifact: Artifact) -> Path:
     return path
 
 
-def _write_session_log(tmp_path: Path, session_id: str) -> None:
-    """Create a minimal session JSONL file."""
-    sessions_dir = tmp_path / ".kodo" / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    (sessions_dir / f"{session_id}.jsonl").write_text(
-        json.dumps({"kind": "session_start"}) + "\n", encoding="utf-8"
+def _write_session_log(tmp_path: Path, session_id: str, main_session: str = "main-1") -> None:
+    """Create a minimal subsession JSONL log under a main session directory.
+
+    In-flight artifacts are stamped with the *subsession* ID of the sub-agent
+    that produced them; the orphan check looks for that subsession log under
+    ``sessions/<main>/subsessions/<subsession_id>.jsonl``.
+    """
+    subsessions_dir = tmp_path / ".kodo" / "sessions" / main_session / "subsessions"
+    subsessions_dir.mkdir(parents=True, exist_ok=True)
+    (subsessions_dir / f"{session_id}.jsonl").write_text(
+        json.dumps({"role": "user", "content": "task"}) + "\n", encoding="utf-8"
     )
 
 

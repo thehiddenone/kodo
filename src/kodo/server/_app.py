@@ -140,6 +140,13 @@ def _make_hello_handler(config: Config, engine: WorkflowEngine) -> HandlerFn:
         state_evt = Envelope.make_event("state", engine.session.to_dict())
         await state.send(state_evt)
 
+        await state.send(
+            Envelope.make_event(
+                "session.name",
+                {"session_id": engine.session_id, "name": engine.session_name},
+            )
+        )
+
         history = engine.history_entries()
         if history:
             await state.send(Envelope.make_event("session.history", {"entries": history}))
