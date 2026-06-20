@@ -162,10 +162,13 @@ So a `ToolSpec` and its `Tool` class are connected **only** through their shared
 import-time side effect, no name-string magic scattered around — adding a row is
 the entire wiring step.
 
-> A spec that has **no** row here (e.g. the placeholders `post_update`,
-> `toolchain_build`) is "spec only": it can be rendered into a prompt but is
-> silently dropped from the LLM-facing tool list, because `tools_for_agent`
-> (§7) only returns specs present in `DISPATCHABLE_TOOLS_BY_NAME`.
+> A spec that has **no** row here (today only the `toolchain_build` /
+> `toolchain_test` / `toolchain_deps` placeholders) is "spec only": it can be
+> rendered into a prompt but is silently dropped from the LLM-facing tool list,
+> because `tools_for_agent` (§7) only returns specs present in
+> `DISPATCHABLE_TOOLS_BY_NAME`. (`post_update` *was* such a placeholder; it now
+> has a `PostUpdateTool` row and dispatches normally.) The table currently holds
+> **20** rows.
 
 ---
 
@@ -183,16 +186,17 @@ class ToolContext:
     workspace: Workspace          # T1 — publish/read artifacts, project_root for file I/O
     index: ProjectIndex           # T1 — query_frontier / list_artifacts read this
     gate: GateLike                # Protocol — ask_user / approval gates (impl in runtime)
-    session: SessionLike          # Protocol — finalize_project writes .phase
-    runner: SubagentRunner        # Protocol — run_subagent / run_author_critic_iteration
-    rollback_fn: Callable[[str], Awaitable[None]]   # injected callback
-    complete_fn: Callable[[str], Awaitable[None]]   # injected promotion callback
+    session: SessionLike          # Protocol — .phase (finalize) + .effective_autonomous
+    services: EngineServices      # Protocol — every engine-side op a tool can trigger
     agent_name: str               # the running agent (used as artifact author)
     session_id: str
-    autonomous: bool
     published_ids: list[str] = field(default_factory=list)   # mutated by publish_artifact
     stop_requested: bool = False                             # set by escalate_blocker
 ```
+
+Note what is **not** here: there is no `autonomous` field. The mode a handler
+honours is read live from `session.effective_autonomous` (frozen per prompt by
+the engine — see §8), so no per-run snapshot can drift from the session.
 
 The three things a tool needs from *above* its tier are **structural
 Protocols**, also defined in `_context.py`:
@@ -201,14 +205,21 @@ Protocols**, also defined in `_context.py`:
   [`GateOrchestrator`](../src/kodo/runtime/_gates.py) satisfies it by shape (no
   inheritance). Its response types satisfy the read-only `QuestionLike` /
   `ApprovalLike` protocols.
-- **`SessionLike`** — a settable `phase: str`. Runtime's `SessionState` matches.
-- **`SubagentRunner`** — `run_subagent(...)` / `run_author_critic_iteration(...)`.
-  Runtime injects a small `_EngineSubagentRunner` adapter wrapping the engine's
-  private methods.
+- **`SessionLike`** — a settable `phase: str` plus a read `effective_autonomous:
+  bool`. Runtime's `SessionState` matches.
+- **`EngineServices`** — **one** protocol covering *every* engine-side operation
+  a tool can delegate upward: `run_subagent(...)`,
+  `run_author_critic_iteration(...)`, `rollback(...)`, `complete_artifact(...)`,
+  `disable_autonomous_mode(...)`, and `post_update(...)`. Runtime injects a single
+  `_EngineServices` adapter (built inline in `_engine.py`) wrapping the engine's
+  private `__run_*` / `__complete_artifact` / `__disable_autonomous` /
+  `__post_update` methods. (This replaced the former split of a `SubagentRunner`
+  protocol plus four bare `rollback_fn` / `complete_fn` / … callables.)
 
 This is the dependency inversion that lets the tool layer sit *below* the engine
 while still calling back into it. `runtime` constructs the concrete objects and
-hands them in; `tools` only ever names the Protocols.
+hands them in; `tools` only ever names the Protocols. A handler reaches an engine
+op as, e.g., `await self.context.services.run_subagent(...)`.
 
 Per-run state lives on the context, not on the tool instance:
 `PublishArtifactTool` appends to `self.context.published_ids`,
@@ -284,8 +295,15 @@ Because the engine builds the LLM tool list from the *already-filtered*
 `agent.tools`, the withheld tool simply never reaches the model.
 
 Tools marked `"auto-accepted"` (e.g. `request_user_review_artifact`) stay
-available; the handler itself short-circuits on `ctx.autonomous` and synthesizes
-the response instead of blocking on the gate.
+available; the handler itself short-circuits on `ctx.session.effective_autonomous`
+and synthesizes the response instead of blocking on the gate.
+
+> **Where `effective_autonomous` comes from.** The user-facing toggle sets
+> `SessionState.autonomous`, but the engine *freezes* that into
+> `effective_autonomous` once per prompt (when the worker dequeues it), so a
+> mid-prompt toggle never splits a running prompt's mode. Every tool and the
+> registry read `effective_autonomous`; the dispatcher therefore needs no
+> `autonomous` argument at all.
 
 ---
 
@@ -296,8 +314,8 @@ run** by the engine. It owns the run's `ToolContext` and routes calls:
 
 ```python
 class ToolDispatcher:
-    def __init__(self, *, workspace, index, gate, session, runner,
-                 rollback_fn, complete_fn, agent_name, session_id, autonomous=False):
+    def __init__(self, *, workspace, index, gate, session, services,
+                 agent_name, session_id):
         self.__ctx = ToolContext(...)            # one context for the whole run
 
     @property
@@ -328,8 +346,9 @@ context and the *set* of tools differ.
 1. Resolve the agent (`registry.get(name, autonomous)`), which yields its
    filtered `tools` and rendered system prompt.
 2. Build the dispatcher: `dispatcher = self.__make_dispatcher(agent_name, session_id)`
-   — injecting the gate, session, the `_EngineSubagentRunner`, and the
-   `rollback`/`complete` callbacks, reading the *current* `ProjectIndex`.
+   — injecting the gate, session, and the single `_EngineServices` adapter,
+   reading the *current* `ProjectIndex`. No `autonomous` flag is passed; tools
+   read `session.effective_autonomous`.
 3. Call `__run_agent_turn(..., tools=tools_for_agent(agent.tools),
    tool_dispatch=dispatcher.dispatch, stop_after_tools=lambda: dispatcher.stop_requested)`.
 
@@ -372,8 +391,8 @@ that publishes an artifact:
  ──────────────────                  ───────────────────────              ───────────────────
    │  tool_use: run_subagent ──────────►  dispatch("run_subagent", …)
    │                                        └─► RunSubagentTool(ctx).handle(…)
-   │                                              └─► self.context.runner.run_subagent(name, …)
-   │                                                    │  (engine adapter)
+   │                                              └─► self.context.services.run_subagent(name, …)
+   │                                                    │  (_EngineServices adapter)
    │                                                    ▼
    │                                        engine.__run_subagent: builds a NEW
    │                                        ToolDispatcher for the leaf, runs its turn
@@ -427,7 +446,7 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [toolspecs/_spec.py](../src/kodo/toolspecs/_spec.py) | The `ToolSpec` dataclass. |
 | [toolspecs/_<tool>.py](../src/kodo/toolspecs/) | One `ToolSpec` constant per tool (pure data). |
 | [toolspecs/__init__.py](../src/kodo/toolspecs/__init__.py) | Re-exports specs + `ALL_TOOLS` (for prompt rendering). |
-| [tools/_context.py](../src/kodo/tools/_context.py) | `ToolContext` + the injected Protocols (`GateLike`, `SessionLike`, `SubagentRunner`, `QuestionLike`, `ApprovalLike`). |
+| [tools/_context.py](../src/kodo/tools/_context.py) | `ToolContext` + the injected Protocols (`GateLike`, `SessionLike`, `EngineServices`, `QuestionLike`, `ApprovalLike`). |
 | [tools/_tool.py](../src/kodo/tools/_tool.py) | The `Tool` ABC: binds a `ToolContext` (read-only `context` property) and declares abstract `handle`. |
 | [tools/_&lt;tool&gt;.py](../src/kodo/tools/) | One `Tool` subclass per tool, with `handle(self, tool_input) -> str`. |
 | [tools/_dispatch.py](../src/kodo/tools/_dispatch.py) | `_TOOL_CLASSES` table, `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME`. |
@@ -436,7 +455,7 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [subagents/_registry.py](../src/kodo/subagents/_registry.py) | Renders each agent's `## Tools` prompt section from spec metadata; autonomous filtering. |
 | [llms/anthropic/_claude.py](../src/kodo/llms/anthropic/_claude.py) | Converts `ToolSpec` → API `tools` param; parses `tool_use` → `ToolCallEvent`. |
 | [llms/_interface.py](../src/kodo/llms/_interface.py) | `Message`, `ToolCallEvent`, `TurnEnd`, the `stream_query` contract. |
-| [runtime/_engine.py](../src/kodo/runtime/_engine.py) | `__make_dispatcher`, `__run_agent_turn` (the tool loop), `_EngineSubagentRunner`. |
+| [runtime/_engine.py](../src/kodo/runtime/_engine.py) | `__make_dispatcher`, `__run_agent_turn` (the tool loop), the `_EngineServices` adapter. |
 | [runtime/_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator` (satisfies `GateLike`). |
 
 See also [INTERNALS.md §6A](INTERNALS.md) for the package's place in the
