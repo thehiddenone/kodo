@@ -209,6 +209,7 @@ class WorkflowEngine:
     __orch_session_id: str
     __current_vendor: str | None
     __replay_subsessions: list[dict[str, object]] | None
+    __resume_subsession_pending: bool
 
     def __init__(
         self,
@@ -251,6 +252,7 @@ class WorkflowEngine:
         self.__orch_session_id = ""
         self.__current_vendor = None
         self.__replay_subsessions = None
+        self.__resume_subsession_pending = False
         self.__toolchain: ToolchainPlugin | None = None
         self.__services = _EngineServices(
             run_subagent=self.__run_subagent,
@@ -303,15 +305,16 @@ class WorkflowEngine:
 
         self.__transient.attach_session(result.orchestrator_session_id, result.orchestrator_resumed)
 
-        resume_subsession = False
         if result.orchestrator_resumed:
             self.__main_messages = self.__load_main_messages()
             # A main turn that was interrupted while a sub-agent held the floor
             # leaves a dangling assistant ``tool_use`` (the spawning call) on
             # disk with no following ``tool_result``. Detect that and resume the
-            # sub-agent subsession in place, then continue the main turn.
+            # sub-agent subsession in place, then continue the main turn — done as
+            # the worker's first action so it is serialised ahead of any queued
+            # user prompt (no concurrent driver of ``__main_messages``).
             if self.__has_dangling_tool_use():
-                resume_subsession = True
+                self.__resume_subsession_pending = True
             else:
                 pending = self.__transient.pending_prompt
                 if pending is not None:
@@ -320,15 +323,13 @@ class WorkflowEngine:
                     )
 
         self.__worker = asyncio.create_task(self.__run_worker(), name="kodo-worker")
-        if resume_subsession:
-            asyncio.create_task(self.__resume_main_turn(), name="kodo-resume-subsession")
         _log.info(
             "Runtime worker started (orchestrator_session=%s resumed=%s messages=%d "
             "resume_subsession=%s)",
             self.__orch_session_id,
             result.orchestrator_resumed,
             len(self.__main_messages),
-            resume_subsession,
+            self.__resume_subsession_pending,
         )
 
     async def __resume_pending_prompt(self, pending: dict[str, object]) -> None:
@@ -489,6 +490,22 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     async def __run_worker(self) -> None:
+        # Resume an interrupted sub-agent before accepting any queued prompt, so
+        # the resume and a new prompt never drive __main_messages concurrently.
+        if self.__resume_subsession_pending:
+            self.__resume_subsession_pending = False
+            self.__session.effective_autonomous = self.__session.autonomous
+            try:
+                await self.__resume_main_turn()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _log.exception("Failed to resume interrupted subsession: %s", exc)
+                self.__replay_subsessions = None
+                self.__session.agent = None
+                await self.__emit_error(str(exc), recoverable=True)
+                await self.__emit_state()
+
         while True:
             task = await self.__queue.get()
             text = str(task.get("text", ""))
