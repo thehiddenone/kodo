@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["READ_ARTIFACT"]
 
@@ -13,8 +13,9 @@ READ_ARTIFACT: ToolSpec = ToolSpec(
     user_description="Read a workspace artifact",
     description=(
         "Query live (non-retired) artifacts from the workspace. At least one filter must be "
-        "supplied. All supplied filters are combined with AND. Returns an array of matching "
-        "artifacts; if artifact_id is used, the array contains at most one entry. Each entry "
+        "supplied. All supplied filters are combined with AND. Returns an object with an "
+        "`artifacts` array of matching artifacts; if artifact_id is used, the array contains "
+        "at most one entry. Each entry "
         "includes: id, type, author, project_code, responsibility_code, requirement_ids, "
         "filename_hint, reviewed_artifact_id, concerns, verdict, supersedes, metadata, "
         "created_at. Content is included by default; set include_content to false to "
@@ -130,6 +131,29 @@ READ_ARTIFACT: ToolSpec = ToolSpec(
             },
         ],
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "artifacts": {
+                "type": "array",
+                "description": "Matching artifacts (at most one when filtering by artifact_id).",
+                "items": {"type": "object"},
+            },
+        },
+        "required": ["artifacts"],
+    },
+    security_impact=SecurityImpact.NONE,
+    input_visibility={
+        "artifact_id": "always",
+        "type": "visible",
+        "author": "visible",
+        "project_code": "visible",
+        "responsibility_code": "visible",
+        "requirement_id": "visible",
+        "version": "visible",
+        "include_content": "visible",
+    },
+    output_visibility={"artifacts": "always"},
     when_to_use=(
         "An input artifact that wasn't delivered inline is needed — e.g., "
         "fetching another component's artifact via "

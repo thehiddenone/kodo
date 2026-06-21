@@ -6,7 +6,7 @@ Withheld in autonomous mode (no answer to synthesize).
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["ASK_USER"]
 
@@ -61,6 +61,17 @@ ASK_USER: ToolSpec = ToolSpec(
         },
         "required": ["question"],
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "answer_text": {"type": "string", "description": "Free-text answer (free_text mode)."},
+            "choice_key": {"type": "string", "description": "Selected choice key (choice mode)."},
+        },
+        "required": [],
+    },
+    security_impact=SecurityImpact.MINIMAL,
+    input_visibility={"question": "always", "mode": "visible", "choices": "visible"},
+    output_visibility={"answer_text": "always", "choice_key": "always"},
     when_to_use=(
         "Eliciting the single most important uncovered or partially-covered "
         "piece of information during gap-filling, or resolving a "
@@ -68,7 +79,7 @@ ASK_USER: ToolSpec = ToolSpec(
         "concern per call.",
     ),
     autonomous_mode=(
-        "unavailable — there is no answer to synthesize when the user is "
+        "Unavailable — there is no answer to synthesize when the user is "
         "away, so this tool is withheld entirely. An agent that would have "
         "asked must instead assume-and-document or, if blocked, "
         "`escalate_blocker`."

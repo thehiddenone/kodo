@@ -5,7 +5,7 @@ Dispatch lives in :mod:`kodo.tools` (one handler module per tool).
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["RUN_AUTHOR_CRITIC_ITERATION"]
 
@@ -41,6 +41,30 @@ RUN_AUTHOR_CRITIC_ITERATION: ToolSpec = ToolSpec(
         },
         "required": ["author_name", "critic_name", "input_artifact_ids"],
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "artifact_id": {
+                "type": ["string", "null"],
+                "description": "The author's published artifact ID (null if none).",
+            },
+            "verdict": {"type": "string", "description": "Critic verdict (accepted/rejected)."},
+            "concerns": {
+                "type": "array",
+                "description": "Concerns raised by the critic.",
+                "items": {"type": "object"},
+            },
+        },
+        "required": ["artifact_id", "verdict", "concerns"],
+    },
+    security_impact=SecurityImpact.LOW,
+    input_visibility={
+        "author_name": "always",
+        "critic_name": "always",
+        "input_artifact_ids": "visible",
+        "previous_artifact_id": "visible",
+    },
+    output_visibility={"artifact_id": "always", "verdict": "always", "concerns": "visible"},
     when_to_use=(
         "Any stage with an author/critic pairing, to run one author→critic round.",
         "Called repeatedly within a per-loop iteration budget (a sensible "

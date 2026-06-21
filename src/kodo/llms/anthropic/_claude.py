@@ -12,14 +12,18 @@ from anthropic.types import (
     InputJSONDelta,
     RawContentBlockDeltaEvent,
     RawContentBlockStartEvent,
+    SignatureDelta,
     TextDelta,
     ToolUseBlock,
 )
+from anthropic.types import ThinkingDelta as RawThinkingDelta  # SDK's own, distinct from ours
 
 from kodo.llms._interface import (
     LLMPlugin,
     Message,
     StreamEvent,
+    ThinkingDelta,
+    ThinkingSignature,
     TokenDelta,
     ToolCallEvent,
     ToolSpec,
@@ -35,6 +39,10 @@ __all__ = ["ClaudePlugin", "UnrecoverableError"]
 _log = logging.getLogger(__name__)
 
 _DEFAULT_MAX_TOKENS = 8192
+
+# Extended thinking: budget_tokens must be >=1024 and < max_tokens, leaving
+# headroom in _DEFAULT_MAX_TOKENS for the visible response.
+_THINKING_BUDGET_TOKENS = 4096
 
 
 class ClaudePlugin(LLMPlugin):
@@ -174,6 +182,7 @@ class ClaudePlugin(LLMPlugin):
             max_tokens=_DEFAULT_MAX_TOKENS,
             system=system_blocks,  # type: ignore[arg-type]
             messages=msg_params,  # type: ignore[arg-type]
+            thinking={"type": "enabled", "budget_tokens": _THINKING_BUDGET_TOKENS},
             **({"tools": tool_defs} if tool_defs else {}),  # type: ignore[arg-type]
         ) as stream:
             async for raw_event in stream:
@@ -187,6 +196,9 @@ class ClaudePlugin(LLMPlugin):
                         current_tool_use_id = block.id
                         current_tool_name = block.name
                         current_tool_input_parts = []
+                    # RedactedThinkingBlock (safety-flagged reasoning, no plain
+                    # text) is intentionally not surfaced or persisted — it is
+                    # rare and has no human-readable content to show or replay.
 
                 elif isinstance(raw_event, RawContentBlockDeltaEvent):
                     delta = raw_event.delta
@@ -194,6 +206,10 @@ class ClaudePlugin(LLMPlugin):
                         yield TokenDelta(text=delta.text)
                     elif isinstance(delta, InputJSONDelta):
                         current_tool_input_parts.append(delta.partial_json)
+                    elif isinstance(delta, RawThinkingDelta):
+                        yield ThinkingDelta(text=delta.thinking)
+                    elif isinstance(delta, SignatureDelta):
+                        yield ThinkingSignature(signature=delta.signature)
 
                 elif raw_event.type == "content_block_stop":
                     if current_tool_use_id is not None and current_tool_name is not None:

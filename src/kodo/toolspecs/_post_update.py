@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["POST_UPDATE"]
 
@@ -23,6 +23,16 @@ POST_UPDATE: ToolSpec = ToolSpec(
         },
         "required": ["message"],
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "description": "Always 'posted'."},
+        },
+        "required": ["status"],
+    },
+    security_impact=SecurityImpact.NONE,
+    input_visibility={"message": "always"},
+    output_visibility={"status": "always"},
     when_to_use=(
         "A stage starts or completes for a codename, or a product-level stage starts or completes.",
         "An escalation is triaged, an invalidation cascade executes, a "

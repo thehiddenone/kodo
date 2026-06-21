@@ -1,5 +1,6 @@
 ---
 name: coder
+display_name: Software Developer
 tools:
   - publish_artifact
   - read_artifact

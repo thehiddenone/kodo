@@ -1,5 +1,6 @@
 ---
 name: narrative_author
+display_name: Narrative Writer
 tools:
   - publish_artifact
   - read_artifact

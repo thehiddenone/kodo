@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["PUBLISH_ARTIFACT"]
 
@@ -183,6 +183,23 @@ PUBLISH_ARTIFACT: ToolSpec = ToolSpec(
             },
         },
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "The new artifact's workspace ID."},
+        },
+        "required": ["id"],
+    },
+    security_impact=SecurityImpact.LOW,
+    input_visibility={
+        "type": "always",
+        "project_code": "always",
+        "responsibility_code": "always",
+        "author": "visible",
+        "filename_hint": "visible",
+        "content": "visible",
+    },
+    output_visibility={"id": "always"},
     when_to_use=(
         "A drafted or revised artifact is ready for review or acceptance.",
         "A review has concluded and needs to be recorded as a `feedback` "

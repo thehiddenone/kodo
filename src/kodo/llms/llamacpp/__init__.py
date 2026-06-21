@@ -29,7 +29,7 @@ from ._installer import (
     uninstall_llamacpp,
     update_llamacpp,
 )
-from ._llama import LlamaPlugin
+from ._llama import LlamaPlugin, ThinkingStreamParser
 from ._llama_server import (
     LlamaServer,
     LlamaServerConfig,
@@ -44,6 +44,7 @@ __all__ = [
     "LlamaServer",
     "LlamaServerConfig",
     "RunningServer",
+    "ThinkingStreamParser",
     "check_llamacpp_update",
     "download_model",
     "ensure_llama_running",

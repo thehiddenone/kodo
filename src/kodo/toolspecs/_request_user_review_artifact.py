@@ -6,7 +6,7 @@ accept/feedback. Auto-accepted in autonomous mode.
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["REQUEST_USER_REVIEW_ARTIFACT"]
 
@@ -41,6 +41,17 @@ REQUEST_USER_REVIEW_ARTIFACT: ToolSpec = ToolSpec(
         },
         "required": ["artifact_id"],
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "description": "'agree' or 'feedback'."},
+            "feedback": {"type": "string", "description": "Feedback text (empty on agree)."},
+        },
+        "required": ["action", "feedback"],
+    },
+    security_impact=SecurityImpact.MINIMAL,
+    input_visibility={"artifact_id": "always", "summary": "visible"},
+    output_visibility={"action": "always", "feedback": "visible"},
     when_to_use=(
         "A review's verdict on an artifact is `accepted` and the artifact "
         "is ready for the user's sign-off.",

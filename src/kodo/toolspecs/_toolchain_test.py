@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["TOOLCHAIN_TEST"]
 
@@ -16,6 +16,17 @@ TOOLCHAIN_TEST: ToolSpec = ToolSpec(
         "status per test, error codes, assertion failures, and stack traces."
     ),
     input_schema={"type": "object", "properties": {}, "required": []},
+    output_schema={
+        "type": "object",
+        "properties": {
+            "success": {"type": "boolean", "description": "Whether all tests passed."},
+            "log": {"type": "string", "description": "Test execution log."},
+        },
+        "required": ["success", "log"],
+    },
+    security_impact=SecurityImpact.MODERATE,
+    input_visibility={},
+    output_visibility={"success": "always", "log": "visible"},
     when_to_use=(
         "After a successful build, to check whether tests pass and to "
         "diagnose failures (implementation bug vs. test bug vs. spec "

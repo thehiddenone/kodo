@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["TOOLCHAIN_DEPS"]
 
@@ -32,6 +32,17 @@ TOOLCHAIN_DEPS: ToolSpec = ToolSpec(
         },
         "required": ["action", "name"],
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "success": {"type": "boolean", "description": "Whether the operation succeeded."},
+            "message": {"type": "string", "description": "Human-readable result detail."},
+        },
+        "required": ["success", "message"],
+    },
+    security_impact=SecurityImpact.MODERATE,
+    input_visibility={"action": "always", "name": "always", "version": "visible"},
+    output_visibility={"success": "always", "message": "visible"},
     when_to_use=(
         "A new library (database driver, HTTP client, message queue "
         "client, parser, etc.) is needed before referencing it in an "

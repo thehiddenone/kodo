@@ -1,5 +1,6 @@
 ---
 name: test_designer
+display_name: Test Designer
 tools:
   - publish_artifact
   - read_artifact

@@ -70,6 +70,13 @@ EVT_AGENT_STARTED = "agent.started"
 EVT_AGENT_FINISHED = "agent.finished"
 EVT_AGENT_TOKENS = "agent.tokens"  # carried inside stream_chunk / stream_end
 EVT_AGENT_TOOL_CALL = "agent.tool_call"
+# Post-dispatch follow-up to EVT_AGENT_TOOL_CALL: carries the customer-visible
+# input/output projection, the persisted Markdown doc path, and the
+# schema-compliance flag, correlated by tool_call_id (= the tool_use block id).
+EVT_AGENT_TOOL_CALL_DETAIL = "agent.tool_call_detail"
+# Emitted when a tool's raw output did not match its declared output schema
+# (the engine repaired it). Drives a VSIX error message box.
+EVT_TOOL_INCOMPLIANT = "tool.incompliant"
 EVT_REVIEW_STARTED = "review.started"
 EVT_REVIEW_VERDICT = "review.verdict"
 EVT_ARTIFACT_PUBLISHED = "artifact.published"

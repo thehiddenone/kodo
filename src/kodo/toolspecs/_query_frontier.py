@@ -5,7 +5,7 @@ Dispatch lives in :mod:`kodo.tools` (one handler module per tool).
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["QUERY_FRONTIER"]
 
@@ -24,6 +24,27 @@ QUERY_FRONTIER: ToolSpec = ToolSpec(
         "so via report_artifact_completed; this tool never decides completion."
     ),
     input_schema={"type": "object", "properties": {}, "required": []},
+    output_schema={
+        "type": "object",
+        "properties": {
+            "frontier": {
+                "type": "array",
+                "description": "Earliest missing artifact type per responsibility.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "responsibility_code": {"type": "string"},
+                        "next_type": {"type": "string"},
+                    },
+                    "required": ["responsibility_code", "next_type"],
+                },
+            },
+        },
+        "required": ["frontier"],
+    },
+    security_impact=SecurityImpact.NONE,
+    input_visibility={},
+    output_visibility={"frontier": "always"},
     when_to_use=(
         "Before every scheduling decision — the first step of the core "
         "loop, every time, including after invalidation cascades or when "

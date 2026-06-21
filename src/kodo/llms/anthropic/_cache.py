@@ -69,9 +69,26 @@ def build_message_params(
         else:
             # Already a list of content blocks — copy and optionally mark last
             content = [dict(block) for block in msg.content]
+            content = _drop_unsigned_thinking(content)
             if i in breakpoint_set and content:
                 content[-1]["cache_control"] = _EPHEMERAL
 
         result.append({"role": msg.role, "content": content})
 
     return result
+
+
+def _drop_unsigned_thinking(content: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Strip ``thinking`` blocks that lack a signature Claude itself issued.
+
+    A thinking block can land in history from a turn run on a different
+    provider (e.g. llama.cpp, switched to mid-session) and carries no
+    signature. Claude requires every ``thinking`` content block in its input
+    to have a valid ``signature`` and rejects the request otherwise, so such
+    blocks must be dropped rather than replayed.
+    """
+    return [
+        block
+        for block in content
+        if not (block.get("type") == "thinking" and not block.get("signature"))
+    ]

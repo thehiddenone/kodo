@@ -1,5 +1,6 @@
 ---
 name: test_coder
+display_name: Software Developer In Test
 tools:
   - publish_artifact
   - read_artifact

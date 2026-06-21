@@ -5,7 +5,7 @@ Dispatch lives in :mod:`kodo.tools` (one handler module per tool).
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["ROLLBACK"]
 
@@ -32,6 +32,16 @@ ROLLBACK: ToolSpec = ToolSpec(
         },
         "required": ["target_sha"],
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "description": "Always 'completed' on success."},
+        },
+        "required": ["status"],
+    },
+    security_impact=SecurityImpact.HIGH,
+    input_visibility={"target_sha": "always"},
+    output_visibility={"status": "always"},
     when_to_use=(
         "Rework-in-place would be worse than starting a stage over — "
         "typically after a root-cause resolution invalidates a large "

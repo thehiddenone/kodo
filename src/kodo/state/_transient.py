@@ -14,6 +14,11 @@ use and reused across restarts when the session is resumed.  Layout::
         subsessions/     — one ``<subsession-id>.jsonl`` per sub-agent run,
                            holding that sub-agent's full isolated message history
         agents/          — per-sub-agent JSONL call logs (usage stats)
+        toolcalls/        — one ``<tool_use_id>.md`` per dispatched tool call;
+                           a tool call that captured a before/after diff (see
+                           ``write_diff_files``) additionally gets a sibling
+                           ``<tool_use_id>_diff/`` directory holding the two
+                           file versions plus a ``meta.json`` sidecar
 
 See ``doc/SESSIONS.md`` for the full session/subsession model.
 """
@@ -28,7 +33,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-__all__ = ["TransientStore", "new_session_id"]
+__all__ = ["TransientStore", "new_session_id", "read_diff_files"]
 
 _log = logging.getLogger(__name__)
 
@@ -40,6 +45,48 @@ _DEFAULT_SESSION_NAME = "Unnamed Session"
 def new_session_id() -> str:
     """Return a new session ID based on the current POSIX timestamp."""
     return str(int(time.time()))
+
+
+def _diff_file_paths(diff_dir: Path, filename: str) -> tuple[Path, Path]:
+    """Return ``(prev_path, new_path)`` for *filename* inside *diff_dir*.
+
+    ``new_path`` keeps the original file name; ``prev_path`` inserts a
+    ``_prev`` suffix before the extension (e.g. ``bar.py`` -> ``bar_prev.py``).
+    Shared by :meth:`TransientStore.write_diff_files` and :func:`read_diff_files`
+    so both sides agree on the on-disk naming.
+    """
+    name = Path(filename).name
+    stem = Path(name).stem
+    suffix = Path(name).suffix
+    return diff_dir / f"{stem}_prev{suffix}", diff_dir / name
+
+
+def read_diff_files(toolcalls_dir: Path, tool_call_id: str) -> dict[str, object] | None:
+    """Look up a previously-written before/after diff pair for a tool call.
+
+    Used by history rebuild (:meth:`WorkflowEngine.history_entries`, which has
+    no live :class:`TransientStore` reference beyond the directory itself) to
+    reconstruct the diff link on reload, mirroring what
+    :meth:`TransientStore.write_diff_files` returns at dispatch time.
+
+    Returns:
+        dict[str, object] | None: ``{"label", "prev_path", "new_path"}`` (paths
+        as strings), or ``None`` if no diff was captured for this tool call.
+    """
+    diff_dir = toolcalls_dir / f"{tool_call_id}_diff"
+    meta_path = diff_dir / "meta.json"
+    if not meta_path.exists():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    filename = str(meta.get("filename", ""))
+    label = str(meta.get("label", filename))
+    prev_path, new_path = _diff_file_paths(diff_dir, filename)
+    if not (prev_path.exists() and new_path.exists()):
+        return None
+    return {"label": label, "prev_path": str(prev_path), "new_path": str(new_path)}
 
 
 @dataclass
@@ -61,6 +108,10 @@ class _SessionPaths:
     @property
     def subsessions(self) -> Path:
         return self.root / "subsessions"
+
+    @property
+    def toolcalls(self) -> Path:
+        return self.root / "toolcalls"
 
     @property
     def agents(self) -> Path:
@@ -144,6 +195,79 @@ class TransientStore:
         return self.__paths.subsessions
 
     @property
+    def toolcalls_dir(self) -> Path:
+        """Directory holding this session's per-tool-call Markdown documents."""
+        assert self.__paths is not None, "attach_session() not yet called"
+        return self.__paths.toolcalls
+
+    def write_tool_call(self, tool_use_id: str, markdown: str) -> Path | None:
+        """Persist one tool call's Markdown document, returning its path.
+
+        The file is named ``<tool_use_id>.md`` so the client-history rebuild can
+        relink it from the ``tool_use`` block id alone. Returns ``None`` if no
+        session is attached or the write fails.
+
+        Args:
+            tool_use_id (str): The tool-use block id (stable link key).
+            markdown (str): The rendered Markdown document.
+        """
+        if self.__paths is None:
+            return None
+        path = self.__paths.toolcalls / f"{tool_use_id}.md"
+        try:
+            self.__paths.toolcalls.mkdir(parents=True, exist_ok=True)
+            path.write_text(markdown, encoding="utf-8")
+        except OSError as exc:
+            _log.warning("Failed to write tool-call document %s: %s", path, exc)
+            return None
+        return path
+
+    def write_diff_files(
+        self,
+        tool_call_id: str,
+        label: str,
+        filename: str,
+        old_content: str,
+        new_content: str,
+    ) -> dict[str, object] | None:
+        """Persist a before/after file pair backing a tool call's diff link.
+
+        Stored under ``toolcalls/<tool_call_id>_diff/`` as ``<name>_prev<ext>``
+        (old content) and ``<name><ext>`` (new content), plus a ``meta.json``
+        sidecar recording *label*/*filename* so :func:`read_diff_files` can
+        reconstruct the link on history reload, when only the directory (not
+        the tool's original raw output) is available.
+
+        Args:
+            tool_call_id (str): The tool-use block id (keys the directory).
+            label (str): Human-readable text for the diff link (e.g. the
+                file's project-relative path).
+            filename (str): The file's base name; determines the on-disk
+                names of both versions.
+            old_content (str): The file's content before this tool call.
+            new_content (str): The file's content after this tool call.
+
+        Returns:
+            dict[str, object] | None: ``{"label", "prev_path", "new_path"}``
+            (paths as strings), or ``None`` if no session is attached or the
+            write fails.
+        """
+        if self.__paths is None:
+            return None
+        diff_dir = self.__paths.toolcalls / f"{tool_call_id}_diff"
+        prev_path, new_path = _diff_file_paths(diff_dir, filename)
+        try:
+            diff_dir.mkdir(parents=True, exist_ok=True)
+            prev_path.write_text(old_content, encoding="utf-8")
+            new_path.write_text(new_content, encoding="utf-8")
+            meta = {"label": label, "filename": Path(filename).name}
+            (diff_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        except OSError as exc:
+            _log.warning("Failed to write diff files for %s: %s", tool_call_id, exc)
+            return None
+        return {"label": label, "prev_path": str(prev_path), "new_path": str(new_path)}
+
+    @property
     def active_subsession(self) -> dict[str, object] | None:
         """The currently in-flight sub-agent subsession, if any.
 
@@ -194,6 +318,7 @@ class TransientStore:
 
         if resumed:
             paths.subsessions.mkdir(exist_ok=True)
+            paths.toolcalls.mkdir(exist_ok=True)
             self.__load_transient(paths)
             self.__load_meta(paths)
             _log.info("Transient session resumed: %s (name=%r)", session_id, self.__session_name)
@@ -201,6 +326,7 @@ class TransientStore:
             paths.root.mkdir(parents=True, exist_ok=True)
             paths.agents.mkdir(exist_ok=True)
             paths.subsessions.mkdir(exist_ok=True)
+            paths.toolcalls.mkdir(exist_ok=True)
             self.__session_name = _DEFAULT_SESSION_NAME
             self.__created_at = datetime.now(tz=UTC).isoformat()
             self.__write_meta(paths)

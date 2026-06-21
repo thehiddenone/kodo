@@ -24,6 +24,7 @@ from ._interface import (
     Message,
     StreamEvent,
     ThinkingDelta,
+    ThinkingSignature,
     TokenDelta,
     ToolCallEvent,
     ToolSpec,
@@ -143,6 +144,8 @@ class LoggingLLMPlugin(LLMPlugin):
 def _event_to_dict(event: StreamEvent) -> dict[str, object]:
     if isinstance(event, ThinkingDelta):
         return {"type": "thinking_delta", "text": event.text}
+    if isinstance(event, ThinkingSignature):
+        return {"type": "thinking_signature", "signature": event.signature}
     if isinstance(event, TokenDelta):
         return {"type": "token_delta", "text": event.text}
     if isinstance(event, ToolCallEvent):

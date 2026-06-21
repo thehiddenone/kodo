@@ -10,7 +10,13 @@ from typing import Literal, cast
 __all__ = ["Envelope", "MessageKind"]
 
 MessageKind = Literal[
-    "request", "response", "event", "stream_chunk", "thinking_chunk", "stream_end"
+    "request",
+    "response",
+    "event",
+    "stream_chunk",
+    "thinking_chunk",
+    "toolgen_chunk",
+    "stream_end",
 ]
 
 
@@ -128,6 +134,29 @@ class Envelope:
         return cls(
             kind="thinking_chunk",
             payload={"type": "agent.thinking", "text": text},
+            correlation_id=correlation_id,
+        )
+
+    @classmethod
+    def make_toolgen_chunk(cls, correlation_id: str, tool_name: str, text: str) -> Envelope:
+        """Create a tool-call-argument streaming chunk envelope.
+
+        Emitted as the model decodes a tool call's arguments (which can be
+        large, e.g. a whole file), so the client can show a live "generating"
+        indicator. Display-only; the assembled call still arrives separately.
+
+        Args:
+            correlation_id (str): Stream identifier.
+            tool_name (str): Tool whose arguments are streaming (may be empty
+                on the first fragment).
+            text (str): Raw argument-text fragment.
+
+        Returns:
+            Envelope: A ``toolgen_chunk`` envelope.
+        """
+        return cls(
+            kind="toolgen_chunk",
+            payload={"type": "agent.toolgen", "tool_name": tool_name, "text": text},
             correlation_id=correlation_id,
         )
 

@@ -7,7 +7,7 @@ would escape it.
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["COPY_FILE"]
 
@@ -38,6 +38,18 @@ COPY_FILE: ToolSpec = ToolSpec(
         },
         "required": ["source", "destination"],
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "description": "Always 'copied' on success."},
+            "source": {"type": "string", "description": "The source path."},
+            "destination": {"type": "string", "description": "The destination path."},
+        },
+        "required": ["status", "source", "destination"],
+    },
+    security_impact=SecurityImpact.LOW,
+    input_visibility={"source": "always", "destination": "always"},
+    output_visibility={"status": "always", "source": "always", "destination": "always"},
     when_to_use=(
         "Duplicating a non-artifact file (e.g., a template) to a new location as a starting point.",
     ),

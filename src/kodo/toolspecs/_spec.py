@@ -3,8 +3,53 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import IntEnum
 
-__all__ = ["ToolSpec"]
+__all__ = [
+    "OUTPUT_VISIBILITY_DEFAULT",
+    "VISIBILITY_ALWAYS",
+    "VISIBILITY_HIDDEN",
+    "VISIBILITY_VALUES",
+    "VISIBILITY_VISIBLE",
+    "SecurityImpact",
+    "ToolSpec",
+]
+
+
+class SecurityImpact(IntEnum):
+    """How much damage a tool could do if misused — a 7-level threat scale.
+
+    Ordered ``NONE`` (0, read-only / inert) through ``CRITICAL`` (6, arbitrary
+    side effects). The numeric value is the threat level; :attr:`label` is the
+    user-friendly name shown in the UI and rendered into agent prompts. The
+    security layer (not yet wired) will consume these levels to decide which
+    calls need a permission gate.
+    """
+
+    NONE = 0
+    MINIMAL = 1
+    LOW = 2
+    MODERATE = 3
+    HIGH = 4
+    SEVERE = 5
+    CRITICAL = 6
+
+    @property
+    def label(self) -> str:
+        """Title-cased, user-friendly name for this threat level."""
+        return self.name.capitalize()
+
+
+# Per-property visibility values for ``input_visibility`` / ``output_visibility``.
+VISIBILITY_ALWAYS = "always"  # shown in full, never cropped
+VISIBILITY_VISIBLE = "visible"  # shown, but cropped if large (3 lines / 200 chars)
+VISIBILITY_HIDDEN = "hidden"  # never shown to the customer
+VISIBILITY_VALUES: frozenset[str] = frozenset(
+    {VISIBILITY_ALWAYS, VISIBILITY_VISIBLE, VISIBILITY_HIDDEN}
+)
+
+# A property absent from a visibility map defaults to hidden (most private).
+OUTPUT_VISIBILITY_DEFAULT = VISIBILITY_HIDDEN
 
 
 @dataclass(frozen=True)
@@ -24,6 +69,19 @@ class ToolSpec:
             definition — what the model reads to decide whether and how to
             call this tool.
         input_schema: JSON Schema dict for the tool's input parameters.
+        output_schema: JSON Schema dict for the tool's successful result. It is
+            an ``object`` schema; the engine augments it in-flight with an
+            engine-owned ``schema_compliance`` boolean (see
+            :mod:`kodo.toolspecs._compliance`) before showing it to agents — so
+            specs must NOT declare ``schema_compliance`` themselves. Tools may
+            also return an ``{"error": "..."}`` object on failure; that envelope
+            is universal and is not modelled per-spec.
+        security_impact: The :class:`SecurityImpact` threat level for this tool.
+        input_visibility: Map of input property name → visibility
+            (``always`` / ``visible`` / ``hidden``); see the ``VISIBILITY_*``
+            constants. Properties absent from the map default to ``hidden``.
+        output_visibility: Map of output property name → visibility, same values
+            and default as :attr:`input_visibility`.
         when_to_use: Bullet points of situations that call for this tool,
             rendered into the ``## Tools`` section of every agent prompt that
             is granted this tool. Each bullet is phrased generically — it
@@ -44,5 +102,9 @@ class ToolSpec:
     user_description: str
     description: str
     input_schema: dict[str, object]
+    output_schema: dict[str, object]
+    security_impact: SecurityImpact
+    input_visibility: dict[str, str]
+    output_visibility: dict[str, str]
     when_to_use: tuple[str, ...]
     autonomous_mode: str | None = None

@@ -1,5 +1,6 @@
 ---
 name: architect
+display_name: Architect
 tools:
   - publish_artifact
   - read_artifact

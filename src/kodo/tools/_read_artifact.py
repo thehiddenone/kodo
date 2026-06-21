@@ -52,4 +52,4 @@ class ReadArtifactTool(Tool):
             _log.exception("read_artifact failed for %s: %s", ctx.agent_name, exc)
             return json.dumps({"error": str(exc)})
 
-        return json.dumps([serialize_artifact(a) for a in artifacts])
+        return json.dumps({"artifacts": [serialize_artifact(a) for a in artifacts]})

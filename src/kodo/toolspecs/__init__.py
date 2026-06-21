@@ -14,6 +14,12 @@ through a single :class:`kodo.tools.ToolDispatcher`.
 from __future__ import annotations
 
 from ._ask_user import ASK_USER
+from ._compliance import (
+    SCHEMA_COMPLIANCE_KEY,
+    augment_output_schema,
+    normalize_output,
+    tool_result_succeeded,
+)
 from ._copy_file import COPY_FILE
 from ._create_file import CREATE_FILE
 from ._delete_file import DELETE_FILE
@@ -33,10 +39,19 @@ from ._rollback import ROLLBACK
 from ._run_author_critic_iteration import RUN_AUTHOR_CRITIC_ITERATION
 from ._run_command import RUN_COMMAND
 from ._run_subagent import RUN_SUBAGENT
-from ._spec import ToolSpec
+from ._spec import (
+    OUTPUT_VISIBILITY_DEFAULT,
+    VISIBILITY_ALWAYS,
+    VISIBILITY_HIDDEN,
+    VISIBILITY_VALUES,
+    VISIBILITY_VISIBLE,
+    SecurityImpact,
+    ToolSpec,
+)
 from ._toolchain_build import TOOLCHAIN_BUILD
 from ._toolchain_deps import TOOLCHAIN_DEPS
 from ._toolchain_test import TOOLCHAIN_TEST
+from ._visibility import build_detail_rows, stringify_value
 
 __all__ = [
     "ALL_TOOLS",
@@ -50,6 +65,7 @@ __all__ = [
     "FINALIZE_PROJECT",
     "LIST_ARTIFACTS",
     "MOVE_FILE",
+    "OUTPUT_VISIBILITY_DEFAULT",
     "POST_UPDATE",
     "PUBLISH_ARTIFACT",
     "QUERY_FRONTIER",
@@ -60,10 +76,21 @@ __all__ = [
     "RUN_AUTHOR_CRITIC_ITERATION",
     "RUN_COMMAND",
     "RUN_SUBAGENT",
+    "SCHEMA_COMPLIANCE_KEY",
     "TOOLCHAIN_BUILD",
     "TOOLCHAIN_DEPS",
     "TOOLCHAIN_TEST",
+    "VISIBILITY_ALWAYS",
+    "VISIBILITY_HIDDEN",
+    "VISIBILITY_VALUES",
+    "VISIBILITY_VISIBLE",
+    "SecurityImpact",
     "ToolSpec",
+    "augment_output_schema",
+    "build_detail_rows",
+    "normalize_output",
+    "stringify_value",
+    "tool_result_succeeded",
 ]
 
 # Every tool spec in the catalog. Used by kodo.subagents._registry to render

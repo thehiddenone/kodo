@@ -1,5 +1,6 @@
 ---
 name: code_critic
+display_name: Code Reviewer
 tools:
   - publish_artifact
   - read_artifact

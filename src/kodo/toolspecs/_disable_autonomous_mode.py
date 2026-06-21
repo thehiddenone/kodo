@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["DISABLE_AUTONOMOUS_MODE"]
 
@@ -25,6 +25,16 @@ DISABLE_AUTONOMOUS_MODE: ToolSpec = ToolSpec(
         },
         "required": ["reason"],
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "description": "Always 'disabled'."},
+        },
+        "required": ["status"],
+    },
+    security_impact=SecurityImpact.HIGH,
+    input_visibility={"reason": "always"},
+    output_visibility={"status": "always"},
     when_to_use=(
         "Only for diagnosed pipeline-level non-convergence — the same "
         "artifact (or pair of artifacts) reworked repeatedly (as a "

@@ -7,7 +7,7 @@ would escape it.
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["DELETE_FILE"]
 
@@ -33,6 +33,17 @@ DELETE_FILE: ToolSpec = ToolSpec(
         },
         "required": ["path"],
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "description": "Always 'deleted' on success."},
+            "path": {"type": "string", "description": "The path that was deleted."},
+        },
+        "required": ["status", "path"],
+    },
+    security_impact=SecurityImpact.HIGH,
+    input_visibility={"path": "always"},
+    output_visibility={"status": "always", "path": "always"},
     when_to_use=(
         "Removing a stale non-artifact file (e.g., a leftover generated "
         "file) that is no longer needed.",

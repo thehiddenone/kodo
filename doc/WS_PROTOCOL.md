@@ -191,6 +191,8 @@ Extended-thinking text uses the same shape under a different kind:
 
 Both are terminated by a single `stream_end` (empty payload) sharing the `correlation_id`. The panel renders thinking in a collapsible block, separate from the assistant response.
 
+The streamed text is not just a UI artifact: the engine accumulates it into a `{"type": "thinking", "thinking": ...}` content block on the assistant `Message` it appends to context (see SESSIONS.md "Thinking blocks"), so it is replayed back to the model on the next call and persisted in `session.jsonl` across reloads, the same way `tool_use` blocks already were.
+
 ### 5.4 `llm.turn_start` — an LLM call is beginning
 
 Emitted just before each `stream_query` so the panel can show an "awaiting" indicator before the first token arrives.
@@ -206,10 +208,42 @@ Emitted before **every** dispatched tool call so the panel can show a one-line a
 ```json
 { "type": "agent.tool_call",
   "tool_name": "run_command",
-  "description": "Run a shell command" }
+  "description": "Run a shell command",
+  "tool_call_id": "<tool_use block id>" }
 ```
 
-`description` is the tool's `user_description` (a short UI label from the `ToolSpec`), never the model-facing schema. The panel decides which tool calls are worth surfacing.
+`description` is the tool's `user_description` (a short UI label from the `ToolSpec`), never the model-facing schema. The panel decides which tool calls are worth surfacing. `tool_call_id` is the LLM `tool_use` block id; it correlates this event with the follow-up `agent.tool_call_detail` (§5.5a) and with the persisted tool-call document.
+
+### 5.5a `agent.tool_call_detail` — customer-visible input/output + doc link
+
+Emitted **after** a tool call is dispatched and its output normalized. Carries the customer-visible projection of the call (driven by the `ToolSpec`'s `input_visibility` / `output_visibility` maps), the absolute path of the persisted Markdown document (full input + output, for the user to open), and the engine-owned `schema_compliance` flag.
+
+```json
+{ "type": "agent.tool_call_detail",
+  "tool_call_id": "<tool_use block id>",
+  "file": "/abs/path/.kodo/sessions/<id>/toolcalls/<tool_use_id>.md",
+  "rows": [
+    { "name": "command", "value": "pytest -q", "source": "input", "visibility": "always" },
+    { "name": "exit_code", "value": "0", "source": "output", "visibility": "always" },
+    { "name": "stdout", "value": "...", "source": "output", "visibility": "visible" }
+  ],
+  "schema_compliance": true }
+```
+
+Each row is one property the customer may see: `always` rows are shown in full, `visible` rows are cropped client-side (3 lines / 200 chars); `hidden` properties (and any property absent from the visibility map) are omitted entirely. The panel renders these rows as a clickable table beneath the `agent.tool_call` one-liner; clicking opens `file`. On reconnect the same fields ride along on `session.history` `tool_call` entries (`rows`, `detailFile`, `schemaCompliance`).
+
+### 5.5b `tool.incompliant` — output did not match its schema
+
+Emitted when a tool's raw output did not conform to its declared `output_schema` and the engine had to repair it (drop undeclared fields and/or backfill missing required ones with empty strings, then set `schema_compliance: false` on the result the agent sees). Drives a VSIX error message box naming the tool.
+
+```json
+{ "type": "tool.incompliant",
+  "tool_name": "run_command",
+  "external_name": "Run Command",
+  "user_description": "Run a shell command" }
+```
+
+`schema_compliance` is **engine-owned**: it is never declared in a `ToolSpec.output_schema`; the engine augments every output schema (the one shown to agents) and every result in-flight to carry it.
 
 ### 5.6 `review.started` / `review.verdict` — low-fi workspace activity
 
@@ -302,7 +336,7 @@ Pushed once after `hello.ack` when the resumed session has prior turns, so a fre
 { "type": "session.history", "entries": [ { ...session-entry... }, ... ] }
 ```
 
-Entries mirror the WebView's session model. Only context-bearing entries (`user_message`, `assistant_response`, `tool_call`) are rehydrated; display-only entries (thinking, status, `post_update`) are dropped on rehydrate.
+Entries mirror the WebView's session model. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Other display-only entries (status, `post_update`) are still ephemeral and dropped on rehydrate.
 
 ### 5.12 Local-model lifecycle events
 

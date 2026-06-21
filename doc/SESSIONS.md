@@ -65,6 +65,56 @@ timestamp). `<subsession-id>` is a random hex ID minted per `run_subagent` call.
 LLM context); `read_session_lines()` returns everything (for resume and history
 rebuild).
 
+## Thinking blocks
+
+Extended-thinking text is not a UI-only side channel. The engine's shared turn
+loop (`__run_agent_turn`) accumulates every `ThinkingDelta` it streams to the
+client into one `{"type": "thinking", "thinking": "<text>"}` content block,
+prepended as the **first** block of the assistant `Message` it appends to
+`messages` — ahead of any `text`/`tool_use` blocks in that same turn. Because
+that `Message` is exactly what gets persisted to `session.jsonl` (or a
+subsession file) and exactly what gets replayed back to the LLM on the next
+call, thinking is now real, durable conversation context, the same way
+`tool_use`/`tool_result` blocks already were — not something reconstructed
+only for display.
+
+**Per-provider signature handling.** Anthropic's extended thinking signs each
+thinking block; the API rejects a later request that replays thinking text
+without the exact signature Anthropic issued for it. The Claude plugin
+(`llms/anthropic/_claude.py`) now requests thinking on every call (`thinking:
+{type: "enabled", budget_tokens: ...}`), captures that signature from the
+stream's `signature_delta` as a new `ThinkingSignature` event, and the engine
+stores it on the block (`"signature": "<sig>"`). llama.cpp has no equivalent
+mechanism — its `ThinkingDelta`s (parsed from `<think>...</think>` tags or an
+OpenAI-style `reasoning_content` field) never carry a signature, so their
+blocks are persisted without one.
+
+This matters because a session can switch providers mid-conversation (local
+↔ cloud), so a thinking block produced by one provider can end up in front of
+the other on the next call:
+
+- `llms/anthropic/_cache.py:_drop_unsigned_thinking` strips any `"thinking"`
+  block lacking a `signature` before it reaches the Anthropic API — a
+  llama.cpp-origin block would otherwise make Claude reject the whole request.
+- `llms/llamacpp/_llama.py:_expand_assistant` re-wraps a `"thinking"` block
+  back into the model's own `<think>...</think>` convention when building
+  history for llama.cpp, regardless of which provider produced it (the
+  signature, if any, is simply irrelevant to llama.cpp and dropped).
+
+**Known gap:** Anthropic's `RedactedThinkingBlock` (safety-flagged reasoning,
+delivered as opaque ciphertext with no plain text) is not captured — there is
+nothing human-readable to show, and it is rare enough that the Claude plugin
+just ignores it rather than threading a third content-block shape through the
+engine.
+
+**Display + reload.** The WebView's `thinking_block` session-entry type
+already rendered a collapsible, toggleable block for the *live* streamed
+text; the only missing piece was that nothing rebuilt it after a reload.
+`WorkflowEngine.__message_to_entries` now also emits a `thinking_block` entry
+(sourced from the persisted `"thinking"` block) ahead of the
+`assistant_response` entry for an assistant message, so `session.history`
+replays it exactly where it appeared live, with the same collapsible UI.
+
 ## Persistence (the "append-before-respond" guarantees)
 
 ### Main turns

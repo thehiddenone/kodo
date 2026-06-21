@@ -26,6 +26,7 @@ from kodo.llms import (
     StreamEvent,
     ThinkingDelta,
     TokenDelta,
+    ToolCallArgDelta,
     ToolCallEvent,
     ToolSpec,
     TurnEnd,
@@ -73,7 +74,15 @@ def _expand_assistant(blocks: list[dict[str, object]]) -> list[dict[str, object]
     text_parts: list[str] = []
     tool_calls: list[dict[str, object]] = []
     for block in blocks:
-        if block.get("type") == "text":
+        block_type = block.get("type")
+        if block_type == "thinking":
+            # Re-wrap in the model's own <think> convention so reasoning from
+            # an earlier turn (this provider's or another's) is real context
+            # again, not just a UI artifact. The signature (if any, e.g. from
+            # a Claude-origin turn in a mixed local/cloud session) is provider
+            # metadata llama.cpp has no use for and is dropped here.
+            text_parts.append(f"<think>{block.get('thinking', '')}</think>")
+        elif block_type == "text":
             text_parts.append(str(block.get("text", "")))
         elif block.get("type") == "tool_use":
             tool_calls.append(
@@ -151,6 +160,23 @@ _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 
 
+def _partial_tag_suffix_len(buffer: str, tag: str) -> int:
+    """Length of the buffer's tail that could be the start of ``tag``.
+
+    Returns the largest ``k`` in ``1..len(tag)-1`` such that ``buffer`` ends
+    with ``tag[:k]`` (i.e. an *incomplete* tag that the next chunk might
+    finish), else ``0``. Only this tail needs to be withheld; the rest is safe
+    to emit now. This is what lets a normal sentence ending (e.g. ``"both."``)
+    flush immediately instead of being held until end-of-stream — the symptom
+    where the last few characters of a sentence only appeared minutes later,
+    alongside the tool call.
+    """
+    for k in range(min(len(tag) - 1, len(buffer)), 0, -1):
+        if buffer.endswith(tag[:k]):
+            return k
+    return 0
+
+
 class ThinkingStreamParser:
     """Splits a streamed text into ThinkingDelta and TokenDelta events.
 
@@ -178,7 +204,7 @@ class ThinkingStreamParser:
                     self._buffer = self._buffer[idx + len(_THINK_CLOSE) :]
                     self._in_thinking = False
                 else:
-                    hold = min(len(_THINK_CLOSE) - 1, len(self._buffer))
+                    hold = _partial_tag_suffix_len(self._buffer, _THINK_CLOSE)
                     safe = len(self._buffer) - hold
                     if safe > 0:
                         events.append(ThinkingDelta(text=self._buffer[:safe]))
@@ -192,7 +218,7 @@ class ThinkingStreamParser:
                     self._buffer = self._buffer[idx + len(_THINK_OPEN) :]
                     self._in_thinking = True
                 else:
-                    hold = min(len(_THINK_OPEN) - 1, len(self._buffer))
+                    hold = _partial_tag_suffix_len(self._buffer, _THINK_OPEN)
                     safe = len(self._buffer) - hold
                     if safe > 0:
                         events.append(TokenDelta(text=self._buffer[:safe]))
@@ -442,8 +468,20 @@ class LlamaPlugin(LLMPlugin):
                         tool_ids[idx] = tc.id
                     if tc.function and tc.function.name:
                         tool_names[idx] = tc.function.name
-                    if tc.function and tc.function.arguments:
-                        tool_arg_parts.setdefault(idx, []).append(tc.function.arguments)
+                    if tc.function:
+                        # Surface progress as the (possibly huge) arguments
+                        # stream in, so the UI shows a live "generating"
+                        # indicator instead of freezing. The name may not have
+                        # arrived yet on the first fragment ("" until it does);
+                        # the client keeps the first non-empty name it sees.
+                        fragment = tc.function.arguments or ""
+                        if tc.function.name or fragment:
+                            yield ToolCallArgDelta(
+                                tool_name=tool_names.get(idx, ""),
+                                text=fragment,
+                            )
+                        if fragment:
+                            tool_arg_parts.setdefault(idx, []).append(fragment)
 
         if cancel_event.is_set():
             return

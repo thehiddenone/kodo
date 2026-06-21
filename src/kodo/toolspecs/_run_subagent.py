@@ -5,7 +5,7 @@ Dispatch lives in :mod:`kodo.tools` (one handler module per tool).
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["RUN_SUBAGENT"]
 
@@ -38,6 +38,24 @@ RUN_SUBAGENT: ToolSpec = ToolSpec(
         },
         "required": ["name", "task_message"],
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "artifact_ids": {
+                "type": "array",
+                "description": "Artifact IDs published by the sub-agent.",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["artifact_ids"],
+    },
+    security_impact=SecurityImpact.LOW,
+    input_visibility={
+        "name": "always",
+        "task_message": "visible",
+        "input_artifact_ids": "visible",
+    },
+    output_visibility={"artifact_ids": "always"},
     when_to_use=(
         "Kicking off a solo agent's stage that doesn't participate in an "
         "author/critic loop, to produce an initial set of artifacts.",

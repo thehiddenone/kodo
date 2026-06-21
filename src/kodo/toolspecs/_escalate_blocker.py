@@ -6,7 +6,7 @@ triages it (and may surface it to the user).
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["ESCALATE_BLOCKER"]
 
@@ -67,6 +67,26 @@ ESCALATE_BLOCKER: ToolSpec = ToolSpec(
         },
         "required": ["reason", "summary"],
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "description": "Always 'escalated'."},
+            "reason": {"type": "string", "description": "Echoed escalation reason."},
+            "user_response": {
+                "type": "string",
+                "description": "User's reply (interactive mode only).",
+            },
+        },
+        "required": ["status", "reason"],
+    },
+    security_impact=SecurityImpact.LOW,
+    input_visibility={
+        "reason": "always",
+        "summary": "visible",
+        "blocking_artifact_ids": "visible",
+        "options": "visible",
+    },
+    output_visibility={"status": "always", "reason": "always", "user_response": "visible"},
     when_to_use=(
         "Inputs are too under-specified to make a defensible call — there "
         "is no reasonable basis for a required decision, an unambiguous "

@@ -7,7 +7,7 @@ would escape it.
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["CREATE_FILE"]
 
@@ -39,6 +39,17 @@ CREATE_FILE: ToolSpec = ToolSpec(
         },
         "required": ["path", "content"],
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "description": "Always 'created' on success."},
+            "path": {"type": "string", "description": "The path that was written."},
+        },
+        "required": ["status", "path"],
+    },
+    security_impact=SecurityImpact.MODERATE,
+    input_visibility={"path": "always", "content": "visible"},
+    output_visibility={"status": "always", "path": "always"},
     when_to_use=(
         "Writing a file directly to the project tree (outside the "
         "`publish_artifact` pipeline) — e.g., scaffolding config files, "

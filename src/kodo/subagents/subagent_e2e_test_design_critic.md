@@ -1,5 +1,6 @@
 ---
 name: e2e_test_design_critic
+display_name: Acceptance Test Design Reviewer
 tools:
   - publish_artifact
   - read_artifact

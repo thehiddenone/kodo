@@ -1,5 +1,6 @@
 ---
 name: e2e_test_designer
+display_name: Acceptance Test Designer
 tools:
   - publish_artifact
   - read_artifact

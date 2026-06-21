@@ -8,6 +8,7 @@ from ._messages import (
     EVT_AGENT_STARTED,
     EVT_AGENT_TOKENS,
     EVT_AGENT_TOOL_CALL,
+    EVT_AGENT_TOOL_CALL_DETAIL,
     # Server → Client events — API key management
     EVT_API_KEY_REVOKE,
     # Deprecated / legacy — retained until handler wiring is migrated
@@ -33,6 +34,7 @@ from ._messages import (
     EVT_STATE,
     EVT_SUBSESSION_ENDED,
     EVT_SUBSESSION_STARTED,
+    EVT_TOOL_INCOMPLIANT,
     EVT_USAGE_UPDATE,
     MSG_APPROVAL_RESPOND,
     # Client → Server requests (WS_PROTOCOL.md §7)
@@ -101,6 +103,8 @@ __all__ = [
     "EVT_AGENT_FINISHED",
     "EVT_AGENT_TOKENS",
     "EVT_AGENT_TOOL_CALL",
+    "EVT_AGENT_TOOL_CALL_DETAIL",
+    "EVT_TOOL_INCOMPLIANT",
     "EVT_REVIEW_STARTED",
     "EVT_REVIEW_VERDICT",
     "EVT_ARTIFACT_PUBLISHED",

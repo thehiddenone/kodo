@@ -258,7 +258,7 @@ async def test_read_artifact_returns_list(tmp_path: Path) -> None:
     result = json.loads(
         await dispatcher.dispatch("read_artifact", {"artifact_id": "nonexistent-id"})
     )
-    assert result == []
+    assert result == {"artifacts": []}
 
 
 @pytest.mark.asyncio
@@ -281,9 +281,10 @@ async def test_read_artifact_returns_published_artifact(tmp_path: Path) -> None:
     read_result = json.loads(
         await dispatcher.dispatch("read_artifact", {"artifact_id": artifact_id})
     )
-    assert len(read_result) == 1
-    assert read_result[0]["id"] == artifact_id
-    assert read_result[0]["content"] == "Hello narrative"
+    artifacts = read_result["artifacts"]
+    assert len(artifacts) == 1
+    assert artifacts[0]["id"] == artifact_id
+    assert artifacts[0]["content"] == "Hello narrative"
 
 
 # ---------------------------------------------------------------------------
@@ -435,7 +436,9 @@ async def test_fileio_rejects_path_outside_project_root(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_command_returns_exit_code_and_output(tmp_path: Path) -> None:
     dispatcher = _make_dispatcher(tmp_path)
-    result = json.loads(await dispatcher.dispatch("run_command", {"command": "echo hello"}))
+    result = json.loads(
+        await dispatcher.dispatch("run_command", {"command": "echo hello", "timeout": 10})
+    )
     assert result["exit_code"] == 0
     assert "hello" in result["stdout"]
 
@@ -444,9 +447,61 @@ async def test_run_command_returns_exit_code_and_output(tmp_path: Path) -> None:
 async def test_run_command_rejects_working_dir_outside_project_root(tmp_path: Path) -> None:
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
-        await dispatcher.dispatch("run_command", {"command": "pwd", "working_dir": ".."})
+        await dispatcher.dispatch(
+            "run_command", {"command": "pwd", "working_dir": "..", "timeout": 10}
+        )
     )
     assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_run_command_requires_timeout(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(await dispatcher.dispatch("run_command", {"command": "echo hi"}))
+    assert "error" in result and "timeout" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_run_command_kills_on_timeout(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("run_command", {"command": "sleep 5", "timeout": 0.2})
+    )
+    assert result["exit_code"] is None
+    assert "timed out" in result["stderr"].lower()
+
+
+@pytest.mark.asyncio
+async def test_run_command_timeout_kills_backgrounded_child(tmp_path: Path) -> None:
+    # Regression: a command that backgrounds a long-lived child which inherits
+    # the stdout/stderr pipes used to wedge the post-kill drain forever (killing
+    # only the wrapping shell left the grandchild holding the pipes open). With
+    # process-group kill + a bounded drain, the call must still return promptly.
+    import time
+
+    dispatcher = _make_dispatcher(tmp_path)
+    start = time.monotonic()
+    result = json.loads(
+        await dispatcher.dispatch(
+            "run_command",
+            {"command": "sleep 30 & echo started; sleep 30", "timeout": 0.3},
+        )
+    )
+    elapsed = time.monotonic() - start
+    assert result["exit_code"] is None
+    assert "timed out" in result["stderr"].lower()
+    # Must unblock well within the backgrounded child's 30s lifetime
+    # (timeout 0.3s + bounded 5s drain, with generous slack).
+    assert elapsed < 15
+
+
+@pytest.mark.asyncio
+async def test_run_command_closes_stdin(tmp_path: Path) -> None:
+    # A command that reads stdin must get immediate EOF, not hang on the
+    # server's inherited stdin. `cat` with no file reads stdin until EOF.
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(await dispatcher.dispatch("run_command", {"command": "cat", "timeout": 5}))
+    assert result["exit_code"] == 0
 
 
 # ---------------------------------------------------------------------------

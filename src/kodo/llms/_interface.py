@@ -19,7 +19,9 @@ __all__ = [
     "Usage",
     "StreamEvent",
     "ThinkingDelta",
+    "ThinkingSignature",
     "TokenDelta",
+    "ToolCallArgDelta",
     "ToolCallEvent",
     "TurnEnd",
 ]
@@ -89,6 +91,24 @@ class ThinkingDelta(StreamEvent):
 
 
 @dataclass(frozen=True)
+class ThinkingSignature(StreamEvent):
+    """The cryptographic signature Anthropic attaches to a finished thinking block.
+
+    Anthropic requires the exact signature to be replayed verbatim alongside
+    the thinking text for a later request to be accepted; a thinking block
+    without one is rejected by the API. Emitted once, after the run of
+    :class:`ThinkingDelta` events for a thinking block completes. llama.cpp has
+    no equivalent concept and never emits this event — its thinking blocks
+    carry no signature.
+
+    Attributes:
+        signature: Opaque signature string to persist and replay unchanged.
+    """
+
+    signature: str
+
+
+@dataclass(frozen=True)
 class TokenDelta(StreamEvent):
     """A text token fragment emitted during streaming.
 
@@ -96,6 +116,30 @@ class TokenDelta(StreamEvent):
         text: The token text fragment.
     """
 
+    text: str
+
+
+@dataclass(frozen=True)
+class ToolCallArgDelta(StreamEvent):
+    """An incremental fragment of a tool call's arguments as the model streams them.
+
+    Display-only. A tool call's arguments can be very large (e.g. an
+    ``edit_file`` whose ``content`` is an entire file), and the model spends
+    most of a turn decoding them — during which no other event is produced, so
+    the UI looks frozen for minutes. Emitting this fragment lets the client show
+    a live "generating" indicator that proves the model is still working.
+
+    The fully-parsed call still arrives later as :class:`ToolCallEvent`; this
+    event is NOT accumulated into conversation history (the engine ignores it
+    for that purpose).
+
+    Attributes:
+        tool_name: Name of the tool whose arguments are streaming. May be ``""``
+            on the very first fragment if the model has not emitted the name yet.
+        text: Raw argument-text fragment (partial JSON), as produced by the model.
+    """
+
+    tool_name: str
     text: str
 
 

@@ -6,7 +6,7 @@ this drives promotion and ``query_frontier``.
 
 from __future__ import annotations
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["REPORT_ARTIFACT_COMPLETED"]
 
@@ -33,6 +33,17 @@ REPORT_ARTIFACT_COMPLETED: ToolSpec = ToolSpec(
         },
         "required": ["artifact_id"],
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "description": "Always 'completed'."},
+            "artifact_id": {"type": "string", "description": "The completed artifact's ID."},
+        },
+        "required": ["status", "artifact_id"],
+    },
+    security_impact=SecurityImpact.MINIMAL,
+    input_visibility={"artifact_id": "always"},
+    output_visibility={"status": "always", "artifact_id": "always"},
     when_to_use=(
         "Immediately after a review's verdict is `accepted` and, in "
         "interactive mode, the user has accepted the artifact via "

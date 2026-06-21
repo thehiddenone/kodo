@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from kodo.workspace import ArtifactType
 
-from ._spec import ToolSpec
+from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["LIST_ARTIFACTS"]
 
@@ -47,6 +47,38 @@ LIST_ARTIFACTS: ToolSpec = ToolSpec(
         "required": [],
         "minProperties": 1,
     },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "artifacts": {
+                "type": "array",
+                "description": "Matching artifact metadata entries.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "artifact_id": {"type": "string"},
+                        "type": {"type": "string"},
+                        "responsibility_code": {"type": "string"},
+                        "filename_hint": {"type": ["string", "null"]},
+                        "state": {"type": "string"},
+                        "author": {"type": "string"},
+                    },
+                    "required": ["artifact_id", "type"],
+                },
+            },
+        },
+        "required": ["artifacts"],
+    },
+    security_impact=SecurityImpact.NONE,
+    input_visibility={
+        "artifact_id": "always",
+        "type": "visible",
+        "responsibility_code": "visible",
+        "requirement_id": "visible",
+        "author": "visible",
+        "state": "visible",
+    },
+    output_visibility={"artifacts": "always"},
     when_to_use=(
         "A broader inventory view than `query_frontier` provides is needed "
         "— e.g., to enumerate all artifacts for a codename, find superseded "

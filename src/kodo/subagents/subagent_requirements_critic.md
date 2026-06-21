@@ -1,5 +1,6 @@
 ---
 name: requirements_critic
+display_name: Requirements Reviewer
 tools:
   - publish_artifact
   - read_artifact

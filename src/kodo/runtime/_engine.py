@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import shutil
 import uuid
@@ -35,7 +36,9 @@ from kodo.llms import (
     Message,
     StreamEvent,
     ThinkingDelta,
+    ThinkingSignature,
     TokenDelta,
+    ToolCallArgDelta,
     ToolCallEvent,
     ToolCallLogger,
     ToolSpec,
@@ -45,15 +48,21 @@ from kodo.llms import (
 from kodo.llms.anthropic import ClaudePlugin, UnrecoverableError
 from kodo.llms.llamacpp import LlamaPlugin
 from kodo.project import ProjectLayout, kodo_user_dir
-from kodo.state import TransientStore
+from kodo.state import TransientStore, read_diff_files, render_tool_call_markdown
 from kodo.subagents import AgentLoadError, AgentRegistry
 from kodo.toolchains import ToolchainPlugin, select_toolchain
 from kodo.tools import ToolDispatcher, tools_for_agent
-from kodo.toolspecs import ALL_TOOLS
+from kodo.toolspecs import (
+    ALL_TOOLS,
+    build_detail_rows,
+    normalize_output,
+    tool_result_succeeded,
+)
 from kodo.transport import (
     EVT_AGENT_FINISHED,
     EVT_AGENT_STARTED,
     EVT_AGENT_TOOL_CALL,
+    EVT_AGENT_TOOL_CALL_DETAIL,
     EVT_API_KEY_REVOKE,
     EVT_AUTONOMOUS_CHANGED,
     EVT_ERROR,
@@ -66,6 +75,7 @@ from kodo.transport import (
     EVT_STATE,
     EVT_SUBSESSION_ENDED,
     EVT_SUBSESSION_STARTED,
+    EVT_TOOL_INCOMPLIANT,
     EVT_USAGE_UPDATE,
 )
 from kodo.workspace import (
@@ -109,6 +119,10 @@ _SUBAGENT_SPAWNING_TOOLS = frozenset({"run_subagent", "run_author_critic_iterati
 
 # Maximum length of a generated session title, in characters.
 _MAX_TITLE_LEN = 60
+
+# Every tool spec keyed by name — used to normalize each tool's output against
+# its declared schema and to project the customer-visible detail rows.
+_SPECS_BY_NAME: dict[str, ToolSpec] = {t.name: t for t in ALL_TOOLS}
 
 
 class _EngineServices:
@@ -821,6 +835,8 @@ class WorkflowEngine:
             call_start_dt = datetime.now(tz=UTC)
             call_start = call_start_dt.isoformat()
             text_parts: list[str] = []
+            thinking_parts: list[str] = []
+            thinking_signature: str | None = None
             tool_calls: list[ToolCallEvent] = []
             turn_end: TurnEnd | None = None
 
@@ -840,6 +856,10 @@ class WorkflowEngine:
                     await self.__handle_stream_event(event, stream_id)
                     if isinstance(event, TokenDelta):
                         text_parts.append(event.text)
+                    elif isinstance(event, ThinkingDelta):
+                        thinking_parts.append(event.text)
+                    elif isinstance(event, ThinkingSignature):
+                        thinking_signature = event.signature
                     elif isinstance(event, ToolCallEvent):
                         tool_calls.append(event)
                     elif isinstance(event, TurnEnd):
@@ -869,14 +889,29 @@ class WorkflowEngine:
                     },
                 )
 
+            thinking_text = "".join(thinking_parts)
+
             if not tool_calls:
-                messages = messages + [
-                    Message(role="assistant", content="".join(text_parts) or "(no text)")
-                ]
+                if thinking_text:
+                    messages = messages + [
+                        Message(
+                            role="assistant",
+                            content=[
+                                self.__thinking_block(thinking_text, thinking_signature),
+                                {"type": "text", "text": "".join(text_parts) or "(no text)"},
+                            ],
+                        )
+                    ]
+                else:
+                    messages = messages + [
+                        Message(role="assistant", content="".join(text_parts) or "(no text)")
+                    ]
                 _flush()
                 break
 
             assistant_content: list[dict[str, object]] = []
+            if thinking_text:
+                assistant_content.append(self.__thinking_block(thinking_text, thinking_signature))
             if text_parts:
                 assistant_content.append({"type": "text", "text": "".join(text_parts)})
             for tc in tool_calls:
@@ -911,6 +946,21 @@ class WorkflowEngine:
 
         return messages, files_written
 
+    @staticmethod
+    def __thinking_block(thinking: str, signature: str | None) -> dict[str, object]:
+        """Build a persisted ``thinking`` content block for an assistant message.
+
+        ``signature`` is Anthropic's per-block signature, required for Claude to
+        accept the block back in a later request; llama.cpp never supplies one,
+        so the field is simply omitted (see ``_drop_unsigned_thinking`` in
+        ``kodo.llms.anthropic._cache``, which strips signature-less thinking
+        blocks before they reach a Claude call).
+        """
+        block: dict[str, object] = {"type": "thinking", "thinking": thinking}
+        if signature is not None:
+            block["signature"] = signature
+        return block
+
     async def __dispatch_tool_calls(
         self,
         calls: list[tuple[str, str, dict[str, object]]],
@@ -928,23 +978,115 @@ class WorkflowEngine:
         """
         tool_results: list[dict[str, object]] = []
         for tool_use_id, tool_name, tool_input in calls:
-            await self.__sink.send(
-                Envelope.make_event(
-                    EVT_AGENT_TOOL_CALL,
-                    {"tool_name": tool_name, "description": tool_desc.get(tool_name, "")},
-                )
-            )
+            payload: dict[str, object] = {
+                "tool_name": tool_name,
+                "description": tool_desc.get(tool_name, ""),
+                "tool_call_id": tool_use_id,
+            }
+            # run_command carries a mandatory timeout; surface it so the client
+            # can render a "waiting for tool output" progress bar that fills
+            # over the timeout window while the command runs.
+            if tool_name == "run_command":
+                payload["timeout_seconds"] = tool_input.get("timeout")
+            await self.__sink.send(Envelope.make_event(EVT_AGENT_TOOL_CALL, payload))
             tc_n = tool_logger.log_invocation(tool_name, tool_input)
             result_text = await tool_dispatch(tool_name, tool_input)
             tool_logger.log_result(tool_name, tc_n, result_text)
+            content = await self.__finalize_tool_result(
+                tool_use_id, tool_name, tool_input, result_text
+            )
             tool_results.append(
                 {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
-                    "content": result_text,
+                    "content": content,
                 }
             )
         return tool_results
+
+    async def __finalize_tool_result(
+        self,
+        tool_use_id: str,
+        tool_name: str,
+        tool_input: dict[str, object],
+        result_text: str,
+    ) -> str:
+        """Normalize a tool result to its schema; persist and surface its detail.
+
+        Returns the JSON string handed back to the LLM as the ``tool_result``
+        content. The engine owns the injected ``schema_compliance`` flag (added
+        by :func:`~kodo.toolspecs.normalize_output`). The full input + output is
+        persisted as a Markdown doc keyed by ``tool_use_id``, and the
+        customer-visible projection is pushed to the client via
+        :data:`EVT_AGENT_TOOL_CALL_DETAIL`; non-compliant output additionally
+        emits :data:`EVT_TOOL_INCOMPLIANT` so the VSIX can warn the user.
+
+        A tool with no matching spec (none today) passes through unchanged.
+        """
+        spec = _SPECS_BY_NAME.get(tool_name)
+        if spec is None:
+            return result_text
+        try:
+            raw: object = json.loads(result_text)
+        except json.JSONDecodeError:
+            raw = {"result": result_text}
+
+        # A tool may smuggle a before/after diff out-of-band via an
+        # undeclared "diff" key (see EditFileTool). Pop it BEFORE
+        # normalize_output: it's never part of any output_schema, and leaving
+        # it in would make every such call look non-compliant (extra
+        # undeclared field) and leak file content into the LLM-visible result.
+        diff_raw = raw.pop("diff", None) if isinstance(raw, dict) else None
+
+        output, compliant = normalize_output(spec.output_schema, raw)
+        content = json.dumps(output)
+
+        markdown = render_tool_call_markdown(
+            name=spec.name,
+            external_name=spec.external_name,
+            user_description=spec.user_description,
+            security_label=spec.security_impact.label,
+            compliant=compliant,
+            tool_input=tool_input,
+            output=output,
+        )
+        doc_path = self.__transient.write_tool_call(tool_use_id, markdown)
+
+        diff_detail: dict[str, object] | None = None
+        if isinstance(diff_raw, dict):
+            diff_detail = self.__transient.write_diff_files(
+                tool_use_id,
+                label=str(diff_raw.get("label", "")),
+                filename=str(diff_raw.get("filename", "")),
+                old_content=str(diff_raw.get("old_content", "")),
+                new_content=str(diff_raw.get("new_content", "")),
+            )
+
+        await self.__sink.send(
+            Envelope.make_event(
+                EVT_AGENT_TOOL_CALL_DETAIL,
+                {
+                    "tool_call_id": tool_use_id,
+                    "file": str(doc_path) if doc_path is not None else None,
+                    "rows": build_detail_rows(spec, tool_input, output),
+                    "schema_compliance": compliant,
+                    "success": tool_result_succeeded(output),
+                    "diff": diff_detail,
+                },
+            )
+        )
+        if not compliant:
+            await self.__sink.send(
+                Envelope.make_event(
+                    EVT_TOOL_INCOMPLIANT,
+                    {
+                        "tool_name": spec.name,
+                        "external_name": spec.external_name,
+                        "user_description": spec.user_description,
+                    },
+                )
+            )
+        return content
 
     # ------------------------------------------------------------------
     # ToolDispatcher factory
@@ -1483,20 +1625,66 @@ class WorkflowEngine:
             VSIX webview's ``session.history`` handler.
         """
         tool_desc = {t.name: t.user_description for t in ALL_TOOLS}
+        toolcalls_dir = self.__transient.toolcalls_dir
+        lines = self.__transient.read_session_lines()
+
+        # Pass 1: index every tool_use_id → its (normalized) output, so the
+        # tool_call entries can be rebuilt with their detail rows and file link.
+        # Subsession transcripts carry their own tool calls, so include them.
+        all_messages: list[dict[str, object]] = [ln for ln in lines if "role" in ln]
+        for line in lines:
+            if line.get("type") == "subsession_start":
+                sid = str(line.get("subsession_id", ""))
+                all_messages.extend(self.__transient.read_subsession_messages(sid))
+        results_by_id = self.__tool_results_from_messages(all_messages)
+
         entries: list[dict[str, object]] = []
-        for line in self.__transient.read_session_lines():
+        for line in lines:
             if "role" in line:
-                entries.extend(self.__message_to_entries(line, tool_desc))
+                entries.extend(
+                    self.__message_to_entries(line, tool_desc, results_by_id, toolcalls_dir)
+                )
                 continue
             kind = line.get("type")
             if kind == "subsession_start":
                 entries.append(self.__divider_entry("subsession_start", line))
                 sid = str(line.get("subsession_id", ""))
                 for sub in self.__transient.read_subsession_messages(sid):
-                    entries.extend(self.__message_to_entries(sub, tool_desc))
+                    entries.extend(
+                        self.__message_to_entries(sub, tool_desc, results_by_id, toolcalls_dir)
+                    )
             elif kind == "subsession_end":
                 entries.append(self.__divider_entry("subsession_end", line))
         return entries
+
+    @staticmethod
+    def __tool_results_from_messages(
+        messages: list[dict[str, object]],
+    ) -> dict[str, dict[str, object]]:
+        """Map ``tool_use_id`` → parsed tool output across persisted messages.
+
+        Tool outputs live in ``tool_result`` blocks of user messages; the
+        content is the normalized JSON string the engine stored at dispatch.
+        """
+        results: dict[str, dict[str, object]] = {}
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                tool_use_id = str(block.get("tool_use_id", ""))
+                raw_content = block.get("content")
+                if not tool_use_id or not isinstance(raw_content, str):
+                    continue
+                try:
+                    parsed = json.loads(raw_content)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    results[tool_use_id] = parsed
+        return results
 
     @staticmethod
     def __divider_entry(kind: str, marker: dict[str, object]) -> dict[str, object]:
@@ -1509,7 +1697,10 @@ class WorkflowEngine:
 
     @staticmethod
     def __message_to_entries(
-        msg: dict[str, object], tool_desc: dict[str, str]
+        msg: dict[str, object],
+        tool_desc: dict[str, str],
+        results_by_id: dict[str, dict[str, object]],
+        toolcalls_dir: Path,
     ) -> list[dict[str, object]]:
         """Convert one persisted ``{role, content}`` line to client feed entries."""
         role = msg.get("role")
@@ -1523,6 +1714,13 @@ class WorkflowEngine:
         if not isinstance(content, list):
             return out
         if role == "assistant":
+            thinking_text = "".join(
+                str(b.get("thinking", ""))
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "thinking"
+            )
+            if thinking_text:
+                out.append({"type": "thinking_block", "content": thinking_text})
             text = "".join(
                 str(b.get("text", ""))
                 for b in content
@@ -1533,13 +1731,37 @@ class WorkflowEngine:
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
                     name = str(block.get("name", ""))
-                    out.append(
-                        {
-                            "type": "tool_call",
-                            "toolName": name,
-                            "description": tool_desc.get(name, ""),
-                        }
-                    )
+                    tool_use_id = str(block.get("id", ""))
+                    tool_input = block.get("input")
+                    if not isinstance(tool_input, dict):
+                        tool_input = {}
+                    output = results_by_id.get(tool_use_id)
+                    spec = _SPECS_BY_NAME.get(name)
+                    rows = build_detail_rows(spec, tool_input, output) if spec is not None else []
+                    doc = toolcalls_dir / f"{tool_use_id}.md"
+                    diff = read_diff_files(toolcalls_dir, tool_use_id)
+                    entry: dict[str, object] = {
+                        "type": "tool_call",
+                        "toolName": name,
+                        "description": tool_desc.get(name, ""),
+                        "toolCallId": tool_use_id,
+                        "rows": rows,
+                        "detailFile": str(doc) if doc.exists() else None,
+                        "schemaCompliance": (
+                            output.get("schema_compliance") if output is not None else None
+                        ),
+                        "success": tool_result_succeeded(output),
+                        "diff": (
+                            {
+                                "label": diff["label"],
+                                "prevPath": diff["prev_path"],
+                                "newPath": diff["new_path"],
+                            }
+                            if diff is not None
+                            else None
+                        ),
+                    }
+                    out.append(entry)
         elif role == "user":
             text = "".join(
                 str(b.get("text", ""))
@@ -1572,6 +1794,10 @@ class WorkflowEngine:
             await self.__sink.send(Envelope.make_thinking_chunk(stream_id, event.text))
         elif isinstance(event, TokenDelta):
             await self.__sink.send(Envelope.make_stream_chunk(stream_id, event.text))
+        elif isinstance(event, ToolCallArgDelta):
+            await self.__sink.send(
+                Envelope.make_toolgen_chunk(stream_id, event.tool_name, event.text)
+            )
 
     async def __emit_state(self) -> None:
         await self.__sink.send(Envelope.make_event(EVT_STATE, self.__session.to_dict()))

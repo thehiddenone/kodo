@@ -1,5 +1,6 @@
 ---
 name: requirements_author
+display_name: Requirements Writer
 tools:
   - publish_artifact
   - read_artifact

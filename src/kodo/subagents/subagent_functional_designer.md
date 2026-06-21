@@ -1,5 +1,6 @@
 ---
 name: functional_designer
+display_name: Functional Designer
 tools:
   - publish_artifact
   - read_artifact

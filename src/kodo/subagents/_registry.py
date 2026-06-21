@@ -25,10 +25,11 @@ or a tool with no matching :class:`~kodo.toolspecs.ToolSpec`.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
-from kodo.toolspecs import ALL_TOOLS, ToolSpec
+from kodo.toolspecs import ALL_TOOLS, ToolSpec, augment_output_schema
 
 from ._loader import AgentLoadError, SubAgent, load_agent
 
@@ -92,8 +93,14 @@ class AgentRegistry:
             lines = []
             if spec.autonomous_mode:
                 lines.append(f"- **Autonomous mode:** {spec.autonomous_mode}")
+            lines.append(f"- **Security impact:** {spec.security_impact.label}")
             lines.append("- **When to use:**")
             lines.extend(f"  - {bullet}" for bullet in spec.when_to_use)
+            # Output schema is visible to the agent (augmented in-flight with the
+            # engine-owned `schema_compliance` flag the agent should consult).
+            output_schema = json.dumps(augment_output_schema(spec.output_schema), indent=2)
+            lines.append("- **Output schema:**")
+            lines.append(f"  ```json\n{output_schema}\n  ```")
             blocks.append(f"### {spec.external_name} (`{name}`)\n\n" + "\n".join(lines))
         return "\n\n".join(blocks)
 
