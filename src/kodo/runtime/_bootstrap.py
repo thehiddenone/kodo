@@ -1,15 +1,20 @@
 """Cold-start index population for Kodo projects.
 
-Bootstrap runs in four deterministic phases on every server start
-(STATE_AND_LIFECYCLE.md §3):
+Bootstrap splits across the two layout tiers (see the ``project-kodo`` memory,
+WorkspaceLayout two-root model):
+
+* :func:`locate_orchestrator_session` — the **workspace** tier.  Locates or
+  creates the session from the workspace-level marker + ``sessions/`` dir.  Runs
+  at server start, before any project is bound.
+* :class:`ProjectBootstrap` — the **project** tier.  Rebuilds the artifact
+  :class:`ProjectIndex` from the bound project's mirror + workspace dirs.  Runs
+  when the current project is lazily bound (Guided) and after a rollback.
+
+Project-tier phases (STATE_AND_LIFECYCLE.md §3):
 
 1. Scan the mirror working tree — produces ``state='completed'`` entries.
 2. Scan the workspace — produces ``state='in_flight'`` entries.
 3. Classify in-flight entries by session presence — orphans are deleted.
-4. Locate or create the Orchestrator session marker.
-
-The result is a :class:`BootstrapResult` containing a fully populated
-:class:`ProjectIndex` and the current Orchestrator session ID.
 """
 
 from __future__ import annotations
@@ -30,6 +35,44 @@ _log = logging.getLogger(__name__)
 _SIDECAR_SUFFIX = ".kodo.json"
 
 
+def locate_orchestrator_session(marker_dir: Path, sessions_dir: Path) -> tuple[str, bool]:
+    """Locate or create the Orchestrator session (workspace tier).
+
+    The session is workspace-scoped (mode-agnostic — Orchestrator and Problem
+    Solver share it), so its marker and store live under
+    ``.kodo-workspace/`` regardless of which project is later bound.
+
+    Args:
+        marker_dir (Path): Directory holding the orchestrator session marker
+            (``.kodo-workspace/``).
+        sessions_dir (Path): Directory holding per-session stores
+            (``.kodo-workspace/sessions/``).
+
+    Returns:
+        tuple[str, bool]: ``(session_id, resumed)`` where ``resumed`` is
+        ``True`` if an existing session directory was found.
+    """
+    marker = OrchestratorMarker(marker_dir)
+    existing = marker.read()
+
+    if existing:
+        session_dir = sessions_dir / existing
+        if session_dir.is_dir():
+            _log.info("Orchestrator session resumed: %s", existing)
+            return existing, True
+        _log.warning(
+            "Orchestrator marker points to missing session dir %s "
+            "— discarding marker and starting fresh",
+            existing,
+        )
+        marker.clear()
+
+    session_id = new_session_id()
+    marker.write(session_id)
+    _log.info("Orchestrator session started: %s", session_id)
+    return session_id, False
+
+
 @dataclass(frozen=True)
 class BootstrapResult:
     """Result of a completed bootstrap run.
@@ -48,60 +91,50 @@ class BootstrapResult:
 
 
 class ProjectBootstrap:
-    """Four-phase cold-start bootstrap.
+    """Project-tier cold-start index rebuild (phases 1–3).
 
     Args:
         mirror_dir (Path): Root of the mirror working tree
             (``<project>/.kodo/checkpoints/``).
         workspace_dir (Path): Root of the workspace directory
             (``<project>/.kodo/workspace/``).
-        sessions_dir (Path): Directory holding session JSONL files
-            (``<project>/.kodo/sessions/``).
-        kodo_dir (Path): The ``.kodo/`` directory (holds the orchestrator
-            marker file and other engine state).
+        sessions_dir (Path): Directory holding per-session stores
+            (``.kodo-workspace/sessions/``) — used only for orphan
+            classification (phase 3).
     """
 
     __mirror_dir: Path
     __workspace_dir: Path
     __sessions_dir: Path
-    __kodo_dir: Path
 
     def __init__(
         self,
         mirror_dir: Path,
         workspace_dir: Path,
         sessions_dir: Path,
-        kodo_dir: Path,
     ) -> None:
         """Initialise bootstrap with directory paths.
 
         Args:
             mirror_dir (Path): Mirror working tree root.
             workspace_dir (Path): Workspace root.
-            sessions_dir (Path): Session logs directory.
-            kodo_dir (Path): The project's ``.kodo/`` directory.
+            sessions_dir (Path): Session stores directory (workspace tier).
         """
         self.__mirror_dir = mirror_dir
         self.__workspace_dir = workspace_dir
         self.__sessions_dir = sessions_dir
-        self.__kodo_dir = kodo_dir
 
-    def run(self) -> BootstrapResult:
-        """Execute all four bootstrap phases and return the result.
+    def build_index(self) -> ProjectIndex:
+        """Execute the three project-tier phases and return the index.
 
         Returns:
-            BootstrapResult: Populated index and Orchestrator session info.
+            ProjectIndex: Populated in-memory artifact index.
         """
         index = ProjectIndex()
         self.__phase1_scan_mirror(index)
         self.__phase2_scan_workspace(index)
         self.__phase3_classify_in_flight(index)
-        session_id, resumed = self.__phase4_orchestrator_session()
-        return BootstrapResult(
-            index=index,
-            orchestrator_session_id=session_id,
-            orchestrator_resumed=resumed,
-        )
+        return index
 
     # ------------------------------------------------------------------
     # Phase 1 — mirror scan
@@ -259,34 +292,3 @@ class ProjectBootstrap:
         )
         index.remove(entry.artifact_id)
         entry.location.unlink(missing_ok=True)
-
-    # ------------------------------------------------------------------
-    # Phase 4 — Orchestrator session (STATE_AND_LIFECYCLE.md §3 Phase 4)
-    # ------------------------------------------------------------------
-
-    def __phase4_orchestrator_session(self) -> tuple[str, bool]:
-        """Locate or create the Orchestrator session.
-
-        Returns:
-            tuple[str, bool]: ``(session_id, resumed)`` where ``resumed``
-            is ``True`` if an existing session directory was found.
-        """
-        marker = OrchestratorMarker(self.__kodo_dir)
-        existing = marker.read()
-
-        if existing:
-            session_dir = self.__sessions_dir / existing
-            if session_dir.is_dir():
-                _log.info("Phase 4: Orchestrator session resumed: %s", existing)
-                return existing, True
-            _log.warning(
-                "Phase 4: Orchestrator marker points to missing session dir %s "
-                "— discarding marker and starting fresh",
-                existing,
-            )
-            marker.clear()
-
-        session_id = new_session_id()
-        marker.write(session_id)
-        _log.info("Phase 4: Orchestrator session started: %s", session_id)
-        return session_id, False

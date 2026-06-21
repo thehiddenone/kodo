@@ -20,6 +20,8 @@ from typing import Protocol
 
 from kodo.workspace import ProjectIndex, Workspace
 
+from ._paths import PathResolver
+
 __all__ = [
     "ApprovalLike",
     "EngineServices",
@@ -161,6 +163,9 @@ class ToolContext:
     Attributes:
         workspace: Shared artifact store.
         index: Live in-memory artifact index.
+        resolver: Path resolver for the native file/shell tools — a
+            project-confined resolver in Guided mode, a logical (workspace-folder
+            keyed) resolver in Problem Solver mode.
         gate: Approval/question gate (protocol).
         session: Session state (protocol); ``effective_autonomous`` is the
             frozen mode for this prompt.
@@ -175,6 +180,7 @@ class ToolContext:
 
     workspace: Workspace
     index: ProjectIndex
+    resolver: PathResolver
     gate: GateLike
     session: SessionLike
     services: EngineServices

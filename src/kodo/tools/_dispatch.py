@@ -51,6 +51,7 @@ from ._escalate_blocker import EscalateBlockerTool
 from ._finalize_project import FinalizeProjectTool
 from ._list_artifacts import ListArtifactsTool
 from ._move_file import MoveFileTool
+from ._paths import PathResolver
 from ._post_update import PostUpdateTool
 from ._publish_artifact import PublishArtifactTool
 from ._query_frontier import QueryFrontierTool
@@ -133,6 +134,8 @@ class ToolDispatcher:
     Args:
         workspace: Shared artifact store.
         index: Live artifact index.
+        resolver: Path resolver for the native file/shell tools (project-confined
+            in Guided mode, logical/workspace-folder-keyed in Problem Solver).
         gate: Approval/question gate.
         session: Session state (carries the frozen ``effective_autonomous``).
         services: Engine-side operations (sub-agent launch, rollback,
@@ -148,6 +151,7 @@ class ToolDispatcher:
         *,
         workspace: Workspace,
         index: ProjectIndex,
+        resolver: PathResolver,
         gate: GateLike,
         session: SessionLike,
         services: EngineServices,
@@ -157,6 +161,7 @@ class ToolDispatcher:
         self.__ctx = ToolContext(
             workspace=workspace,
             index=index,
+            resolver=resolver,
             gate=gate,
             session=session,
             services=services,

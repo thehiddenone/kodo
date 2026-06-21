@@ -36,6 +36,13 @@ from ._escalate_blocker import EscalateBlockerTool
 from ._finalize_project import FinalizeProjectTool
 from ._list_artifacts import ListArtifactsTool
 from ._move_file import MoveFileTool
+from ._paths import (
+    LogicalPathResolver,
+    PathResolver,
+    ProjectPathResolver,
+    resolve_logical,
+    resolve_within,
+)
 from ._post_update import PostUpdateTool
 from ._publish_artifact import PublishArtifactTool
 from ._query_frontier import QueryFrontierTool
@@ -62,8 +69,11 @@ __all__ = [
     "FinalizeProjectTool",
     "GateLike",
     "ListArtifactsTool",
+    "LogicalPathResolver",
     "MoveFileTool",
+    "PathResolver",
     "PostUpdateTool",
+    "ProjectPathResolver",
     "PublishArtifactTool",
     "QueryFrontierTool",
     "QuestionLike",
@@ -78,5 +88,7 @@ __all__ = [
     "Tool",
     "ToolContext",
     "ToolDispatcher",
+    "resolve_logical",
+    "resolve_within",
     "tools_for_agent",
 ]

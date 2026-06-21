@@ -117,6 +117,7 @@ def _make_dispatcher(
     return ToolDispatcher(
         workspace=MagicMock(),
         index=index,
+        resolver=MagicMock(),
         gate=GateOrchestrator(_make_app_state(), MagicMock()),
         session=session,
         services=_StubServices(rollback=rollback_fn),

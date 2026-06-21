@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from kodo.project import WorkspaceLayout
 from kodo.runtime import Rollback, SessionLog
 from kodo.toolchains import (
     ToolchainBuildResult,
@@ -93,7 +94,11 @@ async def _setup(tmp_path: Path) -> tuple[MirrorRepo, Rollback, Path]:
     project_root = tmp_path
     mirror = MirrorRepo(tmp_path / ".kodo" / "checkpoints")
     await mirror.init()
-    rollback = Rollback(project_root=project_root, mirror=mirror)
+    rollback = Rollback(
+        project_root=project_root,
+        mirror=mirror,
+        workspace=WorkspaceLayout(tmp_path),
+    )
     return mirror, rollback, project_root
 
 

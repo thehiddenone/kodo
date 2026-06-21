@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from kodo.runtime import ApprovalResponse, QuestionResponse, SessionState
-from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, ToolDispatcher
+from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, ProjectPathResolver, ToolDispatcher
 from kodo.toolspecs import (
     ALL_TOOLS,
     SCHEMA_COMPLIANCE_KEY,
@@ -100,6 +100,7 @@ def _make_dispatcher(
     return ToolDispatcher(
         workspace=ws,
         index=index,
+        resolver=ProjectPathResolver(tmp_path),
         gate=_FakeGate(),
         session=session,
         services=_FakeServices(ws),

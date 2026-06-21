@@ -23,7 +23,7 @@ from kodo.llms.llamacpp import (
     get_model_path,
     install_llamacpp,
 )
-from kodo.project import ProjectLayout, ProjectLayoutError, kodo_user_dir
+from kodo.project import WorkspaceLayout, kodo_user_dir
 from kodo.runtime import GateOrchestrator, WorkflowEngine
 from kodo.state import TransientStore
 from kodo.subagents import AgentRegistry
@@ -40,14 +40,15 @@ from kodo.transport import (
     MSG_MODE_SET,
     MSG_MODEL_INSTALL,
     MSG_PING,
+    MSG_PROJECT_SET,
     MSG_PROMPT_SUBMIT,
     MSG_STOP,
     MSG_WORKFLOW_SET,
+    MSG_WORKSPACE_FOLDERS,
     HandlerFn,
     Outbox,
     WebSocketDispatcher,
 )
-from kodo.workspace import CheckpointManager
 
 from ._config import Config
 from ._key_broker import KeyBroker
@@ -77,7 +78,7 @@ def _check_git_on_path() -> None:
 # ------------------------------------------------------------------
 
 
-def _setup_log_file(layout: ProjectLayout, log_level: str) -> None:
+def _setup_log_file(layout: WorkspaceLayout, log_level: str) -> None:
     layout.logs_dir.mkdir(parents=True, exist_ok=True)
     handler = logging.handlers.RotatingFileHandler(
         layout.server_log,
@@ -124,7 +125,8 @@ def _make_hello_handler(config: Config, engine: WorkflowEngine) -> HandlerFn:
             {
                 "type": "hello.ack",
                 "server_version": _SERVER_VERSION,
-                "project_root": str(config.project),
+                "workspace_root": str(config.workspace),
+                "current_project": engine.current_project,
                 "state": engine.session.to_dict(),
                 "models": models_payload,
                 "llama_installed": llama is not None,
@@ -319,6 +321,40 @@ def _make_workflow_handler(engine: WorkflowEngine) -> HandlerFn:
     return _handle_workflow
 
 
+def _make_workspace_folders_handler(engine: WorkflowEngine) -> HandlerFn:
+    async def _handle_workspace_folders(state: WebSocketDispatcher, env: Envelope) -> None:
+        physical_root = str(env.payload.get("physical_root", ""))
+        raw = env.payload.get("folders", {})
+        folders = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+        await engine.handle_workspace_folders(physical_root, folders)
+        await state.send(Envelope.make_response(env.id, {"type": "workspace.folders.ack"}))
+
+    return _handle_workspace_folders
+
+
+def _make_project_set_handler(engine: WorkflowEngine) -> HandlerFn:
+    async def _handle_project_set(state: WebSocketDispatcher, env: Envelope) -> None:
+        root = str(env.payload.get("root", "")).strip()
+        name = str(env.payload.get("name", "")).strip()
+        if not root:
+            await state.send(
+                Envelope.make_response(
+                    env.id,
+                    {
+                        "type": "error",
+                        "code": "missing_project_root",
+                        "message": "project.set requires a 'root'.",
+                        "recoverable": True,
+                    },
+                )
+            )
+            return
+        await engine.bind_project(root, name or root)
+        await state.send(Envelope.make_response(env.id, {"type": "project.accepted"}))
+
+    return _handle_project_set
+
+
 def _make_config_reload_handler(config: Config) -> HandlerFn:
     async def _handle_config_reload(state: WebSocketDispatcher, env: Envelope) -> None:
         # Validate the settings file is still parseable; the engine reads
@@ -412,22 +448,17 @@ def create_app(config: Config) -> web.Application:
     """
     _check_git_on_path()
 
-    layout = ProjectLayout(config.project)
-    _setup_log_file(layout, config.log_level)
-
-    try:
-        layout.validate()
-    except ProjectLayoutError as exc:
-        _log.warning("Project layout warning: %s", exc)
+    workspace = WorkspaceLayout(config.workspace)
+    workspace.init()
+    _setup_log_file(workspace, config.log_level)
 
     outbox = Outbox()
     dispatcher = WebSocketDispatcher(outbox)
     key_broker = KeyBroker(dispatcher)
-    transient = TransientStore(layout.kodo_dir)
+    transient = TransientStore(workspace.kodo_dir)
     gate = GateOrchestrator(dispatcher, transient)
 
     registry = AgentRegistry(_AGENTS_DIR)
-    checkpoints = CheckpointManager(layout)
 
     engine = WorkflowEngine(
         sink=dispatcher,
@@ -435,9 +466,8 @@ def create_app(config: Config) -> web.Application:
         key_provider=key_broker,
         get_settings=config.reload_settings,
         transient=transient,
-        layout=layout,
+        workspace_layout=workspace,
         registry=registry,
-        checkpoints=checkpoints,
     )
 
     dispatcher.register_handler(MSG_HELLO, _make_hello_handler(config, engine))
@@ -449,6 +479,8 @@ def create_app(config: Config) -> web.Application:
     dispatcher.register_handler(MSG_PROMPT_SUBMIT, _make_prompt_handler(engine))
     dispatcher.register_handler(MSG_MODE_SET, _make_mode_handler(engine))
     dispatcher.register_handler(MSG_WORKFLOW_SET, _make_workflow_handler(engine))
+    dispatcher.register_handler(MSG_WORKSPACE_FOLDERS, _make_workspace_folders_handler(engine))
+    dispatcher.register_handler(MSG_PROJECT_SET, _make_project_set_handler(engine))
     dispatcher.register_handler(MSG_STOP, _make_stop_handler(engine))
     dispatcher.register_handler(MSG_CONFIG_RELOAD, _make_config_reload_handler(config))
 
@@ -460,9 +492,9 @@ def create_app(config: Config) -> web.Application:
     app.on_shutdown.append(_stop_background)
 
     _log.info(
-        "Kōdo server %s — project=%s port=%d session=%s",
+        "Kōdo server %s — workspace=%s port=%d session=%s",
         _SERVER_VERSION,
-        config.project,
+        config.workspace,
         config.port,
         transient.session_id,
     )

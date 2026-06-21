@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 
-from ._paths import resolve_within
 from ._tool import Tool
 
 __all__ = ["CreateFileTool"]
@@ -21,7 +20,7 @@ class CreateFileTool(Tool):
         path = str(tool_input.get("path", ""))
         content = str(tool_input.get("content", ""))
         try:
-            target = resolve_within(ctx.workspace.project_root, path)
+            target = ctx.resolver.resolve(path)
             if target.exists():
                 raise FileExistsError(f"File already exists: {path!r}")
             target.parent.mkdir(parents=True, exist_ok=True)

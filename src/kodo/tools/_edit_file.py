@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 
-from ._paths import resolve_within
 from ._tool import Tool
 
 __all__ = ["EditFileTool"]
@@ -21,7 +20,7 @@ class EditFileTool(Tool):
         path = str(tool_input.get("path", ""))
         content = str(tool_input.get("content", ""))
         try:
-            target = resolve_within(ctx.workspace.project_root, path)
+            target = ctx.resolver.resolve(path)
             if not target.exists():
                 raise FileNotFoundError(f"File not found: {path!r}")
             try:

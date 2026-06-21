@@ -32,6 +32,15 @@ MSG_CHECKPOINT_LIST = "checkpoint.list"
 MSG_CHECKPOINT_ROLLBACK = "checkpoint.rollback"
 MSG_MODE_SET = "mode.set"
 MSG_WORKFLOW_SET = "workflow.set"
+# Push the VS Code workspace folder map (logical name → physical path) plus the
+# physical root. Sent on connect and on every workspace-folders change; the
+# server rebuilds its WorkspaceLayout logical-root map. Payload:
+# ``{physical_root, folders: {name: path}}``.
+MSG_WORKSPACE_FOLDERS = "workspace.folders"
+# Bind the session's current project (Guided mode). Sent once, lazily, when the
+# user first runs Guided after picking a project. Payload: ``{root, name}``.
+# Immutable for the session — a second, different value is rejected.
+MSG_PROJECT_SET = "project.set"
 MSG_SECURITY_ADD_RULE = "security.add_rule"
 MSG_CONFIG_RELOAD = "config.reload"
 MSG_LLAMACPP_INSTALL = "llamacpp.install"
@@ -96,6 +105,9 @@ EVT_SESSION_NAMING = "session.naming"
 # ("Narrative Author subagent took over from Kōdo" / "Kōdo resumed").
 EVT_SUBSESSION_STARTED = "subsession.started"
 EVT_SUBSESSION_ENDED = "subsession.ended"
+# The session's current project was bound (Guided). Payload: ``{root, name}``.
+# Lets the client display the locked project and stop re-prompting for it.
+EVT_PROJECT_BOUND = "project.bound"
 
 # ---------------------------------------------------------------------------
 # DEPRECATED — legacy constants retained until handler/event wiring is migrated

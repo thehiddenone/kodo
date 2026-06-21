@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    lifecycle = Lifecycle(config.project)
+    lifecycle = Lifecycle(config.workspace)
     lifecycle.check_and_write_pid()
 
     app = create_app(config)

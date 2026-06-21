@@ -26,10 +26,10 @@ import logging
 import shutil
 from pathlib import Path
 
-from kodo.project import ProjectLayout
+from kodo.project import ProjectLayout, WorkspaceLayout
 from kodo.workspace import MirrorRepo
 
-from ._bootstrap import BootstrapResult, ProjectBootstrap
+from ._bootstrap import BootstrapResult, ProjectBootstrap, locate_orchestrator_session
 from ._orchestrator import OrchestratorMarker
 from ._session_log import SessionLog
 
@@ -45,20 +45,25 @@ class Rollback:
     Args:
         project_root (Path): Root directory of the Kodo project.
         mirror (MirrorRepo): The mirror git repository for this project.
+        workspace (WorkspaceLayout): Workspace-tier layout — supplies the
+            session marker + ``sessions/`` dir (both workspace-scoped).
     """
 
     __project_root: Path
     __mirror: MirrorRepo
+    __workspace: WorkspaceLayout
 
-    def __init__(self, project_root: Path, mirror: MirrorRepo) -> None:
+    def __init__(self, project_root: Path, mirror: MirrorRepo, workspace: WorkspaceLayout) -> None:
         """Initialise the rollback handler.
 
         Args:
             project_root (Path): Root directory of the Kodo project.
             mirror (MirrorRepo): The mirror git repository.
+            workspace (WorkspaceLayout): Workspace-tier layout.
         """
         self.__project_root = project_root
         self.__mirror = mirror
+        self.__workspace = workspace
 
     async def execute(
         self,
@@ -81,7 +86,7 @@ class Rollback:
 
         self.__step1_terminate_sessions(sessions, target_sha)
 
-        OrchestratorMarker(layout.kodo_dir).clear()
+        OrchestratorMarker(self.__workspace.marker_dir).clear()
         _log.info("Rollback: Orchestrator session marker cleared")
 
         await asyncio.to_thread(self.__step3_clear_workspace, layout.workspace_dir)
@@ -149,9 +154,17 @@ class Rollback:
         _log.info("Rollback: project trees restored from mirror")
 
     def __step7_rebuild(self, layout: ProjectLayout) -> BootstrapResult:
-        return ProjectBootstrap(
+        index = ProjectBootstrap(
             mirror_dir=self.__mirror.repo_dir,
             workspace_dir=layout.workspace_dir,
-            sessions_dir=layout.sessions_dir,
-            kodo_dir=layout.kodo_dir,
-        ).run()
+            sessions_dir=self.__workspace.sessions_dir,
+        ).build_index()
+        # The marker was cleared in step 2, so this creates a fresh session.
+        session_id, resumed = locate_orchestrator_session(
+            self.__workspace.marker_dir, self.__workspace.sessions_dir
+        )
+        return BootstrapResult(
+            index=index,
+            orchestrator_session_id=session_id,
+            orchestrator_resumed=resumed,
+        )

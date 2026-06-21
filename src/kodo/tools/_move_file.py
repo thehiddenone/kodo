@@ -6,7 +6,6 @@ import json
 import logging
 import shutil
 
-from ._paths import resolve_within
 from ._tool import Tool
 
 __all__ = ["MoveFileTool"]
@@ -22,8 +21,8 @@ class MoveFileTool(Tool):
         source = str(tool_input.get("source", ""))
         destination = str(tool_input.get("destination", ""))
         try:
-            src = resolve_within(ctx.workspace.project_root, source)
-            dst = resolve_within(ctx.workspace.project_root, destination)
+            src = ctx.resolver.resolve(source)
+            dst = ctx.resolver.resolve(destination)
             if not src.exists():
                 raise FileNotFoundError(f"Source not found: {source!r}")
             dst.parent.mkdir(parents=True, exist_ok=True)

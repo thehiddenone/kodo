@@ -8,7 +8,7 @@ convenience.
 
 from kodo.tools import ToolDispatcher, tools_for_agent
 
-from ._bootstrap import BootstrapResult, ProjectBootstrap
+from ._bootstrap import BootstrapResult, ProjectBootstrap, locate_orchestrator_session
 from ._engine import WorkflowEngine
 from ._gates import ApprovalResponse, GateOrchestrator, QuestionResponse
 from ._orchestrator import OrchestratorMarker
@@ -28,5 +28,6 @@ __all__ = [
     "SessionState",
     "ToolDispatcher",
     "WorkflowEngine",
+    "locate_orchestrator_session",
     "tools_for_agent",
 ]

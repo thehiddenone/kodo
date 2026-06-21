@@ -19,7 +19,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kodo.runtime import GateOrchestrator, QuestionResponse, SessionState
-from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, ToolDispatcher, tools_for_agent
+from kodo.tools import (
+    DISPATCHABLE_TOOLS_BY_NAME,
+    ProjectPathResolver,
+    ToolDispatcher,
+    tools_for_agent,
+)
 from kodo.toolspecs import PUBLISH_ARTIFACT, READ_ARTIFACT
 from kodo.workspace import Artifact, ArtifactType, ProjectIndex, Workspace
 
@@ -103,6 +108,7 @@ def _make_dispatcher(
     return ToolDispatcher(
         workspace=ws,
         index=index,
+        resolver=ProjectPathResolver(tmp_path),
         gate=_make_gate(answer),
         session=session,
         services=_StubServices(complete_artifact=ws.mark_completed),

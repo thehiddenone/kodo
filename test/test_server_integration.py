@@ -38,7 +38,7 @@ def project_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 async def server(project_dir: Path) -> AsyncGenerator[TestServer, None]:
     """Start a kodo server bound to a random loopback port."""
-    config = Config(project=project_dir)
+    config = Config(workspace=project_dir)
     app = create_app(config)
     srv = TestServer(app)
     await srv.start_server()
@@ -101,7 +101,7 @@ async def test_hello_returns_server_version(
     """
     Given a connected WebSocket client,
     when a hello request is sent,
-    then the response carries server_version and project_root.
+    then the response carries server_version and workspace_root.
     """
     req = _make_request("hello", client="vsix", version="0.1.0")
     await ws.send_str(req.to_json())
@@ -110,7 +110,7 @@ async def test_hello_returns_server_version(
 
     assert resp.payload["type"] == "hello.ack"
     assert resp.payload["server_version"] == "0.1.0b1"
-    assert str(project_dir) == str(resp.payload["project_root"])
+    assert str(project_dir) == str(resp.payload["workspace_root"])
 
 
 async def test_hello_ack_embeds_state_snapshot(

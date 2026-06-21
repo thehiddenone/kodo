@@ -47,11 +47,17 @@ from kodo.llms import (
 )
 from kodo.llms.anthropic import ClaudePlugin, UnrecoverableError
 from kodo.llms.llamacpp import LlamaPlugin
-from kodo.project import ProjectLayout, kodo_user_dir
+from kodo.project import ProjectLayout, ProjectLayoutError, WorkspaceLayout, kodo_user_dir
 from kodo.state import TransientStore, read_diff_files, render_tool_call_markdown
 from kodo.subagents import AgentLoadError, AgentRegistry
 from kodo.toolchains import ToolchainPlugin, select_toolchain
-from kodo.tools import ToolDispatcher, tools_for_agent
+from kodo.tools import (
+    LogicalPathResolver,
+    PathResolver,
+    ProjectPathResolver,
+    ToolDispatcher,
+    tools_for_agent,
+)
 from kodo.toolspecs import (
     ALL_TOOLS,
     build_detail_rows,
@@ -68,6 +74,7 @@ from kodo.transport import (
     EVT_ERROR,
     EVT_LLM_TURN_START,
     EVT_POST_UPDATE,
+    EVT_PROJECT_BOUND,
     EVT_REVIEW_STARTED,
     EVT_REVIEW_VERDICT,
     EVT_SESSION_NAME,
@@ -89,7 +96,7 @@ from kodo.workspace import (
     materialization_path,
 )
 
-from ._bootstrap import ProjectBootstrap
+from ._bootstrap import ProjectBootstrap, locate_orchestrator_session
 from ._gates import GateOrchestrator
 from ._rollback import Rollback
 from ._session import SessionState
@@ -209,9 +216,11 @@ class WorkflowEngine:
     __key_provider: ApiKeyProvider
     __get_settings: Callable[[], dict[str, object]]
     __transient: TransientStore
-    __layout: ProjectLayout
+    __workspace_layout: WorkspaceLayout
+    __layout: ProjectLayout | None
     __registry: AgentRegistry
-    __checkpoints: CheckpointManager
+    __checkpoints: CheckpointManager | None
+    __current_project: dict[str, str] | None
     __workspace: Workspace
     __queue: asyncio.Queue[dict[str, object]]
     __session: SessionState
@@ -232,32 +241,44 @@ class WorkflowEngine:
         key_provider: ApiKeyProvider,
         get_settings: Callable[[], dict[str, object]],
         transient: TransientStore,
-        layout: ProjectLayout,
+        workspace_layout: WorkspaceLayout,
         registry: AgentRegistry,
-        checkpoints: CheckpointManager,
     ) -> None:
         """Initialise the runtime engine.
+
+        The engine is workspace-scoped.  Project-level collaborators (the
+        ``ProjectLayout``, ``CheckpointManager``, and artifact ``Workspace``) are
+        built lazily in :meth:`bind_project` when the current project is selected
+        for Guided mode; until then ``self.__layout`` is ``None`` and the
+        placeholder ``Workspace`` (rooted at the physical root) is never used,
+        because Problem Solver tools touch only the filesystem via the resolver.
 
         Args:
             sink (MessageSink): Sends outbound envelopes to the client.
             gate (GateOrchestrator): Handles approval / question gates.
             key_provider (ApiKeyProvider): Retrieves cloud API keys on demand.
             get_settings (Callable): Returns fresh merged settings on each call.
-            transient (TransientStore): Append-only JSONL session store.
-            layout (ProjectLayout): Project filesystem layout.
+            transient (TransientStore): Append-only JSONL session store
+                (workspace-tier ``.kodo-workspace/sessions/``).
+            workspace_layout (WorkspaceLayout): Workspace-tier filesystem layout
+                + logical-root folder map.
             registry (AgentRegistry): Loaded subagent file registry.
-            checkpoints (CheckpointManager): Mirror checkpoint manager.
         """
         self.__sink = sink
         self.__gate = gate
         self.__key_provider = key_provider
         self.__get_settings = get_settings
         self.__transient = transient
-        self.__layout = layout
+        self.__workspace_layout = workspace_layout
         self.__registry = registry
-        self.__checkpoints = checkpoints
+        self.__layout: ProjectLayout | None = None
+        self.__checkpoints: CheckpointManager | None = None
+        self.__current_project: dict[str, str] | None = None
         self.__index = ProjectIndex()
-        self.__workspace = Workspace(layout.root, self.__index)
+        # Placeholder workspace at the physical root — replaced by the real,
+        # project-rooted one in bind_project(); never used before then (no
+        # artifact tool runs without a bound project).
+        self.__workspace = Workspace(workspace_layout.physical_root, self.__index)
         self.__queue = asyncio.Queue()
         self.__session = SessionState()
         self.__worker = None
@@ -297,39 +318,63 @@ class WorkflowEngine:
         """Human-readable name of the active session (from ``meta.json``)."""
         return self.__transient.session_name
 
-    async def start(self) -> None:
-        """Start the worker coroutine.
+    @property
+    def current_project(self) -> dict[str, str] | None:
+        """The session's locked current project ``{root, name}``, or ``None``.
 
-        Initialises the mirror, runs the four-phase bootstrap, and starts
-        the worker task.
+        Bound once (lazily) for Guided mode and immutable for the session.
+        ``None`` while only Problem Solver has run.
         """
-        await self.__checkpoints.ensure_initialized()
+        return self.__current_project
+
+    def __require_layout(self) -> ProjectLayout:
+        """Return the bound project layout, or raise if none is bound.
+
+        Guards the Guided-only code paths (rollback, promotion, toolchain) that
+        run only after :meth:`bind_project` has set ``self.__layout``.
+        """
+        if self.__layout is None:
+            raise RuntimeError(
+                "No current project is bound — Guided mode requires a project selection."
+            )
+        return self.__layout
+
+    def __require_checkpoints(self) -> CheckpointManager:
+        """Return the bound checkpoint manager, or raise if none is bound."""
+        if self.__checkpoints is None:
+            raise RuntimeError(
+                "No current project is bound — Guided mode requires a project selection."
+            )
+        return self.__checkpoints
+
+    async def start(self) -> None:
+        """Attach the (workspace-tier) session and start the worker.
+
+        The project is *not* bound here — that happens lazily in
+        :meth:`bind_project` when the user first runs Guided mode.  If the
+        resumed session already recorded a current project, it is re-bound now so
+        crash-resume of a mid-subagent Guided turn still works.
+        """
         self.__clear_llm_request_logs()
 
-        result = ProjectBootstrap(
-            mirror_dir=self.__layout.checkpoints_dir,
-            workspace_dir=self.__layout.workspace_dir,
-            sessions_dir=self.__layout.sessions_dir,
-            kodo_dir=self.__layout.kodo_dir,
-        ).run()
+        session_id, resumed = locate_orchestrator_session(
+            self.__workspace_layout.marker_dir, self.__workspace_layout.sessions_dir
+        )
+        self.__orch_session_id = session_id
+        self.__transient.attach_session(session_id, resumed)
 
-        self.__index = result.index
-        self.__workspace.bind_index(self.__index)
-        self.__orch_session_id = result.orchestrator_session_id
-
-        self.__transient.attach_session(result.orchestrator_session_id, result.orchestrator_resumed)
-
-        if result.orchestrator_resumed:
+        if resumed:
             self.__main_messages = self.__load_main_messages()
-            # A main turn that was interrupted while a sub-agent held the floor
-            # leaves a dangling assistant ``tool_use`` (the spawning call) on
-            # disk with no following ``tool_result``. Detect that and resume the
-            # sub-agent subsession in place, then continue the main turn — done as
-            # the worker's first action so it is serialised ahead of any queued
-            # user prompt (no concurrent driver of ``__main_messages``).
-            if self.__has_dangling_tool_use():
-                self.__resume_subsession_pending = True
-            else:
+            persisted = self.__transient.current_project
+            if persisted is not None:
+                await self.__bind_project(persisted["root"], persisted["name"], emit=False)
+                # A main turn interrupted while a sub-agent held the floor leaves
+                # a dangling assistant ``tool_use`` (the spawning call) with no
+                # following ``tool_result``. Resume needs the bound project's
+                # workspace/index, so it is gated on a successful bind above.
+                if self.__layout is not None and self.__has_dangling_tool_use():
+                    self.__resume_subsession_pending = True
+            if not self.__resume_subsession_pending:
                 pending = self.__transient.pending_prompt
                 if pending is not None:
                     asyncio.create_task(
@@ -339,12 +384,86 @@ class WorkflowEngine:
         self.__worker = asyncio.create_task(self.__run_worker(), name="kodo-worker")
         _log.info(
             "Runtime worker started (orchestrator_session=%s resumed=%s messages=%d "
-            "resume_subsession=%s)",
+            "project=%s resume_subsession=%s)",
             self.__orch_session_id,
-            result.orchestrator_resumed,
+            resumed,
             len(self.__main_messages),
+            self.__current_project["name"] if self.__current_project else None,
             self.__resume_subsession_pending,
         )
+
+    async def handle_workspace_folders(self, physical_root: str, folders: dict[str, str]) -> None:
+        """Update the logical-root folder map (pushed over the WS protocol).
+
+        Args:
+            physical_root (str): The physical workspace root (informational —
+                the server is already launched against it).
+            folders (dict[str, str]): Logical name → physical path for every
+                open VS Code workspace folder.
+        """
+        self.__workspace_layout.set_folders({k: Path(v) for k, v in folders.items()})
+        _log.info(
+            "Workspace folder map updated (physical_root=%s): %s",
+            physical_root,
+            sorted(folders),
+        )
+
+    async def bind_project(self, root: str, name: str) -> None:
+        """Bind the session's current project for Guided mode (idempotent).
+
+        Immutable for the session: a request to bind a *different* project once
+        one is set is rejected with an error event.
+
+        Args:
+            root (str): Absolute path to the project root (contains ``kodo.md``).
+            name (str): Logical workspace-folder name for display.
+        """
+        if self.__current_project is not None:
+            if self.__current_project["root"] != str(Path(root).resolve()):
+                await self.__emit_error(
+                    "The current project is fixed for this session and cannot be changed.",
+                    recoverable=True,
+                )
+            return
+        await self.__bind_project(root, name, emit=True)
+
+    async def __bind_project(self, root: str, name: str, *, emit: bool) -> None:
+        """Construct the project-tier collaborators and rebuild the index.
+
+        Args:
+            root (str): Project root path.
+            name (str): Logical workspace-folder name.
+            emit (bool): Emit ``EVT_PROJECT_BOUND`` and persist the choice
+                (skipped when re-binding a resumed session, which already has it).
+        """
+        project_root = Path(root).resolve()
+        layout = ProjectLayout(project_root)
+        try:
+            layout.validate()
+        except ProjectLayoutError as exc:
+            _log.error("Cannot bind project %s: %s", project_root, exc)
+            await self.__emit_error(str(exc), recoverable=True)
+            return
+
+        self.__layout = layout
+        self.__checkpoints = CheckpointManager(layout)
+        await self.__checkpoints.ensure_initialized()
+
+        self.__index = ProjectBootstrap(
+            mirror_dir=layout.checkpoints_dir,
+            workspace_dir=layout.workspace_dir,
+            sessions_dir=self.__workspace_layout.sessions_dir,
+        ).build_index()
+        self.__workspace = Workspace(layout.root, self.__index)
+        self.__toolchain = None
+        self.__current_project = {"root": str(project_root), "name": name}
+
+        if emit:
+            self.__transient.update(current_project=self.__current_project)
+            await self.__sink.send(
+                Envelope.make_event(EVT_PROJECT_BOUND, dict(self.__current_project))
+            )
+        _log.info("Current project bound: %s (%s)", name, project_root)
 
     async def __resume_pending_prompt(self, pending: dict[str, object]) -> None:
         """Re-surface a ``prompt.question``/``prompt.approval`` lost to a server restart.
@@ -400,7 +519,7 @@ class WorkflowEngine:
 
     def __clear_llm_request_logs(self) -> None:
         """Remove all previously logged LLM requests/responses on (re)start."""
-        logs_dir = self.__layout.llm_requests_dir
+        logs_dir = self.__workspace_layout.llm_requests_dir
         if not logs_dir.is_dir():
             return
         for entry in logs_dir.iterdir():
@@ -486,7 +605,7 @@ class WorkflowEngine:
         if module == "kodo.llms.llamacpp":
             self.__current_vendor = None
             plugin: LLMPlugin = LlamaPlugin(sink=self.__sink, kodo_dir=kodo_user_dir())
-            return LoggingLLMPlugin(plugin, self.__layout.llm_requests_dir), model_key
+            return LoggingLLMPlugin(plugin, self.__workspace_layout.llm_requests_dir), model_key
 
         model_id = entry.model_id if entry is not None else model_key
         vendor = module.rsplit(".", 1)[-1]
@@ -497,7 +616,7 @@ class WorkflowEngine:
             raise RuntimeError(f"API key request rejected: {key_result.error}")
 
         plugin = ClaudePlugin(api_key=key_result.api_key)
-        return LoggingLLMPlugin(plugin, self.__layout.llm_requests_dir), model_id
+        return LoggingLLMPlugin(plugin, self.__workspace_layout.llm_requests_dir), model_id
 
     # ------------------------------------------------------------------
     # Worker
@@ -543,6 +662,15 @@ class WorkflowEngine:
                         await self.__run_problem_solver_with_input(text)
                     else:
                         await self.__handle_input_no_agent(_PROBLEM_SOLVER_AGENT_NAME, text)
+                elif self.__layout is None:
+                    # Guided mode requires a bound project. The extension forces
+                    # the picker before sending the first Guided prompt, so this
+                    # is a safety net for an out-of-band prompt.
+                    self.__session.agent = None
+                    await self.__emit_error(
+                        "Select a project before running Guided mode.", recoverable=True
+                    )
+                    await self.__emit_state()
                 elif self.__agent_available(_ORCHESTRATOR_AGENT_NAME):
                     await self.__run_orchestrator_with_input(text)
                 else:
@@ -822,7 +950,7 @@ class WorkflowEngine:
         """
         files_written: list[Path] = []
         tool_desc = {t.name: t.user_description for t in tools}
-        tool_logger = ToolCallLogger(self.__layout.llm_requests_dir)
+        tool_logger = ToolCallLogger(self.__workspace_layout.llm_requests_dir)
         persisted_upto = len(messages)
 
         def _flush() -> None:
@@ -1104,11 +1232,27 @@ class WorkflowEngine:
         return ToolDispatcher(
             workspace=self.__workspace,
             index=self.__index,
+            resolver=self.__make_resolver(),
             gate=self.__gate,
             session=self.__session,
             services=self.__services,
             agent_name=agent_name,
             session_id=session_id,
+        )
+
+    def __make_resolver(self) -> PathResolver:
+        """Pick the path resolver for the active workflow mode.
+
+        Guided confines file/shell tools to the locked current project's root;
+        Problem Solver resolves *logical* paths (workspace-folder-keyed) so it
+        can address every project in the workspace.  In the degenerate case of a
+        Guided run with no project bound (the extension should prevent this), it
+        falls back to the logical resolver rather than crashing.
+        """
+        if self.__session.workflow_mode == "guided" and self.__layout is not None:
+            return ProjectPathResolver(self.__layout.root)
+        return LogicalPathResolver(
+            self.__workspace_layout.folders, self.__workspace_layout.physical_root
         )
 
     # ------------------------------------------------------------------
@@ -1348,7 +1492,7 @@ class WorkflowEngine:
         dispatcher = self.__make_dispatcher(_ORCHESTRATOR_AGENT_NAME, self.__orch_session_id)
         tools = tools_for_agent(agent.tools)
         tool_desc = {t.name: t.user_description for t in tools}
-        tool_logger = ToolCallLogger(self.__layout.llm_requests_dir)
+        tool_logger = ToolCallLogger(self.__workspace_layout.llm_requests_dir)
 
         self.__session.phase = "running"
         self.__session.agent = _ORCHESTRATOR_AGENT_NAME
@@ -1523,7 +1667,11 @@ class WorkflowEngine:
             target_sha: Mirror commit SHA to roll back to.
         """
         _log.info("Rollback initiated: target_sha=%s", target_sha[:12])
-        rollback = Rollback(self.__layout.root, self.__checkpoints.repo)
+        rollback = Rollback(
+            self.__require_layout().root,
+            self.__require_checkpoints().repo,
+            self.__workspace_layout,
+        )
         result = await rollback.execute(target_sha)
 
         self.__index = result.index
@@ -1559,12 +1707,14 @@ class WorkflowEngine:
 
         toolchain = await self.__resolve_toolchain()
         registry = await self.__component_registry()
-        target = materialization_path(artifact, self.__layout.root, toolchain, registry)
+        target = materialization_path(artifact, self.__require_layout().root, toolchain, registry)
         if target is None:
             await self.__workspace.mark_completed(artifact_id)
             return
 
-        promoter = Promoter(self.__layout.root, self.__checkpoints.repo, toolchain, registry)
+        promoter = Promoter(
+            self.__require_layout().root, self.__require_checkpoints().repo, toolchain, registry
+        )
         message = f"[{artifact.type.value}] {artifact.responsibility_code} completed"
         try:
             await promoter.promote(artifact, message)
@@ -1592,9 +1742,9 @@ class WorkflowEngine:
             return self.__toolchain
         content = await self.__latest_artifact_content(ArtifactType.TECH_STACK)
         if content is not None:
-            self.__toolchain = select_toolchain(content, self.__layout.root)
+            self.__toolchain = select_toolchain(content, self.__require_layout().root)
             return self.__toolchain
-        return select_toolchain("", self.__layout.root)
+        return select_toolchain("", self.__require_layout().root)
 
     async def __component_registry(self) -> ComponentRegistry:
         """Build a component registry from the architecture document, if any."""

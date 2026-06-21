@@ -8,7 +8,6 @@ import logging
 import os
 import signal
 
-from ._paths import resolve_within
 from ._tool import Tool
 
 __all__ = ["RunCommandTool"]
@@ -35,9 +34,9 @@ class RunCommandTool(Tool):
             return json.dumps({"error": str(exc)})
         try:
             cwd = (
-                resolve_within(ctx.workspace.project_root, str(working_dir_raw))
+                ctx.resolver.resolve(str(working_dir_raw))
                 if working_dir_raw
-                else ctx.workspace.project_root
+                else ctx.resolver.default_cwd
             )
         except PermissionError as exc:
             return json.dumps({"error": str(exc)})

@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from kodo.project import ProjectLayout
+from kodo.project import WorkspaceLayout
 
 _log = logging.getLogger(__name__)
 
@@ -17,20 +17,20 @@ _log = logging.getLogger(__name__)
 class Lifecycle:
     """Manages the server PID file and system-signal-driven shutdown.
 
-    The PID file at ``<project>/.kodo/server.pid`` prevents two server
-    instances from binding to the same project simultaneously.
+    The PID file at ``<physical_root>/.kodo-workspace/server.pid`` prevents two
+    server instances from binding to the same workspace simultaneously.
     """
 
     __pid_path: Path
     __shutdown_requested: bool
 
-    def __init__(self, project_root: Path) -> None:
-        """Initialise lifecycle management for a project.
+    def __init__(self, workspace_root: Path) -> None:
+        """Initialise lifecycle management for a workspace.
 
         Args:
-            project_root (Path): Absolute path to the Kodo project root.
+            workspace_root (Path): Absolute path to the physical workspace root.
         """
-        self.__pid_path = ProjectLayout(project_root).server_pid
+        self.__pid_path = WorkspaceLayout(workspace_root).server_pid
         self.__shutdown_requested = False
 
     @property

@@ -138,6 +138,7 @@ class TransientStore:
     __autonomous: bool
     __pending_prompt: dict[str, object] | None
     __active_subsession: dict[str, object] | None
+    __current_project: dict[str, str] | None
     __lock: asyncio.Lock
 
     def __init__(self, kodo_dir: Path) -> None:
@@ -156,6 +157,7 @@ class TransientStore:
         self.__autonomous = False
         self.__pending_prompt = None
         self.__active_subsession = None
+        self.__current_project = None
         self.__lock = asyncio.Lock()
 
     @property
@@ -280,6 +282,15 @@ class TransientStore:
         return self.__active_subsession
 
     @property
+    def current_project(self) -> dict[str, str] | None:
+        """The session's locked current project ``{root, name}`` (Guided), if any.
+
+        Persisted in ``transient.json`` so that a server restart re-binds the
+        same project and crash-resume of a Guided turn keeps working.
+        """
+        return self.__current_project
+
+    @property
     def stage(self) -> str:
         """Most recent workflow stage."""
         return self.__stage
@@ -353,6 +364,7 @@ class TransientStore:
         autonomous: bool | None = None,
         pending_prompt: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
         active_subsession: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
+        current_project: dict[str, str] | None = _UNSET,  # type: ignore[assignment]
     ) -> None:
         """Update mutable fields and flush ``transient.json`` to disk.
 
@@ -366,6 +378,8 @@ class TransientStore:
             active_subsession (dict[str, object] | None): The in-flight
                 sub-agent subsession record to persist, or ``None`` to clear it
                 (the main agent holds the turn again). Left unchanged if omitted.
+            current_project (dict[str, str] | None): The session's locked
+                current project ``{root, name}``. Left unchanged if omitted.
         """
         if stage is not None:
             self.__stage = stage
@@ -377,6 +391,8 @@ class TransientStore:
             self.__pending_prompt = pending_prompt
         if active_subsession is not _UNSET:
             self.__active_subsession = active_subsession
+        if current_project is not _UNSET:
+            self.__current_project = current_project
         if self.__paths is not None:
             self.__flush(self.__paths)
 
@@ -523,6 +539,12 @@ class TransientStore:
             self.__pending_prompt = pending if isinstance(pending, dict) else None
             active = data.get("active_subsession")
             self.__active_subsession = active if isinstance(active, dict) else None
+            project = data.get("current_project")
+            self.__current_project = (
+                {"root": str(project.get("root", "")), "name": str(project.get("name", ""))}
+                if isinstance(project, dict) and project.get("root")
+                else None
+            )
         except Exception:
             _log.warning("Could not parse transient.json — using defaults")
 
@@ -550,5 +572,6 @@ class TransientStore:
             "autonomous": self.__autonomous,
             "pending_prompt": self.__pending_prompt,
             "active_subsession": self.__active_subsession,
+            "current_project": self.__current_project,
         }
         paths.transient.write_text(json.dumps(data, indent=2), encoding="utf-8")

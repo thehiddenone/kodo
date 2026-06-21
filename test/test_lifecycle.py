@@ -39,11 +39,11 @@ def lifecycle(project: Path) -> Lifecycle:
 
 def test_pid_path_is_inside_kodo_dir(lifecycle: Lifecycle, project: Path) -> None:
     """
-    Given a Lifecycle for a project,
+    Given a Lifecycle for a workspace,
     when pid_path is accessed,
-    then it resolves to <project>/.kodo/server.pid.
+    then it resolves to <workspace>/.kodo-workspace/server.pid.
     """
-    expected = project / ".kodo" / "server.pid"
+    expected = project / ".kodo-workspace" / "server.pid"
     assert lifecycle.pid_path == expected
 
 
@@ -91,13 +91,13 @@ def test_check_and_write_pid_creates_kodo_directory_if_absent(
     lifecycle: Lifecycle, project: Path
 ) -> None:
     """
-    Given a project with no .kodo directory,
+    Given a workspace with no .kodo-workspace directory,
     when check_and_write_pid is called,
-    then the .kodo directory is created.
+    then the .kodo-workspace directory is created.
     """
-    assert not (project / ".kodo").exists()
+    assert not (project / ".kodo-workspace").exists()
     lifecycle.check_and_write_pid()
-    assert (project / ".kodo").is_dir()
+    assert (project / ".kodo-workspace").is_dir()
 
 
 def test_check_and_write_pid_replaces_stale_pid_file(lifecycle: Lifecycle) -> None:
