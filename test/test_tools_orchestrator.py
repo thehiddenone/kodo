@@ -73,12 +73,13 @@ class _StubServices:
         self._complete = complete_artifact
 
     async def run_subagent(
-        self, name: str, task_message: str, input_artifact_ids: list[str]
+        self, caller: str, name: str, task_message: str, input_artifact_ids: list[str]
     ) -> list[str]:
         return [f"stub-artifact-{name}"]
 
     async def run_author_critic_iteration(
         self,
+        caller: str,
         author_name: str,
         critic_name: str,
         input_artifact_ids: list[str],
@@ -279,6 +280,69 @@ async def test_run_author_critic_iteration_returns_verdict() -> None:
     )
     assert "verdict" in result
     assert isinstance(result["concerns"], list)
+
+
+class _DenyingServices(_StubServices):
+    """Services whose spawn methods reject every call, as the engine gate does."""
+
+    async def run_subagent(
+        self, caller: str, name: str, task_message: str, input_artifact_ids: list[str]
+    ) -> list[str]:
+        raise PermissionError(f"Agent {caller!r} is not permitted to spawn sub-agent {name!r}.")
+
+    async def run_author_critic_iteration(
+        self,
+        caller: str,
+        author_name: str,
+        critic_name: str,
+        input_artifact_ids: list[str],
+        previous_artifact_id: str | None,
+    ) -> dict[str, object]:
+        raise PermissionError(f"Agent {caller!r} is not permitted to spawn {author_name!r}.")
+
+
+def _make_denying_dispatcher() -> ToolDispatcher:
+    session = SessionState()
+    return ToolDispatcher(
+        workspace=MagicMock(),
+        index=ProjectIndex(),
+        resolver=MagicMock(),
+        gate=GateOrchestrator(_make_app_state(), MagicMock()),
+        session=session,
+        services=_DenyingServices(),
+        agent_name="problem_solver",
+        session_id="sess-test",
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_denied_returns_error() -> None:
+    dispatcher = _make_denying_dispatcher()
+    result = json.loads(
+        await dispatcher.dispatch(
+            "run_subagent",
+            {"name": "narrative_author", "task_message": "go"},
+        )
+    )
+    assert "artifact_ids" not in result
+    assert "not permitted" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_run_author_critic_iteration_denied_returns_error() -> None:
+    dispatcher = _make_denying_dispatcher()
+    result = json.loads(
+        await dispatcher.dispatch(
+            "run_author_critic_iteration",
+            {
+                "author_name": "architect",
+                "critic_name": "architect_critic",
+                "input_artifact_ids": [],
+            },
+        )
+    )
+    assert "verdict" not in result
+    assert "not permitted" in result["error"]
 
 
 # ---------------------------------------------------------------------------

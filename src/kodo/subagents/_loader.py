@@ -32,6 +32,12 @@ class SubAgent:
     Attributes:
         name: Subagent name from frontmatter (e.g. ``'narrative_author'``).
         tools: MCP tool names this subagent may invoke.
+        subagents: Names of sub-agents this agent is permitted to spawn (via
+            ``run_subagent`` / ``run_author_critic_iteration``). Empty by default,
+            so an agent can spawn nothing unless its frontmatter opts in. There is
+            no built-in "only the orchestrator spawns" assumption — any agent that
+            declares both a spawning tool and a ``subagents`` allow-list can drive
+            sub-agents, and the engine enforces the allow-list at dispatch time.
         system_prompt: Full system prompt body.
         source_path: Absolute path to the source ``.md`` file.
         capability: Preferred LLM capability tier — ``'high'``, ``'medium'``,
@@ -47,6 +53,7 @@ class SubAgent:
     source_path: Path
     capability: str = "medium"
     display_name: str = ""
+    subagents: frozenset[str] = frozenset()
 
 
 def load_agent(path: Path) -> SubAgent:
@@ -77,6 +84,14 @@ def load_agent(path: Path) -> SubAgent:
     else:
         tools = frozenset()
 
+    subagents_raw = fm_dict.get("subagents", [])
+    if isinstance(subagents_raw, list):
+        subagents: frozenset[str] = frozenset(str(s) for s in subagents_raw)
+    elif isinstance(subagents_raw, str):
+        subagents = frozenset([subagents_raw])
+    else:
+        subagents = frozenset()
+
     expected_stem = f"subagent_{name}"
     if path.stem != expected_stem:
         raise AgentLoadError(
@@ -105,6 +120,7 @@ def load_agent(path: Path) -> SubAgent:
         source_path=path,
         capability=capability,
         display_name=display_name,
+        subagents=subagents,
     )
 
 

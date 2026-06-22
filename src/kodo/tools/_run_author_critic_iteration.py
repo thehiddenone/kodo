@@ -22,16 +22,23 @@ class RunAuthorCriticIterationTool(Tool):
         input_ids = [str(i) for i in input_ids_raw] if isinstance(input_ids_raw, list) else []
         previous_id = tool_input.get("previous_artifact_id")
 
+        caller = self.context.agent_name
         _log.info(
-            "run_author_critic_iteration: author=%s critic=%s previous=%s",
+            "run_author_critic_iteration: caller=%s author=%s critic=%s previous=%s",
+            caller,
             author_name,
             critic_name,
             previous_id,
         )
-        result = await self.context.services.run_author_critic_iteration(
-            author_name,
-            critic_name,
-            input_ids,
-            str(previous_id) if previous_id is not None else None,
-        )
+        try:
+            result = await self.context.services.run_author_critic_iteration(
+                caller,
+                author_name,
+                critic_name,
+                input_ids,
+                str(previous_id) if previous_id is not None else None,
+            )
+        except PermissionError as exc:
+            _log.warning("run_author_critic_iteration denied: %s", exc)
+            return json.dumps({"error": str(exc)})
         return json.dumps(result)

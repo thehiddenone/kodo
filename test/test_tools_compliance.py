@@ -63,12 +63,13 @@ class _FakeServices:
         self._workspace = workspace
 
     async def run_subagent(
-        self, name: str, task_message: str, input_artifact_ids: list[str]
+        self, caller: str, name: str, task_message: str, input_artifact_ids: list[str]
     ) -> list[str]:
         return ["sub-art-1"]
 
     async def run_author_critic_iteration(
         self,
+        caller: str,
         author_name: str,
         critic_name: str,
         input_artifact_ids: list[str],

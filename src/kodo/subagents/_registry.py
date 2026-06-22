@@ -139,6 +139,24 @@ class AgentRegistry:
             )
         return self.__finalize(self.__agents[name], autonomous)
 
+    def allowed_subagents(self, name: str) -> frozenset[str]:
+        """Return the set of sub-agent names *name* is permitted to spawn.
+
+        Read straight from the agent's frontmatter ``subagents:`` allow-list (no
+        prompt rendering). Empty when the agent declares none — the default, so
+        no agent can spawn sub-agents unless it explicitly opts in. The engine
+        consults this to gate every ``run_subagent`` /
+        ``run_author_critic_iteration`` call, for *whichever* agent makes it.
+
+        Raises:
+            AgentLoadError: No subagent file found for this name.
+        """
+        if name not in self.__agents:
+            raise AgentLoadError(
+                f"No subagent file for {name!r}. Expected: subagents/subagent_{name}.md"
+            )
+        return self.__agents[name].subagents
+
     def all_agents(self) -> list[SubAgent]:
         """Return all loaded subagents (interactive-mode render) in name order."""
         return [

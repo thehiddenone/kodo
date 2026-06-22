@@ -65,6 +65,23 @@ def test_load_agent_multiple_tools(tmp_path: Path) -> None:
     assert agent.tools == frozenset(["fileio_write_file", "fileio_read_file"])
 
 
+def test_load_agent_no_subagents_by_default(tmp_path: Path) -> None:
+    path = _write_agent(tmp_path, "leaf_stub", "name: leaf_stub\n", "A leaf agent.")
+    agent = load_agent(path)
+    assert agent.subagents == frozenset()
+
+
+def test_load_agent_parses_subagents_allow_list(tmp_path: Path) -> None:
+    path = _write_agent(
+        tmp_path,
+        "spawner",
+        "name: spawner\ntools:\n  - run_subagent\nsubagents:\n  - architect\n  - coder\n",
+        "An agent that may spawn others.",
+    )
+    agent = load_agent(path)
+    assert agent.subagents == frozenset(["architect", "coder"])
+
+
 def test_load_agent_missing_frontmatter(tmp_path: Path) -> None:
     path = tmp_path / "subagent_bad.md"
     path.write_text("No frontmatter here.", encoding="utf-8")
@@ -103,6 +120,32 @@ def test_registry_get_returns_agent(tmp_path: Path) -> None:
     agent = registry.get("narrative_author")
     assert isinstance(agent, SubAgent)
     assert agent.name == "narrative_author"
+
+
+def test_registry_allowed_subagents_returns_frontmatter_list(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(
+        tmp_path,
+        "spawner",
+        "name: spawner\ntools:\n  - run_subagent\nsubagents:\n  - architect\n  - coder\n",
+        "A spawning agent.",
+    )
+    registry = AgentRegistry(tmp_path)
+    assert registry.allowed_subagents("spawner") == frozenset(["architect", "coder"])
+
+
+def test_registry_allowed_subagents_empty_when_none_declared(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "leaf", "name: leaf\n", "A leaf agent.")
+    registry = AgentRegistry(tmp_path)
+    assert registry.allowed_subagents("leaf") == frozenset()
+
+
+def test_registry_allowed_subagents_missing_agent_raises(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    registry = AgentRegistry(tmp_path)
+    with pytest.raises(AgentLoadError, match="No subagent file"):
+        registry.allowed_subagents("ghost")
 
 
 def test_registry_missing_agent_raises(tmp_path: Path) -> None:

@@ -11,6 +11,20 @@ tools:
   - finalize_project
   - disable_autonomous_mode
   - post_update
+subagents:
+  - narrative_author
+  - architect
+  - architect_critic
+  - requirements_author
+  - requirements_critic
+  - functional_designer
+  - functional_design_critic
+  - test_designer
+  - test_coder
+  - coder
+  - code_critic
+  - e2e_test_designer
+  - e2e_test_design_critic
 ---
 # Kodo
 

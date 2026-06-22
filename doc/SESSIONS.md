@@ -45,10 +45,17 @@ agents **share one message history** (`session.jsonl`). Switching mode only
 swaps the system prompt and the available tools — the conversation continues
 seamlessly across the change.
 
-> Only the Orchestrator spawns sub-agents today. The Problem Solver works a
-> prompt end-to-end itself and has no `run_subagent`/`run_author_critic_iteration`
-> tools, so in Problem-Solving mode there are no subsessions. The design,
-> however, is agent-agnostic.
+> Sub-agent spawning is **not** wired to the Orchestrator. Any agent may spawn
+> sub-agents if (a) its frontmatter grants a spawning tool
+> (`run_subagent`/`run_author_critic_iteration`) and (b) its frontmatter
+> declares a `subagents:` allow-list naming the sub-agents it may call. The
+> engine gates every spawn against the **calling** agent's allow-list
+> (`AgentRegistry.allowed_subagents` → `__assert_can_spawn`), so the permission
+> travels with whichever agent makes the call — not with a hard-coded
+> orchestrator identity. Today only the Orchestrator opts in (the Problem Solver
+> ships without a spawning tool, so in Problem-Solving mode there are no
+> subsessions), but the path is fully agent-agnostic and crash-resume recovers
+> *whichever* entry agent was holding the floor (see `__last_entry_agent`).
 
 ## On-disk layout
 
@@ -198,7 +205,10 @@ engine reloads `__main_messages` from `session.jsonl`. Then:
        log and driven to completion **live**, then closed (`subsession_end`
        marker + `subsession.ended`).
   3. Append the resulting `tool_result`s to `__main_messages`, persist them, and
-     continue the Orchestrator turn live (the next LLM call).
+     continue the **interrupted entry agent's** turn live (the next LLM call).
+     The entry agent is recovered from the `entry_agent` tag on the dangling
+     assistant message (`__last_entry_agent`), not assumed to be the Orchestrator
+     — any agent permitted to spawn can be the one resumed.
 
   This is why the user sees Kōdo "recover into that mode, load both the main
   session and the active subsession, and resume the sub-agent's subsession."
@@ -257,8 +267,9 @@ including sub-agent work.
 | --- | --- |
 | Main log + subsession files + active pointer | `kodo/state/_transient.py` (`TransientStore`) |
 | Shared entry-agent loop + persistence | `kodo/runtime/_engine.py` (`__run_entry_agent`, `__run_agent_turn`) |
-| Subsession lifecycle + replay | `_engine.py` (`__run_subagent`, `__drive_subsession`, `__open_subsession`, `__close_subsession`, `__replay_next_subsession`) |
-| Crash resume | `_engine.py` (`start`, `__has_dangling_tool_use`, `__resume_main_turn`, `__build_replay_ledger`) |
+| Subsession lifecycle + replay | `_engine.py` (`__run_subagent`, `__spawn_subagent`, `__drive_subsession`, `__open_subsession`, `__close_subsession`, `__replay_next_subsession`) |
+| Spawn permission gate (per-caller `subagents:` allow-list) | `_engine.py` (`__assert_can_spawn`), `subagents/_registry.py` (`allowed_subagents`), `subagents/_loader.py` (`SubAgent.subagents`) |
+| Crash resume | `_engine.py` (`start`, `__has_dangling_tool_use`, `__resume_main_turn`, `__last_entry_agent`, `__build_replay_ledger`) |
 | History rebuild (full inner replay) | `_engine.py` (`history_entries`, `__message_to_entries`, `__divider_entry`) |
 | Orphan detection by subsession log | `kodo/runtime/_bootstrap.py` (`__is_orphan`) |
 | Display names | `kodo/subagents/_loader.py` (`SubAgent.display_name`) |

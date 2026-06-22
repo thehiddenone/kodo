@@ -208,8 +208,8 @@ Protocols**, also defined in `_context.py`:
 - **`SessionLike`** — a settable `phase: str` plus a read `effective_autonomous:
   bool`. Runtime's `SessionState` matches.
 - **`EngineServices`** — **one** protocol covering *every* engine-side operation
-  a tool can delegate upward: `run_subagent(...)`,
-  `run_author_critic_iteration(...)`, `rollback(...)`, `complete_artifact(...)`,
+  a tool can delegate upward: `run_subagent(caller, ...)`,
+  `run_author_critic_iteration(caller, ...)`, `rollback(...)`, `complete_artifact(...)`,
   `disable_autonomous_mode(...)`, and `post_update(...)`. Runtime injects a single
   `_EngineServices` adapter (built inline in `_engine.py`) wrapping the engine's
   private `__run_*` / `__complete_artifact` / `__disable_autonomous` /
@@ -219,7 +219,11 @@ Protocols**, also defined in `_context.py`:
 This is the dependency inversion that lets the tool layer sit *below* the engine
 while still calling back into it. `runtime` constructs the concrete objects and
 hands them in; `tools` only ever names the Protocols. A handler reaches an engine
-op as, e.g., `await self.context.services.run_subagent(...)`.
+op as, e.g., `await self.context.services.run_subagent(self.context.agent_name, ...)`.
+The spawning tools pass `self.context.agent_name` (the **running** agent — not a
+hard-coded orchestrator) as the `caller`; the engine gates the spawn against that
+caller's frontmatter `subagents:` allow-list and raises `PermissionError` (which
+the tool returns to the LLM as `{"error": ...}`) when the target is not permitted.
 
 Per-run state lives on the context, not on the tool instance:
 `PublishArtifactTool` appends to `self.context.published_ids`,

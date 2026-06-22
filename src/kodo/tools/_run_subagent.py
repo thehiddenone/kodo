@@ -21,6 +21,13 @@ class RunSubagentTool(Tool):
         input_ids_raw = tool_input.get("input_artifact_ids", [])
         input_ids = [str(i) for i in input_ids_raw] if isinstance(input_ids_raw, list) else []
 
-        _log.info("run_subagent: name=%s input_ids=%s", name, input_ids)
-        artifact_ids = await self.context.services.run_subagent(name, task_message, input_ids)
+        caller = self.context.agent_name
+        _log.info("run_subagent: caller=%s name=%s input_ids=%s", caller, name, input_ids)
+        try:
+            artifact_ids = await self.context.services.run_subagent(
+                caller, name, task_message, input_ids
+            )
+        except PermissionError as exc:
+            _log.warning("run_subagent denied: %s", exc)
+            return json.dumps({"error": str(exc)})
         return json.dumps({"artifact_ids": artifact_ids})

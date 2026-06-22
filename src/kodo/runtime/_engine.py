@@ -154,9 +154,9 @@ class _EngineServices:
     def __init__(
         self,
         *,
-        run_subagent: Callable[[str, str, list[str]], Awaitable[list[str]]],
+        run_subagent: Callable[[str, str, str, list[str]], Awaitable[list[str]]],
         run_author_critic: Callable[
-            [str, str, list[str], str | None], Awaitable[dict[str, object]]
+            [str, str, str, list[str], str | None], Awaitable[dict[str, object]]
         ],
         rollback: Callable[[str], Awaitable[None]],
         complete_artifact: Callable[[str], Awaitable[None]],
@@ -171,21 +171,22 @@ class _EngineServices:
         self.__post_update = post_update
 
     async def run_subagent(
-        self, name: str, task_message: str, input_artifact_ids: list[str]
+        self, caller: str, name: str, task_message: str, input_artifact_ids: list[str]
     ) -> list[str]:
-        """Delegate to the engine's ``__run_subagent``."""
-        return await self.__run_subagent(name, task_message, input_artifact_ids)
+        """Delegate to the engine's caller-gated sub-agent spawn."""
+        return await self.__run_subagent(caller, name, task_message, input_artifact_ids)
 
     async def run_author_critic_iteration(
         self,
+        caller: str,
         author_name: str,
         critic_name: str,
         input_artifact_ids: list[str],
         previous_artifact_id: str | None,
     ) -> dict[str, object]:
-        """Delegate to the engine's ``__run_author_critic_iteration``."""
+        """Delegate to the engine's caller-gated Author/Critic round."""
         return await self.__run_author_critic(
-            author_name, critic_name, input_artifact_ids, previous_artifact_id
+            caller, author_name, critic_name, input_artifact_ids, previous_artifact_id
         )
 
     async def rollback(self, target_sha: str) -> None:
@@ -1301,10 +1302,63 @@ class WorkflowEngine:
     # Subagent dispatch
     # ------------------------------------------------------------------
 
+    def __assert_can_spawn(self, caller: str, *names: str) -> None:
+        """Gate a spawn: ``caller`` must be allowed to invoke every name in *names*.
+
+        Permission is **not** wired to any one agent — there is no "only the
+        Orchestrator spawns" assumption. Each agent declares the sub-agents it may
+        spawn in its frontmatter ``subagents:`` allow-list (see
+        :meth:`AgentRegistry.allowed_subagents`); any agent that also holds a
+        spawning tool can drive them. ``_DIRECT_ONLY_AGENTS`` (engine-driven
+        agents such as the session titler) are never spawnable by anyone.
+
+        Raises:
+            PermissionError: ``caller`` may not spawn one of *names* — surfaced to
+                the calling LLM as the tool's ``{"error": ...}`` result.
+        """
+        allowed = self.__registry.allowed_subagents(caller)
+        for name in names:
+            if name in _DIRECT_ONLY_AGENTS:
+                raise PermissionError(
+                    f"{name!r} is engine-driven only and cannot be spawned as a sub-agent."
+                )
+            if name not in allowed:
+                permitted = ", ".join(sorted(allowed)) or "(none)"
+                raise PermissionError(
+                    f"Agent {caller!r} is not permitted to spawn sub-agent {name!r}. "
+                    f"Permitted sub-agents: {permitted}."
+                )
+
     async def __run_subagent(
+        self, caller: str, name: str, task_message: str, input_artifact_ids: list[str]
+    ) -> list[str]:
+        """Gate a caller's sub-agent spawn, then run it.
+
+        Args:
+            caller: Agent making the call (the running agent — not assumed to be
+                the Orchestrator). Its frontmatter allow-list gates the spawn.
+            name: Sub-agent name from the registry.
+            task_message: Task message injected as the initial user turn.
+            input_artifact_ids: IDs the agent may reference via read_artifact.
+
+        Returns:
+            list[str]: Artifact IDs published during the run.
+
+        Raises:
+            PermissionError: ``caller`` is not permitted to spawn ``name``.
+        """
+        self.__assert_can_spawn(caller, name)
+        return await self.__spawn_subagent(name, task_message, input_artifact_ids)
+
+    async def __spawn_subagent(
         self, name: str, task_message: str, input_artifact_ids: list[str]
     ) -> list[str]:
         """Invoke a leaf sub-agent and return the artifact IDs it published.
+
+        The ungated spawn primitive: callers that have already passed the
+        permission gate (:meth:`__run_subagent`, or
+        :meth:`__run_author_critic_iteration` which gates both names up front)
+        drive a subsession through here.
 
         Args:
             name: Sub-agent name from the registry.
@@ -1315,7 +1369,7 @@ class WorkflowEngine:
             list[str]: Artifact IDs published during the run.
         """
         if name in _DIRECT_ONLY_AGENTS:
-            _log.warning("run_subagent: %r is engine-driven only and cannot be invoked", name)
+            _log.warning("spawn_subagent: %r is engine-driven only and cannot be invoked", name)
             return []
 
         # During a crash-resume replay, each run_subagent call consumes the next
@@ -1505,6 +1559,20 @@ class WorkflowEngine:
             return False
         return any(isinstance(b, dict) and b.get("type") == "tool_use" for b in last.content)
 
+    def __last_entry_agent(self) -> str:
+        """Entry agent that produced the last persisted main message.
+
+        Read from the ``entry_agent`` tag on the most recent message line in
+        ``session.jsonl`` — *any* entry agent may have been holding the floor
+        when the run was interrupted, so resume must not assume the Orchestrator.
+        Falls back to the Orchestrator only for legacy/untagged sessions.
+        """
+        for line in reversed(self.__transient.read_session_lines()):
+            if "role" in line:
+                ea = line.get("entry_agent")
+                return ea if isinstance(ea, str) and ea else _ORCHESTRATOR_AGENT_NAME
+        return _ORCHESTRATOR_AGENT_NAME
+
     async def __resume_main_turn(self) -> None:
         """Resume a main turn that was interrupted while a sub-agent held the floor.
 
@@ -1512,7 +1580,11 @@ class WorkflowEngine:
         the dangling assistant message, re-dispatches the pending spawning tool
         call(s) — completed sub-sessions return their stored result, the active
         one is rehydrated and driven to completion — then appends the tool
-        results and continues the Orchestrator turn live.
+        results and continues the interrupted entry agent's turn live.
+
+        The entry agent is recovered from the persisted ``entry_agent`` tag, not
+        assumed to be the Orchestrator: any agent permitted to spawn sub-agents
+        can be the one holding the floor at crash time.
         """
         last = self.__main_messages[-1]
         if not isinstance(last.content, list):
@@ -1521,26 +1593,27 @@ class WorkflowEngine:
         if not tool_uses:
             return
 
+        entry_agent = self.__last_entry_agent()
         self.__replay_subsessions = self.__build_replay_ledger()
         _log.info(
-            "Resuming interrupted main turn: %d pending tool call(s), %d subsession(s) to replay",
+            "Resuming interrupted main turn for %r: %d pending tool call(s), "
+            "%d subsession(s) to replay",
+            entry_agent,
             len(tool_uses),
             len(self.__replay_subsessions),
         )
 
-        # Only the Orchestrator spawns sub-agents, so the interrupted entry
-        # agent is always the Orchestrator.
-        agent = self.__registry.get(_ORCHESTRATOR_AGENT_NAME, self.__session.effective_autonomous)
+        agent = self.__registry.get(entry_agent, self.__session.effective_autonomous)
         plugin, model_id, routing = await self.__resolve_plugin(agent.capability)
-        dispatcher = self.__make_dispatcher(_ORCHESTRATOR_AGENT_NAME, self.__orch_session_id)
+        dispatcher = self.__make_dispatcher(entry_agent, self.__orch_session_id)
         tools = tools_for_agent(agent.tools)
         tool_desc = {t.name: t.user_description for t in tools}
         tool_logger = ToolCallLogger(self.__llm_logs_dir)
 
         self.__session.phase = "running"
-        self.__session.agent = _ORCHESTRATOR_AGENT_NAME
+        self.__session.agent = entry_agent
         await self.__emit_state()
-        await self.__emit_agent_started(_ORCHESTRATOR_AGENT_NAME)
+        await self.__emit_agent_started(entry_agent)
 
         calls: list[tuple[str, str, dict[str, object]]] = []
         for b in tool_uses:
@@ -1554,7 +1627,7 @@ class WorkflowEngine:
         results_msg = Message(role="user", content=tool_results)
         self.__main_messages = self.__main_messages + [results_msg]
         self.__transient.append_message(
-            results_msg.role, results_msg.content, entry_agent=_ORCHESTRATOR_AGENT_NAME
+            results_msg.role, results_msg.content, entry_agent=entry_agent
         )
 
         stream_id = uuid.uuid4().hex
@@ -1567,13 +1640,13 @@ class WorkflowEngine:
             tools=tools,
             tool_dispatch=dispatcher.dispatch,
             stream_id=stream_id,
-            agent_name=_ORCHESTRATOR_AGENT_NAME,
+            agent_name=entry_agent,
             stop_after_tools=lambda: dispatcher.stop_requested,
-            persist=self.__persist_main_messages(_ORCHESTRATOR_AGENT_NAME),
+            persist=self.__persist_main_messages(entry_agent),
             flush_before=_SUBAGENT_SPAWNING_TOOLS,
         )
         await self.__sink.send(Envelope.make_stream_end(stream_id))
-        await self.__emit_agent_finished(_ORCHESTRATOR_AGENT_NAME)
+        await self.__emit_agent_finished(entry_agent)
         if self.__session.phase != "done":
             self.__session.phase = "awaiting_user"
         self.__session.agent = None
@@ -1621,6 +1694,7 @@ class WorkflowEngine:
 
     async def __run_author_critic_iteration(
         self,
+        caller: str,
         author_name: str,
         critic_name: str,
         input_artifact_ids: list[str],
@@ -1629,6 +1703,9 @@ class WorkflowEngine:
         """Execute one Author/Critic round and return verdict + concerns.
 
         Args:
+            caller: Agent making the call. Its frontmatter allow-list must permit
+                spawning both ``author_name`` and ``critic_name``; both are gated
+                up front so the inner spawns can use the ungated primitive.
             author_name: Author sub-agent name.
             critic_name: Critic sub-agent name.
             input_artifact_ids: Input artifact IDs for the Author.
@@ -1636,7 +1713,11 @@ class WorkflowEngine:
 
         Returns:
             dict: ``{artifact_id, verdict, concerns}`` from the Critic's feedback.
+
+        Raises:
+            PermissionError: ``caller`` may not spawn the author or the critic.
         """
+        self.__assert_can_spawn(caller, author_name, critic_name)
         author_task_parts = ["Produce your artifact."]
         if previous_artifact_id:
             author_task_parts.append(
@@ -1644,7 +1725,7 @@ class WorkflowEngine:
             )
         author_task = "\n".join(author_task_parts)
 
-        author_ids = await self.__run_subagent(author_name, author_task, input_artifact_ids)
+        author_ids = await self.__spawn_subagent(author_name, author_task, input_artifact_ids)
 
         primary_id: str | None = None
         for aid in reversed(author_ids):
@@ -1674,7 +1755,7 @@ class WorkflowEngine:
             f"Review artifact {primary_id} and publish a feedback artifact "
             f"with reviewed_artifact_id={primary_id}."
         )
-        critic_ids = await self.__run_subagent(critic_name, critic_task, [primary_id])
+        critic_ids = await self.__spawn_subagent(critic_name, critic_task, [primary_id])
 
         verdict = "accepted"
         concerns: list[dict[str, object]] = []

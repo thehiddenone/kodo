@@ -115,19 +115,31 @@ class EngineServices(Protocol):
     """
 
     async def run_subagent(
-        self, name: str, task_message: str, input_artifact_ids: list[str]
+        self, caller: str, name: str, task_message: str, input_artifact_ids: list[str]
     ) -> list[str]:
-        """Run a leaf sub-agent and return the artifact IDs it published."""
+        """Run a leaf sub-agent and return the artifact IDs it published.
+
+        ``caller`` is the name of the agent making the call (the running agent —
+        not necessarily the orchestrator). The engine gates the spawn against
+        that caller's declared sub-agent allow-list and raises ``PermissionError``
+        when ``name`` is not permitted.
+        """
         ...
 
     async def run_author_critic_iteration(
         self,
+        caller: str,
         author_name: str,
         critic_name: str,
         input_artifact_ids: list[str],
         previous_artifact_id: str | None,
     ) -> dict[str, object]:
-        """Run one Author/Critic round and return ``{artifact_id, verdict, concerns}``."""
+        """Run one Author/Critic round and return ``{artifact_id, verdict, concerns}``.
+
+        ``caller`` is the agent making the call; the engine gates both
+        ``author_name`` and ``critic_name`` against that caller's allow-list and
+        raises ``PermissionError`` when either is not permitted.
+        """
         ...
 
     async def rollback(self, target_sha: str) -> None:
