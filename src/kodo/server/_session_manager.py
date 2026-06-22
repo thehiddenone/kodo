@@ -30,7 +30,7 @@ __all__ = ["SessionManager"]
 
 _log = logging.getLogger(__name__)
 
-_DEFAULT_GRACE_SECONDS = 10.0
+_DEFAULT_GRACE_SECONDS = 5.0
 
 
 class SessionManager:

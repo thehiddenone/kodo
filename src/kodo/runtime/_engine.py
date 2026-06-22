@@ -382,6 +382,10 @@ class WorkflowEngine:
 
         if resumed:
             self.__main_messages = self.__load_main_messages()
+            # Restore per-session prefs so a resumed tab keeps its own mode
+            # (the window no longer re-syncs a single global value on connect).
+            self.__session.autonomous = self.__transient.autonomous
+            self.__session.workflow_mode = self.__transient.workflow_mode
             persisted = self.__transient.current_project
             if persisted is not None:
                 await self.__bind_project(persisted["root"], persisted["name"], emit=False)
@@ -597,6 +601,7 @@ class WorkflowEngine:
                 Unknown values fall back to ``"guided"``.
         """
         self.__session.workflow_mode = mode if mode == "problem_solving" else "guided"
+        self.__transient.update(workflow_mode=self.__session.workflow_mode)
         await self.__emit_state()
 
     # ------------------------------------------------------------------

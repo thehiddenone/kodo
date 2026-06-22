@@ -127,6 +127,28 @@ def test_autonomous_update_is_persisted(store: TransientStore) -> None:
     assert data["autonomous"] is True
 
 
+def test_workflow_mode_defaults_to_guided(store: TransientStore) -> None:
+    assert store.workflow_mode == "guided"
+
+
+def test_workflow_mode_update_is_persisted(store: TransientStore) -> None:
+    store.update(workflow_mode="problem_solving")
+    data = json.loads((store.session_dir / "transient.json").read_text(encoding="utf-8"))
+    assert data["workflow_mode"] == "problem_solving"
+    assert store.workflow_mode == "problem_solving"
+
+
+def test_resumed_session_restores_workflow_mode(kodo_dir: Path) -> None:
+    session_id = "1748792410"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    first.update(workflow_mode="problem_solving")
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.workflow_mode == "problem_solving"
+
+
 def test_update_with_no_kwargs_does_not_raise(store: TransientStore) -> None:
     store.update()
     assert store.stage == "IDLE"

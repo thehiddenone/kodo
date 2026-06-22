@@ -124,6 +124,23 @@ async def _require_session(req: Request) -> Session | None:
 async def _handle_hello(req: Request) -> None:
     payload = req.env.payload
     window_id = str(payload.get("window_id") or req.connection.id)
+    role = str(payload.get("role") or "session")
+
+    # A control connection (the window's sidebar) drives window-global, session-
+    # less frames only (llama / model management, session.list).  It must NOT
+    # create or bind a session — it just needs the model/llama snapshot.
+    if role == "control":
+        _log.info("Hello (control) from client=%s window=%s", payload.get("client", "unknown"), window_id[:8])
+        await req.reply(
+            {
+                "type": "hello.ack",
+                "role": "control",
+                "server_version": _SERVER_VERSION,
+                **_llama_payload(),
+            }
+        )
+        return
+
     requested = str(payload.get("session_id") or "")
     _log.info(
         "Hello from client=%s window=%s session=%s",

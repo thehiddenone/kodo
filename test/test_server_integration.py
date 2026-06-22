@@ -114,6 +114,28 @@ async def test_hello_returns_version_and_session_id(ws: aiohttp.ClientWebSocketR
     assert resp.payload["session_id"]
 
 
+async def test_control_hello_creates_no_session(server: TestServer) -> None:
+    """A role=control connection (the sidebar) handshakes without a session."""
+    session = aiohttp.ClientSession()
+    c = await session.ws_connect(f"http://127.0.0.1:{server.port}/ws")
+    try:
+        req = _make_request("hello", client="vsix", window_id="wc", role="control")
+        await c.send_str(req.to_json())
+        resp = await _recv_response(c, req.id)
+        assert resp.payload["type"] == "hello.ack"
+        assert resp.payload["role"] == "control"
+        assert "session_id" not in resp.payload  # no session was minted
+        assert "models" in resp.payload  # window-global llama/model snapshot
+        # The control connection did not create any session.
+        list_req = _make_request("session.list")
+        await c.send_str(list_req.to_json())
+        list_resp = await _recv_response(c, list_req.id)
+        assert list_resp.payload["sessions"] == []
+    finally:
+        await c.close()
+        await session.close()
+
+
 async def test_hello_ack_embeds_state_snapshot(ws: aiohttp.ClientWebSocketResponse) -> None:
     resp = await _hello(ws)
     state = resp.payload["state"]

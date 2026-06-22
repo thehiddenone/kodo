@@ -136,6 +136,7 @@ class TransientStore:
     __stage: str
     __last_prompt: str
     __autonomous: bool
+    __workflow_mode: str
     __pending_prompt: dict[str, object] | None
     __active_subsession: dict[str, object] | None
     __current_project: dict[str, str] | None
@@ -155,6 +156,7 @@ class TransientStore:
         self.__stage = "IDLE"
         self.__last_prompt = ""
         self.__autonomous = False
+        self.__workflow_mode = "guided"
         self.__pending_prompt = None
         self.__active_subsession = None
         self.__current_project = None
@@ -306,6 +308,15 @@ class TransientStore:
         return self.__autonomous
 
     @property
+    def workflow_mode(self) -> str:
+        """Persisted workflow mode (``"guided"`` | ``"problem_solving"``).
+
+        Per-session so a window hosting several sessions can keep each in its
+        own mode across reloads/resume.
+        """
+        return self.__workflow_mode
+
+    @property
     def pending_prompt(self) -> dict[str, object] | None:
         """The outstanding ``prompt.question``/``prompt.approval`` request, if any.
 
@@ -362,6 +373,7 @@ class TransientStore:
         stage: str | None = None,
         prompt: str | None = None,
         autonomous: bool | None = None,
+        workflow_mode: str | None = None,
         pending_prompt: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
         active_subsession: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
         current_project: dict[str, str] | None = _UNSET,  # type: ignore[assignment]
@@ -387,6 +399,8 @@ class TransientStore:
             self.__last_prompt = prompt
         if autonomous is not None:
             self.__autonomous = autonomous
+        if workflow_mode is not None:
+            self.__workflow_mode = workflow_mode
         if pending_prompt is not _UNSET:
             self.__pending_prompt = pending_prompt
         if active_subsession is not _UNSET:
@@ -535,6 +549,9 @@ class TransientStore:
             self.__stage = str(data.get("stage", "IDLE"))
             self.__last_prompt = str(data.get("last_prompt", ""))
             self.__autonomous = bool(data.get("autonomous", False))
+            self.__workflow_mode = (
+                "problem_solving" if data.get("workflow_mode") == "problem_solving" else "guided"
+            )
             pending = data.get("pending_prompt")
             self.__pending_prompt = pending if isinstance(pending, dict) else None
             active = data.get("active_subsession")
@@ -570,6 +587,7 @@ class TransientStore:
             "stage": self.__stage,
             "last_prompt": self.__last_prompt,
             "autonomous": self.__autonomous,
+            "workflow_mode": self.__workflow_mode,
             "pending_prompt": self.__pending_prompt,
             "active_subsession": self.__active_subsession,
             "current_project": self.__current_project,
