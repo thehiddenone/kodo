@@ -35,6 +35,12 @@ MSG_SESSION_LIST = "session.list"
 # Release the session named by ``payload.session_id`` from this window's
 # ownership immediately (graceful window close), so another window can open it.
 MSG_SESSION_RELEASE = "session.release"
+# Permanently delete the session named by ``payload.session_id``: stop its
+# engine and physically remove its directory under ``sessions/`` (the project it
+# worked on is untouched). On success the server closes the socket (the client
+# reads the closure as confirmation); on failure it replies
+# ``{type: "session.delete.error", message}`` and leaves the socket open.
+MSG_SESSION_DELETE = "session.delete"
 MSG_CHECKPOINT_LIST = "checkpoint.list"
 MSG_CHECKPOINT_ROLLBACK = "checkpoint.rollback"
 MSG_MODE_SET = "mode.set"

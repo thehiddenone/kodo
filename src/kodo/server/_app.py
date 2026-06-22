@@ -44,6 +44,7 @@ from kodo.transport import (
     MSG_PING,
     MSG_PROJECT_SET,
     MSG_PROMPT_SUBMIT,
+    MSG_SESSION_DELETE,
     MSG_SESSION_LIST,
     MSG_SESSION_RELEASE,
     MSG_STOP,
@@ -130,7 +131,11 @@ async def _handle_hello(req: Request) -> None:
     # less frames only (llama / model management, session.list).  It must NOT
     # create or bind a session — it just needs the model/llama snapshot.
     if role == "control":
-        _log.info("Hello (control) from client=%s window=%s", payload.get("client", "unknown"), window_id[:8])
+        _log.info(
+            "Hello (control) from client=%s window=%s",
+            payload.get("client", "unknown"),
+            window_id[:8],
+        )
         await req.reply(
             {
                 "type": "hello.ack",
@@ -224,6 +229,26 @@ async def _handle_session_release(req: Request) -> None:
     if req.session_id:
         req.manager.release(req.session_id)
     await req.reply({"type": "session.release.ack"})
+
+
+async def _handle_session_delete(req: Request) -> None:
+    """Delete the session's files; on success close the socket, else reply error.
+
+    The client reads a clean socket closure as confirmation (and closes the tab);
+    on error it keeps the socket open and surfaces ``message``.
+    """
+    session = await _require_session(req)
+    if session is None:
+        return
+    try:
+        await req.manager.delete(req.session_id)
+    except Exception as exc:  # noqa: BLE001 — any failure is reported to the client
+        _log.exception("Failed to delete session %s", req.session_id)
+        await req.reply({"type": "session.delete.error", "message": str(exc)})
+        return
+    # The session is gone: close the socket so the client treats the closure as
+    # success. (drop_connection is a no-op now — delete() already detached it.)
+    await req.connection.ws.close()
 
 
 # ------------------------------------------------------------------
@@ -506,6 +531,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_PING, _handle_ping)
     conn_registry.register_handler(MSG_SESSION_LIST, _handle_session_list)
     conn_registry.register_handler(MSG_SESSION_RELEASE, _handle_session_release)
+    conn_registry.register_handler(MSG_SESSION_DELETE, _handle_session_delete)
     conn_registry.register_handler(MSG_PROMPT_SUBMIT, _handle_prompt)
     conn_registry.register_handler(MSG_MODE_SET, _handle_mode)
     conn_registry.register_handler(MSG_WORKFLOW_SET, _handle_workflow)

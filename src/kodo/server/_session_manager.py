@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
@@ -153,6 +154,34 @@ class SessionManager:
         self.__owner_window.pop(session_id, None)
         self.__write_owner(session_id, owner=None)
         _log.info("Session released: %s", session_id)
+
+    async def delete(self, session_id: str) -> None:
+        """Permanently delete a session: stop its engine and remove its files.
+
+        Drops all in-memory ownership/liveness tracking, stops the running
+        engine (if loaded), then physically removes the session directory under
+        ``sessions/`` plus its per-session LLM request logs.  The project the
+        session worked on is untouched — only this session's data is deleted.
+
+        Raises:
+            OSError: If a directory cannot be removed; the caller surfaces the
+                message to the client and keeps the socket open.
+        """
+        session = self.__sessions.pop(session_id, None)
+        if session is not None:
+            await session.engine.stop()
+        self.__cancel_grace(session_id)
+        self.__owner_window.pop(session_id, None)
+        conn_id = self.__live_conn.pop(session_id, None)
+        if conn_id is not None:
+            self.__conn_session.pop(conn_id, None)
+        for directory in (
+            self.__layout.sessions_dir / session_id,
+            self.__layout.llm_requests_dir / session_id,
+        ):
+            if directory.is_dir():
+                shutil.rmtree(directory)
+        _log.info("Session deleted: %s", session_id)
 
     # ------------------------------------------------------------------
     # Listing

@@ -265,6 +265,63 @@ async def test_stop_returns_accepted(ws: aiohttp.ClientWebSocketResponse) -> Non
     assert resp.payload["type"] == "stop.accepted"
 
 
+async def test_session_delete_closes_socket_and_drops_listing(server: TestServer) -> None:
+    csession = aiohttp.ClientSession()
+    conn = await csession.ws_connect(f"http://127.0.0.1:{server.port}/ws")
+    sid = ""
+    try:
+        sid = await _open_session(conn)
+        req = _make_request("session.delete", session_id=sid)
+        await conn.send_str(req.to_json())
+        # The server closes the socket on success (possibly after a trailing
+        # state event emitted by the engine stop). Drain until the close.
+        closed = False
+        for _ in range(10):
+            msg = await asyncio.wait_for(conn.receive(), timeout=_RECV_TIMEOUT)
+            if msg.type in (
+                aiohttp.WSMsgType.CLOSE,
+                aiohttp.WSMsgType.CLOSING,
+                aiohttp.WSMsgType.CLOSED,
+            ):
+                closed = True
+                break
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                env = Envelope.from_json(str(msg.data))
+                assert env.payload.get("type") != "session.delete.error"
+        assert closed
+    finally:
+        await conn.close()
+        await csession.close()
+
+    # A fresh connection no longer lists the deleted session. (session.list
+    # needs no session of its own, so we don't open one — which would otherwise
+    # reuse the just-freed timestamp id and reappear in the listing.)
+    csession2 = aiohttp.ClientSession()
+    conn2 = await csession2.ws_connect(f"http://127.0.0.1:{server.port}/ws")
+    try:
+        req = _make_request("session.list")
+        await conn2.send_str(req.to_json())
+        resp = await _recv_response(conn2, req.id)
+        ids = {s["id"] for s in resp.payload["sessions"]}
+        assert sid not in ids
+    finally:
+        await conn2.close()
+        await csession2.close()
+
+
+async def test_session_delete_unknown_session_errors(ws: aiohttp.ClientWebSocketResponse) -> None:
+    req = _make_request("session.delete", session_id="nope")
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+    assert resp.payload["type"] == "error"
+    assert resp.payload["code"] == "unknown_session"
+    # The socket stays open: a follow-up ping still round-trips.
+    ping = _make_request("ping")
+    await ws.send_str(ping.to_json())
+    pong = await _recv_response(ws, ping.id)
+    assert pong.payload["type"] == "pong"
+
+
 async def test_orphan_response_is_silently_dropped(ws: aiohttp.ClientWebSocketResponse) -> None:
     orphan = Envelope(
         kind="response", correlation_id="no-such-request", payload={"action": "agree"}

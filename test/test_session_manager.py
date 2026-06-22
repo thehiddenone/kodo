@@ -139,6 +139,33 @@ async def test_list_reports_problem_solving_session(manager_factory) -> None:  #
 
 
 # ---------------------------------------------------------------------------
+# Deletion
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_removes_files_and_frees_ownership(manager_factory) -> None:  # type: ignore[no-untyped-def]
+    mgr: SessionManager = manager_factory()
+    session: Session = await mgr.create("windowA")
+    await mgr.bind_connection(session, _conn())
+
+    # The session directory is present before deletion.
+    assert session.id in {s["id"] for s in mgr.list_sessions()}
+
+    await mgr.delete(session.id)
+
+    # In-memory tracking is gone, the engine is no longer held, and the on-disk
+    # session directory has been removed (so it drops out of the listing).
+    assert mgr.get(session.id) is None
+    assert session.id not in {s["id"] for s in mgr.list_sessions()}
+
+    # Opening the (now nonexistent) id yields a brand-new, empty session object
+    # rather than the deleted one — nothing remains on disk to resume.
+    reopened = await mgr.open(session.id, "windowB")
+    assert reopened is not None and reopened is not session
+
+
+# ---------------------------------------------------------------------------
 # Abstraction-boundary guard
 # ---------------------------------------------------------------------------
 
