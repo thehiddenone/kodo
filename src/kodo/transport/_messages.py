@@ -28,6 +28,13 @@ from __future__ import annotations
 MSG_HELLO = "hello"
 MSG_PROMPT_SUBMIT = "prompt.submit"
 MSG_STOP = "stop"
+# List all persisted sessions for the picker. Server replies with
+# ``{sessions: [{id, name, project_root, taken}]}``. VSIX derives openability
+# (project loaded? taken?) from those fields.
+MSG_SESSION_LIST = "session.list"
+# Release the session named by ``payload.session_id`` from this window's
+# ownership immediately (graceful window close), so another window can open it.
+MSG_SESSION_RELEASE = "session.release"
 MSG_CHECKPOINT_LIST = "checkpoint.list"
 MSG_CHECKPOINT_ROLLBACK = "checkpoint.rollback"
 MSG_MODE_SET = "mode.set"
@@ -92,6 +99,11 @@ EVT_ARTIFACT_PUBLISHED = "artifact.published"
 EVT_ARTIFACT_REMOVED = "artifact.removed"
 EVT_ORCHESTRATOR_COMPACTED = "orchestrator.compacted"
 EVT_LLM_TURN_START = "llm.turn_start"
+# Emitted by the LLM gateway while a session's LLM request is queued behind the
+# serial local gate / a saturated cloud feed (``reason:"queued"``) or is being
+# held back by 429 throttling (``reason:"throttled"`` with ``retry_in_seconds``).
+# ``{waiting:false}`` clears the indicator. Owned entirely by the gateway.
+EVT_LLM_WAITING = "llm.waiting"
 EVT_USAGE_UPDATE = "usage.update"
 EVT_ERROR = "error"
 EVT_LLAMACPP_INSTALL_PROGRESS = "llamacpp.install.progress"

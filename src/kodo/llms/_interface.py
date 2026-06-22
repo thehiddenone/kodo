@@ -15,6 +15,7 @@ from kodo.toolspecs import ToolSpec
 __all__ = [
     "LLMPlugin",
     "Message",
+    "RateLimited",
     "ToolSpec",
     "Usage",
     "StreamEvent",
@@ -25,6 +26,23 @@ __all__ = [
     "ToolCallEvent",
     "TurnEnd",
 ]
+
+
+class RateLimited(Exception):
+    """Provider-agnostic HTTP 429 signal raised by an :class:`LLMPlugin`.
+
+    The plugin surfaces a rate-limit rejection as this exception so the shared
+    :class:`kodo.llms.LLMGateway` can own backoff/re-queue policy (the plugin
+    itself stays a stateless one-shot facade and never queues).
+
+    Attributes:
+        retry_after: Server-advised seconds to wait before retrying, if the
+            provider supplied a ``Retry-After`` header; ``None`` otherwise.
+    """
+
+    def __init__(self, message: str = "rate limited", retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)

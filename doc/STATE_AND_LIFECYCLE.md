@@ -2,6 +2,20 @@
 
 > Status: draft for review. Reference: [DESIGN.md](DESIGN.md), [REQUIREMENTS.md](REQUIREMENTS.md).
 
+> **Singleton lifecycle update (2026-06-21).** The server is a machine-wide
+> **singleton** rooted at the global `~/.kodo` (the per-workspace `.kodo-workspace`
+> is gone; sessions/logs/settings live under `~/.kodo`). It advertises itself via
+> the `~/.kodo/kodo-server` **discovery file** (`{pid, port}`). On start it
+> `sys.exit(1)` if an existing file's **PID is alive OR its port is busy**,
+> otherwise it deletes the stale file and claims it. The VS Code launcher mirrors
+> this: it reuses a live server (port busy / pid alive) and only spawns when the
+> file is absent or stale; a lost launch race (server exit 1) is expected and the
+> client just connects to the winner. The singleton **self-reaps** ~30 s after the
+> last window disconnects (and removes the discovery file). Per-window ownership,
+> the disconnect grace window, and the persisted `owner.json` are covered in
+> [SESSIONS.md](SESSIONS.md); cross-session LLM scheduling in
+> [LLM_GATEWAY.md](LLM_GATEWAY.md).
+
 This document covers how Kodo represents, persists, and recovers state across cold starts, interruptions, and normal operation. It assumes the artifact model from [src/kodo/CLAUDE.md](../src/kodo/CLAUDE.md) — sub-agents communicate exclusively through `publish_artifact` / `read_artifact` against a workspace owned by Kodo.
 
 ---

@@ -31,7 +31,9 @@ from pathlib import Path
 
 from kodo.common import ApiKey, ApiKeyProvider, Envelope, MessageSink
 from kodo.llms import (
+    LLMGateway,
     LLMPlugin,
+    LLMRouting,
     LoggingLLMPlugin,
     Message,
     StreamEvent,
@@ -47,7 +49,13 @@ from kodo.llms import (
 )
 from kodo.llms.anthropic import ClaudePlugin, UnrecoverableError
 from kodo.llms.llamacpp import LlamaPlugin
-from kodo.project import ProjectLayout, ProjectLayoutError, WorkspaceLayout, kodo_user_dir
+from kodo.project import (
+    ProjectLayout,
+    ProjectLayoutError,
+    SessionWorkspace,
+    WorkspaceLayout,
+    kodo_user_dir,
+)
 from kodo.state import TransientStore, read_diff_files, render_tool_call_markdown
 from kodo.subagents import AgentLoadError, AgentRegistry
 from kodo.toolchains import ToolchainPlugin, select_toolchain
@@ -96,7 +104,7 @@ from kodo.workspace import (
     materialization_path,
 )
 
-from ._bootstrap import ProjectBootstrap, locate_orchestrator_session
+from ._bootstrap import ProjectBootstrap
 from ._gates import GateOrchestrator
 from ._rollback import Rollback
 from ._session import SessionState
@@ -217,6 +225,8 @@ class WorkflowEngine:
     __get_settings: Callable[[], dict[str, object]]
     __transient: TransientStore
     __workspace_layout: WorkspaceLayout
+    __session_workspace: SessionWorkspace
+    __gateway: LLMGateway
     __layout: ProjectLayout | None
     __registry: AgentRegistry
     __checkpoints: CheckpointManager | None
@@ -243,6 +253,8 @@ class WorkflowEngine:
         transient: TransientStore,
         workspace_layout: WorkspaceLayout,
         registry: AgentRegistry,
+        gateway: LLMGateway,
+        session_workspace: SessionWorkspace | None = None,
     ) -> None:
         """Initialise the runtime engine.
 
@@ -270,6 +282,8 @@ class WorkflowEngine:
         self.__get_settings = get_settings
         self.__transient = transient
         self.__workspace_layout = workspace_layout
+        self.__session_workspace = session_workspace or SessionWorkspace()
+        self.__gateway = gateway
         self.__registry = registry
         self.__layout: ProjectLayout | None = None
         self.__checkpoints: CheckpointManager | None = None
@@ -278,7 +292,7 @@ class WorkflowEngine:
         # Placeholder workspace at the physical root — replaced by the real,
         # project-rooted one in bind_project(); never used before then (no
         # artifact tool runs without a bound project).
-        self.__workspace = Workspace(workspace_layout.physical_root, self.__index)
+        self.__workspace = Workspace(self.__session_workspace.physical_root, self.__index)
         self.__queue = asyncio.Queue()
         self.__session = SessionState()
         self.__worker = None
@@ -347,20 +361,22 @@ class WorkflowEngine:
             )
         return self.__checkpoints
 
-    async def start(self) -> None:
-        """Attach the (workspace-tier) session and start the worker.
+    async def start(self, session_id: str, resumed: bool) -> None:
+        """Attach the given session and start the worker.
 
+        The session id + resumed flag are supplied by the ``SessionManager``
+        (client-driven: ``hello`` creates a new id or resumes an existing one).
         The project is *not* bound here — that happens lazily in
         :meth:`bind_project` when the user first runs Guided mode.  If the
         resumed session already recorded a current project, it is re-bound now so
         crash-resume of a mid-subagent Guided turn still works.
-        """
-        self.__clear_llm_request_logs()
 
-        session_id, resumed = locate_orchestrator_session(
-            self.__workspace_layout.marker_dir, self.__workspace_layout.sessions_dir
-        )
+        Args:
+            session_id (str): Session identifier to attach.
+            resumed (bool): ``True`` if an existing session dir was found.
+        """
         self.__orch_session_id = session_id
+        self.__clear_llm_request_logs()
         self.__transient.attach_session(session_id, resumed)
 
         if resumed:
@@ -401,7 +417,9 @@ class WorkflowEngine:
             folders (dict[str, str]): Logical name → physical path for every
                 open VS Code workspace folder.
         """
-        self.__workspace_layout.set_folders({k: Path(v) for k, v in folders.items()})
+        if physical_root:
+            self.__session_workspace.set_physical_root(Path(physical_root))
+        self.__session_workspace.set_folders({k: Path(v) for k, v in folders.items()})
         _log.info(
             "Workspace folder map updated (physical_root=%s): %s",
             physical_root,
@@ -517,9 +535,18 @@ class WorkflowEngine:
 
         await self.__queue.put({"text": text, "request_id": ""})
 
+    @property
+    def __llm_logs_dir(self) -> Path:
+        """Per-session LLM request/response log dir (sessions never share one).
+
+        ``~/.kodo/logs/llm_requests/<session_id>/`` — keeps concurrent sessions'
+        logs isolated and makes the on-start clear scoped to this session only.
+        """
+        return self.__workspace_layout.llm_requests_dir / (self.__orch_session_id or "unbound")
+
     def __clear_llm_request_logs(self) -> None:
-        """Remove all previously logged LLM requests/responses on (re)start."""
-        logs_dir = self.__workspace_layout.llm_requests_dir
+        """Remove this session's previously logged LLM requests/responses."""
+        logs_dir = self.__llm_logs_dir
         if not logs_dir.is_dir():
             return
         for entry in logs_dir.iterdir():
@@ -575,14 +602,19 @@ class WorkflowEngine:
     # Plugin resolution — per-dispatch, reads fresh settings each time
     # ------------------------------------------------------------------
 
-    async def __resolve_plugin(self, capability: str) -> tuple[LLMPlugin, str]:
-        """Resolve an LLM plugin for *capability* using current settings.
+    async def __resolve_plugin(self, capability: str) -> tuple[LLMPlugin, str, LLMRouting]:
+        """Resolve an LLM plugin + gateway routing for *capability*.
+
+        Reads fresh settings each call.  The returned :class:`LLMRouting` tells
+        the shared :class:`LLMGateway` which feed to schedule the request on
+        (local serial gate, or a per-vendor cloud feed).  The API key (cloud) is
+        resolved here, per session — the gateway never touches keys.
 
         Args:
             capability: ``'high'``, ``'medium'``, or ``'low'``.
 
         Returns:
-            tuple[LLMPlugin, str]: ``(plugin, model_id)``
+            tuple[LLMPlugin, str, LLMRouting]: ``(plugin, model_id, routing)``.
 
         Raises:
             RuntimeError: If the client rejects or cancels the key request.
@@ -605,7 +637,8 @@ class WorkflowEngine:
         if module == "kodo.llms.llamacpp":
             self.__current_vendor = None
             plugin: LLMPlugin = LlamaPlugin(sink=self.__sink, kodo_dir=kodo_user_dir())
-            return LoggingLLMPlugin(plugin, self.__workspace_layout.llm_requests_dir), model_key
+            routing = LLMRouting(residence="local")
+            return LoggingLLMPlugin(plugin, self.__llm_logs_dir), model_key, routing
 
         model_id = entry.model_id if entry is not None else model_key
         vendor = module.rsplit(".", 1)[-1]
@@ -616,7 +649,8 @@ class WorkflowEngine:
             raise RuntimeError(f"API key request rejected: {key_result.error}")
 
         plugin = ClaudePlugin(api_key=key_result.api_key)
-        return LoggingLLMPlugin(plugin, self.__workspace_layout.llm_requests_dir), model_id
+        routing = LLMRouting(residence="cloud", vendor=vendor)
+        return LoggingLLMPlugin(plugin, self.__llm_logs_dir), model_id, routing
 
     # ------------------------------------------------------------------
     # Worker
@@ -778,12 +812,15 @@ class WorkflowEngine:
         ``last_call_tokens``, so it adds no entry to the session feed).
         """
         agent = self.__registry.get(_SESSION_TITLER_AGENT_NAME)
-        plugin, model_id = await self.__resolve_plugin(agent.capability)
+        plugin, model_id, routing = await self.__resolve_plugin(agent.capability)
 
         messages: list[Message] = [Message(role="user", content=text)]
         text_parts: list[str] = []
         turn_end: TurnEnd | None = None
-        async for event in plugin.stream_query(
+        async for event in self.__gateway.stream_query(
+            routing=routing,
+            plugin=plugin,
+            sink=self.__sink,
             stream_id=uuid.uuid4().hex,
             model=model_id,
             system=agent.system_prompt,
@@ -843,7 +880,7 @@ class WorkflowEngine:
         before any sub-agent dispatch so an interrupted sub-agent can resume).
         """
         agent = self.__registry.get(agent_name, self.__session.effective_autonomous)
-        plugin, model_id = await self.__resolve_plugin(agent.capability)
+        plugin, model_id, routing = await self.__resolve_plugin(agent.capability)
 
         if text:
             self.__main_messages = self.__main_messages + [Message(role="user", content=text)]
@@ -858,6 +895,7 @@ class WorkflowEngine:
         stream_id = uuid.uuid4().hex
         self.__main_messages, _ = await self.__run_agent_turn(
             llm=plugin,
+            routing=routing,
             model=model_id,
             system_prompt=agent.system_prompt,
             messages=self.__main_messages,
@@ -908,6 +946,7 @@ class WorkflowEngine:
     async def __run_agent_turn(
         self,
         llm: LLMPlugin,
+        routing: LLMRouting,
         model: str,
         system_prompt: str,
         messages: list[Message],
@@ -950,7 +989,7 @@ class WorkflowEngine:
         """
         files_written: list[Path] = []
         tool_desc = {t.name: t.user_description for t in tools}
-        tool_logger = ToolCallLogger(self.__workspace_layout.llm_requests_dir)
+        tool_logger = ToolCallLogger(self.__llm_logs_dir)
         persisted_upto = len(messages)
 
         def _flush() -> None:
@@ -973,7 +1012,10 @@ class WorkflowEngine:
             )
 
             try:
-                async for event in llm.stream_query(
+                async for event in self.__gateway.stream_query(
+                    routing=routing,
+                    plugin=llm,
+                    sink=self.__sink,
                     stream_id=stream_id,
                     model=model,
                     system=system_prompt,
@@ -1252,7 +1294,7 @@ class WorkflowEngine:
         if self.__session.workflow_mode == "guided" and self.__layout is not None:
             return ProjectPathResolver(self.__layout.root)
         return LogicalPathResolver(
-            self.__workspace_layout.folders, self.__workspace_layout.physical_root
+            self.__session_workspace.folders, self.__session_workspace.physical_root
         )
 
     # ------------------------------------------------------------------
@@ -1310,7 +1352,7 @@ class WorkflowEngine:
         subsession file at every turn boundary so the run is resumable mid-flight.
         """
         agent = self.__registry.get(name, self.__session.effective_autonomous)
-        plugin, model_id = await self.__resolve_plugin(agent.capability)
+        plugin, model_id, routing = await self.__resolve_plugin(agent.capability)
         dispatcher = self.__make_dispatcher(name, subsession_id)
         leaf_tools = tools_for_agent(agent.tools)
 
@@ -1327,6 +1369,7 @@ class WorkflowEngine:
 
         await self.__run_agent_turn(
             llm=plugin,
+            routing=routing,
             model=model_id,
             system_prompt=agent.system_prompt,
             messages=messages,
@@ -1485,14 +1528,14 @@ class WorkflowEngine:
             len(self.__replay_subsessions),
         )
 
-        # Only the Orchestrator spawns sub-agents, so the interrupted entry agent
-        # is always the Orchestrator.
+        # Only the Orchestrator spawns sub-agents, so the interrupted entry
+        # agent is always the Orchestrator.
         agent = self.__registry.get(_ORCHESTRATOR_AGENT_NAME, self.__session.effective_autonomous)
-        plugin, model_id = await self.__resolve_plugin(agent.capability)
+        plugin, model_id, routing = await self.__resolve_plugin(agent.capability)
         dispatcher = self.__make_dispatcher(_ORCHESTRATOR_AGENT_NAME, self.__orch_session_id)
         tools = tools_for_agent(agent.tools)
         tool_desc = {t.name: t.user_description for t in tools}
-        tool_logger = ToolCallLogger(self.__workspace_layout.llm_requests_dir)
+        tool_logger = ToolCallLogger(self.__llm_logs_dir)
 
         self.__session.phase = "running"
         self.__session.agent = _ORCHESTRATOR_AGENT_NAME
@@ -1517,6 +1560,7 @@ class WorkflowEngine:
         stream_id = uuid.uuid4().hex
         self.__main_messages, _ = await self.__run_agent_turn(
             llm=plugin,
+            routing=routing,
             model=model_id,
             system_prompt=agent.system_prompt,
             messages=self.__main_messages,
@@ -1670,18 +1714,18 @@ class WorkflowEngine:
         rollback = Rollback(
             self.__require_layout().root,
             self.__require_checkpoints().repo,
-            self.__workspace_layout,
+            self.__workspace_layout.sessions_dir,
         )
-        result = await rollback.execute(target_sha)
+        index = await rollback.execute(target_sha)
 
-        self.__index = result.index
+        self.__index = index
         self.__workspace.bind_index(self.__index)
         self.__toolchain = None  # tech-stack may differ post-rollback; re-resolve lazily
-        self.__orch_session_id = result.orchestrator_session_id
+        # Session identity is owned by the driving window and is unchanged; the
+        # rollback only invalidates the in-memory conversation, so reset it.
         self.__main_messages = []
         self.__replay_subsessions = None
-        self.__transient.attach_session(result.orchestrator_session_id, result.orchestrator_resumed)
-        _log.info("Post-rollback Orchestrator session: %s", self.__orch_session_id)
+        _log.info("Post-rollback: index rebuilt for session %s", self.__orch_session_id)
 
     # ------------------------------------------------------------------
     # Artifact completion (promotion)

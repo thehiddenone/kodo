@@ -4,6 +4,27 @@ This document explains how Kōdo persists a conversation, how sub-agents get
 their own isolated history, and how an interrupted sub-agent is resumed after a
 crash or restart.
 
+> **Multi-session update (2026-06-21).** A single **singleton server** (rooted at
+> the global `~/.kodo`, no more `.kodo-workspace`) now manages **many sessions
+> concurrently** — one per VS Code window. Session stores live at
+> `~/.kodo/sessions/<id>/` as before. Key changes:
+> - **A session is owned by exactly one window at a time** (server-authoritative).
+>   Opening it from a second window is rejected (`session_in_use`). A disconnect
+>   starts a short **grace window** that lets the same window reload and reclaim;
+>   a graceful close (`session.release`) frees it immediately.
+> - **Resume is client-driven:** each window persists its `session_id` and sends
+>   it in `hello`. The old workspace-level orchestrator-session **marker** and its
+>   auto-resume are gone (`OrchestratorMarker`/`locate_orchestrator_session`
+>   remain in the tree but are unused by the engine).
+> - **A session's nature is its `current_project`:** `None` ⇒ problem-solving
+>   only (openable in any window); set ⇒ guided-associated, linked to that
+>   `kodo.md` project and openable only where that project is loaded. The session
+>   picker enforces this gate in the extension.
+> - **Crash-resume** of a mid-subagent turn is unchanged, and now runs when the
+>   `SessionManager` (re)loads that specific session.
+> - LLM scheduling across sessions is owned by the shared gateway — see
+>   [LLM_GATEWAY.md](LLM_GATEWAY.md).
+
 ## The two levels
 
 Kōdo's persisted state has exactly two levels:

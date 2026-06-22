@@ -10,8 +10,8 @@ import asyncio
 import logging
 import uuid
 
-from kodo.common import ApiKey, Envelope
-from kodo.transport import SREQ_API_KEY_REQUEST, WebSocketDispatcher
+from kodo.common import ApiKey, Envelope, ResponseChannel
+from kodo.transport import SREQ_API_KEY_REQUEST
 
 __all__ = ["KeyBroker"]
 
@@ -19,28 +19,28 @@ _log = logging.getLogger(__name__)
 
 
 class KeyBroker:
-    """Requests API keys from the VSIX client over the WebSocket.
+    """Requests API keys from one session's VSIX window over the WebSocket.
 
     Sends a ``kind=request`` frame with ``type=api_key.request`` and blocks
     until the client responds with a ``kind=response``.  If the WebSocket
-    disconnects while waiting, the pending future is cancelled by
-    :class:`~kodo.transport.WebSocketDispatcher` and this method raises
-    :class:`asyncio.CancelledError`, which the caller should surface as a
-    key-request failure.
+    disconnects while waiting, the pending future is cancelled by the session's
+    channel and this method raises :class:`asyncio.CancelledError`, which the
+    caller surfaces as a key-request failure.  Keys are per session — each
+    session asks its own window.
 
     Args:
-        dispatcher: The active WebSocket dispatcher.
+        channel: The session's response channel.
     """
 
-    __dispatcher: WebSocketDispatcher
+    __channel: ResponseChannel
 
-    def __init__(self, dispatcher: WebSocketDispatcher) -> None:
-        """Initialise the broker with the WebSocket dispatcher.
+    def __init__(self, channel: ResponseChannel) -> None:
+        """Initialise the broker with the session's response channel.
 
         Args:
-            dispatcher (WebSocketDispatcher): Active WebSocket dispatcher.
+            channel (ResponseChannel): The session's response channel.
         """
-        self.__dispatcher = dispatcher
+        self.__channel = channel
 
     async def get_key(self, vendor: str) -> ApiKey:
         """Request the API key for *vendor* from the VSIX client.
@@ -59,9 +59,9 @@ class KeyBroker:
         req_id = uuid.uuid4().hex
         loop = asyncio.get_event_loop()
         future: asyncio.Future[dict[str, object]] = loop.create_future()
-        self.__dispatcher.register_response_future(req_id, future)
+        self.__channel.register_response_future(req_id, future)
 
-        await self.__dispatcher.send(
+        await self.__channel.send(
             Envelope(
                 kind="request",
                 id=req_id,

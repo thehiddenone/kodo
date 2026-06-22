@@ -4,19 +4,17 @@ Rollback procedure (STATE_AND_LIFECYCLE.md §8.3):
 
 1. Terminate all active sessions (sub-agent + Orchestrator) — append a
    termination event to each session log.
-2. Clear the Orchestrator session marker (Phase 4 of bootstrap will create
-   a fresh session).
-3. Clear ``.kodo/workspace/`` entirely.
-4. ``MirrorRepo.checkout(target_sha)`` — mirror working tree reflects the
+2. Clear ``.kodo/workspace/`` entirely.
+3. ``MirrorRepo.checkout(target_sha)`` — mirror working tree reflects the
    target snapshot.
-5. Delete ``<project>/src/`` and ``<project>/gen/``.
-6. Copy mirror's ``src/`` and ``gen/`` into the project, skipping sidecar files.
-7. Rebuild the full index via :class:`ProjectBootstrap` (all four phases).
-   Phase 4 creates a fresh Orchestrator session because the marker was cleared
-   in step 2.
+4. Delete ``<project>/src/`` and ``<project>/gen/``.
+5. Copy mirror's ``src/`` and ``gen/`` into the project, skipping sidecar files.
+6. Rebuild the full artifact index via :class:`ProjectBootstrap`.
 
-The caller is responsible for halting any running sub-agent processes before
-calling :meth:`Rollback.execute`.
+The session identity is owned by the driving session (one per VS Code window)
+and is unchanged by a rollback — the engine resets its in-memory conversation
+itself.  The caller is responsible for halting any running sub-agent processes
+before calling :meth:`Rollback.execute`.
 """
 
 from __future__ import annotations
@@ -26,11 +24,10 @@ import logging
 import shutil
 from pathlib import Path
 
-from kodo.project import ProjectLayout, WorkspaceLayout
-from kodo.workspace import MirrorRepo
+from kodo.project import ProjectLayout
+from kodo.workspace import MirrorRepo, ProjectIndex
 
-from ._bootstrap import BootstrapResult, ProjectBootstrap, locate_orchestrator_session
-from ._orchestrator import OrchestratorMarker
+from ._bootstrap import ProjectBootstrap
 from ._session_log import SessionLog
 
 _log = logging.getLogger(__name__)
@@ -45,32 +42,32 @@ class Rollback:
     Args:
         project_root (Path): Root directory of the Kodo project.
         mirror (MirrorRepo): The mirror git repository for this project.
-        workspace (WorkspaceLayout): Workspace-tier layout — supplies the
-            session marker + ``sessions/`` dir (both workspace-scoped).
+        sessions_dir (Path): Global ``~/.kodo/sessions/`` dir — used only for
+            in-flight artifact orphan classification during the index rebuild.
     """
 
     __project_root: Path
     __mirror: MirrorRepo
-    __workspace: WorkspaceLayout
+    __sessions_dir: Path
 
-    def __init__(self, project_root: Path, mirror: MirrorRepo, workspace: WorkspaceLayout) -> None:
+    def __init__(self, project_root: Path, mirror: MirrorRepo, sessions_dir: Path) -> None:
         """Initialise the rollback handler.
 
         Args:
             project_root (Path): Root directory of the Kodo project.
             mirror (MirrorRepo): The mirror git repository.
-            workspace (WorkspaceLayout): Workspace-tier layout.
+            sessions_dir (Path): Global session-stores directory.
         """
         self.__project_root = project_root
         self.__mirror = mirror
-        self.__workspace = workspace
+        self.__sessions_dir = sessions_dir
 
     async def execute(
         self,
         target_sha: str,
         active_session_logs: list[SessionLog] | None = None,
-    ) -> BootstrapResult:
-        """Execute the full rollback procedure and return a fresh BootstrapResult.
+    ) -> ProjectIndex:
+        """Execute the full rollback procedure and return the rebuilt index.
 
         Args:
             target_sha (str): Commit SHA to roll back to (full or abbreviated).
@@ -79,15 +76,12 @@ class Rollback:
                 closed with a termination event before the rollback proceeds.
 
         Returns:
-            BootstrapResult: Rebuilt index and fresh Orchestrator session info.
+            ProjectIndex: Rebuilt artifact index for the restored snapshot.
         """
         layout = ProjectLayout(self.__project_root)
         sessions = active_session_logs or []
 
         self.__step1_terminate_sessions(sessions, target_sha)
-
-        OrchestratorMarker(self.__workspace.marker_dir).clear()
-        _log.info("Rollback: Orchestrator session marker cleared")
 
         await asyncio.to_thread(self.__step3_clear_workspace, layout.workspace_dir)
 
@@ -97,13 +91,9 @@ class Rollback:
         await asyncio.to_thread(self.__step5_delete_project_trees)
         await asyncio.to_thread(self.__step6_copy_from_mirror)
 
-        result = await asyncio.to_thread(self.__step7_rebuild, layout)
-        _log.info(
-            "Rollback complete: %d completed entries, new orchestrator session=%s",
-            len(result.index.completed_entries()),
-            result.orchestrator_session_id[:8],
-        )
-        return result
+        index = await asyncio.to_thread(self.__step7_rebuild, layout)
+        _log.info("Rollback complete: %d completed entries", len(index.completed_entries()))
+        return index
 
     # ------------------------------------------------------------------
     # Steps
@@ -153,18 +143,9 @@ class Rollback:
                 shutil.copy2(src_file, dst)
         _log.info("Rollback: project trees restored from mirror")
 
-    def __step7_rebuild(self, layout: ProjectLayout) -> BootstrapResult:
-        index = ProjectBootstrap(
+    def __step7_rebuild(self, layout: ProjectLayout) -> ProjectIndex:
+        return ProjectBootstrap(
             mirror_dir=self.__mirror.repo_dir,
             workspace_dir=layout.workspace_dir,
-            sessions_dir=self.__workspace.sessions_dir,
+            sessions_dir=self.__sessions_dir,
         ).build_index()
-        # The marker was cleared in step 2, so this creates a fresh session.
-        session_id, resumed = locate_orchestrator_session(
-            self.__workspace.marker_dir, self.__workspace.sessions_dir
-        )
-        return BootstrapResult(
-            index=index,
-            orchestrator_session_id=session_id,
-            orchestrator_resumed=resumed,
-        )

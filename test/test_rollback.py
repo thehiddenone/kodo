@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from kodo.project import WorkspaceLayout
 from kodo.runtime import Rollback, SessionLog
 from kodo.toolchains import (
     ToolchainBuildResult,
@@ -97,7 +96,7 @@ async def _setup(tmp_path: Path) -> tuple[MirrorRepo, Rollback, Path]:
     rollback = Rollback(
         project_root=project_root,
         mirror=mirror,
-        workspace=WorkspaceLayout(tmp_path),
+        sessions_dir=tmp_path / "sessions",
     )
     return mirror, rollback, project_root
 
@@ -273,9 +272,9 @@ async def test_rollback_returns_index_with_completed_entries(tmp_path: Path) -> 
     )
     sha = await mirror.head_sha()
 
-    result = await rollback.execute(sha)
+    index = await rollback.execute(sha)
 
-    completed = result.index.completed_entries()
+    completed = index.completed_entries()
     assert any(e.artifact_id == "art-narr" for e in completed)
 
 
@@ -314,6 +313,6 @@ async def test_rollback_index_has_no_in_flight_entries(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = await rollback.execute(sha)
+    index = await rollback.execute(sha)
 
-    assert result.index.in_flight_entries() == []
+    assert index.in_flight_entries() == []

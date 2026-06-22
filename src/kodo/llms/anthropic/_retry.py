@@ -13,11 +13,30 @@ from collections.abc import AsyncIterator, Callable, Coroutine
 
 import anthropic
 
+from kodo.llms._interface import RateLimited
+
 __all__ = ["RetryExhaustedError", "UnrecoverableError", "with_retry"]
 
 _log = logging.getLogger(__name__)
 
 _RETRY_DELAYS: tuple[float, ...] = (2.0, 8.0, 32.0)
+
+
+def _as_rate_limited(exc: anthropic.RateLimitError) -> RateLimited:
+    """Translate a provider 429 into the gateway-owned :class:`RateLimited`.
+
+    Honors a ``Retry-After`` response header when present so the gateway can
+    use the server-advised delay verbatim.
+    """
+    retry_after: float | None = None
+    response = getattr(exc, "response", None)
+    header = response.headers.get("retry-after") if response is not None else None
+    if header:
+        try:
+            retry_after = float(header)
+        except ValueError:
+            retry_after = None
+    return RateLimited(str(getattr(exc, "message", exc)), retry_after=retry_after)
 
 
 class RetryExhaustedError(Exception):
@@ -41,12 +60,13 @@ class UnrecoverableError(Exception):
 def _is_unrecoverable(exc: Exception) -> bool:
     # 400 BadRequestError covers billing/credit errors ("credit balance too low")
     # which must never be retried — surface immediately to the Dev (FR-LLM-06).
+    # NB: RateLimitError (429) is deliberately NOT here — it is surfaced as the
+    # gateway-owned RateLimited so the LLMGateway can apply backoff/re-queue.
     return isinstance(
         exc,
         (
             anthropic.AuthenticationError,
             anthropic.PermissionDeniedError,
-            anthropic.RateLimitError,
             anthropic.BadRequestError,
         ),
     )
@@ -95,6 +115,8 @@ async def with_retry[T](
         try:
             return await factory()
         except Exception as exc:
+            if isinstance(exc, anthropic.RateLimitError):
+                raise _as_rate_limited(exc) from exc
             if _is_unrecoverable(exc):
                 if isinstance(exc, anthropic.APIStatusError):
                     raise UnrecoverableError(exc.message, exc.status_code) from exc
@@ -147,6 +169,8 @@ async def with_retry_iter[T](
                 yield item
             return
         except Exception as exc:
+            if isinstance(exc, anthropic.RateLimitError):
+                raise _as_rate_limited(exc) from exc
             if _is_unrecoverable(exc):
                 if isinstance(exc, anthropic.APIStatusError):
                     raise UnrecoverableError(exc.message, exc.status_code) from exc

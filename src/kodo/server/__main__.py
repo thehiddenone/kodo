@@ -11,9 +11,13 @@ from aiohttp import web
 
 from ._app import create_app
 from ._config import Config
+from ._connection_registry import CONNECTION_REGISTRY_KEY
 from ._lifecycle import Lifecycle
 
 _log = logging.getLogger(__name__)
+
+# Idle period with zero connected windows before the singleton self-reaps.
+_IDLE_SHUTDOWN_SECONDS: float = 30.0
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -32,8 +36,8 @@ def main(argv: list[str] | None = None) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    lifecycle = Lifecycle(config.workspace)
-    lifecycle.check_and_write_pid()
+    lifecycle = Lifecycle(config.port)
+    lifecycle.check_and_write()
 
     app = create_app(config)
 
@@ -58,12 +62,16 @@ async def _serve(app: web.Application, config: Config, lifecycle: Lifecycle) -> 
     stop_event = asyncio.Event()
     lifecycle.install_signal_handlers(stop_event.set)
 
+    # Singleton self-reap: shut down once no window has been connected for the
+    # idle grace period (the launcher relaunches on the next window).
+    app[CONNECTION_REGISTRY_KEY].set_idle_shutdown(stop_event.set, _IDLE_SHUTDOWN_SECONDS)
+
     try:
         await stop_event.wait()
     finally:
         _log.info("Shutting down…")
         await runner.cleanup()
-        lifecycle.remove_pid()
+        lifecycle.remove()
 
 
 if __name__ == "__main__":

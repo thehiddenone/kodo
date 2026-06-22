@@ -1,10 +1,23 @@
-"""PID file management and graceful shutdown for the Kōdo server."""
+"""Discovery-file management and graceful shutdown for the singleton server.
+
+The server is a singleton shared by every VS Code window.  Its presence is
+advertised by the ``kodo-server`` discovery file at ``~/.kodo/kodo-server``,
+which holds ``{"pid": <int>, "port": <int>}``.
+
+Start-time contract (matches the VSIX launcher's stale-file protocol): if the
+file already exists, the running server is considered **alive** iff its PID
+still exists **or** its port is busy.  If either is true the new server refuses
+to start (``sys.exit(1)``); otherwise the file is stale, is deleted, and a fresh
+one is written for this process.
+"""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
+import socket
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -14,72 +27,96 @@ from kodo.project import WorkspaceLayout
 _log = logging.getLogger(__name__)
 
 
-class Lifecycle:
-    """Manages the server PID file and system-signal-driven shutdown.
+def port_busy(port: int, host: str = "127.0.0.1") -> bool:
+    """Return ``True`` if *port* is currently accepting connections on *host*.
 
-    The PID file at ``<physical_root>/.kodo-workspace/server.pid`` prevents two
-    server instances from binding to the same workspace simultaneously.
+    Args:
+        port (int): TCP port to probe.
+        host (str): Loopback host to probe.
+
+    Returns:
+        bool: ``True`` if a connection succeeds (something is listening).
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        try:
+            sock.connect((host, port))
+            return True
+        except OSError:
+            return False
+
+
+class Lifecycle:
+    """Manages the ``kodo-server`` discovery file and signal-driven shutdown.
+
+    The discovery file at ``~/.kodo/kodo-server`` lets the VS Code extension
+    locate the singleton server (its port) and detect a stale file (dead PID +
+    free port).  Only one live server may hold it at a time.
     """
 
-    __pid_path: Path
+    __path: Path
+    __port: int
     __shutdown_requested: bool
 
-    def __init__(self, workspace_root: Path) -> None:
-        """Initialise lifecycle management for a workspace.
+    def __init__(self, port: int, root: Path | None = None) -> None:
+        """Initialise lifecycle management for the singleton server.
 
         Args:
-            workspace_root (Path): Absolute path to the physical workspace root.
+            port (int): The TCP port this server binds to.
+            root (Path | None): Home directory; defaults to ``~/.kodo``.
         """
-        self.__pid_path = WorkspaceLayout(workspace_root).server_pid
+        self.__path = WorkspaceLayout(root).server_discovery
+        self.__port = port
         self.__shutdown_requested = False
 
     @property
-    def pid_path(self) -> Path:
-        """Absolute path to the PID file."""
-        return self.__pid_path
+    def discovery_path(self) -> Path:
+        """Absolute path to the ``kodo-server`` discovery file."""
+        return self.__path
 
     @property
     def shutdown_requested(self) -> bool:
         """``True`` after a graceful-shutdown signal has been received."""
         return self.__shutdown_requested
 
-    def check_and_write_pid(self) -> None:
-        """Write the current PID to disk, aborting if another server is live.
-
-        Creates ``.kodo/`` if absent.
+    def check_and_write(self) -> None:
+        """Claim the discovery file, aborting if another server is live.
 
         Raises:
-            SystemExit: If a live server process already holds the PID file.
+            SystemExit: If a live server already holds the discovery file
+                (its PID exists or its port is busy).
         """
-        self.__pid_path.parent.mkdir(parents=True, exist_ok=True)
+        self.__path.parent.mkdir(parents=True, exist_ok=True)
 
-        if self.__pid_path.exists():
-            existing = self.__pid_path.read_text(encoding="ascii").strip()
-            if existing.isdigit():
-                pid = int(existing)
-                if self.__is_running(pid):
-                    _log.error(
-                        "Another kodo-server (PID %d) is already running for this project. "
-                        "Stop it first or remove %s.",
-                        pid,
-                        self.__pid_path,
-                    )
-                    sys.exit(1)
-                _log.warning("Removing stale PID file (PID %d is not running).", pid)
+        existing = self.__read()
+        if existing is not None:
+            pid, port = existing
+            if self.__is_running(pid) or port_busy(port):
+                _log.error(
+                    "Another kodo-server (pid=%d port=%d) is already running. "
+                    "Refusing to start; stop it first or remove %s.",
+                    pid,
+                    port,
+                    self.__path,
+                )
+                sys.exit(1)
+            _log.warning("Removing stale discovery file (pid=%d is dead, port=%d free).", pid, port)
+            self.__path.unlink(missing_ok=True)
 
-        self.__pid_path.write_text(str(os.getpid()), encoding="ascii")
-        _log.debug("PID file written: %s", self.__pid_path)
+        self.__write()
+        _log.debug(
+            "Discovery file written: %s (pid=%d port=%d)", self.__path, os.getpid(), self.__port
+        )
 
-    def remove_pid(self) -> None:
-        """Delete the PID file if it still belongs to this process."""
+    def remove(self) -> None:
+        """Delete the discovery file if it still belongs to this process."""
         try:
-            if self.__pid_path.exists():
-                current = self.__pid_path.read_text(encoding="ascii").strip()
-                if current == str(os.getpid()):
-                    self.__pid_path.unlink()
-                    _log.debug("PID file removed: %s", self.__pid_path)
+            existing = self.__read()
+            if existing is not None and existing[0] == os.getpid():
+                self.__path.unlink(missing_ok=True)
+                _log.debug("Discovery file removed: %s", self.__path)
         except OSError as exc:
-            _log.warning("Could not remove PID file: %s", exc)
+            _log.warning("Could not remove discovery file: %s", exc)
 
     def install_signal_handlers(self, stop_callback: Callable[[], None]) -> None:
         """Install SIGTERM / SIGINT handlers that trigger graceful shutdown.
@@ -97,6 +134,25 @@ class Lifecycle:
 
         signal.signal(signal.SIGTERM, _handle)
         signal.signal(signal.SIGINT, _handle)
+
+    # ------------------------------------------------------------------
+    # Discovery-file IO
+    # ------------------------------------------------------------------
+
+    def __read(self) -> tuple[int, int] | None:
+        if not self.__path.exists():
+            return None
+        try:
+            data = json.loads(self.__path.read_text(encoding="utf-8"))
+            return int(data["pid"]), int(data["port"])
+        except (json.JSONDecodeError, KeyError, ValueError, OSError):
+            _log.warning("Unparseable discovery file %s — treating as stale", self.__path)
+            return None
+
+    def __write(self) -> None:
+        self.__path.write_text(
+            json.dumps({"pid": os.getpid(), "port": self.__port}), encoding="ascii"
+        )
 
     @staticmethod
     def __is_running(pid: int) -> bool:

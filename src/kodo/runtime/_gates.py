@@ -26,9 +26,9 @@ import logging
 import uuid
 from dataclasses import dataclass
 
-from kodo.common import Envelope
+from kodo.common import Envelope, ResponseChannel
 from kodo.state import TransientStore
-from kodo.transport import SREQ_PROMPT_APPROVAL, SREQ_PROMPT_QUESTION, WebSocketDispatcher
+from kodo.transport import SREQ_PROMPT_APPROVAL, SREQ_PROMPT_QUESTION
 
 __all__ = ["ApprovalResponse", "GateOrchestrator", "QuestionResponse"]
 
@@ -80,7 +80,7 @@ class GateOrchestrator:
             responds.
     """
 
-    def __init__(self, app_state: WebSocketDispatcher, transient: TransientStore) -> None:
+    def __init__(self, app_state: ResponseChannel, transient: TransientStore) -> None:
         """Initialise with the application state.
 
         Args:

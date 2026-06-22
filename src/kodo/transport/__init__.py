@@ -2,6 +2,7 @@
 
 from kodo.common import Envelope, MessageKind
 
+from ._connection import Connection, SessionChannel
 from ._messages import (
     # Server → Client events (WS_PROTOCOL.md §5)
     EVT_AGENT_FINISHED,
@@ -21,6 +22,7 @@ from ._messages import (
     EVT_LLAMA_STATE,
     EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_LLM_TURN_START,
+    EVT_LLM_WAITING,
     EVT_MODEL_INSTALL_PROGRESS,
     EVT_ORCHESTRATOR_COMPACTED,
     EVT_POST_UPDATE,
@@ -52,6 +54,8 @@ from ._messages import (
     MSG_PROJECT_SET,
     MSG_PROMPT_SUBMIT,
     MSG_SECURITY_ADD_RULE,
+    MSG_SESSION_LIST,
+    MSG_SESSION_RELEASE,
     MSG_SESSION_RESUME,
     MSG_STOP,
     MSG_WORKFLOW_SET,
@@ -67,7 +71,9 @@ from ._ws import APP_STATE_KEY, HandlerFn, WebSocketDispatcher, get_state
 
 __all__ = [
     "APP_STATE_KEY",
+    "Connection",
     "HandlerFn",
+    "SessionChannel",
     "WebSocketDispatcher",
     "get_state",
     "Envelope",
@@ -77,6 +83,8 @@ __all__ = [
     "MSG_HELLO",
     "MSG_PROMPT_SUBMIT",
     "MSG_STOP",
+    "MSG_SESSION_LIST",
+    "MSG_SESSION_RELEASE",
     "MSG_CHECKPOINT_LIST",
     "MSG_CHECKPOINT_ROLLBACK",
     "MSG_CONFIG_RELOAD",
@@ -116,6 +124,7 @@ __all__ = [
     "EVT_ARTIFACT_PUBLISHED",
     "EVT_ARTIFACT_REMOVED",
     "EVT_LLM_TURN_START",
+    "EVT_LLM_WAITING",
     "EVT_ORCHESTRATOR_COMPACTED",
     "EVT_USAGE_UPDATE",
     "EVT_ERROR",

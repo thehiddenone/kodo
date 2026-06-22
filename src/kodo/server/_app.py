@@ -1,4 +1,10 @@
-"""aiohttp application factory and WebSocket endpoint for the Kōdo server."""
+"""aiohttp application factory and WebSocket endpoint for the Kōdo server.
+
+The server is a machine-wide singleton: many VS Code windows connect to it, each
+driving its own session.  Frames are routed by ``payload.session_id`` to the
+owning :class:`~kodo.server.SessionManager` session; ``hello`` (the only frame
+without a required ``session_id``) creates or resumes one.
+"""
 
 from __future__ import annotations
 
@@ -11,8 +17,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from kodo.common import Envelope
-from kodo.llms import LLMEntry, get_llm_registry
+from kodo.llms import LLMEntry, LLMGateway, get_llm_registry
 from kodo.llms.llamacpp import (
     LlamaServer,
     LlamaServerConfig,
@@ -24,11 +29,8 @@ from kodo.llms.llamacpp import (
     install_llamacpp,
 )
 from kodo.project import WorkspaceLayout, kodo_user_dir
-from kodo.runtime import GateOrchestrator, WorkflowEngine
-from kodo.state import TransientStore
 from kodo.subagents import AgentRegistry
 from kodo.transport import (
-    APP_STATE_KEY,
     EVT_LLAMA_STATE,
     EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_MODEL_INSTALL_PROGRESS,
@@ -42,28 +44,35 @@ from kodo.transport import (
     MSG_PING,
     MSG_PROJECT_SET,
     MSG_PROMPT_SUBMIT,
+    MSG_SESSION_LIST,
+    MSG_SESSION_RELEASE,
     MSG_STOP,
     MSG_WORKFLOW_SET,
     MSG_WORKSPACE_FOLDERS,
-    HandlerFn,
-    Outbox,
-    WebSocketDispatcher,
+    Envelope,
 )
 
 from ._config import Config
-from ._key_broker import KeyBroker
+from ._connection_registry import (
+    CONNECTION_REGISTRY_KEY,
+    ConnectionRegistry,
+    HandlerFn,
+    Request,
+)
+from ._session import Session
+from ._session_manager import SessionManager
 
 _log = logging.getLogger(__name__)
 
-_SERVER_VERSION: str = "0.1.0b1"
-_ENGINE_KEY: web.AppKey[WorkflowEngine] = web.AppKey("engine")
+_SERVER_VERSION: str = "0.2.0b1"
+_MANAGER_KEY: web.AppKey[SessionManager] = web.AppKey("session_manager")
 
 # Subagents directory: kodo/subagents/ next to kodo/server/
 _AGENTS_DIR = Path(__file__).parent.parent / "subagents"
 
 
 # ------------------------------------------------------------------
-# Startup validation (FR-SRV-05)
+# Startup validation + logging
 # ------------------------------------------------------------------
 
 
@@ -71,11 +80,6 @@ def _check_git_on_path() -> None:
     if shutil.which("git") is None:
         _log.error("'git' is not on PATH.  Kōdo requires git.")
         sys.exit(1)
-
-
-# ------------------------------------------------------------------
-# Logging setup (NFR-05)
-# ------------------------------------------------------------------
 
 
 def _setup_log_file(layout: WorkspaceLayout, log_level: str) -> None:
@@ -93,75 +97,222 @@ def _setup_log_file(layout: WorkspaceLayout, log_level: str) -> None:
 
 
 # ------------------------------------------------------------------
-# Message handlers
+# Helpers
 # ------------------------------------------------------------------
 
 
-def _make_hello_handler(config: Config, engine: WorkflowEngine) -> HandlerFn:
-    async def _handle_hello(state: WebSocketDispatcher, env: Envelope) -> None:
-        payload = env.payload
-        client = str(payload.get("client", "unknown"))
-        version = str(payload.get("version", "unknown"))
-        _log.info("Hello from client=%s version=%s", client, version)
+async def _require_session(req: Request) -> Session | None:
+    """Resolve the request's session, replying with an error if unknown."""
+    if req.session is not None:
+        return req.session
+    await req.reply(
+        {
+            "type": "error",
+            "code": "unknown_session",
+            "message": f"No such session: {req.session_id!r}",
+            "recoverable": True,
+        }
+    )
+    return None
 
-        llm_registry = get_llm_registry()
-        models_payload = [
+
+# ------------------------------------------------------------------
+# hello — create or resume a session, bind the connection
+# ------------------------------------------------------------------
+
+
+async def _handle_hello(req: Request) -> None:
+    payload = req.env.payload
+    window_id = str(payload.get("window_id") or req.connection.id)
+    requested = str(payload.get("session_id") or "")
+    _log.info(
+        "Hello from client=%s window=%s session=%s",
+        payload.get("client", "unknown"),
+        window_id[:8],
+        requested or "<new>",
+    )
+
+    if requested:
+        session = await req.manager.open(requested, window_id)
+        if session is None:
+            await req.reply({"type": "hello.ack", "error": "session_in_use"})
+            return
+    else:
+        session = await req.manager.create(window_id)
+
+    await req.manager.bind_connection(session, req.connection)
+
+    await req.reply(
+        {
+            "type": "hello.ack",
+            "server_version": _SERVER_VERSION,
+            "session_id": session.id,
+            "current_project": session.engine.current_project,
+            "state": session.engine.session.to_dict(),
+            **_llama_payload(),
+        }
+    )
+
+    await session.channel.send(Envelope.make_event("state", session.engine.session.to_dict()))
+    await session.channel.send(
+        Envelope.make_event(
+            "session.name",
+            {"session_id": session.id, "name": session.engine.session_name},
+        )
+    )
+    history = session.engine.history_entries()
+    if history:
+        await session.channel.send(Envelope.make_event("session.history", {"entries": history}))
+
+
+async def _handle_ping(req: Request) -> None:
+    await req.reply({"type": "pong"})
+
+
+def _llama_payload() -> dict[str, object]:
+    llm_registry = get_llm_registry()
+    models_payload = [
+        {
+            "name": e.name,
+            "residence": e.residence,
+            "description": e.description,
+            "model_id": e.model_id,
+            "repo_id": e.repo_id,
+            "filename": e.filename,
+        }
+        for e in llm_registry.values()
+    ]
+    llama = find_installed(kodo_user_dir())
+    active = LlamaServer.get_active_llama_server()
+    llama_is_running = active is not None and active.is_running
+    return {
+        "models": models_payload,
+        "llama_installed": llama is not None,
+        "llama_version": f"b{llama.build}" if llama is not None else None,
+        "llama_running": llama_is_running,
+        "llama_model": active.model_name if llama_is_running and active is not None else None,
+    }
+
+
+# ------------------------------------------------------------------
+# Session list / release
+# ------------------------------------------------------------------
+
+
+async def _handle_session_list(req: Request) -> None:
+    await req.reply({"type": "session.list.ack", "sessions": req.manager.list_sessions()})
+
+
+async def _handle_session_release(req: Request) -> None:
+    if req.session_id:
+        req.manager.release(req.session_id)
+    await req.reply({"type": "session.release.ack"})
+
+
+# ------------------------------------------------------------------
+# Session-scoped engine handlers
+# ------------------------------------------------------------------
+
+
+async def _handle_prompt(req: Request) -> None:
+    session = await _require_session(req)
+    if session is None:
+        return
+    text = str(req.env.payload.get("text", "")).strip()
+    if not text:
+        await req.reply(
             {
-                "name": e.name,
-                "residence": e.residence,
-                "description": e.description,
-                "model_id": e.model_id,
-                "repo_id": e.repo_id,
-                "filename": e.filename,
+                "type": "error",
+                "code": "empty_prompt",
+                "message": "Prompt text is required.",
+                "recoverable": True,
             }
-            for e in llm_registry.values()
-        ]
+        )
+        return
+    _log.info("Prompt submitted (session=%s): %r", session.id, text[:80])
+    await req.reply({"type": "prompt.accepted"})
+    await session.engine.handle_prompt_submit(text, req.env.id)
 
-        llama = find_installed(kodo_user_dir())
-        active = LlamaServer.get_active_llama_server()
-        llama_is_running = active is not None and active.is_running
-        resp = Envelope.make_response(
-            env.id,
+
+async def _handle_mode(req: Request) -> None:
+    session = await _require_session(req)
+    if session is None:
+        return
+    await session.engine.handle_mode_set(bool(req.env.payload.get("autonomous", False)))
+    await req.reply({"type": "mode.accepted"})
+
+
+async def _handle_workflow(req: Request) -> None:
+    session = await _require_session(req)
+    if session is None:
+        return
+    await session.engine.handle_workflow_set(str(req.env.payload.get("mode", "guided")))
+    await req.reply({"type": "workflow.accepted"})
+
+
+async def _handle_workspace_folders(req: Request) -> None:
+    session = await _require_session(req)
+    if session is None:
+        return
+    physical_root = str(req.env.payload.get("physical_root", ""))
+    raw = req.env.payload.get("folders", {})
+    folders = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+    await session.engine.handle_workspace_folders(physical_root, folders)
+    await req.reply({"type": "workspace.folders.ack"})
+
+
+async def _handle_project_set(req: Request) -> None:
+    session = await _require_session(req)
+    if session is None:
+        return
+    root = str(req.env.payload.get("root", "")).strip()
+    name = str(req.env.payload.get("name", "")).strip()
+    if not root:
+        await req.reply(
             {
-                "type": "hello.ack",
-                "server_version": _SERVER_VERSION,
-                "workspace_root": str(config.workspace),
-                "current_project": engine.current_project,
-                "state": engine.session.to_dict(),
-                "models": models_payload,
-                "llama_installed": llama is not None,
-                "llama_version": f"b{llama.build}" if llama is not None else None,
-                "llama_running": llama_is_running,
-                "llama_model": active.model_name
-                if llama_is_running and active is not None
-                else None,
-            },
+                "type": "error",
+                "code": "missing_project_root",
+                "message": "project.set requires a 'root'.",
+                "recoverable": True,
+            }
         )
-        await state.send(resp)
+        return
+    await session.engine.bind_project(root, name or root)
+    await req.reply({"type": "project.accepted"})
 
-        state_evt = Envelope.make_event("state", engine.session.to_dict())
-        await state.send(state_evt)
 
-        await state.send(
-            Envelope.make_event(
-                "session.name",
-                {"session_id": engine.session_id, "name": engine.session_name},
+async def _handle_stop(req: Request) -> None:
+    session = await _require_session(req)
+    if session is None:
+        return
+    await session.engine.stop()
+    await req.reply({"type": "stop.accepted"})
+
+
+def _make_config_reload_handler(config: Config) -> HandlerFn:
+    async def _handle_config_reload(req: Request) -> None:
+        try:
+            config.reload_settings()
+            await req.reply({"type": "config.reload.ack"})
+        except Exception as exc:  # noqa: BLE001
+            await req.reply(
+                {
+                    "type": "error",
+                    "code": "config_reload_failed",
+                    "message": str(exc),
+                    "recoverable": True,
+                }
             )
-        )
 
-        history = engine.history_entries()
-        if history:
-            await state.send(Envelope.make_event("session.history", {"entries": history}))
-
-    return _handle_hello
+    return _handle_config_reload
 
 
-async def _handle_ping(state: WebSocketDispatcher, env: Envelope) -> None:
-    _log.debug("Ping id=%s", env.id)
-    await state.send(Envelope.make_response(env.id, {"type": "pong"}))
+# ------------------------------------------------------------------
+# llama / model management (process-global; reply on the connection)
+# ------------------------------------------------------------------
 
 
-async def _handle_llamacpp_install(state: WebSocketDispatcher, _env: Envelope) -> None:
+async def _handle_llamacpp_install(req: Request) -> None:
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()
 
@@ -171,32 +322,30 @@ async def _handle_llamacpp_install(state: WebSocketDispatcher, _env: Envelope) -
     async def run() -> None:
         try:
             await asyncio.to_thread(install_llamacpp, kodo_user_dir(), progress_cb=progress_cb)
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
         finally:
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
     asyncio.create_task(run())
-
     while True:
         item = await queue.get()
         if item is None:
             break
         pct, msg = item
-        await state.send(
+        await req.connection.send(
             Envelope.make_event(EVT_LLAMACPP_INSTALL_PROGRESS, {"percent": pct, "message": msg})
         )
 
 
-async def _handle_model_install(state: WebSocketDispatcher, env: Envelope) -> None:
-    name = str(env.payload.get("name", "")).strip()
+async def _handle_model_install(req: Request) -> None:
+    name = str(req.env.payload.get("name", "")).strip()
     if not name:
         return
-
     registry = get_llm_registry()
     entry: LLMEntry | None = registry.get(name)
     if entry is None or entry.residence != "local":
-        await state.send(
+        await req.connection.send(
             Envelope.make_event(
                 EVT_MODEL_INSTALL_PROGRESS,
                 {"name": name, "percent": -1, "message": f"Unknown local model: {name!r}"},
@@ -213,19 +362,18 @@ async def _handle_model_install(state: WebSocketDispatcher, env: Envelope) -> No
     async def run() -> None:
         try:
             await asyncio.to_thread(download_model, entry, kodo_user_dir(), progress_cb=progress_cb)
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
         finally:
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
     asyncio.create_task(run())
-
     while True:
         item = await queue.get()
         if item is None:
             break
         pct, msg = item
-        await state.send(
+        await req.connection.send(
             Envelope.make_event(
                 EVT_MODEL_INSTALL_PROGRESS, {"name": name, "percent": pct, "message": msg}
             )
@@ -233,160 +381,47 @@ async def _handle_model_install(state: WebSocketDispatcher, env: Envelope) -> No
 
 
 def _make_llama_start_handler(config: Config) -> HandlerFn:
-    async def _handle_llama_start(state: WebSocketDispatcher, _env: Envelope) -> None:
+    async def _handle_llama_start(req: Request) -> None:
         user_dir = kodo_user_dir()
-
         settings = config.reload_settings()
         models_map = settings.get("models", {})
         model_name = str(models_map.get("local", "") if isinstance(models_map, dict) else "")
         if not model_name:
-            await state.send(
+            await req.connection.send(
                 Envelope.make_event(
                     EVT_LLAMA_STATE,
                     {"running": False, "model": None, "error": "No local model selected"},
                 )
             )
             return
-
         registry = get_llm_registry()
         entry: LLMEntry | None = registry.get(model_name)
         llama_args = entry.llama_args if entry is not None else {}
-
         try:
             server = await ensure_llama_running(model_name, user_dir, llama_args=llama_args)
-        except Exception as exc:
-            await state.send(
+        except Exception as exc:  # noqa: BLE001
+            await req.connection.send(
                 Envelope.make_event(
                     EVT_LLAMA_STATE, {"running": False, "model": None, "error": str(exc)}
                 )
             )
             return
-
-        await state.send(
+        await req.connection.send(
             Envelope.make_event(
-                EVT_LLAMA_STATE,
-                {"running": True, "model": server.model_name, "port": server.port},
+                EVT_LLAMA_STATE, {"running": True, "model": server.model_name, "port": server.port}
             )
         )
 
     return _handle_llama_start
 
 
-async def _handle_llama_stop(state: WebSocketDispatcher, _env: Envelope) -> None:
+async def _handle_llama_stop(req: Request) -> None:
     server = LlamaServer.get_active_llama_server()
     if server is not None:
         await server.stop()
-    await state.send(Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "model": None}))
-
-
-def _make_prompt_handler(engine: WorkflowEngine) -> HandlerFn:
-    async def _handle_prompt(state: WebSocketDispatcher, env: Envelope) -> None:
-        text = str(env.payload.get("text", "")).strip()
-        if not text:
-            await state.send(
-                Envelope.make_response(
-                    env.id,
-                    {
-                        "type": "error",
-                        "code": "empty_prompt",
-                        "message": "Prompt text is required.",
-                        "recoverable": True,
-                    },
-                )
-            )
-            return
-
-        _log.info("Prompt submitted: %r (id=%s)", text[:80], env.id)
-        await state.send(Envelope.make_response(env.id, {"type": "prompt.accepted"}))
-        await engine.handle_prompt_submit(text, env.id)
-
-    return _handle_prompt
-
-
-def _make_mode_handler(engine: WorkflowEngine) -> HandlerFn:
-    async def _handle_mode(state: WebSocketDispatcher, env: Envelope) -> None:
-        autonomous = bool(env.payload.get("autonomous", False))
-        await engine.handle_mode_set(autonomous)
-        await state.send(Envelope.make_response(env.id, {"type": "mode.accepted"}))
-
-    return _handle_mode
-
-
-def _make_workflow_handler(engine: WorkflowEngine) -> HandlerFn:
-    async def _handle_workflow(state: WebSocketDispatcher, env: Envelope) -> None:
-        mode = str(env.payload.get("mode", "guided"))
-        await engine.handle_workflow_set(mode)
-        await state.send(Envelope.make_response(env.id, {"type": "workflow.accepted"}))
-
-    return _handle_workflow
-
-
-def _make_workspace_folders_handler(engine: WorkflowEngine) -> HandlerFn:
-    async def _handle_workspace_folders(state: WebSocketDispatcher, env: Envelope) -> None:
-        physical_root = str(env.payload.get("physical_root", ""))
-        raw = env.payload.get("folders", {})
-        folders = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
-        await engine.handle_workspace_folders(physical_root, folders)
-        await state.send(Envelope.make_response(env.id, {"type": "workspace.folders.ack"}))
-
-    return _handle_workspace_folders
-
-
-def _make_project_set_handler(engine: WorkflowEngine) -> HandlerFn:
-    async def _handle_project_set(state: WebSocketDispatcher, env: Envelope) -> None:
-        root = str(env.payload.get("root", "")).strip()
-        name = str(env.payload.get("name", "")).strip()
-        if not root:
-            await state.send(
-                Envelope.make_response(
-                    env.id,
-                    {
-                        "type": "error",
-                        "code": "missing_project_root",
-                        "message": "project.set requires a 'root'.",
-                        "recoverable": True,
-                    },
-                )
-            )
-            return
-        await engine.bind_project(root, name or root)
-        await state.send(Envelope.make_response(env.id, {"type": "project.accepted"}))
-
-    return _handle_project_set
-
-
-def _make_config_reload_handler(config: Config) -> HandlerFn:
-    async def _handle_config_reload(state: WebSocketDispatcher, env: Envelope) -> None:
-        # Validate the settings file is still parseable; the engine reads
-        # fresh settings on each dispatch so no further action is needed.
-        try:
-            config.reload_settings()
-            _log.info("Config reload acknowledged — new settings apply to next dispatch")
-            await state.send(Envelope.make_response(env.id, {"type": "config.reload.ack"}))
-        except Exception as exc:
-            _log.warning("Config reload failed: %s", exc)
-            await state.send(
-                Envelope.make_response(
-                    env.id,
-                    {
-                        "type": "error",
-                        "code": "config_reload_failed",
-                        "message": str(exc),
-                        "recoverable": True,
-                    },
-                )
-            )
-
-    return _handle_config_reload
-
-
-def _make_stop_handler(engine: WorkflowEngine) -> HandlerFn:
-    async def _handle_stop(state: WebSocketDispatcher, env: Envelope) -> None:
-        _log.info("Stop requested (id=%s)", env.id)
-        await engine.stop()
-        await state.send(Envelope.make_response(env.id, {"type": "stop.accepted"}))
-
-    return _handle_stop
+    await req.connection.send(
+        Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "model": None})
+    )
 
 
 # ------------------------------------------------------------------
@@ -395,8 +430,6 @@ def _make_stop_handler(engine: WorkflowEngine) -> HandlerFn:
 
 
 async def _start_background(app: web.Application) -> None:
-    await app[_ENGINE_KEY].start()
-
     user_dir = kodo_user_dir()
     running = find_running_server(user_dir)
     if running is not None:
@@ -411,91 +444,77 @@ async def _start_background(app: web.Application) -> None:
                 host=running.host,
                 port=running.port,
             )
-            server = LlamaServer(cfg)
-            server.adopt(running)
-        else:
-            _log.warning(
-                "Detected running llama-server pid=%d but cannot reconstruct config "
-                "(install=%s model_path=%s) — treating as unmanaged",
-                running.pid,
-                llama_install,
-                model_path,
-            )
+            LlamaServer(cfg).adopt(running)
 
 
 async def _stop_background(app: web.Application) -> None:
     server = LlamaServer.get_active_llama_server()
     if server is not None and server.is_running:
         await server.stop()
-    await app[_ENGINE_KEY].stop()
+    await app[_MANAGER_KEY].shutdown()
 
 
 async def _ws_endpoint(request: web.Request) -> web.WebSocketResponse:
-    return await request.app[APP_STATE_KEY].run_ws(request)
+    return await request.app[CONNECTION_REGISTRY_KEY].run_ws(request)
 
 
 def create_app(config: Config) -> web.Application:
-    """Build and configure the aiohttp application.
+    """Build and configure the singleton-server aiohttp application.
 
     Args:
         config: Resolved server configuration.
 
     Returns:
         web.Application: Ready-to-serve aiohttp application.
-
-    Raises:
-        SystemExit: If git is absent from PATH or the project layout is invalid.
     """
     _check_git_on_path()
 
-    workspace = WorkspaceLayout(config.workspace)
-    workspace.init()
-    _setup_log_file(workspace, config.log_level)
-
-    outbox = Outbox()
-    dispatcher = WebSocketDispatcher(outbox)
-    key_broker = KeyBroker(dispatcher)
-    transient = TransientStore(workspace.kodo_dir)
-    gate = GateOrchestrator(dispatcher, transient)
+    layout = WorkspaceLayout()
+    layout.init()
+    _setup_log_file(layout, config.log_level)
 
     registry = AgentRegistry(_AGENTS_DIR)
-
-    engine = WorkflowEngine(
-        sink=dispatcher,
-        gate=gate,
-        key_provider=key_broker,
-        get_settings=config.reload_settings,
-        transient=transient,
-        workspace_layout=workspace,
-        registry=registry,
+    gateway = LLMGateway(
+        cloud_concurrency=lambda: _cloud_concurrency(config),
     )
+    manager = SessionManager(
+        registry=registry,
+        gateway=gateway,
+        get_settings=config.reload_settings,
+        layout=layout,
+    )
+    conn_registry = ConnectionRegistry(manager)
 
-    dispatcher.register_handler(MSG_HELLO, _make_hello_handler(config, engine))
-    dispatcher.register_handler(MSG_PING, _handle_ping)
-    dispatcher.register_handler(MSG_LLAMACPP_INSTALL, _handle_llamacpp_install)
-    dispatcher.register_handler(MSG_MODEL_INSTALL, _handle_model_install)
-    dispatcher.register_handler(MSG_LLAMA_START, _make_llama_start_handler(config))
-    dispatcher.register_handler(MSG_LLAMA_STOP, _handle_llama_stop)
-    dispatcher.register_handler(MSG_PROMPT_SUBMIT, _make_prompt_handler(engine))
-    dispatcher.register_handler(MSG_MODE_SET, _make_mode_handler(engine))
-    dispatcher.register_handler(MSG_WORKFLOW_SET, _make_workflow_handler(engine))
-    dispatcher.register_handler(MSG_WORKSPACE_FOLDERS, _make_workspace_folders_handler(engine))
-    dispatcher.register_handler(MSG_PROJECT_SET, _make_project_set_handler(engine))
-    dispatcher.register_handler(MSG_STOP, _make_stop_handler(engine))
-    dispatcher.register_handler(MSG_CONFIG_RELOAD, _make_config_reload_handler(config))
+    conn_registry.register_handler(MSG_HELLO, _handle_hello)
+    conn_registry.register_handler(MSG_PING, _handle_ping)
+    conn_registry.register_handler(MSG_SESSION_LIST, _handle_session_list)
+    conn_registry.register_handler(MSG_SESSION_RELEASE, _handle_session_release)
+    conn_registry.register_handler(MSG_PROMPT_SUBMIT, _handle_prompt)
+    conn_registry.register_handler(MSG_MODE_SET, _handle_mode)
+    conn_registry.register_handler(MSG_WORKFLOW_SET, _handle_workflow)
+    conn_registry.register_handler(MSG_WORKSPACE_FOLDERS, _handle_workspace_folders)
+    conn_registry.register_handler(MSG_PROJECT_SET, _handle_project_set)
+    conn_registry.register_handler(MSG_STOP, _handle_stop)
+    conn_registry.register_handler(MSG_CONFIG_RELOAD, _make_config_reload_handler(config))
+    conn_registry.register_handler(MSG_LLAMACPP_INSTALL, _handle_llamacpp_install)
+    conn_registry.register_handler(MSG_MODEL_INSTALL, _handle_model_install)
+    conn_registry.register_handler(MSG_LLAMA_START, _make_llama_start_handler(config))
+    conn_registry.register_handler(MSG_LLAMA_STOP, _handle_llama_stop)
 
     app = web.Application()
-    app[APP_STATE_KEY] = dispatcher
-    app[_ENGINE_KEY] = engine
+    app[CONNECTION_REGISTRY_KEY] = conn_registry
+    app[_MANAGER_KEY] = manager
     app.router.add_get("/ws", _ws_endpoint)
     app.on_startup.append(_start_background)
     app.on_shutdown.append(_stop_background)
 
-    _log.info(
-        "Kōdo server %s — workspace=%s port=%d session=%s",
-        _SERVER_VERSION,
-        config.workspace,
-        config.port,
-        transient.session_id,
-    )
+    _log.info("Kōdo server %s — home=%s port=%d", _SERVER_VERSION, layout.kodo_dir, config.port)
     return app
+
+
+def _cloud_concurrency(config: Config) -> int:
+    raw = config.reload_settings().get("cloud_concurrency", 2)
+    try:
+        return max(1, int(str(raw)))
+    except (TypeError, ValueError):
+        return 2

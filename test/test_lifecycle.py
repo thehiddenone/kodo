@@ -1,12 +1,14 @@
 """Behavior tests for kodo.server._lifecycle.Lifecycle.
 
-Tests verify PID file creation, stale-PID cleanup, removal, and signal
-handler installation — all using filesystem side-effects observable without
-accessing private state.
+The singleton server advertises itself via the ``kodo-server`` discovery file
+(``~/.kodo/kodo-server``, JSON ``{pid, port}``).  Tests observe filesystem
+side-effects only; the home dir is redirected to a temp path via the ``root``
+argument so the real ``~/.kodo`` is never touched.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 from pathlib import Path
@@ -15,157 +17,101 @@ import pytest
 
 from kodo.server import Lifecycle
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+_FREE_PORT = 64999  # almost certainly not listening during the test run
 
 
 @pytest.fixture()
-def project(tmp_path: Path) -> Path:
-    """Return a fresh project root directory."""
-    return tmp_path / "project"
+def root(tmp_path: Path) -> Path:
+    return tmp_path / "home"
 
 
 @pytest.fixture()
-def lifecycle(project: Path) -> Lifecycle:
-    """Return a Lifecycle bound to the temp project."""
-    return Lifecycle(project)
+def lifecycle(root: Path) -> Lifecycle:
+    return Lifecycle(_FREE_PORT, root=root)
+
+
+def _read(path: Path) -> dict[str, int]:
+    return json.loads(path.read_text(encoding="ascii"))
 
 
 # ---------------------------------------------------------------------------
-# pid_path property
+# discovery_path / shutdown_requested
 # ---------------------------------------------------------------------------
 
 
-def test_pid_path_is_inside_kodo_dir(lifecycle: Lifecycle, project: Path) -> None:
-    """
-    Given a Lifecycle for a workspace,
-    when pid_path is accessed,
-    then it resolves to <workspace>/.kodo-workspace/server.pid.
-    """
-    expected = project / ".kodo-workspace" / "server.pid"
-    assert lifecycle.pid_path == expected
-
-
-# ---------------------------------------------------------------------------
-# shutdown_requested property
-# ---------------------------------------------------------------------------
+def test_discovery_path_is_inside_kodo_dir(lifecycle: Lifecycle, root: Path) -> None:
+    assert lifecycle.discovery_path == root / "kodo-server"
 
 
 def test_shutdown_requested_is_false_initially(lifecycle: Lifecycle) -> None:
-    """
-    Given a newly created Lifecycle,
-    when shutdown_requested is read,
-    then it is False.
-    """
     assert lifecycle.shutdown_requested is False
 
 
 # ---------------------------------------------------------------------------
-# check_and_write_pid
+# check_and_write
 # ---------------------------------------------------------------------------
 
 
-def test_check_and_write_pid_creates_pid_file(lifecycle: Lifecycle) -> None:
-    """
-    Given no existing PID file,
-    when check_and_write_pid is called,
-    then the PID file is created at pid_path.
-    """
-    lifecycle.check_and_write_pid()
-    assert lifecycle.pid_path.exists()
+def test_check_and_write_creates_discovery_file(lifecycle: Lifecycle) -> None:
+    lifecycle.check_and_write()
+    assert lifecycle.discovery_path.exists()
 
 
-def test_check_and_write_pid_writes_current_process_id(lifecycle: Lifecycle) -> None:
-    """
-    Given no existing PID file,
-    when check_and_write_pid is called,
-    then the file contains the current process PID.
-    """
-    lifecycle.check_and_write_pid()
-    stored = lifecycle.pid_path.read_text(encoding="ascii").strip()
-    assert stored == str(os.getpid())
+def test_check_and_write_records_pid_and_port(lifecycle: Lifecycle) -> None:
+    lifecycle.check_and_write()
+    data = _read(lifecycle.discovery_path)
+    assert data == {"pid": os.getpid(), "port": _FREE_PORT}
 
 
-def test_check_and_write_pid_creates_kodo_directory_if_absent(
-    lifecycle: Lifecycle, project: Path
-) -> None:
-    """
-    Given a workspace with no .kodo-workspace directory,
-    when check_and_write_pid is called,
-    then the .kodo-workspace directory is created.
-    """
-    assert not (project / ".kodo-workspace").exists()
-    lifecycle.check_and_write_pid()
-    assert (project / ".kodo-workspace").is_dir()
+def test_check_and_write_creates_home_dir_if_absent(lifecycle: Lifecycle, root: Path) -> None:
+    assert not root.exists()
+    lifecycle.check_and_write()
+    assert root.is_dir()
 
 
-def test_check_and_write_pid_replaces_stale_pid_file(lifecycle: Lifecycle) -> None:
-    """
-    Given a PID file referencing a dead process (PID 0 is always invalid on Linux/Windows),
-    when check_and_write_pid is called,
-    then the file is replaced with the current PID.
-    """
-    lifecycle.pid_path.parent.mkdir(parents=True, exist_ok=True)
-    lifecycle.pid_path.write_text("999999999", encoding="ascii")
-    lifecycle.check_and_write_pid()
-    stored = lifecycle.pid_path.read_text(encoding="ascii").strip()
-    assert stored == str(os.getpid())
+def test_check_and_write_replaces_stale_file(lifecycle: Lifecycle) -> None:
+    """A dead PID + free port ⇒ the file is stale and is replaced."""
+    lifecycle.discovery_path.parent.mkdir(parents=True, exist_ok=True)
+    lifecycle.discovery_path.write_text(
+        json.dumps({"pid": 999999999, "port": _FREE_PORT}), encoding="ascii"
+    )
+    lifecycle.check_and_write()
+    assert _read(lifecycle.discovery_path)["pid"] == os.getpid()
 
 
-def test_check_and_write_pid_exits_if_live_process_holds_pid(
-    lifecycle: Lifecycle,
-) -> None:
-    """
-    Given a PID file containing the current process's own PID (simulating a live
-    duplicate),
-    when check_and_write_pid is called,
-    then SystemExit is raised (only one server per project is allowed).
-    """
-    lifecycle.pid_path.parent.mkdir(parents=True, exist_ok=True)
-    lifecycle.pid_path.write_text(str(os.getpid()), encoding="ascii")
+def test_check_and_write_exits_if_live_pid_holds_file(lifecycle: Lifecycle) -> None:
+    """Our own (live) PID in the file ⇒ a server is considered running ⇒ exit 1."""
+    lifecycle.discovery_path.parent.mkdir(parents=True, exist_ok=True)
+    lifecycle.discovery_path.write_text(
+        json.dumps({"pid": os.getpid(), "port": _FREE_PORT}), encoding="ascii"
+    )
     with pytest.raises(SystemExit):
-        lifecycle.check_and_write_pid()
+        lifecycle.check_and_write()
 
 
 # ---------------------------------------------------------------------------
-# remove_pid
+# remove
 # ---------------------------------------------------------------------------
 
 
-def test_remove_pid_deletes_own_pid_file(lifecycle: Lifecycle) -> None:
-    """
-    Given a PID file written by check_and_write_pid,
-    when remove_pid is called,
-    then the PID file no longer exists.
-    """
-    lifecycle.check_and_write_pid()
-    assert lifecycle.pid_path.exists()
-    lifecycle.remove_pid()
-    assert not lifecycle.pid_path.exists()
+def test_remove_deletes_own_file(lifecycle: Lifecycle) -> None:
+    lifecycle.check_and_write()
+    assert lifecycle.discovery_path.exists()
+    lifecycle.remove()
+    assert not lifecycle.discovery_path.exists()
 
 
-def test_remove_pid_does_nothing_when_no_pid_file(lifecycle: Lifecycle) -> None:
-    """
-    Given no PID file,
-    when remove_pid is called,
-    then no exception is raised.
-    """
-    lifecycle.remove_pid()  # must not raise
+def test_remove_does_nothing_when_no_file(lifecycle: Lifecycle) -> None:
+    lifecycle.remove()  # must not raise
 
 
-def test_remove_pid_does_not_delete_pid_file_owned_by_other_process(
-    lifecycle: Lifecycle,
-) -> None:
-    """
-    Given a PID file containing a different PID (not ours),
-    when remove_pid is called,
-    then the file is left intact.
-    """
-    lifecycle.pid_path.parent.mkdir(parents=True, exist_ok=True)
-    lifecycle.pid_path.write_text("1", encoding="ascii")
-    lifecycle.remove_pid()
-    assert lifecycle.pid_path.exists()
+def test_remove_keeps_file_owned_by_other_process(lifecycle: Lifecycle) -> None:
+    lifecycle.discovery_path.parent.mkdir(parents=True, exist_ok=True)
+    lifecycle.discovery_path.write_text(
+        json.dumps({"pid": 1, "port": _FREE_PORT}), encoding="ascii"
+    )
+    lifecycle.remove()
+    assert lifecycle.discovery_path.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -174,14 +120,8 @@ def test_remove_pid_does_not_delete_pid_file_owned_by_other_process(
 
 
 def test_install_signal_handlers_sets_shutdown_requested_on_sigterm(
-    lifecycle: Lifecycle,
-    monkeypatch: pytest.MonkeyPatch,
+    lifecycle: Lifecycle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """
-    Given installed signal handlers,
-    when the SIGTERM handler is triggered,
-    then shutdown_requested becomes True and the callback is invoked.
-    """
     installed: dict[int, object] = {}
     monkeypatch.setattr(signal, "signal", lambda signum, h: installed.update({signum: h}))
 
@@ -197,14 +137,8 @@ def test_install_signal_handlers_sets_shutdown_requested_on_sigterm(
 
 
 def test_install_signal_handlers_invokes_callback_on_sigint(
-    lifecycle: Lifecycle,
-    monkeypatch: pytest.MonkeyPatch,
+    lifecycle: Lifecycle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """
-    Given installed signal handlers,
-    when the SIGINT handler is triggered,
-    then the stop callback is invoked.
-    """
     installed: dict[int, object] = {}
     monkeypatch.setattr(signal, "signal", lambda signum, h: installed.update({signum: h}))
 

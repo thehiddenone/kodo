@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Protocol
 
 from ._envelope import Envelope
 
-__all__ = ["ApiKey", "ApiKeyProvider", "MessageSink"]
+__all__ = ["ApiKey", "ApiKeyProvider", "MessageSink", "ResponseChannel"]
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,22 @@ class MessageSink(Protocol):
             env (Envelope): The envelope to deliver.
         """
         ...
+
+
+class ResponseChannel(Protocol):
+    """A per-session channel for server-initiated request/response round-trips.
+
+    Used by the key broker and gate orchestrator: send a ``kind=request`` frame
+    to the session's window and register a future to be resolved when the
+    matching ``kind=response`` arrives.  Satisfied by the per-session transport
+    channel.
+    """
+
+    async def send(self, env: Envelope) -> None: ...
+
+    def register_response_future(
+        self, request_id: str, future: asyncio.Future[dict[str, object]]
+    ) -> None: ...
 
 
 class ApiKeyProvider(Protocol):

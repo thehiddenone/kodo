@@ -11,6 +11,28 @@ This document specifies the WebSocket protocol between the VS Code extension
 (client) and the Kodo Server (server). It is the sole contract the two processes
 share; everything else is internal.
 
+> **Multi-session update (2026-06-21).** The server is now a machine-wide
+> **singleton** shared by every VS Code window; each window drives its own
+> **session**. Protocol consequences:
+> - **Every client→server frame except `hello` MUST carry `payload.session_id`.**
+>   The server routes the frame to that session; an unknown id replies with an
+>   `error` (`code:"unknown_session"`).
+> - **`hello`** carries `{client, version, window_id, session_id?}`. With no
+>   `session_id` the server mints a new session; with one it resumes that session
+>   (load from disk + crash-resume). `hello.ack` returns the assigned
+>   `session_id`. If the requested session is already held by another live
+>   window, `hello.ack` carries `error:"session_in_use"` and the client opens a
+>   fresh session. (`workspace_root` was removed from `hello.ack`.)
+> - New client→server: **`session.list`** (→ `{sessions:[{id,name,project_root,
+>   taken}]}` for the picker) and **`session.release`** (free this window's
+>   session immediately on graceful close).
+> - New server→client event: **`llm.waiting`** `{waiting, reason:"queued"|
+>   "throttled", retry_in_seconds?}` — emitted by the LLM gateway while a request
+>   is queued behind the serial local gate / a saturated cloud feed, or held back
+>   by a 429 backoff. See [LLM_GATEWAY.md](LLM_GATEWAY.md).
+> - Resume is **client-driven** (the window persists its `session_id`); the old
+>   orchestrator-session-marker auto-resume is gone.
+
 Where a message is **specified but not yet emitted/handled** (a planned
 extension or a stubbed feature), it is flagged **⟪planned⟫** inline. Everything
 not so flagged is live in the current build.

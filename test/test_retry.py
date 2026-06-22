@@ -177,17 +177,19 @@ async def test_with_retry_raises_unrecoverable_on_permission_denied() -> None:
 
 
 @pytest.mark.asyncio
-async def test_with_retry_raises_unrecoverable_on_rate_limit() -> None:
+async def test_with_retry_raises_rate_limited_on_429() -> None:
     """
     Given a factory that raises RateLimitError,
     when with_retry is called,
-    then UnrecoverableError is raised immediately.
+    then the gateway-owned RateLimited is raised (so the LLMGateway can apply
+    backoff/re-queue) — NOT a terminal UnrecoverableError.
     """
+    from kodo.llms import RateLimited
 
     async def _factory() -> str:
         raise _rate_limit_error()
 
-    with pytest.raises(UnrecoverableError):
+    with pytest.raises(RateLimited):
         await with_retry(_factory, delays=(0.0, 0.0))
 
 
