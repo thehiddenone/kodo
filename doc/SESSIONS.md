@@ -61,7 +61,8 @@ seamlessly across the change.
 
 ```
 .kodo/sessions/<main-session-id>/
-    meta.json          — session name + creation time
+    meta.json          — session name, creation time (created_at), and
+                         last_modified (bumped on every persisted write below)
     transient.json     — mutable runtime state: stage, last prompt, autonomous,
                          pending_prompt, and active_subsession (the resume hook)
     session.jsonl      — the MAIN session log (see below)

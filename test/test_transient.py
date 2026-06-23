@@ -53,6 +53,32 @@ def test_meta_json_written_on_new_session(store: TransientStore) -> None:
     assert "created_at" in data
 
 
+def test_new_session_last_modified_equals_created_at(store: TransientStore) -> None:
+    data = json.loads((store.session_dir / "meta.json").read_text(encoding="utf-8"))
+    assert data["last_modified"] == data["created_at"]
+    assert store.last_modified == store.created_at
+
+
+def test_append_message_bumps_last_modified(store: TransientStore) -> None:
+    before = store.last_modified
+    store.append_message("user", "hello")
+    after = store.last_modified
+    assert after > before
+    data = json.loads((store.session_dir / "meta.json").read_text(encoding="utf-8"))
+    assert data["last_modified"] == after
+    assert data["created_at"] == store.created_at  # created_at untouched
+
+
+def test_subsession_and_toolcall_writes_bump_last_modified(store: TransientStore) -> None:
+    t1 = store.last_modified
+    store.append_subsession_message("sub-1", "assistant", "work")
+    t2 = store.last_modified
+    assert t2 > t1
+    store.write_tool_call("tool-1", "# doc")
+    t3 = store.last_modified
+    assert t3 > t2
+
+
 def test_new_session_is_unnamed(store: TransientStore) -> None:
     assert store.session_name == "Unnamed Session"
     assert store.is_session_named is False

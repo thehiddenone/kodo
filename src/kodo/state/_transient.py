@@ -133,6 +133,7 @@ class TransientStore:
     __session_id: str
     __session_name: str
     __created_at: str
+    __last_modified: str
     __stage: str
     __last_prompt: str
     __autonomous: bool
@@ -153,6 +154,7 @@ class TransientStore:
         self.__session_id = ""
         self.__session_name = _DEFAULT_SESSION_NAME
         self.__created_at = ""
+        self.__last_modified = ""
         self.__stage = "IDLE"
         self.__last_prompt = ""
         self.__autonomous = False
@@ -179,6 +181,21 @@ class TransientStore:
     def is_session_named(self) -> bool:
         """Whether the session has been given a name beyond the default."""
         return self.__session_name != _DEFAULT_SESSION_NAME
+
+    @property
+    def created_at(self) -> str:
+        """ISO-8601 timestamp of when the session was created (``meta.json``)."""
+        return self.__created_at
+
+    @property
+    def last_modified(self) -> str:
+        """ISO-8601 timestamp of the session's last persisted write.
+
+        Bumped to the current time whenever a record is appended to
+        ``session.jsonl``, a subsession log, or a tool-call document; seeded to
+        :attr:`created_at` when the session is first created.
+        """
+        return self.__last_modified
 
     @property
     def session_dir(self) -> Path:
@@ -224,6 +241,7 @@ class TransientStore:
         except OSError as exc:
             _log.warning("Failed to write tool-call document %s: %s", path, exc)
             return None
+        self.__touch_last_modified()
         return path
 
     def write_diff_files(
@@ -269,6 +287,7 @@ class TransientStore:
         except OSError as exc:
             _log.warning("Failed to write diff files for %s: %s", tool_call_id, exc)
             return None
+        self.__touch_last_modified()
         return {"label": label, "prev_path": str(prev_path), "new_path": str(new_path)}
 
     @property
@@ -351,6 +370,7 @@ class TransientStore:
             paths.toolcalls.mkdir(exist_ok=True)
             self.__session_name = _DEFAULT_SESSION_NAME
             self.__created_at = datetime.now(tz=UTC).isoformat()
+            self.__last_modified = self.__created_at
             self.__write_meta(paths)
             self.__flush(paths)
             _log.info("Transient session created: %s", session_id)
@@ -434,6 +454,7 @@ class TransientStore:
         if entry_agent is not None:
             record["entry_agent"] = entry_agent
         self.__append_line(self.__paths.session_log, record)
+        self.__touch_last_modified()
 
     def append_marker(self, marker: dict[str, object]) -> None:
         """Append a non-message marker line to the main ``session.jsonl``.
@@ -450,6 +471,7 @@ class TransientStore:
         if self.__paths is None:
             return
         self.__append_line(self.__paths.session_log, marker)
+        self.__touch_last_modified()
 
     def read_session_lines(self) -> list[dict[str, object]]:
         """Return every line of the main ``session.jsonl`` in order.
@@ -490,6 +512,7 @@ class TransientStore:
         self.__paths.subsessions.mkdir(exist_ok=True)
         path = self.__paths.subsessions / f"{subsession_id}.jsonl"
         self.__append_line(path, {"role": role, "content": content})
+        self.__touch_last_modified()
 
     def read_subsession_messages(self, subsession_id: str) -> list[dict[str, object]]:
         """Return a subsession's full message history in order.
@@ -572,13 +595,29 @@ class TransientStore:
             data = json.loads(paths.meta.read_text(encoding="utf-8"))
             self.__session_name = str(data.get("session_name", _DEFAULT_SESSION_NAME))
             self.__created_at = str(data.get("created_at", ""))
+            # last_modified defaults to created_at for sessions persisted before
+            # the field existed, so reloaded legacy sessions still show a value.
+            self.__last_modified = str(data.get("last_modified", self.__created_at))
         except Exception:
             _log.warning("Could not parse meta.json — using defaults")
 
+    def __touch_last_modified(self) -> None:
+        """Stamp ``last_modified`` with the current time and rewrite ``meta.json``.
+
+        Called after every persisted write (``session.jsonl``, subsession logs,
+        tool-call documents) so the session list can show recency.
+        """
+        if self.__paths is None:
+            return
+        self.__last_modified = datetime.now(tz=UTC).isoformat()
+        self.__write_meta(self.__paths)
+
     def __write_meta(self, paths: _SessionPaths) -> None:
+        created_at = self.__created_at or datetime.now(tz=UTC).isoformat()
         meta = {
             "session_name": self.__session_name,
-            "created_at": self.__created_at or datetime.now(tz=UTC).isoformat(),
+            "created_at": created_at,
+            "last_modified": self.__last_modified or created_at,
         }
         paths.meta.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 

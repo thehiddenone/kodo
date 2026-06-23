@@ -191,10 +191,11 @@ class SessionManager:
         """List every persisted session for the picker.
 
         Returns:
-            list[dict]: ``{id, name, project_root, taken}`` per session; ``taken``
-            is ``True`` while a live window holds it.  ``project_root`` is the
-            bound Guided project (``None`` ⇒ problem-solving-only, openable
-            anywhere).
+            list[dict]: ``{id, name, created_at, last_modified, project_root,
+            taken}`` per session; ``taken`` is ``True`` while a live window holds
+            it.  ``project_root`` is the bound Guided project (``None`` ⇒
+            problem-solving-only, openable anywhere).  ``created_at`` /
+            ``last_modified`` are ISO-8601 strings (``""`` if unknown).
         """
         out: list[dict[str, object]] = []
         sessions_dir = self.__layout.sessions_dir
@@ -203,10 +204,13 @@ class SessionManager:
         for path in sorted(sessions_dir.iterdir(), reverse=True):
             if not path.is_dir():
                 continue
+            name, created_at, last_modified = _read_meta(path)
             out.append(
                 {
                     "id": path.name,
-                    "name": _read_name(path),
+                    "name": name,
+                    "created_at": created_at,
+                    "last_modified": last_modified,
                     "project_root": _read_project_root(path),
                     "taken": path.name in self.__live_conn,
                 }
@@ -305,16 +309,26 @@ class SessionManager:
             _log.debug("Could not write owner.json for %s", session_id)
 
 
-def _read_name(session_dir: Path) -> str:
+def _read_meta(session_dir: Path) -> tuple[str, str, str]:
+    """Return ``(name, created_at, last_modified)`` from a session's meta.json.
+
+    ``name`` falls back to the directory name; the two timestamps fall back to
+    ``""``.  ``last_modified`` falls back to ``created_at`` for sessions written
+    before the field existed.
+    """
+    name = session_dir.name
+    created_at = ""
+    last_modified = ""
     meta = session_dir / "meta.json"
     if meta.exists():
         try:
-            return str(
-                json.loads(meta.read_text(encoding="utf-8")).get("session_name", session_dir.name)
-            )
+            data = json.loads(meta.read_text(encoding="utf-8"))
+            name = str(data.get("session_name", session_dir.name))
+            created_at = str(data.get("created_at", ""))
+            last_modified = str(data.get("last_modified", created_at))
         except (json.JSONDecodeError, OSError):
             pass
-    return session_dir.name
+    return name, created_at, last_modified
 
 
 def _read_project_root(session_dir: Path) -> str | None:

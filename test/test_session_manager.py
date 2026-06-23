@@ -136,6 +136,9 @@ async def test_list_reports_problem_solving_session(manager_factory) -> None:  #
     entry = next(s for s in listing if s["id"] == session.id)
     assert entry["taken"] is True
     assert entry["project_root"] is None  # no guided work ⇒ openable anywhere
+    # A freshly created session reports timestamps, seeded equal at creation.
+    assert entry["created_at"]
+    assert entry["last_modified"] == entry["created_at"]
 
 
 # ---------------------------------------------------------------------------
