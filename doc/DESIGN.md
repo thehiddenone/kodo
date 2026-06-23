@@ -272,11 +272,11 @@ The Architect publishes a project-wide `architecture` artifact whose content inc
 
 ### 5.5 Compaction
 
-When the entry agent's main context crosses **90%** of the global `context_limit` (settings.json; default 256K tokens), the engine compacts it **in place** — implemented in `runtime/_engine.py`, not a separate module:
+When the entry agent's main context crosses **90%** of the **current model's context window** (per-model `context_window` in `kodo/llms/_registry.py`; *not* a global setting), the engine compacts it **in place** — implemented in `runtime/_engine.py`, not a separate module. Switching to a smaller-window model auto-compacts with the outgoing model before the switch takes effect (`handle_config_changed`):
 
 1. The engine runs the tool-less `compactor` sub-agent (`subagents/subagent_compactor.md`) directly, handing it the current main transcript. Output is a compact "prior-context block" capturing the goal, decisions, progress (artifacts/files/plan position), durable tool results, open items, and the next step.
 2. A `compaction` marker carrying the summary is appended to `session.jsonl`, and the live message history is reset to a single synthetic block wrapping that summary. The full log is **not** rewritten — it stays as audit history and `__load_main_messages` rebuilds the LLM context from the latest marker onward.
-3. Wire events surface the transition: `context.compacting {active}` brackets the run and `context.compacted {summary_excerpt, tokens_before, tokens_after}` concludes it; the live gauge rides on `context.stats`. See WS_PROTOCOL.md §5.7a.
+3. Wire events surface the transition: `context.compacting {active}` brackets the run and `context.compacted {summary_excerpt, summary, tokens_before, tokens_after}` concludes it (the divider is clickable and expands to the full `summary`); the live gauge rides on `context.stats`. See WS_PROTOCOL.md §5.7a.
 4. The entry agent resumes transparently. The user can also force compaction at any idle moment via the header **Compact now** button (`compact.now`).
 
 This in-place scheme supersedes the earlier session-rotation design (a fresh `session_id` + `guide.compacted`); see STATE_AND_LIFECYCLE.md §4.5.

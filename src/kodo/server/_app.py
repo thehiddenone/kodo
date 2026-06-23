@@ -344,6 +344,10 @@ def _make_config_reload_handler(config: Config) -> HandlerFn:
     async def _handle_config_reload(req: Request) -> None:
         try:
             config.reload_settings()
+            # The model selection is window-global; notify every live session so
+            # a switch to a smaller-context model can compact right away.
+            for session in req.manager.live_sessions():
+                await session.engine.handle_config_changed()
             await req.reply({"type": "config.reload.ack"})
         except Exception as exc:  # noqa: BLE001
             await req.reply(

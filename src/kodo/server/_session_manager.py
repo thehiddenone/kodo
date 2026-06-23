@@ -74,6 +74,15 @@ class SessionManager:
         """Return the in-memory session, or ``None`` if not loaded."""
         return self.__sessions.get(session_id)
 
+    def live_sessions(self) -> list[Session]:
+        """Return every session currently loaded in memory.
+
+        Used to broadcast a window-global settings change (model switch) to each
+        running engine so it can react immediately (see
+        ``WorkflowEngine.handle_config_changed``).
+        """
+        return list(self.__sessions.values())
+
     def session_for_connection(self, conn_id: str) -> Session | None:
         """Return the session a connection is bound to, if any."""
         sid = self.__conn_session.get(conn_id)

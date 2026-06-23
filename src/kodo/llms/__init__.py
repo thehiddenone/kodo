@@ -16,7 +16,7 @@ from ._interface import (
     Usage,
 )
 from ._logger import LoggingLLMPlugin
-from ._registry import LLMEntry, get_llm_registry
+from ._registry import LLMEntry, get_context_window, get_llm_registry
 from ._tool_logger import ToolCallLogger
 
 __all__ = [
@@ -38,5 +38,6 @@ __all__ = [
     "ToolCallArgDelta",
     "ToolCallEvent",
     "TurnEnd",
+    "get_context_window",
     "get_llm_registry",
 ]

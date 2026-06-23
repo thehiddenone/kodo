@@ -24,11 +24,11 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
     "log_level": "INFO",
     "mode": "local",
     "cloud_concurrency": 2,
-    # Global token budget for an entry agent's main context. When a turn ends
-    # with the measured context at or above 90% of this value the engine
-    # automatically runs the `compactor` sub-agent to summarise and reset the
-    # live context (see runtime/_engine.py and doc/STATE_AND_LIFECYCLE.md §4.5).
-    "context_limit": 256000,
+    # NOTE: the main-context token budget is no longer a global setting. It is
+    # the *current model's* context window (the per-model `context_window` in
+    # kodo/llms/_registry.py), so switching models changes the limit and the
+    # auto-compaction threshold. See runtime/_engine.py:__context_limit and
+    # doc/STATE_AND_LIFECYCLE.md §4.5.
     "models": {
         "high": "claude-opus-4-6",
         "medium": "claude-sonnet-4-6",

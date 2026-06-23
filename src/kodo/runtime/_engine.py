@@ -45,6 +45,7 @@ from kodo.llms import (
     ToolCallLogger,
     ToolSpec,
     TurnEnd,
+    get_context_window,
     get_llm_registry,
 )
 from kodo.llms.anthropic import ClaudePlugin, UnrecoverableError
@@ -135,11 +136,12 @@ _COMPACTOR_AGENT_NAME = "compactor"
 _DIRECT_ONLY_AGENTS = frozenset({_SESSION_TITLER_AGENT_NAME, _COMPACTOR_AGENT_NAME})
 
 # Context compaction. The live main context is measured in tokens after every
-# entry-agent turn; once it reaches ``_COMPACTION_THRESHOLD`` of the global
-# ``context_limit`` (settings.json; default ``_DEFAULT_CONTEXT_LIMIT``) the
-# engine runs the ``compactor`` sub-agent to summarise the context and reset it
-# in place. The user can also trigger this manually while idle (``compact.now``).
-_DEFAULT_CONTEXT_LIMIT = 256_000
+# entry-agent turn; once it reaches ``_COMPACTION_THRESHOLD`` of the current
+# model's context window (the per-model ``context_window`` in the LLM registry,
+# resolved via ``__context_limit``) the engine runs the ``compactor`` sub-agent
+# to summarise the context and reset it in place. The user can also trigger this
+# manually while idle (``compact.now``). A model switch to a smaller window can
+# trigger it immediately (``handle_config_changed``).
 _COMPACTION_THRESHOLD = 0.9
 
 # The two top-level entry agents share one agent-agnostic main message history
@@ -293,6 +295,10 @@ class WorkflowEngine:
     __compacting: bool
     __orch_session_id: str
     __current_vendor: str | None
+    # Registry key of the model the entry agent last ran on (the model that owns
+    # the live main context). Used to detect a model switch and, when the new
+    # model has a smaller context window, compact with this (old) model first.
+    __active_model_key: str | None
     __replay_subsessions: list[dict[str, object]] | None
     __resume_subsession_pending: bool
 
@@ -354,6 +360,7 @@ class WorkflowEngine:
         self.__compacting = False
         self.__orch_session_id = ""
         self.__current_vendor = None
+        self.__active_model_key = None
         self.__replay_subsessions = None
         self.__resume_subsession_pending = False
         self.__toolchain: ToolchainPlugin | None = None
@@ -681,11 +688,50 @@ class WorkflowEngine:
         """
         await self.__queue.put({"kind": "compact"})
 
+    async def handle_config_changed(self) -> None:
+        """React to a window-global settings change (e.g. a model switch).
+
+        The model selection lives in the singleton's ``~/.kodo/settings.json`` and
+        is read fresh per turn, so a switch normally takes effect lazily. This
+        hook (fired by the ``config.reload`` handler for every live session) lets
+        the engine act *immediately*: if the new model's context window is smaller
+        than the live context, it compacts using the *current* model before the
+        switch takes effect. It is funnelled through the worker queue so it never
+        races an in-flight turn or another compaction.
+        """
+        await self.__queue.put({"kind": "config_changed"})
+
     # ------------------------------------------------------------------
     # Plugin resolution — per-dispatch, reads fresh settings each time
     # ------------------------------------------------------------------
 
-    async def __resolve_plugin(self, capability: str) -> tuple[LLMPlugin, str, LLMRouting]:
+    def __resolve_model_key(self, capability: str) -> str:
+        """Resolve the registry model key for *capability* from current settings.
+
+        Pure settings lookup (no plugin construction, no key request), so it is
+        safe to call synchronously from the context-limit/auto-compaction paths.
+        In ``local`` mode every capability maps to the single selected local
+        model; otherwise the per-capability cloud model is used (falling back to
+        the ``medium`` entry, then the capability name itself).
+
+        Args:
+            capability: ``'high'``, ``'medium'``, or ``'low'``.
+
+        Returns:
+            str: The registry key (e.g. ``'claude-opus-4-8'``).
+        """
+        settings = self.__get_settings()
+        mode = str(settings.get("mode", "cloud"))
+        models_map = settings.get("models", {})
+        if not isinstance(models_map, dict):
+            models_map = {}
+        if mode == "local":
+            return str(models_map.get("local", "llamacpp-qwen36-27b"))
+        return str(models_map.get(capability, models_map.get("medium", capability)))
+
+    async def __resolve_plugin(
+        self, capability: str, force_model_key: str | None = None
+    ) -> tuple[LLMPlugin, str, LLMRouting]:
         """Resolve an LLM plugin + gateway routing for *capability*.
 
         Reads fresh settings each call.  The returned :class:`LLMRouting` tells
@@ -695,6 +741,9 @@ class WorkflowEngine:
 
         Args:
             capability: ``'high'``, ``'medium'``, or ``'low'``.
+            force_model_key: When set, use this exact registry key instead of
+                resolving from settings — used so a model-switch compaction runs
+                on the *previous* model rather than the just-selected one.
 
         Returns:
             tuple[LLMPlugin, str, LLMRouting]: ``(plugin, model_id, routing)``.
@@ -702,16 +751,7 @@ class WorkflowEngine:
         Raises:
             RuntimeError: If the client rejects or cancels the key request.
         """
-        settings = self.__get_settings()
-        mode = str(settings.get("mode", "cloud"))
-        models_map = settings.get("models", {})
-        if not isinstance(models_map, dict):
-            models_map = {}
-
-        if mode == "local":
-            model_key = str(models_map.get("local", "llamacpp-qwen36-27b"))
-        else:
-            model_key = str(models_map.get(capability, models_map.get("medium", capability)))
+        model_key = force_model_key or self.__resolve_model_key(capability)
 
         registry = get_llm_registry()
         entry = registry.get(model_key)
@@ -766,6 +806,16 @@ class WorkflowEngine:
                 except Exception as exc:
                     _log.exception("Manual compaction failed: %s", exc)
                     await self.__emit_error(f"Compaction failed: {exc}", recoverable=True)
+                finally:
+                    self.__queue.task_done()
+                continue
+            if task.get("kind") == "config_changed":
+                try:
+                    await self.__handle_config_changed()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    _log.exception("Config-change handling failed: %s", exc)
                 finally:
                     self.__queue.task_done()
                 continue
@@ -964,16 +1014,30 @@ class WorkflowEngine:
     # Context compaction (in-place; see doc/STATE_AND_LIFECYCLE.md §4.5)
     # ------------------------------------------------------------------
 
-    def __context_limit(self) -> int:
-        """Global token budget for the main context, from settings (≥1)."""
-        raw = self.__get_settings().get("context_limit", _DEFAULT_CONTEXT_LIMIT)
-        if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
-            return _DEFAULT_CONTEXT_LIMIT
+    def __entry_agent_name(self) -> str:
+        """The top-level entry agent for the current workflow mode."""
+        if self.__session.workflow_mode == "problem_solving":
+            return _PROBLEM_SOLVER_AGENT_NAME
+        return _GUIDE_AGENT_NAME
+
+    def __entry_capability(self) -> str:
+        """Capability tier of the current entry agent (defaults to medium)."""
         try:
-            limit = int(raw)
-        except (TypeError, ValueError):
-            return _DEFAULT_CONTEXT_LIMIT
-        return limit if limit > 0 else _DEFAULT_CONTEXT_LIMIT
+            return self.__registry.get(self.__entry_agent_name()).capability
+        except Exception:  # noqa: BLE001 — unregistered agent → safe default
+            return "medium"
+
+    def __context_limit(self) -> int:
+        """Token budget for the main context = current model's context window.
+
+        Resolved from the entry-agent model selected in settings (see
+        :meth:`__resolve_model_key`) via the per-model ``context_window`` in the
+        LLM registry. This is *not* session-specific: switching the model mid-
+        session changes the limit, and the gauge/auto-compaction threshold follow
+        it on the next stats emission (or immediately, via
+        :meth:`handle_config_changed`).
+        """
+        return get_context_window(self.__resolve_model_key(self.__entry_capability()))
 
     def __can_compact(self) -> bool:
         """True when a manual compaction would be honoured right now.
@@ -1018,7 +1082,32 @@ class WorkflowEngine:
             return
         await self.__run_compaction("manual")
 
-    async def __run_compaction(self, reason: str) -> None:
+    async def __handle_config_changed(self) -> None:
+        """Worker-side handler for a settings change (see :meth:`handle_config_changed`).
+
+        Detects whether the entry-agent model changed. If it shrank below the live
+        context size, compact with the *outgoing* model first (so the switch only
+        takes effect on a context that fits the new window); then record the new
+        model and re-emit the context gauge (the limit may have moved either way).
+        """
+        new_key = self.__resolve_model_key(self.__entry_capability())
+        old_key = self.__active_model_key
+        if old_key is not None and new_key != old_key:
+            new_limit = get_context_window(new_key)
+            if self.__context_tokens > new_limit and self.__can_compact():
+                _log.info(
+                    "Model switch %s → %s shrinks context window to %d < %d live tokens "
+                    "— compacting with the outgoing model first",
+                    old_key,
+                    new_key,
+                    new_limit,
+                    self.__context_tokens,
+                )
+                await self.__run_compaction("model_switch", force_model_key=old_key)
+        self.__active_model_key = new_key
+        await self.__emit_context_stats()
+
+    async def __run_compaction(self, reason: str, force_model_key: str | None = None) -> None:
         """Summarise the live main context with the compactor and reset it.
 
         The full ``session.jsonl`` is preserved as audit history: this appends a
@@ -1026,7 +1115,15 @@ class WorkflowEngine:
         context to a single synthetic block holding that summary. On resume,
         :meth:`__load_main_messages` rebuilds the context from the latest marker
         onward (summary + any later messages), so the pre-compaction transcript
-        is never resent to the model. ``reason`` is ``"auto"`` or ``"manual"``.
+        is never resent to the model. ``reason`` is ``"auto"``, ``"manual"``, or
+        ``"model_switch"``.
+
+        Args:
+            reason: Why the compaction ran (recorded on the marker).
+            force_model_key: When set, the summarisation call runs on this exact
+                model rather than the one currently selected in settings — used
+                for a model switch so the *outgoing* model compacts before the
+                switch takes effect.
         """
         if not self.__main_messages or not self.__agent_available(_COMPACTOR_AGENT_NAME):
             return
@@ -1037,7 +1134,7 @@ class WorkflowEngine:
         tokens_before = self.__context_tokens
         summary: str | None = None
         try:
-            summary = await self.__generate_compaction_summary()
+            summary = await self.__generate_compaction_summary(force_model_key=force_model_key)
         except Exception:
             _log.exception("Compaction summary generation failed; context unchanged")
         finally:
@@ -1068,17 +1165,18 @@ class WorkflowEngine:
                 EVT_CONTEXT_COMPACTED,
                 {
                     "summary_excerpt": summary[:_COMPACTION_EXCERPT_LEN],
+                    # Full summary = the exact context the conversation continues
+                    # from; the client reveals it in the collapsible divider.
+                    "summary": summary,
                     "tokens_before": tokens_before,
                     "tokens_after": tokens_after,
                 },
             )
         )
         await self.__emit_context_stats()
-        _log.info(
-            "Context compacted (%s): ~%d → ~%d tokens", reason, tokens_before, tokens_after
-        )
+        _log.info("Context compacted (%s): ~%d → ~%d tokens", reason, tokens_before, tokens_after)
 
-    async def __generate_compaction_summary(self) -> str | None:
+    async def __generate_compaction_summary(self, force_model_key: str | None = None) -> str | None:
         """Run one silent LLM call producing a compact briefing of the context.
 
         The current main message list is rendered to a plain-text transcript and
@@ -1086,9 +1184,15 @@ class WorkflowEngine:
         gets no tools. Like the titler, this streams nothing to the feed — only
         the summary text is collected and the call's USD cost folded into the
         running total.
+
+        Args:
+            force_model_key: When set, run on this exact model instead of the one
+                resolved from current settings (see :meth:`__run_compaction`).
         """
         agent = self.__registry.get(_COMPACTOR_AGENT_NAME)
-        plugin, model_id, routing = await self.__resolve_plugin(agent.capability)
+        plugin, model_id, routing = await self.__resolve_plugin(
+            agent.capability, force_model_key=force_model_key
+        )
         transcript = self.__render_transcript(self.__main_messages)
         messages: list[Message] = [
             Message(role="user", content=f"Conversation transcript to compact:\n\n{transcript}")
@@ -1179,8 +1283,10 @@ class WorkflowEngine:
         chars = 0
         for msg in messages:
             content = msg.content
-            chars += len(content) if isinstance(content, str) else len(
-                json.dumps(content, ensure_ascii=False)
+            chars += (
+                len(content)
+                if isinstance(content, str)
+                else len(json.dumps(content, ensure_ascii=False))
             )
         return max(1, chars // 4)
 
@@ -1210,6 +1316,9 @@ class WorkflowEngine:
         """
         agent = self.__registry.get(agent_name, self.__session.effective_autonomous)
         plugin, model_id, routing = await self.__resolve_plugin(agent.capability)
+        # Remember the model that owns this main context, so a later model switch
+        # can detect a shrink and compact with this model first.
+        self.__active_model_key = self.__resolve_model_key(agent.capability)
 
         stored, errors = await self.__store_attachments(attachments or [])
         for message in errors:
@@ -2022,6 +2131,7 @@ class WorkflowEngine:
 
         agent = self.__registry.get(entry_agent, self.__session.effective_autonomous)
         plugin, model_id, routing = await self.__resolve_plugin(agent.capability)
+        self.__active_model_key = self.__resolve_model_key(agent.capability)
         dispatcher = self.__make_dispatcher(entry_agent, self.__orch_session_id)
         tools = tools_for_agent(agent.tools)
         tool_desc = {t.name: t.user_description for t in tools}
@@ -2361,6 +2471,9 @@ class WorkflowEngine:
                     {
                         "type": "context_compacted",
                         "summaryExcerpt": str(line.get("summary", ""))[:_COMPACTION_EXCERPT_LEN],
+                        # Full summary so the reloaded divider expands to the same
+                        # post-compaction context shown live.
+                        "summary": str(line.get("summary", "")),
                         "tokensBefore": tb if isinstance(tb, int) else 0,
                         "tokensAfter": ta if isinstance(ta, int) else 0,
                     }

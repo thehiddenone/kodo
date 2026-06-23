@@ -311,24 +311,27 @@ The engine measures the entry agent's main context after every turn and pushes `
 
 ```json
 { "type": "context.stats",
-  "current_tokens": 184320, "limit_tokens": 256000, "percent": 72.0,
+  "current_tokens": 184320, "limit_tokens": 1000000, "percent": 18.4,
   "can_compact": true }
 ```
 
-`current_tokens` = the last turn's `input + cache_read + cache_write + output` (≈ the next call's context), or a char-based estimate right after a compaction. `can_compact` is `true` only while the entry agent is idle (`phase == "awaiting_user"`), no compaction is running, there is context, and the `compactor` agent is registered — the client gates its **Compact now** button on it.
+`current_tokens` = the last turn's `input + cache_read + cache_write + output` (≈ the next call's context), or a char-based estimate right after a compaction. `limit_tokens` is the **current model's** context window (per-model `context_window` in the LLM registry — *not* a global setting), so it changes when the model changes. `can_compact` is `true` only while the entry agent is idle (`phase == "awaiting_user"`), no compaction is running, there is context, and the `compactor` agent is registered — the client gates its **Compact now** button on it.
 
-When context reaches 90% of `limit_tokens` the engine compacts automatically (the user can also force it via `compact.now`, §7.2a). A run is bracketed by `context.compacting` (drives a "Compacting context, please hold on" indicator):
+When context reaches 90% of `limit_tokens` the engine compacts automatically (the user can also force it via `compact.now`, §7.2a; and switching to a smaller-window model auto-compacts with the outgoing model — STATE_AND_LIFECYCLE.md §4.5). A run is bracketed by `context.compacting` (drives a "Compacting context, please hold on" indicator):
 
 ```json
 { "type": "context.compacting", "active": true }
 ```
 
-and concluded by `context.compacted`, which drops a "Context compacted" divider into the feed:
+and concluded by `context.compacted`, which drops a clickable "✦ Context compacted" divider into the feed (expandable to reveal the full `summary` — the exact post-compaction context — styled like a thinking block):
 
 ```json
 { "type": "context.compacted",
-  "summary_excerpt": "Goal: …", "tokens_before": 230400, "tokens_after": 5120 }
+  "summary_excerpt": "Goal: …", "summary": "Goal: … (full prior-context block)",
+  "tokens_before": 230400, "tokens_after": 5120 }
 ```
+
+`summary_excerpt` is a ≤280-char preview; `summary` is the full prior-context block. `session.history` replays the same shape (camelCase `summaryExcerpt`/`summary`) on reload.
 
 The full conversation stays visible (a `compaction` marker is written to `session.jsonl`; the pre-compaction transcript is kept as audit and replayed by `session.history`, but is no longer sent to the LLM — only the summary plus later messages are). See STATE_AND_LIFECYCLE.md §4.5. The older `guide.compacted` (§5.13) is superseded by these events and is not emitted.
 

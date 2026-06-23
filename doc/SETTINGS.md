@@ -48,13 +48,11 @@ The dict key of the model the engine uses when a subagent does not specify one. 
 
 **Model switching** = change `default_model` to the target key, save the file, send `config.reload`.
 
-### 2.3 `context_limit`
+### 2.3 Context limit (per-model — not a setting)
 
-Global token budget for an entry agent's **main context** (the shared Guide / Problem Solver conversation). Integer; default `256000`. After every entry-agent turn the engine measures the context (last call's input + cache + output tokens); once it reaches **90%** of this value the engine automatically runs the `compactor` sub-agent, which summarises the conversation and resets the live context in place (a `compaction` marker is written to `session.jsonl`; the full log is kept as audit). The user can also trigger this at any idle moment via the header's **Compact now** button (`compact.now`). Lower it to compact sooner on smaller-context models; raise it for large-context models. Takes effect on the next turn after `config.reload`.
+The token budget for an entry agent's **main context** (the shared Guide / Problem Solver conversation) is **not** a global setting. It is the **current model's context window**, defined per model as `context_window` in `kodo/llms/_registry.py` (e.g. Claude Opus/Sonnet 4.x = 1,000,000; Haiku 4.5 = 200,000; local Qwen3 = 262,144; local Gemma = 131,072). After every entry-agent turn the engine measures the context (last call's input + cache + output tokens); once it reaches **90%** of the current model's window it automatically runs the `compactor` sub-agent, which summarises the conversation and resets the live context in place (a `compaction` marker is written to `session.jsonl`; the full log is kept as audit). The user can also trigger this at any idle moment via the header's **Compact now** button (`compact.now`).
 
-```json
-{ "context_limit": 256000 }
-```
+Because the limit follows the model, **switching the model changes it immediately** (`config.reload` notifies every live session). Switching to a model whose window is **smaller than the live context** triggers an auto-compaction *using the outgoing model* before the switch takes effect (see STATE_AND_LIFECYCLE.md §4.5). The legacy `context_limit` setting was **removed**; to change the budget, change the model or edit its `context_window` in the registry.
 
 ### 2.4 `models`
 
@@ -112,7 +110,6 @@ A dictionary of all model definitions available to this Kodo installation.  Each
 {
   "log_level": "INFO",
   "default_model": "claude-sonnet-4-6",
-  "context_limit": 256000,
   "models": {
     "claude-opus-4-8": {
       "local": false,
