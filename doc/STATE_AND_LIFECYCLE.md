@@ -273,19 +273,20 @@ The dedup rules extend to Guide tools (FR-ORCH-03):
 - `rollback` — effectful and destructive. Dedup key is the `request_id` against the mirror commit reached by `MirrorRepo.head_sha()`; if the head already matches `target_sha`, the rollback already happened.
 - `finalize_project` — effectful and terminal. Dedup key is the `request_id` against the wire's `state.phase`; if already `done`, return immediately.
 
-### 4.5 Guide-session compaction
+### 4.5 Context compaction
 
-The Guide session may run for arbitrarily long — across an entire project from intake to `finalize_project`. When token usage approaches the model's context window (initial threshold: 75%), the engine triggers compaction:
+An entry agent (the Guide, or the Problem Solver — they share one agent-agnostic main message history, `__main_messages`) may run for arbitrarily long. After **every** entry-agent turn the engine measures the live context in tokens (the just-finished call's `input + cache_read + cache_write + output` ≈ what the next call will carry) and pushes it to the client as `context.stats` (WS_PROTOCOL.md §5). Once that measure reaches **90%** of the global `context_limit` (settings.json; default `256000`, see SETTINGS.md §2.3) the engine compacts **in place** — it does **not** rotate to a new session:
 
-1. **Quiesce.** The engine waits for the Guide's current tool call to complete and for any in-flight sub-agent session it spawned to finish. Compaction does not happen mid-tool-call.
-2. **Summarize.** The engine issues a dedicated compaction LLM call: input is the full Guide transcript plus a summarization prompt; output is a compact "prior-context block" capturing decisions made, artifacts produced (by `artifact_id`), current Plan position, outstanding user-blocking moments, and the current responsibility/component under work.
-3. **Rotate.** The engine generates a fresh POSIX-timestamp `session_id`, creates a new session directory (`meta.json`, `transient.json`, `session.jsonl`) starting with `{Guide system prompt + the compacted prior-context block + the current index snapshot + a "compaction completed" event in the uncached user block}`, and updates the `<project>/.kodo/guide.session` marker to point at the new session.
-4. **Surface.** The engine emits `guide.compacted {from_session_id, to_session_id, summary_excerpt}` over the wire (WS_PROTOCOL.md §5) so the user sees the transition.
-5. **Resume.** The Guide's next turn begins from the fresh session. Sub-agent sessions are unaffected — they belong to their own session logs and are referenced by `artifact_id` and `session_id` from the compacted summary, not by message-array content.
+1. **Trigger.** Auto-compaction runs at the end of the turn (after the LLM has responded and the session is `awaiting_user`). The user may also trigger it manually at any idle moment via the header's **Compact now** button, which sends `compact.now`; both paths funnel through the single-consumer worker queue, so compaction never races a live turn or a tool call.
+2. **Summarize.** The engine runs the **`compactor`** sub-agent (a tool-less, single-shot summarizer; `subagents/subagent_compactor.md`) directly — like the session titler, never via `run_subagent`. The current `__main_messages` are flattened to a plain-text transcript and handed to it as one user message; its output is a compact "prior-context block" capturing the goal, decisions, progress (artifacts by id, files by path, plan/component position), durable tool results, open items, and the next step. The call streams nothing to the feed; only its USD cost is folded into the running total.
+3. **Mark + reset.** A `compaction` marker — `{type, summary, reason, tokens_before, tokens_after, ts}` — is appended to `session.jsonl`. The live `__main_messages` is then reset to a **single** synthetic user message wrapping that summary, and the gauge is reseeded from a char-based estimate until the next real turn supplies a measured count.
+4. **Surface.** The engine emits `context.compacting {active}` to bracket the run (the WebView shows a "Compacting context, please hold on" indicator with running dots) and, on completion, `context.compacted {summary_excerpt, tokens_before, tokens_after}` so a "Context compacted" divider drops into the feed.
 
-The prior Guide session log is **not deleted**; it remains in `sessions/` as immutable audit history per §5.1. Multiple compactions over a project's lifetime produce multiple Guide session logs whose succession is recorded by the `guide.compacted` wire events (and by the fact that each new session's first messages reference the prior `session_id` in their compaction-summary metadata).
+**Audit & replay.** The full `session.jsonl` is never rewritten: lines before the marker stay as immutable audit history (§5.1) and are still replayed into the client feed by `history_entries` (the WebView shows the whole conversation — before and after every compaction, of which there may be many). What changes is only the *LLM* context: `__load_main_messages` rebuilds it from the **latest** `compaction` marker onward (the summary block + every message appended after it), so the pre-compaction transcript is never resent to the model.
 
-A crash during compaction is recoverable: the marker either still points at the old session (step 3 not committed → resume the old session, retry compaction at next threshold check) or points at the new session (step 3 committed → resume the new session). Both states are valid; the engine does not need a separate "compacting" flag.
+**Crash safety.** The marker is a single appended line. A crash before it lands → the next resume rebuilds the full (un-compacted) context and re-checks the threshold on the next turn; a crash after it lands → resume rebuilds from the summary. Both states are valid; the engine needs no separate persisted "compacting" flag (the in-memory `__compacting` bool only gates the live UI and the manual trigger).
+
+> The earlier *session-rotation* design for this feature (mint a new `session_id`, new session dir, `<project>/.kodo/guide.session` marker, `guide.compacted` event) was **superseded** by the in-place scheme above; `EVT_GUIDE_COMPACTED` remains defined but unused.
 
 ---
 
@@ -429,7 +430,7 @@ The user's VCS sees a large file-change set and decides how to record it. Kodo d
 | Workspace staging storage | Workspace | Writes in-flight artifacts under `.kodo/workspace/`, dedupes by `request_id`, moves them out on completion. |
 | Session log append (Guide and sub-agents) | Engine (LLM call wrapper) | Append-before-respond invariant (§4.2). |
 | Session rehydration | Engine | Reads session log, computes resume point, re-runs pending tool call. |
-| Guide-session compaction | Runtime (`runtime/_compaction.py`) | Triggers at the context-window threshold; surfaces `guide.compacted` (§4.5). |
+| Context compaction | Runtime (`runtime/_engine.py`, `compactor` sub-agent) | Auto-triggers at 90% of `context_limit` (or manual `compact.now`); summarises in place via a `compaction` marker; surfaces `context.stats` / `context.compacting` / `context.compacted` (§4.5). |
 | Bootstrap orchestration | Engine startup hook | Runs §3 phases 1–4, populates index, queues session resumes, ensures the Guide marker is current. |
 | Review-gate and user-prompt blocking | Runtime (`runtime/_gates.py`) | Resolves `ask_user` / `request_user_review_artifact` Futures; in autonomous mode auto-accepts review gates and withholds `ask_user`. |
 | Rollback UI trigger | Extension / Kodo panel | User triggers via the panel; the engine accepts the request and reports completion. |

@@ -79,6 +79,9 @@ from kodo.transport import (
     EVT_AGENT_TOOL_CALL_DETAIL,
     EVT_API_KEY_REVOKE,
     EVT_AUTONOMOUS_CHANGED,
+    EVT_CONTEXT_COMPACTED,
+    EVT_CONTEXT_COMPACTING,
+    EVT_CONTEXT_STATS,
     EVT_ERROR,
     EVT_LLM_TURN_START,
     EVT_POST_UPDATE,
@@ -124,11 +127,20 @@ _log = logging.getLogger(__name__)
 _GUIDE_AGENT_NAME = "guide"
 _PROBLEM_SOLVER_AGENT_NAME = "problem_solver"
 _SESSION_TITLER_AGENT_NAME = "session_titler"
+_COMPACTOR_AGENT_NAME = "compactor"
 
 # Sub-agents that the engine drives directly and that must never be reachable
 # through the ``run_subagent`` tool (the Guide/Problem Solver cannot
 # invoke them).
-_DIRECT_ONLY_AGENTS = frozenset({_SESSION_TITLER_AGENT_NAME})
+_DIRECT_ONLY_AGENTS = frozenset({_SESSION_TITLER_AGENT_NAME, _COMPACTOR_AGENT_NAME})
+
+# Context compaction. The live main context is measured in tokens after every
+# entry-agent turn; once it reaches ``_COMPACTION_THRESHOLD`` of the global
+# ``context_limit`` (settings.json; default ``_DEFAULT_CONTEXT_LIMIT``) the
+# engine runs the ``compactor`` sub-agent to summarise the context and reset it
+# in place. The user can also trigger this manually while idle (``compact.now``).
+_DEFAULT_CONTEXT_LIMIT = 256_000
+_COMPACTION_THRESHOLD = 0.9
 
 # The two top-level entry agents share one agent-agnostic main message history
 # (``__main_messages``); switching workflow mode only swaps the system prompt
@@ -142,6 +154,9 @@ _SUBAGENT_SPAWNING_TOOLS = frozenset({"run_subagent", "run_author_critic_iterati
 
 # Maximum length of a generated session title, in characters.
 _MAX_TITLE_LEN = 60
+# How much of a compaction summary travels in the ``context.compacted`` event as
+# a feed-divider excerpt (the full summary lives in the session.jsonl marker).
+_COMPACTION_EXCERPT_LEN = 280
 
 # Every tool spec keyed by name — used to normalize each tool's output against
 # its declared schema and to project the customer-visible detail rows.
@@ -270,6 +285,12 @@ class WorkflowEngine:
     __worker: asyncio.Task[None] | None
     __cumulative_usd: float
     __main_messages: list[Message]
+    # Measured token size of the live main context (last entry-agent turn's
+    # input + cache + output, or an estimate immediately after a compaction).
+    __context_tokens: int
+    # True while a compaction run is in flight (disables the manual trigger and
+    # drives the "Compacting context…" indicator).
+    __compacting: bool
     __orch_session_id: str
     __current_vendor: str | None
     __replay_subsessions: list[dict[str, object]] | None
@@ -329,6 +350,8 @@ class WorkflowEngine:
         self.__worker = None
         self.__cumulative_usd = 0.0
         self.__main_messages = []
+        self.__context_tokens = 0
+        self.__compacting = False
         self.__orch_session_id = ""
         self.__current_vendor = None
         self.__replay_subsessions = None
@@ -412,6 +435,9 @@ class WorkflowEngine:
 
         if resumed:
             self.__main_messages = self.__load_main_messages()
+            # Seed the gauge from an estimate until the first resumed turn yields
+            # a measured token count.
+            self.__context_tokens = self.__estimate_tokens(self.__main_messages)
             # Restore per-session prefs so a resumed tab keeps its own mode
             # (the window no longer re-syncs a single global value on connect).
             self.__session.autonomous = self.__transient.autonomous
@@ -644,6 +670,17 @@ class WorkflowEngine:
         self.__transient.update(workflow_mode=self.__session.workflow_mode)
         await self.__emit_state()
 
+    async def handle_compact_now(self) -> None:
+        """Enqueue a manual context-compaction request.
+
+        Compaction mutates ``__main_messages``, so it is funnelled through the
+        same single-consumer worker queue as prompts rather than run inline on
+        the connection handler. The worker honours it only when the entry agent
+        is idle and there is context to compact (see :meth:`__run_manual_compaction`);
+        a request that arrives mid-run simply waits its turn and is re-checked.
+        """
+        await self.__queue.put({"kind": "compact"})
+
     # ------------------------------------------------------------------
     # Plugin resolution — per-dispatch, reads fresh settings each time
     # ------------------------------------------------------------------
@@ -721,6 +758,17 @@ class WorkflowEngine:
 
         while True:
             task = await self.__queue.get()
+            if task.get("kind") == "compact":
+                try:
+                    await self.__run_manual_compaction()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    _log.exception("Manual compaction failed: %s", exc)
+                    await self.__emit_error(f"Compaction failed: {exc}", recoverable=True)
+                finally:
+                    self.__queue.task_done()
+                continue
             text = str(task.get("text", ""))
             raw_attachments = task.get("attachments", [])
             attachments = (
@@ -913,6 +961,230 @@ class WorkflowEngine:
         return line or None
 
     # ------------------------------------------------------------------
+    # Context compaction (in-place; see doc/STATE_AND_LIFECYCLE.md §4.5)
+    # ------------------------------------------------------------------
+
+    def __context_limit(self) -> int:
+        """Global token budget for the main context, from settings (≥1)."""
+        raw = self.__get_settings().get("context_limit", _DEFAULT_CONTEXT_LIMIT)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+            return _DEFAULT_CONTEXT_LIMIT
+        try:
+            limit = int(raw)
+        except (TypeError, ValueError):
+            return _DEFAULT_CONTEXT_LIMIT
+        return limit if limit > 0 else _DEFAULT_CONTEXT_LIMIT
+
+    def __can_compact(self) -> bool:
+        """True when a manual compaction would be honoured right now.
+
+        Mirrors the worker-side guard so the client can enable/disable its
+        "Compact now" button from the pushed stats: the entry agent must be idle
+        (the last turn ended and no new one started), a compaction must not be in
+        flight, there must be measured context, and the ``compactor`` agent must
+        be registered.
+        """
+        return (
+            self.__session.phase == "awaiting_user"
+            and not self.__compacting
+            and bool(self.__main_messages)
+            and self.__context_tokens > 0
+            and self.__agent_available(_COMPACTOR_AGENT_NAME)
+        )
+
+    async def __maybe_auto_compact(self) -> None:
+        """Auto-compact when the just-measured context crosses the threshold.
+
+        Called at the end of every main entry-agent turn (after the LLM has
+        responded). One pass is enough — compaction collapses the context far
+        below the threshold — so this never loops.
+        """
+        if self.__compacting:
+            return
+        limit = self.__context_limit()
+        if self.__context_tokens >= _COMPACTION_THRESHOLD * limit:
+            _log.info(
+                "Context at %d/%d tokens (≥%d%%) — auto-compacting",
+                self.__context_tokens,
+                limit,
+                int(_COMPACTION_THRESHOLD * 100),
+            )
+            await self.__run_compaction("auto")
+
+    async def __run_manual_compaction(self) -> None:
+        """Honour a queued ``compact.now`` request, if currently compactable."""
+        if not self.__can_compact():
+            _log.info("compact.now ignored — not in a compactable state")
+            return
+        await self.__run_compaction("manual")
+
+    async def __run_compaction(self, reason: str) -> None:
+        """Summarise the live main context with the compactor and reset it.
+
+        The full ``session.jsonl`` is preserved as audit history: this appends a
+        ``compaction`` marker carrying the summary, then resets the live LLM
+        context to a single synthetic block holding that summary. On resume,
+        :meth:`__load_main_messages` rebuilds the context from the latest marker
+        onward (summary + any later messages), so the pre-compaction transcript
+        is never resent to the model. ``reason`` is ``"auto"`` or ``"manual"``.
+        """
+        if not self.__main_messages or not self.__agent_available(_COMPACTOR_AGENT_NAME):
+            return
+
+        self.__compacting = True
+        await self.__emit_context_compacting(True)
+        await self.__emit_context_stats()  # reflect can_compact=False while running
+        tokens_before = self.__context_tokens
+        summary: str | None = None
+        try:
+            summary = await self.__generate_compaction_summary()
+        except Exception:
+            _log.exception("Compaction summary generation failed; context unchanged")
+        finally:
+            self.__compacting = False
+            await self.__emit_context_compacting(False)
+
+        if not summary:
+            await self.__emit_context_stats()
+            return
+
+        context_msg = self.__compaction_context_message(summary)
+        tokens_after = self.__estimate_tokens([context_msg])
+        self.__transient.append_marker(
+            {
+                "type": "compaction",
+                "summary": summary,
+                "reason": reason,
+                "tokens_before": tokens_before,
+                "tokens_after": tokens_after,
+                "ts": datetime.now(tz=UTC).isoformat(),
+            }
+        )
+        self.__main_messages = [context_msg]
+        self.__context_tokens = tokens_after
+
+        await self.__sink.send(
+            Envelope.make_event(
+                EVT_CONTEXT_COMPACTED,
+                {
+                    "summary_excerpt": summary[:_COMPACTION_EXCERPT_LEN],
+                    "tokens_before": tokens_before,
+                    "tokens_after": tokens_after,
+                },
+            )
+        )
+        await self.__emit_context_stats()
+        _log.info(
+            "Context compacted (%s): ~%d → ~%d tokens", reason, tokens_before, tokens_after
+        )
+
+    async def __generate_compaction_summary(self) -> str | None:
+        """Run one silent LLM call producing a compact briefing of the context.
+
+        The current main message list is rendered to a plain-text transcript and
+        handed to the ``compactor`` sub-agent as a single user message; the model
+        gets no tools. Like the titler, this streams nothing to the feed — only
+        the summary text is collected and the call's USD cost folded into the
+        running total.
+        """
+        agent = self.__registry.get(_COMPACTOR_AGENT_NAME)
+        plugin, model_id, routing = await self.__resolve_plugin(agent.capability)
+        transcript = self.__render_transcript(self.__main_messages)
+        messages: list[Message] = [
+            Message(role="user", content=f"Conversation transcript to compact:\n\n{transcript}")
+        ]
+        text_parts: list[str] = []
+        turn_end: TurnEnd | None = None
+        async for event in self.__gateway.stream_query(
+            routing=routing,
+            plugin=plugin,
+            sink=self.__sink,
+            stream_id=uuid.uuid4().hex,
+            model=model_id,
+            system=agent.system_prompt,
+            messages=messages,
+            tools=[],
+            cache_breakpoints=[0],
+        ):
+            if isinstance(event, TokenDelta):
+                text_parts.append(event.text)
+            elif isinstance(event, TurnEnd):
+                turn_end = event
+
+        if turn_end is not None:
+            self.__cumulative_usd += turn_end.usage.usd_cost
+            await self.__emit_cost_only()
+
+        return "".join(text_parts).strip() or None
+
+    @staticmethod
+    def __compaction_context_message(summary: str) -> Message:
+        """Build the synthetic user message that replaces a compacted context.
+
+        Used both when compaction happens live and when a resumed session is
+        rebuilt from its latest ``compaction`` marker, so the in-memory context
+        is identical in both paths.
+        """
+        return Message(
+            role="user",
+            content=(
+                "The conversation so far has been compacted to stay within the "
+                "context limit. The following is a summary of everything that "
+                "happened before this point; treat it as your working memory and "
+                "continue seamlessly from it:\n\n" + summary
+            ),
+        )
+
+    @staticmethod
+    def __render_transcript(messages: list[Message]) -> str:
+        """Flatten a message list to a plain-text transcript for summarisation.
+
+        Tool-use/`tool_result`/thinking blocks are rendered as labelled lines so
+        the compactor sees the whole exchange as data without needing the tool
+        schemas that a structured replay would require.
+        """
+        out: list[str] = []
+        for msg in messages:
+            content = msg.content
+            header = f"## {msg.role.upper()}"
+            if isinstance(content, str):
+                out.append(f"{header}\n{content}")
+                continue
+            parts: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    parts.append(str(block.get("text", "")))
+                elif btype == "thinking":
+                    parts.append(f"[thinking] {block.get('thinking', '')}")
+                elif btype == "tool_use":
+                    args = json.dumps(block.get("input", {}), ensure_ascii=False)
+                    parts.append(f"[tool_use {block.get('name', '')}] {args}")
+                elif btype == "tool_result":
+                    raw = block.get("content")
+                    body = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)
+                    parts.append(f"[tool_result] {body}")
+            out.append(f"{header}\n" + "\n".join(parts))
+        return "\n\n".join(out)
+
+    @staticmethod
+    def __estimate_tokens(messages: list[Message]) -> int:
+        """Rough token estimate (~4 chars/token) for messages with no live usage.
+
+        Used only to seed the gauge immediately after a compaction, before the
+        next real turn supplies a measured count.
+        """
+        chars = 0
+        for msg in messages:
+            content = msg.content
+            chars += len(content) if isinstance(content, str) else len(
+                json.dumps(content, ensure_ascii=False)
+            )
+        return max(1, chars // 4)
+
+    # ------------------------------------------------------------------
     # Guide LLM loop
     # ------------------------------------------------------------------
 
@@ -992,6 +1264,7 @@ class WorkflowEngine:
             stop_after_tools=lambda: dispatcher.stop_requested,
             persist=self.__persist_main_messages(agent_name),
             flush_before=_SUBAGENT_SPAWNING_TOOLS,
+            track_context=True,
         )
         await self.__sink.send(Envelope.make_stream_end(stream_id))
         await self.__emit_agent_finished(agent_name)
@@ -1000,6 +1273,7 @@ class WorkflowEngine:
             self.__session.phase = "awaiting_user"
         self.__session.agent = None
         await self.__emit_state()
+        await self.__maybe_auto_compact()
 
     async def __store_attachments(self, paths: list[str]) -> tuple[list[dict[str, str]], list[str]]:
         """Validate, copy into the session, and link the prompt's attachments.
@@ -1084,6 +1358,7 @@ class WorkflowEngine:
         persist: Callable[[list[Message]], None] | None = None,
         flush_before: frozenset[str] = frozenset(),
         persist_each_iteration: bool = False,
+        track_context: bool = False,
     ) -> tuple[list[Message], list[Path]]:
         """Run one LLM turn with tool-use loop until the model stops calling tools.
 
@@ -1109,6 +1384,11 @@ class WorkflowEngine:
             persist_each_iteration: When ``True`` (subsession turns), flush after
                 every tool-result batch so a sub-agent's history is durable at
                 each turn boundary and can be resumed mid-run.
+            track_context: When ``True`` (the shared main entry-agent turn), the
+                measured prompt+output token total of each LLM call updates the
+                live context gauge (:attr:`__context_tokens`) and is pushed to the
+                client. Sub-agent/titler turns leave it ``False`` — only the main
+                context counts toward the compaction threshold.
 
         Returns:
             tuple[list[Message], list[Path]]: Updated messages and (unused) files.
@@ -1184,6 +1464,18 @@ class WorkflowEngine:
                         "stop_reason": turn_end.stop_reason,
                     },
                 )
+                if track_context:
+                    usage = turn_end.usage
+                    # The whole prompt that was sent (uncached input + both cache
+                    # tiers) plus the output the model just appended ≈ what the
+                    # next call will carry as context.
+                    self.__context_tokens = (
+                        usage.input_tokens
+                        + usage.cache_read_tokens
+                        + usage.cache_write_tokens
+                        + usage.output_tokens
+                    )
+                    await self.__emit_context_stats()
 
             thinking_text = "".join(thinking_parts)
 
@@ -1769,6 +2061,7 @@ class WorkflowEngine:
             stop_after_tools=lambda: dispatcher.stop_requested,
             persist=self.__persist_main_messages(entry_agent),
             flush_before=_SUBAGENT_SPAWNING_TOOLS,
+            track_context=True,
         )
         await self.__sink.send(Envelope.make_stream_end(stream_id))
         await self.__emit_agent_finished(entry_agent)
@@ -1776,6 +2069,7 @@ class WorkflowEngine:
             self.__session.phase = "awaiting_user"
         self.__session.agent = None
         await self.__emit_state()
+        await self.__maybe_auto_compact()
 
     def __build_replay_ledger(self) -> list[dict[str, object]]:
         """Build the ordered subsession replay ledger from ``session.jsonl`` markers.
@@ -2060,6 +2354,17 @@ class WorkflowEngine:
                     )
             elif kind == "subsession_end":
                 entries.append(self.__divider_entry("subsession_end", line))
+            elif kind == "compaction":
+                tb = line.get("tokens_before", 0)
+                ta = line.get("tokens_after", 0)
+                entries.append(
+                    {
+                        "type": "context_compacted",
+                        "summaryExcerpt": str(line.get("summary", ""))[:_COMPACTION_EXCERPT_LEN],
+                        "tokensBefore": tb if isinstance(tb, int) else 0,
+                        "tokensAfter": ta if isinstance(ta, int) else 0,
+                    }
+                )
         return entries
 
     @staticmethod
@@ -2182,9 +2487,26 @@ class WorkflowEngine:
         return out
 
     def __load_main_messages(self) -> list[Message]:
-        raw = self.__transient.read_messages()
+        # Honour the latest compaction marker: the live LLM context is the
+        # compacted summary block plus every message appended after that marker.
+        # Lines before it remain in session.jsonl as audit history (and are still
+        # replayed into the client feed by history_entries), but are never resent
+        # to the model. With no marker this is the full message history.
+        lines = self.__transient.read_session_lines()
+        last_compaction = -1
+        for i, line in enumerate(lines):
+            if line.get("type") == "compaction":
+                last_compaction = i
+
         messages: list[Message] = []
-        for item in raw:
+        if last_compaction >= 0:
+            summary = str(lines[last_compaction].get("summary", ""))
+            if summary:
+                messages.append(self.__compaction_context_message(summary))
+
+        for item in lines[last_compaction + 1 :]:
+            if "role" not in item:
+                continue
             try:
                 role = str(item["role"])
                 content = item["content"]
@@ -2233,6 +2555,30 @@ class WorkflowEngine:
 
     async def __emit_state(self) -> None:
         await self.__sink.send(Envelope.make_event(EVT_STATE, self.__session.to_dict()))
+        # The header context gauge and its "Compact now" enablement both depend
+        # on phase, so refresh them whenever state is pushed.
+        await self.__emit_context_stats()
+
+    async def __emit_context_stats(self) -> None:
+        """Push the live context gauge (current/limit/percent + compactability)."""
+        limit = self.__context_limit()
+        current = self.__context_tokens
+        percent = round(100.0 * current / limit, 1) if limit > 0 else 0.0
+        await self.__sink.send(
+            Envelope.make_event(
+                EVT_CONTEXT_STATS,
+                {
+                    "current_tokens": current,
+                    "limit_tokens": limit,
+                    "percent": percent,
+                    "can_compact": self.__can_compact(),
+                },
+            )
+        )
+
+    async def __emit_context_compacting(self, active: bool) -> None:
+        """Bracket a compaction run so the client shows a "Compacting…" banner."""
+        await self.__sink.send(Envelope.make_event(EVT_CONTEXT_COMPACTING, {"active": active}))
 
     async def __emit_usage(self, turn_end: TurnEnd, model: str, duration_seconds: float) -> None:
         await self.__sink.send(

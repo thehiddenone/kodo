@@ -50,8 +50,8 @@ src/kodo/
 │   ├── _engine.py          # single worker, dispatches Guide tool calls
 │   ├── _tool_surface.py    # Guide's tools (FR-ORCH-03) wired to engine
 │   ├── _gates.py           # ask_user / request_user_review_artifact blocking machinery
-│   ├── _compaction.py      # Guide-session compaction (FR-ORCH-05)
 │   └── _session.py         # per-session metadata, resume logic
+│                           # (context compaction lives in _engine.py, FR-ORCH-05)
 ├── subagents/              # markdown subagent files; one file per (name, model)
 │   ├── _loader.py          # parses frontmatter + body into Agent dataclass
 │   ├── _registry.py        # (name, model) -> Agent
@@ -272,14 +272,14 @@ The Architect publishes a project-wide `architecture` artifact whose content inc
 
 ### 5.5 Compaction
 
-When the Guide session's accumulated token usage crosses a threshold (initial value: 75% of the model's context window), `runtime/_compaction.py` triggers:
+When the entry agent's main context crosses **90%** of the global `context_limit` (settings.json; default 256K tokens), the engine compacts it **in place** — implemented in `runtime/_engine.py`, not a separate module:
 
-1. The engine spawns a compaction LLM call with the Guide's full transcript and a summarization prompt. Output is a compact "prior-context block" capturing decisions made, artifacts produced, current Plan position, and outstanding user-blocking moments.
-2. A fresh Guide session is created with `{guide system prompt + compacted block + current index snapshot}` as initial messages. The new session's `session_id` is recorded.
-3. A wire event surfaces the transition to the user (`guide.compacted {from_session_id, to_session_id, summary_excerpt}`); see WS_PROTOCOL.md §5 (the WS_PROTOCOL.md catalogue needs this event added).
-4. The Guide resumes work transparently. The prior session log remains on disk per [STATE_AND_LIFECYCLE.md §5](STATE_AND_LIFECYCLE.md) (no deletion of audit history).
+1. The engine runs the tool-less `compactor` sub-agent (`subagents/subagent_compactor.md`) directly, handing it the current main transcript. Output is a compact "prior-context block" capturing the goal, decisions, progress (artifacts/files/plan position), durable tool results, open items, and the next step.
+2. A `compaction` marker carrying the summary is appended to `session.jsonl`, and the live message history is reset to a single synthetic block wrapping that summary. The full log is **not** rewritten — it stays as audit history and `__load_main_messages` rebuilds the LLM context from the latest marker onward.
+3. Wire events surface the transition: `context.compacting {active}` brackets the run and `context.compacted {summary_excerpt, tokens_before, tokens_after}` concludes it; the live gauge rides on `context.stats`. See WS_PROTOCOL.md §5.7a.
+4. The entry agent resumes transparently. The user can also force compaction at any idle moment via the header **Compact now** button (`compact.now`).
 
-Compaction does not cross a checkpoint moment — if a checkpoint commit is pending when the threshold is crossed, the engine completes the checkpoint first.
+This in-place scheme supersedes the earlier session-rotation design (a fresh `session_id` + `guide.compacted`); see STATE_AND_LIFECYCLE.md §4.5.
 
 ---
 

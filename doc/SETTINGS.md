@@ -40,7 +40,7 @@ Python logging level for the server process.
 
 ### 2.2 `default_model`
 
-The dict key of the model the engine uses when a subagent does not specify one.  Must match an entry in the `models` dict (§2.3).  Subagents may override this per-invocation by requesting any key present in `models`.
+The dict key of the model the engine uses when a subagent does not specify one.  Must match an entry in the `models` dict (§2.4).  Subagents may override this per-invocation by requesting any key present in `models`.
 
 ```json
 { "default_model": "claude-sonnet-4-6" }
@@ -48,7 +48,15 @@ The dict key of the model the engine uses when a subagent does not specify one. 
 
 **Model switching** = change `default_model` to the target key, save the file, send `config.reload`.
 
-### 2.3 `models`
+### 2.3 `context_limit`
+
+Global token budget for an entry agent's **main context** (the shared Guide / Problem Solver conversation). Integer; default `256000`. After every entry-agent turn the engine measures the context (last call's input + cache + output tokens); once it reaches **90%** of this value the engine automatically runs the `compactor` sub-agent, which summarises the conversation and resets the live context in place (a `compaction` marker is written to `session.jsonl`; the full log is kept as audit). The user can also trigger this at any idle moment via the header's **Compact now** button (`compact.now`). Lower it to compact sooner on smaller-context models; raise it for large-context models. Takes effect on the next turn after `config.reload`.
+
+```json
+{ "context_limit": 256000 }
+```
+
+### 2.4 `models`
 
 A dictionary of all model definitions available to this Kodo installation.  Each entry describes one model; any entry can be selected as the `default_model` (§2.2).  There is no `active` flag — selection happens through `default_model`.
 
@@ -104,6 +112,7 @@ A dictionary of all model definitions available to this Kodo installation.  Each
 {
   "log_level": "INFO",
   "default_model": "claude-sonnet-4-6",
+  "context_limit": 256000,
   "models": {
     "claude-opus-4-8": {
       "local": false,

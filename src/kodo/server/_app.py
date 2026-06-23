@@ -34,6 +34,7 @@ from kodo.transport import (
     EVT_LLAMA_STATE,
     EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_MODEL_INSTALL_PROGRESS,
+    MSG_COMPACT_NOW,
     MSG_CONFIG_RELOAD,
     MSG_HELLO,
     MSG_LLAMA_START,
@@ -331,6 +332,14 @@ async def _handle_stop(req: Request) -> None:
     await req.reply({"type": "stop.accepted"})
 
 
+async def _handle_compact(req: Request) -> None:
+    session = await _require_session(req)
+    if session is None:
+        return
+    await session.engine.handle_compact_now()
+    await req.reply({"type": "compact.accepted"})
+
+
 def _make_config_reload_handler(config: Config) -> HandlerFn:
     async def _handle_config_reload(req: Request) -> None:
         try:
@@ -538,6 +547,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_WORKSPACE_FOLDERS, _handle_workspace_folders)
     conn_registry.register_handler(MSG_PROJECT_SET, _handle_project_set)
     conn_registry.register_handler(MSG_STOP, _handle_stop)
+    conn_registry.register_handler(MSG_COMPACT_NOW, _handle_compact)
     conn_registry.register_handler(MSG_CONFIG_RELOAD, _make_config_reload_handler(config))
     conn_registry.register_handler(MSG_LLAMACPP_INSTALL, _handle_llamacpp_install)
     conn_registry.register_handler(MSG_MODEL_INSTALL, _handle_model_install)

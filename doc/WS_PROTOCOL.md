@@ -305,6 +305,33 @@ Pushed after each LLM call.
 
 `duration_seconds` is the server-measured wall time of that LLM call. The panel formats `last_call_tokens` into its status line.
 
+### 5.7a `context.stats` / `context.compacting` / `context.compacted` — context gauge & compaction
+
+The engine measures the entry agent's main context after every turn and pushes `context.stats` (also on every `state` change, so the gauge and the header **Compact now** button stay in sync with the phase):
+
+```json
+{ "type": "context.stats",
+  "current_tokens": 184320, "limit_tokens": 256000, "percent": 72.0,
+  "can_compact": true }
+```
+
+`current_tokens` = the last turn's `input + cache_read + cache_write + output` (≈ the next call's context), or a char-based estimate right after a compaction. `can_compact` is `true` only while the entry agent is idle (`phase == "awaiting_user"`), no compaction is running, there is context, and the `compactor` agent is registered — the client gates its **Compact now** button on it.
+
+When context reaches 90% of `limit_tokens` the engine compacts automatically (the user can also force it via `compact.now`, §7.2a). A run is bracketed by `context.compacting` (drives a "Compacting context, please hold on" indicator):
+
+```json
+{ "type": "context.compacting", "active": true }
+```
+
+and concluded by `context.compacted`, which drops a "Context compacted" divider into the feed:
+
+```json
+{ "type": "context.compacted",
+  "summary_excerpt": "Goal: …", "tokens_before": 230400, "tokens_after": 5120 }
+```
+
+The full conversation stays visible (a `compaction` marker is written to `session.jsonl`; the pre-compaction transcript is kept as audit and replayed by `session.history`, but is no longer sent to the LLM — only the summary plus later messages are). See STATE_AND_LIFECYCLE.md §4.5. The older `guide.compacted` (§5.13) is superseded by these events and is not emitted.
+
 ### 5.8 `autonomous.changed` — mode dropped by the engine
 
 Pushed when the engine itself turns autonomous mode off (the Guide's `disable_autonomous_mode` tool), as opposed to a user toggle. The client persists the new value and notifies the user.
@@ -531,6 +558,20 @@ Response:
 
 ```json
 { "type": "stop.accepted" }
+```
+
+### 7.2a `compact.now` — manually compact the context
+
+Asks the engine to compact this session's main context now (the same work as the automatic 90% trigger; see §5.7a and STATE_AND_LIFECYCLE.md §4.5). The request is queued on the worker and honoured only when the entry agent is idle and there is context to compact — otherwise it is silently ignored. The client only enables its **Compact now** button when the latest `context.stats` had `can_compact: true`.
+
+```json
+{ "type": "compact.now" }
+```
+
+Response:
+
+```json
+{ "type": "compact.accepted" }
 ```
 
 ### 7.3 `mode.set` — toggle autonomous mode

@@ -55,6 +55,12 @@ MSG_WORKSPACE_FOLDERS = "workspace.folders"
 # Immutable for the session — a second, different value is rejected.
 MSG_PROJECT_SET = "project.set"
 MSG_SECURITY_ADD_RULE = "security.add_rule"
+# Manually trigger context compaction for this session. Honoured only when the
+# entry agent is idle (``state.phase == "awaiting_user"``) and there is context
+# to compact; otherwise ignored. Drives the same path as the automatic
+# 90%-threshold trigger — the engine runs the ``compactor`` sub-agent, writes a
+# ``compaction`` marker to ``session.jsonl``, and resets the live LLM context.
+MSG_COMPACT_NOW = "compact.now"
 MSG_CONFIG_RELOAD = "config.reload"
 MSG_LLAMACPP_INSTALL = "llamacpp.install"
 MSG_MODEL_INSTALL = "model.install"
@@ -104,6 +110,18 @@ EVT_REVIEW_VERDICT = "review.verdict"
 EVT_ARTIFACT_PUBLISHED = "artifact.published"
 EVT_ARTIFACT_REMOVED = "artifact.removed"
 EVT_GUIDE_COMPACTED = "guide.compacted"
+# Context-compaction events (in-place compaction of an entry agent's main
+# context; see runtime/_engine.py + doc/STATE_AND_LIFECYCLE.md §4.5).
+# - context.stats   {current_tokens, limit_tokens, percent, can_compact}: pushed
+#   on every state change and after each measured turn so the WebView header can
+#   show the live context gauge and enable/disable its "Compact now" button.
+# - context.compacting {active}: brackets a compaction run so the WebView shows a
+#   "Compacting context, please hold on" indicator with running dots.
+# - context.compacted {summary_excerpt, tokens_before, tokens_after}: emitted once
+#   a compaction completes, to drop a "Context compacted" divider into the feed.
+EVT_CONTEXT_STATS = "context.stats"
+EVT_CONTEXT_COMPACTING = "context.compacting"
+EVT_CONTEXT_COMPACTED = "context.compacted"
 EVT_LLM_TURN_START = "llm.turn_start"
 # Emitted by the LLM gateway while a session's LLM request is queued behind the
 # serial local gate / a saturated cloud feed (``reason:"queued"``) or is being
