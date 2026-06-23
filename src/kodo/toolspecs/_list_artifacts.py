@@ -1,4 +1,4 @@
-"""``list_artifacts`` tool spec — orchestrator tool (FR-ORCH-03).
+"""``list_artifacts`` tool spec — guide tool (FR-ORCH-03).
 
 Dispatch lives in :mod:`kodo.tools` (one handler module per tool).
 """

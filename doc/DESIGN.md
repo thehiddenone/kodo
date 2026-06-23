@@ -46,16 +46,16 @@ src/kodo/
 │   ├── _messages.py        # typed payload-type constants per WS_PROTOCOL.md
 │   ├── _outbox.py          # disconnect-tolerant outbound queue
 │   └── _ws.py              # aiohttp WebSocket binding
-├── runtime/                # thin substrate that hosts the Orchestrator session
-│   ├── _engine.py          # single worker, dispatches Orchestrator tool calls
-│   ├── _tool_surface.py    # Orchestrator's tools (FR-ORCH-03) wired to engine
+├── runtime/                # thin substrate that hosts the Guide session
+│   ├── _engine.py          # single worker, dispatches Guide tool calls
+│   ├── _tool_surface.py    # Guide's tools (FR-ORCH-03) wired to engine
 │   ├── _gates.py           # ask_user / request_user_review_artifact blocking machinery
-│   ├── _compaction.py      # Orchestrator-session compaction (FR-ORCH-05)
+│   ├── _compaction.py      # Guide-session compaction (FR-ORCH-05)
 │   └── _session.py         # per-session metadata, resume logic
 ├── subagents/              # markdown subagent files; one file per (name, model)
 │   ├── _loader.py          # parses frontmatter + body into Agent dataclass
 │   ├── _registry.py        # (name, model) -> Agent
-│   ├── orchestrator.claude-sonnet-4-6.md
+│   ├── guide.claude-sonnet-4-6.md
 │   ├── narrative_author.claude-sonnet-4-6.md
 │   ├── architect.claude-sonnet-4-6.md
 │   ├── requirements_author.claude-sonnet-4-6.md
@@ -142,7 +142,7 @@ kodo-vsix/
 4. Extension picks a free loopback TCP port (binds `127.0.0.1:0`, reads the OS-assigned port, releases it) and launches the server with: `kodo-server --project <root> --port <picked>` and `ANTHROPIC_API_KEY` in env.
 5. Server: validates `git` on PATH; ensures project layout (`kodo.md` exists OR errors with init hint); writes PID file; opens WS listener on the supplied port (loopback only).
 6. Extension opens WebSocket, sends `hello` request per WS_PROTOCOL.md §4.1. Server responds with `hello.ack` embedding the current `state` snapshot. The WS connection persists for the lifetime of the VS Code window; the Kodo panel may open and close many times against the same connection.
-7. Bootstrap runs ([STATE_AND_LIFECYCLE.md §3](STATE_AND_LIFECYCLE.md)): scans mirror, scans workspace, locates the Orchestrator session and any sub-agent sessions it had in flight, queues them for resume. No user prompt is required — resume is automatic. The state snapshot embedded in `hello.ack` reflects the post-bootstrap world.
+7. Bootstrap runs ([STATE_AND_LIFECYCLE.md §3](STATE_AND_LIFECYCLE.md)): scans mirror, scans workspace, locates the Guide session and any sub-agent sessions it had in flight, queues them for resume. No user prompt is required — resume is automatic. The state snapshot embedded in `hello.ack` reflects the post-bootstrap world.
 
 Graceful shutdown is triggered by VS Code window close, an explicit `shutdown` request, or SIGTERM. The server flushes transient state, closes the WS, terminates child processes started under tools/shell, removes PID file, exits.
 
@@ -156,7 +156,7 @@ The wire protocol — envelope shape, message catalogue, request/response correl
 
 - **Envelope and message types.** Defined in `src/kodo/transport/_envelope.py` and `_messages.py`. Constants are grouped by frame role (`MSG_*` for client requests, `SREQ_*` for server-initiated user prompts, `EVT_*` for events) per WS_PROTOCOL.md §5–§7.
 - **Outbound queue.** `src/kodo/transport/_outbox.py` buffers envelopes while the client is disconnected. Cap: 50 MB. On reconnect: replay in arrival order, then push a fresh `state` event (WS_PROTOCOL.md §8). Overflow drops the oldest frames and logs the discard.
-- **Request timeout.** The receiver maintains a pending-request map keyed on `id`. Client-initiated requests time out at 60s with an `error` response. Server-initiated user prompts (WS_PROTOCOL.md §6) do not time out — they block the Orchestrator's tool call until the user responds or the connection drops.
+- **Request timeout.** The receiver maintains a pending-request map keyed on `id`. Client-initiated requests time out at 60s with an `error` response. Server-initiated user prompts (WS_PROTOCOL.md §6) do not time out — they block the Guide's tool call until the user responds or the connection drops.
 - **Streaming.** `agent.tokens` chunks carry `correlation_id` equal to a server-generated per-LLM-call stream id. `stream_end` closes the stream. One agent invocation may produce multiple consecutive streams (multiple LLM calls within one sub-agent run); each gets its own stream id.
 
 ---
@@ -217,10 +217,10 @@ The body is the full system prompt for the model encoded in the filename. There 
 
 Two role groups within the `Agent` shape:
 
-- **Orchestrator.** A single sub-agent (`kodo/subagents/orchestrator.<model>.md`) whose tool list is the Orchestrator tool surface (FR-ORCH-03): `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `ask_user`, `rollback`, `finalize_project`. The Orchestrator is the sole entity authorized to invoke other sub-agents (FR-ORCH-02). It does not hold the user sign-off or completion tools — those are leaf tools.
-- **Leaf sub-agents.** The remaining markdown files (Narrative Author, Architect, Requirements Author / Critic, Planner, Functional Designer / Critic, Test Designer / Critic, Test Coder, Coder, Code Reviewer). Their tool lists are the workspace tools plus, for the agents that need them, the common user tools: `ask_user` (elicit/validate user input, used by Narrative Author and critics), `request_user_review_artifact` and `report_artifact_completed` (the user review gate and completion signal, held by critics and solo agents), and `escalate_blocker` (authors/coders relinquishing a decision to the Orchestrator). Sub-agents do not invoke each other; they reach the user only through these tools and produce their contributions only through the workspace. The agent registry renders each agent's `## Tools` section and tool set per mode, withholding `ask_user` in autonomous mode (FR-AUT-02).
+- **Guide.** A single sub-agent (`kodo/subagents/guide.<model>.md`) whose tool list is the Guide tool surface (FR-ORCH-03): `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `ask_user`, `rollback`, `finalize_project`. The Guide is the sole entity authorized to invoke other sub-agents (FR-ORCH-02). It does not hold the user sign-off or completion tools — those are leaf tools.
+- **Leaf sub-agents.** The remaining markdown files (Narrative Author, Architect, Requirements Author / Critic, Planner, Functional Designer / Critic, Test Designer / Critic, Test Coder, Coder, Code Reviewer). Their tool lists are the workspace tools plus, for the agents that need them, the common user tools: `ask_user` (elicit/validate user input, used by Narrative Author and critics), `request_user_review_artifact` and `report_artifact_completed` (the user review gate and completion signal, held by critics and solo agents), and `escalate_blocker` (authors/coders relinquishing a decision to the Guide). Sub-agents do not invoke each other; they reach the user only through these tools and produce their contributions only through the workspace. The agent registry renders each agent's `## Tools` section and tool set per mode, withholding `ask_user` in autonomous mode (FR-AUT-02).
 
-Per leaf sub-agent invocation, the runtime: assembles the task message from input artifact IDs the Orchestrator passed in (resolving them through the workspace MCP server), calls the LLM plugin with the agent's `system_prompt` plus the task message plus the `tools` filter, and persists the resulting session JSONL per [STATE_AND_LIFECYCLE.md §4](STATE_AND_LIFECYCLE.md). The Orchestrator's own invocation is identical in shape; its tool surface is just larger.
+Per leaf sub-agent invocation, the runtime: assembles the task message from input artifact IDs the Guide passed in (resolving them through the workspace MCP server), calls the LLM plugin with the agent's `system_prompt` plus the task message plus the `tools` filter, and persists the resulting session JSONL per [STATE_AND_LIFECYCLE.md §4](STATE_AND_LIFECYCLE.md). The Guide's own invocation is identical in shape; its tool surface is just larger.
 
 ### 4.3 ToolchainPlugin (FR-TC)
 
@@ -240,44 +240,44 @@ class ToolchainPlugin(ABC):
 
 ---
 
-## 5. Orchestrator runtime (FR-ORCH, FR-WF)
+## 5. Guide runtime (FR-ORCH, FR-WF)
 
-The runtime is a thin substrate. It does not contain a stage machine, a scheduler, or a workflow DAG. It hosts the Orchestrator's LLM session, dispatches the Orchestrator's tool calls, and runs the leaf sub-agent sessions the Orchestrator spawns. Every decision about *what* runs *when* is the Orchestrator's, encoded in its system prompt (FR-ORCH-06) and carried out via its tool surface (FR-ORCH-03).
+The runtime is a thin substrate. It does not contain a stage machine, a scheduler, or a workflow DAG. It hosts the Guide's LLM session, dispatches the Guide's tool calls, and runs the leaf sub-agent sessions the Guide spawns. Every decision about *what* runs *when* is the Guide's, encoded in its system prompt (FR-ORCH-06) and carried out via its tool surface (FR-ORCH-03).
 
 ### 5.1 Engine internals
 
-- One `asyncio.Queue[Task]`. Task is `OrchestratorTurn` or `SubAgentInvocation`.
-- One worker coroutine per FR-WF-02. The worker runs whichever task is on the queue; the Orchestrator's blocking tool calls (every tool in FR-ORCH-03 is `async` and can `await`) cooperate with the worker's serial nature.
-- The Orchestrator session is a single long-lived `Session` object. Its LLM call is the same shape as any sub-agent's, but its tool list is the FR-ORCH-03 surface.
+- One `asyncio.Queue[Task]`. Task is `GuideTurn` or `SubAgentInvocation`.
+- One worker coroutine per FR-WF-02. The worker runs whichever task is on the queue; the Guide's blocking tool calls (every tool in FR-ORCH-03 is `async` and can `await`) cooperate with the worker's serial nature.
+- The Guide session is a single long-lived `Session` object. Its LLM call is the same shape as any sub-agent's, but its tool list is the FR-ORCH-03 surface.
 - STOP cancels the worker coroutine. `CancelledError` propagates into every awaited LLM stream, every pending tool call, every blocking user prompt (FR-LLM-07, FR-WF-07). On STOP, all sessions are flushed and the engine transitions wire `state.phase` to `stopped`.
 
 ### 5.2 Tool surface implementation
 
-Each tool in FR-ORCH-03 is implemented in `src/kodo/runtime/_tool_surface.py` as an async function with a JSON Schema declared as a `ToolSpec`. Dispatch happens through the same MCP path leaf sub-agents use for workspace tools, so the Orchestrator's tool calls are persisted in its session log identically to any other tool call.
+Each tool in FR-ORCH-03 is implemented in `src/kodo/runtime/_tool_surface.py` as an async function with a JSON Schema declared as a `ToolSpec`. Dispatch happens through the same MCP path leaf sub-agents use for workspace tools, so the Guide's tool calls are persisted in its session log identically to any other tool call.
 
 - `query_frontier()` / `list_artifacts(filters)` — read-only queries against the in-memory `ProjectIndex` ([STATE_AND_LIFECYCLE.md §2](STATE_AND_LIFECYCLE.md)). `query_frontier` reports an artifact completed only once it has been marked so via `report_artifact_completed`.
 - `run_subagent(name, task_message, input_artifact_ids)` — generates a fresh `session_id`, looks up the agent in the registry, builds the LLM call, runs it through the worker, persists the session log, returns the IDs of artifacts the sub-agent published. Blocks until the sub-agent's LLM loop terminates.
 - `run_author_critic_iteration(...)` — composite tool. Internally invokes `run_subagent` for the Author, reads the resulting artifact, invokes `run_subagent` for the Critic with the Author's artifact ID injected into the task, reads the Critic's `feedback` artifact, returns `{artifact_id, verdict, concerns[]}`. The two underlying sub-agent invocations are visible on the wire as ordinary `agent.started`/`agent.finished` pairs.
-- `ask_user` — surface a `prompt.question` `kind=request` frame per WS_PROTOCOL.md §6.1 for the Orchestrator's own judgment calls. The worker `await`s a `Future` keyed on the request's envelope `id`; the WS dispatcher resolves the Future when a `kind=response` with the matching `correlation_id` arrives. In autonomous mode `ask_user` is withheld from the Orchestrator's tool set entirely (FR-AUT-02), so there is nothing to resolve. The user **review gate** is not an Orchestrator tool: it is surfaced by a critic or solo agent's `request_user_review_artifact` leaf call, which the engine routes through the same `prompt.approval` machinery (`runtime/_gates.py`) and auto-accepts in autonomous mode.
-- `rollback(target_sha)` — invokes the procedure in [STATE_AND_LIFECYCLE.md §8.3](STATE_AND_LIFECYCLE.md), then terminates the current Orchestrator session and starts a fresh one (since the rollback discards in-flight workspace state the Orchestrator was reasoning about).
-- `finalize_project()` — flushes state, transitions wire `state.phase` to `done`, ends the Orchestrator session normally.
+- `ask_user` — surface a `prompt.question` `kind=request` frame per WS_PROTOCOL.md §6.1 for the Guide's own judgment calls. The worker `await`s a `Future` keyed on the request's envelope `id`; the WS dispatcher resolves the Future when a `kind=response` with the matching `correlation_id` arrives. In autonomous mode `ask_user` is withheld from the Guide's tool set entirely (FR-AUT-02), so there is nothing to resolve. The user **review gate** is not an Guide tool: it is surfaced by a critic or solo agent's `request_user_review_artifact` leaf call, which the engine routes through the same `prompt.approval` machinery (`runtime/_gates.py`) and auto-accepts in autonomous mode.
+- `rollback(target_sha)` — invokes the procedure in [STATE_AND_LIFECYCLE.md §8.3](STATE_AND_LIFECYCLE.md), then terminates the current Guide session and starts a fresh one (since the rollback discards in-flight workspace state the Guide was reasoning about).
+- `finalize_project()` — flushes state, transitions wire `state.phase` to `done`, ends the Guide session normally.
 
 ### 5.3 Iteration cap and bail logic
 
-The Author/Critic iteration cap (default 5, FR-AGT-05) lives in the Orchestrator's system prompt as a non-negotiable rule. The runtime does not enforce it — it just dispatches whatever `run_author_critic_iteration` calls the Orchestrator makes. When the Orchestrator decides to bail, it calls `ask_user` to surface the situation; the user replies with guidance or an accept-as-is decision.
+The Author/Critic iteration cap (default 5, FR-AGT-05) lives in the Guide's system prompt as a non-negotiable rule. The runtime does not enforce it — it just dispatches whatever `run_author_critic_iteration` calls the Guide makes. When the Guide decides to bail, it calls `ask_user` to surface the situation; the user replies with guidance or an accept-as-is decision.
 
 ### 5.4 Component dependency DAG
 
-The Architect publishes a project-wide `architecture` artifact whose content includes the component dependency DAG (responsibility codename → depends_on list). The Planner consumes this when authoring the Plan; the Plan encodes ordering and dependency information as task metadata. The runtime does not topologically sort anything — that responsibility is in Planner's prompt, and the Orchestrator follows the resulting Plan task order.
+The Architect publishes a project-wide `architecture` artifact whose content includes the component dependency DAG (responsibility codename → depends_on list). The Planner consumes this when authoring the Plan; the Plan encodes ordering and dependency information as task metadata. The runtime does not topologically sort anything — that responsibility is in Planner's prompt, and the Guide follows the resulting Plan task order.
 
 ### 5.5 Compaction
 
-When the Orchestrator session's accumulated token usage crosses a threshold (initial value: 75% of the model's context window), `runtime/_compaction.py` triggers:
+When the Guide session's accumulated token usage crosses a threshold (initial value: 75% of the model's context window), `runtime/_compaction.py` triggers:
 
-1. The engine spawns a compaction LLM call with the Orchestrator's full transcript and a summarization prompt. Output is a compact "prior-context block" capturing decisions made, artifacts produced, current Plan position, and outstanding user-blocking moments.
-2. A fresh Orchestrator session is created with `{orchestrator system prompt + compacted block + current index snapshot}` as initial messages. The new session's `session_id` is recorded.
-3. A wire event surfaces the transition to the user (`orchestrator.compacted {from_session_id, to_session_id, summary_excerpt}`); see WS_PROTOCOL.md §5 (the WS_PROTOCOL.md catalogue needs this event added).
-4. The Orchestrator resumes work transparently. The prior session log remains on disk per [STATE_AND_LIFECYCLE.md §5](STATE_AND_LIFECYCLE.md) (no deletion of audit history).
+1. The engine spawns a compaction LLM call with the Guide's full transcript and a summarization prompt. Output is a compact "prior-context block" capturing decisions made, artifacts produced, current Plan position, and outstanding user-blocking moments.
+2. A fresh Guide session is created with `{guide system prompt + compacted block + current index snapshot}` as initial messages. The new session's `session_id` is recorded.
+3. A wire event surfaces the transition to the user (`guide.compacted {from_session_id, to_session_id, summary_excerpt}`); see WS_PROTOCOL.md §5 (the WS_PROTOCOL.md catalogue needs this event added).
+4. The Guide resumes work transparently. The prior session log remains on disk per [STATE_AND_LIFECYCLE.md §5](STATE_AND_LIFECYCLE.md) (no deletion of audit history).
 
 Compaction does not cross a checkpoint moment — if a checkpoint commit is pending when the threshold is crossed, the engine completes the checkpoint first.
 
@@ -304,25 +304,25 @@ user (cached block):
 
 user (uncached):
   ## Task
-  {{task message assembled by the runtime from the Orchestrator's run_subagent inputs}}
+  {{task message assembled by the runtime from the Guide's run_subagent inputs}}
 
   ## Prior revision (revisions only)
-  {{previous_artifact_id resolved to content; passed when the Orchestrator
+  {{previous_artifact_id resolved to content; passed when the Guide
     is re-running the Author after a critic verdict or user feedback}}
 ```
 
 `cache_control` breakpoints sit after the system prompt and after the cached user block, so successive calls in the same sub-agent's loop reuse the cache. Artifact content is pulled from the workspace MCP server at task-assembly time; the runtime never embeds disk paths in the prompt.
 
-### 6.2 Orchestrator prompt structure
+### 6.2 Guide prompt structure
 
-The Orchestrator's call is similar in shape but its cached user block carries the *index summary* instead of fixed neighbour artifacts:
+The Guide's call is similar in shape but its cached user block carries the *index summary* instead of fixed neighbour artifacts:
 
 ```text
 system:
-  [Orchestrator role and purpose]
+  [Guide role and purpose]
   [The canonical sequence (FR-ORCH-06) as a non-negotiable default]
   [Review-gate handling (FR-WF-05/06): critics and solo agents own the gate;
-   how the Orchestrator responds when feedback or an escalation comes back]
+   how the Guide responds when feedback or an escalation comes back]
   [Author/Critic iteration cap (5) and the bail/escalate judgment]
   [Tool surface reference: names only, no schemas (CLAUDE.md "transport-agnostic
    tool contract"); schemas live in code]
@@ -340,7 +340,7 @@ user (uncached):
         or user just answered a question; or this is a cold-start}}
 ```
 
-The Orchestrator decides its next tool call from this context. Its output is interpreted by the runtime as ordinary tool-use content blocks; there is no special prose parsing.
+The Guide decides its next tool call from this context. Its output is interpreted by the runtime as ordinary tool-use content blocks; there is no special prose parsing.
 
 ### 6.3 Per-agent constraints
 
@@ -349,8 +349,8 @@ Each leaf sub-agent's markdown file encodes its constraints in the system prompt
 Notable constraints:
 
 - **Test Designer & Test Design Critic** — guard-rails against call-count assertions, internal mocks, tautological tests. The Critic publishes `feedback` with `verdict: "rejected"` citing FR-TST-01..03 when violations appear.
-- **Planner** — produces a structured `plan` artifact: markdown narrative for the user plus a machine-readable task list (`task_id`, target sub-agent, responsibility_code, input artifact references, depends_on). Task status is *not* stored in the Plan; the Orchestrator derives it from the index (a task is done when its expected output artifact has been accepted). This avoids mutating a published artifact.
-- **Coder** — receives only the failing tests + functional-design + requirements artifact IDs. Has access to `tools/shell` (to run tests) and the workspace tools. Loops "publish revision → run tests" until all green or the Orchestrator bails.
+- **Planner** — produces a structured `plan` artifact: markdown narrative for the user plus a machine-readable task list (`task_id`, target sub-agent, responsibility_code, input artifact references, depends_on). Task status is *not* stored in the Plan; the Guide derives it from the index (a task is done when its expected output artifact has been accepted). This avoids mutating a published artifact.
+- **Coder** — receives only the failing tests + functional-design + requirements artifact IDs. Has access to `tools/shell` (to run tests) and the workspace tools. Loops "publish revision → run tests" until all green or the Guide bails.
 - **Code Reviewer** — publishes `feedback`; concerns may request behavior changes only when they map to a requirement.
 
 ---
@@ -419,27 +419,27 @@ Checkpoints are produced one per completed artifact (not one per gate). Each `re
 
 ### 9.1 Transient state
 
-Session data lives at `<project>/.kodo/sessions/<session-id>/`, co-located with the sub-agent session logs (§4 of STATE_AND_LIFECYCLE.md). `<session-id>` is a POSIX timestamp string (e.g. `1748792400`), naturally sortable so the most recent session is the last one. The Orchestrator marker file at `<project>/.kodo/orchestrator.session` records the active session ID.
+Session data lives at `<project>/.kodo/sessions/<session-id>/`, co-located with the sub-agent session logs (§4 of STATE_AND_LIFECYCLE.md). `<session-id>` is a POSIX timestamp string (e.g. `1748792400`), naturally sortable so the most recent session is the last one. The Guide marker file at `<project>/.kodo/guide.session` records the active session ID.
 
 ```
 .kodo/sessions/<posix-timestamp>/
     meta.json         # human-readable: session_name ("Unnamed Session"), created_at
     transient.json    # mutable runtime state: stage, last_prompt, autonomous
-    session.jsonl     # append-only orchestrator LLM context (all messages)
+    session.jsonl     # append-only guide LLM context (all messages)
     agents/           # one JSONL per sub-agent invocation
     mcp/              # one JSONL per MCP tool call
 ```
 
 - `transient.json` is overwritten in place on every state change (not append-only).
 - `session.jsonl` is append-only; each line is a `{role, content}` message.
-- On resume, the engine loads `transient.json` for phase/prompt/autonomous state and replays `session.jsonl` to reconstruct `__orch_messages` for the Orchestrator LLM call.
+- On resume, the engine loads `transient.json` for phase/prompt/autonomous state and replays `session.jsonl` to reconstruct `__orch_messages` for the Guide LLM call.
 - A new session directory is created only when no prior session exists or the prior session reached a terminal phase; otherwise the existing directory is reused across restarts.
 
 ### 9.2 Memory
 
-Memory lives as artifacts under `<project>/src/.memory/`. The Orchestrator may instruct a sub-agent to publish a memory artifact; promotion lands it in `src/.memory/` with a mirror checkpoint, surfacing as an `artifact.published` wire event like any other promoted artifact (WS_PROTOCOL.md §5.6). Security rules apply at the sub-agent's tool call.
+Memory lives as artifacts under `<project>/src/.memory/`. The Guide may instruct a sub-agent to publish a memory artifact; promotion lands it in `src/.memory/` with a mirror checkpoint, surfacing as an `artifact.published` wire event like any other promoted artifact (WS_PROTOCOL.md §5.6). Security rules apply at the sub-agent's tool call.
 
-Memory artifacts are included in the cached user block of every leaf sub-agent's LLM call (§6.1) and in the Orchestrator's index snapshot (§6.2), keeping them inexpensive on subsequent calls.
+Memory artifacts are included in the cached user block of every leaf sub-agent's LLM call (§6.1) and in the Guide's index snapshot (§6.2), keeping them inexpensive on subsequent calls.
 
 ### 9.3 Settings precedence
 
@@ -507,7 +507,7 @@ Schema is documented in `src/kodo/server/_config.py` as a `pydantic` model. VS C
     ├── checkpoints/                  # mirror git repo
     ├── workspace/                    # in-flight artifacts + .retired/ audit (STATE_AND_LIFECYCLE.md §1)
     ├── sessions/                     # session directories + sub-agent JSONL logs
-    │   ├── <posix-timestamp>/        # one dir per Orchestrator session
+    │   ├── <posix-timestamp>/        # one dir per Guide session
     │   │   ├── meta.json
     │   │   ├── transient.json
     │   │   ├── session.jsonl
@@ -562,9 +562,9 @@ Tool errors are returned as the tool result content with an error flag. The agen
 ### 12.3 Autonomous mode behaviour
 
 - `mode.set { autonomous: true }` flips the `autonomous` flag on the session. The flag is consumed by the agent registry (per-mode tool rendering), the gate handler (`runtime/_gates.py`), and the security layer.
-- Agent registry: tools whose `ToolSpec.autonomous_mode` is `"unavailable"` (currently `ask_user`) are excluded from both the rendered `## Tools` section and the returned tool set, for every agent including the Orchestrator. An agent that would have asked must assume-and-document or `escalate_blocker`.
+- Agent registry: tools whose `ToolSpec.autonomous_mode` is `"unavailable"` (currently `ask_user`) are excluded from both the rendered `## Tools` section and the returned tool set, for every agent including the Guide. An agent that would have asked must assume-and-document or `escalate_blocker`.
 - Gate handler: `request_user_review_artifact` resolves immediately with a synthesized acceptance without emitting a `prompt.approval` to the wire. Auto-acceptance is recorded in the reviewing agent's session log (so audit shows which gates were auto-accepted) and surfaced as a low-fi `state` event field rather than a per-gate event.
-- Rollback: the Orchestrator calls `rollback` directly, without the interactive `ask_user` confirmation, and documents it via `post_update`.
+- Rollback: the Guide calls `rollback` directly, without the interactive `ask_user` confirmation, and documents it via `post_update`.
 - Security layer: rules whose action is `prompt` are treated as `allow` while autonomous is on. `deny` rules are still enforced.
 - LLM rate-limit pauses become silent: the worker waits, no Dev notification, STOP still works.
 - Hard errors (auth, billing, NFR-04 violations) page the Dev regardless.
@@ -590,8 +590,8 @@ Tool errors are returned as the tool result content with an error flag. The agen
 Dev (WebView)       Server (runtime worker)            LLM plugin
        │                       │                            │
        │  prompt.submit ──────►│                            │
-       │                       │  Orchestrator turn ──────► │── stream tokens ──┐
-       │ ◄─── stream_chunk × N (Orchestrator decides)                           │
+       │                       │  Guide turn ──────► │── stream tokens ──┐
+       │ ◄─── stream_chunk × N (Guide decides)                           │
        │ ◄─── stream_end                                                        │
        │                       │ ◄─ tool_use: run_subagent("narrative_author")│
        │                       │  spawn NarrativeAuthor ──► │── stream tokens ──┤
@@ -607,8 +607,8 @@ Dev (WebView)       Server (runtime worker)            LLM plugin
        │                       │  engine promotes: Promoter fires; mirror commit│
        │ ◄─── artifact.published (path=src/narrative/narrative.md, checkpoint)  │
        │ ◄─── agent.finished (narrative_author)                                 │
-       │                       │  return artifact_id to Orchestrator            │
-       │                       │  Orchestrator continues ──►│── stream tokens ──┘
+       │                       │  return artifact_id to Guide            │
+       │                       │  Guide continues ──►│── stream tokens ──┘
        │                       │ ◄─ tool_use: run_subagent("architect")
        │                       │  ...
 ```

@@ -13,8 +13,8 @@ crash or restart.
 >   starts a short **grace window** that lets the same window reload and reclaim;
 >   a graceful close (`session.release`) frees it immediately.
 > - **Resume is client-driven:** each window persists its `session_id` and sends
->   it in `hello`. The old workspace-level orchestrator-session **marker** and its
->   auto-resume are gone (`OrchestratorMarker`/`locate_orchestrator_session`
+>   it in `hello`. The old workspace-level guide-session **marker** and its
+>   auto-resume are gone (`GuideMarker`/`locate_guide_session`
 >   remain in the tree but are unused by the engine).
 > - **A session's nature is its `current_project`:** `None` ⇒ problem-solving
 >   only (openable in any window); set ⇒ guided-associated, linked to that
@@ -30,7 +30,7 @@ crash or restart.
 Kōdo's persisted state has exactly two levels:
 
 1. **The main session** — the top-level conversation between the user and
-   whichever *entry agent* is currently driving (the **Orchestrator** in Guided
+   whichever *entry agent* is currently driving (the **Guide** in Guided
    Project Workflow, or the **Problem Solver** in Problem-Solving mode). There is
    exactly one main session per project directory at a time.
 
@@ -40,19 +40,19 @@ Kōdo's persisted state has exactly two levels:
    session-wide-unique ID and is stored alongside the main session.
 
 The main session is **not tied to an agent.** The user can switch between
-Orchestrator and Problem Solver and back within a single session; both entry
+Guide and Problem Solver and back within a single session; both entry
 agents **share one message history** (`session.jsonl`). Switching mode only
 swaps the system prompt and the available tools — the conversation continues
 seamlessly across the change.
 
-> Sub-agent spawning is **not** wired to the Orchestrator. Any agent may spawn
+> Sub-agent spawning is **not** wired to the Guide. Any agent may spawn
 > sub-agents if (a) its frontmatter grants a spawning tool
 > (`run_subagent`/`run_author_critic_iteration`) and (b) its frontmatter
 > declares a `subagents:` allow-list naming the sub-agents it may call. The
 > engine gates every spawn against the **calling** agent's allow-list
 > (`AgentRegistry.allowed_subagents` → `__assert_can_spawn`), so the permission
 > travels with whichever agent makes the call — not with a hard-coded
-> orchestrator identity. Today only the Orchestrator opts in (the Problem Solver
+> guide identity. Today only the Guide opts in (the Problem Solver
 > ships without a spawning tool, so in Problem-Solving mode there are no
 > subsessions), but the path is fully agent-agnostic and crash-resume recovers
 > *whichever* entry agent was holding the floor (see `__last_entry_agent`).
@@ -77,14 +77,14 @@ seamlessly across the change.
                                 holds only a link, never the content; see below
 ```
 
-`<main-session-id>` is the orchestrator session ID minted at bootstrap (a POSIX
+`<main-session-id>` is the guide session ID minted at bootstrap (a POSIX
 timestamp). `<subsession-id>` is a random hex ID minted per `run_subagent` call.
 
 ### `session.jsonl` — the main log
 
 `session.jsonl` is an append-only log that interleaves **two kinds of lines**:
 
-- **Message lines** — `{"role": "user"|"assistant", "content": ..., "entry_agent": "orchestrator"|"problem_solver"}`.
+- **Message lines** — `{"role": "user"|"assistant", "content": ..., "entry_agent": "guide"|"problem_solver"}`.
   These are the top-level LLM context. `entry_agent` is a display/audit tag only;
   because the two entry agents share context, every message replays into the one
   `__main_messages` list regardless of tag.
@@ -220,7 +220,7 @@ engine reloads `__main_messages` from `session.jsonl`. Then:
   3. Append the resulting `tool_result`s to `__main_messages`, persist them, and
      continue the **interrupted entry agent's** turn live (the next LLM call).
      The entry agent is recovered from the `entry_agent` tag on the dangling
-     assistant message (`__last_entry_agent`), not assumed to be the Orchestrator
+     assistant message (`__last_entry_agent`), not assumed to be the Guide
      — any agent permitted to spawn can be the one resumed.
 
   This is why the user sees Kōdo "recover into that mode, load both the main
@@ -234,11 +234,11 @@ Published artifacts survive a crash because `publish_artifact` stamps each
 artifact with the producing subsession's ID. On resume, a resumed sub-agent
 unions any pre-crash publishes (found by `session_id == subsession_id` in the
 rebuilt index) with anything it publishes during the resumed run, so the
-Orchestrator receives the complete result.
+Guide receives the complete result.
 
 ### Resume boundaries (what is *not* auto-resumed)
 
-- A crash during the Orchestrator's **own** LLM call (between sub-agents, with no
+- A crash during the Guide's **own** LLM call (between sub-agents, with no
   dangling `tool_use` on disk) is not auto-continued — the session is left at a
   valid boundary awaiting the next prompt. The explicit guarantee is resuming an
   **interrupted sub-agent**.
@@ -256,7 +256,7 @@ dividers.
 
 Display names come from the sub-agent's `display_name:` frontmatter field, or are
 derived by title-casing the agent name (`narrative_author` → "Narrative Author")
-when not set. The Orchestrator's display name is **"Kōdo"**.
+when not set. The Guide's display name is **"Kōdo"**.
 
 On reconnect, the client requests `session.history`; the server rebuilds the full
 feed by walking `session.jsonl` in order, emitting the dividers and **splicing

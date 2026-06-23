@@ -150,9 +150,7 @@ def load_attachment(path: str, *, running_total: int) -> LoadedAttachment:
         ) from exc
     size = len(raw)
     if size > MAX_ATTACH_BYTES:
-        raise AttachmentError(
-            f'Attached file "{name}" is larger than 128 KB (it was skipped).'
-        )
+        raise AttachmentError(f'Attached file "{name}" is larger than 128 KB (it was skipped).')
     if running_total + size > MAX_ATTACH_BYTES:
         raise AttachmentError(
             f'Attached file "{name}" was skipped — the combined size of attached '

@@ -37,14 +37,14 @@ Kodo owns one directory per project:
     │   ├── <project_code>/<responsibility_code>/<type>/<artifact_id>.{md,json,…}
     │   └── .retired/<artifact_id>/<exact_filename_with_extension>    ← audit-only
     ├── sessions/             ← session state and LLM audit logs
-    │   ├── <posix-timestamp>/         ← one directory per Orchestrator session
+    │   ├── <posix-timestamp>/         ← one directory per Guide session
     │   │   ├── meta.json              ← session_name, created_at
     │   │   ├── transient.json         ← mutable: stage, last_prompt, autonomous
-    │   │   ├── session.jsonl          ← append-only Orchestrator LLM context
+    │   │   ├── session.jsonl          ← append-only Guide LLM context
     │   │   ├── agents/                ← per-sub-agent invocation JSONL call logs
     │   │   └── mcp/                   ← per-MCP-tool JSONL call logs
     │   └── <session_id>.jsonl         ← flat log per sub-agent invocation (UUID)
-    └── orchestrator.session  ← marker file: current Orchestrator session_id
+    └── guide.session  ← marker file: current Guide session_id
 ```
 
 `src/` and `gen/` belong to the user. The user's VCS (git, perforce, whatever) tracks them. Kodo writes to them on promotion but does not version-control them; that is the user's choice.
@@ -143,12 +143,12 @@ The `version` parameter is required on filter-form `read_artifact` calls; there 
 
 ### 2.2 Derived views
 
-Four views are derived from the index. Each is exposed to the Orchestrator through a tool in its tool surface (FR-ORCH-03); none drive any engine-internal scheduling decision. The Orchestrator consults them as inputs to its reasoning.
+Four views are derived from the index. Each is exposed to the Guide through a tool in its tool surface (FR-ORCH-03); none drive any engine-internal scheduling decision. The Guide consults them as inputs to its reasoning.
 
-- **Frontier per component** — for each `responsibility_code`, the earliest artifact type in the canonical workflow order (`functional-design → test-plan → test → code`) that has zero completed entries. Exposed through `query_frontier()`, a read-only query: an entry counts as completed only once an agent has marked it so via `report_artifact_completed`, not by any inference inside the query. The Orchestrator uses the frontier as a hint when in execution sub-mode (FR-ORCH-07); it MAY deviate when responding to user-driven re-entry. A component with at least one completed `code` entry is treated as code-complete for that component's part of the canonical workflow, even though more code files could be added later by revision.
-- **Requirements coverage** — for each requirement ID declared in the current `requirements` artifact, the set of artifacts (per type) whose `requirement_ids` include it. Exposed through `list_artifacts(filters)` queries the Orchestrator composes. Surfaces gaps such as "REQ-AUTH-003 has a `functional-design` entry but no `test-plan` entry covering it" — the Orchestrator's prompt instructs it to detect these and either schedule the missing work or escalate.
-- **Artifact lineage** — for each `filename_hint` within `(project_code, responsibility_code, type)`, the chain of `artifact_id`s linked by `supersedes`. Used by the rollback UI and by the Orchestrator when it needs to reason about the most recent accepted version of a revised artifact.
-- **Active sessions** — every in-flight entry's `session_id`, mapped to the sub-agent and artifact context. Used by the engine to decide which session to resume on a tool result and by the Orchestrator (through its index snapshot) to know what work is still outstanding from a prior turn.
+- **Frontier per component** — for each `responsibility_code`, the earliest artifact type in the canonical workflow order (`functional-design → test-plan → test → code`) that has zero completed entries. Exposed through `query_frontier()`, a read-only query: an entry counts as completed only once an agent has marked it so via `report_artifact_completed`, not by any inference inside the query. The Guide uses the frontier as a hint when in execution sub-mode (FR-ORCH-07); it MAY deviate when responding to user-driven re-entry. A component with at least one completed `code` entry is treated as code-complete for that component's part of the canonical workflow, even though more code files could be added later by revision.
+- **Requirements coverage** — for each requirement ID declared in the current `requirements` artifact, the set of artifacts (per type) whose `requirement_ids` include it. Exposed through `list_artifacts(filters)` queries the Guide composes. Surfaces gaps such as "REQ-AUTH-003 has a `functional-design` entry but no `test-plan` entry covering it" — the Guide's prompt instructs it to detect these and either schedule the missing work or escalate.
+- **Artifact lineage** — for each `filename_hint` within `(project_code, responsibility_code, type)`, the chain of `artifact_id`s linked by `supersedes`. Used by the rollback UI and by the Guide when it needs to reason about the most recent accepted version of a revised artifact.
+- **Active sessions** — every in-flight entry's `session_id`, mapped to the sub-agent and artifact context. Used by the engine to decide which session to resume on a tool result and by the Guide (through its index snapshot) to know what work is still outstanding from a prior turn.
 
 The index itself is not persisted between runs. It is rebuilt on every cold start from the on-disk state (see §3).
 
@@ -181,15 +181,15 @@ For each in-flight entry the engine checks whether the sub-agent session log `<p
 - **Session log present** → entry is resumable. The engine queues the session for rehydration (see §4).
 - **Session log absent** → entry is *orphan*. The engine deletes the orphan file from the workspace and logs the deletion. Orphan artifacts can only arise from a crash between the workspace write and the session log append; the session-log append-before-respond invariant (§4.2) makes this rare but not impossible (e.g., disk full mid-write).
 
-### Phase 4 — locate the Orchestrator session
+### Phase 4 — locate the Guide session
 
-The Orchestrator's session is recorded by a marker file at `<project>/.kodo/orchestrator.session` containing the current Orchestrator `session_id`. Session IDs are POSIX timestamps (e.g. `1748792400`). The engine reads the marker and checks for the corresponding session directory:
+The Guide's session is recorded by a marker file at `<project>/.kodo/guide.session` containing the current Guide `session_id`. Session IDs are POSIX timestamps (e.g. `1748792400`). The engine reads the marker and checks for the corresponding session directory:
 
-- **Marker present and `sessions/<session_id>/` directory exists** → resume. The engine loads `transient.json` for phase/prompt/autonomous state, replays `session.jsonl` to reconstruct the Orchestrator's message history, and queues its next turn per §4.3. Sub-agent sessions queued in Phase 3 are subordinate: they finish first (the Orchestrator was blocked on whichever `run_subagent` tool call spawned them); their results then flow back into the Orchestrator's resumed loop via the request-ID dedup mechanism (§4.4).
-- **Marker present but the named session directory is missing** → the previous Orchestrator session was lost (rare; e.g., disk corruption). The engine logs the anomaly, discards the marker, and falls through to "no marker".
-- **No marker** → no prior Orchestrator session. The engine creates a fresh session directory (new POSIX-timestamp `session_id`, writes `meta.json` with `session_name: "Unnamed Session"`, `transient.json` with initial state, updates the marker file). The Orchestrator's first turn is constructed with `{system prompt + index summary + an explicit "cold start" event in the uncached user block}`. The Orchestrator decides what to do based on the index — typically, "no narrative artifact exists, drive intake".
+- **Marker present and `sessions/<session_id>/` directory exists** → resume. The engine loads `transient.json` for phase/prompt/autonomous state, replays `session.jsonl` to reconstruct the Guide's message history, and queues its next turn per §4.3. Sub-agent sessions queued in Phase 3 are subordinate: they finish first (the Guide was blocked on whichever `run_subagent` tool call spawned them); their results then flow back into the Guide's resumed loop via the request-ID dedup mechanism (§4.4).
+- **Marker present but the named session directory is missing** → the previous Guide session was lost (rare; e.g., disk corruption). The engine logs the anomaly, discards the marker, and falls through to "no marker".
+- **No marker** → no prior Guide session. The engine creates a fresh session directory (new POSIX-timestamp `session_id`, writes `meta.json` with `session_name: "Unnamed Session"`, `transient.json` with initial state, updates the marker file). The Guide's first turn is constructed with `{system prompt + index summary + an explicit "cold start" event in the uncached user block}`. The Guide decides what to do based on the index — typically, "no narrative artifact exists, drive intake".
 
-Bootstrap is complete when phases 1–4 finish. The engine now has a populated index, a set of sub-agent sessions to resume, and an Orchestrator session ready to drive.
+Bootstrap is complete when phases 1–4 finish. The engine now has a populated index, a set of sub-agent sessions to resume, and an Guide session ready to drive.
 
 ### 3.1 Post-crash specifics
 
@@ -203,15 +203,15 @@ The `MirrorRepo` cannot be in a partially committed state by construction — gi
 
 ## 4. Session persistence
 
-Every sub-agent invocation runs inside a *session*. A session is a sequence of messages exchanged with one LLM, identified by a UUID assigned at invocation time. The Orchestrator's session uses the same shape and the same on-disk format as any leaf sub-agent's session — the only differences are its scope (project-lifetime per FR-ORCH-04) and its tool list (the larger Orchestrator surface per FR-ORCH-03).
+Every sub-agent invocation runs inside a *session*. A session is a sequence of messages exchanged with one LLM, identified by a UUID assigned at invocation time. The Guide's session uses the same shape and the same on-disk format as any leaf sub-agent's session — the only differences are its scope (project-lifetime per FR-ORCH-04) and its tool list (the larger Guide surface per FR-ORCH-03).
 
 ### 4.1 What is persisted
 
-**Orchestrator session** — persisted as a directory at `<project>/.kodo/sessions/<posix-timestamp>/` containing:
+**Guide session** — persisted as a directory at `<project>/.kodo/sessions/<posix-timestamp>/` containing:
 
 - `meta.json` — `session_name` and `created_at` (written once at session creation).
 - `transient.json` — mutable runtime state (`stage`, `last_prompt`, `autonomous`); overwritten in place on each state change.
-- `session.jsonl` — append-only LLM context: every message (`role`, `content`) exchanged with the Orchestrator LLM in order.
+- `session.jsonl` — append-only LLM context: every message (`role`, `content`) exchanged with the Guide LLM in order.
 - `agents/` and `mcp/` — one JSONL call log per sub-agent invocation and per MCP tool call respectively.
 
 **Sub-agent sessions** — persisted as flat JSONL files at `<project>/.kodo/sessions/<session_id>.jsonl` (UUID-keyed). Each line is one message envelope:
@@ -265,25 +265,25 @@ On resume, if the last logged message contains a tool call whose `request_id` ha
 
 This makes "always re-run, dedupe by request ID" the universal resume policy. The engine does not branch on tool identity; it re-runs, and the receiver decides whether the side effect has already occurred.
 
-The dedup rules extend to Orchestrator tools (FR-ORCH-03):
+The dedup rules extend to Guide tools (FR-ORCH-03):
 
 - `query_frontier`, `list_artifacts` — idempotent reads of the index. Re-run unconditionally.
-- `run_subagent`, `run_author_critic_iteration` — effectful. Dedup key is the Orchestrator's tool-call `request_id` against existence of the spawned sub-agent's `session_id`. If the spawned session exists, the engine waits for it to finish (or, if it had already finished, returns its result) instead of spawning a duplicate.
+- `run_subagent`, `run_author_critic_iteration` — effectful. Dedup key is the Guide's tool-call `request_id` against existence of the spawned sub-agent's `session_id`. If the spawned session exists, the engine waits for it to finish (or, if it had already finished, returns its result) instead of spawning a duplicate.
 - `ask_user`, `request_user_review_artifact` — effectful (the user's response is the side effect of interest). Dedup key is the `request_id` against the wire's pending-prompt ledger. A re-run after crash finds the pending prompt still outstanding and returns the user's eventual response when it arrives; or if the user already answered before the crash, the response is in the session log and no re-run is needed. In autonomous mode `request_user_review_artifact` resolves immediately with a synthesized acceptance and `ask_user` is not in the tool set at all.
 - `rollback` — effectful and destructive. Dedup key is the `request_id` against the mirror commit reached by `MirrorRepo.head_sha()`; if the head already matches `target_sha`, the rollback already happened.
 - `finalize_project` — effectful and terminal. Dedup key is the `request_id` against the wire's `state.phase`; if already `done`, return immediately.
 
-### 4.5 Orchestrator-session compaction
+### 4.5 Guide-session compaction
 
-The Orchestrator session may run for arbitrarily long — across an entire project from intake to `finalize_project`. When token usage approaches the model's context window (initial threshold: 75%), the engine triggers compaction:
+The Guide session may run for arbitrarily long — across an entire project from intake to `finalize_project`. When token usage approaches the model's context window (initial threshold: 75%), the engine triggers compaction:
 
-1. **Quiesce.** The engine waits for the Orchestrator's current tool call to complete and for any in-flight sub-agent session it spawned to finish. Compaction does not happen mid-tool-call.
-2. **Summarize.** The engine issues a dedicated compaction LLM call: input is the full Orchestrator transcript plus a summarization prompt; output is a compact "prior-context block" capturing decisions made, artifacts produced (by `artifact_id`), current Plan position, outstanding user-blocking moments, and the current responsibility/component under work.
-3. **Rotate.** The engine generates a fresh POSIX-timestamp `session_id`, creates a new session directory (`meta.json`, `transient.json`, `session.jsonl`) starting with `{Orchestrator system prompt + the compacted prior-context block + the current index snapshot + a "compaction completed" event in the uncached user block}`, and updates the `<project>/.kodo/orchestrator.session` marker to point at the new session.
-4. **Surface.** The engine emits `orchestrator.compacted {from_session_id, to_session_id, summary_excerpt}` over the wire (WS_PROTOCOL.md §5) so the user sees the transition.
-5. **Resume.** The Orchestrator's next turn begins from the fresh session. Sub-agent sessions are unaffected — they belong to their own session logs and are referenced by `artifact_id` and `session_id` from the compacted summary, not by message-array content.
+1. **Quiesce.** The engine waits for the Guide's current tool call to complete and for any in-flight sub-agent session it spawned to finish. Compaction does not happen mid-tool-call.
+2. **Summarize.** The engine issues a dedicated compaction LLM call: input is the full Guide transcript plus a summarization prompt; output is a compact "prior-context block" capturing decisions made, artifacts produced (by `artifact_id`), current Plan position, outstanding user-blocking moments, and the current responsibility/component under work.
+3. **Rotate.** The engine generates a fresh POSIX-timestamp `session_id`, creates a new session directory (`meta.json`, `transient.json`, `session.jsonl`) starting with `{Guide system prompt + the compacted prior-context block + the current index snapshot + a "compaction completed" event in the uncached user block}`, and updates the `<project>/.kodo/guide.session` marker to point at the new session.
+4. **Surface.** The engine emits `guide.compacted {from_session_id, to_session_id, summary_excerpt}` over the wire (WS_PROTOCOL.md §5) so the user sees the transition.
+5. **Resume.** The Guide's next turn begins from the fresh session. Sub-agent sessions are unaffected — they belong to their own session logs and are referenced by `artifact_id` and `session_id` from the compacted summary, not by message-array content.
 
-The prior Orchestrator session log is **not deleted**; it remains in `sessions/` as immutable audit history per §5.1. Multiple compactions over a project's lifetime produce multiple Orchestrator session logs whose succession is recorded by the `orchestrator.compacted` wire events (and by the fact that each new session's first messages reference the prior `session_id` in their compaction-summary metadata).
+The prior Guide session log is **not deleted**; it remains in `sessions/` as immutable audit history per §5.1. Multiple compactions over a project's lifetime produce multiple Guide session logs whose succession is recorded by the `guide.compacted` wire events (and by the fact that each new session's first messages reference the prior `session_id` in their compaction-summary metadata).
 
 A crash during compaction is recoverable: the marker either still points at the old session (step 3 not committed → resume the old session, retry compaction at next threshold check) or points at the new session (step 3 committed → resume the new session). Both states are valid; the engine does not need a separate "compacting" flag.
 
@@ -307,7 +307,7 @@ Every workspace artifact carries the `session_id` of the sub-agent invocation th
 
 ### 5.3 Storage
 
-Sub-agent session logs live at `<project>/.kodo/sessions/<session_id>.jsonl` (flat files). Orchestrator session logs live at `<project>/.kodo/sessions/<posix-timestamp>/session.jsonl`. Neither is exported, rotated, or compressed by Kodo. A future enhancement may add an external sink (S3, a database) for long-lived projects, but MVP keeps them local.
+Sub-agent session logs live at `<project>/.kodo/sessions/<session_id>.jsonl` (flat files). Guide session logs live at `<project>/.kodo/sessions/<posix-timestamp>/session.jsonl`. Neither is exported, rotated, or compressed by Kodo. A future enhancement may add an external sink (S3, a database) for long-lived projects, but MVP keeps them local.
 
 ---
 
@@ -317,17 +317,17 @@ This is the happy path: user opens a project in VS Code with a previously initia
 
 1. VS Code activates the Kodo extension.
 2. Extension launches the Kodo server on a loopback port and opens the WebSocket connection.
-3. Server bootstraps (§3): phases 1–4 in order — scans mirror, scans workspace, classifies in-flight sub-agent entries, locates or creates the Orchestrator session.
+3. Server bootstraps (§3): phases 1–4 in order — scans mirror, scans workspace, classifies in-flight sub-agent entries, locates or creates the Guide session.
 4. Server constructs the index and the derived views.
-5. Extension sends `hello`; server responds with `hello.ack` embedding the current state snapshot (WS_PROTOCOL.md §4.1). Pending sub-agent sessions are queued for rehydration; the Orchestrator session is queued to take its next turn.
+5. Extension sends `hello`; server responds with `hello.ack` embedding the current state snapshot (WS_PROTOCOL.md §4.1). Pending sub-agent sessions are queued for rehydration; the Guide session is queued to take its next turn.
 6. Extension renders the Kodo panel from the state snapshot.
 7. The engine drives whatever Phase 4 produced:
-   - **Orchestrator session existed and was resumed** — the engine loads `transient.json` and replays `session.jsonl` to restore the message history (§4.1), then resumes the next turn, re-executing any pending tool call with dedup per §4.4. The Orchestrator's next turn happens automatically; the user sees its `agent.tokens` stream and whichever side effect it produces (a sub-agent spawning, a prompt appearing, an artifact landing).
-   - **Orchestrator session was freshly created** — the engine issues its first turn with the index summary in the cached user block and a "cold start" event in the uncached block. The Orchestrator decides what to do: most commonly, no `narrative` artifact present → drive intake by sending a `prompt.question` asking the user to describe what to build (WS_PROTOCOL.md §6.1, §7.1).
+   - **Guide session existed and was resumed** — the engine loads `transient.json` and replays `session.jsonl` to restore the message history (§4.1), then resumes the next turn, re-executing any pending tool call with dedup per §4.4. The Guide's next turn happens automatically; the user sees its `agent.tokens` stream and whichever side effect it produces (a sub-agent spawning, a prompt appearing, an artifact landing).
+   - **Guide session was freshly created** — the engine issues its first turn with the index summary in the cached user block and a "cold start" event in the uncached block. The Guide decides what to do: most commonly, no `narrative` artifact present → drive intake by sending a `prompt.question` asking the user to describe what to build (WS_PROTOCOL.md §6.1, §7.1).
 
-No engine-level branch table selects "what to do next" — that table lives in the Orchestrator's prompt. The engine's job at startup is just to put the Orchestrator in a position to decide.
+No engine-level branch table selects "what to do next" — that table lives in the Guide's prompt. The engine's job at startup is just to put the Guide in a position to decide.
 
-User-visible result: opening the project shows the work as it was when VS Code was last closed, including any in-progress sub-agent runs, pending prompts, or the Orchestrator's next decision arriving as cards in the panel.
+User-visible result: opening the project shows the work as it was when VS Code was last closed, including any in-progress sub-agent runs, pending prompts, or the Guide's next decision arriving as cards in the panel.
 
 ---
 
@@ -342,28 +342,28 @@ On any cold start, regardless of the reason for the previous shutdown:
 1. Bootstrap runs as in §3 (phases 1–4).
 2. Index is constructed.
 3. Sub-agent sessions are rehydrated per §4.3.
-4. The Orchestrator session is rehydrated (Phase 4 located it; engine loads `transient.json` + replays `session.jsonl` per §4.1).
+4. The Guide session is rehydrated (Phase 4 located it; engine loads `transient.json` + replays `session.jsonl` per §4.1).
 5. Interrupted tool calls in any session are re-executed with dedup per §4.4.
-6. Sub-agent sessions finish their pending tool calls; their results flow back into the Orchestrator's tool-call dedup ledger; the Orchestrator's next turn resumes.
+6. Sub-agent sessions finish their pending tool calls; their results flow back into the Guide's tool-call dedup ledger; the Guide's next turn resumes.
 
-There is no "are we recovering?" branch. The procedure that handles clean restarts handles crashes; the only difference is whether bootstrap finds in-flight entries to resume. The Orchestrator does not need to know it was interrupted — its message array is identical to what it was before the crash.
+There is no "are we recovering?" branch. The procedure that handles clean restarts handles crashes; the only difference is whether bootstrap finds in-flight entries to resume. The Guide does not need to know it was interrupted — its message array is identical to what it was before the crash.
 
 ### 7.2 What is recovered, what is not
 
 | Recovered | Not recovered |
 |---|---|
-| Orchestrator session (full message history) | In-memory engine state outside session logs |
+| Guide session (full message history) | In-memory engine state outside session logs |
 | Sub-agent conversation context (full message history) | Tool calls in flight at moment of crash *only if their result was not logged* — they are re-run |
 | Workspace artifacts (in-flight) | Anything the engine held only in RAM (e.g., partial parsing of a streaming response) |
 | Completed artifacts (from mirror) | — |
 | Per-session request-ID dedup ledger (rebuilt from session logs) | — |
-| The Orchestrator's pending user prompts (rebuilt from session log + outbox) | — |
+| The Guide's pending user prompts (rebuilt from session log + outbox) | — |
 
 ### 7.3 The unrecoverable case
 
-A workspace artifact whose session log is missing — for example because the disk filled between artifact write and log append — is classified orphan and deleted (Phase 3 of bootstrap). The corresponding work restarts when the Orchestrator next decides to re-spawn the sub-agent (typically immediately, since the index shows no completed entry for that slot). This is the only loss-of-work case; in practice it requires a specific failure window of milliseconds.
+A workspace artifact whose session log is missing — for example because the disk filled between artifact write and log append — is classified orphan and deleted (Phase 3 of bootstrap). The corresponding work restarts when the Guide next decides to re-spawn the sub-agent (typically immediately, since the index shows no completed entry for that slot). This is the only loss-of-work case; in practice it requires a specific failure window of milliseconds.
 
-The Orchestrator's marker file (§3 Phase 4) pointing at a missing session log is handled by creating a fresh Orchestrator session; the project's accumulated state is in the mirror and the workspace, so a new Orchestrator session can pick up coherently — though it loses the prior Orchestrator's in-conversation reasoning state and starts from index-derived facts only.
+The Guide's marker file (§3 Phase 4) pointing at a missing session log is handled by creating a fresh Guide session; the project's accumulated state is in the mirror and the workspace, so a new Guide session can pick up coherently — though it loses the prior Guide's in-conversation reasoning state and starts from index-derived facts only.
 
 ---
 
@@ -398,19 +398,19 @@ Current `MirrorRepo.sync_and_commit()` conflates file copying with git operation
 
 ### 8.3 Rollback
 
-Rollback restores the project and mirror to a prior checkpoint commit. It is triggered by the Orchestrator calling its `rollback(target_sha)` tool (FR-ORCH-03), which the engine carries out. Procedure:
+Rollback restores the project and mirror to a prior checkpoint commit. It is triggered by the Guide calling its `rollback(target_sha)` tool (FR-ORCH-03), which the engine carries out. Procedure:
 
 1. **Terminate all ongoing sub-agent sessions.** The engine stops dispatching to every active sub-agent session, cancels any in-flight LLM call, and stops accepting tool results. Each terminated session's log is closed with a final entry recording the rollback (`{"direction": "engine", "event": "session_terminated_by_rollback", "target_sha": "<sha>"}`); the session files remain in `sessions/` as immutable audit history.
-2. **Terminate the current Orchestrator session.** Same treatment as a sub-agent session: cancel in-flight LLM call, close its log with the rollback entry, retain the file for audit. The reason: the Orchestrator was reasoning about a state that no longer exists; continuing with the same conversation would carry stale assumptions into the post-rollback world.
+2. **Terminate the current Guide session.** Same treatment as a sub-agent session: cancel in-flight LLM call, close its log with the rollback entry, retain the file for audit. The reason: the Guide was reasoning about a state that no longer exists; continuing with the same conversation would carry stale assumptions into the post-rollback world.
 3. Clear `<project>/.kodo/workspace/` entirely (in-flight work is discarded; `.retired/` audit history is also cleared since it pertains to the abandoned state).
 4. `MirrorRepo.checkout(target_sha)` — mirror working tree now reflects the target snapshot.
 5. Delete `<project>/src/` and `<project>/gen/` (the directories Kodo owns; the user's broader repo is untouched).
 6. Copy `<project>/.kodo/checkpoints/src/` and `<project>/.kodo/checkpoints/gen/` into `<project>/src/` and `<project>/gen/`.
 7. Rebuild the in-memory index from the new on-disk state (§3 phases 1 and 2 only; phase 3 finds no in-flight entries because the workspace is empty).
-8. **Create a fresh Orchestrator session.** Generate a new POSIX-timestamp `session_id`, create a new session directory (`meta.json`, `transient.json`, `session.jsonl`) with `{Orchestrator system prompt + the rebuilt index snapshot + a "post-rollback start" event in the uncached user block}`, update the `<project>/.kodo/orchestrator.session` marker. The fresh Orchestrator decides what to do based on the restored state; from its perspective, this is a cold start at `target_sha`.
-9. Wire surfaces the rollback completion via a `state` event (the user already knows it happened because they confirmed the `ask_user` prompt that preceded the Orchestrator's `rollback` call).
+8. **Create a fresh Guide session.** Generate a new POSIX-timestamp `session_id`, create a new session directory (`meta.json`, `transient.json`, `session.jsonl`) with `{Guide system prompt + the rebuilt index snapshot + a "post-rollback start" event in the uncached user block}`, update the `<project>/.kodo/guide.session` marker. The fresh Guide decides what to do based on the restored state; from its perspective, this is a cold start at `target_sha`.
+9. Wire surfaces the rollback completion via a `state` event (the user already knows it happened because they confirmed the `ask_user` prompt that preceded the Guide's `rollback` call).
 
-Post-rollback behaviour is indistinguishable from a clean bootstrap whose mirror happens to be at `target_sha`. There is no "rollback mode" the engine subsequently operates in; the rollback is complete the moment the new Orchestrator session takes its first turn.
+Post-rollback behaviour is indistinguishable from a clean bootstrap whose mirror happens to be at `target_sha`. There is no "rollback mode" the engine subsequently operates in; the rollback is complete the moment the new Guide session takes its first turn.
 
 The user's VCS sees a large file-change set and decides how to record it. Kodo does not touch the user's repository configuration.
 
@@ -420,17 +420,17 @@ The user's VCS sees a large file-change set and decides how to record it. Kodo d
 
 | Concern | Owner | Notes |
 |---|---|---|
-| Deciding what runs next | Orchestrator sub-agent | Drives every sub-agent invocation via its tool surface (FR-ORCH-02/03). |
-| Hosting the Orchestrator's tool surface | Runtime (`src/kodo/runtime/_tool_surface.py`) | Implements `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `ask_user`, `rollback`, `finalize_project`. `ask_user` is dropped from the surface in autonomous mode. |
-| Author/Critic iteration cap and bail logic | Orchestrator's system prompt | Cap (5) and judgment rules live in the prompt, not the engine. |
+| Deciding what runs next | Guide sub-agent | Drives every sub-agent invocation via its tool surface (FR-ORCH-02/03). |
+| Hosting the Guide's tool surface | Runtime (`src/kodo/runtime/_tool_surface.py`) | Implements `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `ask_user`, `rollback`, `finalize_project`. `ask_user` is dropped from the surface in autonomous mode. |
+| Author/Critic iteration cap and bail logic | Guide's system prompt | Cap (5) and judgment rules live in the prompt, not the engine. |
 | Git history of checkpoints | `MirrorRepo` | Pure git wrapper, no file I/O beyond git's own. |
 | Move completed artifacts to project + mirror | `Promoter` | Owns the §8.1 sequence; one Promoter run per completed artifact, driven by the engine on `report_artifact_completed`. |
 | Project index (`ProjectIndex`) | Workspace + engine | Single runtime source of truth; held in memory, reconstructed on every bootstrap from mirror sidecars (completed) + workspace staging files (in-flight). Workspace maintains it on publish/supersede/complete. |
 | Workspace staging storage | Workspace | Writes in-flight artifacts under `.kodo/workspace/`, dedupes by `request_id`, moves them out on completion. |
-| Session log append (Orchestrator and sub-agents) | Engine (LLM call wrapper) | Append-before-respond invariant (§4.2). |
+| Session log append (Guide and sub-agents) | Engine (LLM call wrapper) | Append-before-respond invariant (§4.2). |
 | Session rehydration | Engine | Reads session log, computes resume point, re-runs pending tool call. |
-| Orchestrator-session compaction | Runtime (`runtime/_compaction.py`) | Triggers at the context-window threshold; surfaces `orchestrator.compacted` (§4.5). |
-| Bootstrap orchestration | Engine startup hook | Runs §3 phases 1–4, populates index, queues session resumes, ensures the Orchestrator marker is current. |
+| Guide-session compaction | Runtime (`runtime/_compaction.py`) | Triggers at the context-window threshold; surfaces `guide.compacted` (§4.5). |
+| Bootstrap orchestration | Engine startup hook | Runs §3 phases 1–4, populates index, queues session resumes, ensures the Guide marker is current. |
 | Review-gate and user-prompt blocking | Runtime (`runtime/_gates.py`) | Resolves `ask_user` / `request_user_review_artifact` Futures; in autonomous mode auto-accepts review gates and withholds `ask_user`. |
 | Rollback UI trigger | Extension / Kodo panel | User triggers via the panel; the engine accepts the request and reports completion. |
-| Rollback execution | Orchestrator + engine | Orchestrator calls `rollback(target_sha)` (after `ask_user` confirmation in interactive mode; directly in autonomous mode); engine performs the §8.3 sequence; a fresh Orchestrator session resumes. |
+| Rollback execution | Guide + engine | Guide calls `rollback(target_sha)` (after `ask_user` confirmation in interactive mode; directly in autonomous mode); engine performs the §8.3 sequence; a fresh Guide session resumes. |

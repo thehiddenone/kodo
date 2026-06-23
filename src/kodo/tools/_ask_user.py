@@ -1,6 +1,6 @@
 """``ask_user`` tool — surfaces a question to the present user.
 
-Shared by every agent that declares ``ask_user`` (orchestrator included).
+Shared by every agent that declares ``ask_user`` (guide included).
 The tool is withheld entirely in autonomous mode by ``subagents._registry``,
 so this handler only ever runs when a user is present.
 """

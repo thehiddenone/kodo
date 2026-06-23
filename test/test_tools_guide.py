@@ -1,7 +1,7 @@
-"""Behavior tests for the orchestrator-facing tools in :mod:`kodo.tools`.
+"""Behavior tests for the guide-facing tools in :mod:`kodo.tools`.
 
 Every agent now shares one :class:`~kodo.tools.ToolDispatcher`; these tests
-exercise the tools the orchestrator typically holds — the read-only ones
+exercise the tools the guide typically holds — the read-only ones
 (``query_frontier``, ``list_artifacts``), the sub-agent launchers
 (``run_subagent``, ``run_author_critic_iteration``), and the terminal tools
 (``finalize_project``, ``rollback``).
@@ -122,7 +122,7 @@ def _make_dispatcher(
         gate=GateOrchestrator(_make_app_state(), MagicMock()),
         session=session,
         services=_StubServices(rollback=rollback_fn),
-        agent_name="orchestrator",
+        agent_name="guide",
         session_id="sess-test",
     )
 

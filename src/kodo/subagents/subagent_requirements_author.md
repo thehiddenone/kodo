@@ -93,26 +93,26 @@ Publish by calling `publish_artifact` with `type: "requirements"`, `author: "req
 
 ### 5. Requirements Critic review loop
 
-Publishing the requirements artifact signals it is ready for review. The orchestrator runs Requirements Critic on your published artifact; Critic publishes a `feedback` artifact whose `reviewed_artifact_id` is your requirements artifact ID.
+Publishing the requirements artifact signals it is ready for review. The guide runs Requirements Critic on your published artifact; Critic publishes a `feedback` artifact whose `reviewed_artifact_id` is your requirements artifact ID.
 
 Critic feedback arrives as your next input, with `verdict: "rejected"` and a non-empty `concerns` array. Concern kinds Critic uses include `ambiguity`, `compound`, `missing_field`, `contradiction`, `uncaptured_assumption`, `gap`, `scope_creep`, `north_star_misalignment`. For each concern:
 
 - Revise the affected requirement, add the missing requirement, capture the missed assumption, or strengthen the relevant area.
 - The concern's `description` is concrete; use it directly when sound.
 
-Republish the revised requirements by calling `publish_artifact` with `supersedes: [<prior_requirements_artifact_id>]`. The orchestrator runs Critic again on the new artifact and decides how many revision rounds to attempt; you do not count iterations or assume a fixed limit.
+Republish the revised requirements by calling `publish_artifact` with `supersedes: [<prior_requirements_artifact_id>]`. The guide runs Critic again on the new artifact and decides how many revision rounds to attempt; you do not count iterations or assume a fixed limit.
 
 When Critic publishes feedback with `verdict: "accepted"`, the loop is complete and the artifact is presented to the user at the review gate.
 
 ### 6. Escalation when Critic does not converge
 
-When the orchestrator signals that it is ending the loop without convergence and Critic is still publishing `rejected` feedback, call `escalate_blocker` with:
+When the guide signals that it is ending the loop without convergence and Critic is still publishing `rejected` feedback, call `escalate_blocker` with:
 
 - `reason: "critic_iteration_cap"`.
 - `summary` describing the current state of the requirements and the area in dispute.
 - `blocking_artifact_ids` containing the current requirements artifact ID and the most recent rejected feedback artifact ID(s).
 
-The user's resolution arrives as your next input. Incorporate it, republish via `publish_artifact` with `supersedes`. If the resolution materially changes requirements, the orchestrator runs one more Critic pass.
+The user's resolution arrives as your next input. Incorporate it, republish via `publish_artifact` with `supersedes`. If the resolution materially changes requirements, the guide runs one more Critic pass.
 
 ### 7. User feedback handling
 
@@ -177,7 +177,7 @@ The tool call sequence over a complete Requirements Author run is:
 2. Optional `escalate_blocker` if a sub-narrative blocks a requirement.
 3. `publish_artifact` (requirements draft).
 4. Zero or more revision cycles driven by Critic feedback: `publish_artifact` with `supersedes`.
-5. Optional `escalate_blocker` if the orchestrator ends the loop without convergence.
+5. Optional `escalate_blocker` if the guide ends the loop without convergence.
 6. Zero or more revision cycles driven by user feedback at the review gate, each via `publish_artifact` with `supersedes`.
 
 ## Tools

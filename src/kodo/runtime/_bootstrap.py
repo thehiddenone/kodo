@@ -3,7 +3,7 @@
 Bootstrap splits across the two layout tiers (see the ``project-kodo`` memory,
 WorkspaceLayout two-root model):
 
-* :func:`locate_orchestrator_session` — the **workspace** tier.  Locates or
+* :func:`locate_guide_session` — the **workspace** tier.  Locates or
   creates the session from the workspace-level marker + ``sessions/`` dir.  Runs
   at server start, before any project is bound.
 * :class:`ProjectBootstrap` — the **project** tier.  Rebuilds the artifact
@@ -28,22 +28,22 @@ from pathlib import Path
 from kodo.state import new_session_id
 from kodo.workspace import ArtifactType, IndexEntry, ProjectIndex, Verdict
 
-from ._orchestrator import OrchestratorMarker
+from ._guide import GuideMarker
 
 _log = logging.getLogger(__name__)
 
 _SIDECAR_SUFFIX = ".kodo.json"
 
 
-def locate_orchestrator_session(marker_dir: Path, sessions_dir: Path) -> tuple[str, bool]:
-    """Locate or create the Orchestrator session (workspace tier).
+def locate_guide_session(marker_dir: Path, sessions_dir: Path) -> tuple[str, bool]:
+    """Locate or create the Guide session (workspace tier).
 
-    The session is workspace-scoped (mode-agnostic — Orchestrator and Problem
+    The session is workspace-scoped (mode-agnostic — Guide and Problem
     Solver share it), so its marker and store live under
     ``.kodo-workspace/`` regardless of which project is later bound.
 
     Args:
-        marker_dir (Path): Directory holding the orchestrator session marker
+        marker_dir (Path): Directory holding the guide session marker
             (``.kodo-workspace/``).
         sessions_dir (Path): Directory holding per-session stores
             (``.kodo-workspace/sessions/``).
@@ -52,24 +52,23 @@ def locate_orchestrator_session(marker_dir: Path, sessions_dir: Path) -> tuple[s
         tuple[str, bool]: ``(session_id, resumed)`` where ``resumed`` is
         ``True`` if an existing session directory was found.
     """
-    marker = OrchestratorMarker(marker_dir)
+    marker = GuideMarker(marker_dir)
     existing = marker.read()
 
     if existing:
         session_dir = sessions_dir / existing
         if session_dir.is_dir():
-            _log.info("Orchestrator session resumed: %s", existing)
+            _log.info("Guide session resumed: %s", existing)
             return existing, True
         _log.warning(
-            "Orchestrator marker points to missing session dir %s "
-            "— discarding marker and starting fresh",
+            "Guide marker points to missing session dir %s — discarding marker and starting fresh",
             existing,
         )
         marker.clear()
 
     session_id = new_session_id()
     marker.write(session_id)
-    _log.info("Orchestrator session started: %s", session_id)
+    _log.info("Guide session started: %s", session_id)
     return session_id, False
 
 
@@ -79,15 +78,15 @@ class BootstrapResult:
 
     Attributes:
         index: Fully populated in-memory artifact index.
-        orchestrator_session_id: The current Orchestrator session ID —
+        guide_session_id: The current Guide session ID —
             either resumed from the marker or freshly created.
-        orchestrator_resumed: ``True`` when an existing session log was
+        guide_resumed: ``True`` when an existing session log was
             found; ``False`` when a fresh session was started.
     """
 
     index: ProjectIndex
-    orchestrator_session_id: str
-    orchestrator_resumed: bool
+    guide_session_id: str
+    guide_resumed: bool
 
 
 class ProjectBootstrap:
@@ -252,7 +251,7 @@ class ProjectBootstrap:
         if entry.session_id is None:
             return True
         # In-flight artifacts are stamped with the subsession ID of the sub-agent
-        # that published them. The subsession log lives under the orchestrator
+        # that published them. The subsession log lives under the guide
         # session's ``subsessions/`` directory; an artifact whose subsession log
         # is gone has no producing run and is an orphan.
         if not self.__sessions_dir.is_dir():

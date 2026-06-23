@@ -103,7 +103,7 @@ EVT_REVIEW_STARTED = "review.started"
 EVT_REVIEW_VERDICT = "review.verdict"
 EVT_ARTIFACT_PUBLISHED = "artifact.published"
 EVT_ARTIFACT_REMOVED = "artifact.removed"
-EVT_ORCHESTRATOR_COMPACTED = "orchestrator.compacted"
+EVT_GUIDE_COMPACTED = "guide.compacted"
 EVT_LLM_TURN_START = "llm.turn_start"
 # Emitted by the LLM gateway while a session's LLM request is queued behind the
 # serial local gate / a saturated cloud feed (``reason:"queued"``) or is being

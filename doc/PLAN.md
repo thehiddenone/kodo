@@ -8,7 +8,7 @@
 
 ### 0.1 Starting point
 
-**Discard the existing `src/kodo/` scaffolding** (`server/_app.py`, `_orchestrator.py`, `_worker.py`, the placeholder `workflow/`). They were prototyped against an HTTP + multiprocessing design that conflicts with the websocket + single-asyncio-worker design in [DESIGN.md](DESIGN.md). The Anthropic LLM stub, the MCP registry shape, and the `tools/fileio` + `tools/shell` MCP servers can be salvaged as references but will be reimplemented to match the design's interfaces.
+**Discard the existing `src/kodo/` scaffolding** (`server/_app.py`, `_guide.py`, `_worker.py`, the placeholder `workflow/`). They were prototyped against an HTTP + multiprocessing design that conflicts with the websocket + single-asyncio-worker design in [DESIGN.md](DESIGN.md). The Anthropic LLM stub, the MCP registry shape, and the `tools/fileio` + `tools/shell` MCP servers can be salvaged as references but will be reimplemented to match the design's interfaces.
 
 The first milestone reorganises the repo to the layout in DESIGN section 1.1.
 

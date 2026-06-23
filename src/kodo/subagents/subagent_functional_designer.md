@@ -90,24 +90,24 @@ The engine handles autonomous mode (when the user is not available) by auto-acce
 
 ### Stage 5 — Per-component design loop
 
-For each component, in the order set by the Design Plan, the orchestrator drives the following sequence:
+For each component, in the order set by the Design Plan, the guide drives the following sequence:
 
 1. Compose the Functional Design document (structure described below) and publish it by calling `publish_artifact` with `type: "functional-design"`, `author: "functional_designer"`, `project_code: <PROJECTCODE>`, `responsibility_code: <COMPONENT_CODENAME>`, `content`, `requirement_ids` set to every requirement ID this component covers, and optional `filename_hint: "functional-design.md"`. Record the returned `artifact_id`.
-2. The orchestrator runs Functional Design Critic on the published artifact. Critic publishes a `feedback` artifact whose `reviewed_artifact_id` is yours.
-3. When Critic publishes feedback with `verdict: "rejected"`, address each concern, then republish via `publish_artifact` with `supersedes: [<prior_functional_design_id>]`. The orchestrator decides how many revision rounds to attempt; you do not count iterations or assume a fixed limit.
-4. When the orchestrator signals that it is ending the loop without convergence and Critic is still publishing `rejected` feedback, call `escalate_blocker` with `reason: "critic_iteration_cap"`, a `summary` of the dispute, and `blocking_artifact_ids` containing the current functional-design artifact ID and the latest rejected feedback ID(s).
+2. The guide runs Functional Design Critic on the published artifact. Critic publishes a `feedback` artifact whose `reviewed_artifact_id` is yours.
+3. When Critic publishes feedback with `verdict: "rejected"`, address each concern, then republish via `publish_artifact` with `supersedes: [<prior_functional_design_id>]`. The guide decides how many revision rounds to attempt; you do not count iterations or assume a fixed limit.
+4. When the guide signals that it is ending the loop without convergence and Critic is still publishing `rejected` feedback, call `escalate_blocker` with `reason: "critic_iteration_cap"`, a `summary` of the dispute, and `blocking_artifact_ids` containing the current functional-design artifact ID and the latest rejected feedback ID(s).
 5. When Critic publishes feedback with `verdict: "accepted"`, the artifact is presented to the user at the review gate. User feedback returns to you as the next input. Handle feedback as described in *Feedback handling* below.
 6. Once accepted, the design is locked and the loop advances to the next component. "Locked" means the latest accepted functional-design artifact for the component is the live one in the workspace; do not supersede it unless a reopen requires it.
 
 ### Stage 6 — Handling reopens of locked designs
 
-When a Critic concern implicates a locked design, the orchestrator routes a feedback artifact whose `reviewed_artifact_id` points at the locked design back to you. Republish the locked design via `publish_artifact` with `supersedes: [<locked_design_id>]`. The same orchestrator-managed iteration budget and `escalate_blocker` path apply.
+When a Critic concern implicates a locked design, the guide routes a feedback artifact whose `reviewed_artifact_id` points at the locked design back to you. Republish the locked design via `publish_artifact` with `supersedes: [<locked_design_id>]`. The same guide-managed iteration budget and `escalate_blocker` path apply.
 
 If the engine signals that reopens have cascaded to more than two locked designs from a single new design, call `escalate_blocker` with `reason: "reopen_cascade"` even if no iteration budget has been spent — a cascade of that depth indicates an interface problem that requires a design-plan-level decision.
 
 ### Stage 7 — Final cross-design pass
 
-Once every component has a locked design, the orchestrator runs Critic one final time over the complete set, in cross-design mode. Concerns from this pass arrive as `feedback` artifacts whose `reviewed_artifact_id` points at one of the locked designs, handled per Stage 6.
+Once every component has a locked design, the guide runs Critic one final time over the complete set, in cross-design mode. Concerns from this pass arrive as `feedback` artifacts whose `reviewed_artifact_id` points at one of the locked designs, handled per Stage 6.
 
 ### Stage 8 — Run complete
 

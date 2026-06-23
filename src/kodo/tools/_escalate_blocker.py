@@ -1,4 +1,4 @@
-"""``escalate_blocker`` tool — hands control back to the orchestrator."""
+"""``escalate_blocker`` tool — hands control back to the guide."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ class EscalateBlockerTool(Tool):
     """Escalate a blocker, ending the agent's turn.
 
     Sets the context's ``stop_requested`` so the engine returns control to the
-    orchestrator. In interactive mode the blocker is also surfaced to the
-    present user; in autonomous mode the orchestrator adjudicates.
+    guide. In interactive mode the blocker is also surfaced to the
+    present user; in autonomous mode the guide adjudicates.
     """
 
     async def handle(self, tool_input: dict[str, object]) -> str:

@@ -8,7 +8,7 @@ must never import ``subagents``, ``llms``, or ``runtime`` — the collaborators
 those would provide are expressed here as structural Protocols
 (:class:`GateLike`, :class:`SessionLike`, :class:`EngineServices`) and injected.
 
-There is a single unified tool surface: every agent (orchestrator included)
+There is a single unified tool surface: every agent (guide included)
 gets exactly the tools its frontmatter declares, dispatched through one
 :class:`ToolDispatcher`.  Each tool is a :class:`Tool` subclass in its own
 ``_<tool_name>.py`` module, bound to one run's :class:`ToolContext`, mirroring

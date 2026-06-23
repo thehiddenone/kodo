@@ -1,4 +1,4 @@
-"""``query_frontier`` tool spec — orchestrator tool (FR-ORCH-03).
+"""``query_frontier`` tool spec — guide tool (FR-ORCH-03).
 
 Dispatch lives in :mod:`kodo.tools` (one handler module per tool).
 """

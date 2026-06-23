@@ -130,7 +130,7 @@ def test_append_message_persists_attachment_links_not_content(store: TransientSt
     store.append_message(
         "user",
         "clean prompt",
-        entry_agent="orchestrator",
+        entry_agent="guide",
         attachments=[{"name": "f.py", "stored": rel}],
     )
     lines = store.read_session_lines()
@@ -338,8 +338,8 @@ def test_session_log_path_is_inside_session_dir(store: TransientStore) -> None:
 
 @pytest.mark.asyncio
 async def test_agent_jsonl_is_written(store: TransientStore) -> None:
-    await store.write_agent_record("orchestrator", {"prompt": "hello", "tokens": 10})
-    jsonl = store.session_dir / "agents" / "orchestrator.jsonl"
+    await store.write_agent_record("guide", {"prompt": "hello", "tokens": 10})
+    jsonl = store.session_dir / "agents" / "guide.jsonl"
     assert jsonl.exists()
     records = [json.loads(line) for line in jsonl.read_text(encoding="utf-8").splitlines()]
     assert len(records) == 1
@@ -349,8 +349,8 @@ async def test_agent_jsonl_is_written(store: TransientStore) -> None:
 @pytest.mark.asyncio
 async def test_multiple_records_append_to_same_agent_file(store: TransientStore) -> None:
     for i in range(1, 4):
-        await store.write_agent_record("orchestrator", {"n": i})
-    jsonl = store.session_dir / "agents" / "orchestrator.jsonl"
+        await store.write_agent_record("guide", {"n": i})
+    jsonl = store.session_dir / "agents" / "guide.jsonl"
     records = [json.loads(line) for line in jsonl.read_text(encoding="utf-8").splitlines()]
     assert [r["n"] for r in records] == [1, 2, 3]
 

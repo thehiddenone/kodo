@@ -1,9 +1,9 @@
-"""Orchestrator session marker — tracks the current Orchestrator session_id on disk.
+"""Guide session marker — tracks the current Guide session_id on disk.
 
-The marker file at ``<project>/.kodo/orchestrator.session`` contains a single
-line: the current Orchestrator session_id.  Bootstrap Phase 4
+The marker file at ``<project>/.kodo/guide.session`` contains a single
+line: the current Guide session_id.  Bootstrap Phase 4
 (STATE_AND_LIFECYCLE.md §3) reads this to decide whether to resume an existing
-Orchestrator session or start a fresh one.
+Guide session or start a fresh one.
 """
 
 from __future__ import annotations
@@ -11,13 +11,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-__all__ = ["OrchestratorMarker"]
+__all__ = ["GuideMarker"]
 
 _log = logging.getLogger(__name__)
 
 
-class OrchestratorMarker:
-    """Reads and writes the Orchestrator session marker file.
+class GuideMarker:
+    """Reads and writes the Guide session marker file.
 
     Args:
         kodo_dir (Path): The ``.kodo/`` directory of the project.
@@ -31,7 +31,7 @@ class OrchestratorMarker:
         Args:
             kodo_dir (Path): Path to ``<project>/.kodo/``.
         """
-        self.__path = kodo_dir / "orchestrator.session"
+        self.__path = kodo_dir / "guide.session"
 
     @property
     def path(self) -> Path:
@@ -53,11 +53,11 @@ class OrchestratorMarker:
         """Write a session_id to the marker file, creating it if absent.
 
         Args:
-            session_id (str): The new Orchestrator session_id.
+            session_id (str): The new Guide session_id.
         """
         self.__path.parent.mkdir(parents=True, exist_ok=True)
         self.__path.write_text(session_id + "\n", encoding="utf-8")
-        _log.debug("Orchestrator marker written: %s", session_id)
+        _log.debug("Guide marker written: %s", session_id)
 
     def clear(self) -> None:
         """Delete the marker file (used on rollback to force a fresh session).
@@ -65,4 +65,4 @@ class OrchestratorMarker:
         No-op if the file does not exist.
         """
         self.__path.unlink(missing_ok=True)
-        _log.debug("Orchestrator marker cleared")
+        _log.debug("Guide marker cleared")

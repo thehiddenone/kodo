@@ -2,7 +2,7 @@
 
 Rollback procedure (STATE_AND_LIFECYCLE.md §8.3):
 
-1. Terminate all active sessions (sub-agent + Orchestrator) — append a
+1. Terminate all active sessions (sub-agent + Guide) — append a
    termination event to each session log.
 2. Clear ``.kodo/workspace/`` entirely.
 3. ``MirrorRepo.checkout(target_sha)`` — mirror working tree reflects the
@@ -72,7 +72,7 @@ class Rollback:
         Args:
             target_sha (str): Commit SHA to roll back to (full or abbreviated).
             active_session_logs (list[SessionLog] | None): Session logs of all
-                currently active sessions (sub-agent and Orchestrator).  Each is
+                currently active sessions (sub-agent and Guide).  Each is
                 closed with a termination event before the rollback proceeds.
 
         Returns:

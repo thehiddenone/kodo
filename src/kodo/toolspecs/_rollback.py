@@ -1,4 +1,4 @@
-"""``rollback`` tool spec — orchestrator tool (FR-ORCH-03).
+"""``rollback`` tool spec — guide tool (FR-ORCH-03).
 
 Dispatch lives in :mod:`kodo.tools` (one handler module per tool).
 """
@@ -17,8 +17,8 @@ ROLLBACK: ToolSpec = ToolSpec(
     description=(
         "Invoke the rollback procedure.  "
         "Restores src/ and gen/ from the target mirror commit, clears the workspace, "
-        "and starts a fresh Orchestrator session.  "
-        "In interactive mode the Orchestrator MUST confirm with the user via ask_user "
+        "and starts a fresh Guide session.  "
+        "In interactive mode the Guide MUST confirm with the user via ask_user "
         "before calling this.  In autonomous mode it decides and documents via post_update; "
         "there is no user to confirm with."
     ),

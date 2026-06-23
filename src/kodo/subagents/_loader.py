@@ -35,7 +35,7 @@ class SubAgent:
         subagents: Names of sub-agents this agent is permitted to spawn (via
             ``run_subagent`` / ``run_author_critic_iteration``). Empty by default,
             so an agent can spawn nothing unless its frontmatter opts in. There is
-            no built-in "only the orchestrator spawns" assumption — any agent that
+            no built-in "only the guide spawns" assumption — any agent that
             declares both a spawning tool and a ``subagents`` allow-list can drive
             sub-agents, and the engine enforces the allow-list at dispatch time.
         system_prompt: Full system prompt body.

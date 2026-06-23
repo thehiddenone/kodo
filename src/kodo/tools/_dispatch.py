@@ -1,6 +1,6 @@
 """Unified tool dispatch — one surface for every agent.
 
-There is no orchestrator-vs-leaf split: every agent (the orchestrator
+There is no guide-vs-leaf split: every agent (the guide
 included) is granted exactly the tools its frontmatter declares, and every
 tool call — whoever makes it — is routed through a single
 :class:`ToolDispatcher` to the matching :class:`~kodo.tools.Tool` subclass.
@@ -122,7 +122,7 @@ def tools_for_agent(tool_names: frozenset[str]) -> list[ToolSpec]:
 class ToolDispatcher:
     """Routes one agent run's tool calls to their :class:`Tool` instances.
 
-    One instance is created per agent run (orchestrator or leaf). It owns a
+    One instance is created per agent run (guide or leaf). It owns a
     :class:`~kodo.tools.ToolContext` carrying the injected collaborators plus
     the run's mutable state, and exposes that state (``published_ids``,
     ``stop_requested``) back to the engine after the run.

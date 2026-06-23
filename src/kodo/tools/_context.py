@@ -120,7 +120,7 @@ class EngineServices(Protocol):
         """Run a leaf sub-agent and return the artifact IDs it published.
 
         ``caller`` is the name of the agent making the call (the running agent —
-        not necessarily the orchestrator). The engine gates the spawn against
+        not necessarily the guide). The engine gates the spawn against
         that caller's declared sub-agent allow-list and raises ``PermissionError``
         when ``name`` is not permitted.
         """
@@ -163,7 +163,7 @@ class EngineServices(Protocol):
 class ToolContext:
     """Everything a tool handler may touch, plus per-run mutable state.
 
-    One instance is created per agent run (orchestrator or leaf) by the engine
+    One instance is created per agent run (guide or leaf) by the engine
     and shared across every tool call in that run.  Handlers mutate
     ``published_ids`` and ``stop_requested``; the owning
     :class:`~kodo.tools.ToolDispatcher` exposes them back to the engine.

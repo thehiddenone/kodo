@@ -78,7 +78,7 @@ FINALIZE_PROJECT: ToolSpec = ToolSpec(
     user_description="Mark the project as done",   # short UI label for tool-call events
     description=(                          # what the MODEL reads to decide to call it
         "Terminal call: the project is complete.  "
-        "Transitions state.phase to 'done' and ends the Orchestrator session."
+        "Transitions state.phase to 'done' and ends the Guide session."
     ),
     input_schema={"type": "object", "properties": {}, "required": []},  # JSON Schema
     when_to_use=(                          # rendered into the agent's `## Tools` prompt
@@ -221,7 +221,7 @@ while still calling back into it. `runtime` constructs the concrete objects and
 hands them in; `tools` only ever names the Protocols. A handler reaches an engine
 op as, e.g., `await self.context.services.run_subagent(self.context.agent_name, ...)`.
 The spawning tools pass `self.context.agent_name` (the **running** agent — not a
-hard-coded orchestrator) as the `caller`; the engine gates the spawn against that
+hard-coded guide) as the `caller`; the engine gates the spawn against that
 caller's frontmatter `subagents:` allow-list and raises `PermissionError` (which
 the tool returns to the LLM as `{"error": ...}`) when the target is not permitted.
 
@@ -265,8 +265,8 @@ ToolCallEvent(tool_use_id="toolu_…", tool_name="finalize_project", tool_input=
 
 ## 7. Which tools an agent gets: frontmatter → `tools_for_agent`
 
-There is **one unified tool surface** — no orchestrator-vs-leaf split. Every
-agent (the orchestrator included) is granted exactly the tools its frontmatter
+There is **one unified tool surface** — no guide-vs-leaf split. Every
+agent (the guide included) is granted exactly the tools its frontmatter
 `tools:` list declares. Two consumers turn that list into reality:
 
 **(a) The LLM-facing tool list.** The engine calls
@@ -336,7 +336,7 @@ class ToolDispatcher:
 
 `dispatch` is the single function the engine passes into its turn loop as the
 `tool_dispatch` callback. It instantiates the matching `Tool` subclass bound to
-this run's context and calls its `handle`. Whether the caller is the orchestrator
+this run's context and calls its `handle`. Whether the caller is the guide
 or a leaf sub-agent, the routing is identical — only the *contents* of the
 context and the *set* of tools differ.
 
@@ -345,7 +345,7 @@ context and the *set* of tools differ.
 ## 10. The engine turn loop — putting it together
 
 [runtime/_engine.py](../src/kodo/runtime/_engine.py) drives the generic loop
-(`__run_agent_turn`), shared by the orchestrator and every leaf agent. Per run:
+(`__run_agent_turn`), shared by the guide and every leaf agent. Per run:
 
 1. Resolve the agent (`registry.get(name, autonomous)`), which yields its
    filtered `tools` and rendered system prompt.
@@ -387,11 +387,11 @@ the engine reads `dispatcher.published_ids` (what a leaf produced) and used
 
 ## 11. Full end-to-end sequence
 
-A concrete trace of the orchestrator calling `run_subagent`, which spawns a leaf
+A concrete trace of the guide calling `run_subagent`, which spawns a leaf
 that publishes an artifact:
 
 ```text
- LLM (orchestrator)                  Engine / ToolDispatcher              tools/ Tool classes
+ LLM (guide)                  Engine / ToolDispatcher              tools/ Tool classes
  ──────────────────                  ───────────────────────              ───────────────────
    │  tool_use: run_subagent ──────────►  dispatch("run_subagent", …)
    │                                        └─► RunSubagentTool(ctx).handle(…)

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from kodo.runtime import ProjectBootstrap, locate_orchestrator_session
+from kodo.runtime import ProjectBootstrap, locate_guide_session
 from kodo.toolchains import (
     ToolchainBuildResult,
     ToolchainPlugin,
@@ -98,7 +98,7 @@ def _bootstrap(tmp_path: Path) -> ProjectBootstrap:
 
 
 def _locate_session(tmp_path: Path) -> tuple[str, bool]:
-    return locate_orchestrator_session(
+    return locate_guide_session(
         marker_dir=tmp_path / ".kodo",
         sessions_dir=tmp_path / ".kodo" / "sessions",
     )
@@ -465,19 +465,19 @@ async def test_bootstrap_phase3_correct_lineage_keeps_in_flight(tmp_path: Path) 
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator session location (locate_orchestrator_session)
+# Guide session location (locate_guide_session)
 # ---------------------------------------------------------------------------
 
 
 def test_session_fresh_project_creates_marker(tmp_path: Path) -> None:
     """
-    Given a project with no orchestrator.session marker,
+    Given a project with no guide.session marker,
     when the session is located,
     then a marker file is created and resumed is False.
     """
     (tmp_path / ".kodo").mkdir(parents=True)
     session_id, resumed = _locate_session(tmp_path)
-    marker_path = tmp_path / ".kodo" / "orchestrator.session"
+    marker_path = tmp_path / ".kodo" / "guide.session"
 
     assert not resumed
     assert session_id != ""
@@ -496,7 +496,7 @@ def test_session_existing_session_log_is_resumed(tmp_path: Path) -> None:
     sessions_dir = kodo_dir / "sessions"
     sessions_dir.mkdir(parents=True)
     session_id = "prior-session-id"
-    (kodo_dir / "orchestrator.session").write_text(session_id + "\n", encoding="utf-8")
+    (kodo_dir / "guide.session").write_text(session_id + "\n", encoding="utf-8")
     (sessions_dir / session_id).mkdir()
 
     located_id, resumed = _locate_session(tmp_path)
@@ -515,7 +515,7 @@ def test_session_missing_session_log_starts_fresh(tmp_path: Path) -> None:
     kodo_dir = tmp_path / ".kodo"
     kodo_dir.mkdir(parents=True)
     stale_id = "stale-session-id"
-    (kodo_dir / "orchestrator.session").write_text(stale_id + "\n", encoding="utf-8")
+    (kodo_dir / "guide.session").write_text(stale_id + "\n", encoding="utf-8")
     # NOTE: no matching sessions/stale-session-id
 
     session_id, resumed = _locate_session(tmp_path)
@@ -523,7 +523,7 @@ def test_session_missing_session_log_starts_fresh(tmp_path: Path) -> None:
     assert not resumed
     assert session_id != stale_id
     # Marker was overwritten with the fresh session id
-    marker_path = kodo_dir / "orchestrator.session"
+    marker_path = kodo_dir / "guide.session"
     assert marker_path.read_text(encoding="utf-8").strip() == session_id
 
 

@@ -8,7 +8,7 @@ use and reused across restarts when the session is resumed.  Layout::
         transient.json   — mutable runtime state (stage, prompt, autonomous,
                            active_subsession)
         session.jsonl    — append-only MAIN session log: top-level LLM messages
-                           (agent-agnostic — Orchestrator and Problem Solver
+                           (agent-agnostic — Guide and Problem Solver
                            share it) interleaved with ``subsession_start`` /
                            ``subsession_end`` marker lines
         subsessions/     — one ``<subsession-id>.jsonl`` per sub-agent run,
@@ -514,7 +514,7 @@ class TransientStore:
     ) -> None:
         """Append one top-level LLM message to the main ``session.jsonl``.
 
-        The main log is agent-agnostic: both the Orchestrator and the Problem
+        The main log is agent-agnostic: both the Guide and the Problem
         Solver append to it. ``entry_agent`` tags which top-level agent produced
         the message (display/audit only — context is shared across them).
 

@@ -5,7 +5,7 @@ and its lifecycle ``state`` (``in_flight`` while authors/critics work on it in
 the workspace staging area; ``completed`` once it has passed all gates and been
 moved out). It is constructed once at bootstrap by scanning what is on disk and
 then maintained in memory at runtime — the :class:`~kodo.workspace.Workspace`
-updates it on every mutation, and the orchestrator reads it (``query_frontier``,
+updates it on every mutation, and the guide reads it (``query_frontier``,
 ``list_artifacts``).
 
 The index itself is **never persisted**: it is a reflection of on-disk state.

@@ -85,11 +85,7 @@ def test_inject_no_items_returns_clean_text() -> None:
 
 def test_inject_prepends_files_with_headings_prompt_last() -> None:
     out = inject_attachments("my prompt", [("a.py", "print(1)"), ("b.md", "# hi")])
-    assert out == (
-        "## Attached file: a.py\nprint(1)\n\n"
-        "## Attached file: b.md\n# hi\n\n"
-        "my prompt"
-    )
+    assert out == ("## Attached file: a.py\nprint(1)\n\n## Attached file: b.md\n# hi\n\nmy prompt")
 
 
 # ---------------------------------------------------------------------------

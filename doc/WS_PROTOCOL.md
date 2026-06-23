@@ -31,7 +31,7 @@ share; everything else is internal.
 >   is queued behind the serial local gate / a saturated cloud feed, or held back
 >   by a 429 backoff. See [LLM_GATEWAY.md](LLM_GATEWAY.md).
 > - Resume is **client-driven** (the window persists its `session_id`); the old
->   orchestrator-session-marker auto-resume is gone.
+>   guide-session-marker auto-resume is gone.
 
 Where a message is **specified but not yet emitted/handled** (a planned
 extension or a stubbed feature), it is flagged **⟪planned⟫** inline. Everything
@@ -175,7 +175,7 @@ Pushed on connect (also embedded in `hello.ack`), and whenever a field below cha
 - `done` — the project is finalized.
 - `error` — the engine hit an unrecoverable error.
 
-`autonomous` is the **user-facing** Autonomous/Interactive mode (the mode the *next* prompt will run under). `workflow_mode` selects which top-level workflow drives a prompt: `guided` (the Orchestrator + full Kodo pipeline) or `problem_solving` (the standalone Problem Solver agent). Both are toggled from the sidebar (§7.5/§7.6) and apply to the next prompt.
+`autonomous` is the **user-facing** Autonomous/Interactive mode (the mode the *next* prompt will run under). `workflow_mode` selects which top-level workflow drives a prompt: `guided` (the Guide + full Kodo pipeline) or `problem_solving` (the standalone Problem Solver agent). Both are toggled from the sidebar (§7.5/§7.6) and apply to the next prompt.
 
 > **Not yet on the snapshot:** `cumulative_usd`, `pending_prompts`, and
 > `last_checkpoint_sha` are **⟪planned⟫** additions; today cost arrives via
@@ -220,7 +220,7 @@ The streamed text is not just a UI artifact: the engine accumulates it into a `{
 Emitted just before each `stream_query` so the panel can show an "awaiting" indicator before the first token arrives.
 
 ```json
-{ "type": "llm.turn_start", "agent": "orchestrator", "model": "claude-sonnet-4-6" }
+{ "type": "llm.turn_start", "agent": "guide", "model": "claude-sonnet-4-6" }
 ```
 
 ### 5.5 `agent.tool_call` — visible tool invocations
@@ -307,7 +307,7 @@ Pushed after each LLM call.
 
 ### 5.8 `autonomous.changed` — mode dropped by the engine
 
-Pushed when the engine itself turns autonomous mode off (the Orchestrator's `disable_autonomous_mode` tool), as opposed to a user toggle. The client persists the new value and notifies the user.
+Pushed when the engine itself turns autonomous mode off (the Guide's `disable_autonomous_mode` tool), as opposed to a user toggle. The client persists the new value and notifies the user.
 
 ```json
 { "type": "autonomous.changed", "autonomous": false }
@@ -383,7 +383,7 @@ These drive the sidebar's llama.cpp / model controls; they carry no workflow mea
 
 ### 5.13 ⟪planned⟫ — artifact & compaction events
 
-`artifact.published`, `artifact.removed`, and `orchestrator.compacted` are **specified but not yet emitted.** Promotion-on-completion happens internally (Promoter writes `src/`/`gen/` + the mirror), but no per-file event reaches the client yet. The legacy `file.change` event name is retained in the client for forward-compatibility but the engine does not emit it. When these land they will be purely additive.
+`artifact.published`, `artifact.removed`, and `guide.compacted` are **specified but not yet emitted.** Promotion-on-completion happens internally (Promoter writes `src/`/`gen/` + the mirror), but no per-file event reaches the client yet. The legacy `file.change` event name is retained in the client for forward-compatibility but the engine does not emit it. When these land they will be purely additive.
 
 ---
 
@@ -393,7 +393,7 @@ Every server-initiated prompt is a `kind=request` frame. The client's reply is a
 
 ### 6.1 `prompt.question` — free-form or choice
 
-Surfaced when any agent calls `ask_user` (e.g. the Narrative Author or the Problem Solver eliciting input, or the Orchestrator's own judgment-call questions). In autonomous mode `ask_user` is withheld from the agent entirely, so no `prompt.question` is emitted.
+Surfaced when any agent calls `ask_user` (e.g. the Narrative Author or the Problem Solver eliciting input, or the Guide's own judgment-call questions). In autonomous mode `ask_user` is withheld from the agent entirely, so no `prompt.question` is emitted.
 
 Request payload:
 
@@ -439,7 +439,7 @@ Response payload:
   "feedback_text": "..." | null }
 ```
 
-`feedback_text` accompanies `action = "feedback"`. On `agree`, the reviewing agent reports the artifact completed (`report_artifact_completed`) and the engine promotes it; on `feedback`, the reviewing agent opens a revision round, escalating to the Orchestrator only when the feedback implicates an upstream artifact.
+`feedback_text` accompanies `action = "feedback"`. On `agree`, the reviewing agent reports the artifact completed (`report_artifact_completed`) and the engine promotes it; on `feedback`, the reviewing agent opens a revision round, escalating to the Guide only when the feedback implicates an upstream artifact.
 
 > The doc'd `artifact_path` field is **not** sent today — the panel correlates by
 > `artifact_id` only.
@@ -488,7 +488,7 @@ The client initiates these. Each is a `kind=request`; the server replies `kind=r
 
 ### 7.1 `prompt.submit` — user-initiated input
 
-The "user has something to say to Kodo" channel. The engine interprets it in light of current state and the active `workflow_mode` (it enqueues the prompt for the worker, which routes it to the Orchestrator or the Problem Solver).
+The "user has something to say to Kodo" channel. The engine interprets it in light of current state and the active `workflow_mode` (it enqueues the prompt for the worker, which routes it to the Guide or the Problem Solver).
 
 ```json
 { "type": "prompt.submit", "text": "Build an algorithmic trading bot that ..." }
@@ -551,7 +551,7 @@ A `state` event with the updated `autonomous` field follows.
 
 ### 7.4 `workflow.set` — choose the top-level workflow
 
-Selects which workflow drives the next prompt: `guided` (Orchestrator pipeline) or `problem_solving` (standalone Problem Solver). Unknown values fall back to `guided`. Like `mode.set`, it applies to the next prompt.
+Selects which workflow drives the next prompt: `guided` (Guide pipeline) or `problem_solving` (standalone Problem Solver). Unknown values fall back to `guided`. Like `mode.set`, it applies to the next prompt.
 
 ```json
 { "type": "workflow.set", "mode": "problem_solving" }
@@ -597,7 +597,7 @@ These drive the sidebar's local-LLM controls; progress/results come back as the 
 The following are specified for later milestones but **not handled** today:
 
 - `checkpoint.list` / `checkpoint.rollback` (FR-MIR-04) — mirror commit listing
-  and rollback. Rollback exists *internally* (the Orchestrator's `rollback`
+  and rollback. Rollback exists *internally* (the Guide's `rollback`
   tool), but no client-initiated checkpoint command is wired.
 - `security.add_rule` (FR-SEC-07) — the security layer is a stub.
 - `credentials.set` — superseded by the `api_key.request`/response flow (§6.3):
@@ -640,7 +640,7 @@ The following are deliberately **not** on the wire. Future contributors should n
 
 These are anticipated and structured so adding them is purely additive — no existing message changes shape.
 
-- **Artifact & compaction events** (§5.13): `artifact.published`, `artifact.removed`, `orchestrator.compacted`.
+- **Artifact & compaction events** (§5.13): `artifact.published`, `artifact.removed`, `guide.compacted`.
 - **Richer `state` snapshot** (§5.1): `cumulative_usd`, `pending_prompts`, `last_checkpoint_sha`.
 - **Checkpoint commands** (§7.7): `checkpoint.list` / `checkpoint.rollback`.
 - **Security prompts & rules** (§6.5, §7.7): `prompt.permission`, `security.add_rule`.

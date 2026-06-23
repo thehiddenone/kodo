@@ -1,17 +1,17 @@
-"""Kodo runtime engine — single async worker hosting the Orchestrator session.
+"""Kodo runtime engine — single async worker hosting the Guide session.
 
 The engine is a thin substrate.  It does not contain a stage machine, a
 scheduler, or a workflow DAG.  Every decision about what runs when is the
-Orchestrator's, encoded in its system prompt and carried out via the unified
+Guide's, encoded in its system prompt and carried out via the unified
 tool surface in :mod:`kodo.tools`.
 
 Architecture (DESIGN.md §5):
 - One ``asyncio.Queue`` + one worker coroutine (FR-WF-02).
-- The worker drives the Orchestrator LLM: builds the turn, dispatches tool
+- The worker drives the Guide LLM: builds the turn, dispatches tool
   calls through a per-run :class:`kodo.tools.ToolDispatcher`, appends results,
   repeats until the model emits no more tool calls.  Leaf sub-agents run the
   same loop with their own dispatcher — the only difference is the tool set.
-- User prompts (via ``prompt.submit``) are fed to the Orchestrator as new user
+- User prompts (via ``prompt.submit``) are fed to the Guide as new user
   messages between turns.
 - Approval/question blocking happens inside the gate-backed tool handlers
   which ``await`` a :class:`asyncio.Future` resolved by the WS dispatcher.
@@ -121,12 +121,12 @@ __all__ = ["WorkflowEngine"]
 
 _log = logging.getLogger(__name__)
 
-_ORCHESTRATOR_AGENT_NAME = "orchestrator"
+_GUIDE_AGENT_NAME = "guide"
 _PROBLEM_SOLVER_AGENT_NAME = "problem_solver"
 _SESSION_TITLER_AGENT_NAME = "session_titler"
 
 # Sub-agents that the engine drives directly and that must never be reachable
-# through the ``run_subagent`` tool (the Orchestrator/Problem Solver cannot
+# through the ``run_subagent`` tool (the Guide/Problem Solver cannot
 # invoke them).
 _DIRECT_ONLY_AGENTS = frozenset({_SESSION_TITLER_AGENT_NAME})
 
@@ -148,9 +148,7 @@ _MAX_TITLE_LEN = 60
 _SPECS_BY_NAME: dict[str, ToolSpec] = {t.name: t for t in ALL_TOOLS}
 
 
-def _history_attachment_links(
-    attachments: object, session_dir: Path
-) -> list[dict[str, str]]:
+def _history_attachment_links(attachments: object, session_dir: Path) -> list[dict[str, str]]:
     """Resolve a persisted message's attachment links for the client feed.
 
     Each ``{"name", "stored"}`` link is turned into ``{"name", "path"}`` with an
@@ -239,7 +237,7 @@ class _EngineServices:
 
 
 class WorkflowEngine:
-    """Single-worker runtime engine hosting the Orchestrator session.
+    """Single-worker runtime engine hosting the Guide session.
 
     Args:
         sink: Message sink for sending events to the connected client.
@@ -357,7 +355,7 @@ class WorkflowEngine:
 
     @property
     def session_id(self) -> str:
-        """Identifier of the active Orchestrator session."""
+        """Identifier of the active Guide session."""
         return self.__orch_session_id
 
     @property
@@ -436,7 +434,7 @@ class WorkflowEngine:
 
         self.__worker = asyncio.create_task(self.__run_worker(), name="kodo-worker")
         _log.info(
-            "Runtime worker started (orchestrator_session=%s resumed=%s messages=%d "
+            "Runtime worker started (guide_session=%s resumed=%s messages=%d "
             "project=%s resume_subsession=%s)",
             self.__orch_session_id,
             resumed,
@@ -526,7 +524,7 @@ class WorkflowEngine:
         The original LLM turn that issued the prompt was never persisted (it
         only lands in ``session.jsonl`` once the turn completes), so it
         cannot be resumed in place. Instead, re-fire the same prompt to the
-        client and feed the user's answer back to the Orchestrator as a new
+        client and feed the user's answer back to the Guide as a new
         input describing what was asked and how it was answered.
         """
         self.__session.phase = "awaiting_user"
@@ -605,7 +603,7 @@ class WorkflowEngine:
         _log.info("Runtime worker stopped")
 
     async def handle_prompt_submit(self, text: str, request_id: str) -> None:
-        """Enqueue a user prompt for the Orchestrator to process.
+        """Enqueue a user prompt for the Guide to process.
 
         Any attachment control line the extension prepended (see
         :mod:`kodo.runtime._attachments`) is parsed off here so the queued/
@@ -638,7 +636,7 @@ class WorkflowEngine:
         """Select the top-level workflow that drives user prompts.
 
         Args:
-            mode: ``"guided"`` (Orchestrator + full Kodo pipeline) or
+            mode: ``"guided"`` (Guide + full Kodo pipeline) or
                 ``"problem_solving"`` (the standalone Problem Solver agent).
                 Unknown values fall back to ``"guided"``.
         """
@@ -728,7 +726,7 @@ class WorkflowEngine:
             attachments = (
                 [str(p) for p in raw_attachments] if isinstance(raw_attachments, list) else []
             )
-            # Freeze the autonomous mode for the whole prompt (orchestrator +
+            # Freeze the autonomous mode for the whole prompt (guide +
             # every sub-agent it spawns). A toggle the user sends mid-prompt
             # updates self.__session.autonomous but takes effect only when the
             # next prompt is dequeued here, so the in-flight prompt stays
@@ -742,7 +740,7 @@ class WorkflowEngine:
 
                 # The entry agent is chosen per prompt from the current
                 # workflow mode: Problem Solver for "problem_solving", the
-                # Orchestrator (full Kodo pipeline) for "guided".
+                # Guide (full Kodo pipeline) for "guided".
                 if self.__session.workflow_mode == "problem_solving":
                     if self.__agent_available(_PROBLEM_SOLVER_AGENT_NAME):
                         await self.__run_problem_solver_with_input(text, attachments)
@@ -757,10 +755,10 @@ class WorkflowEngine:
                         "Select a project before running Guided mode.", recoverable=True
                     )
                     await self.__emit_state()
-                elif self.__agent_available(_ORCHESTRATOR_AGENT_NAME):
-                    await self.__run_orchestrator_with_input(text, attachments)
+                elif self.__agent_available(_GUIDE_AGENT_NAME):
+                    await self.__run_guide_with_input(text, attachments)
                 else:
-                    await self.__handle_input_no_agent(_ORCHESTRATOR_AGENT_NAME, text)
+                    await self.__handle_input_no_agent(_GUIDE_AGENT_NAME, text)
 
                 if self.__session.phase == "done":
                     _log.info("Project finalized — worker exiting")
@@ -915,18 +913,16 @@ class WorkflowEngine:
         return line or None
 
     # ------------------------------------------------------------------
-    # Orchestrator LLM loop
+    # Guide LLM loop
     # ------------------------------------------------------------------
 
-    async def __run_orchestrator_with_input(
-        self, text: str, attachments: list[str] | None = None
-    ) -> None:
-        await self.__run_entry_agent(_ORCHESTRATOR_AGENT_NAME, text, attachments)
+    async def __run_guide_with_input(self, text: str, attachments: list[str] | None = None) -> None:
+        await self.__run_entry_agent(_GUIDE_AGENT_NAME, text, attachments)
 
     async def __run_entry_agent(
         self, agent_name: str, text: str, attachments: list[str] | None = None
     ) -> None:
-        """Drive a top-level entry agent (Orchestrator or Problem Solver).
+        """Drive a top-level entry agent (Guide or Problem Solver).
 
         Both entry agents share one agent-agnostic main message history
         (``__main_messages``) persisted to ``session.jsonl``; the only per-mode
@@ -1005,9 +1001,7 @@ class WorkflowEngine:
         self.__session.agent = None
         await self.__emit_state()
 
-    async def __store_attachments(
-        self, paths: list[str]
-    ) -> tuple[list[dict[str, str]], list[str]]:
+    async def __store_attachments(self, paths: list[str]) -> tuple[list[dict[str, str]], list[str]]:
         """Validate, copy into the session, and link the prompt's attachments.
 
         Each source path is read + validated (text-only, per-file and combined
@@ -1063,7 +1057,7 @@ class WorkflowEngine:
     ) -> None:
         """Drive the standalone Problem Solver agent for one user prompt.
 
-        Shares the agent-agnostic main history with the Orchestrator (see
+        Shares the agent-agnostic main history with the Guide (see
         :meth:`__run_entry_agent`): switching to Problem Solving only swaps the
         system prompt and tools, so the conversation continues across the mode
         change and — unlike before — Problem Solver turns now persist to
@@ -1085,7 +1079,7 @@ class WorkflowEngine:
         tools: list[ToolSpec],
         tool_dispatch: Callable[[str, dict[str, object]], Awaitable[str]],
         stream_id: str,
-        agent_name: str = _ORCHESTRATOR_AGENT_NAME,
+        agent_name: str = _GUIDE_AGENT_NAME,
         stop_after_tools: Callable[[], bool] | None = None,
         persist: Callable[[list[Message]], None] | None = None,
         flush_before: frozenset[str] = frozenset(),
@@ -1437,7 +1431,7 @@ class WorkflowEngine:
         """Gate a spawn: ``caller`` must be allowed to invoke every name in *names*.
 
         Permission is **not** wired to any one agent — there is no "only the
-        Orchestrator spawns" assumption. Each agent declares the sub-agents it may
+        Guide spawns" assumption. Each agent declares the sub-agents it may
         spawn in its frontmatter ``subagents:`` allow-list (see
         :meth:`AgentRegistry.allowed_subagents`); any agent that also holds a
         spawning tool can drive them. ``_DIRECT_ONLY_AGENTS`` (engine-driven
@@ -1467,7 +1461,7 @@ class WorkflowEngine:
 
         Args:
             caller: Agent making the call (the running agent — not assumed to be
-                the Orchestrator). Its frontmatter allow-list gates the spawn.
+                the Guide). Its frontmatter allow-list gates the spawn.
             name: Sub-agent name from the registry.
             task_message: Task message injected as the initial user turn.
             input_artifact_ids: IDs the agent may reference via read_artifact.
@@ -1583,7 +1577,7 @@ class WorkflowEngine:
     async def __open_subsession(self, name: str, subsession_id: str) -> None:
         """Record a subsession takeover: marker, active pointer, and UI divider."""
         display_name = self.__display_name(name)
-        parent_display = self.__display_name(self.__session.agent or _ORCHESTRATOR_AGENT_NAME)
+        parent_display = self.__display_name(self.__session.agent or _GUIDE_AGENT_NAME)
         self.__transient.append_marker(
             {
                 "type": "subsession_start",
@@ -1611,7 +1605,7 @@ class WorkflowEngine:
     async def __close_subsession(self, name: str, subsession_id: str, published: list[str]) -> None:
         """Record a subsession handing control back: marker, clear pointer, divider."""
         display_name = self.__display_name(name)
-        parent_display = self.__display_name(self.__session.agent or _ORCHESTRATOR_AGENT_NAME)
+        parent_display = self.__display_name(self.__session.agent or _GUIDE_AGENT_NAME)
         self.__transient.append_marker(
             {
                 "type": "subsession_end",
@@ -1695,14 +1689,14 @@ class WorkflowEngine:
 
         Read from the ``entry_agent`` tag on the most recent message line in
         ``session.jsonl`` — *any* entry agent may have been holding the floor
-        when the run was interrupted, so resume must not assume the Orchestrator.
-        Falls back to the Orchestrator only for legacy/untagged sessions.
+        when the run was interrupted, so resume must not assume the Guide.
+        Falls back to the Guide only for legacy/untagged sessions.
         """
         for line in reversed(self.__transient.read_session_lines()):
             if "role" in line:
                 ea = line.get("entry_agent")
-                return ea if isinstance(ea, str) and ea else _ORCHESTRATOR_AGENT_NAME
-        return _ORCHESTRATOR_AGENT_NAME
+                return ea if isinstance(ea, str) and ea else _GUIDE_AGENT_NAME
+        return _GUIDE_AGENT_NAME
 
     async def __resume_main_turn(self) -> None:
         """Resume a main turn that was interrupted while a sub-agent held the floor.
@@ -1714,7 +1708,7 @@ class WorkflowEngine:
         results and continues the interrupted entry agent's turn live.
 
         The entry agent is recovered from the persisted ``entry_agent`` tag, not
-        assumed to be the Orchestrator: any agent permitted to spawn sub-agents
+        assumed to be the Guide: any agent permitted to spawn sub-agents
         can be the one holding the floor at crash time.
         """
         last = self.__main_messages[-1]
@@ -1917,7 +1911,7 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     async def __run_rollback(self, target_sha: str) -> None:
-        """Execute rollback, rebuild the index, and start a fresh Orchestrator session.
+        """Execute rollback, rebuild the index, and start a fresh Guide session.
 
         Args:
             target_sha: Mirror commit SHA to roll back to.
@@ -2122,9 +2116,7 @@ class WorkflowEngine:
             if role == "user":
                 atts = _history_attachment_links(msg.get("attachments"), session_dir)
                 if content or atts:
-                    out.append(
-                        {"type": "user_message", "content": content, "attachments": atts}
-                    )
+                    out.append({"type": "user_message", "content": content, "attachments": atts})
             elif role == "assistant" and content:
                 out.append({"type": "assistant_response", "content": content})
             return out
@@ -2304,7 +2296,7 @@ class WorkflowEngine:
     async def __disable_autonomous(self) -> None:
         """Disable autonomous mode and notify the client.
 
-        Unlike a user toggle, this is an Orchestrator decision that must take
+        Unlike a user toggle, this is an Guide decision that must take
         effect immediately, so it clears the frozen ``effective_autonomous`` as
         well — any sub-agent spawned later in this same prompt runs interactive.
         """

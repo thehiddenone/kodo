@@ -13,13 +13,13 @@
 
 Kōdo is an agentic harness that turns a natural-language product request into
 working code through a pipeline of LLM sub-agents arbitrated by a single
-**Orchestrator** LLM. The Python package `kodo` is the **server**: an asyncio
+**Guide** LLM. The Python package `kodo` is the **server**: an asyncio
 aiohttp process that speaks a WebSocket wire protocol to a VS Code extension
 (`kodo-vsix`, a separate repo). One server instance runs per project.
 
 The server is deliberately a **thin substrate**. There is no hard-coded stage
 machine or workflow DAG in Python. Every "what runs next" decision belongs to
-the Orchestrator LLM, expressed through a small tool surface. The Python side
+the Guide LLM, expressed through a small tool surface. The Python side
 provides: an LLM streaming abstraction, a virtual artifact workspace, a git
 mirror for checkpoints/rollback, a toolchain abstraction, session persistence,
 and the wire transport.
@@ -130,7 +130,7 @@ only the principal lines are drawn above to keep the figure readable.)
   injected by `runtime`. It is imported only by `runtime`, never by `subagents`
   or `llms`.
 - **T4 — `runtime`**: the engine; composes nearly every domain service and
-  builds a per-run `tools.ToolDispatcher` for each agent (orchestrator or leaf).
+  builds a per-run `tools.ToolDispatcher` for each agent (guide or leaf).
 - **T5 — `server`**: the composition root; builds the object graph and registers
   handlers.
 
@@ -208,13 +208,13 @@ input_schema, when_to_use: tuple[str, ...], autonomous_mode: str | None = None
   Consumed by `subagents/_registry` to render prompts. (Which of these specs are
   actually *dispatchable* is a `tools/` concern — see
   `tools.DISPATCHABLE_TOOLS_BY_NAME`, §6A. The former `LEAF_TOOLS_BY_NAME`
-  leaf/orchestrator split was removed when dispatch unified into `tools/`.)
+  leaf/guide split was removed when dispatch unified into `tools/`.)
 
 [_ask_user.py](../src/kodo/toolspecs/_ask_user.py) (`ASK_USER`) carries
 `autonomous_mode="unavailable …"`, as does `REQUEST_USER_REVIEW_ARTIFACT`
 (`"auto-accepted …"`). (`ask_user` was once split into a leaf spec and a separate
-orchestrator spec; they were collapsed into one — the runtime contract was
-identical and the orchestrator-only guidance already lives in the orchestrator
+guide spec; they were collapsed into one — the runtime contract was
+identical and the guide-only guidance already lives in the guide
 prompt body.)
 
 **Implementation state of the specs** (spec exists ≠ dispatch exists):
@@ -228,7 +228,7 @@ All dispatchable specs now share one handler layer (`tools/`, §6A); the
 | `escalate_blocker`, `ask_user`, `request_user_review_artifact`, `report_artifact_completed` | `tools/` | ✅ implemented |
 | `create_file`/`edit_file`/`delete_file`/`copy_file`/`move_file`/`run_command` | `tools/` | ✅ implemented; granted to the `problem_solver` agent (the only frontmatter that declares them — no pipeline agent does). |
 | `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `rollback`, `finalize_project` | `tools/` | ✅ implemented |
-| `disable_autonomous_mode`, `post_update` | `tools/` | ✅ implemented (`DisableAutonomousModeTool`/`PostUpdateTool`, in `_TOOL_CLASSES`). Declared by `orchestrator` (both) and `problem_solver` (`post_update`); resolved by `tools_for_agent` and dispatched. |
+| `disable_autonomous_mode`, `post_update` | `tools/` | ✅ implemented (`DisableAutonomousModeTool`/`PostUpdateTool`, in `_TOOL_CLASSES`). Declared by `guide` (both) and `problem_solver` (`post_update`); resolved by `tools_for_agent` and dispatched. |
 | `toolchain_build`/`toolchain_test`/`toolchain_deps` | — | ⚠️ **spec only, no dispatch.** Declared by `coder`/`test_coder`/`problem_solver` frontmatter; rendered into prompts but silently dropped by `tools_for_agent` (no handler in `DISPATCHABLE_TOOLS_BY_NAME`). |
 
 **State:** Catalog complete; several specs are intentional placeholders ahead of dispatch.
@@ -243,7 +243,7 @@ consumed only by `runtime`. It must never import `subagents`, `llms`, or
 `runtime` — the collaborators those would supply are inverted via structural
 Protocols and injected.
 
-**There is no orchestrator-vs-leaf split.** Every agent (orchestrator included)
+**There is no guide-vs-leaf split.** Every agent (guide included)
 is granted exactly the tools its frontmatter declares, and every tool call is
 routed through a single `ToolDispatcher` to the matching `Tool` subclass (bound
 to the run's context). This replaced the former
@@ -394,8 +394,8 @@ preamble prepended. Consumed only by `WorkflowEngine`.
 
 | Agent | Tools declared | Role |
 |---|---|---|
-| `orchestrator` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode, post_update | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. |
-| `problem_solver` | create/edit/delete/move/copy_file, run_command, **toolchain_build/test/deps**, ask_user, post_update | Standalone generalist for the **problem-solving** workflow — runs *outside* the Orchestrator pipeline, talking to the user directly and editing real files on disk (see §15). |
+| `guide` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode, post_update | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. |
+| `problem_solver` | create/edit/delete/move/copy_file, run_command, **toolchain_build/test/deps**, ask_user, post_update | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). |
 | `narrative_author` | publish, read, **ask_user**, request_review, report_completed | Solo, user-facing intake. |
 | `architect`, `requirements_author`, `functional_designer`, `e2e_test_designer`, `test_designer` | publish, read, escalate_blocker | Authors (paired with a critic). |
 | `architect_critic`, `requirements_critic`, `functional_design_critic`, `e2e_test_design_critic`, `code_critic` | publish, read, request_review, report_completed | Critics (own the review gate). |
@@ -406,7 +406,7 @@ preamble prepended. Consumed only by `WorkflowEngine`.
 > declare `toolchain_build/test/deps`, which have no handler in `tools/`, so
 > `tools_for_agent` drops them — described to the LLM yet not executable. This is
 > the remaining gap between "described to the LLM" and "executable."
-> (`orchestrator`'s `disable_autonomous_mode`/`post_update` and `problem_solver`'s
+> (`guide`'s `disable_autonomous_mode`/`post_update` and `problem_solver`'s
 > file-I/O were the former gaps; both now have handlers in `_TOOL_CLASSES` and
 > dispatch normally.)
 
@@ -435,7 +435,7 @@ It **internally constructs**: a shared `ProjectIndex`, a `Workspace` (wrapping
 that index), a `SessionState`, and one `_EngineServices` adapter. It builds
 a `tools.ToolDispatcher` **per agent run** (via `__make_dispatcher`, which reads
 the current `ProjectIndex` — no persistent surface to rebuild after
-bootstrap/rollback). It owns `__orch_messages` (the Orchestrator's running
+bootstrap/rollback). It owns `__orch_messages` (the Guide's running
 `list[Message]`), cumulative USD, and a lazily-resolved `ToolchainPlugin`.
 
 **Composition / call graph:**
@@ -455,22 +455,22 @@ bootstrap/rollback). It owns `__orch_messages` (the Orchestrator's running
   per-prompt autonomous mode** (`effective_autonomous = autonomous`), then
   **routes by `workflow_mode`**: `"problem_solving"` →
   `__run_problem_solver_with_input` (if the `problem_solver` agent is present,
-  else `__handle_input_no_agent`); otherwise → `__run_orchestrator_with_input`.
+  else `__handle_input_no_agent`); otherwise → `__run_guide_with_input`.
   Exits the loop once `phase == "done"`.
 - `__resolve_plugin(capability)` → reads fresh settings → `get_llm_registry()` →
   builds `ClaudePlugin` (via `ApiKeyProvider.get_key`) or `LlamaPlugin`, wrapped
   in `LoggingLLMPlugin`.
-- `__run_agent_turn(...)` — the **generic LLM tool loop**, shared by orchestrator
+- `__run_agent_turn(...)` — the **generic LLM tool loop**, shared by guide
   and leaf agents: streams events → emits `EVT_LLM_TURN_START`, stream chunks,
   `EVT_AGENT_TOOL_CALL`, `EVT_USAGE_UPDATE` → logs via `ToolCallLogger` +
   `TransientStore.write_agent_record` → dispatches each tool via an injected
   `tool_dispatch` callback → loops until no tool calls (or `stop_after_tools`).
-- `__run_orchestrator_with_input` → builds a `ToolDispatcher` for the
-  orchestrator, `tool_dispatch = dispatcher.dispatch`,
+- `__run_guide_with_input` → builds a `ToolDispatcher` for the
+  guide, `tool_dispatch = dispatcher.dispatch`,
   `tools = tools_for_agent(agent.tools)` (the registry already filtered the
   agent's tools for `effective_autonomous`).
 - `__run_problem_solver_with_input` → the **problem-solving** counterpart of the
-  orchestrator loop: loads the `problem_solver` agent, keeps its own running
+  guide loop: loads the `problem_solver` agent, keeps its own running
   history (`__ps_messages`), and runs the same `__run_agent_turn` with its own
   per-run `ToolDispatcher` and `stop_after_tools = lambda: dispatcher.stop_requested`.
   It works the prompt end to end alone (no sub-agents, no critics) and yields
@@ -482,16 +482,16 @@ bootstrap/rollback). It owns `__orch_messages` (the Orchestrator's running
 - `__run_author_critic_iteration` → calls `__run_subagent` twice (author then
   critic), reads the critic's feedback artifact from `Workspace`, emits
   `EVT_REVIEW_STARTED`/`EVT_REVIEW_VERDICT`. **This is the callback the
-  Orchestrator's `run_author_critic_iteration` tool invokes.**
+  Guide's `run_author_critic_iteration` tool invokes.**
 - `__complete_artifact` (exposed via `_EngineServices.complete_artifact`) →
   reads artifact → `__resolve_toolchain` + `__component_registry` →
   `materialization_path` → `Promoter.promote` (mirror commit + sidecar) →
   `Workspace.mark_completed(location=...)`. This is **promotion-on-completion**.
 - `__run_rollback` (exposed via `_EngineServices.rollback`) →
-  `Rollback.execute` → rebinds index, resets toolchain, fresh orchestrator session.
+  `Rollback.execute` → rebinds index, resets toolchain, fresh guide session.
 - `__disable_autonomous` / `__post_update` (exposed via
   `_EngineServices.disable_autonomous_mode` / `post_update`) back the
-  orchestrator's `disable_autonomous_mode` / `post_update` tools.
+  guide's `disable_autonomous_mode` / `post_update` tools.
 
 **The engine injects into every `ToolDispatcher`:** `GateOrchestrator`,
 `SessionState`, and one `_EngineServices` adapter wrapping `__run_subagent` /
@@ -502,7 +502,7 @@ from `SessionState.effective_autonomous` rather than passed in.
 ### 12.2 Tool dispatch (`tools.ToolDispatcher`)
 
 Dispatch no longer lives in `runtime`; see §6A. The engine builds one
-`tools.ToolDispatcher` per agent run (orchestrator and leaf alike) and passes its
+`tools.ToolDispatcher` per agent run (guide and leaf alike) and passes its
 `dispatch` as the `tool_dispatch` callback into `__run_agent_turn`. After the run
 it reads `dispatcher.published_ids` (leaf) and uses `dispatcher.stop_requested`
 as the `stop_after_tools` predicate. The former `ToolSurface` /
@@ -512,15 +512,15 @@ as the `stop_after_tools` predicate. The former `ToolSurface` /
 
 | Module | Defines | Role / links |
 |---|---|---|
-| [_bootstrap.py](../src/kodo/runtime/_bootstrap.py) | `ProjectBootstrap`, `BootstrapResult` | 4-phase cold start: scan mirror sidecars (`completed`), scan workspace JSON (`in_flight`), drop orphans/broken lineage, locate/create orchestrator session via `OrchestratorMarker`. Returns a populated `ProjectIndex`. Imports `state._transient._new_session_id`. |
-| [_orchestrator.py](../src/kodo/runtime/_orchestrator.py) | `OrchestratorMarker` | Reads/writes `.kodo/orchestrator.session`. Used by bootstrap + rollback. |
+| [_bootstrap.py](../src/kodo/runtime/_bootstrap.py) | `ProjectBootstrap`, `BootstrapResult` | 4-phase cold start: scan mirror sidecars (`completed`), scan workspace JSON (`in_flight`), drop orphans/broken lineage, locate/create guide session via `GuideMarker`. Returns a populated `ProjectIndex`. Imports `state._transient._new_session_id`. |
+| [_guide.py](../src/kodo/runtime/_guide.py) | `GuideMarker` | Reads/writes `.kodo/guide.session`. Used by bootstrap + rollback. |
 | [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse`, `QuestionResponse` | **Composes** `WebSocketDispatcher` + `TransientStore`. `fire_approval`/`fire_question` send `kind=request`, register a future, persist the pending prompt (for restart re-surface), and await. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by every gate-backed tool handler. |
-| [_rollback.py](../src/kodo/runtime/_rollback.py) | `Rollback` | **Composes** `MirrorRepo` + `ProjectLayout`. 7-step restore; rebuilds via `ProjectBootstrap`. Imports `_session_log.SessionLog`, `_orchestrator.OrchestratorMarker`. |
+| [_rollback.py](../src/kodo/runtime/_rollback.py) | `Rollback` | **Composes** `MirrorRepo` + `ProjectLayout`. 7-step restore; rebuilds via `ProjectBootstrap`. Imports `_session_log.SessionLog`, `_guide.GuideMarker`. |
 | [_session.py](../src/kodo/runtime/_session.py) | `SessionState` | Mutable `phase`/`agent`/`component` plus the two mode fields: `autonomous` (user-facing Autonomous/Interactive, set by `handle_mode_set`, reported in `to_dict()`/`EVT_STATE`) and `effective_autonomous` (frozen per prompt by `__run_worker`; what tools/registry actually read), and `workflow_mode` (`"guided"`/`"problem_solving"`, in `to_dict()`). Shared by the engine; satisfies `tools.SessionLike` (`finalize_project` writes `phase`; tools read `effective_autonomous`). |
 | [_session_log.py](../src/kodo/runtime/_session_log.py) | `SessionLog` | Append-only JSONL per session. Used by `Rollback` (termination events). |
 
 **State:** Engine, dispatch (now in `tools/`), bootstrap, gates, rollback are
-implemented and exercised by the orchestrator/author-critic flow. Coverage is
+implemented and exercised by the guide/author-critic flow. Coverage is
 lower here than in `workspace/` (many branches are restart/rollback paths).
 
 ---
@@ -529,7 +529,7 @@ lower here than in `workspace/` (many branches are restart/rollback paths).
 
 | Module | State |
 |---|---|
-| [state/_transient.py](../src/kodo/state/_transient.py) `TransientStore` | ✅ Per-session dir under `.kodo/sessions/<id>/`: `meta.json`, `transient.json` (stage/prompt/autonomous/pending_prompt), `session.jsonl` (orchestrator messages), `agents/*.jsonl`. Injected into engine + gate. |
+| [state/_transient.py](../src/kodo/state/_transient.py) `TransientStore` | ✅ Per-session dir under `.kodo/sessions/<id>/`: `meta.json`, `transient.json` (stage/prompt/autonomous/pending_prompt), `session.jsonl` (guide messages), `agents/*.jsonl`. Injected into engine + gate. |
 | [state/_memory.py](../src/kodo/state/_memory.py) | ⚠️ **Stub** (`__all__ = []`). |
 | [security/](../src/kodo/security/) (`_layer`, `_rules`, `_store`, `_defaults`) | ⚠️ **Stubs.** No rule evaluation gates any tool call. `autonomous` filtering happens in the registry/tool surface, not here. The wire defines `SREQ_PROMPT_PERMISSION` but nothing emits it. |
 
@@ -574,9 +574,9 @@ llama-server).
 ## 15. End-to-end flows
 
 **Prompt → work:** client `prompt.submit` → `_app` handler →
-`engine.handle_prompt_submit` (enqueues) → worker → `__run_orchestrator_with_input`
-→ `__run_agent_turn` streams the Orchestrator LLM → tool calls dispatch through
-the orchestrator's `tools.ToolDispatcher` → `run_subagent`/`run_author_critic_iteration`
+`engine.handle_prompt_submit` (enqueues) → worker → `__run_guide_with_input`
+→ `__run_agent_turn` streams the Guide LLM → tool calls dispatch through
+the guide's `tools.ToolDispatcher` → `run_subagent`/`run_author_critic_iteration`
 call back into the engine (via the injected `EngineServices`), which spawns leaf
 agents — each with its own `ToolDispatcher` — → artifacts land in
 `Workspace`/`ProjectIndex`. This is the **guided** workflow.
@@ -586,7 +586,7 @@ the worker routes the same prompt to `__run_problem_solver_with_input` instead.
 The standalone `problem_solver` agent runs one `__run_agent_turn` with its own
 dispatcher, reading/writing the project's real files via the file-I/O and
 `run_command` tools and talking to the user directly (`ask_user`/`post_update`) —
-no Orchestrator, no sub-agents, no critics, no artifacts.
+no Guide, no sub-agents, no critics, no artifacts.
 
 **Mode toggles (both apply to the *next* prompt):** the VSIX sidebar has two
 toggles. *Autonomous/Interactive* → `toggle_autonomous` → `mode.set {autonomous}`
@@ -596,7 +596,7 @@ toggles. *Autonomous/Interactive* → `toggle_autonomous` → `mode.set {autonom
 shows a "applies to your next prompt" notice. *Guided/Problem-Solving* →
 `toggle_workflow_mode` → `workflow.set {mode}` → `handle_workflow_set` sets
 `SessionState.workflow_mode`, which the worker reads at the next dequeue to pick
-the entry agent. Both emit `EVT_STATE`; the Orchestrator can also drop autonomous
+the entry agent. Both emit `EVT_STATE`; the Guide can also drop autonomous
 mid-run via the `disable_autonomous_mode` tool (engine `__disable_autonomous`
 clears both `autonomous` and `effective_autonomous` immediately and emits
 `EVT_AUTONOMOUS_CHANGED`).
@@ -616,14 +616,14 @@ dequeues the prompt; a user toggle mid-prompt updates `autonomous` (UI-facing)
 but only takes effect at the next prompt. In autonomous mode `ask_user` is
 withheld entirely and review auto-accepts.
 
-**Restart:** `ProjectBootstrap` rebuilds the index from disk; `OrchestratorMarker`
+**Restart:** `ProjectBootstrap` rebuilds the index from disk; `GuideMarker`
 + `TransientStore` resume the session; an unanswered `pending_prompt` is
 re-surfaced.
 
-**Rollback:** Orchestrator `rollback` → `tools/_rollback.handle` →
+**Rollback:** Guide `rollback` → `tools/_rollback.handle` →
 `EngineServices.rollback` → engine `__run_rollback` → `Rollback.execute` (mirror
 checkout, tree restore, fresh bootstrap) → engine rebinds index + starts a fresh
-orchestrator session.
+guide session.
 
 ---
 
@@ -636,9 +636,9 @@ orchestrator session.
 | `toolspecs` catalog, `subagents` loader/registry, `tools` dispatch | ✅ Complete |
 | `runtime` engine / bootstrap / gates / rollback | ✅ Functional; lower branch coverage on restart/rollback |
 | Toolchain agent tools (`toolchain_build/test/deps`) | ⚠️ Spec only — no handler, dropped by `tools_for_agent` |
-| `disable_autonomous_mode` / `post_update` | ✅ Implemented and dispatched (orchestrator + problem_solver) |
+| `disable_autonomous_mode` / `post_update` | ✅ Implemented and dispatched (guide + problem_solver) |
 | Native file-IO / `run_command` tools | ✅ Implemented; granted to the `problem_solver` agent |
-| Two workflows (`guided` Orchestrator / `problem_solving` Problem Solver) | ✅ Implemented; selected by `workflow.set` → `SessionState.workflow_mode` |
+| Two workflows (`guided` Guide / `problem_solving` Problem Solver) | ✅ Implemented; selected by `workflow.set` → `SessionState.workflow_mode` |
 | `security/*`, `state/_memory` | ⛔ Stubs |
 | `project/_manifest` | ◽ Implemented but unused at runtime |
 
@@ -651,7 +651,7 @@ orchestrator session.
    `ToolDispatcher` reads the same reference. All reads (`query_frontier`,
    `list_artifacts`) and all writes flow through it. It is never persisted.
 2. **One tool-dispatch surface, one generic loop.** `__run_agent_turn` is
-   agent-agnostic; the only difference between the Orchestrator and a leaf agent
+   agent-agnostic; the only difference between the Guide and a leaf agent
    is the `tools` list (from each agent's frontmatter via `tools_for_agent`). Both
    route through the same `tools.ToolDispatcher`; per-run state (`published_ids`,
    `stop_requested`) lives on each run's `ToolContext`, so tools never bleed

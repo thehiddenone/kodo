@@ -1,4 +1,4 @@
-"""``finalize_project`` tool spec — orchestrator tool (FR-ORCH-03).
+"""``finalize_project`` tool spec — guide tool (FR-ORCH-03).
 
 Dispatch lives in :mod:`kodo.tools` (one handler module per tool).
 """
@@ -16,7 +16,7 @@ FINALIZE_PROJECT: ToolSpec = ToolSpec(
     user_description="Mark the project as done",
     description=(
         "Terminal call: the project is complete.  "
-        "Transitions state.phase to 'done' and ends the Orchestrator session."
+        "Transitions state.phase to 'done' and ends the Guide session."
     ),
     input_schema={"type": "object", "properties": {}, "required": []},
     output_schema={

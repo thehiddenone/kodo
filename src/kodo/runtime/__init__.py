@@ -1,4 +1,4 @@
-"""Kodo runtime — Orchestrator substrate, index, bootstrap, gates, and tools.
+"""Kodo runtime — Guide substrate, index, bootstrap, gates, and tools.
 
 Tool dispatch lives in :mod:`kodo.tools` (a lower import tier); the engine
 builds a per-run :class:`~kodo.tools.ToolDispatcher` and resolves each agent's
@@ -8,10 +8,10 @@ convenience.
 
 from kodo.tools import ToolDispatcher, tools_for_agent
 
-from ._bootstrap import BootstrapResult, ProjectBootstrap, locate_orchestrator_session
+from ._bootstrap import BootstrapResult, ProjectBootstrap, locate_guide_session
 from ._engine import WorkflowEngine
 from ._gates import ApprovalResponse, GateOrchestrator, QuestionResponse
-from ._orchestrator import OrchestratorMarker
+from ._guide import GuideMarker
 from ._rollback import Rollback
 from ._session import SessionState
 from ._session_log import SessionLog
@@ -20,7 +20,7 @@ __all__ = [
     "ApprovalResponse",
     "BootstrapResult",
     "GateOrchestrator",
-    "OrchestratorMarker",
+    "GuideMarker",
     "ProjectBootstrap",
     "QuestionResponse",
     "Rollback",
@@ -28,6 +28,6 @@ __all__ = [
     "SessionState",
     "ToolDispatcher",
     "WorkflowEngine",
-    "locate_orchestrator_session",
+    "locate_guide_session",
     "tools_for_agent",
 ]

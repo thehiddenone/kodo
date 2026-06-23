@@ -1,4 +1,4 @@
-"""``run_subagent`` tool spec — orchestrator tool (FR-ORCH-03).
+"""``run_subagent`` tool spec — guide tool (FR-ORCH-03).
 
 Dispatch lives in :mod:`kodo.tools` (one handler module per tool).
 """

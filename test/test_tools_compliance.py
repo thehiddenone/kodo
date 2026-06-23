@@ -375,13 +375,13 @@ async def test_ask_user_compliance(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator tools
+# Guide tools
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_run_subagent_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="orchestrator")
+    d = _make_dispatcher(tmp_path, agent_name="guide")
     _assert_compliant(
         "run_subagent",
         await _dispatch(d, "run_subagent", {"name": "narrative_author", "task_message": "go"}),
@@ -390,7 +390,7 @@ async def test_run_subagent_compliance(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_run_author_critic_iteration_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="orchestrator")
+    d = _make_dispatcher(tmp_path, agent_name="guide")
     _assert_compliant(
         "run_author_critic_iteration",
         await _dispatch(
@@ -403,20 +403,20 @@ async def test_run_author_critic_iteration_compliance(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_rollback_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="orchestrator")
+    d = _make_dispatcher(tmp_path, agent_name="guide")
     _assert_compliant("rollback", await _dispatch(d, "rollback", {"target_sha": "abc123"}))
     _assert_compliant("rollback", await _dispatch(d, "rollback", {"target_sha": ""}))
 
 
 @pytest.mark.asyncio
 async def test_finalize_project_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="orchestrator")
+    d = _make_dispatcher(tmp_path, agent_name="guide")
     _assert_compliant("finalize_project", await _dispatch(d, "finalize_project", {}))
 
 
 @pytest.mark.asyncio
 async def test_disable_autonomous_mode_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="orchestrator")
+    d = _make_dispatcher(tmp_path, agent_name="guide")
     _assert_compliant(
         "disable_autonomous_mode",
         await _dispatch(d, "disable_autonomous_mode", {"reason": "loop"}),
@@ -425,7 +425,7 @@ async def test_disable_autonomous_mode_compliance(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_post_update_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="orchestrator")
+    d = _make_dispatcher(tmp_path, agent_name="guide")
     _assert_compliant("post_update", await _dispatch(d, "post_update", {"message": "progress"}))
 
 

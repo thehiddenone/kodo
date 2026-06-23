@@ -34,7 +34,7 @@ class SessionState:
             value even if the user toggles mid-run. Tools read this, never
             ``autonomous``.
         workflow_mode: Which top-level workflow drives prompts — ``"guided"``
-            (Orchestrator + full Kodo pipeline) or ``"problem_solving"``
+            (Guide + full Kodo pipeline) or ``"problem_solving"``
             (the standalone Problem Solver agent).
     """
 

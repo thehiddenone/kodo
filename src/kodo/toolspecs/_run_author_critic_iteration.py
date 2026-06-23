@@ -1,4 +1,4 @@
-"""``run_author_critic_iteration`` tool spec — orchestrator tool (FR-ORCH-03).
+"""``run_author_critic_iteration`` tool spec — guide tool (FR-ORCH-03).
 
 Dispatch lives in :mod:`kodo.tools` (one handler module per tool).
 """
@@ -19,7 +19,7 @@ RUN_AUTHOR_CRITIC_ITERATION: ToolSpec = ToolSpec(
         "Spawns the Author (with previous_artifact_id as feedback context when provided), "
         "then spawns the Critic against the Author's output.  "
         "Returns the artifact ID, verdict, and concerns.  "
-        "Call again to iterate; the Orchestrator decides when to stop."
+        "Call again to iterate; the Guide decides when to stop."
     ),
     input_schema={
         "type": "object",

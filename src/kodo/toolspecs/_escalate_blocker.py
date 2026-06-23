@@ -1,6 +1,6 @@
 """``escalate_blocker`` tool spec — leaf sub-agent report tool.
 
-An author hands a blocker it cannot resolve to the orchestrator, which
+An author hands a blocker it cannot resolve to the guide, which
 triages it (and may surface it to the user).
 """
 
@@ -14,12 +14,12 @@ __all__ = ["ESCALATE_BLOCKER"]
 ESCALATE_BLOCKER: ToolSpec = ToolSpec(
     name="escalate_blocker",
     external_name="Escalate Blocker",
-    user_description="Escalate a blocker to the orchestrator",
+    user_description="Escalate a blocker to the guide",
     description=(
         "Hand a blocking issue the agent cannot defensibly resolve to the "
-        "orchestrator. Use when an iteration cap is exhausted, when a "
+        "guide. Use when an iteration cap is exhausted, when a "
         "back-and-forth between two sub-agents cannot be reconciled, or when "
-        "input artifacts are insufficient. The orchestrator owns the "
+        "input artifacts are insufficient. The guide owns the "
         "resolution: it triages procedurally, decides itself in autonomous "
         "mode, or surfaces the matter to the user via ask_user in interactive "
         "mode. The resolution arrives as the agent's next input. For an input "
@@ -47,7 +47,7 @@ ESCALATE_BLOCKER: ToolSpec = ToolSpec(
             "blocking_artifact_ids": {
                 "type": "array",
                 "description": (
-                    "IDs of workspace artifacts the orchestrator (or user) "
+                    "IDs of workspace artifacts the guide (or user) "
                     "must inspect to adjudicate: the artifact under review, "
                     "the feedback artifacts in dispute, and any neighbouring "
                     "artifacts that bear on the decision. Empty array when the "
