@@ -79,6 +79,74 @@ def test_subsession_and_toolcall_writes_bump_last_modified(store: TransientStore
     assert t3 > t2
 
 
+# ---------------------------------------------------------------------------
+# Prompt attachments
+# ---------------------------------------------------------------------------
+
+
+def test_store_attachment_writes_copy_and_returns_link(store: TransientStore) -> None:
+    rel = store.store_attachment("notes.py", "print('hi')")
+    assert rel is not None
+    assert rel.startswith("attachments/")
+    assert rel.endswith("__notes.py")
+    copy = store.session_dir / rel
+    assert copy.read_text(encoding="utf-8") == "print('hi')"
+
+
+def test_store_attachment_unique_names_for_same_basename(store: TransientStore) -> None:
+    a = store.store_attachment("dup.txt", "first")
+    b = store.store_attachment("dup.txt", "second")
+    assert a != b
+    assert (store.session_dir / a).read_text(encoding="utf-8") == "first"
+    assert (store.session_dir / b).read_text(encoding="utf-8") == "second"
+
+
+def test_store_attachment_bumps_last_modified(store: TransientStore) -> None:
+    before = store.last_modified
+    store.store_attachment("a.txt", "x")
+    assert store.last_modified > before
+
+
+def test_read_attachment_round_trips(store: TransientStore) -> None:
+    rel = store.store_attachment("r.txt", "round-trip")
+    assert rel is not None
+    assert store.read_attachment(rel) == "round-trip"
+
+
+def test_read_attachment_missing_returns_none(store: TransientStore) -> None:
+    assert store.read_attachment("attachments/does-not-exist.txt") is None
+
+
+def test_read_attachment_rejects_traversal(store: TransientStore) -> None:
+    # A tampered/legacy link must not escape the attachments dir.
+    (store.session_dir / "meta.json")  # exists
+    assert store.read_attachment("../meta.json") is None
+    assert store.read_attachment("attachments/../../etc/passwd") is None
+
+
+def test_append_message_persists_attachment_links_not_content(store: TransientStore) -> None:
+    rel = store.store_attachment("f.py", "secret-content")
+    assert rel is not None
+    store.append_message(
+        "user",
+        "clean prompt",
+        entry_agent="orchestrator",
+        attachments=[{"name": "f.py", "stored": rel}],
+    )
+    lines = store.read_session_lines()
+    assert len(lines) == 1
+    record = lines[0]
+    assert record["content"] == "clean prompt"  # NOT the file content
+    assert "secret-content" not in json.dumps(record)
+    assert record["attachments"] == [{"name": "f.py", "stored": rel}]
+
+
+def test_append_message_without_attachments_omits_key(store: TransientStore) -> None:
+    store.append_message("user", "hi")
+    record = store.read_session_lines()[0]
+    assert "attachments" not in record
+
+
 def test_new_session_is_unnamed(store: TransientStore) -> None:
     assert store.session_name == "Unnamed Session"
     assert store.is_session_named is False

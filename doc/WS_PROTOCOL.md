@@ -321,6 +321,14 @@ The `post_update` tool's payload. A short progress message rendered in the sessi
 { "type": "post.update", "message": "Wrote the auth module; running tests next." }
 ```
 
+### 5.9c `user.attachments` — stored prompt attachments
+
+Emitted right after a submitted prompt's file attachments (§7.1) are validated, copied into the session, and persisted. Carries each stored copy's absolute path so the client retargets the just-sent user bubble's clickable chips at the durable copies (not the originals). Emitted whenever the prompt carried any attachment paths — including an **empty** `attachments` array when every file was rejected — so the client always reconciles its optimistic chips with the authoritative stored set.
+
+```json
+{ "type": "user.attachments", "attachments": [ { "name": "config.py", "path": "/Users/me/.kodo/sessions/1748.../attachments/ab12cd34__config.py" } ] }
+```
+
 ### 5.9a `session.name` — session title
 
 The human-readable name of the session, produced by the engine-driven `session_titler` sub-agent from the first prompt (and persisted to `meta.json`). Replayed once after `hello.ack` with the current name (default `"Unnamed Session"`), then pushed again when a title is generated. The client renames the editor tab and the session header.
@@ -493,6 +501,23 @@ Response:
 ```
 
 An empty prompt is rejected with an `error` event (`code: "empty_prompt"`).
+
+**Attached files (server-side).** The VS Code extension lets the user stage up to 9 text files alongside a prompt (the "+" button in the input footer). The **server** owns the attachment lifecycle — the client never reads file content into the prompt. On submit the host prepends a single machine-generated control line listing the staged absolute **paths**:
+
+```text
+<!--KODO_ATTACHMENTS:["/abs/a.py","/abs/b.md"]-->
+<the user's actual prompt>
+```
+
+The server (a localhost singleton co-located with the files) parses + strips this line (`kodo.runtime._attachments.parse_attachment_marker`), then for each path:
+
+1. **reads + validates** the file — UTF-8 with no NUL byte; each ≤ 128 KB; combined ≤ 128 KB; at most 9 (the authoritative gate; the original may have changed since the user staged it). A rejected file is **skipped** and its reason surfaced as a recoverable `error` event; the rest of the prompt proceeds.
+2. **copies** it into the session at `sessions/<id>/attachments/<token>__<basename>` (an immutable snapshot).
+3. **injects** its content into the LLM context only — each file under a `## Attached file: <basename>` heading, the user's prompt last.
+
+Crucially, **file content is never written to `session.jsonl`.** The persisted user message stores the *clean* prompt plus opaque links (`attachments: [{name, stored}]`, `stored` relative to the session dir). On resume the links are re-expanded from the stored copies (`__load_main_messages`), so the reconstructed LLM context is byte-identical — without the content ever bloating the log or re-appearing as if the user typed it. This fixes the prior client-side scheme where injected content was persisted and replayed verbatim on reload.
+
+After persisting, the server emits `user.attachments` (§5) carrying the stored copies' absolute paths so the live webview retargets the just-sent bubble's clickable chips at the durable copies (clicking posts `open_file`). On reload, `session.history` user-message entries carry the same `attachments: [{name, path}]` links. The chip opens the session's **stored copy**, so the session stays intact even if the original file is moved or deleted.
 
 ### 7.2 `stop` — global STOP
 

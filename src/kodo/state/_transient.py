@@ -19,6 +19,12 @@ use and reused across restarts when the session is resumed.  Layout::
                            ``write_diff_files``) additionally gets a sibling
                            ``<tool_use_id>_diff/`` directory holding the two
                            file versions plus a ``meta.json`` sidecar
+        attachments/      — immutable copies of files the user attached to a
+                           prompt (``store_attachment``). ``session.jsonl`` keeps
+                           only a link (relative path + display name); the copy
+                           here is what is injected into the LLM context on
+                           resume and what the WebView chip opens, so the session
+                           survives the original file being moved or deleted.
 
 See ``doc/SESSIONS.md`` for the full session/subsession model.
 """
@@ -29,6 +35,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -116,6 +123,10 @@ class _SessionPaths:
     @property
     def agents(self) -> Path:
         return self.root / "agents"
+
+    @property
+    def attachments(self) -> Path:
+        return self.root / "attachments"
 
 
 class TransientStore:
@@ -220,6 +231,70 @@ class TransientStore:
         """Directory holding this session's per-tool-call Markdown documents."""
         assert self.__paths is not None, "attach_session() not yet called"
         return self.__paths.toolcalls
+
+    @property
+    def attachments_dir(self) -> Path:
+        """Directory holding this session's stored prompt-attachment copies."""
+        assert self.__paths is not None, "attach_session() not yet called"
+        return self.__paths.attachments
+
+    def store_attachment(self, display_name: str, content: str) -> str | None:
+        """Copy one attachment's text into the session, returning its link path.
+
+        The copy is immutable and self-contained: ``session.jsonl`` stores only
+        the returned relative path (plus the display name), never the content,
+        so the message is reconstructable even after the original file is gone.
+        The stored filename is prefixed with a random token so two attachments
+        with the same basename never collide.
+
+        Args:
+            display_name (str): The original file's basename (display only).
+            content (str): The validated UTF-8 text to store.
+
+        Returns:
+            str | None: The stored copy's path relative to the session dir
+            (e.g. ``attachments/<token>__name.py``), or ``None`` if no session
+            is attached or the write fails.
+        """
+        if self.__paths is None:
+            return None
+        safe = Path(display_name).name or "attachment"
+        rel = f"attachments/{uuid.uuid4().hex[:12]}__{safe}"
+        try:
+            self.__paths.attachments.mkdir(parents=True, exist_ok=True)
+            (self.__paths.root / rel).write_text(content, encoding="utf-8")
+        except OSError:
+            _log.exception("Failed to store attachment %r", display_name)
+            return None
+        self.__touch_last_modified()
+        return rel
+
+    def read_attachment(self, stored_rel: str) -> str | None:
+        """Read back a stored attachment's text by its session-relative link path.
+
+        Used on resume to re-expand a persisted user message into the exact LLM
+        context seen at submit time. Returns ``None`` if the copy is missing or
+        unreadable (the caller degrades gracefully rather than failing resume).
+
+        Args:
+            stored_rel (str): The relative path returned by
+                :meth:`store_attachment` (must stay within ``attachments/``).
+        """
+        if self.__paths is None:
+            return None
+        # Guard against path traversal from a tampered/legacy log line.
+        rel = Path(stored_rel)
+        if rel.is_absolute() or ".." in rel.parts or rel.parts[:1] != ("attachments",):
+            return None
+        try:
+            return (self.__paths.root / rel).read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+    def attachment_abs_path(self, stored_rel: str) -> str:
+        """Absolute path of a stored attachment (for the WebView chip to open)."""
+        assert self.__paths is not None, "attach_session() not yet called"
+        return str(self.__paths.root / stored_rel)
 
     def write_tool_call(self, tool_use_id: str, markdown: str) -> Path | None:
         """Persist one tool call's Markdown document, returning its path.
@@ -435,6 +510,7 @@ class TransientStore:
         role: str,
         content: str | list[dict[str, object]],
         entry_agent: str | None = None,
+        attachments: list[dict[str, str]] | None = None,
     ) -> None:
         """Append one top-level LLM message to the main ``session.jsonl``.
 
@@ -442,17 +518,27 @@ class TransientStore:
         Solver append to it. ``entry_agent`` tags which top-level agent produced
         the message (display/audit only — context is shared across them).
 
+        ``attachments`` records prompt file-attachments as opaque links —
+        ``{"name", "stored"}`` where ``stored`` is the session-relative path of
+        the copy written by :meth:`store_attachment`. The persisted ``content``
+        is the user's *clean* prompt (no file content); the attachment text is
+        re-injected on resume from the stored copies, so it never bloats the log.
+
         Args:
             role (str): ``'user'`` or ``'assistant'``.
             content (str | list): Message content (plain text or content blocks).
             entry_agent (str | None): Name of the top-level agent that produced
                 this message, if known.
+            attachments (list[dict[str, str]] | None): Attachment links to bind
+                to this message, or ``None``/empty for a plain message.
         """
         if self.__paths is None:
             return
         record: dict[str, object] = {"role": role, "content": content}
         if entry_agent is not None:
             record["entry_agent"] = entry_agent
+        if attachments:
+            record["attachments"] = attachments
         self.__append_line(self.__paths.session_log, record)
         self.__touch_last_modified()
 

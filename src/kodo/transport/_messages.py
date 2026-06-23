@@ -126,6 +126,11 @@ EVT_SUBSESSION_ENDED = "subsession.ended"
 # The session's current project was bound (Guided). Payload: ``{root, name}``.
 # Lets the client display the locked project and stop re-prompting for it.
 EVT_PROJECT_BOUND = "project.bound"
+# A submitted prompt carried file attachments that the server has now stored in
+# the session. Emitted right after the user message is persisted so the live
+# WebView can render clickable chips on the just-sent bubble pointing at the
+# stored copies. Payload: ``{attachments: [{name, path}]}`` (``path`` absolute).
+EVT_USER_ATTACHMENTS = "user.attachments"
 
 # ---------------------------------------------------------------------------
 # DEPRECATED — legacy constants retained until handler/event wiring is migrated

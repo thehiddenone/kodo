@@ -92,6 +92,7 @@ from kodo.transport import (
     EVT_SUBSESSION_STARTED,
     EVT_TOOL_INCOMPLIANT,
     EVT_USAGE_UPDATE,
+    EVT_USER_ATTACHMENTS,
 )
 from kodo.workspace import (
     ArtifactType,
@@ -104,6 +105,13 @@ from kodo.workspace import (
     materialization_path,
 )
 
+from ._attachments import (
+    MAX_ATTACHMENTS,
+    AttachmentError,
+    inject_attachments,
+    load_attachment,
+    parse_attachment_marker,
+)
 from ._bootstrap import ProjectBootstrap
 from ._gates import GateOrchestrator
 from ._rollback import Rollback
@@ -138,6 +146,30 @@ _MAX_TITLE_LEN = 60
 # Every tool spec keyed by name — used to normalize each tool's output against
 # its declared schema and to project the customer-visible detail rows.
 _SPECS_BY_NAME: dict[str, ToolSpec] = {t.name: t for t in ALL_TOOLS}
+
+
+def _history_attachment_links(
+    attachments: object, session_dir: Path
+) -> list[dict[str, str]]:
+    """Resolve a persisted message's attachment links for the client feed.
+
+    Each ``{"name", "stored"}`` link is turned into ``{"name", "path"}`` with an
+    absolute path to the session's stored copy, so the WebView chip opens the
+    durable snapshot regardless of what happened to the original file.
+    """
+    if not isinstance(attachments, list):
+        return []
+    links: list[dict[str, str]] = []
+    for att in attachments:
+        if not isinstance(att, dict):
+            continue
+        stored = str(att.get("stored", ""))
+        if not stored:
+            continue
+        links.append(
+            {"name": str(att.get("name", "attachment")), "path": str(session_dir / stored)}
+        )
+    return links
 
 
 class _EngineServices:
@@ -575,12 +607,22 @@ class WorkflowEngine:
     async def handle_prompt_submit(self, text: str, request_id: str) -> None:
         """Enqueue a user prompt for the Orchestrator to process.
 
+        Any attachment control line the extension prepended (see
+        :mod:`kodo.runtime._attachments`) is parsed off here so the queued/
+        persisted prompt is the user's *clean* text and the attachment source
+        paths travel alongside it. The files themselves are read, copied into
+        the session, and injected into the LLM context later, when the prompt
+        actually reaches its entry agent.
+
         Args:
-            text: The user's prompt text.
+            text: The user's prompt text (possibly with a leading control line).
             request_id: Envelope ID of the originating request.
         """
-        self.__transient.update(prompt=text)
-        await self.__queue.put({"text": text, "request_id": request_id})
+        clean_text, attachment_paths = parse_attachment_marker(text)
+        self.__transient.update(prompt=clean_text)
+        await self.__queue.put(
+            {"text": clean_text, "attachments": attachment_paths, "request_id": request_id}
+        )
 
     async def handle_mode_set(self, autonomous: bool) -> None:
         """Toggle autonomous mode.
@@ -682,6 +724,10 @@ class WorkflowEngine:
         while True:
             task = await self.__queue.get()
             text = str(task.get("text", ""))
+            raw_attachments = task.get("attachments", [])
+            attachments = (
+                [str(p) for p in raw_attachments] if isinstance(raw_attachments, list) else []
+            )
             # Freeze the autonomous mode for the whole prompt (orchestrator +
             # every sub-agent it spawns). A toggle the user sends mid-prompt
             # updates self.__session.autonomous but takes effect only when the
@@ -699,7 +745,7 @@ class WorkflowEngine:
                 # Orchestrator (full Kodo pipeline) for "guided".
                 if self.__session.workflow_mode == "problem_solving":
                     if self.__agent_available(_PROBLEM_SOLVER_AGENT_NAME):
-                        await self.__run_problem_solver_with_input(text)
+                        await self.__run_problem_solver_with_input(text, attachments)
                     else:
                         await self.__handle_input_no_agent(_PROBLEM_SOLVER_AGENT_NAME, text)
                 elif self.__layout is None:
@@ -712,7 +758,7 @@ class WorkflowEngine:
                     )
                     await self.__emit_state()
                 elif self.__agent_available(_ORCHESTRATOR_AGENT_NAME):
-                    await self.__run_orchestrator_with_input(text)
+                    await self.__run_orchestrator_with_input(text, attachments)
                 else:
                     await self.__handle_input_no_agent(_ORCHESTRATOR_AGENT_NAME, text)
 
@@ -872,10 +918,14 @@ class WorkflowEngine:
     # Orchestrator LLM loop
     # ------------------------------------------------------------------
 
-    async def __run_orchestrator_with_input(self, text: str) -> None:
-        await self.__run_entry_agent(_ORCHESTRATOR_AGENT_NAME, text)
+    async def __run_orchestrator_with_input(
+        self, text: str, attachments: list[str] | None = None
+    ) -> None:
+        await self.__run_entry_agent(_ORCHESTRATOR_AGENT_NAME, text, attachments)
 
-    async def __run_entry_agent(self, agent_name: str, text: str) -> None:
+    async def __run_entry_agent(
+        self, agent_name: str, text: str, attachments: list[str] | None = None
+    ) -> None:
         """Drive a top-level entry agent (Orchestrator or Problem Solver).
 
         Both entry agents share one agent-agnostic main message history
@@ -884,13 +934,47 @@ class WorkflowEngine:
         persisted immediately; the agent's own turns persist incrementally
         through :meth:`__run_agent_turn` (the spawning-tool prefix is flushed
         before any sub-agent dispatch so an interrupted sub-agent can resume).
+
+        Prompt attachments are resolved here: each source file is read, copied
+        into the session, and *injected* into the in-memory user message (so the
+        LLM sees the content), while ``session.jsonl`` persists only the clean
+        prompt plus links to the stored copies — see :meth:`__store_attachments`.
         """
         agent = self.__registry.get(agent_name, self.__session.effective_autonomous)
         plugin, model_id, routing = await self.__resolve_plugin(agent.capability)
 
-        if text:
-            self.__main_messages = self.__main_messages + [Message(role="user", content=text)]
-            self.__transient.append_message("user", text, entry_agent=agent_name)
+        stored, errors = await self.__store_attachments(attachments or [])
+        for message in errors:
+            await self.__emit_error(message, recoverable=True)
+
+        if text or stored:
+            llm_text = inject_attachments(text, [(s["name"], s["content"]) for s in stored])
+            self.__main_messages = self.__main_messages + [Message(role="user", content=llm_text)]
+            self.__transient.append_message(
+                "user",
+                text,
+                entry_agent=agent_name,
+                attachments=[{"name": s["name"], "stored": s["stored"]} for s in stored],
+            )
+            # Always echo the authoritative stored set when the user staged
+            # anything — even an empty set (every file failed validation) — so
+            # the client retargets the optimistically-rendered chips to the
+            # stored copies, or clears them.
+            if attachments:
+                await self.__sink.send(
+                    Envelope.make_event(
+                        EVT_USER_ATTACHMENTS,
+                        {
+                            "attachments": [
+                                {
+                                    "name": s["name"],
+                                    "path": self.__transient.attachment_abs_path(s["stored"]),
+                                }
+                                for s in stored
+                            ]
+                        },
+                    )
+                )
 
         self.__session.phase = "running"
         self.__session.agent = agent_name
@@ -921,6 +1005,46 @@ class WorkflowEngine:
         self.__session.agent = None
         await self.__emit_state()
 
+    async def __store_attachments(
+        self, paths: list[str]
+    ) -> tuple[list[dict[str, str]], list[str]]:
+        """Validate, copy into the session, and link the prompt's attachments.
+
+        Each source path is read + validated (text-only, per-file and combined
+        size caps, at most :data:`MAX_ATTACHMENTS`) and, on success, copied into
+        the session's ``attachments/`` directory. The original may have changed
+        or vanished since the user staged it, so this server-side read is the
+        authoritative gate; a rejected file is skipped and its reason returned
+        as a user-facing error (the rest of the prompt still proceeds).
+
+        Returns:
+            tuple: ``(stored, errors)`` where each ``stored`` item is
+            ``{"name", "stored", "content"}`` (``stored`` is the session-relative
+            link, ``content`` is kept only for in-memory injection) and
+            ``errors`` is a list of human-readable rejection messages.
+        """
+        stored: list[dict[str, str]] = []
+        errors: list[str] = []
+        running_total = 0
+        for path in paths:
+            if len(stored) >= MAX_ATTACHMENTS:
+                errors.append(
+                    f"At most {MAX_ATTACHMENTS} files can be attached; the rest were skipped."
+                )
+                break
+            try:
+                loaded = load_attachment(path, running_total=running_total)
+            except AttachmentError as exc:
+                errors.append(str(exc))
+                continue
+            rel = self.__transient.store_attachment(loaded.name, loaded.content)
+            if rel is None:
+                errors.append(f'Attached file "{loaded.name}" could not be saved and was skipped.')
+                continue
+            running_total += loaded.size
+            stored.append({"name": loaded.name, "stored": rel, "content": loaded.content})
+        return stored, errors
+
     def __persist_main_messages(self, entry_agent: str) -> Callable[[list[Message]], None]:
         """Return a persist hook that appends main messages to ``session.jsonl``."""
 
@@ -934,7 +1058,9 @@ class WorkflowEngine:
     # Problem Solver LLM loop (standalone, outside the Kodo pipeline)
     # ------------------------------------------------------------------
 
-    async def __run_problem_solver_with_input(self, text: str) -> None:
+    async def __run_problem_solver_with_input(
+        self, text: str, attachments: list[str] | None = None
+    ) -> None:
         """Drive the standalone Problem Solver agent for one user prompt.
 
         Shares the agent-agnostic main history with the Orchestrator (see
@@ -943,7 +1069,7 @@ class WorkflowEngine:
         change and — unlike before — Problem Solver turns now persist to
         ``session.jsonl``.
         """
-        await self.__run_entry_agent(_PROBLEM_SOLVER_AGENT_NAME, text)
+        await self.__run_entry_agent(_PROBLEM_SOLVER_AGENT_NAME, text, attachments)
 
     # ------------------------------------------------------------------
     # Generic agent turn (single LLM call + tool loop)
@@ -1918,11 +2044,14 @@ class WorkflowEngine:
                 all_messages.extend(self.__transient.read_subsession_messages(sid))
         results_by_id = self.__tool_results_from_messages(all_messages)
 
+        session_dir = self.__transient.session_dir
         entries: list[dict[str, object]] = []
         for line in lines:
             if "role" in line:
                 entries.extend(
-                    self.__message_to_entries(line, tool_desc, results_by_id, toolcalls_dir)
+                    self.__message_to_entries(
+                        line, tool_desc, results_by_id, toolcalls_dir, session_dir
+                    )
                 )
                 continue
             kind = line.get("type")
@@ -1931,7 +2060,9 @@ class WorkflowEngine:
                 sid = str(line.get("subsession_id", ""))
                 for sub in self.__transient.read_subsession_messages(sid):
                     entries.extend(
-                        self.__message_to_entries(sub, tool_desc, results_by_id, toolcalls_dir)
+                        self.__message_to_entries(
+                            sub, tool_desc, results_by_id, toolcalls_dir, session_dir
+                        )
                     )
             elif kind == "subsession_end":
                 entries.append(self.__divider_entry("subsession_end", line))
@@ -1981,15 +2112,21 @@ class WorkflowEngine:
         tool_desc: dict[str, str],
         results_by_id: dict[str, dict[str, object]],
         toolcalls_dir: Path,
+        session_dir: Path,
     ) -> list[dict[str, object]]:
         """Convert one persisted ``{role, content}`` line to client feed entries."""
         role = msg.get("role")
         content = msg.get("content")
         out: list[dict[str, object]] = []
         if isinstance(content, str):
-            if role in ("user", "assistant") and content:
-                kind = "user_message" if role == "user" else "assistant_response"
-                out.append({"type": kind, "content": content})
+            if role == "user":
+                atts = _history_attachment_links(msg.get("attachments"), session_dir)
+                if content or atts:
+                    out.append(
+                        {"type": "user_message", "content": content, "attachments": atts}
+                    )
+            elif role == "assistant" and content:
+                out.append({"type": "assistant_response", "content": content})
             return out
         if not isinstance(content, list):
             return out
@@ -2049,7 +2186,7 @@ class WorkflowEngine:
                 if isinstance(b, dict) and b.get("type") == "text"
             )
             if text:
-                out.append({"type": "user_message", "content": text})
+                out.append({"type": "user_message", "content": text, "attachments": []})
         return out
 
     def __load_main_messages(self) -> list[Message]:
@@ -2059,11 +2196,34 @@ class WorkflowEngine:
             try:
                 role = str(item["role"])
                 content = item["content"]
+                if isinstance(content, str):
+                    content = self.__expand_persisted_attachments(content, item.get("attachments"))
                 if isinstance(content, (str, list)):
                     messages.append(Message(role=role, content=content))
             except (KeyError, TypeError):
                 _log.warning("Skipping malformed message in session.jsonl")
         return messages
+
+    def __expand_persisted_attachments(self, clean_text: str, attachments: object) -> str:
+        """Re-inject a persisted user message's attachments from their copies.
+
+        ``session.jsonl`` stores only the clean prompt plus attachment links; on
+        resume the LLM context must match what was sent originally, so each
+        stored copy is read back and re-injected with the same layout used at
+        submit time (:func:`inject_attachments`). A copy that has gone missing is
+        replaced by a short placeholder rather than failing the whole resume.
+        """
+        if not isinstance(attachments, list) or not attachments:
+            return clean_text
+        items: list[tuple[str, str]] = []
+        for att in attachments:
+            if not isinstance(att, dict):
+                continue
+            name = str(att.get("name", "attachment"))
+            stored = str(att.get("stored", ""))
+            content = self.__transient.read_attachment(stored) if stored else None
+            items.append((name, content if content is not None else "(attachment unavailable)"))
+        return inject_attachments(clean_text, items)
 
     # ------------------------------------------------------------------
     # Event emitters
