@@ -1,6 +1,7 @@
 ---
 name: guide
 display_name: Kōdo
+capability: high
 tools:
   - query_frontier
   - list_artifacts

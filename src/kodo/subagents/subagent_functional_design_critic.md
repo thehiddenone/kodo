@@ -1,6 +1,7 @@
 ---
 name: functional_design_critic
 display_name: Functional Design Reviewer
+capability: high
 tools:
   - publish_artifact
   - read_artifact

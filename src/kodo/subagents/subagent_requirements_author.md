@@ -1,6 +1,7 @@
 ---
 name: requirements_author
 display_name: Requirements Writer
+capability: medium
 tools:
   - publish_artifact
   - read_artifact

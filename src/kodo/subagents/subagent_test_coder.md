@@ -1,6 +1,7 @@
 ---
 name: test_coder
 display_name: Software Developer In Test
+capability: medium
 tools:
   - publish_artifact
   - read_artifact

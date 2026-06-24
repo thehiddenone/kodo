@@ -19,6 +19,7 @@ Rules for the title:
 - 2 to 6 words. Aim for 3–5.
 - Title Case (capitalize the principal words).
 - Name the concrete subject or goal of the request (e.g. a feature, component, bug, or document), not the act of asking. Prefer "CSV Export Endpoint" over "Add A New Endpoint For CSV".
+- NEVER output a single bare word, and never name the programming language, framework, or tool instead of the subject. "python", "react", "api" are all unacceptable titles — name the *thing being built* ("Tic Tac Toe Game", "React Dashboard Layout").
 - Plain text only — no emoji, no quotes, no code formatting, no file paths.
 - If the request is empty, unintelligible, or gives nothing to summarize, output exactly: New Session
 
@@ -32,5 +33,8 @@ Title: Search Pagination Fix
 
 Request: "I want a CLI tool that converts markdown files to PDF"
 Title: Markdown To PDF CLI
+
+Request: "implement a game of tic tac toe where a player chooses x or 0 and plays against a computer"
+Title: Tic Tac Toe Game
 
 Respond with the title and nothing more.

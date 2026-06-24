@@ -1,6 +1,7 @@
 ---
 name: narrative_author
 display_name: Narrative Writer
+capability: high
 tools:
   - publish_artifact
   - read_artifact

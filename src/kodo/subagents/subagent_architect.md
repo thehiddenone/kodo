@@ -1,6 +1,7 @@
 ---
 name: architect
 display_name: Architect
+capability: medium
 tools:
   - publish_artifact
   - read_artifact

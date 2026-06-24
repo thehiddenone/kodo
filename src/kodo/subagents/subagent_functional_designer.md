@@ -1,6 +1,7 @@
 ---
 name: functional_designer
 display_name: Functional Designer
+capability: medium
 tools:
   - publish_artifact
   - read_artifact

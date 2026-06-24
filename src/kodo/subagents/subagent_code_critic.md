@@ -1,6 +1,7 @@
 ---
 name: code_critic
 display_name: Code Reviewer
+capability: high
 tools:
   - publish_artifact
   - read_artifact

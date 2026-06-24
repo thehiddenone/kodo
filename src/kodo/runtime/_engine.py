@@ -158,6 +158,11 @@ _SUBAGENT_SPAWNING_TOOLS = frozenset({"run_subagent", "run_author_critic_iterati
 
 # Maximum length of a generated session title, in characters.
 _MAX_TITLE_LEN = 60
+# A usable title must name the subject in at least this many words. Weak titler
+# models sometimes collapse to a single bare token (e.g. the implementation
+# language, "python"); such answers are rejected and re-generated once.
+_MIN_TITLE_WORDS = 2
+_MAX_TITLE_WORDS = 8
 # How much of a compaction summary travels in the ``context.compacted`` event as
 # a feed-divider excerpt (the full summary lives in the session.jsonl marker).
 _COMPACTION_EXCERPT_LEN = 280
@@ -954,17 +959,57 @@ class WorkflowEngine:
         _log.info("Session %s named %r", self.__orch_session_id, title)
 
     async def __generate_session_title(self, text: str) -> str | None:
-        """Run one silent LLM call to produce a session title from *text*.
+        """Run a silent LLM call to produce a session title from *text*.
 
         Does not forward any stream/thinking events to the client; only the
         title text is collected. The call's USD cost is added to the running
         cumulative total and pushed as a cost-only ``usage.update`` (no
         ``last_call_tokens``, so it adds no entry to the session feed).
+
+        Weak titler models occasionally ignore the rules and emit a degenerate
+        answer (a single bare token such as the implementation language). The
+        sanitized result is validated against :meth:`__is_acceptable_title`; on
+        rejection we re-prompt once with a corrective nudge appended to the
+        conversation, then give up (returning ``None`` leaves the session
+        unnamed so the next prompt can try again).
         """
         agent = self.__registry.get(_SESSION_TITLER_AGENT_NAME)
         plugin, model_id, routing = await self.__resolve_plugin(agent.capability)
 
         messages: list[Message] = [Message(role="user", content=text)]
+        for _attempt in range(2):
+            raw = await self.__run_titler_turn(routing, plugin, model_id, agent, messages)
+            title = self.__sanitize_title(raw)
+            if self.__is_acceptable_title(title):
+                return title
+            # Show the model its own rejected answer and ask for a real title.
+            messages.append(Message(role="assistant", content=raw))
+            messages.append(
+                Message(
+                    role="user",
+                    content=(
+                        "That is not a usable title. It must be 2 to 6 words in "
+                        "Title Case naming the subject of the request — not the "
+                        "programming language, not a single bare word. Output "
+                        "only the corrected title."
+                    ),
+                )
+            )
+
+        # Both attempts failed validation; better to leave it unnamed than to
+        # commit a degenerate title.
+        _log.info("Session titler produced no acceptable title after retry")
+        return None
+
+    async def __run_titler_turn(
+        self,
+        routing,
+        plugin,
+        model_id: str,
+        agent,
+        messages: list[Message],
+    ) -> str:
+        """One silent titler LLM turn; returns the raw concatenated text."""
         text_parts: list[str] = []
         turn_end: TurnEnd | None = None
         async for event in self.__gateway.stream_query(
@@ -987,7 +1032,20 @@ class WorkflowEngine:
             self.__cumulative_usd += turn_end.usage.usd_cost
             await self.__emit_cost_only()
 
-        return self.__sanitize_title("".join(text_parts))
+        return "".join(text_parts)
+
+    @staticmethod
+    def __is_acceptable_title(title: str | None) -> bool:
+        """Reject degenerate titler output that slipped past sanitizing.
+
+        Enforces the word-count band the prompt asks for (a single bare token
+        such as ``python`` is the canonical failure). Title Case, length, and
+        formatting are already handled by :meth:`__sanitize_title`.
+        """
+        if not title:
+            return False
+        words = title.split()
+        return _MIN_TITLE_WORDS <= len(words) <= _MAX_TITLE_WORDS
 
     @staticmethod
     def __sanitize_title(raw: str) -> str | None:

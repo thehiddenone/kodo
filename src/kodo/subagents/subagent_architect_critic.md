@@ -1,6 +1,7 @@
 ---
 name: architect_critic
 display_name: Architecture Reviewer
+capability: high
 tools:
   - publish_artifact
   - read_artifact

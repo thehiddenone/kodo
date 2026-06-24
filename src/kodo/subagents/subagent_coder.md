@@ -1,6 +1,7 @@
 ---
 name: coder
 display_name: Software Developer
+capability: medium
 tools:
   - publish_artifact
   - read_artifact
