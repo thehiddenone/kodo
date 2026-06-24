@@ -35,6 +35,12 @@ def _write_preamble(
     (tmp_path / "preamble_performance.md").write_text(performance, encoding="utf-8")
 
 
+def _write_base(tmp_path: Path, name: str, text: str) -> Path:
+    p = tmp_path / f"base_{name}.md"
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
 # ---------------------------------------------------------------------------
 # load_agent
 # ---------------------------------------------------------------------------
@@ -86,6 +92,23 @@ def test_load_agent_parses_subagents_allow_list(tmp_path: Path) -> None:
     )
     agent = load_agent(path)
     assert agent.subagents == frozenset(["architect", "coder"])
+
+
+def test_load_agent_no_bases_by_default(tmp_path: Path) -> None:
+    path = _write_agent(tmp_path, "leaf_stub", "name: leaf_stub\n", "A leaf agent.")
+    agent = load_agent(path)
+    assert agent.bases == ()
+
+
+def test_load_agent_parses_bases_list(tmp_path: Path) -> None:
+    path = _write_agent(
+        tmp_path,
+        "tooler",
+        "name: tooler\nbases:\n  - toolchain\n  - shared\n",
+        "An agent built on shared bases.",
+    )
+    agent = load_agent(path)
+    assert agent.bases == ("toolchain", "shared")
 
 
 def test_load_agent_missing_frontmatter(tmp_path: Path) -> None:
@@ -184,6 +207,59 @@ def test_registry_prepends_both_preambles_to_every_prompt(tmp_path: Path) -> Non
             _PERFORMANCE_TEXT
         )
     assert registry.get("agent_a").system_prompt == f"{_PREAMBLE_TEXT}\n\nPrompt A."
+
+
+def test_registry_prepends_base_after_preamble_before_body(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_base(tmp_path, "toolchain", "# Shared Toolchain Contract\n\nThe shared rules.")
+    _write_agent(
+        tmp_path,
+        "tooler",
+        "name: tooler\nbases:\n  - toolchain\n",
+        "Agent-specific body.",
+    )
+    registry = AgentRegistry(tmp_path)
+    prompt = registry.get("tooler").system_prompt
+    # preamble first, then base contract, then the agent body.
+    assert prompt.startswith(_PREAMBLE_TEXT)
+    assert "The shared rules." in prompt
+    assert "Agent-specific body." in prompt
+    assert prompt.index("The shared rules.") < prompt.index("Agent-specific body.")
+    assert prompt.index(_PREAMBLE_TEXT) < prompt.index("The shared rules.")
+
+
+def test_registry_agent_without_bases_has_no_base_text(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_base(tmp_path, "toolchain", "# Shared Toolchain Contract\n\nThe shared rules.")
+    _write_agent(tmp_path, "plain", "name: plain\n", "Just the body.")
+    registry = AgentRegistry(tmp_path)
+    prompt = registry.get("plain").system_prompt
+    assert "The shared rules." not in prompt
+    assert prompt == f"{_PREAMBLE_TEXT}\n\nJust the body."
+
+
+def test_registry_unknown_base_raises(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "tooler", "name: tooler\nbases:\n  - ghost\n", "Body.")
+    with pytest.raises(AgentLoadError, match="ghost"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_empty_base_file_raises(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_base(tmp_path, "toolchain", "   \n")
+    _write_agent(tmp_path, "tooler", "name: tooler\nbases:\n  - toolchain\n", "Body.")
+    with pytest.raises(AgentLoadError, match="empty"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_base_file_not_loaded_as_agent(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_base(tmp_path, "toolchain", "# Shared\n\nRules.")
+    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Body A.")
+    registry = AgentRegistry(tmp_path)
+    names = {a.name for a in registry.all_agents()}
+    assert names == {"agent_a"}
 
 
 def test_registry_missing_performance_preamble_raises(tmp_path: Path) -> None:

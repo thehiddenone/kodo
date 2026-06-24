@@ -59,7 +59,7 @@ from kodo.project import (
     kodo_user_dir,
 )
 from kodo.state import TransientStore, read_diff_files, render_tool_call_markdown
-from kodo.subagents import AgentLoadError, AgentRegistry
+from kodo.subagents import AgentLoadError, AgentRegistry, SubAgent
 from kodo.toolchains import ToolchainPlugin, select_toolchain
 from kodo.tools import (
     LogicalPathResolver,
@@ -1003,10 +1003,10 @@ class WorkflowEngine:
 
     async def __run_titler_turn(
         self,
-        routing,
-        plugin,
+        routing: LLMRouting,
+        plugin: LLMPlugin,
         model_id: str,
-        agent,
+        agent: SubAgent,
         messages: list[Message],
     ) -> str:
         """One silent titler LLM turn; returns the raw concatenated text."""

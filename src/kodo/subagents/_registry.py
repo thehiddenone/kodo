@@ -60,14 +60,16 @@ class AgentRegistry:
 
     Args:
         agents_dir: Directory containing ``preamble_security.md``,
-            ``preamble_performance.md`` and ``subagent_*.md`` files.
+            ``preamble_performance.md``, any ``base_*.md`` shared snippets, and
+            the ``subagent_*.md`` files.
 
     Raises:
-        AgentLoadError: a preamble file is missing or empty, or an agent
-            references a tool with no matching :class:`~kodo.toolspecs.ToolSpec`.
+        AgentLoadError: a preamble or base file is missing or empty, an agent
+            references a tool with no matching :class:`~kodo.toolspecs.ToolSpec`,
+            or an agent references a ``bases:`` entry with no ``base_*.md`` file.
     """
 
-    __slots__ = ("__agents", "__preamble")
+    __slots__ = ("__agents", "__preamble", "__bases")
 
     def __init__(self, agents_dir: Path) -> None:
         # Security first (it takes precedence), then performance. Both are always
@@ -75,12 +77,28 @@ class AgentRegistry:
         security = self.__load_preamble(agents_dir, _SECURITY_PREAMBLE_FILENAME)
         performance = self.__load_preamble(agents_dir, _PERFORMANCE_PREAMBLE_FILENAME)
         self.__preamble = f"{security}\n\n{performance}"
+        # Shared base snippets (``base_<name>.md``), keyed by ``<name>``. Agents
+        # opt into them via the frontmatter ``bases:`` list; they are never loaded
+        # as agents (the agent glob is ``subagent_*.md``).
+        self.__bases: dict[str, str] = {}
+        for path in sorted(agents_dir.glob("base_*.md")):
+            name = path.stem[len("base_") :]
+            text = path.read_text(encoding="utf-8").strip()
+            if not text:
+                raise AgentLoadError(f"{path}: base file is empty")
+            self.__bases[name] = text
         self.__agents: dict[str, SubAgent] = {}
         for path in sorted(agents_dir.glob("subagent_*.md")):
             agent = load_agent(path)
             # Validate every declared tool resolves now, at load time, so a bad
             # frontmatter reference fails fast rather than at first render.
             self.__render_tools_section(agent.tools, path)
+            # Validate every declared base exists, for the same fail-fast reason.
+            for base in agent.bases:
+                if base not in self.__bases:
+                    raise AgentLoadError(
+                        f"{path}: base {base!r} has no base_{base}.md in {agents_dir}"
+                    )
             self.__agents[agent.name] = agent
 
     @staticmethod
@@ -118,14 +136,19 @@ class AgentRegistry:
         """Render *agent* for the requested mode.
 
         Filters autonomous-disabled tools from both the effective tool set and
-        the rendered ``## Tools`` section, then prepends the preamble.
+        the rendered ``## Tools`` section, then prepends the shared base snippets
+        (if any) and the global preamble.
         """
         effective_tools = agent.tools
         if autonomous and _AUTONOMOUS_DISABLED:
             effective_tools = frozenset(t for t in agent.tools if t not in _AUTONOMOUS_DISABLED)
         tools_section = self.__render_tools_section(effective_tools, agent.source_path)
         system_prompt = agent.system_prompt.replace(_TOOLS_PLACEHOLDER, tools_section)
-        system_prompt = f"{self.__preamble}\n\n{system_prompt}"
+        # Order of precedence: global preamble (security + performance) first,
+        # then any shared base contract, then the agent's own body (which may
+        # specialize the base). Bases are validated to exist at load time.
+        parts = [self.__preamble, *(self.__bases[b] for b in agent.bases), system_prompt]
+        system_prompt = "\n\n".join(parts)
         return replace(agent, tools=effective_tools, system_prompt=system_prompt)
 
     def get(self, name: str, autonomous: bool = False) -> SubAgent:

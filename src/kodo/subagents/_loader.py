@@ -45,6 +45,12 @@ class SubAgent:
         display_name: User-friendly name shown in the UI (e.g. in subsession
             takeover dividers). Falls back to a title-cased ``name`` when the
             frontmatter does not set ``display_name``.
+        bases: Names of shared base snippets (``base_<name>.md`` in the subagents
+            dir) whose bodies are prepended to this agent's prompt at render time,
+            after the global preambles and before the agent's own body. Empty by
+            default. Lets a family of agents (e.g. the toolchain-setup agents)
+            share one contract without duplicating it; the registry validates each
+            reference exists at load time.
     """
 
     name: str
@@ -54,6 +60,7 @@ class SubAgent:
     capability: str = "medium"
     display_name: str = ""
     subagents: frozenset[str] = frozenset()
+    bases: tuple[str, ...] = ()
 
 
 def load_agent(path: Path) -> SubAgent:
@@ -92,6 +99,14 @@ def load_agent(path: Path) -> SubAgent:
     else:
         subagents = frozenset()
 
+    bases_raw = fm_dict.get("bases", [])
+    if isinstance(bases_raw, list):
+        bases: tuple[str, ...] = tuple(str(b) for b in bases_raw)
+    elif isinstance(bases_raw, str):
+        bases = (bases_raw,)
+    else:
+        bases = ()
+
     expected_stem = f"subagent_{name}"
     if path.stem != expected_stem:
         raise AgentLoadError(
@@ -121,6 +136,7 @@ def load_agent(path: Path) -> SubAgent:
         capability=capability,
         display_name=display_name,
         subagents=subagents,
+        bases=bases,
     )
 
 

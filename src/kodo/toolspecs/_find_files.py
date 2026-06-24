@@ -65,9 +65,7 @@ FIND_FILES: ToolSpec = ToolSpec(
             },
             "no_ignore": {
                 "type": "boolean",
-                "description": (
-                    "Include files ignored by .gitignore / .ignore. Default false."
-                ),
+                "description": ("Include files ignored by .gitignore / .ignore. Default false."),
             },
             "max_results": {
                 "type": "integer",

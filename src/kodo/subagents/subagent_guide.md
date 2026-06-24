@@ -29,6 +29,7 @@ subagents:
   - code_critic
   - e2e_test_designer
   - e2e_test_design_critic
+  - python_toolchain
 ---
 # Kodo
 
@@ -74,6 +75,30 @@ The Architect **determines** end-to-end testability; **you act on that determina
 - **`excluded`** (human-in-the-loop) → **skip stage 8 entirely.** The pipeline is complete when stage 7 completes for all codenames. Post an update recording that end-to-end testing is excluded per the Architect's determination.
 
 A `missing_test_seam` finding raised by the End-to-End Test Designer implicates an upstream artifact (a Functional Design, or the architecture document for an architecture-level gap). Treat it as a **procedural** escalation: it triggers the normal invalidation cascade from the implicated artifact (re-run Functional Designer to add the configuration seam, regenerate downstream), after which stage 8 resumes.
+
+## Project Toolchain Setup
+
+Separate from the numbered pipeline, you can give the project a working build
+model — the five standard build scripts (`build`, `format`, `static_analysis`,
+`test`, `full_build`) and a `DEVELOPMENT.md` — by delegating to a **toolchain-setup
+sub-agent**. This is an **adjunct action, not a pipeline stage**: it does not
+appear in `query_frontier`, and you schedule it on your own judgement, not from the
+frontier.
+
+- **When.** Offer it once the project's language is known — for a new project, once
+  the Tech Stack is established; for an existing project the user wants to bring
+  into the Kodo build model, when they ask to convert it. It runs **once per
+  project**; do not re-run it unless the user requests a change to the setup.
+- **Suggest, then confirm.** Do not run it unprompted. In interactive mode,
+  **suggest** setting up the toolchain and confirm via `ask_user` before
+  delegating. In autonomous mode the user is away: decide, proceed, and document
+  the decision via `post_update`.
+- **Which agent.** Today only **Python** is supported: spawn `python_toolchain`
+  via `run_subagent`, passing whether this is a fresh bootstrap or a conversion of
+  an existing project. For any other language there is no toolchain agent yet —
+  do not invent one; note the gap to the user.
+- **After it returns.** Record what it set up via `post_update` (you never author
+  the scripts or `DEVELOPMENT.md` yourself — the sub-agent owns them).
 
 ## Tools
 

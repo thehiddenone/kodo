@@ -338,6 +338,16 @@ result, resetting it on rollback.
 
 **State:** Plugins complete; not yet wired to agent tool calls.
 
+> **Direction (not yet built):** the project-level build model is moving into
+> agent-generated scripts. The `python_toolchain` toolchain-setup agent (§11)
+> generates `scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}` +
+> `DEVELOPMENT.md` in the user's project. The planned follow-up is to rewrite
+> `toolchain_build`/`toolchain_test` (and `PythonPlugin.build/test`) to **invoke
+> those generated scripts**, and to add a separate dependency-management subagent
+> that executes the step-by-step dependency guides `DEVELOPMENT.md` carries
+> (replacing `toolchain_deps`'s plugin path). Both are out of scope for the first
+> toolchain-setup deliverable.
+
 ---
 
 ## 9. `llms/` — LLM streaming abstraction
@@ -434,17 +444,27 @@ into the per-run `ToolContext.util_paths` (see §12, search tools).
 
 | Module | Defines | Links |
 |---|---|---|
-| [_loader.py](../src/kodo/subagents/_loader.py) | `SubAgent` (frozen: `name`, `tools: frozenset[str]`, `system_prompt`, `source_path`, `capability`), `AgentLoadError`, `load_agent()` | Parses `subagent_<name>.md` frontmatter + body. |
-| [_registry.py](../src/kodo/subagents/_registry.py) | `AgentRegistry` | Loads all `subagent_*.md` + the two mandatory preambles `preamble_security.md` and `preamble_performance.md`. **Renders the `## Tools` section from `ToolSpec` data** (one `_SPECS_BY_NAME` map over `ALL_TOOLS`), filtering `autonomous_mode == "unavailable"` tools when `autonomous=True`. Prepends the preambles (security, then performance). |
+| [_loader.py](../src/kodo/subagents/_loader.py) | `SubAgent` (frozen: `name`, `tools: frozenset[str]`, `system_prompt`, `source_path`, `capability`, `display_name`, `subagents`, **`bases: tuple[str, ...]`**), `AgentLoadError`, `load_agent()` | Parses `subagent_<name>.md` frontmatter + body. |
+| [_registry.py](../src/kodo/subagents/_registry.py) | `AgentRegistry` | Loads all `subagent_*.md`, the two mandatory preambles `preamble_security.md` and `preamble_performance.md`, **and any `base_*.md` shared snippets**. **Renders the `## Tools` section from `ToolSpec` data** (one `_SPECS_BY_NAME` map over `ALL_TOOLS`), filtering `autonomous_mode == "unavailable"` tools when `autonomous=True`. Prepends the preambles (security, then performance), then the agent's referenced bases. |
 
 **Links:** `_registry` imports `ALL_TOOLS` from `toolspecs`. `get(name,
-autonomous)` returns a `SubAgent` with `{PLACEHOLDER:TOOLS}` replaced and both
-preambles prepended (security first, performance second). Because the system
-prompt is rebuilt on every turn, both preambles are always present regardless of
-context compaction (compaction rewrites only the message history). Consumed only
-by `WorkflowEngine`.
+autonomous)` returns a `SubAgent` with `{PLACEHOLDER:TOOLS}` replaced and the
+prompt composed as **preamble (security, then performance) → bases → agent body**.
+Because the system prompt is rebuilt on every turn, the preambles (and bases) are
+always present regardless of context compaction (compaction rewrites only the
+message history). Consumed only by `WorkflowEngine`.
 
-**The 15 agents + 2 preambles** (frontmatter `tools:` lists):
+**Shared bases (`bases:` frontmatter):** an agent may list `bases: [<name>, …]`;
+each names a `base_<name>.md` file in the subagents dir whose body is prepended
+(after the preambles, before the agent's own body, which may specialize it).
+`base_*.md` files are **not** globbed as agents (the agent glob stays
+`subagent_*.md`), so they never register as spawnable agents. The registry
+validates every referenced base exists and is non-empty at construction
+(fail-fast, alongside the tool-resolution check). This lets a family of agents
+share one contract without duplication — used by the **toolchain-setup** family
+(`base_toolchain.md`).
+
+**The agents + 2 preambles + shared bases** (frontmatter `tools:` lists):
 
 The **security preamble** carries the confidentiality / injection-resistance /
 role-fixing / tool-discipline / output-hygiene rules. The **performance
@@ -455,8 +475,9 @@ Conventions, Verify Don't Assume, and Stay In Scope.
 
 | Agent | Tools declared | Role |
 |---|---|---|
-| `guide` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode, post_update | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. |
-| `problem_solver` | create/edit/delete/move/copy_file, run_command, **toolchain_build/test/deps**, ask_user, post_update | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). |
+| `guide` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode, post_update | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. `subagents:` allow-list includes the pipeline agents **+ `python_toolchain`**. |
+| `problem_solver` | create/edit/delete/move/copy_file, run_command, **toolchain_build/test/deps**, **run_subagent**, ask_user, post_update | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). Now declares `run_subagent` + `subagents: [python_toolchain]` — its first spawn capability, used only to delegate toolchain setup. |
+| `python_toolchain` | run_command, create/edit/rewrite_file, find_files, find_text_in_files, get_root_paths, ask_user, post_update | **Toolchain-setup** agent (`bases: [toolchain]`). Spawnable by both `guide` and `problem_solver`. Bootstraps/converts a project: generates the five per-platform build scripts (`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`) + a `DEVELOPMENT.md` (run guide + command-level dependency-management steps). Suggest-then-confirm invocation. |
 | `narrative_author` | publish, read, **ask_user**, request_review, report_completed | Solo, user-facing intake. |
 | `architect`, `requirements_author`, `functional_designer`, `e2e_test_designer`, `test_designer` | publish, read, escalate_blocker | Authors (paired with a critic). |
 | `architect_critic`, `requirements_critic`, `functional_design_critic`, `e2e_test_design_critic`, `code_critic` | publish, read, request_review, report_completed | Critics (own the review gate). |
@@ -471,7 +492,7 @@ Conventions, Verify Don't Assume, and Stay In Scope.
 > file-I/O were the former gaps; both now have handlers in `_TOOL_CLASSES` and
 > dispatch normally.)
 
-**State:** Loader/registry complete; agent roster present; tool wiring partially complete.
+**State:** Loader/registry complete (incl. `bases:` shared snippets); agent roster present (pipeline + `problem_solver` + the `python_toolchain` toolchain-setup agent); tool wiring partially complete.
 
 ---
 
