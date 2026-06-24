@@ -9,6 +9,9 @@ tools:
   - move_file
   - copy_file
   - run_command
+  - get_root_paths
+  - find_files
+  - find_text_in_files
   - toolchain_build
   - toolchain_test
   - toolchain_deps

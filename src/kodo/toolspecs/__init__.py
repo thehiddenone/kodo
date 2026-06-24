@@ -27,6 +27,9 @@ from ._disable_autonomous_mode import DISABLE_AUTONOMOUS_MODE
 from ._edit_file import EDIT_FILE
 from ._escalate_blocker import ESCALATE_BLOCKER
 from ._finalize_project import FINALIZE_PROJECT
+from ._find_files import FIND_FILES
+from ._find_text_in_files import FIND_TEXT_IN_FILES
+from ._get_root_paths import GET_ROOT_PATHS
 from ._list_artifacts import LIST_ARTIFACTS
 from ._move_file import MOVE_FILE
 from ._post_update import POST_UPDATE
@@ -63,6 +66,9 @@ __all__ = [
     "EDIT_FILE",
     "ESCALATE_BLOCKER",
     "FINALIZE_PROJECT",
+    "FIND_FILES",
+    "FIND_TEXT_IN_FILES",
+    "GET_ROOT_PATHS",
     "LIST_ARTIFACTS",
     "MOVE_FILE",
     "OUTPUT_VISIBILITY_DEFAULT",
@@ -104,6 +110,9 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     EDIT_FILE,
     ESCALATE_BLOCKER,
     FINALIZE_PROJECT,
+    GET_ROOT_PATHS,
+    FIND_FILES,
+    FIND_TEXT_IN_FILES,
     LIST_ARTIFACTS,
     MOVE_FILE,
     POST_UPDATE,

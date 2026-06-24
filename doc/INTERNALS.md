@@ -227,6 +227,7 @@ All dispatchable specs now share one handler layer (`tools/`, §6A); the
 | `publish_artifact`, `read_artifact` | `tools/` | ✅ implemented |
 | `escalate_blocker`, `ask_user`, `request_user_review_artifact`, `report_artifact_completed` | `tools/` | ✅ implemented |
 | `create_file`/`edit_file`/`delete_file`/`copy_file`/`move_file`/`run_command` | `tools/` | ✅ implemented; granted to the `problem_solver` agent (the only frontmatter that declares them — no pipeline agent does). |
+| `get_root_paths`, `find_files`, `find_text_in_files` | `tools/` | ✅ implemented (workspace search). `get_root_paths` returns the mode-aware root list (bound project in Guided; every workspace folder in Problem Solver) from `ToolContext.root_paths`. `find_files`/`find_text_in_files` resolve `root` through the active resolver then shell out to the bundled `fd`/`rg` (§10a) via `ToolContext.util_paths`. Granted to `guide` + `problem_solver`. |
 | `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `rollback`, `finalize_project` | `tools/` | ✅ implemented |
 | `disable_autonomous_mode`, `post_update` | `tools/` | ✅ implemented (`DisableAutonomousModeTool`/`PostUpdateTool`, in `_TOOL_CLASSES`). Declared by `guide` (both) and `problem_solver` (`post_update`); resolved by `tools_for_agent` and dispatched. |
 | `toolchain_build`/`toolchain_test`/`toolchain_deps` | — | ⚠️ **spec only, no dispatch.** Declared by `coder`/`test_coder`/`problem_solver` frontmatter; rendered into prompts but silently dropped by `tools_for_agent` (no handler in `DISPATCHABLE_TOOLS_BY_NAME`). |
@@ -251,11 +252,12 @@ to the run's context). This replaced the former
 
 | Module | Defines | Role |
 |---|---|---|
-| [_context.py](../src/kodo/tools/_context.py) | `ToolContext`, `GateLike`, `SessionLike`, `EngineServices`, `QuestionLike`, `ApprovalLike` | The injected per-run context (collaborators + mutable `published_ids`/`stop_requested`) and the structural Protocols runtime satisfies. `EngineServices` is one protocol covering every engine-side operation a tool can trigger (sub-agent launch, rollback, completion, mode disable, client updates). `runtime.GateOrchestrator`/`SessionState` and the engine's `_EngineServices` adapter match them by shape. The mode a tool honours is read live from `SessionLike.effective_autonomous` (frozen per prompt), never snapshotted onto the context. |
+| [_context.py](../src/kodo/tools/_context.py) | `ToolContext`, `RootPath`, `GateLike`, `SessionLike`, `EngineServices`, `QuestionLike`, `ApprovalLike` | The injected per-run context (collaborators + mutable `published_ids`/`stop_requested`) and the structural Protocols runtime satisfies. `EngineServices` is one protocol covering every engine-side operation a tool can trigger (sub-agent launch, rollback, completion, mode disable, client updates). `runtime.GateOrchestrator`/`SessionState` and the engine's `_EngineServices` adapter match them by shape. The mode a tool honours is read live from `SessionLike.effective_autonomous` (frozen per prompt), never snapshotted onto the context. Also carries `root_paths: tuple[RootPath, ...]` (mode-aware workspace roots) and `util_paths: dict[str, Path]` (`fd`/`ripgrep` binary paths) for the search tools — the engine computes both, so `tools` never imports `binutils` (tier rule). |
 | [_tool.py](../src/kodo/tools/_tool.py) | `Tool` (ABC) | Binds one run's `ToolContext` (read-only `context` property) and declares the abstract `handle(self, tool_input) -> str`. |
-| `_<tool_name>.py` (20 modules) | one `Tool` subclass each | e.g. `PublishArtifactTool`, `FinalizeProjectTool`; implements `handle` reading `self.context`. Mirrors the `toolspecs` one-file-per-tool convention. |
+| `_<tool_name>.py` (23 modules) | one `Tool` subclass each | e.g. `PublishArtifactTool`, `GetRootPathsTool`, `FindFilesTool`; implements `handle` reading `self.context`. Mirrors the `toolspecs` one-file-per-tool convention. |
 | [_dispatch.py](../src/kodo/tools/_dispatch.py) | `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME` | The `_TOOL_CLASSES` table pairs each dispatchable `ToolSpec` with its `Tool` subclass; `dispatch` instantiates the class bound to the run's context and calls `handle`; exposes per-run `published_ids`/`stop_requested`. `tools_for_agent(frozenset[str])` resolves an agent's declared names to specs (skipping spec-only placeholders). |
-| [_paths.py](../src/kodo/tools/_paths.py) | `resolve_within` | Project-root path guard shared by the file-I/O and shell handlers. |
+| [_paths.py](../src/kodo/tools/_paths.py) | `resolve_within` | Project-root path guard shared by the file-I/O, shell, and search handlers. |
+| [_search.py](../src/kodo/tools/_search.py) | `run_util`, `UtilTimeout` | Shared subprocess launcher for `find_files`/`find_text_in_files`: runs the util with stdin closed under a bounded timeout, killing the whole process tree on POSIX. Holds no tool dispatch. |
 | [_serialize.py](../src/kodo/tools/_serialize.py) | `serialize_artifact` | `Artifact` → JSON dict, used by `read_artifact`. |
 
 **Links:** `runtime/_engine.py` builds one `ToolDispatcher` per agent run via
@@ -266,7 +268,10 @@ to the run's context). This replaced the former
 `autonomous` flag — tools read `SessionState.effective_autonomous`, which the
 worker freezes once per prompt, so a mid-prompt mode toggle never rebuilds the
 dispatcher or splits the prompt's mode. Autonomous filtering of `ask_user`
-happens once, in `subagents/_registry`.
+happens once, in `subagents/_registry`. `__make_dispatcher` also passes
+`root_paths` (computed mode-aware from `current_project`/`SessionWorkspace.folders`
+— the latter synced by the extension's `workspace.folders` frames) and
+`util_paths` (resolved from `binutils.find_util(kodo_user_dir(), "fd"/"ripgrep")`).
 
 **State:** Complete; mirrors the prior dispatch behavior with the two surfaces unified.
 
@@ -374,6 +379,52 @@ handlers) — via `kodo.llms.llamacpp`, never from the private modules.
 
 **Links:** Consumed by `llms/llamacpp/_llama.py` (runtime) and `server/_app.py`
 (install/start/stop handlers). Self-contained otherwise.
+
+**State:** Complete.
+
+---
+
+## 10a. `binutils/` — portable third-party util manager
+
+Kōdo bundles three external CLI utils — **uv**, **ripgrep**, **fd** — under
+`~/.kodo/bin/`. Each util gets its own directory with the binary directly inside
+it, plus a sibling JSON manifest:
+
+```
+~/.kodo/bin/
+    uv.json        uv/uv          (uv\uv.exe on Windows)
+    ripgrep.json   ripgrep/rg
+    fd.json        fd/fd
+```
+
+They are called **utils** (not "tools") to avoid colliding with the agent-facing
+tool catalog (`kodo.toolspecs.ToolSpec` etc.), which is an unrelated concept.
+
+Manifest schema (shared verbatim with the VS Code extension's
+[`src/uv-setup.ts`](../../kodo-vsix/src/uv-setup.ts)): `{name, version, path,
+download_url}`. Versions are **pinned** (`uv=0.11.24`, `ripgrep=15.1.0`,
+`fd=10.4.2`) in `UTIL_SPECS`; bumping one is a code change here (and in the
+extension, for uv).
+
+Both the extension and this module check the manifest + binary and only download
+the pinned release when missing, so whichever runs first wins and the other is a
+no-op. The **extension installs only uv** (it needs uv to build the venv before
+any Python runs); **this module installs all three**, so a future console-only
+build works without the extension. The dual install path is intentional.
+
+| Module | Defines | Links |
+|---|---|---|
+| [_utils.py](../src/kodo/binutils/_utils.py) | `UtilSpec`, `UtilInstall`, `UTIL_SPECS`, `ensure_util`, `ensure_all_utils`, `find_util` | Platform-keyed (`<os>-<arch>`) pinned download/extract into `~/.kodo/bin/<name>/`. Per-util target maps encode rg's musl(x64)/gnu(arm64) Linux split; all three now ship a native `aarch64-pc-windows-msvc` build. No `kodo` imports (takes `kodo_dir: Path`). |
+
+The Python package is named `binutils` (the on-disk install dir stays `~/.kodo/bin/`)
+to keep it distinct from the agent-facing tool catalog.
+
+**Wiring:** `server/_app.py:_start_background` calls `ensure_all_utils(kodo_user_dir())`
+via `asyncio.to_thread` once at startup — best-effort (per-util failures logged,
+never fatal), off the event loop so a first-run download does not block readiness.
+`ripgrep`/`fd` are now **invoked** by the `find_text_in_files`/`find_files` agent
+tools: the engine resolves their binary paths via `find_util(...)` and injects them
+into the per-run `ToolContext.util_paths` (see §12, search tools).
 
 **State:** Complete.
 

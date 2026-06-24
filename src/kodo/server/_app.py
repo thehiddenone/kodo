@@ -17,6 +17,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from kodo.binutils import ensure_all_utils
 from kodo.llms import LLMEntry, LLMGateway, get_llm_registry
 from kodo.llms.llamacpp import (
     LlamaServer,
@@ -486,6 +487,14 @@ async def _handle_llama_stop(req: Request) -> None:
 
 async def _start_background(app: web.Application) -> None:
     user_dir = kodo_user_dir()
+
+    # Ensure the bundled third-party utils (uv, ripgrep, fd) are present under
+    # ~/.kodo/bin.  Best-effort and idempotent: each is a no-op once installed
+    # (the VS Code extension already installs uv before launching us), so this
+    # only does real work on a first console-style launch.  Off the event loop
+    # so the first-run download does not block server readiness.
+    await asyncio.to_thread(ensure_all_utils, user_dir)
+
     running = find_running_server(user_dir)
     if running is not None:
         llama_install = find_installed(user_dir)

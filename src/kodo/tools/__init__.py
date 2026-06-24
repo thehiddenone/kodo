@@ -23,6 +23,7 @@ from ._context import (
     EngineServices,
     GateLike,
     QuestionLike,
+    RootPath,
     SessionLike,
     ToolContext,
 )
@@ -34,6 +35,9 @@ from ._dispatch import DISPATCHABLE_TOOLS_BY_NAME, ToolDispatcher, tools_for_age
 from ._edit_file import EditFileTool
 from ._escalate_blocker import EscalateBlockerTool
 from ._finalize_project import FinalizeProjectTool
+from ._find_files import FindFilesTool
+from ._find_text_in_files import FindTextInFilesTool
+from ._get_root_paths import GetRootPathsTool
 from ._list_artifacts import ListArtifactsTool
 from ._move_file import MoveFileTool
 from ._paths import (
@@ -67,7 +71,10 @@ __all__ = [
     "EditFileTool",
     "EscalateBlockerTool",
     "FinalizeProjectTool",
+    "FindFilesTool",
+    "FindTextInFilesTool",
     "GateLike",
+    "GetRootPathsTool",
     "ListArtifactsTool",
     "LogicalPathResolver",
     "MoveFileTool",
@@ -81,6 +88,7 @@ __all__ = [
     "ReportArtifactCompletedTool",
     "RequestUserReviewArtifactTool",
     "RollbackTool",
+    "RootPath",
     "RunAuthorCriticIterationTool",
     "RunCommandTool",
     "RunSubagentTool",

@@ -20,8 +20,10 @@ from pathlib import Path
 
 import pytest
 
+from kodo.binutils import find_util
+from kodo.project import kodo_user_dir
 from kodo.runtime import ApprovalResponse, QuestionResponse, SessionState
-from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, ProjectPathResolver, ToolDispatcher
+from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, ProjectPathResolver, RootPath, ToolDispatcher
 from kodo.toolspecs import (
     ALL_TOOLS,
     SCHEMA_COMPLIANCE_KEY,
@@ -91,7 +93,12 @@ class _FakeServices:
 
 
 def _make_dispatcher(
-    tmp_path: Path, *, agent_name: str = "test_agent", autonomous: bool = False
+    tmp_path: Path,
+    *,
+    agent_name: str = "test_agent",
+    autonomous: bool = False,
+    root_paths: tuple[RootPath, ...] = (),
+    util_paths: dict[str, Path] | None = None,
 ) -> ToolDispatcher:
     index = ProjectIndex()
     ws = Workspace(tmp_path, index)
@@ -107,6 +114,8 @@ def _make_dispatcher(
         services=_FakeServices(ws),
         agent_name=agent_name,
         session_id="sess-test",
+        root_paths=root_paths,
+        util_paths=util_paths,
     )
 
 
@@ -264,6 +273,65 @@ async def test_run_command_compliance(tmp_path: Path) -> None:
         "run_command", await _dispatch(d, "run_command", {"command": "exit 3", "timeout": 10})
     )
     assert fail["exit_code"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Workspace search tools (get_root_paths / find_files / find_text_in_files)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_root_paths_compliance(tmp_path: Path) -> None:
+    roots = (RootPath(name="proj", path=str(tmp_path)),)
+    d = _make_dispatcher(tmp_path, root_paths=roots)
+    parsed = _assert_compliant("get_root_paths", await _dispatch(d, "get_root_paths", {}))
+    assert parsed["roots"] == [{"name": "proj", "path": str(tmp_path)}]
+    # Degenerate (no roots synced) is still a compliant, empty result.
+    empty = _make_dispatcher(tmp_path)
+    _assert_compliant("get_root_paths", await _dispatch(empty, "get_root_paths", {}))
+
+
+@pytest.mark.asyncio
+async def test_find_files_compliance(tmp_path: Path) -> None:
+    # Util-missing and bad-input paths return compliant error envelopes.
+    d = _make_dispatcher(tmp_path)
+    _assert_compliant("find_files", await _dispatch(d, "find_files", {}))
+    _assert_compliant("find_files", await _dispatch(d, "find_files", {"root": str(tmp_path)}))
+
+    fd = find_util(kodo_user_dir(), "fd")
+    if fd is None:
+        pytest.skip("fd util not installed; success path not exercised")
+    (tmp_path / "alpha.py").write_text("x", encoding="utf-8")
+    (tmp_path / "beta.txt").write_text("y", encoding="utf-8")
+    d = _make_dispatcher(tmp_path, util_paths={"fd": fd.path})
+    ok = _assert_compliant(
+        "find_files",
+        await _dispatch(d, "find_files", {"root": str(tmp_path), "extension": "py"}),
+    )
+    assert ok["files"] == ["alpha.py"]
+    assert ok["count"] == 1 and ok["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_find_text_in_files_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path)
+    _assert_compliant("find_text_in_files", await _dispatch(d, "find_text_in_files", {}))
+    _assert_compliant(
+        "find_text_in_files",
+        await _dispatch(d, "find_text_in_files", {"query": "x", "root": str(tmp_path)}),
+    )
+
+    rg = find_util(kodo_user_dir(), "ripgrep")
+    if rg is None:
+        pytest.skip("ripgrep util not installed; success path not exercised")
+    (tmp_path / "a.py").write_text("needle here\nother\n", encoding="utf-8")
+    d = _make_dispatcher(tmp_path, util_paths={"ripgrep": rg.path})
+    ok = _assert_compliant(
+        "find_text_in_files",
+        await _dispatch(d, "find_text_in_files", {"query": "needle", "root": str(tmp_path)}),
+    )
+    assert ok["matches"] == [{"path": "a.py", "line": 1, "text": "needle here"}]
+    assert ok["count"] == 1 and ok["truncated"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +506,9 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "copy_file",
         "move_file",
         "run_command",
+        "get_root_paths",
+        "find_files",
+        "find_text_in_files",
         "publish_artifact",
         "read_artifact",
         "list_artifacts",

@@ -29,6 +29,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from kodo.binutils import find_util
 from kodo.common import ApiKey, ApiKeyProvider, Envelope, MessageSink
 from kodo.llms import (
     LLMGateway,
@@ -64,6 +65,7 @@ from kodo.tools import (
     LogicalPathResolver,
     PathResolver,
     ProjectPathResolver,
+    RootPath,
     ToolDispatcher,
     tools_for_agent,
 )
@@ -1807,7 +1809,45 @@ class WorkflowEngine:
             services=self.__services,
             agent_name=agent_name,
             session_id=session_id,
+            root_paths=self.__root_paths(),
+            util_paths=self.__util_paths(),
         )
+
+    def __root_paths(self) -> tuple[RootPath, ...]:
+        """The filesystem roots the run may operate within, mode-aware.
+
+        Guided mode confines the agent to one project, so it reports just the
+        bound project root. Problem Solver mode addresses the whole workspace, so
+        it reports every open VS Code workspace folder (the map the extension
+        keeps synced via ``workspace.folders``). When no folders have been pushed
+        — e.g. a future console-only single-project run — it falls back to the
+        physical root, keeping ``get_root_paths`` always non-empty.
+        """
+        if self.__session.workflow_mode == "guided" and self.__current_project is not None:
+            cp = self.__current_project
+            return (RootPath(name=cp["name"], path=cp["root"]),)
+        folders = self.__session_workspace.folders
+        if folders:
+            return tuple(RootPath(name=name, path=str(p)) for name, p in folders.items())
+        root = self.__session_workspace.physical_root
+        return (RootPath(name=root.name or str(root), path=str(root)),)
+
+    @staticmethod
+    def __util_paths() -> dict[str, Path]:
+        """Absolute paths to the bundled search utils (``fd`` / ``ripgrep``).
+
+        Read from the ``~/.kodo/bin/`` manifests written by
+        :mod:`kodo.binutils`. A util absent here (not yet installed) is simply
+        omitted; the search tool then returns a clear "not available" error
+        rather than crashing.
+        """
+        paths: dict[str, Path] = {}
+        kodo_dir = kodo_user_dir()
+        for name in ("fd", "ripgrep"):
+            install = find_util(kodo_dir, name)
+            if install is not None:
+                paths[name] = install.path
+        return paths
 
     def __make_resolver(self) -> PathResolver:
         """Pick the path resolver for the active workflow mode.

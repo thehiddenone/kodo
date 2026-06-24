@@ -16,6 +16,7 @@ See [[feedback-tools-layer]]: ``kodo.tools`` may import only T0/T1/T2.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
 
 from kodo.workspace import ProjectIndex, Workspace
@@ -27,9 +28,29 @@ __all__ = [
     "EngineServices",
     "GateLike",
     "QuestionLike",
+    "RootPath",
     "SessionLike",
     "ToolContext",
 ]
+
+
+@dataclass(frozen=True)
+class RootPath:
+    """One filesystem root the running agent may operate within.
+
+    In Guided mode there is exactly one — the bound project root.  In Problem
+    Solver mode there is one per open VS Code workspace folder.  ``get_root_paths``
+    returns these; ``find_files`` / ``find_text_in_files`` take an ``root``
+    matching one of the ``path`` values.
+
+    Attributes:
+        name: Human/logical label (the project name in Guided, the workspace
+            folder's display name in Problem Solver).
+        path: Absolute path to the root directory.
+    """
+
+    name: str
+    path: str
 
 
 class QuestionLike(Protocol):
@@ -185,6 +206,13 @@ class ToolContext:
             rollback, artifact completion, mode disable, client updates.
         agent_name: Name of the running agent (used as artifact author).
         session_id: Session ID attached to published artifacts.
+        root_paths: Filesystem roots the agent may operate within, computed
+            mode-aware by the engine (the bound project in Guided; every open
+            workspace folder in Problem Solver).  Surfaced by ``get_root_paths``.
+        util_paths: Absolute paths to the bundled third-party CLI utils keyed by
+            manifest name (``"fd"``, ``"ripgrep"``), or absent when a util is not
+            yet installed.  Injected by the engine from ``kodo.binutils`` so the
+            search tools never import that package directly (tier rule).
         published_ids: Artifact IDs published during this run (mutated by
             ``publish_artifact``).
         stop_requested: Set ``True`` by ``escalate_blocker`` to end the run.
@@ -198,5 +226,7 @@ class ToolContext:
     services: EngineServices
     agent_name: str
     session_id: str
+    root_paths: tuple[RootPath, ...] = ()
+    util_paths: dict[str, Path] = field(default_factory=dict)
     published_ids: list[str] = field(default_factory=list)
     stop_requested: bool = False

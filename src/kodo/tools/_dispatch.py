@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 from kodo.toolspecs import (
     ASK_USER,
@@ -24,6 +25,9 @@ from kodo.toolspecs import (
     EDIT_FILE,
     ESCALATE_BLOCKER,
     FINALIZE_PROJECT,
+    FIND_FILES,
+    FIND_TEXT_IN_FILES,
+    GET_ROOT_PATHS,
     LIST_ARTIFACTS,
     MOVE_FILE,
     POST_UPDATE,
@@ -41,7 +45,7 @@ from kodo.toolspecs import (
 from kodo.workspace import ProjectIndex, Workspace
 
 from ._ask_user import AskUserTool
-from ._context import EngineServices, GateLike, SessionLike, ToolContext
+from ._context import EngineServices, GateLike, RootPath, SessionLike, ToolContext
 from ._copy_file import CopyFileTool
 from ._create_file import CreateFileTool
 from ._delete_file import DeleteFileTool
@@ -49,6 +53,9 @@ from ._disable_autonomous_mode import DisableAutonomousModeTool
 from ._edit_file import EditFileTool
 from ._escalate_blocker import EscalateBlockerTool
 from ._finalize_project import FinalizeProjectTool
+from ._find_files import FindFilesTool
+from ._find_text_in_files import FindTextInFilesTool
+from ._get_root_paths import GetRootPathsTool
 from ._list_artifacts import ListArtifactsTool
 from ._move_file import MoveFileTool
 from ._paths import PathResolver
@@ -83,6 +90,9 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (COPY_FILE, CopyFileTool),
     (MOVE_FILE, MoveFileTool),
     (RUN_COMMAND, RunCommandTool),
+    (GET_ROOT_PATHS, GetRootPathsTool),
+    (FIND_FILES, FindFilesTool),
+    (FIND_TEXT_IN_FILES, FindTextInFilesTool),
     (QUERY_FRONTIER, QueryFrontierTool),
     (LIST_ARTIFACTS, ListArtifactsTool),
     (RUN_SUBAGENT, RunSubagentTool),
@@ -157,6 +167,8 @@ class ToolDispatcher:
         services: EngineServices,
         agent_name: str,
         session_id: str,
+        root_paths: tuple[RootPath, ...] = (),
+        util_paths: dict[str, Path] | None = None,
     ) -> None:
         self.__ctx = ToolContext(
             workspace=workspace,
@@ -167,6 +179,8 @@ class ToolDispatcher:
             services=services,
             agent_name=agent_name,
             session_id=session_id,
+            root_paths=root_paths,
+            util_paths=dict(util_paths or {}),
         )
 
     @property

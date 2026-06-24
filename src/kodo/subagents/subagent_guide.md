@@ -4,6 +4,9 @@ display_name: Kōdo
 tools:
   - query_frontier
   - list_artifacts
+  - get_root_paths
+  - find_files
+  - find_text_in_files
   - run_subagent
   - run_author_critic_iteration
   - ask_user
