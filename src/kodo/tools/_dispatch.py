@@ -36,6 +36,7 @@ from kodo.toolspecs import (
     READ_ARTIFACT,
     REPORT_ARTIFACT_COMPLETED,
     REQUEST_USER_REVIEW_ARTIFACT,
+    REWRITE_FILE,
     ROLLBACK,
     RUN_AUTHOR_CRITIC_ITERATION,
     RUN_COMMAND,
@@ -65,6 +66,7 @@ from ._query_frontier import QueryFrontierTool
 from ._read_artifact import ReadArtifactTool
 from ._report_artifact_completed import ReportArtifactCompletedTool
 from ._request_user_review_artifact import RequestUserReviewArtifactTool
+from ._rewrite_file import RewriteFileTool
 from ._rollback import RollbackTool
 from ._run_author_critic_iteration import RunAuthorCriticIterationTool
 from ._run_command import RunCommandTool
@@ -86,6 +88,7 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (REPORT_ARTIFACT_COMPLETED, ReportArtifactCompletedTool),
     (CREATE_FILE, CreateFileTool),
     (EDIT_FILE, EditFileTool),
+    (REWRITE_FILE, RewriteFileTool),
     (DELETE_FILE, DeleteFileTool),
     (COPY_FILE, CopyFileTool),
     (MOVE_FILE, MoveFileTool),

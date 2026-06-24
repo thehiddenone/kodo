@@ -229,10 +229,27 @@ async def test_edit_file_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path)
     await _dispatch(d, "create_file", {"path": "a.txt", "content": "x"})
     _assert_compliant(
-        "edit_file", await _dispatch(d, "edit_file", {"path": "a.txt", "content": "z"})
+        "edit_file",
+        await _dispatch(d, "edit_file", {"path": "a.txt", "old_string": "x", "new_string": "z"}),
     )
     _assert_compliant(
-        "edit_file", await _dispatch(d, "edit_file", {"path": "missing.txt", "content": "z"})
+        "edit_file",
+        await _dispatch(
+            d, "edit_file", {"path": "missing.txt", "old_string": "x", "new_string": "z"}
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_rewrite_file_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path)
+    await _dispatch(d, "create_file", {"path": "a.txt", "content": "x"})
+    _assert_compliant(
+        "rewrite_file", await _dispatch(d, "rewrite_file", {"path": "a.txt", "content": "z"})
+    )
+    _assert_compliant(
+        "rewrite_file",
+        await _dispatch(d, "rewrite_file", {"path": "missing.txt", "content": "z"}),
     )
 
 
@@ -502,6 +519,7 @@ def test_all_dispatchable_tools_are_covered() -> None:
     covered = {
         "create_file",
         "edit_file",
+        "rewrite_file",
         "delete_file",
         "copy_file",
         "move_file",

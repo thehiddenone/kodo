@@ -226,7 +226,7 @@ All dispatchable specs now share one handler layer (`tools/`, §6A); the
 |---|---|---|
 | `publish_artifact`, `read_artifact` | `tools/` | ✅ implemented |
 | `escalate_blocker`, `ask_user`, `request_user_review_artifact`, `report_artifact_completed` | `tools/` | ✅ implemented |
-| `create_file`/`edit_file`/`delete_file`/`copy_file`/`move_file`/`run_command` | `tools/` | ✅ implemented; granted to the `problem_solver` agent (the only frontmatter that declares them — no pipeline agent does). |
+| `create_file`/`edit_file`/`rewrite_file`/`delete_file`/`copy_file`/`move_file`/`run_command` | `tools/` | ✅ implemented; granted to the `problem_solver` agent (the only frontmatter that declares them — no pipeline agent does). `edit_file` is a **targeted string-match edit** (`old_string` → `new_string`; must match exactly and uniquely or it fails without writing) and is the **preferred** way to change a file; `rewrite_file` (formerly `edit_file`) replaces the **whole** file content and is for end-to-end regeneration only. |
 | `get_root_paths`, `find_files`, `find_text_in_files` | `tools/` | ✅ implemented (workspace search). `get_root_paths` returns the mode-aware root list (bound project in Guided; every workspace folder in Problem Solver) from `ToolContext.root_paths`. `find_files`/`find_text_in_files` resolve `root` through the active resolver then shell out to the bundled `fd`/`rg` (§10a) via `ToolContext.util_paths`. Granted to `guide` + `problem_solver`. |
 | `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `rollback`, `finalize_project` | `tools/` | ✅ implemented |
 | `disable_autonomous_mode`, `post_update` | `tools/` | ✅ implemented (`DisableAutonomousModeTool`/`PostUpdateTool`, in `_TOOL_CLASSES`). Declared by `guide` (both) and `problem_solver` (`post_update`); resolved by `tools_for_agent` and dispatched. |
@@ -435,13 +435,23 @@ into the per-run `ToolContext.util_paths` (see §12, search tools).
 | Module | Defines | Links |
 |---|---|---|
 | [_loader.py](../src/kodo/subagents/_loader.py) | `SubAgent` (frozen: `name`, `tools: frozenset[str]`, `system_prompt`, `source_path`, `capability`), `AgentLoadError`, `load_agent()` | Parses `subagent_<name>.md` frontmatter + body. |
-| [_registry.py](../src/kodo/subagents/_registry.py) | `AgentRegistry` | Loads all `subagent_*.md` + mandatory `preamble.md`. **Renders the `## Tools` section from `ToolSpec` data** (one `_SPECS_BY_NAME` map over `ALL_TOOLS`), filtering `autonomous_mode == "unavailable"` tools when `autonomous=True`. Prepends the preamble. |
+| [_registry.py](../src/kodo/subagents/_registry.py) | `AgentRegistry` | Loads all `subagent_*.md` + the two mandatory preambles `preamble_security.md` and `preamble_performance.md`. **Renders the `## Tools` section from `ToolSpec` data** (one `_SPECS_BY_NAME` map over `ALL_TOOLS`), filtering `autonomous_mode == "unavailable"` tools when `autonomous=True`. Prepends the preambles (security, then performance). |
 
 **Links:** `_registry` imports `ALL_TOOLS` from `toolspecs`. `get(name,
-autonomous)` returns a `SubAgent` with `{PLACEHOLDER:TOOLS}` replaced and
-preamble prepended. Consumed only by `WorkflowEngine`.
+autonomous)` returns a `SubAgent` with `{PLACEHOLDER:TOOLS}` replaced and both
+preambles prepended (security first, performance second). Because the system
+prompt is rebuilt on every turn, both preambles are always present regardless of
+context compaction (compaction rewrites only the message history). Consumed only
+by `WorkflowEngine`.
 
-**The 15 agents + 1 preamble** (frontmatter `tools:` lists):
+**The 15 agents + 2 preambles** (frontmatter `tools:` lists):
+
+The **security preamble** carries the confidentiality / injection-resistance /
+role-fixing / tool-discipline / output-hygiene rules. The **performance
+preamble** carries execution-quality rules: Communication Style, Reasoning Is
+Silent, **Edit Discipline** (targeted, minimal edits; prefer `edit_file` over
+`rewrite_file`; no drive-by changes), Read Before You Write, Match Existing
+Conventions, Verify Don't Assume, and Stay In Scope.
 
 | Agent | Tools declared | Role |
 |---|---|---|

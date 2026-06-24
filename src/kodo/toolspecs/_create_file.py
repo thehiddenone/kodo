@@ -18,9 +18,9 @@ CREATE_FILE: ToolSpec = ToolSpec(
     user_description="Create a new file",
     description=(
         "Create a new file with the given content. Fails if the file already "
-        "exists — use edit_file to overwrite an existing file. Parent "
-        "directories are created automatically. The path must resolve inside "
-        "the project root."
+        "exists — use edit_file for a targeted change to an existing file, or "
+        "rewrite_file to replace its whole content. Parent directories are "
+        "created automatically. The path must resolve inside the project root."
     ),
     input_schema={
         "type": "object",

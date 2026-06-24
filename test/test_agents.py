@@ -13,7 +13,10 @@ from kodo.subagents import AgentLoadError, AgentRegistry, SubAgent, load_agent
 # ---------------------------------------------------------------------------
 
 
-_PREAMBLE_TEXT = "# Security Preamble\n\nThese rules apply to every sub-agent."
+_SECURITY_TEXT = "# Security Preamble\n\nThese rules apply to every sub-agent."
+_PERFORMANCE_TEXT = "# Performance Preamble\n\nHow well you work."
+# Security first, then performance — the order the registry prepends them in.
+_PREAMBLE_TEXT = f"{_SECURITY_TEXT}\n\n{_PERFORMANCE_TEXT}"
 
 
 def _write_agent(tmp_path: Path, name: str, frontmatter: str, body: str) -> Path:
@@ -23,10 +26,13 @@ def _write_agent(tmp_path: Path, name: str, frontmatter: str, body: str) -> Path
     return p
 
 
-def _write_preamble(tmp_path: Path, text: str = _PREAMBLE_TEXT) -> Path:
-    p = tmp_path / "preamble.md"
-    p.write_text(text, encoding="utf-8")
-    return p
+def _write_preamble(
+    tmp_path: Path,
+    security: str = _SECURITY_TEXT,
+    performance: str = _PERFORMANCE_TEXT,
+) -> None:
+    (tmp_path / "preamble_security.md").write_text(security, encoding="utf-8")
+    (tmp_path / "preamble_performance.md").write_text(performance, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -164,14 +170,28 @@ def test_registry_all_agents_returns_loaded(tmp_path: Path) -> None:
     assert names == {"agent_a", "agent_b"}
 
 
-def test_registry_prepends_preamble_to_every_prompt(tmp_path: Path) -> None:
+def test_registry_prepends_both_preambles_to_every_prompt(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
     _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
     _write_agent(tmp_path, "agent_b", "name: agent_b\n", "Prompt B.")
     registry = AgentRegistry(tmp_path)
     for agent in registry.all_agents():
+        # Security comes first (it takes precedence), then performance, then body.
         assert agent.system_prompt.startswith(_PREAMBLE_TEXT)
+        assert _SECURITY_TEXT in agent.system_prompt
+        assert _PERFORMANCE_TEXT in agent.system_prompt
+        assert agent.system_prompt.index(_SECURITY_TEXT) < agent.system_prompt.index(
+            _PERFORMANCE_TEXT
+        )
     assert registry.get("agent_a").system_prompt == f"{_PREAMBLE_TEXT}\n\nPrompt A."
+
+
+def test_registry_missing_performance_preamble_raises(tmp_path: Path) -> None:
+    # Only the security preamble present — the performance one is mandatory too.
+    (tmp_path / "preamble_security.md").write_text(_SECURITY_TEXT, encoding="utf-8")
+    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
+    with pytest.raises(AgentLoadError, match="preamble"):
+        AgentRegistry(tmp_path)
 
 
 def test_registry_missing_preamble_raises(tmp_path: Path) -> None:

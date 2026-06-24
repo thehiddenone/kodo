@@ -1,8 +1,12 @@
 """Subagent registry — ``name -> SubAgent`` lookup.
 
 Loads all ``.md`` files from the subagents package directory at construction time.
-The security preamble (``preamble.md`` in the same directory) is mandatory and is
-prepended to every subagent's system prompt.
+Two mandatory preambles — the **security** preamble (``preamble_security.md``)
+and the **performance** preamble (``preamble_performance.md``) — are prepended,
+in that order, to every subagent's system prompt. Because the system prompt is
+rebuilt fresh on every turn, both preambles are always present regardless of
+context compaction (compaction only rewrites the conversation history, never the
+system prompt).
 
 Each subagent's ``## Tools`` section is rendered lazily by replacing the
 ``{PLACEHOLDER:TOOLS}`` token with one block per tool listed in its frontmatter
@@ -33,7 +37,8 @@ from kodo.toolspecs import ALL_TOOLS, ToolSpec, augment_output_schema
 
 from ._loader import AgentLoadError, SubAgent, load_agent
 
-_PREAMBLE_FILENAME = "preamble.md"
+_SECURITY_PREAMBLE_FILENAME = "preamble_security.md"
+_PERFORMANCE_PREAMBLE_FILENAME = "preamble_performance.md"
 _TOOLS_PLACEHOLDER = "{PLACEHOLDER:TOOLS}"
 
 # Every tool spec, keyed by tool name (names are unique in the catalog).
@@ -48,23 +53,28 @@ _AUTONOMOUS_DISABLED: frozenset[str] = frozenset(
 class AgentRegistry:
     """Index of all loaded subagents, looked up by name.
 
-    Every agent returned by :meth:`get` has the security preamble prepended and
-    its ``## Tools`` placeholder replaced with descriptions for its allowed
-    tools, filtered for the requested mode.
+    Every agent returned by :meth:`get` has the security and performance
+    preambles prepended (in that order) and its ``## Tools`` placeholder
+    replaced with descriptions for its allowed tools, filtered for the
+    requested mode.
 
     Args:
-        agents_dir: Directory containing ``preamble.md`` and ``subagent_*.md``
-            files.
+        agents_dir: Directory containing ``preamble_security.md``,
+            ``preamble_performance.md`` and ``subagent_*.md`` files.
 
     Raises:
-        AgentLoadError: ``preamble.md`` is missing or empty, or an agent
+        AgentLoadError: a preamble file is missing or empty, or an agent
             references a tool with no matching :class:`~kodo.toolspecs.ToolSpec`.
     """
 
     __slots__ = ("__agents", "__preamble")
 
     def __init__(self, agents_dir: Path) -> None:
-        self.__preamble = self.__load_preamble(agents_dir)
+        # Security first (it takes precedence), then performance. Both are always
+        # re-prepended on every render, so compaction can never drop them.
+        security = self.__load_preamble(agents_dir, _SECURITY_PREAMBLE_FILENAME)
+        performance = self.__load_preamble(agents_dir, _PERFORMANCE_PREAMBLE_FILENAME)
+        self.__preamble = f"{security}\n\n{performance}"
         self.__agents: dict[str, SubAgent] = {}
         for path in sorted(agents_dir.glob("subagent_*.md")):
             agent = load_agent(path)
@@ -74,13 +84,13 @@ class AgentRegistry:
             self.__agents[agent.name] = agent
 
     @staticmethod
-    def __load_preamble(agents_dir: Path) -> str:
-        path = agents_dir / _PREAMBLE_FILENAME
+    def __load_preamble(agents_dir: Path, filename: str) -> str:
+        path = agents_dir / filename
         if not path.is_file():
-            raise AgentLoadError(f"{path}: security preamble file is missing")
+            raise AgentLoadError(f"{path}: preamble file is missing")
         preamble = path.read_text(encoding="utf-8").strip()
         if not preamble:
-            raise AgentLoadError(f"{path}: security preamble file is empty")
+            raise AgentLoadError(f"{path}: preamble file is empty")
         return preamble
 
     @staticmethod

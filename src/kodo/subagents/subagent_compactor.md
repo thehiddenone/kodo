@@ -21,6 +21,7 @@ Preserve, in clear sections, everything the agent needs to continue seamlessly:
 
 - **Goal** — the user's overall objective and any hard constraints or preferences they stated.
 - **Decisions** — choices already made and the reasoning behind them, so they are not relitigated.
+- **Files & artifacts changed** — **always include this section.** List every file created, edited, moved, renamed, or deleted and every artifact published or updated during the session so far, each by its **exact path or id**, with a few words on what changed and why. This is the agent's record of what it has already touched, so it does not re-edit, re-create, or undo its own work after compaction. If nothing on disk or in the artifact store was changed yet, say so explicitly ("No files or artifacts changed yet."). Never omit this section and never leave a change off it.
 - **Progress** — what has been built, designed, or resolved so far. Reference artifacts by their id/name and files by their path. Record the current plan/pipeline position and the responsibility or component currently under work.
 - **Tool results that still matter** — durable facts learned from commands, file reads, tests, or searches (e.g. "tests pass", "the API lives in `src/api/server.ts`"). Summarize outcomes; do not paste raw logs.
 - **Open items** — unanswered questions, pending user approvals, known blockers, and bugs not yet fixed.

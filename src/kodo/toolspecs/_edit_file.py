@@ -1,8 +1,12 @@
-"""``edit_file`` tool spec — native file I/O tool.
+"""``edit_file`` tool spec — native file I/O tool (targeted string-match edit).
 
 Dispatch lives in :mod:`kodo.tools` (one handler module per tool),
 which resolves the path against the project root and rejects anything that
 would escape it.
+
+This is the **preferred** way to change an existing file: it replaces one exact,
+unique snippet (``old_string``) with ``new_string`` and leaves the rest of the
+file byte-for-byte untouched. The whole-file counterpart is ``rewrite_file``.
 """
 
 from __future__ import annotations
@@ -15,11 +19,24 @@ __all__ = ["EDIT_FILE"]
 EDIT_FILE: ToolSpec = ToolSpec(
     name="edit_file",
     external_name="Edit File",
-    user_description="Replace a file's contents",
+    user_description="Make a targeted edit to a file",
     description=(
-        "Replace the entire content of an existing file. Fails if the file "
-        "does not exist — use create_file to create a new file. The path must "
-        "resolve inside the project root."
+        "The PREFERRED way to edit an existing file. Replaces one exact "
+        "occurrence of `old_string` with `new_string`, leaving the rest of the "
+        "file untouched. Use this for ordinary, localized changes instead of "
+        "rewriting the whole file.\n\n"
+        "Rules:\n"
+        "- `old_string` must match the file content EXACTLY, including "
+        "whitespace and indentation, and must appear EXACTLY ONCE. If it is not "
+        "found, or appears more than once, the edit fails and nothing is "
+        "written — include enough surrounding context to make the match unique.\n"
+        "- To make several changes to one file, call this tool once per change. "
+        "Read the file first so your `old_string` reflects the current content; "
+        "after an edit, earlier line positions and surrounding text may have "
+        "shifted.\n"
+        "- Fails if the file does not exist — use `create_file` to create one. "
+        "To regenerate an entire file, use `rewrite_file` instead.\n"
+        "The path must resolve inside the project root."
     ),
     input_schema={
         "type": "object",
@@ -31,26 +48,39 @@ EDIT_FILE: ToolSpec = ToolSpec(
                     "inside it). Paths that resolve outside the project root are rejected."
                 ),
             },
-            "content": {
+            "old_string": {
                 "type": "string",
-                "description": "Full replacement content for the file.",
+                "description": (
+                    "The exact text to replace. Must match the file content "
+                    "verbatim (including whitespace/indentation) and occur exactly "
+                    "once. Include surrounding context if needed to make it unique."
+                ),
+            },
+            "new_string": {
+                "type": "string",
+                "description": (
+                    "The text to substitute in place of `old_string`. Use an empty "
+                    "string to delete the matched text."
+                ),
             },
         },
-        "required": ["path", "content"],
+        "required": ["path", "old_string", "new_string"],
     },
     output_schema={
         "type": "object",
         "properties": {
             "status": {"type": "string", "description": "Always 'edited' on success."},
-            "path": {"type": "string", "description": "The path that was written."},
+            "path": {"type": "string", "description": "The path that was edited."},
         },
         "required": ["status", "path"],
     },
     security_impact=SecurityImpact.MODERATE,
-    input_visibility={"path": "always", "content": "visible"},
+    input_visibility={"path": "always", "old_string": "visible", "new_string": "visible"},
     output_visibility={"status": "always", "path": "always"},
     when_to_use=(
-        "Updating a non-artifact file already on disk (e.g., a generated "
-        "config or lockfile) in place.",
+        "Making a localized change to an existing file — the default, preferred "
+        "way to edit. Replaces just the snippet you target and preserves "
+        "everything else, keeping the diff minimal. Use `rewrite_file` only to "
+        "regenerate a whole file.",
     ),
 )

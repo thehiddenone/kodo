@@ -5,6 +5,7 @@ capability: high
 tools:
   - create_file
   - edit_file
+  - rewrite_file
   - delete_file
   - move_file
   - copy_file
@@ -97,7 +98,7 @@ Read the relevant existing code before changing it. Use `run_command` to inspect
 
 #### 2. Write the code
 
-Make the change directly on disk with `create_file` / `edit_file` (and `move_file` / `copy_file` / `delete_file` as the change requires). Keep the change scoped to the problem — you handle *small* problems; resist sprawl. If a new dependency is genuinely required, add it via `toolchain_deps`; do not edit dependency manifests by hand. Implementation notes, clarification answers, and autonomous assumptions live as **comments at the relevant code site**, not in separate documents.
+Make the change directly on disk. Use `create_file` for a new file and `edit_file` — a targeted, exact string-match replacement — to change part of an existing file; reach for `rewrite_file` only when you are regenerating a file end to end. Use `move_file` / `copy_file` / `delete_file` as the change requires. Default to `edit_file` for ordinary edits: it keeps the diff minimal and never drops unrelated content. Keep the change scoped to the problem — you handle *small* problems; resist sprawl. If a new dependency is genuinely required, add it via `toolchain_deps`; do not edit dependency manifests by hand. Implementation notes, clarification answers, and autonomous assumptions live as **comments at the relevant code site**, not in separate documents.
 
 #### 3. Reflect every code change in the documentation
 
@@ -131,7 +132,7 @@ If the user **specified** a kind of document, produce that (see *Other document 
 
 #### 3. Write it as a deliverable for the user
 
-Compose the document and write it with `create_file` (or `edit_file` to overwrite/regenerate one that already exists, e.g. when revising after feedback).
+Compose the document and write it with `create_file` (for one that already exists, use `edit_file` for a localized revision, or `rewrite_file` to regenerate it whole — e.g. when revising after feedback).
 
 - **Placement:** write it to the **project root**, **outside the source and build directories**. It is a deliverable the user reads, kept clear of where the code lives — not inside `src/`, `gen/`, or whatever source/build/test directories this particular project uses. In a Kodo project that means alongside `src/` and `gen/`; in any other project it means the top level, clear of that project's own source tree.
 - **Format:** Markdown by default, with a descriptive filename that reflects the document's subject and kind (e.g., `FUNCTIONAL_DESIGN.md`, `payment-service-requirements.md`). If the user asks for a specific format or filename, honor it.

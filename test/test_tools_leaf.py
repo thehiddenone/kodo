@@ -163,6 +163,7 @@ def test_dispatchable_catalog_includes_fileio_and_shell_tools() -> None:
     for name in (
         "create_file",
         "edit_file",
+        "rewrite_file",
         "delete_file",
         "copy_file",
         "move_file",
@@ -373,21 +374,77 @@ async def test_create_file_fails_if_already_exists(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_edit_file_replaces_content(tmp_path: Path) -> None:
-    (tmp_path / "out.txt").write_text("old", encoding="utf-8")
+async def test_edit_file_replaces_unique_match(tmp_path: Path) -> None:
+    (tmp_path / "out.txt").write_text("alpha beta gamma", encoding="utf-8")
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
-        await dispatcher.dispatch("edit_file", {"path": "out.txt", "content": "new"})
+        await dispatcher.dispatch(
+            "edit_file",
+            {"path": "out.txt", "old_string": "beta", "new_string": "BETA"},
+        )
     )
     assert result["status"] == "edited"
-    assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "new"
+    # Only the matched snippet changes; everything else is preserved byte-for-byte.
+    assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "alpha BETA gamma"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_fails_when_match_missing(tmp_path: Path) -> None:
+    (tmp_path / "out.txt").write_text("hello world", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch(
+            "edit_file",
+            {"path": "out.txt", "old_string": "nope", "new_string": "x"},
+        )
+    )
+    assert "error" in result
+    # Nothing is written on a failed match.
+    assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_fails_when_match_not_unique(tmp_path: Path) -> None:
+    (tmp_path / "out.txt").write_text("x x x", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch(
+            "edit_file",
+            {"path": "out.txt", "old_string": "x", "new_string": "y"},
+        )
+    )
+    assert "error" in result
+    assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "x x x"
 
 
 @pytest.mark.asyncio
 async def test_edit_file_fails_if_missing(tmp_path: Path) -> None:
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
-        await dispatcher.dispatch("edit_file", {"path": "missing.txt", "content": "new"})
+        await dispatcher.dispatch(
+            "edit_file",
+            {"path": "missing.txt", "old_string": "a", "new_string": "b"},
+        )
+    )
+    assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_rewrite_file_replaces_whole_content(tmp_path: Path) -> None:
+    (tmp_path / "out.txt").write_text("old", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("rewrite_file", {"path": "out.txt", "content": "new"})
+    )
+    assert result["status"] == "rewritten"
+    assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "new"
+
+
+@pytest.mark.asyncio
+async def test_rewrite_file_fails_if_missing(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("rewrite_file", {"path": "missing.txt", "content": "new"})
     )
     assert "error" in result
 
