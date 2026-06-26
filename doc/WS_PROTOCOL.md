@@ -156,14 +156,18 @@ All visibility messages are `kind=event` frames (except the token/thinking strea
 
 ### 5.1 `state` — workflow snapshot
 
-Pushed on connect (also embedded in `hello.ack`), and whenever a field below changes (phase transition, agent change, autonomous toggle, workflow-mode change). Always the complete current snapshot — never a delta.
+Pushed on connect (also embedded in `hello.ack`), and whenever a field below changes (phase transition, agent change, any mode toggle, or the per-turn freeze at prompt dequeue). Always the complete current snapshot — never a delta.
 
 ```json
 { "type": "state",
   "phase": "intake" | "running" | "awaiting_user" | "stopped" | "done" | "error",
   "current_agent": { "name": "functional_designer", "component": "TRADE" } | null,
   "autonomous": false,
-  "workflow_mode": "guided" | "problem_solving" }
+  "effective_autonomous": false,
+  "workflow_mode": "guided" | "problem_solving",
+  "effective_workflow_mode": "guided" | "problem_solving",
+  "edit_control": "review_all" | "allow_all" | "smart",
+  "command_control": "defensive" | "permissive" | "smart" }
 ```
 
 `phase` semantics:
@@ -175,7 +179,17 @@ Pushed on connect (also embedded in `hello.ack`), and whenever a field below cha
 - `done` — the project is finalized.
 - `error` — the engine hit an unrecoverable error.
 
-`autonomous` is the **user-facing** Autonomous/Interactive mode (the mode the *next* prompt will run under). `workflow_mode` selects which top-level workflow drives a prompt: `guided` (the Guide + full Kodo pipeline) or `problem_solving` (the standalone Problem Solver agent). Both are toggled from the sidebar (§7.5/§7.6) and apply to the next prompt.
+The four header toggles split into **two frozen** and **two never-frozen**:
+
+**Frozen toggles** (`autonomous`, `workflow_mode`) are reported as a **pair**: the user-facing *selected* value and its per-turn frozen *effective* twin (`effective_*`). The selected value flips the instant the user clicks; the effective value is the one the **in-flight prompt** actually runs under — the engine freezes both from their selected values when it dequeues a prompt (`__freeze_effective_modes`), so a toggle flipped mid-run takes effect only on the *next* prompt. The client renders each as "in effect" (selected == effective, or idle) or "queued for the next prompt" (a turn is running and they differ).
+
+- `autonomous` — Autonomous/Interactive mode. Toggled via `mode.set` (§7.5).
+- `workflow_mode` — `guided` (the Guide + full Kodo pipeline) or `problem_solving` (the standalone Problem Solver agent). Toggled via `workflow.set` (§7.6).
+
+**Never-frozen toggles** (`edit_control`, `command_control`) carry a **single** value and **no `effective_*` twin**. The *client* owns them: it keeps the user's selected posture and sends the **shown** value, which it forces to `allow_all`/`permissive` (and locks the toggle in the UI) while Autonomous mode is *in effect* — i.e. the frozen `effective_autonomous` during a turn, the live `autonomous` selection when idle — and restores the user's selection otherwise. The server simply mirrors whatever the client last sent, so its stored value is always exactly what the UI shows. **State tracking only** — enforcement is deferred to the M4 security layer.
+
+- `edit_control` — how file edits are handled: `review_all` (pause for sign-off) / `allow_all` / `smart` (default). Set via `edit_control.set` (§7.4a).
+- `command_control` — how much risky commands are restricted: `defensive` / `permissive` / `smart` (default). Set via `command_control.set` (§7.4b).
 
 > **Not yet on the snapshot:** `cumulative_usd`, `pending_prompts`, and
 > `last_checkpoint_sha` are **⟪planned⟫** additions; today cost arrives via
@@ -396,7 +410,7 @@ Pushed once after `hello.ack` when the resumed session has prior turns, so a fre
 { "type": "session.history", "entries": [ { ...session-entry... }, ... ] }
 ```
 
-Entries mirror the WebView's session model. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Other display-only entries (status, `post_update`) are still ephemeral and dropped on rehydrate.
+Entries mirror the WebView's session model. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed. Other display-only entries (status, `post_update`) are still ephemeral and dropped on rehydrate.
 
 ### 5.12 Local-model lifecycle events
 
@@ -608,6 +622,38 @@ Response:
 ```
 
 A `state` event with the updated `workflow_mode` follows.
+
+### 7.4a `edit_control.set` — set the Edit Control posture
+
+Sets the Edit Control posture: `review_all` (pause for sign-off on every edit) / `allow_all` (apply without pausing) / `smart` (decide per edit; the default). Unknown values fall back to `smart`. Unlike `mode.set`/`workflow.set` this is **never frozen**: the client owns the value (forcing `allow_all` while Autonomous mode is in effect, restoring the user's pick otherwise) and the server mirrors whatever it last sent, so the stored value is always exactly what the UI shows. **State tracking only** — no edit gate is enforced yet (deferred to the M4 security layer).
+
+```json
+{ "type": "edit_control.set", "edit_control": "review_all" }
+```
+
+Response:
+
+```json
+{ "type": "edit_control.accepted" }
+```
+
+A `state` event with the updated `edit_control` field follows.
+
+### 7.4b `command_control.set` — set the Command Control posture
+
+Sets the Command Control posture: `defensive` (block risky commands) / `permissive` (allow them) / `smart` (decide per command; the default). Unknown values fall back to `smart`. Mirrored exactly like `edit_control.set` (the client forces `permissive` while Autonomous is in effect). **State tracking only** (M4).
+
+```json
+{ "type": "command_control.set", "command_control": "defensive" }
+```
+
+Response:
+
+```json
+{ "type": "command_control.accepted" }
+```
+
+A `state` event with the updated `command_control` field follows.
 
 ### 7.5 `config.reload` — apply settings.json changes
 

@@ -1,6 +1,8 @@
 ---
 name: python_toolchain
 display_name: Python Toolchain
+solo: true
+standalone: true
 capability: high
 bases:
   - toolchain
@@ -22,6 +24,10 @@ shared *Toolchain Setup* contract above governs everything you do — the two jo
 (bootstrap / convert), the explore-first policy, the five build scripts, the
 `DEVELOPMENT.md` requirements, verification, change requests, and the report-back.
 This section fills that contract in with the concrete Python tooling.
+
+## Purpose
+
+Sets up or converts a project's **Python** build model: the five standard build scripts (`build`, `format`, `static_analysis`, `test`, `full_build`) plus a `DEVELOPMENT.md`. Runs solo via `run_subagent` as an **adjunct action — not a pipeline stage** — once the project's language is known. Use it to bootstrap a new project's toolchain or bring an existing one into the Kodo build model; it owns the scripts and `DEVELOPMENT.md` it produces.
 
 ## Explore the Python Environment First
 

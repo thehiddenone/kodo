@@ -36,6 +36,7 @@ from kodo.toolspecs import (
     READ_ARTIFACT,
     REPORT_ARTIFACT_COMPLETED,
     REQUEST_USER_REVIEW_ARTIFACT,
+    RETURN_RESULT,
     REWRITE_FILE,
     ROLLBACK,
     RUN_AUTHOR_CRITIC_ITERATION,
@@ -66,6 +67,7 @@ from ._query_frontier import QueryFrontierTool
 from ._read_artifact import ReadArtifactTool
 from ._report_artifact_completed import ReportArtifactCompletedTool
 from ._request_user_review_artifact import RequestUserReviewArtifactTool
+from ._return_result import ReturnResultTool
 from ._rewrite_file import RewriteFileTool
 from ._rollback import RollbackTool
 from ._run_author_critic_iteration import RunAuthorCriticIterationTool
@@ -100,6 +102,7 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (LIST_ARTIFACTS, ListArtifactsTool),
     (RUN_SUBAGENT, RunSubagentTool),
     (RUN_AUTHOR_CRITIC_ITERATION, RunAuthorCriticIterationTool),
+    (RETURN_RESULT, ReturnResultTool),
     (ROLLBACK, RollbackTool),
     (FINALIZE_PROJECT, FinalizeProjectTool),
     (DISABLE_AUTONOMOUS_MODE, DisableAutonomousModeTool),
@@ -155,6 +158,9 @@ class ToolDispatcher:
             completion, mode disable, client updates).
         agent_name: Name of the running agent.
         session_id: Session ID attached to published artifacts.
+        output_schema: The running sub-agent's ``output_schema`` (from its
+            ``SubAgentSpec``), so ``return_result`` can validate its result.
+            ``None`` for entry agents that never call ``return_result``.
     """
 
     __ctx: ToolContext
@@ -172,6 +178,7 @@ class ToolDispatcher:
         session_id: str,
         root_paths: tuple[RootPath, ...] = (),
         util_paths: dict[str, Path] | None = None,
+        output_schema: dict[str, object] | None = None,
     ) -> None:
         self.__ctx = ToolContext(
             workspace=workspace,
@@ -184,6 +191,7 @@ class ToolDispatcher:
             session_id=session_id,
             root_paths=root_paths,
             util_paths=dict(util_paths or {}),
+            output_schema=output_schema,
         )
 
     @property
@@ -193,8 +201,13 @@ class ToolDispatcher:
 
     @property
     def stop_requested(self) -> bool:
-        """``True`` once the agent called ``escalate_blocker``."""
+        """``True`` once the agent called ``escalate_blocker`` or ``return_result``."""
         return self.__ctx.stop_requested
+
+    @property
+    def returned_output(self) -> dict[str, object] | None:
+        """The normalized result the agent passed to ``return_result``, if any."""
+        return self.__ctx.returned_output
 
     async def dispatch(self, tool_name: str, tool_input: dict[str, object]) -> str:
         """Route one tool call to its handler and return a JSON-encoded result.

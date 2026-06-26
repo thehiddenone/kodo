@@ -149,6 +149,8 @@ class TransientStore:
     __last_prompt: str
     __autonomous: bool
     __workflow_mode: str
+    __edit_control: str
+    __command_control: str
     __pending_prompt: dict[str, object] | None
     __active_subsession: dict[str, object] | None
     __current_project: dict[str, str] | None
@@ -170,6 +172,8 @@ class TransientStore:
         self.__last_prompt = ""
         self.__autonomous = False
         self.__workflow_mode = "guided"
+        self.__edit_control = "smart"
+        self.__command_control = "smart"
         self.__pending_prompt = None
         self.__active_subsession = None
         self.__current_project = None
@@ -411,6 +415,16 @@ class TransientStore:
         return self.__workflow_mode
 
     @property
+    def edit_control(self) -> str:
+        """Persisted Edit Control posture (``"review_all"`` | ``"allow_all"`` | ``"smart"``)."""
+        return self.__edit_control
+
+    @property
+    def command_control(self) -> str:
+        """Persisted Command Control posture (``"defensive"`` | ``"permissive"`` | ``"smart"``)."""
+        return self.__command_control
+
+    @property
     def pending_prompt(self) -> dict[str, object] | None:
         """The outstanding ``prompt.question``/``prompt.approval`` request, if any.
 
@@ -469,6 +483,8 @@ class TransientStore:
         prompt: str | None = None,
         autonomous: bool | None = None,
         workflow_mode: str | None = None,
+        edit_control: str | None = None,
+        command_control: str | None = None,
         pending_prompt: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
         active_subsession: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
         current_project: dict[str, str] | None = _UNSET,  # type: ignore[assignment]
@@ -479,6 +495,9 @@ class TransientStore:
             stage (str | None): New stage name if changed.
             prompt (str | None): Developer prompt to persist for resume.
             autonomous (bool | None): New autonomous flag if changed.
+            workflow_mode (str | None): New workflow mode if changed.
+            edit_control (str | None): New Edit Control posture if changed.
+            command_control (str | None): New Command Control posture if changed.
             pending_prompt (dict[str, object] | None): Outstanding
                 ``prompt.question``/``prompt.approval`` request to persist,
                 or ``None`` to clear it. Left unchanged if omitted.
@@ -496,6 +515,10 @@ class TransientStore:
             self.__autonomous = autonomous
         if workflow_mode is not None:
             self.__workflow_mode = workflow_mode
+        if edit_control is not None:
+            self.__edit_control = edit_control
+        if command_control is not None:
+            self.__command_control = command_control
         if pending_prompt is not _UNSET:
             self.__pending_prompt = pending_prompt
         if active_subsession is not _UNSET:
@@ -584,7 +607,11 @@ class TransientStore:
     # -- Subsession logs -------------------------------------------------
 
     def append_subsession_message(
-        self, subsession_id: str, role: str, content: str | list[dict[str, object]]
+        self,
+        subsession_id: str,
+        role: str,
+        content: str | list[dict[str, object]],
+        kind: str | None = None,
     ) -> None:
         """Append one message to a sub-agent's isolated subsession log.
 
@@ -592,12 +619,19 @@ class TransientStore:
             subsession_id (str): Session-wide unique subsession identifier.
             role (str): ``'user'`` or ``'assistant'``.
             content (str | list): Message content (plain text or content blocks).
+            kind (str | None): Optional entry discriminator. ``"subagent_task"``
+                tags the structured task the engine seeds a subsession with, so
+                history reconstruction renders it as a distinct *task brief*
+                rather than a user prompt bubble. ``None`` for ordinary turns.
         """
         if self.__paths is None:
             return
         self.__paths.subsessions.mkdir(exist_ok=True)
         path = self.__paths.subsessions / f"{subsession_id}.jsonl"
-        self.__append_line(path, {"role": role, "content": content})
+        record: dict[str, object] = {"role": role, "content": content}
+        if kind is not None:
+            record["kind"] = kind
+        self.__append_line(path, record)
         self.__touch_last_modified()
 
     def read_subsession_messages(self, subsession_id: str) -> list[dict[str, object]]:
@@ -661,6 +695,14 @@ class TransientStore:
             self.__workflow_mode = (
                 "problem_solving" if data.get("workflow_mode") == "problem_solving" else "guided"
             )
+            edit = data.get("edit_control")
+            self.__edit_control = (
+                edit if edit in ("review_all", "allow_all", "smart") else "smart"
+            )
+            command = data.get("command_control")
+            self.__command_control = (
+                command if command in ("defensive", "permissive", "smart") else "smart"
+            )
             pending = data.get("pending_prompt")
             self.__pending_prompt = pending if isinstance(pending, dict) else None
             active = data.get("active_subsession")
@@ -713,6 +755,8 @@ class TransientStore:
             "last_prompt": self.__last_prompt,
             "autonomous": self.__autonomous,
             "workflow_mode": self.__workflow_mode,
+            "edit_control": self.__edit_control,
+            "command_control": self.__command_control,
             "pending_prompt": self.__pending_prompt,
             "active_subsession": self.__active_subsession,
             "current_project": self.__current_project,

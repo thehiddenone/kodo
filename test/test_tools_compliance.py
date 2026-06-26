@@ -65,9 +65,9 @@ class _FakeServices:
         self._workspace = workspace
 
     async def run_subagent(
-        self, caller: str, name: str, task_message: str, input_artifact_ids: list[str]
-    ) -> list[str]:
-        return ["sub-art-1"]
+        self, caller: str, name: str, task_input: dict[str, object]
+    ) -> dict[str, object]:
+        return {"artifact_ids": ["sub-art-1"], "summary": "done"}
 
     async def run_author_critic_iteration(
         self,
@@ -75,7 +75,7 @@ class _FakeServices:
         author_name: str,
         critic_name: str,
         input_artifact_ids: list[str],
-        previous_artifact_id: str | None,
+        for_revision_artifact_ids: list[str],
     ) -> dict[str, object]:
         return {"artifact_id": "ac-art-1", "verdict": "accepted", "concerns": []}
 
@@ -99,6 +99,7 @@ def _make_dispatcher(
     autonomous: bool = False,
     root_paths: tuple[RootPath, ...] = (),
     util_paths: dict[str, Path] | None = None,
+    output_schema: dict[str, object] | None = None,
 ) -> ToolDispatcher:
     index = ProjectIndex()
     ws = Workspace(tmp_path, index)
@@ -116,6 +117,7 @@ def _make_dispatcher(
         session_id="sess-test",
         root_paths=root_paths,
         util_paths=util_paths,
+        output_schema=output_schema,
     )
 
 
@@ -469,8 +471,43 @@ async def test_run_subagent_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path, agent_name="guide")
     _assert_compliant(
         "run_subagent",
-        await _dispatch(d, "run_subagent", {"name": "narrative_author", "task_message": "go"}),
+        await _dispatch(
+            d,
+            "run_subagent",
+            {"name": "narrative_author", "task_input": {"instructions": "go"}},
+        ),
     )
+
+
+@pytest.mark.asyncio
+async def test_return_result_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path, agent_name="coder")
+    _assert_compliant(
+        "return_result",
+        await _dispatch(d, "return_result", {"result": {"artifact_ids": ["a"], "summary": "s"}}),
+    )
+
+
+@pytest.mark.asyncio
+async def test_return_result_captures_normalized_output_and_stops(tmp_path: Path) -> None:
+    schema = {
+        "type": "object",
+        "properties": {"verdict": {"type": "string"}, "concerns": {"type": "array"}},
+        "required": ["verdict", "concerns"],
+    }
+    d = _make_dispatcher(tmp_path, agent_name="architect_critic", output_schema=schema)
+    await _dispatch(
+        d,
+        "return_result",
+        {"result": {"verdict": "rejected", "concerns": [{"kind": "gap"}], "stray": 1}},
+    )
+    # The run ends after return_result, and the engine reads the normalized result.
+    assert d.stop_requested
+    out = d.returned_output
+    assert out is not None
+    assert out["verdict"] == "rejected"
+    assert "stray" not in out  # undeclared field dropped by normalize_output
+    assert out["schema_compliance"] is False  # because a field was dropped
 
 
 @pytest.mark.asyncio
@@ -537,6 +574,7 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "ask_user",
         "run_subagent",
         "run_author_critic_iteration",
+        "return_result",
         "rollback",
         "finalize_project",
         "disable_autonomous_mode",

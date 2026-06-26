@@ -45,6 +45,17 @@ MSG_CHECKPOINT_LIST = "checkpoint.list"
 MSG_CHECKPOINT_ROLLBACK = "checkpoint.rollback"
 MSG_MODE_SET = "mode.set"
 MSG_WORKFLOW_SET = "workflow.set"
+# Set the Edit Control posture.
+# Payload: ``{edit_control: "review_all"|"allow_all"|"smart"}``. Unlike
+# mode.set/workflow.set this is NEVER frozen: the client owns the value (forcing
+# "allow_all" while Autonomous is in effect) and the server mirrors whatever it
+# last sent, so the stored value is always exactly what the UI shows. (State
+# tracking only — enforcement is deferred to the M4 security layer.)
+MSG_EDIT_CONTROL_SET = "edit_control.set"
+# Set the Command Control posture.
+# Payload: ``{command_control: "defensive"|"permissive"|"smart"}``. Mirrored
+# exactly like edit_control.set (client forces "permissive" under Autonomous).
+MSG_COMMAND_CONTROL_SET = "command_control.set"
 # Push the VS Code workspace folder map (logical name → physical path) plus the
 # physical root. Sent on connect and on every workspace-folders change; the
 # server rebuilds its WorkspaceLayout logical-root map. Payload:

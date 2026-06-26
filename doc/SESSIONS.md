@@ -192,9 +192,44 @@ When a sub-agent takes over, the engine:
 3. emits `subsession.started` to the client.
 
 When it finishes, the engine writes a `subsession_end` marker (with the
-published `result`), clears `active_subsession`, and emits `subsession.ended`.
-So at any instant, `active_subsession` names the one subsession that "is the
-active one right now," exactly as the user model requires.
+sub-agent's structured `result`), clears `active_subsession`, and emits
+`subsession.ended`. So at any instant, `active_subsession` names the one
+subsession that "is the active one right now," exactly as the user model
+requires.
+
+### Typed sub-agent interface (input/output schemas)
+
+Agent↔sub-agent interaction is typed, mirroring tools. Every sub-agent except
+the entry agents (`guide`, `problem_solver`) has a `SubAgentSpec`
+(`kodo.subagents.specs`, one literal per file) declaring an `input_schema` and an
+`output_schema`. The registry auto-grants such agents the terminal
+`return_result` tool and injects a `## Your Task Contract` section (their own
+input/output schema) into their prompt; a caller's `{PLACEHOLDER:SUBAGENTS}`
+roster also renders every callee's schemas.
+
+- **Input.** `run_subagent` takes `{name, task_input}` where `task_input` is a
+  structured object conforming to the callee's `input_schema`. The engine renders
+  it to the seed user turn (`__render_task_input`) but persists that seed with
+  `kind="subagent_task"`, so the UI shows it as a distinct **task brief** card,
+  not a user-prompt bubble. The rendered task also rides the `subsession.started`
+  event's `task` field for the live feed.
+- **Output.** The sub-agent ends its run by calling `return_result` with a
+  payload validated/normalized against its `output_schema` (`normalize_output`,
+  which now also handles a top-level `oneOf` for the dual-role `test_coder`). The
+  engine reads the structured result off `dispatcher.returned_output`; if the
+  agent never called `return_result`, a `{artifact_ids, schema_compliance:false}`
+  fallback is synthesized. `run_subagent` returns this structured result (no
+  longer a bare artifact-id list).
+- **Author/critic.** `run_author_critic_iteration` builds each side's
+  `task_input`, reads the author's `artifact_ids` and the critic's
+  `verdict`/`concerns` from their `return_result` outputs (the engine no longer
+  sniffs the feedback artifact; it still falls back to reading it if a critic
+  returns no verdict). Its `previous_artifact_id` arg became
+  `for_revision_artifact_ids` (a list).
+- **Engine-driven agents.** `compactor` and `session_titler` also carry specs and
+  return through `return_result` (`{summary}` / `{title}`); the silent
+  `__run_silent_return_turn` grants them the tool and captures the payload, with
+  raw text as a fallback.
 
 ## Resume
 
@@ -268,11 +303,16 @@ including sub-agent work.
 
 | Event | Direction | Payload |
 | --- | --- | --- |
-| `subsession.started` | server → client | `{subsession_id, agent, display_name}` |
+| `subsession.started` | server → client | `{subsession_id, agent, display_name, task}` |
 | `subsession.ended` | server → client | `{subsession_id, agent, display_name, parent_display_name}` |
 
-`session.history` entries gained two display-only types: `subsession_start` and
-`subsession_end`, each carrying `displayName` / `parentDisplayName`.
+`task` is the rendered task brief; the client shows it as a `subagent_task` card
+right after the start divider.
+
+`session.history` entries gained three display-only types: `subsession_start` and
+`subsession_end` (each carrying `displayName` / `parentDisplayName`), and
+`subagent_task` (`{content}`) — the structured task a sub-agent was seeded with,
+reconstructed from the `kind="subagent_task"` seed message.
 
 ## Key code
 

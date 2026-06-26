@@ -38,6 +38,7 @@ from ._query_frontier import QUERY_FRONTIER
 from ._read_artifact import READ_ARTIFACT
 from ._report_artifact_completed import REPORT_ARTIFACT_COMPLETED
 from ._request_user_review_artifact import REQUEST_USER_REVIEW_ARTIFACT
+from ._return_result import RETURN_RESULT
 from ._rewrite_file import REWRITE_FILE
 from ._rollback import ROLLBACK
 from ._run_author_critic_iteration import RUN_AUTHOR_CRITIC_ITERATION
@@ -79,6 +80,7 @@ __all__ = [
     "READ_ARTIFACT",
     "REPORT_ARTIFACT_COMPLETED",
     "REQUEST_USER_REVIEW_ARTIFACT",
+    "RETURN_RESULT",
     "REWRITE_FILE",
     "ROLLBACK",
     "RUN_AUTHOR_CRITIC_ITERATION",
@@ -123,6 +125,7 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     READ_ARTIFACT,
     REPORT_ARTIFACT_COMPLETED,
     REQUEST_USER_REVIEW_ARTIFACT,
+    RETURN_RESULT,
     REWRITE_FILE,
     ROLLBACK,
     RUN_AUTHOR_CRITIC_ITERATION,

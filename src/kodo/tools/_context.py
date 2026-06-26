@@ -136,9 +136,13 @@ class EngineServices(Protocol):
     """
 
     async def run_subagent(
-        self, caller: str, name: str, task_message: str, input_artifact_ids: list[str]
-    ) -> list[str]:
-        """Run a leaf sub-agent and return the artifact IDs it published.
+        self, caller: str, name: str, task_input: dict[str, object]
+    ) -> dict[str, object]:
+        """Run a leaf sub-agent and return its structured result.
+
+        ``task_input`` is the structured task validated against the sub-agent's
+        ``input_schema``; the return is the structured output the sub-agent
+        produced via ``return_result`` (its ``output_schema``).
 
         ``caller`` is the name of the agent making the call (the running agent —
         not necessarily the guide). The engine gates the spawn against
@@ -153,13 +157,14 @@ class EngineServices(Protocol):
         author_name: str,
         critic_name: str,
         input_artifact_ids: list[str],
-        previous_artifact_id: str | None,
+        for_revision_artifact_ids: list[str],
     ) -> dict[str, object]:
         """Run one Author/Critic round and return ``{artifact_id, verdict, concerns}``.
 
-        ``caller`` is the agent making the call; the engine gates both
-        ``author_name`` and ``critic_name`` against that caller's allow-list and
-        raises ``PermissionError`` when either is not permitted.
+        ``for_revision_artifact_ids`` are the prior Author outputs to revise (empty
+        on the first round). ``caller`` is the agent making the call; the engine
+        gates both ``author_name`` and ``critic_name`` against that caller's
+        allow-list and raises ``PermissionError`` when either is not permitted.
         """
         ...
 
@@ -213,9 +218,17 @@ class ToolContext:
             manifest name (``"fd"``, ``"ripgrep"``), or absent when a util is not
             yet installed.  Injected by the engine from ``kodo.binutils`` so the
             search tools never import that package directly (tier rule).
+        output_schema: The running sub-agent's declared ``output_schema`` (from
+            its :class:`~kodo.subagents.SubAgentSpec`), injected by the engine so
+            ``return_result`` can validate/normalize the agent's result against
+            it. ``None`` for the entry agents (guide/problem_solver), which have
+            no spec and never call ``return_result``.
         published_ids: Artifact IDs published during this run (mutated by
             ``publish_artifact``).
         stop_requested: Set ``True`` by ``escalate_blocker`` to end the run.
+        returned_output: The normalized result the sub-agent passed to
+            ``return_result`` (with the engine-owned ``schema_compliance`` field),
+            or ``None`` until it calls it. Read back by the engine after the run.
     """
 
     workspace: Workspace
@@ -228,5 +241,7 @@ class ToolContext:
     session_id: str
     root_paths: tuple[RootPath, ...] = ()
     util_paths: dict[str, Path] = field(default_factory=dict)
+    output_schema: dict[str, object] | None = None
     published_ids: list[str] = field(default_factory=list)
     stop_requested: bool = False
+    returned_output: dict[str, object] | None = None

@@ -53,6 +53,7 @@ from ._query_frontier import QueryFrontierTool
 from ._read_artifact import ReadArtifactTool
 from ._report_artifact_completed import ReportArtifactCompletedTool
 from ._request_user_review_artifact import RequestUserReviewArtifactTool
+from ._return_result import ReturnResultTool
 from ._rewrite_file import RewriteFileTool
 from ._rollback import RollbackTool
 from ._run_author_critic_iteration import RunAuthorCriticIterationTool
@@ -88,6 +89,7 @@ __all__ = [
     "ReadArtifactTool",
     "ReportArtifactCompletedTool",
     "RequestUserReviewArtifactTool",
+    "ReturnResultTool",
     "RewriteFileTool",
     "RollbackTool",
     "RootPath",

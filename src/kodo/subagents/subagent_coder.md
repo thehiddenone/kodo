@@ -1,6 +1,7 @@
 ---
 name: coder
-display_name: Software Developer
+display_name: Coder
+critic: code_critic
 capability: medium
 tools:
   - publish_artifact
@@ -21,6 +22,10 @@ Your output is read by:
 - Downstream components that will be coded later — your component's declared interface becomes their contract.
 
 The agent harness places your code into the component's directory. You produce content; the harness handles placement.
+
+## Purpose
+
+Implements the production code for one component until **all of its tests pass**, working from the Functional Design and the failing test suite the Test Coder produced. Call it per component once tests and stubs exist. **Author paired with the critic `code_critic`** — run via `run_author_critic_iteration`.
 
 ## Inputs
 

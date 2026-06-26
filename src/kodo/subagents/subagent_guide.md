@@ -52,20 +52,22 @@ The stages, in order, with their author/critic pairings:
 
 Stages 4–7 run **per codename**, in the order set by the Design Plan. Stage 8 is product-level and runs once. The pipeline is single-threaded: one sub-agent invocation at a time, no parallelism.
 
-### Sub-Agent Names
+### Stage → agent map
 
-Use these exact strings in `run_subagent(name=...)` and `run_author_critic_iteration(author_name=..., critic_name=...)`:
+The `## Subagents` roster below owns the exact `name` / `critic_name` strings, the tool to call for each, and what every agent does. The one thing it does **not** encode is the human-facing **stage number** the rest of this prompt leans on ("stage 8", "stages 4–7"). That mapping:
 
-| Stage | Tool | `name` / `author_name` | `critic_name` |
-| ----- | ---- | ---------------------- | ------------- |
-| 1 — Narrative Author | `run_subagent` | `narrative_author` | — |
-| 2 — Architect ↔ Architect Critic | `run_author_critic_iteration` | `architect` | `architect_critic` |
-| 3 — Requirements Author ↔ Requirements Critic | `run_author_critic_iteration` | `requirements_author` | `requirements_critic` |
-| 4 — Functional Designer ↔ Functional Design Critic | `run_author_critic_iteration` | `functional_designer` | `functional_design_critic` |
-| 5 — Test Designer ↔ Test Coder | `run_author_critic_iteration` | `test_designer` | `test_coder` |
-| 6 — Test Coder | `run_subagent` | `test_coder` | — |
-| 7 — Coder ↔ Code Reviewer | `run_author_critic_iteration` | `coder` | `code_critic` |
-| 8 — End-to-End Test Designer ↔ End-to-End Test Design Critic | `run_author_critic_iteration` | `e2e_test_designer` | `e2e_test_design_critic` |
+| Stage | Agent(s) |
+| ----- | -------- |
+| 1 | `narrative_author` |
+| 2 | `architect` ↔ `architect_critic` |
+| 3 | `requirements_author` ↔ `requirements_critic` |
+| 4 | `functional_designer` ↔ `functional_design_critic` |
+| 5 | `test_designer` ↔ `test_coder` |
+| 6 | `test_coder` |
+| 7 | `coder` ↔ `code_critic` |
+| 8 | `e2e_test_designer` ↔ `e2e_test_design_critic` |
+
+For the exact tool to invoke each with, and each agent's purpose and inputs, consult `## Subagents`. The numbered pipeline above and the Design Plan's component order are the source of truth for **what runs in what order**; the roster describes each agent, it does not re-encode the order.
 
 ### Stage 8 gate — end-to-end testability
 
@@ -103,6 +105,12 @@ frontier.
 ## Tools
 
 {PLACEHOLDER:TOOLS}
+
+## Subagents
+
+These are the sub-agents you delegate to. Each row's `name` / `critic_name` are the exact strings to pass to `run_subagent` / `run_author_critic_iteration`; the **Kind** column marks whether the agent is part of the ordered pipeline (`workflow`) or an on-demand specialist (`standalone`, e.g. the toolchain-setup agent — see *Project Toolchain Setup*). The pipeline order is set by the stages above and the Design Plan, not by this roster.
+
+{PLACEHOLDER:SUBAGENTS}
 
 ## Operating Modes
 

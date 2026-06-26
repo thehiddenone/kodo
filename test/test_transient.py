@@ -243,6 +243,57 @@ def test_resumed_session_restores_workflow_mode(kodo_dir: Path) -> None:
     assert second.workflow_mode == "problem_solving"
 
 
+def test_edit_control_defaults_to_smart(store: TransientStore) -> None:
+    assert store.edit_control == "smart"
+
+
+def test_edit_control_update_is_persisted(store: TransientStore) -> None:
+    store.update(edit_control="review_all")
+    data = json.loads((store.session_dir / "transient.json").read_text(encoding="utf-8"))
+    assert data["edit_control"] == "review_all"
+    assert store.edit_control == "review_all"
+
+
+def test_command_control_defaults_to_smart(store: TransientStore) -> None:
+    assert store.command_control == "smart"
+
+
+def test_command_control_update_is_persisted(store: TransientStore) -> None:
+    store.update(command_control="permissive")
+    data = json.loads((store.session_dir / "transient.json").read_text(encoding="utf-8"))
+    assert data["command_control"] == "permissive"
+    assert store.command_control == "permissive"
+
+
+def test_edit_control_invalid_value_falls_back_to_smart(kodo_dir: Path) -> None:
+    session_id = "1748792411"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    # Hand-corrupt the persisted value, then reload.
+    path = first.session_dir / "transient.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["edit_control"] = "bogus"
+    data["command_control"] = "bogus"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.edit_control == "smart"
+    assert second.command_control == "smart"
+
+
+def test_resumed_session_restores_edit_and_command_control(kodo_dir: Path) -> None:
+    session_id = "1748792412"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    first.update(edit_control="review_all", command_control="defensive")
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.edit_control == "review_all"
+    assert second.command_control == "defensive"
+
+
 def test_update_with_no_kwargs_does_not_raise(store: TransientStore) -> None:
     store.update()
     assert store.stage == "IDLE"

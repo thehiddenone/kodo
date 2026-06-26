@@ -204,7 +204,9 @@ input_schema, when_to_use: tuple[str, ...], autonomous_mode: str | None = None
 
 [\_\_init\_\_.py](../src/kodo/toolspecs/__init__.py) exposes one catalog:
 
-- **`ALL_TOOLS: tuple[ToolSpec, ...]`** — all 23 specs (tool names are unique).
+- **`ALL_TOOLS: tuple[ToolSpec, ...]`** — all 24 specs (tool names are unique),
+  including the terminal `return_result` every sub-agent uses to return its
+  typed result (§11).
   Consumed by `subagents/_registry` to render prompts. (Which of these specs are
   actually *dispatchable* is a `tools/` concern — see
   `tools.DISPATCHABLE_TOOLS_BY_NAME`, §6A. The former `LEAF_TOOLS_BY_NAME`
@@ -444,8 +446,9 @@ into the per-run `ToolContext.util_paths` (see §12, search tools).
 
 | Module | Defines | Links |
 |---|---|---|
-| [_loader.py](../src/kodo/subagents/_loader.py) | `SubAgent` (frozen: `name`, `tools: frozenset[str]`, `system_prompt`, `source_path`, `capability`, `display_name`, `subagents`, **`bases: tuple[str, ...]`**), `AgentLoadError`, `load_agent()` | Parses `subagent_<name>.md` frontmatter + body. |
-| [_registry.py](../src/kodo/subagents/_registry.py) | `AgentRegistry` | Loads all `subagent_*.md`, the two mandatory preambles `preamble_security.md` and `preamble_performance.md`, **and any `base_*.md` shared snippets**. **Renders the `## Tools` section from `ToolSpec` data** (one `_SPECS_BY_NAME` map over `ALL_TOOLS`), filtering `autonomous_mode == "unavailable"` tools when `autonomous=True`. Prepends the preambles (security, then performance), then the agent's referenced bases. |
+| [_loader.py](../src/kodo/subagents/_loader.py) | `SubAgent` (frozen: `name`, `tools: frozenset[str]`, `system_prompt`, `source_path`, `capability`, `display_name`, `subagents`, **`bases: tuple[str, ...]`**, **`subagent_order: tuple[str, ...]`**, **`purpose`**, **`solo: bool`**, **`critic`**, **`standalone: bool`**), `AgentLoadError`, `load_agent()` | Parses `subagent_<name>.md` frontmatter + body. Extracts the **`## Purpose`** body section (caller-agnostic "what this agent does / when to call it"); reads the `solo`/`critic`/`standalone` frontmatter that drives a caller's roster; keeps the `subagents:` allow-list in declaration order as `subagent_order`. |
+| [_subagentspec.py](../src/kodo/subagents/_subagentspec.py) + [specs/](../src/kodo/subagents/specs/) | `SubAgentSpec` (frozen: `name`, `description`, `input_schema`, `output_schema`) + one literal per agent in `specs/_<name>.py`, aggregated as `ALL_SUBAGENTS` | The typed input/output contract of a sub-agent — "a tool with agentic behavior". Every sub-agent **except** the entry agents (`guide`, `problem_solver`) has one. `specs/_shapes.py` holds declarative schema builders (`pipeline_input`/`author_output`/`critic_output`). |
+| [_registry.py](../src/kodo/subagents/_registry.py) | `AgentRegistry` | Loads all `subagent_*.md`, the two mandatory preambles `preamble_security.md` and `preamble_performance.md`, **and any `base_*.md` shared snippets**. **Renders the `## Tools` section from `ToolSpec` data** (one `_SPECS_BY_NAME` map over `ALL_TOOLS`), filtering `autonomous_mode == "unavailable"` tools when `autonomous=True`. **Renders the `## Subagents` roster from `{PLACEHOLDER:SUBAGENTS}`** (`render_subagents_section()`, public), now including each callee's input/output schema. For an agent with a `SubAgentSpec` (`SUBAGENT_SPECS_BY_NAME`, `spec_for()`), **auto-grants `return_result`** and **injects a `## Your Task Contract` section** (its own input + augmented output schema). Prepends the preambles (security, then performance), then the agent's referenced bases, then the contract. |
 
 **Links:** `_registry` imports `ALL_TOOLS` from `toolspecs`. `get(name,
 autonomous)` returns a `SubAgent` with `{PLACEHOLDER:TOOLS}` replaced and the
@@ -464,6 +467,33 @@ validates every referenced base exists and is non-empty at construction
 share one contract without duplication — used by the **toolchain-setup** family
 (`base_toolchain.md`).
 
+**Sub-agent roster (`{PLACEHOLDER:SUBAGENTS}`):** a *caller* agent (one with a
+`subagents:` allow-list) may embed `{PLACEHOLDER:SUBAGENTS}`. The registry replaces
+it with a **roster**: a short **intro paragraph** (workflow vs standalone), then a
+table of the invocable sub-agents, then each listed sub-agent's `## Purpose`
+paragraph, all in the caller's allow-list order. The roster is built from the
+**callee** agents' frontmatter + body, so a sub-agent's description lives once with
+it and is reused by every caller (the `## Purpose` text is written
+**caller-agnostic**). Table rules, per callee frontmatter: a `critic: <name>` marks
+an **author** → one `run_author_critic_iteration` row naming the critic; `solo: true`
+→ a `run_subagent` row; a **pure critic** (neither) is absorbed into its author's row
+and gets no row of its own (but still gets a purpose paragraph). The **`Kind`** column
+reads `standalone` when the callee declares `standalone: true`, else `workflow` —
+distinguishing on-demand specialists (e.g. `python_toolchain`) from ordered-pipeline
+agents. The roster carries **no ordering column**: ordering lives in the caller's
+prose (the Guide's numbered pipeline + the Design Plan), since a single linear
+predecessor (`depends_on`, now removed) misrepresented the real inter-agent
+dependencies. An agent can be **both** solo and a critic — `test_coder` gets its own
+`run_subagent` row *and* appears as `test_designer`'s `critic_name`.
+`render_subagents_section(name)` is public so prompt-review tooling can render a
+caller's roster even when its body omits the placeholder. Validated fail-fast at
+construction (every listed sub-agent must exist and carry a `## Purpose`). Live
+users: **`problem_solver`** (lists `python_toolchain`) and **`guide`** (the full
+pipeline + `python_toolchain`; its `## Subagents` section embeds the placeholder and
+a thin stage→agent map replaces the old hand-written `### Sub-Agent Names` table).
+See [GUIDE_PROMPT_REVIEW.md](GUIDE_PROMPT_REVIEW.md) for the live assembled prompt and
+the amendment record.
+
 **The agents + 2 preambles + shared bases** (frontmatter `tools:` lists):
 
 The **security preamble** carries the confidentiality / injection-resistance /
@@ -476,7 +506,7 @@ Conventions, Verify Don't Assume, and Stay In Scope.
 | Agent | Tools declared | Role |
 |---|---|---|
 | `guide` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode, post_update | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. `subagents:` allow-list includes the pipeline agents **+ `python_toolchain`**. |
-| `problem_solver` | create/edit/delete/move/copy_file, run_command, **toolchain_build/test/deps**, **run_subagent**, ask_user, post_update | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). Now declares `run_subagent` + `subagents: [python_toolchain]` — its first spawn capability, used only to delegate toolchain setup. |
+| `problem_solver` | create/edit/delete/move/copy_file, run_command, **toolchain_build/test/deps**, **run_subagent**, ask_user, post_update | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). Now declares `run_subagent` + `subagents: [python_toolchain]` — its first spawn capability, used only to delegate toolchain setup. **Embeds `{PLACEHOLDER:SUBAGENTS}` in a `## Subagents` section** — the live caller of the roster mechanism (renders `python_toolchain`'s row + purpose). |
 | `python_toolchain` | run_command, create/edit/rewrite_file, find_files, find_text_in_files, get_root_paths, ask_user, post_update | **Toolchain-setup** agent (`bases: [toolchain]`). Spawnable by both `guide` and `problem_solver`. Bootstraps/converts a project: generates the five per-platform build scripts (`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`) + a `DEVELOPMENT.md` (run guide + command-level dependency-management steps). Suggest-then-confirm invocation. |
 | `narrative_author` | publish, read, **ask_user**, request_review, report_completed | Solo, user-facing intake. |
 | `architect`, `requirements_author`, `functional_designer`, `e2e_test_designer`, `test_designer` | publish, read, escalate_blocker | Authors (paired with a critic). |
@@ -492,7 +522,7 @@ Conventions, Verify Don't Assume, and Stay In Scope.
 > file-I/O were the former gaps; both now have handlers in `_TOOL_CLASSES` and
 > dispatch normally.)
 
-**State:** Loader/registry complete (incl. `bases:` shared snippets); agent roster present (pipeline + `problem_solver` + the `python_toolchain` toolchain-setup agent); tool wiring partially complete.
+**State:** Loader/registry complete (incl. `bases:` shared snippets **and the `{PLACEHOLDER:SUBAGENTS}` roster from per-agent `## Purpose` + `solo`/`critic`/`standalone` frontmatter**); agent roster present (pipeline + `problem_solver` + the `python_toolchain` toolchain-setup agent); tool wiring partially complete.
 
 ---
 

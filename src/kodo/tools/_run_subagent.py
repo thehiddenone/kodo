@@ -13,21 +13,18 @@ _log = logging.getLogger(__name__)
 
 
 class RunSubagentTool(Tool):
-    """Run a leaf sub-agent and return the artifact IDs it published."""
+    """Run a leaf sub-agent and return its structured result."""
 
     async def handle(self, tool_input: dict[str, object]) -> str:
         name = str(tool_input.get("name", ""))
-        task_message = str(tool_input.get("task_message", ""))
-        input_ids_raw = tool_input.get("input_artifact_ids", [])
-        input_ids = [str(i) for i in input_ids_raw] if isinstance(input_ids_raw, list) else []
+        task_input_raw = tool_input.get("task_input", {})
+        task_input = task_input_raw if isinstance(task_input_raw, dict) else {}
 
         caller = self.context.agent_name
-        _log.info("run_subagent: caller=%s name=%s input_ids=%s", caller, name, input_ids)
+        _log.info("run_subagent: caller=%s name=%s", caller, name)
         try:
-            artifact_ids = await self.context.services.run_subagent(
-                caller, name, task_message, input_ids
-            )
+            result = await self.context.services.run_subagent(caller, name, task_input)
         except PermissionError as exc:
             _log.warning("run_subagent denied: %s", exc)
             return json.dumps({"error": str(exc)})
-        return json.dumps({"artifact_ids": artifact_ids})
+        return json.dumps(result)

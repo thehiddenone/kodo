@@ -31,11 +31,14 @@ RUN_AUTHOR_CRITIC_ITERATION: ToolSpec = ToolSpec(
                 "items": {"type": "string"},
                 "description": "Input artifact IDs passed to the Author.",
             },
-            "previous_artifact_id": {
-                "type": "string",
+            "for_revision_artifact_ids": {
+                "type": "array",
+                "items": {"type": "string"},
                 "description": (
-                    "Artifact ID of the prior Author output.  When set, the Author "
-                    "receives it as revision context alongside the Critic's concerns."
+                    "Artifact IDs of the prior Author outputs to revise.  When non-empty, "
+                    "the Author receives them as revision context alongside the Critic's "
+                    "concerns.  A list because an Author may have published several "
+                    "artifacts that all need revision."
                 ),
             },
         },
@@ -62,7 +65,7 @@ RUN_AUTHOR_CRITIC_ITERATION: ToolSpec = ToolSpec(
         "author_name": "always",
         "critic_name": "always",
         "input_artifact_ids": "visible",
-        "previous_artifact_id": "visible",
+        "for_revision_artifact_ids": "visible",
     },
     output_visibility={"artifact_id": "always", "verdict": "always", "concerns": "visible"},
     when_to_use=(

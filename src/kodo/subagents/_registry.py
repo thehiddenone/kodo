@@ -23,6 +23,19 @@ marks ``autonomous_mode`` as ``unavailable`` are excluded — from both the
 rendered ``## Tools`` section and the returned :attr:`SubAgent.tools` set —
 when ``autonomous=True``.
 
+A caller agent (one with a ``subagents:`` allow-list) may also embed a
+``{PLACEHOLDER:SUBAGENTS}`` token. It is replaced with a **sub-agent roster**:
+a short paragraph distinguishing **workflow** sub-agents (ordered pipeline,
+depend on upstream artifacts) from **standalone** ones (on-demand specialists
+with no upstream dependency), then a table of the invocable sub-agents
+(author/critic pairs collapsed into one ``run_author_critic_iteration`` row,
+solos as ``run_subagent`` rows, with a ``Kind`` column marking workflow vs
+standalone) followed by each listed sub-agent's caller-agnostic ``## Purpose``
+paragraph — in the caller's allow-list order. The roster is built from the
+*callee* agents' frontmatter (``solo``/``critic``/``standalone``) and
+``## Purpose`` body, so the description lives once with each sub-agent and is
+reused by every caller. See :meth:`AgentRegistry.render_subagents_section`.
+
 Raises :class:`~._loader.AgentLoadError` on duplicate names, missing entries,
 or a tool with no matching :class:`~kodo.toolspecs.ToolSpec`.
 """
@@ -36,13 +49,42 @@ from pathlib import Path
 from kodo.toolspecs import ALL_TOOLS, ToolSpec, augment_output_schema
 
 from ._loader import AgentLoadError, SubAgent, load_agent
+from ._subagentspec import SubAgentSpec
+from .specs import ALL_SUBAGENTS
 
 _SECURITY_PREAMBLE_FILENAME = "preamble_security.md"
 _PERFORMANCE_PREAMBLE_FILENAME = "preamble_performance.md"
 _TOOLS_PLACEHOLDER = "{PLACEHOLDER:TOOLS}"
+_SUBAGENTS_PLACEHOLDER = "{PLACEHOLDER:SUBAGENTS}"
+
+# The terminal tool every schema-bearing sub-agent is auto-granted (so it can
+# return its result against its declared output schema). Granted in the registry
+# rather than per-frontmatter so it can never drift from a spec's existence.
+_RETURN_RESULT_TOOL = "return_result"
+
+# Intro paragraph that precedes the roster table. Drawn from the callees'
+# ``standalone`` frontmatter, it tells the caller how to read the ``Kind``
+# column: **workflow** agents advance an ordered pipeline and depend on upstream
+# artifacts; **standalone** agents are on-demand specialists with no such
+# dependency.
+_SUBAGENTS_INTRO = (
+    "The sub-agents below come in two kinds, marked in the **Kind** column. "
+    "**Workflow** sub-agents advance a pre-determined pipeline: each one consumes "
+    "the artifacts produced by the stage before it, so they run in a fixed order "
+    "and depend on upstream output. **Standalone** sub-agents are specialists you "
+    "invoke whenever the need arises; they sit outside the pipeline and do not "
+    "depend on the outcome of any other agent."
+)
 
 # Every tool spec, keyed by tool name (names are unique in the catalog).
 _SPECS_BY_NAME: dict[str, ToolSpec] = {t.name: t for t in ALL_TOOLS}
+
+# Every sub-agent's typed interface, keyed by agent name. An agent that has an
+# entry here is "schema-bearing": it is auto-granted ``return_result``, gets a
+# ``## Your Task Contract`` section rendered into its own prompt, and its schemas
+# appear in any caller's roster. Entry agents (guide/problem_solver) have no
+# spec and are left untouched.
+SUBAGENT_SPECS_BY_NAME: dict[str, SubAgentSpec] = {s.name: s for s in ALL_SUBAGENTS}
 
 # Tools withheld entirely in autonomous mode.
 _AUTONOMOUS_DISABLED: frozenset[str] = frozenset(
@@ -100,6 +142,13 @@ class AgentRegistry:
                         f"{path}: base {base!r} has no base_{base}.md in {agents_dir}"
                     )
             self.__agents[agent.name] = agent
+        # Second pass — every agent is loaded now, so cross-agent references in a
+        # ``{PLACEHOLDER:SUBAGENTS}`` roster can be validated (each listed
+        # sub-agent must exist and carry a ``## Purpose`` section). Fail-fast at
+        # construction, same as the tool/base checks above.
+        for agent in self.__agents.values():
+            if _SUBAGENTS_PLACEHOLDER in agent.system_prompt:
+                self.__render_subagents_section(agent)
 
     @staticmethod
     def __load_preamble(agents_dir: Path, filename: str) -> str:
@@ -132,6 +181,119 @@ class AgentRegistry:
             blocks.append(f"### {spec.external_name} (`{name}`)\n\n" + "\n".join(lines))
         return "\n\n".join(blocks)
 
+    @staticmethod
+    def __render_contract_section(spec: SubAgentSpec) -> str:
+        """Render an agent's own ``## Your Task Contract`` from its spec.
+
+        Shows the structured task the agent receives (``input_schema``) and the
+        result it must hand to ``return_result`` (``output_schema``, augmented
+        with the engine-owned ``schema_compliance`` field, exactly as a tool's
+        output schema is shown).
+        """
+        input_json = json.dumps(spec.input_schema, indent=2)
+        output_json = json.dumps(augment_output_schema(spec.output_schema), indent=2)
+        return (
+            "## Your Task Contract\n\n"
+            "You are invoked with a structured task matching this **input schema**:\n\n"
+            f"```json\n{input_json}\n```\n\n"
+            "When you finish, call `return_result` exactly once with a `result` object "
+            "matching this **output schema**. The engine validates it; a "
+            "`schema_compliance: false` in the acknowledgement means it had to repair "
+            "your payload (missing fields backfilled, undeclared fields dropped):\n\n"
+            f"```json\n{output_json}\n```"
+        )
+
+    @staticmethod
+    def __render_subagent_schemas(spec: SubAgentSpec) -> str:
+        """Render a callee's input/output schema blocks for a caller's roster."""
+        input_json = json.dumps(spec.input_schema, indent=2)
+        output_json = json.dumps(augment_output_schema(spec.output_schema), indent=2)
+        return (
+            "**Input schema** (pass as `task_input`):\n\n"
+            f"```json\n{input_json}\n```\n\n"
+            "**Output schema** (what it returns):\n\n"
+            f"```json\n{output_json}\n```"
+        )
+
+    def __render_subagents_section(self, caller: SubAgent) -> str:
+        """Render the sub-agent roster that fills *caller*'s ``{PLACEHOLDER:SUBAGENTS}``.
+
+        Three parts, in this order:
+
+        1. An **intro paragraph** (:data:`_SUBAGENTS_INTRO`) explaining how to
+           read the ``Kind`` column — workflow (ordered, upstream-dependent) vs
+           standalone (on-demand specialist).
+        2. A **roster table** (modelled on the guide's hand-written *Sub-Agent
+           Names* table) with one row per *invocable* sub-agent in the caller's
+           ``subagents:`` allow-list order. An agent that declares a ``critic:``
+           is an **author** → a ``run_author_critic_iteration`` row naming the
+           critic; an agent that declares ``solo: true`` → a ``run_subagent`` row;
+           a **pure critic** (neither) is *absorbed* into its author's row and
+           gets no row of its own. The ``Kind`` column reads ``standalone`` when
+           the callee declares ``standalone: true``, else ``workflow``.
+        3. A **purpose paragraph** per sub-agent in the allow-list — authors,
+           critics, and solos alike — so an author and its critic read adjacent.
+           Each is the caller-agnostic ``## Purpose`` body from that agent's file.
+
+        Validates (fail-fast) that every listed sub-agent exists and carries a
+        ``## Purpose`` section.
+        """
+        order = caller.subagent_order
+        for sub in order:
+            if sub not in self.__agents:
+                raise AgentLoadError(
+                    f"{caller.source_path}: subagents entry {sub!r} has no "
+                    f"subagent_{sub}.md in the registry"
+                )
+            if not self.__agents[sub].purpose:
+                raise AgentLoadError(
+                    f"{caller.source_path}: sub-agent {sub!r} has no '## Purpose' "
+                    f"section, required to render {_SUBAGENTS_PLACEHOLDER}"
+                )
+
+        rows: list[str] = []
+        for sub in order:
+            agent = self.__agents[sub]
+            if agent.critic:
+                tool, critic_col = "run_author_critic_iteration", f"`{agent.critic}`"
+            elif agent.solo:
+                tool, critic_col = "run_subagent", "—"
+            else:
+                continue  # pure critic — shown in its author's row, not its own
+            kind = "standalone" if agent.standalone else "workflow"
+            rows.append(f"| `{tool}` | `{sub}` | {critic_col} | {kind} |")
+        table = (
+            "| Tool | `name` / `author_name` | `critic_name` | Kind |\n"
+            "| ---- | ---------------------- | ------------- | ---- |\n" + "\n".join(rows)
+        )
+
+        paras: list[str] = []
+        for sub in order:
+            agent = self.__agents[sub]
+            para = f"### {agent.display_name} (`{sub}`)\n\n{agent.purpose}"
+            spec = SUBAGENT_SPECS_BY_NAME.get(sub)
+            if spec is not None:
+                para += "\n\n" + self.__render_subagent_schemas(spec)
+            paras.append(para)
+        return _SUBAGENTS_INTRO + "\n\n" + table + "\n\n" + "\n\n".join(paras)
+
+    def render_subagents_section(self, name: str) -> str:
+        """Public access to the rendered sub-agent roster for *name*'s allow-list.
+
+        Same content the registry injects at ``{PLACEHOLDER:SUBAGENTS}``, exposed
+        so callers (e.g. prompt-review tooling) can render an agent's roster even
+        when its own body does not embed the placeholder.
+
+        Raises:
+            AgentLoadError: No subagent file for *name*, or a listed sub-agent is
+                missing or lacks a ``## Purpose`` section.
+        """
+        if name not in self.__agents:
+            raise AgentLoadError(
+                f"No subagent file for {name!r}. Expected: subagents/subagent_{name}.md"
+            )
+        return self.__render_subagents_section(self.__agents[name])
+
     def __finalize(self, agent: SubAgent, autonomous: bool) -> SubAgent:
         """Render *agent* for the requested mode.
 
@@ -139,15 +301,31 @@ class AgentRegistry:
         the rendered ``## Tools`` section, then prepends the shared base snippets
         (if any) and the global preamble.
         """
+        spec = SUBAGENT_SPECS_BY_NAME.get(agent.name)
         effective_tools = agent.tools
+        # Schema-bearing sub-agents are auto-granted the terminal return tool so
+        # they can return their result against their declared output schema.
+        if spec is not None:
+            effective_tools = effective_tools | {_RETURN_RESULT_TOOL}
         if autonomous and _AUTONOMOUS_DISABLED:
-            effective_tools = frozenset(t for t in agent.tools if t not in _AUTONOMOUS_DISABLED)
+            effective_tools = frozenset(t for t in effective_tools if t not in _AUTONOMOUS_DISABLED)
         tools_section = self.__render_tools_section(effective_tools, agent.source_path)
         system_prompt = agent.system_prompt.replace(_TOOLS_PLACEHOLDER, tools_section)
+        if _SUBAGENTS_PLACEHOLDER in system_prompt:
+            system_prompt = system_prompt.replace(
+                _SUBAGENTS_PLACEHOLDER, self.__render_subagents_section(agent)
+            )
         # Order of precedence: global preamble (security + performance) first,
-        # then any shared base contract, then the agent's own body (which may
+        # then any shared base contract, then the agent's own typed task
+        # contract (when it has a spec), then the agent's own body (which may
         # specialize the base). Bases are validated to exist at load time.
-        parts = [self.__preamble, *(self.__bases[b] for b in agent.bases), system_prompt]
+        contract = [self.__render_contract_section(spec)] if spec is not None else []
+        parts = [
+            self.__preamble,
+            *(self.__bases[b] for b in agent.bases),
+            *contract,
+            system_prompt,
+        ]
         system_prompt = "\n\n".join(parts)
         return replace(agent, tools=effective_tools, system_prompt=system_prompt)
 
@@ -189,6 +367,15 @@ class AgentRegistry:
                 f"No subagent file for {name!r}. Expected: subagents/subagent_{name}.md"
             )
         return self.__agents[name].subagents
+
+    def spec_for(self, name: str) -> SubAgentSpec | None:
+        """Return the :class:`SubAgentSpec` for *name*, or ``None`` if it has none.
+
+        Entry agents (guide/problem_solver) have no spec; everything else does.
+        The engine uses the spec's ``output_schema`` to validate the agent's
+        ``return_result`` payload.
+        """
+        return SUBAGENT_SPECS_BY_NAME.get(name)
 
     def all_agents(self) -> list[SubAgent]:
         """Return all loaded subagents (interactive-mode render) in name order."""

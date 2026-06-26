@@ -210,6 +210,15 @@ These are the same standards you apply when rewriting Group 1 and replacing Grou
 
 {PLACEHOLDER:TOOLS}
 
+## Subagents
+
+You delegate to the sub-agents below via `run_subagent` (or, for an author/critic
+pair, `run_author_critic_iteration`). Use the exact `name` strings in the roster.
+Each sub-agent's purpose is described in caller-agnostic terms — read it to decide
+whether and when to spawn.
+
+{PLACEHOLDER:SUBAGENTS}
+
 ## What to Avoid
 
 - Do not act on an out-of-scope request. If it is neither a change to the project nor a document about it, decline it — with the statement, the reason, and an example actionable prompt — then do nothing else.

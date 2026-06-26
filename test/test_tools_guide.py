@@ -73,9 +73,9 @@ class _StubServices:
         self._complete = complete_artifact
 
     async def run_subagent(
-        self, caller: str, name: str, task_message: str, input_artifact_ids: list[str]
-    ) -> list[str]:
-        return [f"stub-artifact-{name}"]
+        self, caller: str, name: str, task_input: dict[str, object]
+    ) -> dict[str, object]:
+        return {"artifact_ids": [f"stub-artifact-{name}"], "summary": "done"}
 
     async def run_author_critic_iteration(
         self,
@@ -83,7 +83,7 @@ class _StubServices:
         author_name: str,
         critic_name: str,
         input_artifact_ids: list[str],
-        previous_artifact_id: str | None,
+        for_revision_artifact_ids: list[str],
     ) -> dict[str, object]:
         return {"artifact_id": f"stub-{author_name}", "verdict": "accepted", "concerns": []}
 
@@ -258,7 +258,7 @@ async def test_run_subagent_returns_artifact_ids() -> None:
     result = json.loads(
         await dispatcher.dispatch(
             "run_subagent",
-            {"name": "narrative_author", "task_message": "Build a trading bot"},
+            {"name": "narrative_author", "task_input": {"instructions": "Build a trading bot"}},
         )
     )
     assert "artifact_ids" in result
@@ -286,8 +286,8 @@ class _DenyingServices(_StubServices):
     """Services whose spawn methods reject every call, as the engine gate does."""
 
     async def run_subagent(
-        self, caller: str, name: str, task_message: str, input_artifact_ids: list[str]
-    ) -> list[str]:
+        self, caller: str, name: str, task_input: dict[str, object]
+    ) -> dict[str, object]:
         raise PermissionError(f"Agent {caller!r} is not permitted to spawn sub-agent {name!r}.")
 
     async def run_author_critic_iteration(
@@ -296,7 +296,7 @@ class _DenyingServices(_StubServices):
         author_name: str,
         critic_name: str,
         input_artifact_ids: list[str],
-        previous_artifact_id: str | None,
+        for_revision_artifact_ids: list[str],
     ) -> dict[str, object]:
         raise PermissionError(f"Agent {caller!r} is not permitted to spawn {author_name!r}.")
 
@@ -321,7 +321,7 @@ async def test_run_subagent_denied_returns_error() -> None:
     result = json.loads(
         await dispatcher.dispatch(
             "run_subagent",
-            {"name": "narrative_author", "task_message": "go"},
+            {"name": "narrative_author", "task_input": {"instructions": "go"}},
         )
     )
     assert "artifact_ids" not in result

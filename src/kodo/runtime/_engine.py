@@ -71,6 +71,7 @@ from kodo.tools import (
 )
 from kodo.toolspecs import (
     ALL_TOOLS,
+    SCHEMA_COMPLIANCE_KEY,
     build_detail_rows,
     normalize_output,
     tool_result_succeeded,
@@ -208,9 +209,9 @@ class _EngineServices:
     def __init__(
         self,
         *,
-        run_subagent: Callable[[str, str, str, list[str]], Awaitable[list[str]]],
+        run_subagent: Callable[[str, str, dict[str, object]], Awaitable[dict[str, object]]],
         run_author_critic: Callable[
-            [str, str, str, list[str], str | None], Awaitable[dict[str, object]]
+            [str, str, str, list[str], list[str]], Awaitable[dict[str, object]]
         ],
         rollback: Callable[[str], Awaitable[None]],
         complete_artifact: Callable[[str], Awaitable[None]],
@@ -225,10 +226,10 @@ class _EngineServices:
         self.__post_update = post_update
 
     async def run_subagent(
-        self, caller: str, name: str, task_message: str, input_artifact_ids: list[str]
-    ) -> list[str]:
+        self, caller: str, name: str, task_input: dict[str, object]
+    ) -> dict[str, object]:
         """Delegate to the engine's caller-gated sub-agent spawn."""
-        return await self.__run_subagent(caller, name, task_message, input_artifact_ids)
+        return await self.__run_subagent(caller, name, task_input)
 
     async def run_author_critic_iteration(
         self,
@@ -236,11 +237,11 @@ class _EngineServices:
         author_name: str,
         critic_name: str,
         input_artifact_ids: list[str],
-        previous_artifact_id: str | None,
+        for_revision_artifact_ids: list[str],
     ) -> dict[str, object]:
         """Delegate to the engine's caller-gated Author/Critic round."""
         return await self.__run_author_critic(
-            caller, author_name, critic_name, input_artifact_ids, previous_artifact_id
+            caller, author_name, critic_name, input_artifact_ids, for_revision_artifact_ids
         )
 
     async def rollback(self, target_sha: str) -> None:
@@ -456,6 +457,8 @@ class WorkflowEngine:
             # (the window no longer re-syncs a single global value on connect).
             self.__session.autonomous = self.__transient.autonomous
             self.__session.workflow_mode = self.__transient.workflow_mode
+            self.__session.edit_control = self.__transient.edit_control
+            self.__session.command_control = self.__transient.command_control
             persisted = self.__transient.current_project
             if persisted is not None:
                 await self.__bind_project(persisted["root"], persisted["name"], emit=False)
@@ -684,6 +687,55 @@ class WorkflowEngine:
         self.__transient.update(workflow_mode=self.__session.workflow_mode)
         await self.__emit_state()
 
+    async def handle_edit_control_set(self, value: str) -> None:
+        """Set the Edit Control posture.
+
+        Unlike the frozen toggles this is **never** frozen: the client owns the
+        value (forcing ``"allow_all"`` while Autonomous is in effect, restoring
+        the user's pick otherwise) and the engine simply mirrors whatever it last
+        sent, so the stored value is always exactly what the UI shows. State
+        tracking only — enforcement is deferred to the M4 security layer.
+
+        Args:
+            value: ``"review_all"`` | ``"allow_all"`` | ``"smart"``. Unknown
+                values fall back to ``"smart"``.
+        """
+        self.__session.edit_control = (
+            value if value in ("review_all", "allow_all", "smart") else "smart"
+        )
+        self.__transient.update(edit_control=self.__session.edit_control)
+        await self.__emit_state()
+
+    async def handle_command_control_set(self, value: str) -> None:
+        """Set the Command Control posture.
+
+        Mirrors the client exactly, same as :meth:`handle_edit_control_set`
+        (the client forces ``"permissive"`` while Autonomous is in effect).
+        State tracking only — enforcement deferred to M4.
+
+        Args:
+            value: ``"defensive"`` | ``"permissive"`` | ``"smart"``. Unknown
+                values fall back to ``"smart"``.
+        """
+        self.__session.command_control = (
+            value if value in ("defensive", "permissive", "smart") else "smart"
+        )
+        self.__transient.update(command_control=self.__session.command_control)
+        await self.__emit_state()
+
+    def __freeze_effective_modes(self) -> None:
+        """Snapshot the two frozen toggles into their ``effective_*`` twins.
+
+        Called once per prompt at dequeue (and on sub-session resume) so the
+        guide and every sub-agent it spawns see one consistent value for the
+        whole turn even if the user flips a toggle mid-run. Only ``autonomous``
+        and ``workflow_mode`` are frozen — ``edit_control``/``command_control``
+        are deliberately never frozen (the client owns them and may change them
+        any time it is not locked by Autonomous mode).
+        """
+        self.__session.effective_autonomous = self.__session.autonomous
+        self.__session.effective_workflow_mode = self.__session.workflow_mode
+
     async def handle_compact_now(self) -> None:
         """Enqueue a manual context-compaction request.
 
@@ -791,7 +843,7 @@ class WorkflowEngine:
         # the resume and a new prompt never drive __main_messages concurrently.
         if self.__resume_subsession_pending:
             self.__resume_subsession_pending = False
-            self.__session.effective_autonomous = self.__session.autonomous
+            self.__freeze_effective_modes()
             try:
                 await self.__resume_main_turn()
             except asyncio.CancelledError:
@@ -831,12 +883,12 @@ class WorkflowEngine:
             attachments = (
                 [str(p) for p in raw_attachments] if isinstance(raw_attachments, list) else []
             )
-            # Freeze the autonomous mode for the whole prompt (guide +
-            # every sub-agent it spawns). A toggle the user sends mid-prompt
-            # updates self.__session.autonomous but takes effect only when the
-            # next prompt is dequeued here, so the in-flight prompt stays
-            # consistent end to end.
-            self.__session.effective_autonomous = self.__session.autonomous
+            # Freeze every mode toggle for the whole prompt (guide + every
+            # sub-agent it spawns). A toggle the user flips mid-prompt updates
+            # the user-facing value but takes effect only when the next prompt
+            # is dequeued here, so the in-flight prompt stays consistent end to
+            # end and the client can tell "in effect" from "queued".
+            self.__freeze_effective_modes()
             try:
                 # Name the session from its first prompt, before that prompt
                 # reaches the main agent. The titler session is invisible: it
@@ -1001,17 +1053,25 @@ class WorkflowEngine:
         _log.info("Session titler produced no acceptable title after retry")
         return None
 
-    async def __run_titler_turn(
+    async def __run_silent_return_turn(
         self,
         routing: LLMRouting,
         plugin: LLMPlugin,
         model_id: str,
         agent: SubAgent,
         messages: list[Message],
-    ) -> str:
-        """One silent titler LLM turn; returns the raw concatenated text."""
+    ) -> tuple[dict[str, object] | None, str]:
+        """One silent (un-streamed-to-feed) LLM turn for an engine-driven agent.
+
+        Grants the agent its tools (for ``compactor`` / ``session_titler`` that is
+        just ``return_result``) and captures the ``return_result`` payload, plus
+        the concatenated text as a fallback for a model that ignores the tool.
+        Returns ``(result_or_None, text)``. The call's USD cost is folded into the
+        running total; no stream/thinking events reach the feed.
+        """
         text_parts: list[str] = []
         turn_end: TurnEnd | None = None
+        result: dict[str, object] | None = None
         async for event in self.__gateway.stream_query(
             routing=routing,
             plugin=plugin,
@@ -1020,11 +1080,16 @@ class WorkflowEngine:
             model=model_id,
             system=agent.system_prompt,
             messages=messages,
-            tools=[],
+            tools=tools_for_agent(agent.tools),
             cache_breakpoints=[0],
         ):
             if isinstance(event, TokenDelta):
                 text_parts.append(event.text)
+            elif isinstance(event, ToolCallEvent):
+                if event.tool_name == "return_result" and isinstance(event.tool_input, dict):
+                    payload = event.tool_input.get("result")
+                    if isinstance(payload, dict):
+                        result = payload
             elif isinstance(event, TurnEnd):
                 turn_end = event
 
@@ -1032,7 +1097,25 @@ class WorkflowEngine:
             self.__cumulative_usd += turn_end.usage.usd_cost
             await self.__emit_cost_only()
 
-        return "".join(text_parts)
+        return result, "".join(text_parts)
+
+    async def __run_titler_turn(
+        self,
+        routing: LLMRouting,
+        plugin: LLMPlugin,
+        model_id: str,
+        agent: SubAgent,
+        messages: list[Message],
+    ) -> str:
+        """One silent titler LLM turn; returns the title (via return_result) or text."""
+        result, text = await self.__run_silent_return_turn(
+            routing, plugin, model_id, agent, messages
+        )
+        if result is not None:
+            title = result.get("title")
+            if isinstance(title, str) and title.strip():
+                return title
+        return text
 
     @staticmethod
     def __is_acceptable_title(title: str | None) -> bool:
@@ -1257,29 +1340,14 @@ class WorkflowEngine:
         messages: list[Message] = [
             Message(role="user", content=f"Conversation transcript to compact:\n\n{transcript}")
         ]
-        text_parts: list[str] = []
-        turn_end: TurnEnd | None = None
-        async for event in self.__gateway.stream_query(
-            routing=routing,
-            plugin=plugin,
-            sink=self.__sink,
-            stream_id=uuid.uuid4().hex,
-            model=model_id,
-            system=agent.system_prompt,
-            messages=messages,
-            tools=[],
-            cache_breakpoints=[0],
-        ):
-            if isinstance(event, TokenDelta):
-                text_parts.append(event.text)
-            elif isinstance(event, TurnEnd):
-                turn_end = event
-
-        if turn_end is not None:
-            self.__cumulative_usd += turn_end.usage.usd_cost
-            await self.__emit_cost_only()
-
-        return "".join(text_parts).strip() or None
+        result, text = await self.__run_silent_return_turn(
+            routing, plugin, model_id, agent, messages
+        )
+        if result is not None:
+            summary = result.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                return summary.strip()
+        return text.strip() or None
 
     @staticmethod
     def __compaction_context_message(summary: str) -> Message:
@@ -1858,6 +1926,7 @@ class WorkflowEngine:
         ``self.__session.effective_autonomous``, which the worker freezes per
         prompt, so the dispatcher needs no rebuild on a mode toggle.
         """
+        spec = self.__registry.spec_for(agent_name)
         return ToolDispatcher(
             workspace=self.__workspace,
             index=self.__index,
@@ -1869,6 +1938,7 @@ class WorkflowEngine:
             session_id=session_id,
             root_paths=self.__root_paths(),
             util_paths=self.__util_paths(),
+            output_schema=spec.output_schema if spec is not None else None,
         )
 
     def __root_paths(self) -> tuple[RootPath, ...]:
@@ -1954,30 +2024,55 @@ class WorkflowEngine:
                 )
 
     async def __run_subagent(
-        self, caller: str, name: str, task_message: str, input_artifact_ids: list[str]
-    ) -> list[str]:
+        self, caller: str, name: str, task_input: dict[str, object]
+    ) -> dict[str, object]:
         """Gate a caller's sub-agent spawn, then run it.
 
         Args:
             caller: Agent making the call (the running agent — not assumed to be
                 the Guide). Its frontmatter allow-list gates the spawn.
             name: Sub-agent name from the registry.
-            task_message: Task message injected as the initial user turn.
-            input_artifact_ids: IDs the agent may reference via read_artifact.
+            task_input: Structured task, conforming to the sub-agent's
+                ``input_schema``.
 
         Returns:
-            list[str]: Artifact IDs published during the run.
+            dict: The sub-agent's structured result (its ``output_schema``).
 
         Raises:
             PermissionError: ``caller`` is not permitted to spawn ``name``.
         """
         self.__assert_can_spawn(caller, name)
-        return await self.__spawn_subagent(name, task_message, input_artifact_ids)
+        return await self.__spawn_subagent(name, task_input)
 
-    async def __spawn_subagent(
-        self, name: str, task_message: str, input_artifact_ids: list[str]
-    ) -> list[str]:
-        """Invoke a leaf sub-agent and return the artifact IDs it published.
+    @staticmethod
+    def __render_task_input(task_input: dict[str, object]) -> str:
+        """Render a structured ``task_input`` to the user turn the sub-agent reads.
+
+        The instructions become the heading; every other field is listed under
+        ``## Inputs`` (lists comma-joined). This is what the LLM sees; the UI
+        renders the same task as a distinct *task brief* entry (see the
+        ``subagent_task`` entry kind), not as a user prompt bubble.
+        """
+        if not task_input:
+            return "(no task)"
+        lines: list[str] = []
+        instructions = task_input.get("instructions")
+        if isinstance(instructions, str) and instructions.strip():
+            lines.append("# Task\n\n" + instructions.strip())
+        others = {k: v for k, v in task_input.items() if k != "instructions"}
+        if others:
+            input_lines = ["## Inputs"]
+            for key, value in others.items():
+                if isinstance(value, list):
+                    rendered = ", ".join(str(x) for x in value) if value else "(none)"
+                else:
+                    rendered = str(value)
+                input_lines.append(f"- {key}: {rendered}")
+            lines.append("\n".join(input_lines))
+        return "\n\n".join(lines) or "(no task)"
+
+    async def __spawn_subagent(self, name: str, task_input: dict[str, object]) -> dict[str, object]:
+        """Invoke a leaf sub-agent and return its structured result.
 
         The ungated spawn primitive: callers that have already passed the
         permission gate (:meth:`__run_subagent`, or
@@ -1986,15 +2081,14 @@ class WorkflowEngine:
 
         Args:
             name: Sub-agent name from the registry.
-            task_message: Task message injected as the initial user turn.
-            input_artifact_ids: IDs the agent may reference via read_artifact.
+            task_input: Structured task conforming to the sub-agent's input schema.
 
         Returns:
-            list[str]: Artifact IDs published during the run.
+            dict: The structured result the sub-agent returned via ``return_result``.
         """
         if name in _DIRECT_ONLY_AGENTS:
             _log.warning("spawn_subagent: %r is engine-driven only and cannot be invoked", name)
-            return []
+            return {}
 
         # During a crash-resume replay, each run_subagent call consumes the next
         # subsession marker recorded before the crash instead of starting fresh.
@@ -2005,29 +2099,31 @@ class WorkflowEngine:
         self.__replay_subsessions = None
 
         subsession_id = uuid.uuid4().hex
-        await self.__open_subsession(name, subsession_id)
+        seed_content = self.__render_task_input(task_input)
+        await self.__open_subsession(name, subsession_id, seed_content)
 
-        parts = [task_message] if task_message else []
-        if input_artifact_ids:
-            parts.append(
-                "\n## Input Artifact IDs\n" + "\n".join(f"- {aid}" for aid in input_artifact_ids)
-            )
-        initial_content = "\n".join(parts) or "(no task message)"
-        seed = Message(role="user", content=initial_content)
-        self.__transient.append_subsession_message(subsession_id, seed.role, seed.content)
+        seed = Message(role="user", content=seed_content)
+        # Persisted/displayed as a distinct task brief, not a user prompt bubble.
+        self.__transient.append_subsession_message(
+            subsession_id, seed.role, seed.content, kind="subagent_task"
+        )
 
-        published = await self.__drive_subsession(name, subsession_id, [seed])
-        await self.__close_subsession(name, subsession_id, published)
-        return published
+        output = await self.__drive_subsession(name, subsession_id, [seed])
+        await self.__close_subsession(name, subsession_id, output)
+        return output
 
     async def __drive_subsession(
         self, name: str, subsession_id: str, messages: list[Message]
-    ) -> list[str]:
-        """Run a sub-agent's isolated turn loop and return its published IDs.
+    ) -> dict[str, object]:
+        """Run a sub-agent's isolated turn loop and return its structured result.
 
         Used for both a fresh subsession and a resumed one (``messages`` already
         rehydrated from the subsession log). Sub-agent messages persist into the
         subsession file at every turn boundary so the run is resumable mid-flight.
+        The structured result is whatever the agent passed to ``return_result``
+        (validated against its output schema); if it never called it, a fallback
+        ``{artifact_ids, schema_compliance: False}`` is synthesized from the
+        artifacts it published.
         """
         agent = self.__registry.get(name, self.__session.effective_autonomous)
         plugin, model_id, routing = await self.__resolve_plugin(agent.capability)
@@ -2068,13 +2164,32 @@ class WorkflowEngine:
             e.artifact_id for e in self.__index.all_entries() if e.session_id == subsession_id
         ]
         published = list(dict.fromkeys([*pre_crash, *dispatcher.published_ids]))
+        output = dispatcher.returned_output
+        if output is None:
+            _log.warning(
+                "subsession %s (%s) ended without return_result; synthesizing fallback",
+                subsession_id,
+                name,
+            )
+            output = {"artifact_ids": published, SCHEMA_COMPLIANCE_KEY: False}
         _log.info(
-            "subsession completed: name=%s id=%s published=%s", name, subsession_id, published
+            "subsession completed: name=%s id=%s published=%s keys=%s",
+            name,
+            subsession_id,
+            published,
+            sorted(output.keys()),
         )
-        return published
+        return output
 
-    async def __open_subsession(self, name: str, subsession_id: str) -> None:
-        """Record a subsession takeover: marker, active pointer, and UI divider."""
+    async def __open_subsession(
+        self, name: str, subsession_id: str, task_content: str = ""
+    ) -> None:
+        """Record a subsession takeover: marker, active pointer, and UI divider.
+
+        ``task_content`` is the rendered task brief; it rides the live
+        ``subsession.started`` event so the client can show the same task-brief
+        card it reconstructs from the seed message on reload.
+        """
         display_name = self.__display_name(name)
         parent_display = self.__display_name(self.__session.agent or _GUIDE_AGENT_NAME)
         self.__transient.append_marker(
@@ -2097,12 +2212,23 @@ class WorkflowEngine:
         await self.__sink.send(
             Envelope.make_event(
                 EVT_SUBSESSION_STARTED,
-                {"subsession_id": subsession_id, "agent": name, "display_name": display_name},
+                {
+                    "subsession_id": subsession_id,
+                    "agent": name,
+                    "display_name": display_name,
+                    "task": task_content,
+                },
             )
         )
 
-    async def __close_subsession(self, name: str, subsession_id: str, published: list[str]) -> None:
-        """Record a subsession handing control back: marker, clear pointer, divider."""
+    async def __close_subsession(
+        self, name: str, subsession_id: str, output: dict[str, object]
+    ) -> None:
+        """Record a subsession handing control back: marker, clear pointer, divider.
+
+        ``output`` is the sub-agent's structured result; it is stored on the
+        ``subsession_end`` marker so a crash-resume replay can return it verbatim.
+        """
         display_name = self.__display_name(name)
         parent_display = self.__display_name(self.__session.agent or _GUIDE_AGENT_NAME)
         self.__transient.append_marker(
@@ -2112,7 +2238,7 @@ class WorkflowEngine:
                 "agent": name,
                 "display_name": display_name,
                 "parent_display_name": parent_display,
-                "result": list(published),
+                "result": dict(output),
             }
         )
         self.__transient.update(active_subsession=None)
@@ -2128,13 +2254,14 @@ class WorkflowEngine:
             )
         )
 
-    async def __replay_next_subsession(self, name: str) -> list[str]:
+    async def __replay_next_subsession(self, name: str) -> dict[str, object]:
         """Consume the next pre-crash subsession marker during resume replay.
 
-        Completed subsessions return their stored result immediately (the
-        artifacts are already on disk and rebuilt into the index). The single
+        Completed subsessions return their stored structured result immediately
+        (the artifacts are already on disk and rebuilt into the index). The single
         active (un-closed) subsession is rehydrated from its log and driven to
-        completion live; once consumed, replay mode ends.
+        completion live; once consumed, replay mode ends. A legacy marker whose
+        ``result`` is a bare artifact-id list is wrapped into the structured shape.
         """
         assert self.__replay_subsessions
         rec = self.__replay_subsessions.pop(0)
@@ -2145,17 +2272,21 @@ class WorkflowEngine:
             _log.info(
                 "Replay: subsession %s already complete; returning stored result", subsession_id
             )
-            result = rec.get("result", [])
-            return [str(x) for x in result] if isinstance(result, list) else []
+            result = rec.get("result", {})
+            if isinstance(result, dict):
+                return result
+            if isinstance(result, list):  # legacy marker: bare artifact-id list
+                return {"artifact_ids": [str(x) for x in result], SCHEMA_COMPLIANCE_KEY: False}
+            return {}
 
         _log.info("Replay: resuming active subsession %s (%s)", subsession_id, name)
         rehydrated = [
             Message(role=str(m["role"]), content=m["content"])  # type: ignore[arg-type]
             for m in self.__transient.read_subsession_messages(subsession_id)
         ]
-        published = await self.__drive_subsession(name, subsession_id, rehydrated)
-        await self.__close_subsession(name, subsession_id, published)
-        return published
+        output = await self.__drive_subsession(name, subsession_id, rehydrated)
+        await self.__close_subsession(name, subsession_id, output)
+        return output
 
     def __display_name(self, agent_name: str) -> str:
         """User-friendly name for an agent (frontmatter ``display_name`` or derived)."""
@@ -2319,13 +2450,51 @@ class WorkflowEngine:
     # Author/Critic iteration
     # ------------------------------------------------------------------
 
+    async def __extract_verdict(
+        self, critic_output: dict[str, object]
+    ) -> tuple[str, list[dict[str, object]]]:
+        """Read a critic's verdict + concerns, preferring its ``return_result``.
+
+        The structured ``return_result`` output is authoritative. As a safety net
+        for a critic that finished without returning a verdict, fall back to
+        reading its published feedback artifact (the pre-schema behaviour).
+        """
+        verdict_raw = critic_output.get("verdict")
+        if isinstance(verdict_raw, str) and verdict_raw:
+            concerns_raw = critic_output.get("concerns", [])
+            concerns = (
+                [c for c in concerns_raw if isinstance(c, dict)]
+                if isinstance(concerns_raw, list)
+                else []
+            )
+            return verdict_raw, concerns
+
+        candidate_ids: list[str] = []
+        feedback_id = critic_output.get("feedback_artifact_id")
+        if isinstance(feedback_id, str) and feedback_id:
+            candidate_ids.append(feedback_id)
+        art_ids = critic_output.get("artifact_ids")
+        if isinstance(art_ids, list):
+            candidate_ids.extend(str(a) for a in reversed(art_ids))
+        for aid in candidate_ids:
+            feedback_arts = await self.__workspace.read(artifact_id=aid)
+            if not feedback_arts:
+                continue
+            fa = feedback_arts[0]
+            if fa.verdict is not None:
+                return (
+                    fa.verdict.value,
+                    [{"kind": c.kind, "description": c.description} for c in fa.concerns],
+                )
+        return "accepted", []
+
     async def __run_author_critic_iteration(
         self,
         caller: str,
         author_name: str,
         critic_name: str,
         input_artifact_ids: list[str],
-        previous_artifact_id: str | None,
+        for_revision_artifact_ids: list[str],
     ) -> dict[str, object]:
         """Execute one Author/Critic round and return verdict + concerns.
 
@@ -2336,23 +2505,30 @@ class WorkflowEngine:
             author_name: Author sub-agent name.
             critic_name: Critic sub-agent name.
             input_artifact_ids: Input artifact IDs for the Author.
-            previous_artifact_id: Prior Author output to revise (optional).
+            for_revision_artifact_ids: Prior Author outputs to revise (empty on the
+                first round).
 
         Returns:
-            dict: ``{artifact_id, verdict, concerns}`` from the Critic's feedback.
+            dict: ``{artifact_id, verdict, concerns}`` — verdict/concerns come from
+            the Critic's ``return_result`` (falling back to its feedback artifact
+            if it returned none).
 
         Raises:
             PermissionError: ``caller`` may not spawn the author or the critic.
         """
         self.__assert_can_spawn(caller, author_name, critic_name)
-        author_task_parts = ["Produce your artifact."]
-        if previous_artifact_id:
-            author_task_parts.append(
-                f"\nPrior version to revise: artifact_id={previous_artifact_id}"
-            )
-        author_task = "\n".join(author_task_parts)
+        author_instructions = "Produce your artifact."
+        if for_revision_artifact_ids:
+            author_instructions += " Revise the prior version(s) per the critic's concerns."
+        author_task: dict[str, object] = {
+            "instructions": author_instructions,
+            "input_artifact_ids": input_artifact_ids,
+            "for_revision_artifact_ids": for_revision_artifact_ids,
+        }
 
-        author_ids = await self.__spawn_subagent(author_name, author_task, input_artifact_ids)
+        author_output = await self.__spawn_subagent(author_name, author_task)
+        author_ids_raw = author_output.get("artifact_ids", [])
+        author_ids = [str(a) for a in author_ids_raw] if isinstance(author_ids_raw, list) else []
 
         primary_id: str | None = None
         for aid in reversed(author_ids):
@@ -2378,21 +2554,15 @@ class WorkflowEngine:
             )
         )
 
-        critic_task = (
-            f"Review artifact {primary_id} and publish a feedback artifact "
-            f"with reviewed_artifact_id={primary_id}."
-        )
-        critic_ids = await self.__spawn_subagent(critic_name, critic_task, [primary_id])
-
-        verdict = "accepted"
-        concerns: list[dict[str, object]] = []
-        feedback_art_id: str | None = next((aid for aid in reversed(critic_ids)), None)
-        if feedback_art_id:
-            feedback_arts = await self.__workspace.read(artifact_id=feedback_art_id)
-            if feedback_arts:
-                fa = feedback_arts[0]
-                verdict = fa.verdict.value if fa.verdict else "accepted"
-                concerns = [{"kind": c.kind, "description": c.description} for c in fa.concerns]
+        critic_task: dict[str, object] = {
+            "instructions": (
+                f"Review artifact {primary_id} and publish a feedback artifact "
+                f"with reviewed_artifact_id={primary_id}."
+            ),
+            "input_artifact_ids": [primary_id],
+        }
+        critic_output = await self.__spawn_subagent(critic_name, critic_task)
+        verdict, concerns = await self.__extract_verdict(critic_output)
 
         await self.__sink.send(
             Envelope.make_event(
@@ -2628,6 +2798,13 @@ class WorkflowEngine:
         role = msg.get("role")
         content = msg.get("content")
         out: list[dict[str, object]] = []
+        # A subsession's seed task is a user-role message tagged ``subagent_task``;
+        # render it as a distinct task brief, never as the user's prompt bubble.
+        if msg.get("kind") == "subagent_task":
+            out.append(
+                {"type": "subagent_task", "content": content if isinstance(content, str) else ""}
+            )
+            return out
         if isinstance(content, str):
             if role == "user":
                 atts = _history_attachment_links(msg.get("attachments"), session_dir)

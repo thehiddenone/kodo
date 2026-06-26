@@ -35,8 +35,10 @@ from kodo.transport import (
     EVT_LLAMA_STATE,
     EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_MODEL_INSTALL_PROGRESS,
+    MSG_COMMAND_CONTROL_SET,
     MSG_COMPACT_NOW,
     MSG_CONFIG_RELOAD,
+    MSG_EDIT_CONTROL_SET,
     MSG_HELLO,
     MSG_LLAMA_START,
     MSG_LLAMA_STOP,
@@ -292,6 +294,26 @@ async def _handle_workflow(req: Request) -> None:
         return
     await session.engine.handle_workflow_set(str(req.env.payload.get("mode", "guided")))
     await req.reply({"type": "workflow.accepted"})
+
+
+async def _handle_edit_control(req: Request) -> None:
+    session = await _require_session(req)
+    if session is None:
+        return
+    await session.engine.handle_edit_control_set(
+        str(req.env.payload.get("edit_control", "smart"))
+    )
+    await req.reply({"type": "edit_control.accepted"})
+
+
+async def _handle_command_control(req: Request) -> None:
+    session = await _require_session(req)
+    if session is None:
+        return
+    await session.engine.handle_command_control_set(
+        str(req.env.payload.get("command_control", "smart"))
+    )
+    await req.reply({"type": "command_control.accepted"})
 
 
 async def _handle_workspace_folders(req: Request) -> None:
@@ -557,6 +579,8 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_PROMPT_SUBMIT, _handle_prompt)
     conn_registry.register_handler(MSG_MODE_SET, _handle_mode)
     conn_registry.register_handler(MSG_WORKFLOW_SET, _handle_workflow)
+    conn_registry.register_handler(MSG_EDIT_CONTROL_SET, _handle_edit_control)
+    conn_registry.register_handler(MSG_COMMAND_CONTROL_SET, _handle_command_control)
     conn_registry.register_handler(MSG_WORKSPACE_FOLDERS, _handle_workspace_folders)
     conn_registry.register_handler(MSG_PROJECT_SET, _handle_project_set)
     conn_registry.register_handler(MSG_STOP, _handle_stop)

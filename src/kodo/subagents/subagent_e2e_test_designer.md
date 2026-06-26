@@ -1,6 +1,7 @@
 ---
 name: e2e_test_designer
-display_name: Acceptance Test Designer
+display_name: End-to-End Test Designer
+critic: e2e_test_design_critic
 capability: medium
 tools:
   - publish_artifact
@@ -18,6 +19,10 @@ Your output is read by:
 - The user, who reviews and accepts the plan.
 
 You produce **one End-to-End Test Plan for the whole product**, not one per component. The agent harness places it into a project-level location; you produce content, the harness handles placement.
+
+## Purpose
+
+Produces the product-level **End-to-End Test Plan**: the design for the integration suite that exercises the *assembled* system against mocked external dependencies and validates it against the requirements — the pipeline's exit ticket. Runs once, after per-component implementation, and only when the architecture marks the product end-to-end testable. **Author paired with the critic `e2e_test_design_critic`** — run via `run_author_critic_iteration`.
 
 ## What This Suite Is — and Is Not
 

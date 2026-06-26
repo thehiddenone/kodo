@@ -16,7 +16,10 @@ RUN_SUBAGENT: ToolSpec = ToolSpec(
     user_description="Run a solo sub-agent",
     description=(
         "Invoke a leaf sub-agent by name.  Blocks until the sub-agent session "
-        "completes.  Returns the artifact IDs the sub-agent published."
+        "completes.  `task_input` is a structured object that MUST conform to the "
+        "named sub-agent's input schema (see its entry in `## Subagents`); the "
+        "engine validates it.  Returns the structured result the sub-agent "
+        "produced via `return_result` (its output schema)."
     ),
     input_schema={
         "type": "object",
@@ -25,37 +28,29 @@ RUN_SUBAGENT: ToolSpec = ToolSpec(
                 "type": "string",
                 "description": "Sub-agent name from the registry (e.g. 'narrative_author').",
             },
-            "task_message": {
-                "type": "string",
-                "description": "Task message injected as the initial uncached user turn.",
-            },
-            "input_artifact_ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "default": [],
-                "description": "Artifact IDs the sub-agent may read via read_artifact.",
+            "task_input": {
+                "type": "object",
+                "description": (
+                    "Structured task for the sub-agent, conforming to that agent's input "
+                    "schema (typically: instructions, input_artifact_ids, and any agent-"
+                    "specific fields)."
+                ),
             },
         },
-        "required": ["name", "task_message"],
+        "required": ["name", "task_input"],
     },
     output_schema={
         "type": "object",
-        "properties": {
-            "artifact_ids": {
-                "type": "array",
-                "description": "Artifact IDs published by the sub-agent.",
-                "items": {"type": "string"},
-            },
-        },
-        "required": ["artifact_ids"],
+        "description": "The sub-agent's structured result (its declared output schema).",
     },
     security_impact=SecurityImpact.LOW,
     input_visibility={
         "name": "always",
-        "task_message": "visible",
-        "input_artifact_ids": "visible",
+        "task_input": "visible",
     },
-    output_visibility={"artifact_ids": "always"},
+    # The result is the sub-agent's own dynamic output schema, so there are no
+    # fixed output properties to assign per-key visibility to.
+    output_visibility={},
     when_to_use=(
         "Kicking off a solo agent's stage that doesn't participate in an "
         "author/critic loop, to produce an initial set of artifacts.",

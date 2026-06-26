@@ -20,6 +20,10 @@ __all__ = ["SubAgent", "AgentLoadError", "load_agent"]
 
 _FRONT_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 
+# Captures the body of a ``## Purpose`` section: everything after the heading
+# line up to (but not including) the next ``#``/``##`` heading or end of file.
+_PURPOSE_RE = re.compile(r"(?ms)^##[ \t]+Purpose[ \t]*$\n?(.*?)(?=^#{1,2}[ \t]|\Z)")
+
 
 class AgentLoadError(Exception):
     """Raised when a subagent file cannot be parsed or lacks required fields."""
@@ -51,6 +55,28 @@ class SubAgent:
             default. Lets a family of agents (e.g. the toolchain-setup agents)
             share one contract without duplicating it; the registry validates each
             reference exists at load time.
+        subagent_order: The ``subagents:`` allow-list in declaration order. Same
+            membership as :attr:`subagents` (a set, order-free, used for the
+            dispatch gate), but order-preserving so a caller's ``## Subagents``
+            roster table/paragraphs render in the order the author listed them.
+        purpose: Body of this agent's ``## Purpose`` section — a *caller-agnostic*
+            description of what the agent does and when to call it. Empty when the
+            file has no ``## Purpose`` section. The registry renders it into a
+            caller's roster when filling ``{PLACEHOLDER:SUBAGENTS}``.
+        solo: ``True`` when this agent is invoked on its own via ``run_subagent``
+            (frontmatter ``solo: true``). Gives it a ``run_subagent`` row in a
+            caller's roster table. Mutually informative with :attr:`critic`.
+        critic: Name of the critic this agent is paired with (frontmatter
+            ``critic:``). A non-empty value marks the agent an **author**, driven
+            via ``run_author_critic_iteration``; it gets one roster row naming the
+            critic. Empty for solos and for critics themselves.
+        standalone: ``True`` when this agent is **not** part of the ordered
+            pipeline (frontmatter ``standalone: true``) — a specialist invoked on
+            demand whenever the need arises, with no upstream dependency on any
+            other agent's output. ``False`` (the default) marks a **workflow**
+            agent that advances the pre-determined pipeline and consumes the
+            artifacts of the stage before it. Shown as the ``Kind`` column in a
+            caller's roster table.
     """
 
     name: str
@@ -61,6 +87,11 @@ class SubAgent:
     display_name: str = ""
     subagents: frozenset[str] = frozenset()
     bases: tuple[str, ...] = ()
+    subagent_order: tuple[str, ...] = ()
+    purpose: str = ""
+    solo: bool = False
+    critic: str = ""
+    standalone: bool = False
 
 
 def load_agent(path: Path) -> SubAgent:
@@ -93,11 +124,12 @@ def load_agent(path: Path) -> SubAgent:
 
     subagents_raw = fm_dict.get("subagents", [])
     if isinstance(subagents_raw, list):
-        subagents: frozenset[str] = frozenset(str(s) for s in subagents_raw)
+        subagent_order: tuple[str, ...] = tuple(str(s) for s in subagents_raw)
     elif isinstance(subagents_raw, str):
-        subagents = frozenset([subagents_raw])
+        subagent_order = (subagents_raw,)
     else:
-        subagents = frozenset()
+        subagent_order = ()
+    subagents: frozenset[str] = frozenset(subagent_order)
 
     bases_raw = fm_dict.get("bases", [])
     if isinstance(bases_raw, list):
@@ -128,6 +160,11 @@ def load_agent(path: Path) -> SubAgent:
         else _default_display_name(name)
     )
 
+    solo = _scalar(fm_dict.get("solo")).lower() in ("true", "yes", "1")
+    critic = _scalar(fm_dict.get("critic"))
+    standalone = _scalar(fm_dict.get("standalone")).lower() in ("true", "yes", "1")
+    purpose = _extract_purpose(body)
+
     return SubAgent(
         name=name,
         tools=tools,
@@ -137,7 +174,32 @@ def load_agent(path: Path) -> SubAgent:
         display_name=display_name,
         subagents=subagents,
         bases=bases,
+        subagent_order=subagent_order,
+        purpose=purpose,
+        solo=solo,
+        critic=critic,
+        standalone=standalone,
     )
+
+
+def _scalar(value: object) -> str:
+    """Coerce a frontmatter value to a trimmed scalar string.
+
+    The lightweight frontmatter parser yields scalars as ``str`` and lists as
+    ``list[str]``; an empty scalar (``key:`` with nothing after the colon) comes
+    back as an empty list. Normalize all of these to a plain string.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return str(value[0]).strip() if value else ""
+    return ""
+
+
+def _extract_purpose(body: str) -> str:
+    """Return the body of the ``## Purpose`` section, or ``""`` when absent."""
+    m = _PURPOSE_RE.search(body)
+    return m.group(1).strip() if m else ""
 
 
 def _default_display_name(name: str) -> str:
