@@ -41,14 +41,17 @@ source:
 | `toolchains` | *(nothing)* |
 | `state` | *(nothing)* |
 | `security` | *(nothing — stub)* |
+| `mirror` | *(nothing)* |
+| `shellparser` | *(nothing)* |
+| `binutils` | *(nothing)* |
 | `transport` | `common` |
 | `workspace` | `project`, `toolchains` |
 | `toolspecs` | `workspace` |
 | `tools` | `workspace`, `toolspecs` |
 | `llms` | `common`, `transport`, `toolspecs` |
 | `subagents` | `toolspecs` |
-| `runtime` | `common`, `transport`, `toolspecs`, `tools`, `workspace`, `toolchains`, `project`, `state`, `subagents`, `llms` |
-| `server` | `common`, `transport`, `project`, `state`, `workspace`, `subagents`, `llms`, `runtime` |
+| `runtime` | `common`, `transport`, `toolspecs`, `tools`, `workspace`, `toolchains`, `project`, `state`, `subagents`, `llms`, `mirror`, `shellparser`, `binutils` |
+| `server` | `common`, `transport`, `project`, `state`, `workspace`, `subagents`, `llms`, `runtime`, `binutils` |
 
 One edge breaks a clean strict hierarchy:
 
@@ -100,22 +103,30 @@ imported); the annotation on each line names the packages pulled in.
        │ workspace
        ▼
  ┌───────────┐      ┌───────────┐
- │ transport │      │ workspace │                       T1   (workspace ⊇ mirror)
+ │ transport │      │ workspace │                       T1   (workspace ⊇ promotion mirror)
  └─────┬─────┘      └─────┬─────┘
        │ common           │ project · toolchains
        ▼                  ▼
- ┌────────┬─────────┬────────────┬───────┬──────────┐
- │ common │ project │ toolchains │ state │ security │   T0  ← import nothing from kodo
- └────────┴─────────┴────────────┴───────┴──────────┘
+ ┌────────┬─────────┬────────────┬───────┬──────────┬────────┬─────────────┬──────────┐
+ │ common │ project │ toolchains │ state │ security │ mirror │ shellparser │ binutils │   T0  ← import nothing from kodo
+ └────────┴─────────┴────────────┴───────┴──────────┴────────┴─────────────┴──────────┘
 ```
+
+`runtime` is the sole importer of `mirror` and `shellparser` (via `runtime/_checkpoints.py`,
+§10b) — neither is reachable from `tools`, `subagents`, or `llms`. Do not confuse the new
+leaf `kodo.mirror` (`ShadowMirror`, §10b) with the unrelated "mirror" *promotion* subsystem
+folded into `workspace` (`MirrorRepo`/`Promoter`/`CheckpointManager`, §7) — same word, two
+independent git mechanisms; see the disambiguation note in §10b.
 
 (`runtime` and `server` also reach past the tier directly below them — e.g.
 `runtime → toolspecs`/`workspace`/`common` — as the matrix in §2.1 lists in full;
 only the principal lines are drawn above to keep the figure readable.)
 
 - **T0 — leaf packages** (`common`, `project`, `toolchains`, `state`,
-  `security`): import nothing from `kodo`. `security` and `state/_memory.py` are
-  **stubs** (see §13).
+  `security`, `mirror`, `shellparser`, `binutils`): import nothing from `kodo`.
+  `security` and `state/_memory.py` are **stubs** (see §13); `mirror`/`shellparser`
+  are the checkpoint primitives consumed by `runtime` (§10b); `binutils` is the
+  third-party util manager (§10a).
 - **T1**: `transport` (wire framing over `common`), `workspace` (artifact store
   **plus the merged git mirror** — checkpoints/promotion — over `project` +
   `toolchains`).
@@ -172,15 +183,26 @@ backend that `GateOrchestrator` and `KeyBroker` register futures against.
 
 | Module | Defines | Links |
 |---|---|---|
-| [_layout.py](../src/kodo/project/_layout.py) | `ProjectLayout` (frozen dataclass), `ProjectLayoutError`, `kodo_user_dir()` | Pure path algebra over a `root`: `kodo_md`, `src_dir`, `gen_dir`, `kodo_dir`, `workspace_dir`, `checkpoints_dir`, `sessions_dir`, `llm_requests_dir`, etc. `validate()` and `init()`. |
+| [_layout.py](../src/kodo/project/_layout.py) | `ProjectLayout` (frozen dataclass), `ProjectLayoutError`, `kodo_user_dir()` | Pure path algebra over a `root`: `kodo_md`, `src_dir`, `gen_dir`, `kodo_dir`, `workspace_dir`, `checkpoints_dir`, `sessions_dir`, `llm_requests_dir`, etc. `validate()`, `init()`, and **`scaffold_kodo_dir()`**. |
 | [_manifest.py](../src/kodo/project/_manifest.py) | `Manifest` (frozen), `ManifestError`, `parse_manifest()` | Parses `kodo.md` headings + toolchain list. |
+
+**`kodo_md` moved under `.kodo/`:** the manifest now lives at `<root>/.kodo/kodo.md`
+(was `<root>/kodo.md`) — `init()`/`validate()` updated accordingly, as did the
+extension's project-detection/create-flow. The shadow checkpoint mirror (§10b)
+excludes `.kodo/` entirely, so the manifest is **intentionally never checkpointed**.
+
+**`scaffold_kodo_dir()`** is the lightweight counterpart of `init()` used when
+Kōdo first touches an arbitrary directory that isn't (yet) a full Kodo project —
+e.g. a Problem Solver workspace folder getting its first checkpoint mirror
+(`RootMirrorManager`, §10b/§12.4): it creates only `.kodo/` and a minimal `kodo.md`
+marker, never `src/`/`gen/`, and never overwrites an existing manifest.
 
 **Links:** `ProjectLayout` is **used by value** (constructed ad hoc) throughout:
 `Workspace`, `Config`, `Lifecycle`, `CheckpointManager`, `Rollback`,
-`WorkflowEngine`. `_manifest.py` is currently **not consumed** by the runtime —
-toolchain selection happens from the Tech Stack artifact instead (see
-`toolchains/_select.py`), so `parse_manifest` is effectively orphaned at
-runtime.
+`WorkflowEngine`, `RootMirrorManager`. `_manifest.py` is currently **not
+consumed** by the runtime — toolchain selection happens from the Tech Stack
+artifact instead (see `toolchains/_select.py`), so `parse_manifest` is
+effectively orphaned at runtime.
 
 **State:** Complete; `parse_manifest` under-used.
 
@@ -228,7 +250,7 @@ All dispatchable specs now share one handler layer (`tools/`, §6A); the
 |---|---|---|
 | `publish_artifact`, `read_artifact` | `tools/` | ✅ implemented |
 | `escalate_blocker`, `ask_user`, `request_user_review_artifact`, `report_artifact_completed` | `tools/` | ✅ implemented |
-| `filesystem`/`edit_file`/`run_command` | `tools/` | ✅ implemented; granted to the `problem_solver` agent (and `filesystem`/`edit_file` to `python_toolchain`). `filesystem` is **one tool** whose mandatory `operation` field selects among eight file/directory ops — `create_file`/`create_dir`/`delete_file`/`delete_dir`/`copy_file`/`copy_dir`/`move_file`/`move_dir` (dir ops are recursive: `copytree`/`rmtree`/`mkdir -p`; `copy_dir`/`move_dir` fail if the destination exists) — replacing the former per-operation `create_file`/`delete_file`/`copy_file`/`move_file` and `rewrite_file` tools. `edit_file` stays separate: a **targeted string-match edit** (`old_string` → `new_string`; must match exactly and uniquely or it fails without writing), the **preferred** way to change a file's contents; pass the whole new content as `new_string` to regenerate a file end to end. |
+| `filesystem`/`edit_file`/`run_command` | `tools/` | ✅ implemented; granted to the `problem_solver` agent (and `filesystem`/`edit_file` to `python_toolchain`). `filesystem` is **one tool** whose mandatory `operation` field selects among eight file/directory ops — `create_file`/`create_dir`/`delete_file`/`delete_dir`/`copy_file`/`copy_dir`/`move_file`/`move_dir` (dir ops are recursive: `copytree`/`rmtree`/`mkdir -p`; `copy_dir`/`move_dir` fail if the destination exists) — replacing the former per-operation `create_file`/`delete_file`/`copy_file`/`move_file` and `rewrite_file` tools. `edit_file` stays separate: a **targeted string-match edit** (`old_string` → `new_string`; must match exactly and uniquely or it fails without writing), the **preferred** way to change a file's contents; pass the whole new content as `new_string` to regenerate a file end to end. These three are exactly `runtime/_checkpoints.py:_MUTATING_TOOLS` — the engine checkpoints around every call to them in Problem Solver mode (§10b/§12.1) and each one's `output_schema` carries an **optional `checkpoint_sha`** field the engine fills in when a commit happened. |
 | `get_root_paths`, `find_files`, `find_text_in_files` | `tools/` | ✅ implemented (workspace search). `get_root_paths` returns the mode-aware root list (bound project in Guided; every workspace folder in Problem Solver) from `ToolContext.root_paths`. `find_files`/`find_text_in_files` resolve `root` through the active resolver then shell out to the bundled `fd`/`rg` (§10a) via `ToolContext.util_paths`. Granted to `guide` + `problem_solver`. |
 | `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `rollback`, `finalize_project` | `tools/` | ✅ implemented |
 | `disable_autonomous_mode`, `post_update` | `tools/` | ✅ implemented (`DisableAutonomousModeTool`/`PostUpdateTool`, in `_TOOL_CLASSES`). Declared by `guide` (both) and `problem_solver` (`post_update`); resolved by `tools_for_agent` and dispatched. |
@@ -443,6 +465,32 @@ into the per-run `ToolContext.util_paths` (see §12, search tools).
 
 ---
 
+## 10b. `mirror/` & `shellparser/` — generic checkpoint primitives
+
+> **Disambiguation — two unrelated "mirror" mechanisms share the word:**
+> §7 describes the **promotion mirror** (`workspace._repo.MirrorRepo` /
+> `_promoter.Promoter` / `_checkpoints.CheckpointManager`), which commits one
+> artifact per `report_artifact_completed` call for the **Guide/Guided**
+> pipeline. The packages documented here are a separate, newer, much lower-level
+> mechanism that commits the **real project tree** after every file-mutating
+> tool call, wired only into the **Problem Solver** workflow
+> (`workflow_mode == "problem_solving"`). The two systems do not share code,
+> storage, or commands; the Guided promotion mirror is **untouched** by this
+> feature. A future milestone may rebuild the Guided mirror on top of this one,
+> but that has not happened yet.
+
+Both packages are T0 leaves (import nothing from `kodo`) and have no opinion
+about *when* to checkpoint — that judgment lives entirely in `runtime`.
+
+| Module | Defines | Role |
+|---|---|---|
+| [mirror/_mirror.py](../src/kodo/mirror/_mirror.py) | `ShadowMirror`, `CommitInfo` (frozen) | Drives `git` over an **explicit `(work_tree, git_dir)` pair** via `GIT_DIR`/`GIT_WORK_TREE` env vars instead of a `.git` inside the tracked tree — so the tracked files are the real project files (no copy/duplication) while git's metadata lives elsewhere (`<root>/.kodo/checkpoints/.git`). `init(excludes)` seeds `info/exclude` then commits the **current tree as a baseline** (so undoing the very first change restores genuine pre-Kōdo state, not an empty tree). `commit(label) → sha` stages everything and commits; a clean tree short-circuits to the existing `HEAD` (no empty commits). `paths_changed(sha)` lists the work-tree-relative paths a commit touched (`git diff-tree --name-only`). `undo(sha)` restores **only** the paths `sha` touched to their pre-`sha` state (`git checkout sha^ -- <paths>`) — later edits to *other* files are untouched, but later edits to the *same* files are discarded. `rollback(sha)` restores the **entire** tree to `sha`'s state and deletes files created after it. Both `undo` and `rollback` record their effect as a **new commit** — the mirror is append-only, so re-applying an undone change ("redo") is always just rolling forward to a later commit; nothing is ever reset or force-pushed. `log()`/`head_sha()` round out the read side. |
+| [shellparser/_parser.py](../src/kodo/shellparser/_parser.py) | `parse_command(str) → ParsedCommand`, `ParsedCommand`/`Segment`/`Redirection` (frozen) | **Parse-only, judgement-free** — splits a shell command line into pipeline `Segment`s (on `\| \|\| && ; &`) via `shlex`, each with its `executable`/`args`/`redirections`; never raises (falls back to a naive split on malformed input). It does **not** decide whether a command mutates the filesystem — that heuristic is caller-side (`runtime/_checkpoints.py:command_may_mutate`, below) by design, so the parser stays reusable by future callers (e.g. the security layer) without inheriting checkpoint-specific judgment calls. |
+
+**State:** Complete; covered by `test/test_shadow_mirror.py` and `test/test_shellparser.py`.
+
+---
+
 ## 11. `subagents/` — agent files & prompt rendering
 
 | Module | Defines | Links |
@@ -545,7 +593,10 @@ registry: AgentRegistry      mirror: CheckpointManager
 ```
 
 It **internally constructs**: a shared `ProjectIndex`, a `Workspace` (wrapping
-that index), a `SessionState`, and one `_EngineServices` adapter. It builds
+that index), a `SessionState`, one `_EngineServices` adapter, and a
+**`__root_mirrors: RootMirrorManager`** (§12.4/§10b — the Problem Solver
+checkpoint coordinator; unrelated to the constructor-injected `mirror:
+CheckpointManager` above, which is the Guided promotion mirror). It builds
 a `tools.ToolDispatcher` **per agent run** (via `__make_dispatcher`, which reads
 the current `ProjectIndex` — no persistent surface to rebuild after
 bootstrap/rollback). It owns `__orch_messages` (the Guide's running
@@ -605,6 +656,29 @@ bootstrap/rollback). It owns `__orch_messages` (the Guide's running
 - `__disable_autonomous` / `__post_update` (exposed via
   `_EngineServices.disable_autonomous_mode` / `post_update`) back the
   guide's `disable_autonomous_mode` / `post_update` tools.
+- **Per-tool-call checkpointing (Problem Solver only)** — gated by
+  `__checkpoint_enabled()` (`effective_workflow_mode == "problem_solving"`),
+  inside `__dispatch_tool_calls` around each of `_MUTATING_TOOLS =
+  {"filesystem", "edit_file", "run_command"}`: `__checkpoint_prepare(tool_name,
+  tool_input)` resolves the affected path(s) (`__mutation_paths` — `edit_file`'s
+  `path`; `filesystem`'s `destination`/`path`/`source`; `run_command`'s `cwd`,
+  gated by `command_may_mutate(parse_command(cmd))`, §10b) and calls
+  `__root_mirrors.prepare(path)` **before** dispatch, so the baseline commit
+  captures pre-change state. After dispatch, `__checkpoint_commit(...)` calls
+  `__root_mirrors.commit_for_path(path, label)` (`run_command` additionally
+  `sweep_initialized`s every other already-initialised mirror, to catch writes
+  outside the command's `cwd`). `__finalize_tool_result` injects the resulting
+  `checkpoint.sha` into the LLM-visible result as `checkpoint_sha` (declared
+  optional in each of the 3 tools' `output_schema`, so `normalize_output` keeps
+  it without flagging non-compliance) and rides `{root, sha, parent}` out-of-band
+  on `EVT_AGENT_TOOL_CALL_DETAIL` as a new `"checkpoint"` key (`null` when no
+  commit happened — outside any known root, or a no-op), the same pattern as the
+  existing `"diff"` side-channel (§9, Sub-Agents memory). New public
+  `handle_checkpoint_undo(root, sha)` / `handle_checkpoint_rollback(root, sha)`
+  delegate straight to `RootMirrorManager.undo`/`.rollback` — **files-only**,
+  they never touch conversation history or the `ProjectIndex` (deliberately
+  distinct from the Guide's conversation-rewinding `rollback` tool, which is
+  untouched and still calls `Rollback.execute`).
 
 **The engine injects into every `ToolDispatcher`:** `GateOrchestrator`,
 `SessionState`, and one `_EngineServices` adapter wrapping `__run_subagent` /
@@ -627,6 +701,7 @@ as the `stop_after_tools` predicate. The former `ToolSurface` /
 |---|---|---|
 | [_bootstrap.py](../src/kodo/runtime/_bootstrap.py) | `ProjectBootstrap`, `BootstrapResult` | 4-phase cold start: scan mirror sidecars (`completed`), scan workspace JSON (`in_flight`), drop orphans/broken lineage, locate/create guide session via `GuideMarker`. Returns a populated `ProjectIndex`. Imports `state._transient._new_session_id`. |
 | [_guide.py](../src/kodo/runtime/_guide.py) | `GuideMarker` | Reads/writes `.kodo/guide.session`. Used by bootstrap + rollback. |
+| [_checkpoints.py](../src/kodo/runtime/_checkpoints.py) | `RootMirrorManager`, `CheckpointRef` (frozen), `command_may_mutate()` | ⚠️ **Name collides with the unrelated `workspace/_checkpoints.py:CheckpointManager`** (the Guided promotion mirror) — different module, different package, different system; see §10b. Bridges the path-agnostic `mirror.ShadowMirror` to Kōdo's conventions: every root a Problem Solver session may touch gets its own independent mirror at `<root>/.kodo/checkpoints`, created **lazily** the first time a file-mutating tool writes under that root (scaffolding `<root>/.kodo/` + `kodo.md` via `ProjectLayout.scaffold_kodo_dir()`, §5, at that moment — not upfront for every root). `_root_for(path)` maps a path to its enclosing root by longest-prefix match. `_KODO_EXCLUDES` (node_modules/.venv/`__pycache__`/dist/build/egg-info/caches + always `.kodo/`+`.git/`) seed each mirror's `info/exclude` **on top of** the project's own `.gitignore` (git honours both). One `asyncio.Lock` serialises `prepare`/`commit_for_path`/`sweep_initialized`/`undo`/`rollback`. The free function `command_may_mutate(parsed: ParsedCommand) -> bool` is the caller-side mutation heuristic the parser (§10b) deliberately omits: `True` if any redirection is an output redirect (`> >> >\| &> &>> <>`), else `True` unless every executable's basename is on a small read-only allow-list (`ls cat grep find rg fd pwd wc diff …` — notably **not** `git`, since even read-only-looking git subcommands can touch `.git/` state) — **defaults to `True` (mutating) whenever uncertain**, so a missed checkpoint is never the failure mode; an unnecessary no-op commit is. |
 | [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse`, `QuestionResponse` | **Composes** `WebSocketDispatcher` + `TransientStore`. `fire_approval`/`fire_question` send `kind=request`, register a future, persist the pending prompt (for restart re-surface), and await. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by every gate-backed tool handler. |
 | [_rollback.py](../src/kodo/runtime/_rollback.py) | `Rollback` | **Composes** `MirrorRepo` + `ProjectLayout`. 7-step restore; rebuilds via `ProjectBootstrap`. Imports `_session_log.SessionLog`, `_guide.GuideMarker`. |
 | [_session.py](../src/kodo/runtime/_session.py) | `SessionState` | Mutable `phase`/`agent`/`component` plus the two mode fields: `autonomous` (user-facing Autonomous/Interactive, set by `handle_mode_set`, reported in `to_dict()`/`EVT_STATE`) and `effective_autonomous` (frozen per prompt by `__run_worker`; what tools/registry actually read), and `workflow_mode` (`"guided"`/`"problem_solving"`, in `to_dict()`). Shared by the engine; satisfies `tools.SessionLike` (`finalize_project` writes `phase`; tools read `effective_autonomous`). |
@@ -674,8 +749,13 @@ AgentRegistry(_AGENTS_DIR)   CheckpointManager(layout)
 Then it registers `HandlerFn`s on the dispatcher (`hello`, `ping`, `prompt.submit`,
 `mode.set` → `handle_mode_set` (Autonomous/Interactive), `workflow.set` →
 `handle_workflow_set` (Guided/Problem-Solving), `stop`, `config.reload`, llama
-install/start/stop, model.install) — `mode.set`/`workflow.set` each reply with a
-`mode.accepted`/`workflow.accepted` response —
+install/start/stop, model.install, **`checkpoint.undo` → `_handle_checkpoint_undo`,
+`checkpoint.rollback` → `_handle_checkpoint_rollback`**) — `mode.set`/`workflow.set`
+each reply with a `mode.accepted`/`workflow.accepted` response, and the two
+checkpoint handlers each pull `{root, sha}` from the request payload, call the
+matching `engine.handle_checkpoint_undo`/`handle_checkpoint_rollback` (§12.1/§10b),
+and reply `{type: "checkpoint.undo.done"|"checkpoint.rollback.done", root, sha:
+<new sha>}` —
 stores the engine on the app, and hooks `_start_background`/`_stop_background`
 (which call `engine.start()`/`engine.stop()` and adopt any surviving
 llama-server).
@@ -738,6 +818,28 @@ re-surfaced.
 checkout, tree restore, fresh bootstrap) → engine rebinds index + starts a fresh
 guide session.
 
+**Per-tool-call checkpointing + undo/rollback (Problem Solver only, §10b/§12.1):**
+a `filesystem`/`edit_file`/`run_command` dispatch in `problem_solving` mode is
+bracketed by `__checkpoint_prepare` (baselines the enclosing root's
+`RootMirrorManager` mirror, scaffolding `.kodo/`+`kodo.md` lazily on first touch)
+and `__checkpoint_commit` (commits the real tree, surfacing `{root, sha, parent}`
+on `EVT_AGENT_TOOL_CALL_DETAIL` and `checkpoint_sha` in the tool's own result).
+The WebView renders an **"↩ undo this change"** link next to that tool call and a
+**"⟲ Rollback to this state"** control below its params box whenever a checkpoint
+rode along. Clicking either sends `checkpoint.undo`/`checkpoint.rollback`
+`{root, sha}` → `_app._handle_checkpoint_undo`/`_rollback` → engine
+`handle_checkpoint_undo`/`handle_checkpoint_rollback` → `RootMirrorManager.undo`/
+`.rollback` → `ShadowMirror.undo`/`.rollback`, each producing a **new** append-only
+commit (`undo` restores only the files the target commit touched; `rollback`
+restores the whole tree to that commit). Neither path touches conversation
+history, the `ProjectIndex`, or the Guide's `rollback` tool/`Rollback.execute` —
+this is a files-only, agent-loop-agnostic operation, deliberately decoupled from
+the Guided rollback flow above. **Known limitations:** a `run_command` that
+writes into a root other than its `cwd` is only captured if that other root has
+already been touched at least once (no global "first ever write" sweep across
+every possible root); a cross-root move/copy surfaces an undo/rollback control
+only on the destination root's checkpoint, not the source's.
+
 ---
 
 ## 16. Implementation-state summary
@@ -748,6 +850,7 @@ guide session.
 | `llms` (Anthropic + llama.cpp, incl. merged local-inference utilities), `toolchains` plugins | ✅ Complete |
 | `toolspecs` catalog, `subagents` loader/registry, `tools` dispatch | ✅ Complete |
 | `runtime` engine / bootstrap / gates / rollback | ✅ Functional; lower branch coverage on restart/rollback |
+| `mirror`/`shellparser` (§10b) + `runtime/_checkpoints.RootMirrorManager` — generic checkpoint/undo/rollback | ✅ Implemented; wired only into Problem Solver. Two documented limitations (§15). The Guided promotion mirror (`workspace/_checkpoints.CheckpointManager`) is untouched. |
 | Toolchain agent tools (`toolchain_build/deps`) | ⚠️ Spec only — no handler, dropped by `tools_for_agent` |
 | `disable_autonomous_mode` / `post_update` | ✅ Implemented and dispatched (guide + problem_solver) |
 | Native file-IO / `run_command` tools | ✅ Implemented; granted to the `problem_solver` agent |

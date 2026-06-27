@@ -42,7 +42,15 @@ MSG_SESSION_RELEASE = "session.release"
 # ``{type: "session.delete.error", message}`` and leaves the socket open.
 MSG_SESSION_DELETE = "session.delete"
 MSG_CHECKPOINT_LIST = "checkpoint.list"
+# Files-only, append-only checkpoint actions on one mirror commit, triggered from
+# a tool-call card. Both carry ``{root, sha}`` (the root names which per-root
+# ``.kodo/checkpoints`` mirror the sha belongs to). ``rollback`` restores the
+# whole tree to the state *after* that commit; ``undo`` surgically reverts only
+# the files that commit changed (discarding later edits to those files). Each is
+# itself recorded as a new commit, so rolling forward always works. The server
+# replies with the new commit sha.
 MSG_CHECKPOINT_ROLLBACK = "checkpoint.rollback"
+MSG_CHECKPOINT_UNDO = "checkpoint.undo"
 MSG_MODE_SET = "mode.set"
 MSG_WORKFLOW_SET = "workflow.set"
 # Set the Edit Control posture.

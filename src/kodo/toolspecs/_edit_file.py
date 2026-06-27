@@ -74,6 +74,13 @@ EDIT_FILE: ToolSpec = ToolSpec(
         "properties": {
             "status": {"type": "string", "description": "Always 'edited' on success."},
             "path": {"type": "string", "description": "The path that was edited."},
+            "checkpoint_sha": {
+                "type": "string",
+                "description": (
+                    "Mirror checkpoint commit recording this edit (present when "
+                    "checkpointing is active; absent otherwise)."
+                ),
+            },
         },
         "required": ["status", "path"],
     },

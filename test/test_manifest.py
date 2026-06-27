@@ -90,11 +90,12 @@ def test_missing_toolchain_entry_raises_manifest_error(tmp_path: Path) -> None:
 
 
 def test_validate_accepts_valid_project(tmp_path: Path) -> None:
-    (tmp_path / "kodo.md").write_text(
+    layout = ProjectLayout(tmp_path)
+    layout.kodo_dir.mkdir(parents=True, exist_ok=True)
+    layout.kodo_md.write_text(
         "# Kodo Project\n\n## Toolchain\n\n- python\n\n## Components\n\n## Settings overrides\n",
         encoding="utf-8",
     )
-    layout = ProjectLayout(tmp_path)
     layout.validate()  # must not raise
 
 
@@ -105,8 +106,9 @@ def test_validate_rejects_missing_kodo_md(tmp_path: Path) -> None:
 
 
 def test_validate_rejects_kodo_md_without_marker(tmp_path: Path) -> None:
-    (tmp_path / "kodo.md").write_text("No marker heading here.\n", encoding="utf-8")
     layout = ProjectLayout(tmp_path)
+    layout.kodo_dir.mkdir(parents=True, exist_ok=True)
+    layout.kodo_md.write_text("No marker heading here.\n", encoding="utf-8")
     with pytest.raises(ProjectLayoutError, match="# Kodo Project"):
         layout.validate()
 

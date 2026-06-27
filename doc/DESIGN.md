@@ -413,6 +413,14 @@ Rollback (`checkpoint.rollback`, FR-MIR-04) follows the procedure in [STATE_AND_
 
 Checkpoints are produced one per completed artifact (not one per gate). Each `report_artifact_completed` call produces its own Promoter run and its own checkpoint commit; a review gate covering several artifacts yields one completion call and one checkpoint per artifact.
 
+### 8.4 A second, unrelated checkpoint mechanism for Problem Solver
+
+Everything above is the **Guided** pipeline's mirror, scoped to promoted artifacts. The **problem-solving** workflow has no artifacts to promote — it edits the user's real project files directly — so it gets a separate, much lower-level checkpoint mechanism instead, gated to `workflow_mode == "problem_solving"` and otherwise dormant. The two systems share nothing: no code, no storage location, no wire command.
+
+Mechanism: a generic per-root **shadow git mirror** (`kodo/mirror/`'s `ShadowMirror`, driving `git` over an explicit `(work_tree, git_dir)` pair so the tracked files are the real project files — no copying) commits the enclosing root's tree before and after every `filesystem`/`edit_file`/`run_command` dispatch (`runtime/_checkpoints.py:RootMirrorManager`, lazily creating `<root>/.kodo/checkpoints/` + a `.kodo/kodo.md` marker the first time a root is touched). Every commit is append-only: `undo(sha)` restores only the files that commit touched (to their pre-commit state); `rollback(sha)` restores the whole tree to that commit. Both operations are themselves new commits, so the user can always roll forward again. The WebView surfaces this as an "↩ undo this change" link and a "⟲ Rollback to this state" control on each checkpointed tool call.
+
+This is a deliberately minimal, low-level primitive — not a rewrite of FR-MIR — and it does not back the Guide's `rollback` tool. Full implementation detail (the `command_may_mutate` heuristic, the wire messages, the two known cross-root edge cases) lives in [INTERNALS.md §10b/§12.1/§15](INTERNALS.md). A future milestone may rebuild the Guided artifact mirror on top of this engine; that has not happened yet.
+
 ---
 
 ## 9. State & memory (FR-STA)
@@ -490,7 +498,6 @@ Schema is documented in `src/kodo/server/_config.py` as a `pydantic` model. VS C
 
 ```text
 <project>/
-├── kodo.md
 ├── src/                              # specification artifacts (FR-WKS-11 via Promoter)
 │   ├── narrative/
 │   ├── architecture/                 # includes the component dependency DAG
@@ -504,7 +511,8 @@ Schema is documented in `src/kodo/server/_config.py` as a `pydantic` model. VS C
 │   ├── src/<responsibility>/
 │   └── test/<responsibility>/
 └── .kodo/
-    ├── checkpoints/                  # mirror git repo
+    ├── kodo.md                       # project manifest — moved here from <project>/kodo.md
+    ├── checkpoints/                  # mirror git repo (the Guided promotion mirror, §8)
     ├── workspace/                    # in-flight artifacts + .retired/ audit (STATE_AND_LIFECYCLE.md §1)
     ├── sessions/                     # session directories + sub-agent JSONL logs
     │   ├── <posix-timestamp>/        # one dir per Guide session

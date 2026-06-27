@@ -21,7 +21,7 @@ Out of scope: teams, multi-tenant deployments, hosted/cloud variants, non-develo
 | --- | --- |
 | Project | A directory containing `kodo.md`, `src/`, `gen/`, and `.kodo/`. The unit of work. |
 | `.kd` file | Markdown file under `src/` describing some aspect of the project (narrative, responsibilities, requirements, design, test plan). For MVP, `.kd` is plain Markdown. |
-| `kodo.md` | Project manifest at the project root. Required headings declare a Kodo project. |
+| `kodo.md` | Project manifest, at `<project>/.kodo/kodo.md` (moved under `.kodo/` post-MVP; was at the project root). Required headings declare a Kodo project. |
 | Narrative | Top-level natural-language description of the end product. The "north star". One per project. |
 | Responsibility | A single, named area of behavior the product must deliver. |
 | Component | The implementation unit for one responsibility — typically one package/module containing a main class plus satellites. |
@@ -221,7 +221,7 @@ MVP replaces the prior hardcoded stage machine with an agentic Guide. The Guide 
 
 ### 5.14 Project layout & lifecycle (FR-PRJ)
 
-- **FR-PRJ-01.** A Kodo project's root SHALL contain: `kodo.md`, `src/`, `gen/`, `.kodo/`.
+- **FR-PRJ-01.** A Kodo project's root SHALL contain: `src/`, `gen/`, `.kodo/` (which in turn contains `kodo.md`; see `_layout.py:ProjectLayout.kodo_md`, moved post-MVP from the project root).
 - **FR-PRJ-02.** `kodo.md` SHALL contain at minimum these top-level headings: `# Kodo Project`, `## Toolchain`, `## Components`, `## Settings overrides`. The presence of `# Kodo Project` is the marker that identifies a directory as a Kodo project.
 - **FR-PRJ-03.** `src/` SHALL contain `narrative.kd`, `responsibilities.kd`, optionally `.memory/*.kd`, and one subdirectory per component. Each component subdirectory contains `requirements.kd`, `design.kd`, `test_plan.kd`.
 - **FR-PRJ-04.** `gen/` SHALL contain one subdirectory per component plus a `tests/e2e/` directory. Layout inside each component subdirectory is owned by the active toolchain plugin.

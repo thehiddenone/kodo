@@ -138,6 +138,13 @@ FILESYSTEM: ToolSpec = ToolSpec(
                 "type": "string",
                 "description": "The destination path (copy/move operations).",
             },
+            "checkpoint_sha": {
+                "type": "string",
+                "description": (
+                    "Mirror checkpoint commit recording this operation (present when "
+                    "checkpointing is active; absent otherwise)."
+                ),
+            },
         },
         "required": ["status", "operation"],
     },

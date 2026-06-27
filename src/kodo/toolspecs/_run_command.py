@@ -69,6 +69,13 @@ RUN_COMMAND: ToolSpec = ToolSpec(
             },
             "stdout": {"type": "string", "description": "Captured standard output."},
             "stderr": {"type": "string", "description": "Captured standard error."},
+            "checkpoint_sha": {
+                "type": "string",
+                "description": (
+                    "Mirror checkpoint commit recording the filesystem changes this "
+                    "command made (present only when it mutated files; absent otherwise)."
+                ),
+            },
         },
         "required": ["exit_code", "stdout", "stderr"],
     },

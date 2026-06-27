@@ -35,6 +35,8 @@ from kodo.transport import (
     EVT_LLAMA_STATE,
     EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_MODEL_INSTALL_PROGRESS,
+    MSG_CHECKPOINT_ROLLBACK,
+    MSG_CHECKPOINT_UNDO,
     MSG_COMMAND_CONTROL_SET,
     MSG_COMPACT_NOW,
     MSG_CONFIG_RELOAD,
@@ -363,6 +365,26 @@ async def _handle_compact(req: Request) -> None:
     await req.reply({"type": "compact.accepted"})
 
 
+async def _handle_checkpoint_rollback(req: Request) -> None:
+    session = await _require_session(req)
+    if session is None:
+        return
+    root = str(req.env.payload.get("root", ""))
+    sha = str(req.env.payload.get("sha", ""))
+    new_sha = await session.engine.handle_checkpoint_rollback(root, sha)
+    await req.reply({"type": "checkpoint.rollback.done", "root": root, "sha": new_sha})
+
+
+async def _handle_checkpoint_undo(req: Request) -> None:
+    session = await _require_session(req)
+    if session is None:
+        return
+    root = str(req.env.payload.get("root", ""))
+    sha = str(req.env.payload.get("sha", ""))
+    new_sha = await session.engine.handle_checkpoint_undo(root, sha)
+    await req.reply({"type": "checkpoint.undo.done", "root": root, "sha": new_sha})
+
+
 def _make_config_reload_handler(config: Config) -> HandlerFn:
     async def _handle_config_reload(req: Request) -> None:
         try:
@@ -585,6 +607,8 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_PROJECT_SET, _handle_project_set)
     conn_registry.register_handler(MSG_STOP, _handle_stop)
     conn_registry.register_handler(MSG_COMPACT_NOW, _handle_compact)
+    conn_registry.register_handler(MSG_CHECKPOINT_ROLLBACK, _handle_checkpoint_rollback)
+    conn_registry.register_handler(MSG_CHECKPOINT_UNDO, _handle_checkpoint_undo)
     conn_registry.register_handler(MSG_CONFIG_RELOAD, _make_config_reload_handler(config))
     conn_registry.register_handler(MSG_LLAMACPP_INSTALL, _handle_llamacpp_install)
     conn_registry.register_handler(MSG_MODEL_INSTALL, _handle_model_install)

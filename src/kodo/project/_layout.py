@@ -14,8 +14,8 @@ Three concepts (see the ``project-kodo`` memory):
   :func:`kodo.tools.resolve_logical` for Problem Solver path resolution.
 
 * :class:`ProjectLayout` — the *single project* tier.  Rooted at a project
-  folder containing ``kodo.md``, owning ``src/``, ``gen/`` and the per-project
-  ``.kodo/`` directory (the Guided artifact workspace + git mirror checkpoints).
+  folder whose ``.kodo/`` directory holds ``kodo.md`` (the project manifest) and
+  owns ``src/``, ``gen/`` plus the git mirror checkpoints.
 """
 
 from __future__ import annotations
@@ -157,8 +157,8 @@ class ProjectLayout:
 
     @property
     def kodo_md(self) -> Path:
-        """``<root>/kodo.md`` — project manifest."""
-        return self.root / "kodo.md"
+        """``<root>/.kodo/kodo.md`` — project manifest (lives under ``.kodo/``)."""
+        return self.kodo_dir / "kodo.md"
 
     @property
     def src_dir(self) -> Path:
@@ -223,7 +223,7 @@ class ProjectLayout:
     def init(self, *, force: bool = False) -> None:
         """Create the standard Kodo project layout under ``root``.
 
-        Creates ``kodo.md``, ``src/``, ``gen/``, and ``.kodo/`` if absent.
+        Creates ``src/``, ``gen/``, ``.kodo/`` and ``.kodo/kodo.md`` if absent.
         Refuses to overwrite an existing ``kodo.md`` unless ``force=True``.
 
         Args:
@@ -244,6 +244,19 @@ class ProjectLayout:
         self.kodo_dir.mkdir(exist_ok=True)
 
         if not self.kodo_md.exists() or force:
+            self.kodo_md.write_text(_KODO_MD_TEMPLATE, encoding="utf-8")
+
+    def scaffold_kodo_dir(self) -> None:
+        """Create ``.kodo/`` and a minimal ``kodo.md`` marker if absent.
+
+        The lightweight counterpart of :meth:`init` used when Kōdo first touches
+        an arbitrary directory (e.g. a Problem Solver workspace folder getting
+        its checkpoint mirror): it creates only ``.kodo/`` and the ``kodo.md``
+        marker — never ``src/`` or ``gen/`` — and never overwrites an existing
+        manifest.
+        """
+        self.kodo_dir.mkdir(parents=True, exist_ok=True)
+        if not self.kodo_md.exists():
             self.kodo_md.write_text(_KODO_MD_TEMPLATE, encoding="utf-8")
 
 

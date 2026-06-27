@@ -263,10 +263,13 @@ Emitted **after** a tool call is dispatched and its output normalized. Carries t
     { "name": "exit_code", "value": "0", "source": "output", "visibility": "always" },
     { "name": "stdout", "value": "...", "source": "output", "visibility": "visible" }
   ],
-  "schema_compliance": true }
+  "schema_compliance": true,
+  "checkpoint": { "root": "/abs/path/to/root", "sha": "<commit sha>", "parent": "<parent sha>" } }
 ```
 
 Each row is one property the customer may see: `always` rows are shown in full, `visible` rows are cropped client-side (3 lines / 200 chars); `hidden` properties (and any property absent from the visibility map) are omitted entirely. The panel renders these rows as a clickable table beneath the `agent.tool_call` one-liner; clicking opens `file`. On reconnect the same fields ride along on `session.history` `tool_call` entries (`rows`, `detailFile`, `schemaCompliance`).
+
+`checkpoint` is `null` unless the call was a `filesystem`/`edit_file`/`run_command` dispatch in the **problem-solving** workflow that produced a commit in that path's per-root shadow mirror (see §7.4c). When present, the panel renders an "↩ undo this change" link next to the `agent.tool_call` line and a "⟲ Rollback to this state" control below the detail table; both are absent when `checkpoint` is `null` (e.g. every call in the Guided workflow, or a no-op in Problem Solver).
 
 ### 5.5b `tool.incompliant` — output did not match its schema
 
@@ -655,6 +658,26 @@ Response:
 
 A `state` event with the updated `command_control` field follows.
 
+### 7.4c `checkpoint.undo` / `checkpoint.rollback` — Problem Solver file checkpoints
+
+Acts on the per-root **shadow checkpoint mirror** that the engine commits to after every `filesystem`/`edit_file`/`run_command` dispatch in the **problem-solving** workflow (INTERNALS.md §10b/§12.1). Both carry the `{root, sha}` pair the client received on the originating call's `checkpoint` field (§5.5a). This is **unrelated** to the Guide's `rollback` tool / FR-MIR-04 — it never touches conversation history, the `ProjectIndex`, or artifacts; it only restores files.
+
+```json
+{ "type": "checkpoint.undo", "root": "/abs/path/to/root", "sha": "<commit sha>" }
+{ "type": "checkpoint.rollback", "root": "/abs/path/to/root", "sha": "<commit sha>" }
+```
+
+`undo` restores only the files that commit `sha` touched, to their state immediately before it (discarding any later edits to those same files). `rollback` restores the entire root's tree to `sha`'s state. Both are recorded as **new** mirror commits — the mirror is append-only — so there is no destructive reset and a later checkpoint can always be reached again.
+
+Response:
+
+```json
+{ "type": "checkpoint.undo.done", "root": "/abs/path/to/root", "sha": "<new commit sha>" }
+{ "type": "checkpoint.rollback.done", "root": "/abs/path/to/root", "sha": "<new commit sha>" }
+```
+
+No `state` event follows — only the targeted root's files on disk change; the running conversation is untouched.
+
 ### 7.5 `config.reload` — apply settings.json changes
 
 Tells the server to re-read `settings.json` (user + project layers). The primary use is model switching: the VSIX edits the `models` map in `<project>/.kodo/settings.json` and sends this message; the engine resolves the new active plugin on its next dispatch (settings are read fresh per call). It also carries `mode` (local/cloud) changes.
@@ -682,13 +705,16 @@ These drive the sidebar's local-LLM controls; progress/results come back as the 
 { "type": "llama.stop" }             // stop llama-server
 ```
 
-### 7.7 ⟪planned⟫ — checkpoints, security rules, credential push
+### 7.7 ⟪planned⟫ — checkpoint browsing, security rules, credential push
 
 The following are specified for later milestones but **not handled** today:
 
-- `checkpoint.list` / `checkpoint.rollback` (FR-MIR-04) — mirror commit listing
-  and rollback. Rollback exists *internally* (the Guide's `rollback`
-  tool), but no client-initiated checkpoint command is wired.
+- `checkpoint.list` (FR-MIR-04) — listing the **Guided** promotion mirror's
+  commits for a browsing UI. Note this is distinct from the now-implemented
+  `checkpoint.undo`/`checkpoint.rollback` (§7.4c), which act on the unrelated
+  Problem Solver shadow mirror and take an explicit `{root, sha}` rather than
+  browsing a list; the Guide's own `rollback` tool still has no client-initiated
+  wire command.
 - `security.add_rule` (FR-SEC-07) — the security layer is a stub.
 - `credentials.set` — superseded by the `api_key.request`/response flow (§6.3):
   the server pulls keys on demand rather than the client pushing them.
@@ -720,7 +746,7 @@ The following are deliberately **not** on the wire. Future contributors should n
 
 - **Session log content.** The audit trail (STATE_AND_LIFECYCLE.md §5) lives on disk; the protocol carries no message that exposes session JSONL. (`session.history` replays the *conversation*, not the raw log.)
 - **Workspace artifact content, paths, or diffs (MVP).** Workspace activity is conveyed only by `review.*` (§5.6). Detailed artifact events are the planned "verbose workspace mode" (§9.1).
-- **Mirror operation internals.** Mirror commits, trees, and refs are not exposed.
+- **Guided promotion-mirror operation internals.** Its commits, trees, and refs are not exposed. (Exception, added with the Problem Solver shadow mirror: its `{root, sha, parent}` *is* exposed on `agent.tool_call_detail`/`session.history`, §5.5a, since the user-facing undo/rollback controls need it — but no tree/ref/log browsing exists, only undo-by-sha and rollback-by-sha.)
 - **Stage-machine transitions.** Internal workflow stages are not pushed as events. The user-visible signal is the `agent.started`/`agent.finished` sequence plus `state.phase`.
 - **Memory writes** as a distinct event class — they flow through the promotion path like any other artifact.
 - **Historical event replay beyond the outbox.** The protocol is "now and forward"; the on-disk logs and mirror are the archives.
@@ -732,7 +758,7 @@ These are anticipated and structured so adding them is purely additive — no ex
 
 - **Artifact & compaction events** (§5.13): `artifact.published`, `artifact.removed`, `guide.compacted`.
 - **Richer `state` snapshot** (§5.1): `cumulative_usd`, `pending_prompts`, `last_checkpoint_sha`.
-- **Checkpoint commands** (§7.7): `checkpoint.list` / `checkpoint.rollback`.
+- **Guided checkpoint browsing** (§7.7): `checkpoint.list` for the promotion mirror. (The Problem Solver `checkpoint.undo`/`.rollback` commands, §7.4c, are already implemented.)
 - **Security prompts & rules** (§6.5, §7.7): `prompt.permission`, `security.add_rule`.
 - **Verbose workspace mode.** New `workspace.*` event types gated by a settings flag, carrying workspace paths and structured content. The `review.*` events stay as the low-fi default.
 - **Streamed tool output.** A streamed form of `agent.tool_call` for long-running shell commands; the single-event form remains valid for short calls.

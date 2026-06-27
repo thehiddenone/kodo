@@ -18,6 +18,17 @@
 
 This document covers how Kodo represents, persists, and recovers state across cold starts, interruptions, and normal operation. It assumes the artifact model from [src/kodo/CLAUDE.md](../src/kodo/CLAUDE.md) — sub-agents communicate exclusively through `publish_artifact` / `read_artifact` against a workspace owned by Kodo.
 
+> **Scope note — a second checkpoint mechanism exists outside this document.**
+> Everything below (`MirrorRepo`, `Promoter`, §3 bootstrap, §8 promotion, §8.3
+> rollback) is specific to the **Guided** pipeline's artifact mirror. The
+> **Problem Solver** workflow checkpoints the real project tree directly —
+> committing before/after every file-mutating tool call via a per-root shadow
+> git mirror (`kodo/mirror/ShadowMirror` + `runtime/_checkpoints.RootMirrorManager`)
+> — with its own undo/rollback wire commands and no artifact/index/session
+> involvement at all. The two mechanisms are independent; see
+> [DESIGN.md §8.4](DESIGN.md) and [INTERNALS.md §10b/§12.1](INTERNALS.md) for
+> the Problem Solver mechanism.
+
 ---
 
 ## 1. Directory layout

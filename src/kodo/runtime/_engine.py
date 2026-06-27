@@ -58,6 +58,7 @@ from kodo.project import (
     WorkspaceLayout,
     kodo_user_dir,
 )
+from kodo.shellparser import parse_command
 from kodo.state import TransientStore, read_diff_files, render_tool_call_markdown
 from kodo.subagents import AgentLoadError, AgentRegistry, SubAgent
 from kodo.toolchains import ToolchainPlugin, select_toolchain
@@ -120,6 +121,7 @@ from ._attachments import (
     parse_attachment_marker,
 )
 from ._bootstrap import ProjectBootstrap
+from ._checkpoints import CheckpointRef, RootMirrorManager, command_may_mutate
 from ._gates import GateOrchestrator
 from ._rollback import Rollback
 from ._session import SessionState
@@ -156,6 +158,11 @@ _COMPACTION_THRESHOLD = 0.9
 # message) is flushed to ``session.jsonl`` BEFORE dispatch, so a crash mid-
 # subagent leaves the dangling ``tool_use`` on disk and the run can be resumed.
 _SUBAGENT_SPAWNING_TOOLS = frozenset({"run_subagent", "run_author_critic_iteration"})
+
+# File-mutating tools that earn a shadow-mirror checkpoint after each call. The
+# checkpoint hook is gated to Problem Solver this milestone (Guided keeps its own
+# artifact-gate checkpoint system); the mechanism itself is mode-agnostic.
+_MUTATING_TOOLS = frozenset({"filesystem", "edit_file", "run_command"})
 
 # Maximum length of a generated session title, in characters.
 _MAX_TITLE_LEN = 60
@@ -286,6 +293,9 @@ class WorkflowEngine:
     __layout: ProjectLayout | None
     __registry: AgentRegistry
     __checkpoints: CheckpointManager | None
+    # Per-root shadow-git checkpoint mirrors (Problem Solver). Mode-agnostic in
+    # mechanism, but only driven for ``problem_solving`` runs this milestone.
+    __root_mirrors: RootMirrorManager
     __current_project: dict[str, str] | None
     __workspace: Workspace
     __queue: asyncio.Queue[dict[str, object]]
@@ -353,6 +363,7 @@ class WorkflowEngine:
         self.__registry = registry
         self.__layout: ProjectLayout | None = None
         self.__checkpoints: CheckpointManager | None = None
+        self.__root_mirrors = RootMirrorManager()
         self.__current_project: dict[str, str] | None = None
         self.__index = ProjectIndex()
         # Placeholder workspace at the physical root — replaced by the real,
@@ -1815,10 +1826,15 @@ class WorkflowEngine:
                 payload["timeout_seconds"] = tool_input.get("timeout")
             await self.__sink.send(Envelope.make_event(EVT_AGENT_TOOL_CALL, payload))
             tc_n = tool_logger.log_invocation(tool_name, tool_input)
+            # Snapshot the pre-mutation baseline of any root this tool is about
+            # to write to, so the post-dispatch commit records the change as its
+            # own checkpoint (see __checkpoint_prepare / __checkpoint_commit).
+            ck_paths = await self.__checkpoint_prepare(tool_name, tool_input)
             result_text = await tool_dispatch(tool_name, tool_input)
             tool_logger.log_result(tool_name, tc_n, result_text)
+            checkpoint = await self.__checkpoint_commit(tool_name, tool_input, ck_paths)
             content = await self.__finalize_tool_result(
-                tool_use_id, tool_name, tool_input, result_text
+                tool_use_id, tool_name, tool_input, result_text, checkpoint
             )
             tool_results.append(
                 {
@@ -1835,6 +1851,7 @@ class WorkflowEngine:
         tool_name: str,
         tool_input: dict[str, object],
         result_text: str,
+        checkpoint: CheckpointRef | None = None,
     ) -> str:
         """Normalize a tool result to its schema; persist and surface its detail.
 
@@ -1845,6 +1862,12 @@ class WorkflowEngine:
         customer-visible projection is pushed to the client via
         :data:`EVT_AGENT_TOOL_CALL_DETAIL`; non-compliant output additionally
         emits :data:`EVT_TOOL_INCOMPLIANT` so the VSIX can warn the user.
+
+        ``checkpoint`` (when a file-mutating tool produced a mirror commit) is
+        surfaced two ways: its ``sha`` is injected into the LLM-visible result
+        (declared as ``checkpoint_sha`` in each mutating tool's output schema),
+        and the full ``{root, sha, parent}`` rides the detail event out-of-band
+        so the WebView can render the undo / rollback controls.
 
         A tool with no matching spec (none today) passes through unchanged.
         """
@@ -1862,6 +1885,12 @@ class WorkflowEngine:
         # it in would make every such call look non-compliant (extra
         # undeclared field) and leak file content into the LLM-visible result.
         diff_raw = raw.pop("diff", None) if isinstance(raw, dict) else None
+
+        # Inject the checkpoint SHA into the result so the agent sees which
+        # commit captured its change. checkpoint_sha is a declared (optional)
+        # output_schema field, so normalize_output keeps it and compliance holds.
+        if checkpoint is not None and isinstance(raw, dict):
+            raw["checkpoint_sha"] = checkpoint.sha
 
         output, compliant = normalize_output(spec.output_schema, raw)
         content = json.dumps(output)
@@ -1897,6 +1926,15 @@ class WorkflowEngine:
                     "schema_compliance": compliant,
                     "success": tool_result_succeeded(output),
                     "diff": diff_detail,
+                    "checkpoint": (
+                        {
+                            "root": checkpoint.root,
+                            "sha": checkpoint.sha,
+                            "parent": checkpoint.parent,
+                        }
+                        if checkpoint is not None
+                        else None
+                    ),
                 },
             )
         )
@@ -1912,6 +1950,119 @@ class WorkflowEngine:
                 )
             )
         return content
+
+    # ------------------------------------------------------------------
+    # Checkpointing (Problem Solver shadow-git mirror)
+    # ------------------------------------------------------------------
+
+    def __checkpoint_enabled(self) -> bool:
+        """Whether per-tool-call checkpointing runs for the current prompt.
+
+        Gated to Problem Solver so it never collides with the Guided artifact
+        checkpoint system (which still owns ``.kodo/checkpoints`` there).
+        """
+        return self.__session.effective_workflow_mode == "problem_solving"
+
+    async def __checkpoint_prepare(
+        self, tool_name: str, tool_input: dict[str, object]
+    ) -> list[Path]:
+        """Snapshot the pre-mutation baseline for a mutating tool; return its paths.
+
+        Called *before* dispatch so each root's mirror baseline reflects the tree
+        as it was before this call. Returns the affected paths (primary first) to
+        hand to :meth:`__checkpoint_commit`, or an empty list when nothing should
+        be checkpointed (wrong mode, non-mutating tool, or a read-only command).
+        """
+        if not self.__checkpoint_enabled() or tool_name not in _MUTATING_TOOLS:
+            return []
+        paths = self.__mutation_paths(tool_name, tool_input)
+        if paths:
+            self.__root_mirrors.set_roots([Path(rp.path) for rp in self.__root_paths()])
+            for path in paths:
+                await self.__root_mirrors.prepare(path)
+        return paths
+
+    async def __checkpoint_commit(
+        self, tool_name: str, tool_input: dict[str, object], paths: list[Path]
+    ) -> CheckpointRef | None:
+        """Commit the mirror after a mutating tool ran; return its checkpoint ref.
+
+        Commits the root enclosing the primary path. ``run_command`` additionally
+        sweeps every other already-initialised mirror (no-op when clean) so a
+        command that wrote outside its cwd's root is still captured.
+        """
+        if not paths:
+            return None
+        label = self.__checkpoint_label(tool_name, tool_input)
+        ref = await self.__root_mirrors.commit_for_path(paths[0], label)
+        if tool_name == "run_command":
+            await self.__root_mirrors.sweep_initialized(label)
+        return ref
+
+    def __mutation_paths(self, tool_name: str, tool_input: dict[str, object]) -> list[Path]:
+        """Resolve the filesystem paths a mutating tool will touch (primary first)."""
+        resolver = self.__make_resolver()
+
+        def _resolve(key: str) -> Path | None:
+            value = tool_input.get(key)
+            if not value:
+                return None
+            try:
+                return resolver.resolve(str(value))
+            except (PermissionError, ValueError):
+                return None
+
+        if tool_name == "edit_file":
+            path = _resolve("path")
+            return [path] if path is not None else []
+        if tool_name == "filesystem":
+            # destination/path is the primary mutation; source matters for moves.
+            return [p for p in (_resolve("destination"), _resolve("path"), _resolve("source")) if p]
+        if tool_name == "run_command":
+            command = str(tool_input.get("command", ""))
+            if not command.strip() or not command_may_mutate(parse_command(command)):
+                return []
+            working_dir = tool_input.get("working_dir")
+            try:
+                cwd = resolver.resolve(str(working_dir)) if working_dir else resolver.default_cwd
+            except (PermissionError, ValueError):
+                cwd = resolver.default_cwd
+            return [cwd]
+        return []
+
+    @staticmethod
+    def __checkpoint_label(tool_name: str, tool_input: dict[str, object]) -> str:
+        """A short, human-readable commit message for a tool-call checkpoint."""
+        if tool_name == "run_command":
+            return f"run_command: {str(tool_input.get('command', ''))[:80]}"
+        if tool_name == "filesystem":
+            op = tool_input.get("operation", "")
+            target = tool_input.get("path") or tool_input.get("destination", "")
+            return f"filesystem {op}: {target}"
+        return f"{tool_name}: {tool_input.get('path', '')}"
+
+    async def handle_checkpoint_undo(self, root: str, sha: str) -> str:
+        """Undo only checkpoint *sha* in *root*'s mirror; return the new commit SHA.
+
+        Files-only and append-only: restores the files that commit touched to
+        their prior state (discarding later edits to those same files) as a new
+        commit. The conversation and agent state are untouched.
+        """
+        self.__root_mirrors.set_roots([Path(rp.path) for rp in self.__root_paths()])
+        new_sha = await self.__root_mirrors.undo(root, sha)
+        _log.info("Checkpoint undo: root=%s %s -> %s", root, sha[:8], new_sha[:8])
+        return new_sha
+
+    async def handle_checkpoint_rollback(self, root: str, sha: str) -> str:
+        """Restore *root*'s whole tree to checkpoint *sha*; return the new commit SHA.
+
+        Files-only and append-only (a new commit records the restored tree), so
+        a later rollback to a newer checkpoint rolls forward.
+        """
+        self.__root_mirrors.set_roots([Path(rp.path) for rp in self.__root_paths()])
+        new_sha = await self.__root_mirrors.rollback(root, sha)
+        _log.info("Checkpoint rollback: root=%s %s -> %s", root, sha[:8], new_sha[:8])
+        return new_sha
 
     # ------------------------------------------------------------------
     # ToolDispatcher factory
