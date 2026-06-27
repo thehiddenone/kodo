@@ -2231,6 +2231,11 @@ class WorkflowEngine:
         """
         display_name = self.__display_name(name)
         parent_display = self.__display_name(self.__session.agent or _GUIDE_AGENT_NAME)
+        # A sub-agent "failed" when it did not return a schema-compliant result
+        # (e.g. it ended without calling return_result, so the engine synthesized
+        # the {schema_compliance: False} fallback). The flag drives the red
+        # <kodo_crit> handback callout in the WebView instead of the green <kodo>.
+        failed = output.get(SCHEMA_COMPLIANCE_KEY) is False
         self.__transient.append_marker(
             {
                 "type": "subsession_end",
@@ -2238,6 +2243,7 @@ class WorkflowEngine:
                 "agent": name,
                 "display_name": display_name,
                 "parent_display_name": parent_display,
+                "failed": failed,
                 "result": dict(output),
             }
         )
@@ -2250,6 +2256,7 @@ class WorkflowEngine:
                     "agent": name,
                     "display_name": display_name,
                     "parent_display_name": parent_display,
+                    "failed": failed,
                 },
             )
         )
@@ -2784,6 +2791,7 @@ class WorkflowEngine:
             "agent": str(marker.get("agent", "")),
             "displayName": str(marker.get("display_name", "")),
             "parentDisplayName": str(marker.get("parent_display_name", "")),
+            "failed": marker.get("failed") is True,
         }
 
     @staticmethod
