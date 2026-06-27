@@ -41,16 +41,31 @@ MSG_SESSION_RELEASE = "session.release"
 # reads the closure as confirmation); on failure it replies
 # ``{type: "session.delete.error", message}`` and leaves the socket open.
 MSG_SESSION_DELETE = "session.delete"
+# Fetch the persisted CheckpointState ({current_index, entries: [...]}) for
+# ``payload.root`` — used to hydrate the UI's per-entry undo/redo and
+# rollback/roll-forward eligibility on session resume.
 MSG_CHECKPOINT_LIST = "checkpoint.list"
-# Files-only, append-only checkpoint actions on one mirror commit, triggered from
-# a tool-call card. Both carry ``{root, sha}`` (the root names which per-root
-# ``.kodo/checkpoints`` mirror the sha belongs to). ``rollback`` restores the
-# whole tree to the state *after* that commit; ``undo`` surgically reverts only
-# the files that commit changed (discarding later edits to those files). Each is
-# itself recorded as a new commit, so rolling forward always works. The server
-# replies with the new commit sha.
+# Stateful checkpoint actions on one mirror commit, triggered from a tool-call
+# card. All four carry ``{root, sha}`` plus an optional ``resolution``
+# (``"stash"|"discard"``, supplied only on retry after a ``*.needs_confirmation``
+# reply caused by a dirty work tree — see below). ``undo``/``redo`` are a
+# per-entry toggle: surgically revert/reapply only the files that commit
+# changed, each as a new forward commit, flipping that entry's persisted
+# ``undone`` flag. ``rollback``/``roll_forward`` are the same underlying
+# operation in both directions: move the mirror's branch ref directly to
+# ``sha``, preserving whatever tip it orphans under a ``rollback_<ts>`` branch
+# (never a detached HEAD) — see ``kodo.mirror.ShadowMirror.rollback``. The
+# server replies either ``checkpoint.<verb>.done`` with the updated
+# CheckpointState, or ``checkpoint.<verb>.needs_confirmation`` (no
+# ``resolution`` given and the tree is dirty — i.e. has edits Kodo didn't
+# make); the client resubmits with a chosen ``resolution`` to proceed. The
+# server also pushes ``EVT_CHECKPOINT_STATE`` after any successful mutation so
+# every checkpoint button in the transcript can refresh, not just the one
+# acted on.
 MSG_CHECKPOINT_ROLLBACK = "checkpoint.rollback"
+MSG_CHECKPOINT_ROLL_FORWARD = "checkpoint.roll_forward"
 MSG_CHECKPOINT_UNDO = "checkpoint.undo"
+MSG_CHECKPOINT_REDO = "checkpoint.redo"
 MSG_MODE_SET = "mode.set"
 MSG_WORKFLOW_SET = "workflow.set"
 # Set the Edit Control posture.
@@ -141,6 +156,12 @@ EVT_GUIDE_COMPACTED = "guide.compacted"
 EVT_CONTEXT_STATS = "context.stats"
 EVT_CONTEXT_COMPACTING = "context.compacting"
 EVT_CONTEXT_COMPACTED = "context.compacted"
+# Pushed after any successful checkpoint.undo/redo/rollback/roll_forward:
+# ``{root, current_index, entries: [{sha, undone}]}``. Lets the WebView
+# recompute every tool-call card's undo/redo + rollback/roll-forward labels
+# for that root in one pass, since a single action can change every other
+# entry's eligible action (see MSG_CHECKPOINT_ROLLBACK above).
+EVT_CHECKPOINT_STATE = "checkpoint.state"
 EVT_LLM_TURN_START = "llm.turn_start"
 # Emitted by the LLM gateway while a session's LLM request is queued behind the
 # serial local gate / a saturated cloud feed (``reason:"queued"``) or is being

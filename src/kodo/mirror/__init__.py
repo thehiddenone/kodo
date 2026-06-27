@@ -8,8 +8,11 @@ inside the tracked tree.  It knows nothing about Kōdo's ``.kodo`` layout or
 ignore patterns.  Higher layers (the per-root checkpoint coordinator) wrap it
 with project conventions.
 
-The mirror is *append-only*: rollback and undo are themselves new commits, so
-the history only grows and rolling forward is always possible.
+``undo`` is append-only — it restores touched files as a *new* forward commit,
+so undoing an undo (a "redo") stays possible. ``rollback`` instead moves the
+current branch's ref directly to a target commit (forward or backward),
+preserving whatever tip it orphans under a ``rollback_<unix-ts>`` branch so no
+commit is ever left unreachable — it never detaches HEAD.
 """
 
 from ._mirror import CommitInfo, ShadowMirror, ShadowMirrorError

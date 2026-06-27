@@ -30,11 +30,15 @@ from kodo.llms.llamacpp import (
     install_llamacpp,
 )
 from kodo.project import WorkspaceLayout, kodo_user_dir
+from kodo.runtime import CheckpointState, MirrorDirtyError
 from kodo.subagents import AgentRegistry
 from kodo.transport import (
     EVT_LLAMA_STATE,
     EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_MODEL_INSTALL_PROGRESS,
+    MSG_CHECKPOINT_LIST,
+    MSG_CHECKPOINT_REDO,
+    MSG_CHECKPOINT_ROLL_FORWARD,
     MSG_CHECKPOINT_ROLLBACK,
     MSG_CHECKPOINT_UNDO,
     MSG_COMMAND_CONTROL_SET,
@@ -188,7 +192,7 @@ async def _handle_hello(req: Request) -> None:
             {"session_id": session.id, "name": session.engine.session_name},
         )
     )
-    history = session.engine.history_entries()
+    history = await session.engine.history_entries()
     if history:
         await session.channel.send(Envelope.make_event("session.history", {"entries": history}))
 
@@ -365,24 +369,100 @@ async def _handle_compact(req: Request) -> None:
     await req.reply({"type": "compact.accepted"})
 
 
-async def _handle_checkpoint_rollback(req: Request) -> None:
+def _checkpoint_state_payload(state: CheckpointState) -> dict[str, object]:
+    """The wire shape for a CheckpointState, shared by every checkpoint reply."""
+    return {
+        "current_index": state.current_index,
+        "entries": [{"sha": e.sha, "undone": e.undone} for e in state.entries],
+    }
+
+
+async def _checkpoint_request(req: Request) -> tuple[Session, str, str, str | None] | None:
+    """Shared ``(session, root, sha, resolution)`` extraction for checkpoint ops.
+
+    ``resolution`` (``"stash"|"discard"``) is only present on a retry after a
+    ``*.needs_confirmation`` reply caused by a dirty work tree.
+    """
     session = await _require_session(req)
     if session is None:
-        return
+        return None
     root = str(req.env.payload.get("root", ""))
     sha = str(req.env.payload.get("sha", ""))
-    new_sha = await session.engine.handle_checkpoint_rollback(root, sha)
-    await req.reply({"type": "checkpoint.rollback.done", "root": root, "sha": new_sha})
+    resolution = req.env.payload.get("resolution")
+    return session, root, sha, str(resolution) if isinstance(resolution, str) else None
+
+
+async def _reply_checkpoint_done(
+    req: Request, verb: str, root: str, sha: str, state: CheckpointState
+) -> None:
+    payload = {"type": f"checkpoint.{verb}.done", "root": root, "sha": sha}
+    await req.reply({**payload, **_checkpoint_state_payload(state)})
+
+
+async def _reply_needs_confirmation(req: Request, verb: str, root: str, sha: str) -> None:
+    await req.reply({"type": f"checkpoint.{verb}.needs_confirmation", "root": root, "sha": sha})
+
+
+async def _handle_checkpoint_rollback(req: Request) -> None:
+    parsed = await _checkpoint_request(req)
+    if parsed is None:
+        return
+    session, root, sha, resolution = parsed
+    try:
+        state = await session.engine.handle_checkpoint_rollback(root, sha, resolution)
+    except MirrorDirtyError:
+        await _reply_needs_confirmation(req, "rollback", root, sha)
+        return
+    await _reply_checkpoint_done(req, "rollback", root, sha, state)
+
+
+async def _handle_checkpoint_roll_forward(req: Request) -> None:
+    parsed = await _checkpoint_request(req)
+    if parsed is None:
+        return
+    session, root, sha, resolution = parsed
+    try:
+        state = await session.engine.handle_checkpoint_roll_forward(root, sha, resolution)
+    except MirrorDirtyError:
+        await _reply_needs_confirmation(req, "roll_forward", root, sha)
+        return
+    await _reply_checkpoint_done(req, "roll_forward", root, sha, state)
 
 
 async def _handle_checkpoint_undo(req: Request) -> None:
+    parsed = await _checkpoint_request(req)
+    if parsed is None:
+        return
+    session, root, sha, resolution = parsed
+    try:
+        state = await session.engine.handle_checkpoint_undo(root, sha, resolution)
+    except MirrorDirtyError:
+        await _reply_needs_confirmation(req, "undo", root, sha)
+        return
+    await _reply_checkpoint_done(req, "undo", root, sha, state)
+
+
+async def _handle_checkpoint_redo(req: Request) -> None:
+    parsed = await _checkpoint_request(req)
+    if parsed is None:
+        return
+    session, root, sha, resolution = parsed
+    try:
+        state = await session.engine.handle_checkpoint_redo(root, sha, resolution)
+    except MirrorDirtyError:
+        await _reply_needs_confirmation(req, "redo", root, sha)
+        return
+    await _reply_checkpoint_done(req, "redo", root, sha, state)
+
+
+async def _handle_checkpoint_list(req: Request) -> None:
     session = await _require_session(req)
     if session is None:
         return
     root = str(req.env.payload.get("root", ""))
-    sha = str(req.env.payload.get("sha", ""))
-    new_sha = await session.engine.handle_checkpoint_undo(root, sha)
-    await req.reply({"type": "checkpoint.undo.done", "root": root, "sha": new_sha})
+    state = await session.engine.handle_checkpoint_list(root)
+    payload = {"type": "checkpoint.list.done", "root": root}
+    await req.reply({**payload, **_checkpoint_state_payload(state)})
 
 
 def _make_config_reload_handler(config: Config) -> HandlerFn:
@@ -608,7 +688,10 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_STOP, _handle_stop)
     conn_registry.register_handler(MSG_COMPACT_NOW, _handle_compact)
     conn_registry.register_handler(MSG_CHECKPOINT_ROLLBACK, _handle_checkpoint_rollback)
+    conn_registry.register_handler(MSG_CHECKPOINT_ROLL_FORWARD, _handle_checkpoint_roll_forward)
     conn_registry.register_handler(MSG_CHECKPOINT_UNDO, _handle_checkpoint_undo)
+    conn_registry.register_handler(MSG_CHECKPOINT_REDO, _handle_checkpoint_redo)
+    conn_registry.register_handler(MSG_CHECKPOINT_LIST, _handle_checkpoint_list)
     conn_registry.register_handler(MSG_CONFIG_RELOAD, _make_config_reload_handler(config))
     conn_registry.register_handler(MSG_LLAMACPP_INSTALL, _handle_llamacpp_install)
     conn_registry.register_handler(MSG_MODEL_INSTALL, _handle_model_install)

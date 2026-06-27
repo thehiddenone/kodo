@@ -76,6 +76,13 @@ RUN_COMMAND: ToolSpec = ToolSpec(
                     "command made (present only when it mutated files; absent otherwise)."
                 ),
             },
+            "checkpoint_root": {
+                "type": "string",
+                "description": (
+                    "Root of the .kodo/checkpoints mirror checkpoint_sha belongs to "
+                    "(present alongside checkpoint_sha)."
+                ),
+            },
         },
         "required": ["exit_code", "stdout", "stderr"],
     },

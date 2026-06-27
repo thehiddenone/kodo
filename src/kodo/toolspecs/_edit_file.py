@@ -81,6 +81,13 @@ EDIT_FILE: ToolSpec = ToolSpec(
                     "checkpointing is active; absent otherwise)."
                 ),
             },
+            "checkpoint_root": {
+                "type": "string",
+                "description": (
+                    "Root of the .kodo/checkpoints mirror checkpoint_sha belongs to "
+                    "(present alongside checkpoint_sha)."
+                ),
+            },
         },
         "required": ["status", "path"],
     },

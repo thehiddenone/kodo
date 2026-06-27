@@ -62,13 +62,15 @@ async def test_undo_and_rollback_roundtrip(tmp_path: Path) -> None:
     ref2 = await mgr.commit_for_path(tmp_path / "a.txt", "edit a")
     assert ref2 is not None
 
-    # Undo the creation: a.txt disappears.
-    await mgr.undo(ref1.root, ref1.sha)
+    # Undo the creation: a.txt disappears, and the original entry flips undone.
+    state = await mgr.undo(ref1.root, ref1.sha)
     assert not (tmp_path / "a.txt").exists()
+    assert state.entries[state.index_of(ref1.sha)].undone is True
 
-    # Rollback to the second checkpoint: a.txt == "two".
-    await mgr.rollback(ref2.root, ref2.sha)
+    # Rollback to the second checkpoint: a.txt == "two", current_index moves there.
+    state = await mgr.rollback(ref2.root, ref2.sha)
     assert (tmp_path / "a.txt").read_text() == "two\n"
+    assert state.current_index == state.index_of(ref2.sha)
 
 
 async def test_path_outside_roots_yields_no_checkpoint(tmp_path: Path) -> None:

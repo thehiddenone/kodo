@@ -84,6 +84,7 @@ from kodo.transport import (
     EVT_AGENT_TOOL_CALL_DETAIL,
     EVT_API_KEY_REVOKE,
     EVT_AUTONOMOUS_CHANGED,
+    EVT_CHECKPOINT_STATE,
     EVT_CONTEXT_COMPACTED,
     EVT_CONTEXT_COMPACTING,
     EVT_CONTEXT_STATS,
@@ -121,7 +122,7 @@ from ._attachments import (
     parse_attachment_marker,
 )
 from ._bootstrap import ProjectBootstrap
-from ._checkpoints import CheckpointRef, RootMirrorManager, command_may_mutate
+from ._checkpoints import CheckpointRef, CheckpointState, RootMirrorManager, command_may_mutate
 from ._gates import GateOrchestrator
 from ._rollback import Rollback
 from ._session import SessionState
@@ -1891,6 +1892,7 @@ class WorkflowEngine:
         # output_schema field, so normalize_output keeps it and compliance holds.
         if checkpoint is not None and isinstance(raw, dict):
             raw["checkpoint_sha"] = checkpoint.sha
+            raw["checkpoint_root"] = checkpoint.root
 
         output, compliant = normalize_output(spec.output_schema, raw)
         content = json.dumps(output)
@@ -1916,6 +1918,19 @@ class WorkflowEngine:
                 new_content=str(diff_raw.get("new_content", "")),
             )
 
+        checkpoint_detail: dict[str, object] | None = None
+        if checkpoint is not None:
+            state = await self.__root_mirrors.state_for(checkpoint.root)
+            index = state.index_of(checkpoint.sha)
+            checkpoint_detail = {
+                "root": checkpoint.root,
+                "sha": checkpoint.sha,
+                "parent": checkpoint.parent,
+                "index": index if index is not None else state.current_index,
+                "undone": state.entries[index].undone if index is not None else False,
+                "current_index": state.current_index,
+            }
+
         await self.__sink.send(
             Envelope.make_event(
                 EVT_AGENT_TOOL_CALL_DETAIL,
@@ -1926,15 +1941,7 @@ class WorkflowEngine:
                     "schema_compliance": compliant,
                     "success": tool_result_succeeded(output),
                     "diff": diff_detail,
-                    "checkpoint": (
-                        {
-                            "root": checkpoint.root,
-                            "sha": checkpoint.sha,
-                            "parent": checkpoint.parent,
-                        }
-                        if checkpoint is not None
-                        else None
-                    ),
+                    "checkpoint": checkpoint_detail,
                 },
             )
         )
@@ -2041,28 +2048,99 @@ class WorkflowEngine:
             return f"filesystem {op}: {target}"
         return f"{tool_name}: {tool_input.get('path', '')}"
 
-    async def handle_checkpoint_undo(self, root: str, sha: str) -> str:
-        """Undo only checkpoint *sha* in *root*'s mirror; return the new commit SHA.
+    async def handle_checkpoint_undo(
+        self, root: str, sha: str, resolution: str | None = None
+    ) -> CheckpointState:
+        """Undo checkpoint *sha* in *root*'s mirror; return the updated state.
 
-        Files-only and append-only: restores the files that commit touched to
-        their prior state (discarding later edits to those same files) as a new
-        commit. The conversation and agent state are untouched.
+        Restores the files that commit touched to their prior state
+        (discarding later edits to those same files) as a new commit and
+        flips that entry's ``undone`` flag. The conversation and agent state
+        are untouched.
+
+        Raises:
+            MirrorDirtyError: The work tree has edits Kodo didn't make and
+                *resolution* wasn't given — caller should ask the user how to
+                proceed and retry with a resolution.
         """
         self.__root_mirrors.set_roots([Path(rp.path) for rp in self.__root_paths()])
-        new_sha = await self.__root_mirrors.undo(root, sha)
-        _log.info("Checkpoint undo: root=%s %s -> %s", root, sha[:8], new_sha[:8])
-        return new_sha
+        state = await self.__root_mirrors.undo(root, sha, resolution)
+        _log.info(
+            "Checkpoint undo: root=%s sha=%s current_index=%d", root, sha[:8], state.current_index
+        )
+        await self.__push_checkpoint_state(root, state)
+        return state
 
-    async def handle_checkpoint_rollback(self, root: str, sha: str) -> str:
-        """Restore *root*'s whole tree to checkpoint *sha*; return the new commit SHA.
+    async def handle_checkpoint_redo(
+        self, root: str, sha: str, resolution: str | None = None
+    ) -> CheckpointState:
+        """Redo checkpoint *sha* in *root*'s mirror; return the updated state.
 
-        Files-only and append-only (a new commit records the restored tree), so
-        a later rollback to a newer checkpoint rolls forward.
+        See :meth:`handle_checkpoint_undo` — this is its inverse and shares
+        the same dirty-tree handling.
         """
         self.__root_mirrors.set_roots([Path(rp.path) for rp in self.__root_paths()])
-        new_sha = await self.__root_mirrors.rollback(root, sha)
-        _log.info("Checkpoint rollback: root=%s %s -> %s", root, sha[:8], new_sha[:8])
-        return new_sha
+        state = await self.__root_mirrors.redo(root, sha, resolution)
+        _log.info(
+            "Checkpoint redo: root=%s sha=%s current_index=%d", root, sha[:8], state.current_index
+        )
+        await self.__push_checkpoint_state(root, state)
+        return state
+
+    async def handle_checkpoint_rollback(
+        self, root: str, sha: str, resolution: str | None = None
+    ) -> CheckpointState:
+        """Move *root*'s current branch to checkpoint *sha*; return the updated state.
+
+        See :meth:`handle_checkpoint_undo` for the dirty-tree handling.
+        """
+        self.__root_mirrors.set_roots([Path(rp.path) for rp in self.__root_paths()])
+        state = await self.__root_mirrors.rollback(root, sha, resolution)
+        _log.info(
+            "Checkpoint rollback: root=%s sha=%s current_index=%d",
+            root,
+            sha[:8],
+            state.current_index,
+        )
+        await self.__push_checkpoint_state(root, state)
+        return state
+
+    async def handle_checkpoint_roll_forward(
+        self, root: str, sha: str, resolution: str | None = None
+    ) -> CheckpointState:
+        """Move *root*'s current branch forward to checkpoint *sha*.
+
+        Same underlying operation as :meth:`handle_checkpoint_rollback` —
+        see :meth:`kodo.runtime._checkpoints.RootMirrorManager.roll_forward`.
+        """
+        self.__root_mirrors.set_roots([Path(rp.path) for rp in self.__root_paths()])
+        state = await self.__root_mirrors.roll_forward(root, sha, resolution)
+        _log.info(
+            "Checkpoint roll-forward: root=%s sha=%s current_index=%d",
+            root,
+            sha[:8],
+            state.current_index,
+        )
+        await self.__push_checkpoint_state(root, state)
+        return state
+
+    async def handle_checkpoint_list(self, root: str) -> CheckpointState:
+        """The persisted :class:`CheckpointState` for *root* (UI hydration)."""
+        self.__root_mirrors.set_roots([Path(rp.path) for rp in self.__root_paths()])
+        return await self.__root_mirrors.state_for(root)
+
+    async def __push_checkpoint_state(self, root: str, state: CheckpointState) -> None:
+        """Broadcast *root*'s updated state so every checkpoint button can refresh."""
+        await self.__sink.send(
+            Envelope.make_event(
+                EVT_CHECKPOINT_STATE,
+                {
+                    "root": root,
+                    "current_index": state.current_index,
+                    "entries": [{"sha": e.sha, "undone": e.undone} for e in state.entries],
+                },
+            )
+        )
 
     # ------------------------------------------------------------------
     # ToolDispatcher factory
@@ -2840,7 +2918,7 @@ class WorkflowEngine:
         arts = await self.__workspace.read(artifact_id=latest.artifact_id)
         return arts[0].content if arts else None
 
-    def history_entries(self) -> list[dict[str, object]]:
+    async def history_entries(self) -> list[dict[str, object]]:
         """Rebuild the full client-facing feed for a resumed session.
 
         Walks the main ``session.jsonl`` in order. Message lines become
@@ -2849,6 +2927,11 @@ class WorkflowEngine:
         sub-agent's full inner transcript (read from its subsession log), and a
         ``subsession_end`` marker emits a hand-back divider. This gives the
         WebView a faithful replay of who did what, including sub-agent work.
+
+        Each ``tool_call`` entry's ``checkpoint`` (root/sha/parent/index/undone)
+        is reconstructed from the persisted ``checkpoint_sha``/``checkpoint_root``
+        output fields plus that root's :class:`CheckpointState` — async because
+        loading a root's state touches disk; see :meth:`__checkpoint_detail`.
 
         Returns:
             list[dict[str, object]]: Ordered entries in the shape expected by the
@@ -2869,12 +2952,19 @@ class WorkflowEngine:
         results_by_id = self.__tool_results_from_messages(all_messages)
 
         session_dir = self.__transient.session_dir
+        # Loaded at most once per root for this whole rebuild.
+        checkpoint_states: dict[str, CheckpointState] = {}
         entries: list[dict[str, object]] = []
         for line in lines:
             if "role" in line:
                 entries.extend(
-                    self.__message_to_entries(
-                        line, tool_desc, results_by_id, toolcalls_dir, session_dir
+                    await self.__message_to_entries(
+                        line,
+                        tool_desc,
+                        results_by_id,
+                        toolcalls_dir,
+                        session_dir,
+                        checkpoint_states,
                     )
                 )
                 continue
@@ -2884,8 +2974,13 @@ class WorkflowEngine:
                 sid = str(line.get("subsession_id", ""))
                 for sub in self.__transient.read_subsession_messages(sid):
                     entries.extend(
-                        self.__message_to_entries(
-                            sub, tool_desc, results_by_id, toolcalls_dir, session_dir
+                        await self.__message_to_entries(
+                            sub,
+                            tool_desc,
+                            results_by_id,
+                            toolcalls_dir,
+                            session_dir,
+                            checkpoint_states,
                         )
                     )
             elif kind == "subsession_end":
@@ -2945,13 +3040,14 @@ class WorkflowEngine:
             "failed": marker.get("failed") is True,
         }
 
-    @staticmethod
-    def __message_to_entries(
+    async def __message_to_entries(
+        self,
         msg: dict[str, object],
         tool_desc: dict[str, str],
         results_by_id: dict[str, dict[str, object]],
         toolcalls_dir: Path,
         session_dir: Path,
+        checkpoint_states: dict[str, CheckpointState],
     ) -> list[dict[str, object]]:
         """Convert one persisted ``{role, content}`` line to client feed entries."""
         role = msg.get("role")
@@ -3001,6 +3097,7 @@ class WorkflowEngine:
                     rows = build_detail_rows(spec, tool_input, output) if spec is not None else []
                     doc = toolcalls_dir / f"{tool_use_id}.md"
                     diff = read_diff_files(toolcalls_dir, tool_use_id)
+                    checkpoint = await self.__checkpoint_detail(output, checkpoint_states)
                     entry: dict[str, object] = {
                         "type": "tool_call",
                         "toolName": name,
@@ -3021,6 +3118,7 @@ class WorkflowEngine:
                             if diff is not None
                             else None
                         ),
+                        "checkpoint": checkpoint,
                     }
                     out.append(entry)
         elif role == "user":
@@ -3032,6 +3130,45 @@ class WorkflowEngine:
             if text:
                 out.append({"type": "user_message", "content": text, "attachments": []})
         return out
+
+    async def __checkpoint_detail(
+        self,
+        output: dict[str, object] | None,
+        checkpoint_states: dict[str, CheckpointState],
+    ) -> dict[str, object] | None:
+        """Reconstruct a persisted tool call's checkpoint dict for the history feed.
+
+        ``checkpoint_sha``/``checkpoint_root`` are the only checkpoint data
+        actually persisted in ``session.jsonl`` (injected at
+        :meth:`__finalize_tool_result`); ``parent``/``index``/``undone`` are
+        looked up from that root's :class:`CheckpointState` (cached in
+        *checkpoint_states*, populated at most once per root per
+        :meth:`history_entries` call). Fails open to ``None`` — same as when
+        there's no mirror at all — if the sha can't be found (e.g. an
+        externally deleted ``state.json``).
+        """
+        if output is None:
+            return None
+        sha = output.get("checkpoint_sha")
+        root = output.get("checkpoint_root")
+        if not isinstance(sha, str) or not sha or not isinstance(root, str) or not root:
+            return None
+        state = checkpoint_states.get(root)
+        if state is None:
+            state = await self.__root_mirrors.state_for(root)
+            checkpoint_states[root] = state
+        index = state.index_of(sha)
+        if index is None:
+            return None
+        entry = state.entries[index]
+        return {
+            "root": root,
+            "sha": sha,
+            "parent": entry.parent,
+            "index": index,
+            "undone": entry.undone,
+            "current_index": state.current_index,
+        }
 
     def __load_main_messages(self) -> list[Message]:
         # Honour the latest compaction marker: the live LLM context is the

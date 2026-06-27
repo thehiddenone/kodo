@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,6 +53,7 @@ class ShadowMirror:
     def __init__(self, work_tree: Path, git_dir: Path) -> None:
         self.__work_tree = work_tree.resolve()
         self.__git_dir = git_dir.resolve()
+        self.__branch: str | None = None
 
     @property
     def work_tree(self) -> Path:
@@ -170,27 +172,113 @@ class ShadowMirror:
             (self.__work_tree / rel).unlink(missing_ok=True)
         return await self.commit(f"undo {sha[:8]}")
 
-    async def rollback(self, sha: str) -> str:
-        """Restore the entire work tree to its state at *sha*, as a new commit.
+    async def redo(self, sha: str) -> str:
+        """Redo *sha*: restore the files it touched to their state at *sha* itself.
 
-        Tracked files are reset to *sha*; files created after *sha* are removed.
-        Recorded as a new commit on top of HEAD (append-only), so a later
-        rollback to a newer commit rolls forward.
+        The inverse of :meth:`undo` — re-applies the file contents *sha*
+        introduced (discarding any later edits to those same files). Other
+        files are left as they are. The result is recorded as a new commit
+        (append-only), so this is itself undoable (via another ``undo``).
 
         Args:
-            sha: The commit whose tree to restore.
+            sha: The commit to redo.
 
         Returns:
-            str: SHA of the new commit recording the rollback.
+            str: SHA of the new commit recording the redo.
         """
-        # Files present now but absent at sha (created later) must be deleted;
-        # compute before mutating the work tree.
-        added = await self.__git("diff", "--diff-filter=A", "--name-only", sha)
-        added_paths = [line for line in added.splitlines() if line]
-        await self.__git("checkout", sha, "--", ".")
-        for rel in added_paths:
+        paths = await self.paths_changed(sha)
+        if not paths:
+            return await self.head_sha()
+        # Restore each touched path to its state at sha. A path that does not
+        # exist at sha (sha deleted it) is removed from the work tree.
+        existed = set(await self.__tree_paths(sha))
+        to_restore = [p for p in paths if p in existed]
+        to_delete = [p for p in paths if p not in existed]
+        if to_restore:
+            await self.__git("checkout", sha, "--", *to_restore)
+        for rel in to_delete:
             (self.__work_tree / rel).unlink(missing_ok=True)
-        return await self.commit(f"rollback to {sha[:8]}")
+        return await self.commit(f"redo {sha[:8]}")
+
+    async def rollback(self, sha: str) -> str:
+        """Move the current branch to point at *sha*, never leaving a detached HEAD.
+
+        Used for both "rollback" (sha behind the tip) and "roll forward" (sha
+        ahead, or on a diverged branch) — the direction is purely a caller-side
+        bookkeeping concept; the git mechanics are identical and symmetric.
+
+        If the branch's current tip is not an ancestor reachable after the
+        move (i.e. it isn't *sha* itself), it is preserved by branching it off
+        under ``rollback_<unix-ts>`` *before* the reset, so it stays reachable
+        and is never garbage-collected as a dangling commit. We stay on the
+        same branch throughout — only ``git reset --hard`` moves where it
+        points — so this can never produce a detached HEAD.
+
+        Args:
+            sha: The commit the current branch should now point at.
+
+        Returns:
+            str: The new HEAD SHA (``sha`` itself; a no-op returns the
+            unchanged tip when *sha* is already the tip).
+        """
+        tip = await self.head_sha()
+        if sha == tip:
+            return tip
+        await self.__create_rollback_branch(tip)
+        await self.__git("reset", "--hard", sha)
+        return await self.head_sha()
+
+    async def __create_rollback_branch(self, tip: str) -> str:
+        """Create a uniquely-named ``rollback_<unix-ts>`` branch at *tip*.
+
+        Two rollbacks within the same wall-clock second would otherwise
+        collide on the same name; on an "already exists" error this retries
+        with a ``-2``, ``-3``, ... suffix rather than failing the rollback.
+        """
+        base = f"rollback_{int(time.time())}"
+        name = base
+        attempt = 1
+        while True:
+            try:
+                await self.create_branch(name, tip)
+                return name
+            except ShadowMirrorError as exc:
+                if "already exists" not in str(exc):
+                    raise
+                attempt += 1
+                name = f"{base}-{attempt}"
+
+    async def is_dirty(self) -> bool:
+        """Return ``True`` if the work tree has changes not yet committed here.
+
+        Catches both modified-tracked and untracked files. Used to detect
+        edits made to the work tree outside of Kodo (the mirror auto-commits
+        after every Kodo-driven mutation, so any leftover diff is external)
+        before an undo/redo/rollback would otherwise silently overwrite it.
+        """
+        out = await self.__git("status", "--porcelain")
+        return bool(out.strip())
+
+    async def stash_push(self) -> bool:
+        """Stash uncommitted/untracked changes; return ``False`` if nothing to stash."""
+        if not await self.is_dirty():
+            return False
+        await self.__git("stash", "push", "-u", "-m", "kodo: pre-checkpoint-op stash")
+        return True
+
+    async def stash_pop(self) -> None:
+        """Reapply and drop the most recently pushed stash."""
+        await self.__git("stash", "pop")
+
+    async def branch_name(self) -> str:
+        """The mirror's current branch name (cached after the first read)."""
+        if self.__branch is None:
+            self.__branch = (await self.__git("symbolic-ref", "--short", "HEAD")).strip()
+        return self.__branch
+
+    async def create_branch(self, name: str, sha: str) -> None:
+        """Create branch *name* pointing at *sha* (does not check it out)."""
+        await self.__git("branch", name, sha)
 
     async def log(self) -> list[CommitInfo]:
         """Return all commits newest-first."""

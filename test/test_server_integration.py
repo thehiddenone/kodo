@@ -331,3 +331,147 @@ async def test_orphan_response_is_silently_dropped(ws: aiohttp.ClientWebSocketRe
     await ws.send_str(ping.to_json())
     resp = await _recv_response(ws, ping.id)
     assert resp.payload["type"] == "pong"
+
+
+# ---------------------------------------------------------------------------
+# checkpoint.* — full wire protocol against a real RootMirrorManager-backed
+# root (no LLM/tool-dispatch involved: the checkpoint history is seeded
+# directly via RootMirrorManager, the same on-disk artifacts a real tool
+# call would produce — see test_checkpoint_state.py for the engine-level
+# coverage this builds on).
+# ---------------------------------------------------------------------------
+
+
+async def _recv_until_response(
+    ws: aiohttp.ClientWebSocketResponse, correlation_id: str, timeout: float = _RECV_TIMEOUT
+) -> tuple[Envelope, list[Envelope]]:
+    """Like _recv_response, but also returns every event seen along the way."""
+    events: list[Envelope] = []
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError(f"No response for id={correlation_id!r} within {timeout}s")
+        env = await _recv(ws, timeout=remaining)
+        if env.kind == "response" and env.correlation_id == correlation_id:
+            return env, events
+        if env.kind == "event":
+            events.append(env)
+
+
+async def _seed_two_checkpoints(root: Path) -> tuple[str, str]:
+    """Create a real two-checkpoint mirror history at *root* and return the shas."""
+    from kodo.runtime._checkpoints import RootMirrorManager
+
+    mgr = RootMirrorManager([root])
+    await mgr.prepare(root / "a.txt")
+    (root / "a.txt").write_text("one\n")
+    ref1 = await mgr.commit_for_path(root / "a.txt", "create a")
+    assert ref1 is not None
+    await mgr.prepare(root / "a.txt")
+    (root / "a.txt").write_text("two\n")
+    ref2 = await mgr.commit_for_path(root / "a.txt", "edit a")
+    assert ref2 is not None
+    return ref1.sha, ref2.sha
+
+
+async def test_checkpoint_list_returns_seeded_state(
+    ws: aiohttp.ClientWebSocketResponse, tmp_path: Path
+) -> None:
+    root = tmp_path / "proj"
+    root.mkdir()
+    sha1, sha2 = await _seed_two_checkpoints(root)
+    sid = await _open_session(ws)
+
+    req = _make_request("checkpoint.list", session_id=sid, root=str(root))
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+
+    assert resp.payload["type"] == "checkpoint.list.done"
+    assert resp.payload["current_index"] == 1
+    entries = resp.payload["entries"]
+    assert [e["sha"] for e in entries] == [sha1, sha2]
+    assert all(e["undone"] is False for e in entries)
+
+
+async def test_checkpoint_undo_flips_undone_and_pushes_state(
+    ws: aiohttp.ClientWebSocketResponse, tmp_path: Path
+) -> None:
+    root = tmp_path / "proj"
+    root.mkdir()
+    sha1, _sha2 = await _seed_two_checkpoints(root)
+    sid = await _open_session(ws)
+
+    req = _make_request("checkpoint.undo", session_id=sid, root=str(root), sha=sha1)
+    await ws.send_str(req.to_json())
+    resp, events = await _recv_until_response(ws, req.id)
+
+    assert resp.payload["type"] == "checkpoint.undo.done"
+    # entries grew by one (the undo itself is a new forward commit).
+    entries = resp.payload["entries"]
+    assert len(entries) == 3
+    assert entries[0]["sha"] == sha1
+    assert entries[0]["undone"] is True
+    assert resp.payload["current_index"] == 2
+    assert not (root / "a.txt").exists()
+
+    state_events = [e for e in events if e.payload.get("type") == "checkpoint.state"]
+    assert len(state_events) == 1
+    assert state_events[0].payload["root"] == str(root)
+    assert state_events[0].payload["current_index"] == 2
+
+
+async def test_checkpoint_rollback_then_roll_forward(
+    ws: aiohttp.ClientWebSocketResponse, tmp_path: Path
+) -> None:
+    root = tmp_path / "proj"
+    root.mkdir()
+    sha1, sha2 = await _seed_two_checkpoints(root)
+    sid = await _open_session(ws)
+
+    req = _make_request("checkpoint.rollback", session_id=sid, root=str(root), sha=sha1)
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+    assert resp.payload["type"] == "checkpoint.rollback.done"
+    assert resp.payload["current_index"] == 0
+    assert (root / "a.txt").read_text() == "one\n"
+
+    req = _make_request("checkpoint.roll_forward", session_id=sid, root=str(root), sha=sha2)
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+    assert resp.payload["type"] == "checkpoint.roll_forward.done"
+    assert resp.payload["current_index"] == 1
+    assert (root / "a.txt").read_text() == "two\n"
+
+
+async def test_checkpoint_undo_on_dirty_tree_needs_confirmation_then_stash(
+    ws: aiohttp.ClientWebSocketResponse, tmp_path: Path
+) -> None:
+    root = tmp_path / "proj"
+    root.mkdir()
+    sha1, _sha2 = await _seed_two_checkpoints(root)
+    sid = await _open_session(ws)
+
+    # An edit made outside of Kodo, never committed to the mirror.
+    (root / "untracked.txt").write_text("surprise\n")
+
+    req = _make_request("checkpoint.undo", session_id=sid, root=str(root), sha=sha1)
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+    assert resp.payload["type"] == "checkpoint.undo.needs_confirmation"
+    assert resp.payload["root"] == str(root)
+    assert resp.payload["sha"] == sha1
+    # Nothing was touched — the dirty file is still there untouched.
+    assert (root / "untracked.txt").read_text() == "surprise\n"
+    assert (root / "a.txt").read_text() == "two\n"
+
+    req = _make_request(
+        "checkpoint.undo", session_id=sid, root=str(root), sha=sha1, resolution="stash"
+    )
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+    assert resp.payload["type"] == "checkpoint.undo.done"
+    assert not (root / "a.txt").exists()
+    # Stashed change reapplied afterwards.
+    assert (root / "untracked.txt").read_text() == "surprise\n"
