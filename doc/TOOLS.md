@@ -163,12 +163,16 @@ import-time side effect, no name-string magic scattered around — adding a row 
 the entire wiring step.
 
 > A spec that has **no** row here (today only the `toolchain_build` /
-> `toolchain_test` / `toolchain_deps` placeholders) is "spec only": it can be
+> `toolchain_deps` placeholders) is "spec only": it can be
 > rendered into a prompt but is silently dropped from the LLM-facing tool list,
 > because `tools_for_agent` (§7) only returns specs present in
 > `DISPATCHABLE_TOOLS_BY_NAME`. (`post_update` *was* such a placeholder; it now
 > has a `PostUpdateTool` row and dispatches normally.) The table currently holds
-> **20** rows.
+> **21** rows. `filesystem` is one of them:
+> a single `FilesystemTool` dispatches all eight file/directory operations
+> (create/delete/copy/move × file/dir) on its `operation` field, replacing the
+> former per-operation `create_file`/`delete_file`/`copy_file`/`move_file` (and
+> `rewrite_file`) tools; `edit_file` stays a separate tool.
 
 ---
 

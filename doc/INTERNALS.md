@@ -228,11 +228,11 @@ All dispatchable specs now share one handler layer (`tools/`, §6A); the
 |---|---|---|
 | `publish_artifact`, `read_artifact` | `tools/` | ✅ implemented |
 | `escalate_blocker`, `ask_user`, `request_user_review_artifact`, `report_artifact_completed` | `tools/` | ✅ implemented |
-| `create_file`/`edit_file`/`rewrite_file`/`delete_file`/`copy_file`/`move_file`/`run_command` | `tools/` | ✅ implemented; granted to the `problem_solver` agent (the only frontmatter that declares them — no pipeline agent does). `edit_file` is a **targeted string-match edit** (`old_string` → `new_string`; must match exactly and uniquely or it fails without writing) and is the **preferred** way to change a file; `rewrite_file` (formerly `edit_file`) replaces the **whole** file content and is for end-to-end regeneration only. |
+| `filesystem`/`edit_file`/`run_command` | `tools/` | ✅ implemented; granted to the `problem_solver` agent (and `filesystem`/`edit_file` to `python_toolchain`). `filesystem` is **one tool** whose mandatory `operation` field selects among eight file/directory ops — `create_file`/`create_dir`/`delete_file`/`delete_dir`/`copy_file`/`copy_dir`/`move_file`/`move_dir` (dir ops are recursive: `copytree`/`rmtree`/`mkdir -p`; `copy_dir`/`move_dir` fail if the destination exists) — replacing the former per-operation `create_file`/`delete_file`/`copy_file`/`move_file` and `rewrite_file` tools. `edit_file` stays separate: a **targeted string-match edit** (`old_string` → `new_string`; must match exactly and uniquely or it fails without writing), the **preferred** way to change a file's contents; pass the whole new content as `new_string` to regenerate a file end to end. |
 | `get_root_paths`, `find_files`, `find_text_in_files` | `tools/` | ✅ implemented (workspace search). `get_root_paths` returns the mode-aware root list (bound project in Guided; every workspace folder in Problem Solver) from `ToolContext.root_paths`. `find_files`/`find_text_in_files` resolve `root` through the active resolver then shell out to the bundled `fd`/`rg` (§10a) via `ToolContext.util_paths`. Granted to `guide` + `problem_solver`. |
 | `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `rollback`, `finalize_project` | `tools/` | ✅ implemented |
 | `disable_autonomous_mode`, `post_update` | `tools/` | ✅ implemented (`DisableAutonomousModeTool`/`PostUpdateTool`, in `_TOOL_CLASSES`). Declared by `guide` (both) and `problem_solver` (`post_update`); resolved by `tools_for_agent` and dispatched. |
-| `toolchain_build`/`toolchain_test`/`toolchain_deps` | — | ⚠️ **spec only, no dispatch.** Declared by `coder`/`test_coder`/`problem_solver` frontmatter; rendered into prompts but silently dropped by `tools_for_agent` (no handler in `DISPATCHABLE_TOOLS_BY_NAME`). |
+| `toolchain_build`/`toolchain_deps` | — | ⚠️ **spec only, no dispatch.** Declared by `coder`/`problem_solver` frontmatter; rendered into prompts but silently dropped by `tools_for_agent` (no handler in `DISPATCHABLE_TOOLS_BY_NAME`). `toolchain_build` now **absorbs the former `toolchain_test`**: boolean step flags (`build`/`static_analysis`/`test`, default on; `format`, default off) select which `scripts/<step>` run in order — format → build → static_analysis → test — plus a `test_selector` passed through to the `test` script. Running tests = `toolchain_build` with `test: true` and the build/analysis steps disabled. |
 
 **State:** Catalog complete; several specs are intentional placeholders ahead of dispatch.
 
@@ -344,8 +344,9 @@ result, resetting it on rollback.
 > agent-generated scripts. The `python_toolchain` toolchain-setup agent (§11)
 > generates `scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}` +
 > `DEVELOPMENT.md` in the user's project. The planned follow-up is to rewrite
-> `toolchain_build`/`toolchain_test` (and `PythonPlugin.build/test`) to **invoke
-> those generated scripts**, and to add a separate dependency-management subagent
+> `toolchain_build` (which now also covers testing, via its step flags, having
+> absorbed the former `toolchain_test`; and `PythonPlugin.build/test`) to
+> **invoke those generated scripts**, and to add a separate dependency-management subagent
 > that executes the step-by-step dependency guides `DEVELOPMENT.md` carries
 > (replacing `toolchain_deps`'s plugin path). Both are out of scope for the first
 > toolchain-setup deliverable.
@@ -499,23 +500,23 @@ the amendment record.
 The **security preamble** carries the confidentiality / injection-resistance /
 role-fixing / tool-discipline / output-hygiene rules. The **performance
 preamble** carries execution-quality rules: Communication Style, Reasoning Is
-Silent, **Edit Discipline** (targeted, minimal edits; prefer `edit_file` over
-`rewrite_file`; no drive-by changes), Read Before You Write, Match Existing
-Conventions, Verify Don't Assume, and Stay In Scope.
+Silent, **Edit Discipline** (targeted, minimal edits; prefer a targeted
+`edit_file` over regenerating a whole file; no drive-by changes), Read Before You
+Write, Match Existing Conventions, Verify Don't Assume, and Stay In Scope.
 
 | Agent | Tools declared | Role |
 |---|---|---|
 | `guide` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode, post_update | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. `subagents:` allow-list includes the pipeline agents **+ `python_toolchain`**. |
-| `problem_solver` | create/edit/delete/move/copy_file, run_command, **toolchain_build/test/deps**, **run_subagent**, ask_user, post_update | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). Now declares `run_subagent` + `subagents: [python_toolchain]` — its first spawn capability, used only to delegate toolchain setup. **Embeds `{PLACEHOLDER:SUBAGENTS}` in a `## Subagents` section** — the live caller of the roster mechanism (renders `python_toolchain`'s row + purpose). |
-| `python_toolchain` | run_command, create/edit/rewrite_file, find_files, find_text_in_files, get_root_paths, ask_user, post_update | **Toolchain-setup** agent (`bases: [toolchain]`). Spawnable by both `guide` and `problem_solver`. Bootstraps/converts a project: generates the five per-platform build scripts (`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`) + a `DEVELOPMENT.md` (run guide + command-level dependency-management steps). Suggest-then-confirm invocation. |
+| `problem_solver` | filesystem, edit_file, run_command, **toolchain_build/deps**, **run_subagent**, ask_user, post_update | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). Now declares `run_subagent` + `subagents: [python_toolchain]` — its first spawn capability, used only to delegate toolchain setup. **Embeds `{PLACEHOLDER:SUBAGENTS}` in a `## Subagents` section** — the live caller of the roster mechanism (renders `python_toolchain`'s row + purpose). |
+| `python_toolchain` | run_command, filesystem, edit_file, find_files, find_text_in_files, get_root_paths, ask_user, post_update | **Toolchain-setup** agent (`bases: [toolchain]`). Spawnable by both `guide` and `problem_solver`. Bootstraps/converts a project: generates the five per-platform build scripts (`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`) + a `DEVELOPMENT.md` (run guide + command-level dependency-management steps). Suggest-then-confirm invocation. |
 | `narrative_author` | publish, read, **ask_user**, request_review, report_completed | Solo, user-facing intake. |
 | `architect`, `requirements_author`, `functional_designer`, `e2e_test_designer`, `test_designer` | publish, read, escalate_blocker | Authors (paired with a critic). |
 | `architect_critic`, `requirements_critic`, `functional_design_critic`, `e2e_test_design_critic`, `code_critic` | publish, read, request_review, report_completed | Critics (own the review gate). |
-| `coder` | publish, read, **toolchain_build/test/deps**, escalate_blocker | Implements code (toolchain tools not yet dispatchable). |
+| `coder` | publish, read, **toolchain_build/deps**, escalate_blocker | Implements code (toolchain tools not yet dispatchable). |
 | `test_coder` | publish, read, escalate_blocker, request_review, report_completed | Writes tests. |
 
-> ⚠️ **Frontmatter ↔ surface mismatch:** `coder`/`test_coder`/`problem_solver`
-> declare `toolchain_build/test/deps`, which have no handler in `tools/`, so
+> ⚠️ **Frontmatter ↔ surface mismatch:** `coder`/`problem_solver`
+> declare `toolchain_build/deps`, which have no handler in `tools/`, so
 > `tools_for_agent` drops them — described to the LLM yet not executable. This is
 > the remaining gap between "described to the LLM" and "executable."
 > (`guide`'s `disable_autonomous_mode`/`post_update` and `problem_solver`'s
@@ -747,7 +748,7 @@ guide session.
 | `llms` (Anthropic + llama.cpp, incl. merged local-inference utilities), `toolchains` plugins | ✅ Complete |
 | `toolspecs` catalog, `subagents` loader/registry, `tools` dispatch | ✅ Complete |
 | `runtime` engine / bootstrap / gates / rollback | ✅ Functional; lower branch coverage on restart/rollback |
-| Toolchain agent tools (`toolchain_build/test/deps`) | ⚠️ Spec only — no handler, dropped by `tools_for_agent` |
+| Toolchain agent tools (`toolchain_build/deps`) | ⚠️ Spec only — no handler, dropped by `tools_for_agent` |
 | `disable_autonomous_mode` / `post_update` | ✅ Implemented and dispatched (guide + problem_solver) |
 | Native file-IO / `run_command` tools | ✅ Implemented; granted to the `problem_solver` agent |
 | Two workflows (`guided` Guide / `problem_solving` Problem Solver) | ✅ Implemented; selected by `workflow.set` → `SessionState.workflow_mode` |

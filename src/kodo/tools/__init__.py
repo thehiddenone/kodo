@@ -27,19 +27,16 @@ from ._context import (
     SessionLike,
     ToolContext,
 )
-from ._copy_file import CopyFileTool
-from ._create_file import CreateFileTool
-from ._delete_file import DeleteFileTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
 from ._dispatch import DISPATCHABLE_TOOLS_BY_NAME, ToolDispatcher, tools_for_agent
 from ._edit_file import EditFileTool
 from ._escalate_blocker import EscalateBlockerTool
+from ._filesystem import FilesystemTool
 from ._finalize_project import FinalizeProjectTool
 from ._find_files import FindFilesTool
 from ._find_text_in_files import FindTextInFilesTool
 from ._get_root_paths import GetRootPathsTool
 from ._list_artifacts import ListArtifactsTool
-from ._move_file import MoveFileTool
 from ._paths import (
     LogicalPathResolver,
     PathResolver,
@@ -54,7 +51,6 @@ from ._read_artifact import ReadArtifactTool
 from ._report_artifact_completed import ReportArtifactCompletedTool
 from ._request_user_review_artifact import RequestUserReviewArtifactTool
 from ._return_result import ReturnResultTool
-from ._rewrite_file import RewriteFileTool
 from ._rollback import RollbackTool
 from ._run_author_critic_iteration import RunAuthorCriticIterationTool
 from ._run_command import RunCommandTool
@@ -66,12 +62,10 @@ __all__ = [
     "ApprovalLike",
     "AskUserTool",
     "EngineServices",
-    "CopyFileTool",
-    "CreateFileTool",
-    "DeleteFileTool",
     "DisableAutonomousModeTool",
     "EditFileTool",
     "EscalateBlockerTool",
+    "FilesystemTool",
     "FinalizeProjectTool",
     "FindFilesTool",
     "FindTextInFilesTool",
@@ -79,7 +73,6 @@ __all__ = [
     "GetRootPathsTool",
     "ListArtifactsTool",
     "LogicalPathResolver",
-    "MoveFileTool",
     "PathResolver",
     "PostUpdateTool",
     "ProjectPathResolver",
@@ -90,7 +83,6 @@ __all__ = [
     "ReportArtifactCompletedTool",
     "RequestUserReviewArtifactTool",
     "ReturnResultTool",
-    "RewriteFileTool",
     "RollbackTool",
     "RootPath",
     "RunAuthorCriticIterationTool",

@@ -18,18 +18,15 @@ from pathlib import Path
 
 from kodo.toolspecs import (
     ASK_USER,
-    COPY_FILE,
-    CREATE_FILE,
-    DELETE_FILE,
     DISABLE_AUTONOMOUS_MODE,
     EDIT_FILE,
     ESCALATE_BLOCKER,
+    FILESYSTEM,
     FINALIZE_PROJECT,
     FIND_FILES,
     FIND_TEXT_IN_FILES,
     GET_ROOT_PATHS,
     LIST_ARTIFACTS,
-    MOVE_FILE,
     POST_UPDATE,
     PUBLISH_ARTIFACT,
     QUERY_FRONTIER,
@@ -37,7 +34,6 @@ from kodo.toolspecs import (
     REPORT_ARTIFACT_COMPLETED,
     REQUEST_USER_REVIEW_ARTIFACT,
     RETURN_RESULT,
-    REWRITE_FILE,
     ROLLBACK,
     RUN_AUTHOR_CRITIC_ITERATION,
     RUN_COMMAND,
@@ -48,18 +44,15 @@ from kodo.workspace import ProjectIndex, Workspace
 
 from ._ask_user import AskUserTool
 from ._context import EngineServices, GateLike, RootPath, SessionLike, ToolContext
-from ._copy_file import CopyFileTool
-from ._create_file import CreateFileTool
-from ._delete_file import DeleteFileTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
 from ._edit_file import EditFileTool
 from ._escalate_blocker import EscalateBlockerTool
+from ._filesystem import FilesystemTool
 from ._finalize_project import FinalizeProjectTool
 from ._find_files import FindFilesTool
 from ._find_text_in_files import FindTextInFilesTool
 from ._get_root_paths import GetRootPathsTool
 from ._list_artifacts import ListArtifactsTool
-from ._move_file import MoveFileTool
 from ._paths import PathResolver
 from ._post_update import PostUpdateTool
 from ._publish_artifact import PublishArtifactTool
@@ -68,7 +61,6 @@ from ._read_artifact import ReadArtifactTool
 from ._report_artifact_completed import ReportArtifactCompletedTool
 from ._request_user_review_artifact import RequestUserReviewArtifactTool
 from ._return_result import ReturnResultTool
-from ._rewrite_file import RewriteFileTool
 from ._rollback import RollbackTool
 from ._run_author_critic_iteration import RunAuthorCriticIterationTool
 from ._run_command import RunCommandTool
@@ -88,12 +80,8 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (ASK_USER, AskUserTool),
     (REQUEST_USER_REVIEW_ARTIFACT, RequestUserReviewArtifactTool),
     (REPORT_ARTIFACT_COMPLETED, ReportArtifactCompletedTool),
-    (CREATE_FILE, CreateFileTool),
+    (FILESYSTEM, FilesystemTool),
     (EDIT_FILE, EditFileTool),
-    (REWRITE_FILE, RewriteFileTool),
-    (DELETE_FILE, DeleteFileTool),
-    (COPY_FILE, CopyFileTool),
-    (MOVE_FILE, MoveFileTool),
     (RUN_COMMAND, RunCommandTool),
     (GET_ROOT_PATHS, GetRootPathsTool),
     (FIND_FILES, FindFilesTool),

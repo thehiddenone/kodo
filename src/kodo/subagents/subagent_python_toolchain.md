@@ -8,9 +8,8 @@ bases:
   - toolchain
 tools:
   - run_command
-  - create_file
+  - filesystem
   - edit_file
-  - rewrite_file
   - find_files
   - find_text_in_files
   - get_root_paths

@@ -293,19 +293,19 @@ def test_registry_renders_tools_section_for_agent_tools(tmp_path: Path) -> None:
     _write_agent(
         tmp_path,
         "agent_a",
-        "name: agent_a\ntools:\n  - create_file\n  - read_artifact\n",
+        "name: agent_a\ntools:\n  - filesystem\n  - read_artifact\n",
         "Prompt A.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
     )
     registry = AgentRegistry(tmp_path)
     prompt = registry.get("agent_a").system_prompt
     assert "{PLACEHOLDER:TOOLS}" not in prompt
-    assert "### Create File (`create_file`)" in prompt
+    assert "### Filesystem (`filesystem`)" in prompt
     assert "### Read Artifact (`read_artifact`)" in prompt
     assert "- **When to use:**" in prompt
     assert "- **External name:**" not in prompt
     assert "- **Description:**" not in prompt
     # Tools are rendered in a stable, sorted order.
-    assert prompt.index("Create File") < prompt.index("Read Artifact")
+    assert prompt.index("Filesystem") < prompt.index("Read Artifact")
 
 
 def test_registry_renders_empty_tools_section_for_agent_with_no_tools(tmp_path: Path) -> None:

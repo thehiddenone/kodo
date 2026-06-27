@@ -85,8 +85,9 @@ Script rules:
 - Scripts are **idempotent and re-runnable** — running them twice is safe.
 - Scripts run from the project root regardless of the caller's working directory
   (resolve paths relative to the script location).
-- Use `create_file` to write the scripts under `scripts/`; on POSIX, make the
-  `.sh` files executable (`chmod +x` via `run_command`).
+- Use the `filesystem` tool (`operation: "create_file"`) to write the scripts
+  under `scripts/`; on POSIX, make the `.sh` files executable (`chmod +x` via
+  `run_command`).
 
 ## DEVELOPMENT.md
 
@@ -138,8 +139,9 @@ reason you can fix.
 
 When you are re-invoked to change an existing toolchain setup, treat it as a
 targeted edit, not a regeneration: read the current scripts and `DEVELOPMENT.md`,
-make the requested change with `edit_file` (or `rewrite_file` only when
-regenerating a file whole), re-verify by running the affected scripts, and update
+make the requested change with `edit_file` (passing the whole new content as
+`new_string` only when regenerating a file whole), re-verify by running the
+affected scripts, and update
 `DEVELOPMENT.md` to match. Do not silently drop capabilities the previous setup
 had.
 

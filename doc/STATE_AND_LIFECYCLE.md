@@ -260,7 +260,7 @@ Every tool call carries a `request_id` (UUID) assigned by the engine before disp
 
 On resume, if the last logged message contains a tool call whose `request_id` has no matching result:
 
-- For **idempotent tools** (`read_artifact`, `toolchain_build`, `toolchain_test`, `query_frontier`, `list_artifacts`, and `ask_user`/`request_user_review_artifact` when no user reply was received): the engine re-runs the tool unconditionally and logs the result.
+- For **idempotent tools** (`read_artifact`, `toolchain_build`, `query_frontier`, `list_artifacts`, and `ask_user`/`request_user_review_artifact` when no user reply was received): the engine re-runs the tool unconditionally and logs the result.
 - For **effectful tools** (`publish_artifact`, `toolchain_deps`, `escalate_blocker`, `report_artifact_completed`): the engine consults the receiving subsystem's request-ID ledger. The workspace records the `request_id` of every successful `publish_artifact` call before returning; on re-execution it detects the duplicate and returns the prior result. `toolchain_deps` and `escalate_blocker` carry the same pattern — the receiver dedupes, never the caller. `report_artifact_completed` is idempotent at the receiver: a re-run finds the entry already `completed` (the staging file already moved out) and returns without re-promoting.
 
 This makes "always re-run, dedupe by request ID" the universal resume policy. The engine does not branch on tool identity; it re-runs, and the receiver decides whether the side effect has already occurred.

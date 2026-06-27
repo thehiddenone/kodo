@@ -6,7 +6,8 @@ would escape it.
 
 This is the **preferred** way to change an existing file: it replaces one exact,
 unique snippet (``old_string``) with ``new_string`` and leaves the rest of the
-file byte-for-byte untouched. The whole-file counterpart is ``rewrite_file``.
+file byte-for-byte untouched. To create, delete, copy, or move whole files or
+directories, use the ``filesystem`` tool instead.
 """
 
 from __future__ import annotations
@@ -34,8 +35,10 @@ EDIT_FILE: ToolSpec = ToolSpec(
         "Read the file first so your `old_string` reflects the current content; "
         "after an edit, earlier line positions and surrounding text may have "
         "shifted.\n"
-        "- Fails if the file does not exist — use `create_file` to create one. "
-        "To regenerate an entire file, use `rewrite_file` instead.\n"
+        "- To regenerate an entire file end to end, pass its whole new content "
+        "as `new_string` and its whole current content as `old_string`.\n"
+        "- Fails if the file does not exist — use the `filesystem` tool "
+        '(`operation: "create_file"`) to create one.\n'
         "The path must resolve inside the project root."
     ),
     input_schema={
@@ -80,7 +83,7 @@ EDIT_FILE: ToolSpec = ToolSpec(
     when_to_use=(
         "Making a localized change to an existing file — the default, preferred "
         "way to edit. Replaces just the snippet you target and preserves "
-        "everything else, keeping the diff minimal. Use `rewrite_file` only to "
-        "regenerate a whole file.",
+        "everything else, keeping the diff minimal. To create, delete, copy, or "
+        "move whole files or directories, use the `filesystem` tool.",
     ),
 )

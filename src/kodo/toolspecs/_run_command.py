@@ -77,7 +77,7 @@ RUN_COMMAND: ToolSpec = ToolSpec(
     output_visibility={"exit_code": "always", "stdout": "visible", "stderr": "visible"},
     when_to_use=(
         "Running a command the toolchain tools "
-        "(`toolchain_build`/`toolchain_test`/`toolchain_deps`) don't cover "
+        "(`toolchain_build`/`toolchain_deps`) don't cover "
         "— e.g., a one-off CLI invocation needed to scaffold or inspect the "
         "project.",
     ),

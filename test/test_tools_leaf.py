@@ -161,12 +161,8 @@ def test_dispatchable_catalog_includes_workspace_and_report_tools() -> None:
 
 def test_dispatchable_catalog_includes_fileio_and_shell_tools() -> None:
     for name in (
-        "create_file",
+        "filesystem",
         "edit_file",
-        "rewrite_file",
-        "delete_file",
-        "copy_file",
-        "move_file",
         "run_command",
     ):
         assert name in DISPATCHABLE_TOOLS_BY_NAME
@@ -356,9 +352,12 @@ async def test_request_user_review_artifact_autonomous_auto_accepts(tmp_path: Pa
 async def test_create_file_writes_new_file(tmp_path: Path) -> None:
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
-        await dispatcher.dispatch("create_file", {"path": "out.txt", "content": "hello"})
+        await dispatcher.dispatch(
+            "filesystem", {"operation": "create_file", "path": "out.txt", "content": "hello"}
+        )
     )
     assert result["status"] == "created"
+    assert result["operation"] == "create_file"
     assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "hello"
 
 
@@ -367,10 +366,19 @@ async def test_create_file_fails_if_already_exists(tmp_path: Path) -> None:
     (tmp_path / "out.txt").write_text("existing", encoding="utf-8")
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
-        await dispatcher.dispatch("create_file", {"path": "out.txt", "content": "hello"})
+        await dispatcher.dispatch(
+            "filesystem", {"operation": "create_file", "path": "out.txt", "content": "hello"}
+        )
     )
     assert "error" in result
     assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "existing"
+
+
+@pytest.mark.asyncio
+async def test_filesystem_unknown_operation_errors(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(await dispatcher.dispatch("filesystem", {"operation": "frobnicate"}))
+    assert "error" in result
 
 
 @pytest.mark.asyncio
@@ -430,32 +438,25 @@ async def test_edit_file_fails_if_missing(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_rewrite_file_replaces_whole_content(tmp_path: Path) -> None:
-    (tmp_path / "out.txt").write_text("old", encoding="utf-8")
-    dispatcher = _make_dispatcher(tmp_path)
-    result = json.loads(
-        await dispatcher.dispatch("rewrite_file", {"path": "out.txt", "content": "new"})
-    )
-    assert result["status"] == "rewritten"
-    assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "new"
-
-
-@pytest.mark.asyncio
-async def test_rewrite_file_fails_if_missing(tmp_path: Path) -> None:
-    dispatcher = _make_dispatcher(tmp_path)
-    result = json.loads(
-        await dispatcher.dispatch("rewrite_file", {"path": "missing.txt", "content": "new"})
-    )
-    assert "error" in result
-
-
-@pytest.mark.asyncio
 async def test_delete_file_removes_file(tmp_path: Path) -> None:
     (tmp_path / "out.txt").write_text("content", encoding="utf-8")
     dispatcher = _make_dispatcher(tmp_path)
-    result = json.loads(await dispatcher.dispatch("delete_file", {"path": "out.txt"}))
+    result = json.loads(
+        await dispatcher.dispatch("filesystem", {"operation": "delete_file", "path": "out.txt"})
+    )
     assert result["status"] == "deleted"
     assert not (tmp_path / "out.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_file_rejects_directory(tmp_path: Path) -> None:
+    (tmp_path / "dir").mkdir()
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("filesystem", {"operation": "delete_file", "path": "dir"})
+    )
+    assert "error" in result
+    assert (tmp_path / "dir").is_dir()
 
 
 @pytest.mark.asyncio
@@ -463,7 +464,10 @@ async def test_copy_file_copies_content(tmp_path: Path) -> None:
     (tmp_path / "src.txt").write_text("content", encoding="utf-8")
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
-        await dispatcher.dispatch("copy_file", {"source": "src.txt", "destination": "dst.txt"})
+        await dispatcher.dispatch(
+            "filesystem",
+            {"operation": "copy_file", "source": "src.txt", "destination": "dst.txt"},
+        )
     )
     assert result["status"] == "copied"
     assert (tmp_path / "src.txt").read_text(encoding="utf-8") == "content"
@@ -475,18 +479,104 @@ async def test_move_file_renames_file(tmp_path: Path) -> None:
     (tmp_path / "src.txt").write_text("content", encoding="utf-8")
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
-        await dispatcher.dispatch("move_file", {"source": "src.txt", "destination": "dst.txt"})
+        await dispatcher.dispatch(
+            "filesystem",
+            {"operation": "move_file", "source": "src.txt", "destination": "dst.txt"},
+        )
     )
     assert result["status"] == "moved"
     assert not (tmp_path / "src.txt").exists()
     assert (tmp_path / "dst.txt").read_text(encoding="utf-8") == "content"
 
 
+# ---------------------------------------------------------------------------
+# Native directory operations (filesystem tool)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_dir_makes_parents(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("filesystem", {"operation": "create_dir", "path": "a/b/c"})
+    )
+    assert result["status"] == "created"
+    assert (tmp_path / "a" / "b" / "c").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_delete_dir_removes_tree(tmp_path: Path) -> None:
+    (tmp_path / "d" / "sub").mkdir(parents=True)
+    (tmp_path / "d" / "sub" / "f.txt").write_text("x", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("filesystem", {"operation": "delete_dir", "path": "d"})
+    )
+    assert result["status"] == "deleted"
+    assert not (tmp_path / "d").exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_dir_rejects_file(tmp_path: Path) -> None:
+    (tmp_path / "f.txt").write_text("x", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("filesystem", {"operation": "delete_dir", "path": "f.txt"})
+    )
+    assert "error" in result
+    assert (tmp_path / "f.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_copy_dir_copies_tree(tmp_path: Path) -> None:
+    (tmp_path / "src" / "sub").mkdir(parents=True)
+    (tmp_path / "src" / "sub" / "f.txt").write_text("x", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch(
+            "filesystem", {"operation": "copy_dir", "source": "src", "destination": "dst"}
+        )
+    )
+    assert result["status"] == "copied"
+    assert (tmp_path / "dst" / "sub" / "f.txt").read_text(encoding="utf-8") == "x"
+    assert (tmp_path / "src" / "sub" / "f.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_copy_dir_fails_if_destination_exists(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "dst").mkdir()
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch(
+            "filesystem", {"operation": "copy_dir", "source": "src", "destination": "dst"}
+        )
+    )
+    assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_move_dir_relocates_tree(tmp_path: Path) -> None:
+    (tmp_path / "src" / "sub").mkdir(parents=True)
+    (tmp_path / "src" / "sub" / "f.txt").write_text("x", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch(
+            "filesystem", {"operation": "move_dir", "source": "src", "destination": "dst"}
+        )
+    )
+    assert result["status"] == "moved"
+    assert not (tmp_path / "src").exists()
+    assert (tmp_path / "dst" / "sub" / "f.txt").read_text(encoding="utf-8") == "x"
+
+
 @pytest.mark.asyncio
 async def test_fileio_rejects_path_outside_project_root(tmp_path: Path) -> None:
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
-        await dispatcher.dispatch("create_file", {"path": "../escape.txt", "content": "nope"})
+        await dispatcher.dispatch(
+            "filesystem", {"operation": "create_file", "path": "../escape.txt", "content": "nope"}
+        )
     )
     assert "error" in result
     assert not (tmp_path.parent / "escape.txt").exists()

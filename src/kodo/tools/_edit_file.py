@@ -3,8 +3,9 @@
 Replaces one exact, unique occurrence of ``old_string`` with ``new_string`` and
 leaves the rest of the file byte-for-byte untouched. The match must be unique:
 zero matches (not found) and more-than-one match (ambiguous) both fail loudly
-without writing anything, so the model cannot silently edit the wrong place. The
-whole-file counterpart is :class:`~kodo.tools._rewrite_file.RewriteFileTool`.
+without writing anything, so the model cannot silently edit the wrong place.
+Creating, deleting, copying, or moving whole files/directories lives in the
+separate ``filesystem`` tool (:class:`~kodo.tools._filesystem.FilesystemTool`).
 """
 
 from __future__ import annotations

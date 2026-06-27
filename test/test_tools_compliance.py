@@ -214,22 +214,49 @@ def test_visibility_keys_reference_declared_properties() -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _assert_fs(d: ToolDispatcher, payload: dict[str, object]) -> None:
+    """Dispatch one ``filesystem`` operation and assert the result is compliant."""
+    _assert_compliant("filesystem", await _dispatch(d, "filesystem", payload))
+
+
 @pytest.mark.asyncio
-async def test_create_file_compliance(tmp_path: Path) -> None:
+async def test_filesystem_file_ops_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path)
-    _assert_compliant(
-        "create_file", await _dispatch(d, "create_file", {"path": "a.txt", "content": "x"})
+    # create_file: success + already-exists error.
+    await _assert_fs(d, {"operation": "create_file", "path": "a.txt", "content": "x"})
+    err = await _dispatch(
+        d, "filesystem", {"operation": "create_file", "path": "a.txt", "content": "y"}
     )
-    # Error: file already exists.
-    err = await _dispatch(d, "create_file", {"path": "a.txt", "content": "y"})
     assert isinstance(err, dict) and "error" in err
-    _assert_compliant("create_file", err)
+    _assert_compliant("filesystem", err)
+    # copy_file / move_file: success + missing-source error.
+    await _assert_fs(d, {"operation": "copy_file", "source": "a.txt", "destination": "b.txt"})
+    await _assert_fs(d, {"operation": "copy_file", "source": "no.txt", "destination": "c.txt"})
+    await _assert_fs(d, {"operation": "move_file", "source": "b.txt", "destination": "d.txt"})
+    await _assert_fs(d, {"operation": "move_file", "source": "no.txt", "destination": "e.txt"})
+    # delete_file: success + already-gone error.
+    await _assert_fs(d, {"operation": "delete_file", "path": "a.txt"})
+    await _assert_fs(d, {"operation": "delete_file", "path": "a.txt"})
+    # Unknown operation → error envelope.
+    await _assert_fs(d, {"operation": "nope"})
+
+
+@pytest.mark.asyncio
+async def test_filesystem_dir_ops_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path)
+    await _assert_fs(d, {"operation": "create_dir", "path": "src"})
+    await _assert_fs(d, {"operation": "copy_dir", "source": "src", "destination": "dst"})
+    # copy_dir onto an existing destination → error.
+    await _assert_fs(d, {"operation": "copy_dir", "source": "src", "destination": "dst"})
+    await _assert_fs(d, {"operation": "move_dir", "source": "dst", "destination": "moved"})
+    await _assert_fs(d, {"operation": "delete_dir", "path": "src"})
+    await _assert_fs(d, {"operation": "delete_dir", "path": "src"})
 
 
 @pytest.mark.asyncio
 async def test_edit_file_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path)
-    await _dispatch(d, "create_file", {"path": "a.txt", "content": "x"})
+    await _dispatch(d, "filesystem", {"operation": "create_file", "path": "a.txt", "content": "x"})
     _assert_compliant(
         "edit_file",
         await _dispatch(d, "edit_file", {"path": "a.txt", "old_string": "x", "new_string": "z"}),
@@ -239,45 +266,6 @@ async def test_edit_file_compliance(tmp_path: Path) -> None:
         await _dispatch(
             d, "edit_file", {"path": "missing.txt", "old_string": "x", "new_string": "z"}
         ),
-    )
-
-
-@pytest.mark.asyncio
-async def test_rewrite_file_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path)
-    await _dispatch(d, "create_file", {"path": "a.txt", "content": "x"})
-    _assert_compliant(
-        "rewrite_file", await _dispatch(d, "rewrite_file", {"path": "a.txt", "content": "z"})
-    )
-    _assert_compliant(
-        "rewrite_file",
-        await _dispatch(d, "rewrite_file", {"path": "missing.txt", "content": "z"}),
-    )
-
-
-@pytest.mark.asyncio
-async def test_delete_file_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path)
-    await _dispatch(d, "create_file", {"path": "a.txt", "content": "x"})
-    _assert_compliant("delete_file", await _dispatch(d, "delete_file", {"path": "a.txt"}))
-    _assert_compliant("delete_file", await _dispatch(d, "delete_file", {"path": "a.txt"}))
-
-
-@pytest.mark.asyncio
-async def test_copy_and_move_file_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path)
-    await _dispatch(d, "create_file", {"path": "a.txt", "content": "x"})
-    _assert_compliant(
-        "copy_file", await _dispatch(d, "copy_file", {"source": "a.txt", "destination": "b.txt"})
-    )
-    _assert_compliant(
-        "copy_file", await _dispatch(d, "copy_file", {"source": "no.txt", "destination": "c.txt"})
-    )
-    _assert_compliant(
-        "move_file", await _dispatch(d, "move_file", {"source": "b.txt", "destination": "d.txt"})
-    )
-    _assert_compliant(
-        "move_file", await _dispatch(d, "move_file", {"source": "no.txt", "destination": "e.txt"})
     )
 
 
@@ -554,12 +542,8 @@ async def test_post_update_compliance(tmp_path: Path) -> None:
 def test_all_dispatchable_tools_are_covered() -> None:
     """Fail if a new dispatchable tool is added without a compliance scenario."""
     covered = {
-        "create_file",
+        "filesystem",
         "edit_file",
-        "rewrite_file",
-        "delete_file",
-        "copy_file",
-        "move_file",
         "run_command",
         "get_root_paths",
         "find_files",

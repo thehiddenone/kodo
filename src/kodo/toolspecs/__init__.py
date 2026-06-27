@@ -3,7 +3,7 @@
 This package contains **only** :class:`ToolSpec` (the dataclass) and
 ``ToolSpec`` catalog entries — one module per tool, named ``_<tool_name>.py``,
 each exporting a single module-level ``ToolSpec`` constant (e.g.
-``_create_file.py`` exports ``CREATE_FILE``). When adding a new tool, add a
+``_filesystem.py`` exports ``FILESYSTEM``). When adding a new tool, add a
 new ``_<tool_name>.py`` module here rather than extending an existing one.
 
 No dispatch or implementation logic lives here. Every tool's dispatch lives in
@@ -20,18 +20,15 @@ from ._compliance import (
     normalize_output,
     tool_result_succeeded,
 )
-from ._copy_file import COPY_FILE
-from ._create_file import CREATE_FILE
-from ._delete_file import DELETE_FILE
 from ._disable_autonomous_mode import DISABLE_AUTONOMOUS_MODE
 from ._edit_file import EDIT_FILE
 from ._escalate_blocker import ESCALATE_BLOCKER
+from ._filesystem import FILESYSTEM
 from ._finalize_project import FINALIZE_PROJECT
 from ._find_files import FIND_FILES
 from ._find_text_in_files import FIND_TEXT_IN_FILES
 from ._get_root_paths import GET_ROOT_PATHS
 from ._list_artifacts import LIST_ARTIFACTS
-from ._move_file import MOVE_FILE
 from ._post_update import POST_UPDATE
 from ._publish_artifact import PUBLISH_ARTIFACT
 from ._query_frontier import QUERY_FRONTIER
@@ -39,7 +36,6 @@ from ._read_artifact import READ_ARTIFACT
 from ._report_artifact_completed import REPORT_ARTIFACT_COMPLETED
 from ._request_user_review_artifact import REQUEST_USER_REVIEW_ARTIFACT
 from ._return_result import RETURN_RESULT
-from ._rewrite_file import REWRITE_FILE
 from ._rollback import ROLLBACK
 from ._run_author_critic_iteration import RUN_AUTHOR_CRITIC_ITERATION
 from ._run_command import RUN_COMMAND
@@ -55,24 +51,20 @@ from ._spec import (
 )
 from ._toolchain_build import TOOLCHAIN_BUILD
 from ._toolchain_deps import TOOLCHAIN_DEPS
-from ._toolchain_test import TOOLCHAIN_TEST
 from ._visibility import build_detail_rows, stringify_value
 
 __all__ = [
     "ALL_TOOLS",
     "ASK_USER",
-    "COPY_FILE",
-    "CREATE_FILE",
-    "DELETE_FILE",
     "DISABLE_AUTONOMOUS_MODE",
     "EDIT_FILE",
     "ESCALATE_BLOCKER",
+    "FILESYSTEM",
     "FINALIZE_PROJECT",
     "FIND_FILES",
     "FIND_TEXT_IN_FILES",
     "GET_ROOT_PATHS",
     "LIST_ARTIFACTS",
-    "MOVE_FILE",
     "OUTPUT_VISIBILITY_DEFAULT",
     "POST_UPDATE",
     "PUBLISH_ARTIFACT",
@@ -81,7 +73,6 @@ __all__ = [
     "REPORT_ARTIFACT_COMPLETED",
     "REQUEST_USER_REVIEW_ARTIFACT",
     "RETURN_RESULT",
-    "REWRITE_FILE",
     "ROLLBACK",
     "RUN_AUTHOR_CRITIC_ITERATION",
     "RUN_COMMAND",
@@ -89,7 +80,6 @@ __all__ = [
     "SCHEMA_COMPLIANCE_KEY",
     "TOOLCHAIN_BUILD",
     "TOOLCHAIN_DEPS",
-    "TOOLCHAIN_TEST",
     "VISIBILITY_ALWAYS",
     "VISIBILITY_HIDDEN",
     "VISIBILITY_VALUES",
@@ -107,18 +97,15 @@ __all__ = [
 # the `## Tools` section of each agent prompt.
 ALL_TOOLS: tuple[ToolSpec, ...] = (
     ASK_USER,
-    COPY_FILE,
-    CREATE_FILE,
-    DELETE_FILE,
     DISABLE_AUTONOMOUS_MODE,
     EDIT_FILE,
     ESCALATE_BLOCKER,
+    FILESYSTEM,
     FINALIZE_PROJECT,
     GET_ROOT_PATHS,
     FIND_FILES,
     FIND_TEXT_IN_FILES,
     LIST_ARTIFACTS,
-    MOVE_FILE,
     POST_UPDATE,
     PUBLISH_ARTIFACT,
     QUERY_FRONTIER,
@@ -126,12 +113,10 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     REPORT_ARTIFACT_COMPLETED,
     REQUEST_USER_REVIEW_ARTIFACT,
     RETURN_RESULT,
-    REWRITE_FILE,
     ROLLBACK,
     RUN_AUTHOR_CRITIC_ITERATION,
     RUN_COMMAND,
     RUN_SUBAGENT,
     TOOLCHAIN_BUILD,
     TOOLCHAIN_DEPS,
-    TOOLCHAIN_TEST,
 )
