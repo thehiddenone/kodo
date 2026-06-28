@@ -253,7 +253,7 @@ All dispatchable specs now share one handler layer (`tools/`, §6A); the
 | `filesystem`/`edit_file`/`run_command` | `tools/` | ✅ implemented; granted to the `problem_solver` agent (and `filesystem`/`edit_file` to `python_toolchain`). `filesystem` is **one tool** whose mandatory `operation` field selects among eight file/directory ops — `create_file`/`create_dir`/`delete_file`/`delete_dir`/`copy_file`/`copy_dir`/`move_file`/`move_dir` (dir ops are recursive: `copytree`/`rmtree`/`mkdir -p`; `copy_dir`/`move_dir` fail if the destination exists) — replacing the former per-operation `create_file`/`delete_file`/`copy_file`/`move_file` and `rewrite_file` tools. `edit_file` stays separate: a **targeted string-match edit** (`old_string` → `new_string`; must match exactly and uniquely or it fails without writing), the **preferred** way to change a file's contents; pass the whole new content as `new_string` to regenerate a file end to end. These three are exactly `runtime/_checkpoints.py:_MUTATING_TOOLS` — the engine checkpoints around every call to them in Problem Solver mode (§10b/§12.1) and each one's `output_schema` carries an **optional `checkpoint_sha`** field the engine fills in when a commit happened. |
 | `get_root_paths`, `find_files`, `find_text_in_files` | `tools/` | ✅ implemented (workspace search). `get_root_paths` returns the mode-aware root list (bound project in Guided; every workspace folder in Problem Solver) from `ToolContext.root_paths`. `find_files`/`find_text_in_files` resolve `root` through the active resolver then shell out to the bundled `fd`/`rg` (§10a) via `ToolContext.util_paths`. Granted to `guide` + `problem_solver`. |
 | `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `rollback`, `finalize_project` | `tools/` | ✅ implemented |
-| `disable_autonomous_mode`, `post_update` | `tools/` | ✅ implemented (`DisableAutonomousModeTool`/`PostUpdateTool`, in `_TOOL_CLASSES`). Declared by `guide` (both) and `problem_solver` (`post_update`); resolved by `tools_for_agent` and dispatched. |
+| `disable_autonomous_mode` | `tools/` | ✅ implemented (`DisableAutonomousModeTool`, in `_TOOL_CLASSES`). Declared by `guide`; resolved by `tools_for_agent` and dispatched. (Progress reporting is no longer a tool — agents emit `<kodo_info>` callouts in their message text; see the performance preamble.) |
 | `toolchain_build`/`toolchain_deps` | — | ⚠️ **spec only, no dispatch.** Declared by `coder`/`problem_solver` frontmatter; rendered into prompts but silently dropped by `tools_for_agent` (no handler in `DISPATCHABLE_TOOLS_BY_NAME`). `toolchain_build` now **absorbs the former `toolchain_test`**: boolean step flags (`build`/`static_analysis`/`test`, default on; `format`, default off) select which `scripts/<step>` run in order — format → build → static_analysis → test — plus a `test_selector` passed through to the `test` script. Running tests = `toolchain_build` with `test: true` and the build/analysis steps disabled. |
 
 **State:** Catalog complete; several specs are intentional placeholders ahead of dispatch.
@@ -288,7 +288,7 @@ to the run's context). This replaced the former
 `__make_dispatcher`, injecting `GateOrchestrator`, `SessionState`, and one
 `_EngineServices` adapter (wrapping the engine's `__run_subagent` /
 `__run_author_critic_iteration` / `__run_rollback` / `__complete_artifact` /
-`__disable_autonomous` / `__post_update`). The dispatcher takes **no**
+`__disable_autonomous`). The dispatcher takes **no**
 `autonomous` flag — tools read `SessionState.effective_autonomous`, which the
 worker freezes once per prompt, so a mid-prompt mode toggle never rebuilds the
 dispatcher or splits the prompt's mode. Autonomous filtering of `ask_user`
@@ -383,11 +383,12 @@ result, resetting it on rollback.
 | [_registry.py](../src/kodo/llms/_registry.py) | `LLMEntry` (frozen), `get_llm_registry()` | Static catalog of cloud (Claude Opus/Sonnet/Haiku) + local (llama.cpp Qwen/Gemma GGUF) models. Maps name → plugin module + model/repo IDs. |
 | [_logger.py](../src/kodo/llms/_logger.py) | `LoggingLLMPlugin(LLMPlugin)` | **Decorator** wrapping any `LLMPlugin`; writes `NNNN_request.json`/`NNNN_response.json`. Process-wide counter. |
 | [_tool_logger.py](../src/kodo/llms/_tool_logger.py) | `ToolCallLogger` | Writes per-tool invocation/result JSON; turn counter. Used by the engine, not a plugin. |
+| [_sanitize.py](../src/kodo/llms/_sanitize.py) | `strip_kodo_callouts` | Regex-strips `<kodo_info>`/`<kodo_warn>`/`<kodo_crit>`/`<kodo>` callout tags (incl. their content) from assistant text. These tags are a one-way notification to the human user (§ performance preamble), so their content is never replayed back into the model's own context. Called only by the wire-format builders below and by `_engine.py`'s `__render_transcript` (compaction input) — never by anything that persists or renders history, so `session.jsonl`/the WebView still see the tags verbatim. |
 | [anthropic/_claude.py](../src/kodo/llms/anthropic/_claude.py) | `ClaudePlugin(LLMPlugin)`, `UnrecoverableError` | **Subclasses** ABC. Uses `anthropic.AsyncAnthropic`; composes `_cache` (breakpoints) + `_retry` (`with_retry_iter`). Enables extended thinking on every call (`thinking={"type": "enabled", "budget_tokens": 4096}`); yields `ThinkingDelta` from the SDK's raw thinking delta and `ThinkingSignature` from its `signature_delta`. Cancellation via per-`stream_id` `asyncio.Event`. |
-| [anthropic/_cache.py](../src/kodo/llms/anthropic/_cache.py) | `build_system_blocks`, `build_message_params`, `_drop_unsigned_thinking` | Prompt-cache breakpoint construction. `_drop_unsigned_thinking` strips any persisted `"thinking"` block lacking a `signature` (e.g. one originated by llama.cpp in a mixed-provider session) before it reaches Claude, which rejects unsigned thinking blocks. |
+| [anthropic/_cache.py](../src/kodo/llms/anthropic/_cache.py) | `build_system_blocks`, `build_message_params`, `_drop_unsigned_thinking`, `_strip_callout_text` | Prompt-cache breakpoint construction. `_drop_unsigned_thinking` strips any persisted `"thinking"` block lacking a `signature` (e.g. one originated by llama.cpp in a mixed-provider session) before it reaches Claude, which rejects unsigned thinking blocks. `_strip_callout_text` runs `_sanitize.strip_kodo_callouts` over every assistant `"text"` block (and bare string content) before it is sent. |
 | [anthropic/_retry.py](../src/kodo/llms/anthropic/_retry.py) | `with_retry`, `with_retry_iter`, `UnrecoverableError`, `RetryExhaustedError` | Exponential backoff (2/8/32s); classifies auth/billing as unrecoverable. |
 | [anthropic/_usage.py](../src/kodo/llms/anthropic/_usage.py) | `compute_cost` | Per-model USD pricing table. |
-| [llamacpp/_llama.py](../src/kodo/llms/llamacpp/_llama.py) | `LlamaPlugin(LLMPlugin)`, `ThinkingStreamParser` | **Subclasses** ABC. OpenAI-compatible client against `llama-server`; converts Anthropic-style content blocks ↔ OpenAI chat messages; parses `<think>` tags into `ThinkingDelta`. `_expand_assistant` re-wraps any persisted `"thinking"` content block (this provider's or a Claude-origin signed one) back into `<think>...</think>` text, dropping any signature, since llama.cpp has no use for it. **Composes** `MessageSink` (to emit `EVT_LLAMA_STATE`) and calls its sibling `_manager.ensure_llama_running`. |
+| [llamacpp/_llama.py](../src/kodo/llms/llamacpp/_llama.py) | `LlamaPlugin(LLMPlugin)`, `ThinkingStreamParser` | **Subclasses** ABC. OpenAI-compatible client against `llama-server`; converts Anthropic-style content blocks ↔ OpenAI chat messages; parses `<think>` tags into `ThinkingDelta`. `_expand_assistant` re-wraps any persisted `"thinking"` content block (this provider's or a Claude-origin signed one) back into `<think>...</think>` text, dropping any signature, since llama.cpp has no use for it; it also runs assistant `"text"` blocks (and `_expand_message`'s bare string case) through `strip_kodo_callouts`. **Composes** `MessageSink` (to emit `EVT_LLAMA_STATE`) and calls its sibling `_manager.ensure_llama_running`. |
 
 **Links:** Every plugin is wrapped in `LoggingLLMPlugin` by the engine's
 `__resolve_plugin`. `LlamaPlugin` reaches *up* into `transport` (for state
@@ -554,9 +555,9 @@ Write, Match Existing Conventions, Verify Don't Assume, and Stay In Scope.
 
 | Agent | Tools declared | Role |
 |---|---|---|
-| `guide` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode, post_update | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. `subagents:` allow-list includes the pipeline agents **+ `python_toolchain`**. |
-| `problem_solver` | filesystem, edit_file, run_command, **toolchain_build/deps**, **run_subagent**, ask_user, post_update | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). Now declares `run_subagent` + `subagents: [python_toolchain]` — its first spawn capability, used only to delegate toolchain setup. **Embeds `{PLACEHOLDER:SUBAGENTS}` in a `## Subagents` section** — the live caller of the roster mechanism (renders `python_toolchain`'s row + purpose). |
-| `python_toolchain` | run_command, filesystem, edit_file, find_files, find_text_in_files, get_root_paths, ask_user, post_update | **Toolchain-setup** agent (`bases: [toolchain]`). Spawnable by both `guide` and `problem_solver`. Bootstraps/converts a project: generates the five per-platform build scripts (`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`) + a `DEVELOPMENT.md` (run guide + command-level dependency-management steps). Suggest-then-confirm invocation. |
+| `guide` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. `subagents:` allow-list includes the pipeline agents **+ `python_toolchain`**. |
+| `problem_solver` | filesystem, edit_file, run_command, **toolchain_build/deps**, **run_subagent**, ask_user | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). Now declares `run_subagent` + `subagents: [python_toolchain]` — its first spawn capability, used only to delegate toolchain setup. **Embeds `{PLACEHOLDER:SUBAGENTS}` in a `## Subagents` section** — the live caller of the roster mechanism (renders `python_toolchain`'s row + purpose). |
+| `python_toolchain` | run_command, filesystem, edit_file, find_files, find_text_in_files, get_root_paths, ask_user | **Toolchain-setup** agent (`bases: [toolchain]`). Spawnable by both `guide` and `problem_solver`. Bootstraps/converts a project: generates the five per-platform build scripts (`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`) + a `DEVELOPMENT.md` (run guide + command-level dependency-management steps). Suggest-then-confirm invocation. |
 | `narrative_author` | publish, read, **ask_user**, request_review, report_completed | Solo, user-facing intake. |
 | `architect`, `requirements_author`, `functional_designer`, `e2e_test_designer`, `test_designer` | publish, read, escalate_blocker | Authors (paired with a critic). |
 | `architect_critic`, `requirements_critic`, `functional_design_critic`, `e2e_test_design_critic`, `code_critic` | publish, read, request_review, report_completed | Critics (own the review gate). |
@@ -567,9 +568,10 @@ Write, Match Existing Conventions, Verify Don't Assume, and Stay In Scope.
 > declare `toolchain_build/deps`, which have no handler in `tools/`, so
 > `tools_for_agent` drops them — described to the LLM yet not executable. This is
 > the remaining gap between "described to the LLM" and "executable."
-> (`guide`'s `disable_autonomous_mode`/`post_update` and `problem_solver`'s
+> (`guide`'s `disable_autonomous_mode` and `problem_solver`'s
 > file-I/O were the former gaps; both now have handlers in `_TOOL_CLASSES` and
-> dispatch normally.)
+> dispatch normally. Progress reporting is no longer a tool at all — agents emit
+> `<kodo_info>` callouts in their message text, per the performance preamble.)
 
 **State:** Loader/registry complete (incl. `bases:` shared snippets **and the `{PLACEHOLDER:SUBAGENTS}` roster from per-agent `## Purpose` + `solo`/`critic`/`standalone` frontmatter**); agent roster present (pipeline + `problem_solver` + the `python_toolchain` toolchain-setup agent); tool wiring partially complete.
 
@@ -653,9 +655,9 @@ bootstrap/rollback). It owns `__orch_messages` (the Guide's running
   `Workspace.mark_completed(location=...)`. This is **promotion-on-completion**.
 - `__run_rollback` (exposed via `_EngineServices.rollback`) →
   `Rollback.execute` → rebinds index, resets toolchain, fresh guide session.
-- `__disable_autonomous` / `__post_update` (exposed via
-  `_EngineServices.disable_autonomous_mode` / `post_update`) back the
-  guide's `disable_autonomous_mode` / `post_update` tools.
+- `__disable_autonomous` (exposed via
+  `_EngineServices.disable_autonomous_mode`) backs the
+  guide's `disable_autonomous_mode` tool.
 - **Per-tool-call checkpointing (Problem Solver only)** — gated by
   `__checkpoint_enabled()` (`effective_workflow_mode == "problem_solving"`),
   inside `__dispatch_tool_calls` around each of `_MUTATING_TOOLS =
@@ -683,7 +685,7 @@ bootstrap/rollback). It owns `__orch_messages` (the Guide's running
 **The engine injects into every `ToolDispatcher`:** `GateOrchestrator`,
 `SessionState`, and one `_EngineServices` adapter wrapping `__run_subagent` /
 `__run_author_critic_iteration` / `__run_rollback` / `__complete_artifact` /
-`__disable_autonomous` / `__post_update`. The per-prompt autonomous mode is read
+`__disable_autonomous`. The per-prompt autonomous mode is read
 from `SessionState.effective_autonomous` rather than passed in.
 
 ### 12.2 Tool dispatch (`tools.ToolDispatcher`)
@@ -778,8 +780,9 @@ agents — each with its own `ToolDispatcher` — → artifacts land in
 the worker routes the same prompt to `__run_problem_solver_with_input` instead.
 The standalone `problem_solver` agent runs one `__run_agent_turn` with its own
 dispatcher, reading/writing the project's real files via the file-I/O and
-`run_command` tools and talking to the user directly (`ask_user`/`post_update`) —
-no Guide, no sub-agents, no critics, no artifacts.
+`run_command` tools and talking to the user directly (`ask_user`, plus
+`<kodo_info>` progress callouts in its message text) — no Guide, no sub-agents,
+no critics, no artifacts.
 
 **Mode toggles (both apply to the *next* prompt):** the VSIX sidebar has two
 toggles. *Autonomous/Interactive* → `toggle_autonomous` → `mode.set {autonomous}`
@@ -852,7 +855,7 @@ only on the destination root's checkpoint, not the source's.
 | `runtime` engine / bootstrap / gates / rollback | ✅ Functional; lower branch coverage on restart/rollback |
 | `mirror`/`shellparser` (§10b) + `runtime/_checkpoints.RootMirrorManager` — generic checkpoint/undo/rollback | ✅ Implemented; wired only into Problem Solver. Two documented limitations (§15). The Guided promotion mirror (`workspace/_checkpoints.CheckpointManager`) is untouched. |
 | Toolchain agent tools (`toolchain_build/deps`) | ⚠️ Spec only — no handler, dropped by `tools_for_agent` |
-| `disable_autonomous_mode` / `post_update` | ✅ Implemented and dispatched (guide + problem_solver) |
+| `disable_autonomous_mode` | ✅ Implemented and dispatched (guide) |
 | Native file-IO / `run_command` tools | ✅ Implemented; granted to the `problem_solver` agent |
 | Two workflows (`guided` Guide / `problem_solving` Problem Solver) | ✅ Implemented; selected by `workflow.set` → `SessionState.workflow_mode` |
 | `security/*`, `state/_memory` | ⛔ Stubs |

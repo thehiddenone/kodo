@@ -572,7 +572,7 @@ Tool errors are returned as the tool result content with an error flag. The agen
 - `mode.set { autonomous: true }` flips the `autonomous` flag on the session. The flag is consumed by the agent registry (per-mode tool rendering), the gate handler (`runtime/_gates.py`), and the security layer.
 - Agent registry: tools whose `ToolSpec.autonomous_mode` is `"unavailable"` (currently `ask_user`) are excluded from both the rendered `## Tools` section and the returned tool set, for every agent including the Guide. An agent that would have asked must assume-and-document or `escalate_blocker`.
 - Gate handler: `request_user_review_artifact` resolves immediately with a synthesized acceptance without emitting a `prompt.approval` to the wire. Auto-acceptance is recorded in the reviewing agent's session log (so audit shows which gates were auto-accepted) and surfaced as a low-fi `state` event field rather than a per-gate event.
-- Rollback: the Guide calls `rollback` directly, without the interactive `ask_user` confirmation, and documents it via `post_update`.
+- Rollback: the Guide calls `rollback` directly, without the interactive `ask_user` confirmation, and documents it with a `<kodo_info>` callout.
 - Security layer: rules whose action is `prompt` are treated as `allow` while autonomous is on. `deny` rules are still enforced.
 - LLM rate-limit pauses become silent: the worker waits, no Dev notification, STOP still works.
 - Hard errors (auth, billing, NFR-04 violations) page the Dev regardless.

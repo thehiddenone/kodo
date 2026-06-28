@@ -1,6 +1,6 @@
-"""Subagent markdown file parser — frontmatter + system-prompt body.
+"""Agent markdown file parser — frontmatter + system-prompt body.
 
-Each subagent file is a Markdown document with YAML frontmatter:
+Each agent file is a Markdown document with YAML frontmatter:
 
     ---
     name: narrative_author
@@ -8,6 +8,11 @@ Each subagent file is a Markdown document with YAML frontmatter:
       - fileio_write_file
     ---
     <system prompt body>
+
+The filename stem must be ``subagent_<name>`` for sub-agents (everything driven
+by ``run_subagent`` / ``run_author_critic_iteration``) or ``agent_<name>`` for
+the user-facing entry agents (``guide``, ``problem_solver``) that drive a
+session directly rather than being spawned by one.
 """
 
 from __future__ import annotations
@@ -139,10 +144,11 @@ def load_agent(path: Path) -> SubAgent:
     else:
         bases = ()
 
-    expected_stem = f"subagent_{name}"
-    if path.stem != expected_stem:
+    expected_stems = (f"subagent_{name}", f"agent_{name}")
+    if path.stem not in expected_stems:
         raise AgentLoadError(
-            f"{path}: filename stem {path.stem!r} does not match expected {expected_stem!r}"
+            f"{path}: filename stem {path.stem!r} does not match expected "
+            f"{expected_stems[0]!r} or {expected_stems[1]!r}"
         )
 
     if not body:

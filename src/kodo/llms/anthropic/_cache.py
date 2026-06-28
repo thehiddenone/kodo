@@ -8,6 +8,7 @@ that satisfy the SDK's TypedDict requirements.
 from __future__ import annotations
 
 from kodo.llms._interface import Message
+from kodo.llms._sanitize import strip_kodo_callouts
 
 __all__ = ["build_system_blocks", "build_message_params"]
 
@@ -60,16 +61,19 @@ def build_message_params(
 
     for i, msg in enumerate(messages):
         if isinstance(msg.content, str):
+            text = strip_kodo_callouts(msg.content) if msg.role == "assistant" else msg.content
             if i in breakpoint_set:
                 content: list[dict[str, object]] = [
-                    {"type": "text", "text": msg.content, "cache_control": _EPHEMERAL}
+                    {"type": "text", "text": text, "cache_control": _EPHEMERAL}
                 ]
             else:
-                content = [{"type": "text", "text": msg.content}]
+                content = [{"type": "text", "text": text}]
         else:
             # Already a list of content blocks — copy and optionally mark last
             content = [dict(block) for block in msg.content]
             content = _drop_unsigned_thinking(content)
+            if msg.role == "assistant":
+                content = _strip_callout_text(content)
             if i in breakpoint_set and content:
                 content[-1]["cache_control"] = _EPHEMERAL
 
@@ -92,3 +96,16 @@ def _drop_unsigned_thinking(content: list[dict[str, object]]) -> list[dict[str, 
         for block in content
         if not (block.get("type") == "thinking" and not block.get("signature"))
     ]
+
+
+def _strip_callout_text(content: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Strip kodo callout tags from an assistant message's ``text`` blocks.
+
+    The four callout tags are one-way notifications to the human user (see
+    ``subagents/preamble_performance.md``); their content must never be
+    replayed back into the model's own context.
+    """
+    for block in content:
+        if block.get("type") == "text":
+            block["text"] = strip_kodo_callouts(str(block.get("text", "")))
+    return content

@@ -166,9 +166,8 @@ the entire wiring step.
 > `toolchain_deps` placeholders) is "spec only": it can be
 > rendered into a prompt but is silently dropped from the LLM-facing tool list,
 > because `tools_for_agent` (§7) only returns specs present in
-> `DISPATCHABLE_TOOLS_BY_NAME`. (`post_update` *was* such a placeholder; it now
-> has a `PostUpdateTool` row and dispatches normally.) The table currently holds
-> **21** rows. `filesystem` is one of them:
+> `DISPATCHABLE_TOOLS_BY_NAME`. The table currently holds
+> **20** rows. `filesystem` is one of them:
 > a single `FilesystemTool` dispatches all eight file/directory operations
 > (create/delete/copy/move × file/dir) on its `operation` field, replacing the
 > former per-operation `create_file`/`delete_file`/`copy_file`/`move_file` (and
@@ -214,10 +213,10 @@ Protocols**, also defined in `_context.py`:
 - **`EngineServices`** — **one** protocol covering *every* engine-side operation
   a tool can delegate upward: `run_subagent(caller, ...)`,
   `run_author_critic_iteration(caller, ...)`, `rollback(...)`, `complete_artifact(...)`,
-  `disable_autonomous_mode(...)`, and `post_update(...)`. Runtime injects a single
+  and `disable_autonomous_mode(...)`. Runtime injects a single
   `_EngineServices` adapter (built inline in `_engine.py`) wrapping the engine's
-  private `__run_*` / `__complete_artifact` / `__disable_autonomous` /
-  `__post_update` methods. (This replaced the former split of a `SubagentRunner`
+  private `__run_*` / `__complete_artifact` / `__disable_autonomous`
+  methods. (This replaced the former split of a `SubagentRunner`
   protocol plus four bare `rollback_fn` / `complete_fn` / … callables.)
 
 This is the dependency inversion that lets the tool layer sit *below* the engine

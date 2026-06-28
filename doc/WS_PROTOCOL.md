@@ -360,15 +360,7 @@ Pushed when the engine itself turns autonomous mode off (the Guide's `disable_au
 { "type": "autonomous.changed", "autonomous": false }
 ```
 
-### 5.9 `post.update` — non-blocking progress note
-
-The `post_update` tool's payload. A short progress message rendered in the session as a display-only entry (it is **not** part of the LLM context).
-
-```json
-{ "type": "post.update", "message": "Wrote the auth module; running tests next." }
-```
-
-### 5.9c `user.attachments` — stored prompt attachments
+### 5.9 `user.attachments` — stored prompt attachments
 
 Emitted right after a submitted prompt's file attachments (§7.1) are validated, copied into the session, and persisted. Carries each stored copy's absolute path so the client retargets the just-sent user bubble's clickable chips at the durable copies (not the originals). Emitted whenever the prompt carried any attachment paths — including an **empty** `attachments` array when every file was rejected — so the client always reconciles its optimistic chips with the authoritative stored set.
 
@@ -413,7 +405,7 @@ Pushed once after `hello.ack` when the resumed session has prior turns, so a fre
 { "type": "session.history", "entries": [ { ...session-entry... }, ... ] }
 ```
 
-Entries mirror the WebView's session model. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed. Other display-only entries (status, `post_update`) are still ephemeral and dropped on rehydrate.
+Entries mirror the WebView's session model. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed. Other display-only entries (status) are still ephemeral and dropped on rehydrate.
 
 ### 5.12 Local-model lifecycle events
 

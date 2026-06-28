@@ -29,7 +29,6 @@ from ._find_files import FIND_FILES
 from ._find_text_in_files import FIND_TEXT_IN_FILES
 from ._get_root_paths import GET_ROOT_PATHS
 from ._list_artifacts import LIST_ARTIFACTS
-from ._post_update import POST_UPDATE
 from ._publish_artifact import PUBLISH_ARTIFACT
 from ._query_frontier import QUERY_FRONTIER
 from ._read_artifact import READ_ARTIFACT
@@ -66,7 +65,6 @@ __all__ = [
     "GET_ROOT_PATHS",
     "LIST_ARTIFACTS",
     "OUTPUT_VISIBILITY_DEFAULT",
-    "POST_UPDATE",
     "PUBLISH_ARTIFACT",
     "QUERY_FRONTIER",
     "READ_ARTIFACT",
@@ -106,7 +104,6 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     FIND_FILES,
     FIND_TEXT_IN_FILES,
     LIST_ARTIFACTS,
-    POST_UPDATE,
     PUBLISH_ARTIFACT,
     QUERY_FRONTIER,
     READ_ARTIFACT,

@@ -44,7 +44,6 @@ from ._paths import (
     resolve_logical,
     resolve_within,
 )
-from ._post_update import PostUpdateTool
 from ._publish_artifact import PublishArtifactTool
 from ._query_frontier import QueryFrontierTool
 from ._read_artifact import ReadArtifactTool
@@ -74,7 +73,6 @@ __all__ = [
     "ListArtifactsTool",
     "LogicalPathResolver",
     "PathResolver",
-    "PostUpdateTool",
     "ProjectPathResolver",
     "PublishArtifactTool",
     "QueryFrontierTool",

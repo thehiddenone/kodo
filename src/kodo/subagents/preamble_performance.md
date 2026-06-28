@@ -64,4 +64,6 @@ Put the message text directly between the tags; markdown inside a callout is ren
 
 The renderer is best-effort and forgiving of streamed, partial output: an unclosed callout tag is treated as closing at the end of your message, so a half-emitted tag will still render correctly once the rest arrives.
 
+These tags are a one-way channel straight to the user: their content is stripped out before your conversation history is ever replayed back into context, on this turn or any later one. Nothing you write inside a callout will come back to you — not in your own next turn, not for a sub-agent, not after a compaction summary. Never use a callout to record something you intend to read back later (a note to self, a value you'll need again, a running tally); put anything you still need in your ordinary message text or in tool state instead.
+
 ---

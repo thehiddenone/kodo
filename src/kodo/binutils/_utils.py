@@ -266,7 +266,7 @@ def _extract_binary(archive: Path, ext: str, binary_name: str, dest_bin: Path) -
                 zf.extractall(tmp_dir)
         else:
             with tarfile.open(archive, "r:gz") as tf:
-                tf.extractall(tmp_dir)
+                tf.extractall(tmp_dir, filter="data")
 
         src = next((p for p in tmp_dir.rglob(binary_name) if p.is_file()), None)
         if src is None:

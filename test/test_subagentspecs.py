@@ -84,6 +84,52 @@ def test_test_coder_normalizes_either_branch() -> None:
     assert author_ok and critic_ok
 
 
+def test_return_result_with_engine_owned_compliance_key_stays_compliant() -> None:
+    """A result that includes the engine-owned ``schema_compliance`` key is compliant.
+
+    Regression: an agent is shown the *augmented* output schema (via its ``##
+    Your Task Contract``), which lists ``schema_compliance`` as required, so an
+    obedient agent includes it in its ``return_result`` payload. Validation,
+    however, runs against the *raw* ``spec.output_schema`` that omits the key.
+    Before the fix, normalize_output treated the supplied key as an undeclared
+    extra, dropped it, and wrongly marked the otherwise-perfect result
+    non-compliant — flagging the whole sub-agent run as failed. This mirrors the
+    real python_toolchain payload that exhibited the bug.
+    """
+    spec = _SPECS_BY_NAME["python_toolchain"]
+    payload = {
+        "scripts_created": ["scripts/build.sh"],
+        "development_md_path": "DEVELOPMENT.md",
+        "pyproject_path": "pyproject.toml",
+        "summary": "done",
+        "schema_compliance": True,  # included exactly as the augmented contract asks
+    }
+    normalized, compliant = normalize_output(spec.output_schema, payload)
+    assert compliant, f"normalized -> {normalized!r}"
+    # The engine owns the value: it is re-injected, never trusted from the input.
+    assert normalized["schema_compliance"] is True
+
+
+def test_engine_owned_compliance_key_does_not_mask_a_real_violation() -> None:
+    """Including ``schema_compliance`` must not whitewash an actually bad payload.
+
+    A genuinely undeclared field is still dropped and still marks the result
+    non-compliant even when ``schema_compliance`` rides along in the input.
+    """
+    spec = _SPECS_BY_NAME["python_toolchain"]
+    payload = {
+        "scripts_created": ["scripts/build.sh"],
+        "development_md_path": "DEVELOPMENT.md",
+        "summary": "done",
+        "schema_compliance": True,
+        "stray": 1,  # genuinely undeclared
+    }
+    normalized, compliant = normalize_output(spec.output_schema, payload)
+    assert not compliant
+    assert "stray" not in normalized
+    assert normalized["schema_compliance"] is False
+
+
 def test_registry_auto_grants_return_result_and_contract() -> None:
     registry = AgentRegistry(_AGENTS_DIR)
     for name in _SPECS_BY_NAME:

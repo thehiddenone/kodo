@@ -27,7 +27,6 @@ from kodo.toolspecs import (
     FIND_TEXT_IN_FILES,
     GET_ROOT_PATHS,
     LIST_ARTIFACTS,
-    POST_UPDATE,
     PUBLISH_ARTIFACT,
     QUERY_FRONTIER,
     READ_ARTIFACT,
@@ -54,7 +53,6 @@ from ._find_text_in_files import FindTextInFilesTool
 from ._get_root_paths import GetRootPathsTool
 from ._list_artifacts import ListArtifactsTool
 from ._paths import PathResolver
-from ._post_update import PostUpdateTool
 from ._publish_artifact import PublishArtifactTool
 from ._query_frontier import QueryFrontierTool
 from ._read_artifact import ReadArtifactTool
@@ -94,7 +92,6 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (ROLLBACK, RollbackTool),
     (FINALIZE_PROJECT, FinalizeProjectTool),
     (DISABLE_AUTONOMOUS_MODE, DisableAutonomousModeTool),
-    (POST_UPDATE, PostUpdateTool),
 )
 
 _CLASSES_BY_NAME: dict[str, type[Tool]] = {spec.name: cls for spec, cls in _TOOL_CLASSES}
@@ -107,8 +104,8 @@ DISPATCHABLE_TOOLS_BY_NAME: dict[str, ToolSpec] = {spec.name: spec for spec, _ i
 def tools_for_agent(tool_names: frozenset[str]) -> list[ToolSpec]:
     """Resolve an agent's declared tool names to dispatchable ``ToolSpec``s.
 
-    Names with no tool class (spec-only placeholders such as ``post_update``)
-    are silently skipped, matching the prompt/surface contract.
+    Names with no tool class (spec-only placeholders) are silently skipped,
+    matching the prompt/surface contract.
 
     Args:
         tool_names: The agent's frontmatter ``tools:`` set (e.g. ``agent.tools``).

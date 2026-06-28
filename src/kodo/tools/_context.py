@@ -180,10 +180,6 @@ class EngineServices(Protocol):
         """Turn off autonomous mode and notify the client."""
         ...
 
-    async def post_update(self, message: str) -> None:
-        """Send a non-blocking progress update to the client."""
-        ...
-
 
 @dataclass
 class ToolContext:

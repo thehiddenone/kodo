@@ -306,9 +306,7 @@ async def _handle_edit_control(req: Request) -> None:
     session = await _require_session(req)
     if session is None:
         return
-    await session.engine.handle_edit_control_set(
-        str(req.env.payload.get("edit_control", "smart"))
-    )
+    await session.engine.handle_edit_control_set(str(req.env.payload.get("edit_control", "smart")))
     await req.reply({"type": "edit_control.accepted"})
 
 

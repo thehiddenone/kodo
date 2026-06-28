@@ -59,9 +59,7 @@ def augment_output_schema(output_schema: dict[str, object]) -> dict[str, object]
     branches = output_schema.get("oneOf")
     if isinstance(branches, list):
         schema = deepcopy(output_schema)
-        schema["oneOf"] = [
-            augment_output_schema(b) if isinstance(b, dict) else b for b in branches
-        ]
+        schema["oneOf"] = [augment_output_schema(b) if isinstance(b, dict) else b for b in branches]
         return schema
 
     schema = deepcopy(output_schema)
@@ -115,6 +113,17 @@ def normalize_output(
         out = dict(raw)
         out[SCHEMA_COMPLIANCE_KEY] = True
         return out, True
+
+    # The engine owns SCHEMA_COMPLIANCE_KEY and re-injects it below, so a value
+    # the producer already supplied is neither an undeclared extra nor a missing
+    # required field — drop it before the schema check. This is the normal case
+    # for a sub-agent's return_result: it is shown the *augmented* output schema
+    # (schema_compliance listed and required, see augment_output_schema), so an
+    # obedient agent includes the key, yet validation runs against the *raw*
+    # schema that omits it. Without this strip the key would count as an
+    # undeclared field and wrongly mark every compliant result non-compliant.
+    if SCHEMA_COMPLIANCE_KEY in raw:
+        raw = {k: v for k, v in raw.items() if k != SCHEMA_COMPLIANCE_KEY}
 
     # A top-level oneOf (dual-role sub-agents such as test_coder): try each
     # branch and return the first that normalizes cleanly; if none is compliant,

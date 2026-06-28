@@ -173,14 +173,14 @@ def test_registry_allowed_subagents_empty_when_none_declared(tmp_path: Path) -> 
 def test_registry_allowed_subagents_missing_agent_raises(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
     registry = AgentRegistry(tmp_path)
-    with pytest.raises(AgentLoadError, match="No subagent file"):
+    with pytest.raises(AgentLoadError, match="No agent file"):
         registry.allowed_subagents("ghost")
 
 
 def test_registry_missing_agent_raises(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
     registry = AgentRegistry(tmp_path)
-    with pytest.raises(AgentLoadError, match="No subagent file"):
+    with pytest.raises(AgentLoadError, match="No agent file"):
         registry.get("nonexistent")
 
 

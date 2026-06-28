@@ -17,6 +17,7 @@ from ._interface import (
 )
 from ._logger import LoggingLLMPlugin
 from ._registry import LLMEntry, get_context_window, get_llm_registry
+from ._sanitize import strip_kodo_callouts
 from ._tool_logger import ToolCallLogger
 
 __all__ = [
@@ -40,4 +41,5 @@ __all__ = [
     "TurnEnd",
     "get_context_window",
     "get_llm_registry",
+    "strip_kodo_callouts",
 ]

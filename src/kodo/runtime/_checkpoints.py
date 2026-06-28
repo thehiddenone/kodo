@@ -367,9 +367,7 @@ class RootMirrorManager:
                 if sha != parent:
                     await self._record(root, sha, parent, label, kind="tool_call")
 
-    async def undo(
-        self, root: str, sha: str, resolution: str | None = None
-    ) -> CheckpointState:
+    async def undo(self, root: str, sha: str, resolution: str | None = None) -> CheckpointState:
         """Undo checkpoint *sha* in *root*'s mirror; return the updated state.
 
         Restores only the files *sha* touched to their pre-*sha* state
@@ -412,9 +410,7 @@ class RootMirrorManager:
                 await self._persist(root_path, state)
             return state
 
-    async def redo(
-        self, root: str, sha: str, resolution: str | None = None
-    ) -> CheckpointState:
+    async def redo(self, root: str, sha: str, resolution: str | None = None) -> CheckpointState:
         """Redo checkpoint *sha* in *root*'s mirror; return the updated state.
 
         The inverse of :meth:`undo` — re-applies the files *sha* touched to
@@ -453,9 +449,7 @@ class RootMirrorManager:
                 await self._persist(root_path, state)
             return state
 
-    async def rollback(
-        self, root: str, sha: str, resolution: str | None = None
-    ) -> CheckpointState:
+    async def rollback(self, root: str, sha: str, resolution: str | None = None) -> CheckpointState:
         """Move *root*'s current branch to *sha*; return the updated state.
 
         Covers both "rollback" (sha behind the tip) and "roll forward" (sha

@@ -102,8 +102,9 @@ class AgentRegistry:
 
     Args:
         agents_dir: Directory containing ``preamble_security.md``,
-            ``preamble_performance.md``, any ``base_*.md`` shared snippets, and
-            the ``subagent_*.md`` files.
+            ``preamble_performance.md``, any ``base_*.md`` shared snippets, the
+            ``subagent_*.md`` files, and the ``agent_*.md`` entry-agent files
+            (``guide``, ``problem_solver``).
 
     Raises:
         AgentLoadError: a preamble or base file is missing or empty, an agent
@@ -121,7 +122,7 @@ class AgentRegistry:
         self.__preamble = f"{security}\n\n{performance}"
         # Shared base snippets (``base_<name>.md``), keyed by ``<name>``. Agents
         # opt into them via the frontmatter ``bases:`` list; they are never loaded
-        # as agents (the agent glob is ``subagent_*.md``).
+        # as agents (the agent globs are ``subagent_*.md`` and ``agent_*.md``).
         self.__bases: dict[str, str] = {}
         for path in sorted(agents_dir.glob("base_*.md")):
             name = path.stem[len("base_") :]
@@ -130,7 +131,13 @@ class AgentRegistry:
                 raise AgentLoadError(f"{path}: base file is empty")
             self.__bases[name] = text
         self.__agents: dict[str, SubAgent] = {}
-        for path in sorted(agents_dir.glob("subagent_*.md")):
+        # Sub-agents (``subagent_*.md``) and the user-facing entry agents
+        # (``agent_*.md`` — ``guide``, ``problem_solver``) share one registry,
+        # looked up by name regardless of which filename prefix they use.
+        agent_paths = sorted(agents_dir.glob("subagent_*.md")) + sorted(
+            agents_dir.glob("agent_*.md")
+        )
+        for path in agent_paths:
             agent = load_agent(path)
             # Validate every declared tool resolves now, at load time, so a bad
             # frontmatter reference fails fast rather than at first render.
@@ -285,12 +292,13 @@ class AgentRegistry:
         when its own body does not embed the placeholder.
 
         Raises:
-            AgentLoadError: No subagent file for *name*, or a listed sub-agent is
+            AgentLoadError: No agent file for *name*, or a listed sub-agent is
                 missing or lacks a ``## Purpose`` section.
         """
         if name not in self.__agents:
             raise AgentLoadError(
-                f"No subagent file for {name!r}. Expected: subagents/subagent_{name}.md"
+                f"No agent file for {name!r}. Expected: subagents/subagent_{name}.md "
+                f"or subagents/agent_{name}.md"
             )
         return self.__render_subagents_section(self.__agents[name])
 
@@ -342,11 +350,12 @@ class AgentRegistry:
             SubAgent: The matching subagent definition.
 
         Raises:
-            AgentLoadError: No subagent file found for this name.
+            AgentLoadError: No agent file found for this name.
         """
         if name not in self.__agents:
             raise AgentLoadError(
-                f"No subagent file for {name!r}. Expected: subagents/subagent_{name}.md"
+                f"No agent file for {name!r}. Expected: subagents/subagent_{name}.md "
+                f"or subagents/agent_{name}.md"
             )
         return self.__finalize(self.__agents[name], autonomous)
 
@@ -360,11 +369,12 @@ class AgentRegistry:
         ``run_author_critic_iteration`` call, for *whichever* agent makes it.
 
         Raises:
-            AgentLoadError: No subagent file found for this name.
+            AgentLoadError: No agent file found for this name.
         """
         if name not in self.__agents:
             raise AgentLoadError(
-                f"No subagent file for {name!r}. Expected: subagents/subagent_{name}.md"
+                f"No agent file for {name!r}. Expected: subagents/subagent_{name}.md "
+                f"or subagents/agent_{name}.md"
             )
         return self.__agents[name].subagents
 

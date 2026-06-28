@@ -98,9 +98,6 @@ class _StubServices:
     async def disable_autonomous_mode(self) -> None:
         return None
 
-    async def post_update(self, message: str) -> None:
-        return None
-
 
 def _make_dispatcher(
     index: ProjectIndex | None = None,

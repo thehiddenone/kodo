@@ -48,6 +48,7 @@ from kodo.llms import (
     TurnEnd,
     get_context_window,
     get_llm_registry,
+    strip_kodo_callouts,
 )
 from kodo.llms.anthropic import ClaudePlugin, UnrecoverableError
 from kodo.llms.llamacpp import LlamaPlugin
@@ -90,7 +91,6 @@ from kodo.transport import (
     EVT_CONTEXT_STATS,
     EVT_ERROR,
     EVT_LLM_TURN_START,
-    EVT_POST_UPDATE,
     EVT_PROJECT_BOUND,
     EVT_REVIEW_STARTED,
     EVT_REVIEW_VERDICT,
@@ -224,14 +224,12 @@ class _EngineServices:
         rollback: Callable[[str], Awaitable[None]],
         complete_artifact: Callable[[str], Awaitable[None]],
         disable_autonomous: Callable[[], Awaitable[None]],
-        post_update: Callable[[str], Awaitable[None]],
     ) -> None:
         self.__run_subagent = run_subagent
         self.__run_author_critic = run_author_critic
         self.__rollback = rollback
         self.__complete_artifact = complete_artifact
         self.__disable_autonomous = disable_autonomous
-        self.__post_update = post_update
 
     async def run_subagent(
         self, caller: str, name: str, task_input: dict[str, object]
@@ -263,10 +261,6 @@ class _EngineServices:
     async def disable_autonomous_mode(self) -> None:
         """Delegate to the engine's ``__disable_autonomous``."""
         await self.__disable_autonomous()
-
-    async def post_update(self, message: str) -> None:
-        """Delegate to the engine's ``__post_update``."""
-        await self.__post_update(message)
 
 
 class WorkflowEngine:
@@ -390,7 +384,6 @@ class WorkflowEngine:
             rollback=self.__run_rollback,
             complete_artifact=self.__complete_artifact,
             disable_autonomous=self.__disable_autonomous,
-            post_update=self.__post_update,
         )
 
     @property
@@ -1391,8 +1384,10 @@ class WorkflowEngine:
         for msg in messages:
             content = msg.content
             header = f"## {msg.role.upper()}"
+            is_assistant = msg.role == "assistant"
             if isinstance(content, str):
-                out.append(f"{header}\n{content}")
+                text = strip_kodo_callouts(content) if is_assistant else content
+                out.append(f"{header}\n{text}")
                 continue
             parts: list[str] = []
             for block in content:
@@ -1400,7 +1395,9 @@ class WorkflowEngine:
                     continue
                 btype = block.get("type")
                 if btype == "text":
-                    parts.append(str(block.get("text", "")))
+                    text = str(block.get("text", ""))
+                    # One-way notifications to the user; never replayed as context.
+                    parts.append(strip_kodo_callouts(text) if is_assistant else text)
                 elif btype == "thinking":
                     parts.append(f"[thinking] {block.get('thinking', '')}")
                 elif btype == "tool_use":
@@ -1945,6 +1942,17 @@ class WorkflowEngine:
                 },
             )
         )
+        # A new tool-call commit becomes the tip (its own index == current_index,
+        # so its own RollbackBox stays hidden), but it advances current_index past
+        # every *earlier* entry. Those earlier tool-call cards carry a now-stale
+        # current_index from when they were the tip, so without this push their
+        # "Rollback to this state" link would never appear. Broadcasting the full
+        # state lets the webview refresh current_index on every card for the root.
+        if checkpoint is not None:
+            await self.__push_checkpoint_state(
+                checkpoint.root, await self.__root_mirrors.state_for(checkpoint.root)
+            )
+
         if not compliant:
             await self.__sink.send(
                 Envelope.make_event(
@@ -2671,13 +2679,27 @@ class WorkflowEngine:
                 continue
             sid = str(m["subsession_id"])
             end = ends.get(sid)
-            end_result = end.get("result", []) if end else []
+            end_result = end.get("result") if end else None
+            # Preserve the stored result faithfully: a structured (dict) result —
+            # the standard return_result shape — is reused verbatim by
+            # __replay_next_subsession; a bare list is the legacy artifact-id
+            # shape. Anything else (or an active, un-closed subsession) carries no
+            # reusable result. Coercing a dict to [] here would hand the parent an
+            # empty {"artifact_ids": [], schema_compliance: False} and discard the
+            # sub-agent's real output on resume.
+            result: object
+            if isinstance(end_result, dict):
+                result = dict(end_result)
+            elif isinstance(end_result, list):
+                result = list(end_result)
+            else:
+                result = {}
             ledger.append(
                 {
                     "subsession_id": sid,
                     "agent": m.get("agent"),
                     "completed": end is not None,
-                    "result": list(end_result) if isinstance(end_result, list) else [],
+                    "result": result,
                 }
             )
         return ledger
@@ -3335,10 +3357,6 @@ class WorkflowEngine:
         self.__transient.update(autonomous=False)
         await self.__emit_state()
         await self.__sink.send(Envelope.make_event(EVT_AUTONOMOUS_CHANGED, {"autonomous": False}))
-
-    async def __post_update(self, message: str) -> None:
-        """Forward a progress update message to the client."""
-        await self.__sink.send(Envelope.make_event(EVT_POST_UPDATE, {"message": message}))
 
     async def __emit_agent_started(self, agent_name: str) -> None:
         await self.__sink.send(

@@ -32,6 +32,7 @@ from kodo.llms import (
     TurnEnd,
     Usage,
     get_llm_registry,
+    strip_kodo_callouts,
 )
 from kodo.transport import EVT_LLAMA_STATE
 
@@ -83,7 +84,8 @@ def _expand_assistant(blocks: list[dict[str, object]]) -> list[dict[str, object]
             # metadata llama.cpp has no use for and is dropped here.
             text_parts.append(f"<think>{block.get('thinking', '')}</think>")
         elif block_type == "text":
-            text_parts.append(str(block.get("text", "")))
+            # One-way notifications to the user; never replayed as context.
+            text_parts.append(strip_kodo_callouts(str(block.get("text", ""))))
         elif block.get("type") == "tool_use":
             tool_calls.append(
                 {
@@ -125,7 +127,8 @@ def _expand_user(blocks: list[dict[str, object]]) -> list[dict[str, object]]:
 
 def _expand_message(msg: Message) -> list[dict[str, object]]:
     if isinstance(msg.content, str):
-        return [{"role": msg.role, "content": msg.content}]
+        content = strip_kodo_callouts(msg.content) if msg.role == "assistant" else msg.content
+        return [{"role": msg.role, "content": content}]
     blocks = msg.content
     if msg.role == "assistant":
         return _expand_assistant(blocks)

@@ -174,7 +174,6 @@ EVT_LLAMACPP_INSTALL_PROGRESS = "llamacpp.install.progress"
 EVT_MODEL_INSTALL_PROGRESS = "model.install.progress"
 EVT_LLAMA_STATE = "llama.state"
 EVT_AUTONOMOUS_CHANGED = "autonomous.changed"
-EVT_POST_UPDATE = "post.update"
 EVT_SESSION_NAME = "session.name"
 EVT_SESSION_NAMING = "session.naming"
 # Subsession (sub-agent takeover) boundaries — drive the WebView feed dividers

@@ -191,3 +191,43 @@ def test_build_message_params_multiple_breakpoints() -> None:
     assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
     assert "cache_control" not in result[1]["content"][0]
     assert result[2]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+# ---------------------------------------------------------------------------
+# build_message_params — kodo callout stripping
+# ---------------------------------------------------------------------------
+
+
+def test_build_message_params_strips_callout_from_assistant_string_content() -> None:
+    """
+    Given an assistant message whose string content contains a kodo callout,
+    when build_message_params is called,
+    then the callout tag and its content are removed.
+    """
+    messages = [Message(role="assistant", content="Done. <kodo>All tests pass.</kodo>")]
+    result = build_message_params(messages, [])
+    assert result[0]["content"][0]["text"] == "Done. "
+
+
+def test_build_message_params_does_not_strip_callout_from_user_string_content() -> None:
+    """
+    Given a user message whose string content happens to contain callout-like text,
+    when build_message_params is called,
+    then the text is left untouched (only assistant text is ever sanitized).
+    """
+    messages = [Message(role="user", content="What does <kodo_info>x</kodo_info> mean?")]
+    result = build_message_params(messages, [])
+    assert result[0]["content"][0]["text"] == "What does <kodo_info>x</kodo_info> mean?"
+
+
+def test_build_message_params_strips_callout_from_assistant_text_block() -> None:
+    """
+    Given an assistant message with list content containing a 'text' block with a
+    kodo callout,
+    when build_message_params is called,
+    then the callout is stripped from that block's text.
+    """
+    blocks = [{"type": "text", "text": "Indexing done. <kodo_info>moving on</kodo_info> bye"}]
+    messages = [Message(role="assistant", content=blocks)]
+    result = build_message_params(messages, [])
+    assert result[0]["content"][0]["text"] == "Indexing done.  bye"

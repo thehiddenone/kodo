@@ -105,9 +105,7 @@ FILESYSTEM: ToolSpec = ToolSpec(
             },
             "destination": {
                 "type": "string",
-                "description": (
-                    "Destination path for the copy/move operations. " + _PATH_DESC
-                ),
+                "description": ("Destination path for the copy/move operations. " + _PATH_DESC),
             },
         },
         "required": ["operation"],

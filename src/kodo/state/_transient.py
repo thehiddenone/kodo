@@ -696,9 +696,7 @@ class TransientStore:
                 "problem_solving" if data.get("workflow_mode") == "problem_solving" else "guided"
             )
             edit = data.get("edit_control")
-            self.__edit_control = (
-                edit if edit in ("review_all", "allow_all", "smart") else "smart"
-            )
+            self.__edit_control = edit if edit in ("review_all", "allow_all", "smart") else "smart"
             command = data.get("command_control")
             self.__command_control = (
                 command if command in ("defensive", "permissive", "smart") else "smart"
