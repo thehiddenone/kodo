@@ -88,6 +88,9 @@ class _FakeServices:
     async def disable_autonomous_mode(self) -> None:
         return None
 
+    async def create_project(self, name: str, path: str | None = None) -> dict[str, object]:
+        return {"path": path or "/tmp/new-project", "name": name}
+
 
 def _make_dispatcher(
     tmp_path: Path,
@@ -530,6 +533,20 @@ async def test_disable_autonomous_mode_compliance(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_create_new_project_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path, agent_name="guide")
+    _assert_compliant(
+        "create_new_project",
+        await _dispatch(d, "create_new_project", {"name": "My Todo App"}),
+    )
+    # Empty name is rejected with the universal error envelope.
+    _assert_compliant(
+        "create_new_project",
+        await _dispatch(d, "create_new_project", {"name": "   "}),
+    )
+
+
 def test_all_dispatchable_tools_are_covered() -> None:
     """Fail if a new dispatchable tool is added without a compliance scenario."""
     covered = {
@@ -553,6 +570,7 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "rollback",
         "finalize_project",
         "disable_autonomous_mode",
+        "create_new_project",
     }
     assert set(DISPATCHABLE_TOOLS_BY_NAME) == covered, (
         "Dispatchable tools changed; add a compliance scenario for: "

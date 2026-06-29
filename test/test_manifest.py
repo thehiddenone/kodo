@@ -122,8 +122,9 @@ def test_init_creates_expected_structure(tmp_path: Path) -> None:
     layout = ProjectLayout(tmp_path)
     layout.init()
     assert layout.kodo_md.exists()
+    assert layout.specs_dir.is_dir()
     assert layout.src_dir.is_dir()
-    assert layout.gen_dir.is_dir()
+    assert layout.test_dir.is_dir()
     assert layout.kodo_dir.is_dir()
     assert "# Kodo Project" in layout.kodo_md.read_text(encoding="utf-8")
 

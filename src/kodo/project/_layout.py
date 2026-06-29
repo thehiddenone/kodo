@@ -15,7 +15,7 @@ Three concepts (see the ``project-kodo`` memory):
 
 * :class:`ProjectLayout` — the *single project* tier.  Rooted at a project
   folder whose ``.kodo/`` directory holds ``kodo.md`` (the project manifest) and
-  owns ``src/``, ``gen/`` plus the git mirror checkpoints.
+  owns ``specs/``, ``src/``, ``test/`` plus the git mirror checkpoints.
 """
 
 from __future__ import annotations
@@ -161,14 +161,19 @@ class ProjectLayout:
         return self.kodo_dir / "kodo.md"
 
     @property
+    def specs_dir(self) -> Path:
+        """``<root>/specs/`` — specification and documentation files."""
+        return self.root / "specs"
+
+    @property
     def src_dir(self) -> Path:
-        """``<root>/src/`` — specification source files."""
+        """``<root>/src/`` — source code, excluding tests."""
         return self.root / "src"
 
     @property
-    def gen_dir(self) -> Path:
-        """``<root>/gen/`` — generated artifacts."""
-        return self.root / "gen"
+    def test_dir(self) -> Path:
+        """``<root>/test/`` — TDD and end-to-end test code."""
+        return self.root / "test"
 
     @property
     def kodo_dir(self) -> Path:
@@ -198,8 +203,8 @@ class ProjectLayout:
         """Assert that this directory looks like a Kodo project.
 
         Checks that ``kodo.md`` is present and contains the required
-        ``# Kodo Project`` heading.  Does *not* require ``src/``, ``gen/``,
-        or ``.kodo/`` to exist (they are created by :meth:`init`).
+        ``# Kodo Project`` heading.  Does *not* require ``specs/``, ``src/``,
+        ``test/``, or ``.kodo/`` to exist (they are created by :meth:`init`).
 
         Raises:
             ProjectLayoutError: ``kodo.md`` is absent or missing the marker
@@ -223,8 +228,9 @@ class ProjectLayout:
     def init(self, *, force: bool = False) -> None:
         """Create the standard Kodo project layout under ``root``.
 
-        Creates ``src/``, ``gen/``, ``.kodo/`` and ``.kodo/kodo.md`` if absent.
-        Refuses to overwrite an existing ``kodo.md`` unless ``force=True``.
+        Creates ``specs/``, ``src/``, ``test/``, ``.kodo/`` and
+        ``.kodo/kodo.md`` if absent.  Refuses to overwrite an existing
+        ``kodo.md`` unless ``force=True``.
 
         Args:
             force (bool): Overwrite an existing project layout.
@@ -239,8 +245,9 @@ class ProjectLayout:
             )
 
         self.root.mkdir(parents=True, exist_ok=True)
+        self.specs_dir.mkdir(exist_ok=True)
         self.src_dir.mkdir(exist_ok=True)
-        self.gen_dir.mkdir(exist_ok=True)
+        self.test_dir.mkdir(exist_ok=True)
         self.kodo_dir.mkdir(exist_ok=True)
 
         if not self.kodo_md.exists() or force:
@@ -252,8 +259,8 @@ class ProjectLayout:
         The lightweight counterpart of :meth:`init` used when Kōdo first touches
         an arbitrary directory (e.g. a Problem Solver workspace folder getting
         its checkpoint mirror): it creates only ``.kodo/`` and the ``kodo.md``
-        marker — never ``src/`` or ``gen/`` — and never overwrites an existing
-        manifest.
+        marker — never ``specs/``, ``src/``, or ``test/`` — and never
+        overwrites an existing manifest.
         """
         self.kodo_dir.mkdir(parents=True, exist_ok=True)
         if not self.kodo_md.exists():

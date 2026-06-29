@@ -113,7 +113,7 @@ class Workspace:
                 For project-wide artifacts, pass the project_code value.
             content (str): Full text content of the artifact.
             filename_hint (str | None): Suggested leaf filename used when
-                materializing to ``src/`` or ``gen/``.
+                materializing to ``specs/``, ``src/``, or ``test/``.
             requirement_ids (list[str] | None): Requirement IDs satisfied or
                 related to this artifact.
             supersedes (list[str] | None): IDs of live artifacts to retire.

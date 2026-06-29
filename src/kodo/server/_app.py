@@ -29,7 +29,7 @@ from kodo.llms.llamacpp import (
     get_model_path,
     install_llamacpp,
 )
-from kodo.project import WorkspaceLayout, kodo_user_dir
+from kodo.project import ProjectLayoutError, WorkspaceLayout, kodo_user_dir
 from kodo.runtime import CheckpointState, MirrorDirtyError
 from kodo.subagents import AgentRegistry
 from kodo.transport import (
@@ -52,6 +52,7 @@ from kodo.transport import (
     MSG_MODE_SET,
     MSG_MODEL_INSTALL,
     MSG_PING,
+    MSG_PROJECT_CREATE,
     MSG_PROJECT_SET,
     MSG_PROMPT_SUBMIT,
     MSG_SESSION_DELETE,
@@ -349,6 +350,31 @@ async def _handle_project_set(req: Request) -> None:
         return
     await session.engine.bind_project(root, name or root)
     await req.reply({"type": "project.accepted"})
+
+
+async def _handle_project_create(req: Request) -> None:
+    session = await _require_session(req)
+    if session is None:
+        return
+    path = str(req.env.payload.get("path", "")).strip()
+    name = str(req.env.payload.get("name", "")).strip()
+    force = bool(req.env.payload.get("force", False))
+    if not path and not name:
+        await req.reply(
+            {
+                "type": "error",
+                "code": "missing_project_name_or_path",
+                "message": "project.create requires a 'path' or 'name'.",
+                "recoverable": True,
+            }
+        )
+        return
+    try:
+        result = await session.engine.handle_project_create(name, path or None, force)
+    except ProjectLayoutError as exc:
+        await req.reply({"type": "project.create.error", "message": str(exc)})
+        return
+    await req.reply({"type": "project.create.done", **result})
 
 
 async def _handle_stop(req: Request) -> None:
@@ -683,6 +709,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_COMMAND_CONTROL_SET, _handle_command_control)
     conn_registry.register_handler(MSG_WORKSPACE_FOLDERS, _handle_workspace_folders)
     conn_registry.register_handler(MSG_PROJECT_SET, _handle_project_set)
+    conn_registry.register_handler(MSG_PROJECT_CREATE, _handle_project_create)
     conn_registry.register_handler(MSG_STOP, _handle_stop)
     conn_registry.register_handler(MSG_COMPACT_NOW, _handle_compact)
     conn_registry.register_handler(MSG_CHECKPOINT_ROLLBACK, _handle_checkpoint_rollback)

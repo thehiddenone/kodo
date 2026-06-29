@@ -89,8 +89,8 @@ _REGISTRY: dict[str, LLMEntry] = {
         model_id="claude-haiku-4-5-20251001",
         context_window=200_000,
     ),
-    "llamacpp-qwen36-27b": LLMEntry(
-        name="llamacpp-qwen36-27b",
+    "llamacpp-qwen36-27b-q4-k-xl": LLMEntry(
+        name="llamacpp-qwen36-27b-q4-k-xl",
         residence="local",
         module="kodo.llms.llamacpp",
         description="Qwen 3.6 27B UD-Q4_K_XL — local inference via llama-server",
@@ -99,8 +99,8 @@ _REGISTRY: dict[str, LLMEntry] = {
         llama_args={"--cache-type-k": "q4_0", "--cache-type-v": "q4_0"},
         context_window=262_144,
     ),
-    "llamacpp-qwen35-9b": LLMEntry(
-        name="llamacpp-qwen35-9b",
+    "llamacpp-qwen35-9b-q8-k-xl": LLMEntry(
+        name="llamacpp-qwen35-9b-q8-k-xl",
         residence="local",
         module="kodo.llms.llamacpp",
         description="Qwen 3.5 9B UD-Q8_K_XL — local inference via llama-server",
@@ -109,8 +109,8 @@ _REGISTRY: dict[str, LLMEntry] = {
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
     ),
-    "llamacpp-gemma4-26b": LLMEntry(
-        name="llamacpp-gemma4-26b",
+    "llamacpp-gemma4-26b-q4-k-xl": LLMEntry(
+        name="llamacpp-gemma4-26b-q4-k-xl",
         residence="local",
         module="kodo.llms.llamacpp",
         description="Gemma 4 26B UD-Q4_K_XL — local inference via llama-server",
@@ -118,6 +118,46 @@ _REGISTRY: dict[str, LLMEntry] = {
         filename="gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf",
         llama_args={"--cache-type-k": "q4_0", "--cache-type-v": "q4_0"},
         context_window=131_072,
+    ),
+    "llamacpp-ornith10-35b-q8-0": LLMEntry(
+        name="llamacpp-ornith10-35b-q8-0",
+        residence="local",
+        module="kodo.llms.llamacpp",
+        description="Ornith 1.0 35B Q8_0 — local inference via llama-server",
+        repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
+        filename="ornith-1.0-35b-Q8_0.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+    ),
+    "llamacpp-ornith10-35b-q6-k": LLMEntry(
+        name="llamacpp-ornith10-35b-q6-k",
+        residence="local",
+        module="kodo.llms.llamacpp",
+        description="Ornith 1.0 35B Q6_K — local inference via llama-server",
+        repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
+        filename="ornith-1.0-35b-Q6_K.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+    ),
+    "llamacpp-ornith10-35b-q5-k-m": LLMEntry(
+        name="llamacpp-ornith10-35b-q5-k-m",
+        residence="local",
+        module="kodo.llms.llamacpp",
+        description="Ornith 1.0 35B Q5_K — local inference via llama-server",
+        repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
+        filename="ornith-1.0-35b-Q5_K_m.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+    ),
+    "llamacpp-ornith10-35b-q4-k-m": LLMEntry(
+        name="llamacpp-ornith10-35b-q4-k-m",
+        residence="local",
+        module="kodo.llms.llamacpp",
+        description="Ornith 1.0 35B Q4_K — local inference via llama-server",
+        repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
+        filename="ornith-1.0-35b-Q4_K_m.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
     ),
 }
 

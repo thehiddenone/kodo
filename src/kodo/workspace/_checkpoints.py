@@ -1,4 +1,4 @@
-"""Checkpoint commit logic — snapshot src/ + gen/ on every approval gate."""
+"""Checkpoint commit logic — snapshot specs/ + src/ + test/ on every approval gate."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ class CheckpointManager:
     """Creates mirror commits at every approval gate.
 
     Args:
-        layout: Project layout supplying the ``src/``, ``gen/``, and
-            ``.kodo/checkpoints/`` paths.
+        layout: Project layout supplying the ``specs/``, ``src/``, ``test/``,
+            and ``.kodo/checkpoints/`` paths.
     """
 
     def __init__(self, layout: ProjectLayout) -> None:

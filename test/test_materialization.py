@@ -95,33 +95,37 @@ ROOT = Path("/project")
 # ---------------------------------------------------------------------------
 
 
-def test_narrative_lands_in_src_narrative() -> None:
+def test_narrative_lands_in_specs_narrative() -> None:
     a = _artifact(ArtifactType.NARRATIVE, "PROJ", "narrative.md")
-    assert materialization_path(a, ROOT, _TOOLCHAIN, _REG) == ROOT / "src/narrative/narrative.md"
+    assert materialization_path(a, ROOT, _TOOLCHAIN, _REG) == ROOT / "specs/narrative/narrative.md"
 
 
-def test_tech_stack_lands_in_src_tech_stack() -> None:
+def test_tech_stack_lands_in_specs_tech_stack() -> None:
     a = _artifact(ArtifactType.TECH_STACK, "PROJ", "tech_stack.md")
-    assert materialization_path(a, ROOT, _TOOLCHAIN, _REG) == ROOT / "src/tech_stack/tech_stack.md"
+    assert (
+        materialization_path(a, ROOT, _TOOLCHAIN, _REG) == ROOT / "specs/tech_stack/tech_stack.md"
+    )
 
 
-def test_requirements_lands_in_src_requirements() -> None:
+def test_requirements_lands_in_specs_requirements() -> None:
     a = _artifact(ArtifactType.REQUIREMENTS, "PROJ", "requirements.md")
     assert (
-        materialization_path(a, ROOT, _TOOLCHAIN, _REG) == ROOT / "src/requirements/requirements.md"
+        materialization_path(a, ROOT, _TOOLCHAIN, _REG)
+        == ROOT / "specs/requirements/requirements.md"
     )
 
 
-def test_architecture_lands_in_src_architecture() -> None:
+def test_architecture_lands_in_specs_architecture() -> None:
     a = _artifact(ArtifactType.ARCHITECTURE, "PROJ", "architecture.md")
     assert (
-        materialization_path(a, ROOT, _TOOLCHAIN, _REG) == ROOT / "src/architecture/architecture.md"
+        materialization_path(a, ROOT, _TOOLCHAIN, _REG)
+        == ROOT / "specs/architecture/architecture.md"
     )
 
 
-def test_design_plan_lands_in_src_design() -> None:
+def test_design_plan_lands_in_specs_design() -> None:
     a = _artifact(ArtifactType.DESIGN_PLAN, "PROJ", "design_plan.md")
-    assert materialization_path(a, ROOT, _TOOLCHAIN, _REG) == ROOT / "src/design/design_plan.md"
+    assert materialization_path(a, ROOT, _TOOLCHAIN, _REG) == ROOT / "specs/design/design_plan.md"
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +137,7 @@ def test_functional_design_uses_display_name_dir() -> None:
     a = _artifact(ArtifactType.FUNCTIONAL_DESIGN, "AUTH", "design.md")
     assert (
         materialization_path(a, ROOT, _TOOLCHAIN, _REG)
-        == ROOT / "src/design/user_authentication/design.md"
+        == ROOT / "specs/design/user_authentication/design.md"
     )
 
 
@@ -141,23 +145,23 @@ def test_test_plan_uses_display_name_dir() -> None:
     a = _artifact(ArtifactType.TEST_PLAN, "TRADE", "test_plan.md")
     assert (
         materialization_path(a, ROOT, _TOOLCHAIN, _REG)
-        == ROOT / "src/test_design/trade_execution/test_plan.md"
+        == ROOT / "specs/test_design/trade_execution/test_plan.md"
     )
 
 
-def test_code_lands_in_gen_src_with_toolchain_extension() -> None:
+def test_code_lands_in_src_with_toolchain_extension() -> None:
     a = _artifact(ArtifactType.CODE, "AUTH", "auth_service")
     assert (
         materialization_path(a, ROOT, _TOOLCHAIN, _REG)
-        == ROOT / "gen/src/user_authentication/auth_service.py"
+        == ROOT / "src/user_authentication/auth_service.py"
     )
 
 
-def test_test_lands_in_gen_test_with_toolchain_prefix() -> None:
+def test_test_lands_in_test_with_toolchain_prefix() -> None:
     a = _artifact(ArtifactType.TEST, "TRADE", "order_handler")
     assert (
         materialization_path(a, ROOT, _TOOLCHAIN, _REG)
-        == ROOT / "gen/test/trade_execution/test_order_handler.py"
+        == ROOT / "test/trade_execution/test_order_handler.py"
     )
 
 
@@ -168,12 +172,12 @@ def test_test_lands_in_gen_test_with_toolchain_prefix() -> None:
 
 def test_unknown_codename_falls_back_to_raw_code() -> None:
     a = _artifact(ArtifactType.FUNCTIONAL_DESIGN, "NOTIFY", "design.md")
-    assert materialization_path(a, ROOT, _TOOLCHAIN, _REG) == ROOT / "src/design/NOTIFY/design.md"
+    assert materialization_path(a, ROOT, _TOOLCHAIN, _REG) == ROOT / "specs/design/NOTIFY/design.md"
 
 
 def test_no_registry_falls_back_to_raw_code() -> None:
     a = _artifact(ArtifactType.CODE, "AUTH", "auth_service")
-    assert materialization_path(a, ROOT, _TOOLCHAIN, None) == ROOT / "gen/src/AUTH/auth_service.py"
+    assert materialization_path(a, ROOT, _TOOLCHAIN, None) == ROOT / "src/AUTH/auth_service.py"
 
 
 # ---------------------------------------------------------------------------
@@ -196,11 +200,11 @@ async def test_materialize_writes_content_to_correct_path(tmp_path: Path) -> Non
     """
     Given a narrative artifact,
     when materialize() is called,
-    then the file appears at src/narrative/<filename_hint> with the correct content.
+    then the file appears at specs/narrative/<filename_hint> with the correct content.
     """
     a = _artifact(ArtifactType.NARRATIVE, "PROJ", "narrative.md")
     written = await materialize(a, tmp_path, _TOOLCHAIN, _REG)
-    expected = tmp_path / "src" / "narrative" / "narrative.md"
+    expected = tmp_path / "specs" / "narrative" / "narrative.md"
     assert written == expected
     assert expected.read_text(encoding="utf-8") == "content"
 

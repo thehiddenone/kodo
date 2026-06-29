@@ -99,9 +99,9 @@ src/kodo/
 │   └── _checkpoints.py     # checkpoint commit logic
 ├── state/
 │   ├── _transient.py       # .kodo/sessions/<posix-ts>/ per-session store
-│   └── _memory.py          # src/.memory/*.kd helpers
+│   └── _memory.py          # specs/.memory/*.kd helpers
 └── project/
-    ├── _layout.py          # path conventions (kodo.md, src/, gen/, .kodo/)
+    ├── _layout.py          # path conventions (kodo.md, specs/, src/, test/, .kodo/)
     └── _manifest.py        # kodo.md parser/validator
 ```
 
@@ -402,14 +402,14 @@ security.layer.evaluate(call)
 
 ## 8. Mirror & checkpoints (FR-MIR)
 
-The mirror at `<project>/.kodo/checkpoints/` is initialised by `Kodo: Init Project` with a single empty commit and a fixed branch `kodo`. The mirror is *not* a git worktree of the main repo; it is a separate repository whose working tree contains a copy of `src/` and `gen/`.
+The mirror at `<project>/.kodo/checkpoints/` is initialised by `Kodo: Init Project` with a single empty commit and a fixed branch `kodo`. The mirror is *not* a git worktree of the main repo; it is a separate repository whose working tree contains a copy of `specs/`, `src/`, and `test/`.
 
 `MirrorRepo` is a pure git wrapper (`init`, `stage_and_commit(message) → sha`, `checkout(sha)`, `log()`, `head_sha()`) and owns no file copying. Promotion of accepted artifacts and checkpoint commits are sequenced by `Promoter`, defined in [STATE_AND_LIFECYCLE.md §8.1](STATE_AND_LIFECYCLE.md):
 
-- Each Promoter run reads one completed workspace artifact, writes it to its `src/`/`gen/` destination and into the mirror's working tree (alongside a `.kodo.json` metadata sidecar), calls `MirrorRepo.stage_and_commit(message)`, deletes the workspace staging file, and updates `ProjectIndex` (flips the entry to `completed`). Commit message format: `<project_code>/<responsibility_code>/<type>: <session_id> → <artifact_id>`.
+- Each Promoter run reads one completed workspace artifact, writes it to its `specs/`/`src/`/`test/` destination and into the mirror's working tree (alongside a `.kodo.json` metadata sidecar), calls `MirrorRepo.stage_and_commit(message)`, deletes the workspace staging file, and updates `ProjectIndex` (flips the entry to `completed`). Commit message format: `<project_code>/<responsibility_code>/<type>: <session_id> → <artifact_id>`.
 - The Promoter run is what `report_artifact_completed` triggers: the engine resolves the toolchain from the Tech Stack, builds a `ComponentRegistry` from the architecture artifact, and runs the Promoter; the wire surfaces the result as an `artifact.published` event carrying `checkpoint_sha` (WS_PROTOCOL.md §5.6).
 
-Rollback (`checkpoint.rollback`, FR-MIR-04) follows the procedure in [STATE_AND_LIFECYCLE.md §8.3](STATE_AND_LIFECYCLE.md): terminate sessions, clear workspace, `MirrorRepo.checkout(target_sha)`, replace `src/`/`gen/` from the mirror tree, rebuild the index, resume.
+Rollback (`checkpoint.rollback`, FR-MIR-04) follows the procedure in [STATE_AND_LIFECYCLE.md §8.3](STATE_AND_LIFECYCLE.md): terminate sessions, clear workspace, `MirrorRepo.checkout(target_sha)`, replace `specs/`/`src/`/`test/` from the mirror tree, rebuild the index, resume.
 
 Checkpoints are produced one per completed artifact (not one per gate). Each `report_artifact_completed` call produces its own Promoter run and its own checkpoint commit; a review gate covering several artifacts yields one completion call and one checkpoint per artifact.
 
@@ -445,7 +445,7 @@ Session data lives at `<project>/.kodo/sessions/<session-id>/`, co-located with 
 
 ### 9.2 Memory
 
-Memory lives as artifacts under `<project>/src/.memory/`. The Guide may instruct a sub-agent to publish a memory artifact; promotion lands it in `src/.memory/` with a mirror checkpoint, surfacing as an `artifact.published` wire event like any other promoted artifact (WS_PROTOCOL.md §5.6). Security rules apply at the sub-agent's tool call.
+Memory lives as artifacts under `<project>/specs/.memory/`. The Guide may instruct a sub-agent to publish a memory artifact; promotion lands it in `specs/.memory/` with a mirror checkpoint, surfacing as an `artifact.published` wire event like any other promoted artifact (WS_PROTOCOL.md §5.6). Security rules apply at the sub-agent's tool call.
 
 Memory artifacts are included in the cached user block of every leaf sub-agent's LLM call (§6.1) and in the Guide's index snapshot (§6.2), keeping them inexpensive on subsequent calls.
 
@@ -498,7 +498,7 @@ Schema is documented in `src/kodo/server/_config.py` as a `pydantic` model. VS C
 
 ```text
 <project>/
-├── src/                              # specification artifacts (FR-WKS-11 via Promoter)
+├── specs/                            # specification artifacts (FR-WKS-11 via Promoter)
 │   ├── narrative/
 │   ├── architecture/                 # includes the component dependency DAG
 │   ├── requirements/<responsibility>/
@@ -507,9 +507,8 @@ Schema is documented in `src/kodo/server/_config.py` as a `pydantic` model. VS C
 │   ├── tech_stack/
 │   ├── test_design/<responsibility>/
 │   └── .memory/                      # project memory artifacts
-├── gen/                              # generated artifacts (FR-WKS-10 via Promoter)
-│   ├── src/<responsibility>/
-│   └── test/<responsibility>/
+├── src/<responsibility>/             # generated source code (FR-WKS-10 via Promoter)
+├── test/<responsibility>/            # generated test code (FR-WKS-10 via Promoter)
 └── .kodo/
     ├── kodo.md                       # project manifest — moved here from <project>/kodo.md
     ├── checkpoints/                  # mirror git repo (the Guided promotion mirror, §8)
@@ -529,7 +528,7 @@ Schema is documented in `src/kodo/server/_config.py` as a `pydantic` model. VS C
         └── server.log
 ```
 
-The leaf-filename rules per artifact type are defined in [STATE_AND_LIFECYCLE.md §1.1](STATE_AND_LIFECYCLE.md). Promoter is the only writer to `src/` and `gen/`; the workspace MCP server is the only writer to `.kodo/workspace/`.
+The leaf-filename rules per artifact type are defined in [STATE_AND_LIFECYCLE.md §1.1](STATE_AND_LIFECYCLE.md). Promoter is the only writer to `specs/`, `src/`, and `test/`; the workspace MCP server is the only writer to `.kodo/workspace/`.
 
 ### 11.2 `kodo.md` minimal template
 
@@ -613,7 +612,7 @@ Dev (WebView)       Server (runtime worker)            LLM plugin
        │                       │  resolve gate Future; return accept to agent ──│
        │                       │ ◄─ tool_use: report_artifact_completed(id) ────│
        │                       │  engine promotes: Promoter fires; mirror commit│
-       │ ◄─── artifact.published (path=src/narrative/narrative.md, checkpoint)  │
+       │ ◄─── artifact.published (path=specs/narrative/narrative.md, checkpoint)│
        │ ◄─── agent.finished (narrative_author)                                 │
        │                       │  return artifact_id to Guide            │
        │                       │  Guide continues ──►│── stream tokens ──┘

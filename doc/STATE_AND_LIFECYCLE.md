@@ -37,13 +37,15 @@ Kodo owns one directory per project:
 
 ```
 <project>/
+├── specs/                    ← user files (user's VCS)
 ├── src/                      ← user files (user's VCS)
-├── gen/                      ← generated files (user's VCS)
+├── test/                     ← user files (user's VCS)
 └── .kodo/                    ← Kodo-owned, gitignored from user's VCS
     ├── checkpoints/          ← MirrorRepo (git repo, branch "kodo")
     │   ├── .git/
+    │   ├── specs/            ← mirror of specs/ at last checkpoint
     │   ├── src/              ← mirror of src/ at last checkpoint
-    │   └── gen/              ← mirror of gen/ at last checkpoint
+    │   └── test/             ← mirror of test/ at last checkpoint
     ├── workspace/            ← in-flight artifacts (messy table)
     │   ├── <project_code>/<responsibility_code>/<type>/<artifact_id>.{md,json,…}
     │   └── .retired/<artifact_id>/<exact_filename_with_extension>    ← audit-only
@@ -58,7 +60,7 @@ Kodo owns one directory per project:
     └── guide.session  ← marker file: current Guide session_id
 ```
 
-`src/` and `gen/` belong to the user. The user's VCS (git, perforce, whatever) tracks them. Kodo writes to them on promotion but does not version-control them; that is the user's choice.
+`specs/`, `src/`, and `test/` belong to the user. The user's VCS (git, perforce, whatever) tracks them. Kodo writes to them on promotion but does not version-control them; that is the user's choice.
 
 `.kodo/` belongs entirely to Kodo. Kodo SHOULD write `.kodo/` into `.gitignore` on first run; if the user uses a non-git VCS the same exclusion pattern applies in their tool.
 
@@ -70,19 +72,19 @@ Every artifact lands at a deterministic path derived from its `type` and `respon
 
 **Base directory by type:**
 
-`src/` holds human-readable design and specification artifacts — what the project *is* and what it *should do*. `gen/` holds machine-executable artifacts — source code and tests. The split lets the user version-control the two trees with different policies if they choose (e.g., review `src/` changes carefully, treat `gen/` churn as routine).
+`specs/` holds human-readable design and specification artifacts — what the project *is* and what it *should do*. `src/` holds machine-executable source code; `test/` holds the tests. The split lets the user version-control the trees with different policies if they choose (e.g., review `specs/` changes carefully, treat `src/`/`test/` churn as routine).
 
 | Artifact type | Base directory | Scope |
 | --- | --- | --- |
-| `narrative` | `src/narrative/` | project-wide |
-| `tech-stack` | `src/tech_stack/` | project-wide |
-| `requirements` | `src/requirements/` | project-wide |
-| `architecture` | `src/architecture/` | project-wide |
-| `design-plan` | `src/design/` | project-wide |
-| `functional-design` | `src/design/<component_dir>/` | per-component |
-| `test-plan` | `src/test_design/<component_dir>/` | per-component |
-| `code` | `gen/src/<component_dir>/` | per-component |
-| `test` | `gen/test/<component_dir>/` | per-component |
+| `narrative` | `specs/narrative/` | project-wide |
+| `tech-stack` | `specs/tech_stack/` | project-wide |
+| `requirements` | `specs/requirements/` | project-wide |
+| `architecture` | `specs/architecture/` | project-wide |
+| `design-plan` | `specs/design/` | project-wide |
+| `functional-design` | `specs/design/<component_dir>/` | per-component |
+| `test-plan` | `specs/test_design/<component_dir>/` | per-component |
+| `code` | `src/<component_dir>/` | per-component |
+| `test` | `test/<component_dir>/` | per-component |
 | `feedback` | not promoted | workspace-only (see below) |
 
 Within each directory the leaf filename is the artifact's `filename_hint`. Multiple files per `(component, type)` simply land as multiple files in the same directory.
@@ -97,7 +99,7 @@ Each `responsibility_code` (the short codename — `AUTH`, `TRADE`, `REPORT`) ca
 | `TRADE` | Trade Execution | `trade_execution` |
 | `REPORT` | Reporting | `reporting` |
 
-A test artifact for `AUTH` therefore lands at `gen/test/user_authentication/<filename_hint>`; its production stub and later real code land at `gen/src/user_authentication/<filename_hint>`; its functional design lands at `src/design/user_authentication/<filename_hint>`; and so on.
+A test artifact for `AUTH` therefore lands at `test/user_authentication/<filename_hint>`; its production stub and later real code land at `src/user_authentication/<filename_hint>`; its functional design lands at `specs/design/user_authentication/<filename_hint>`; and so on.
 
 The mapping `codename → display name` lives inside the `architecture` artifact's content. Bootstrap parses it when reading the completed `architecture` entry; before architecture exists the mapping is empty and per-component placement is impossible (which is correct — no per-component artifacts can exist until Architect has declared the components).
 
@@ -137,7 +139,7 @@ IndexEntry:
 
 A single `(project_code, responsibility_code, type)` may yield **multiple** entries — a component typically has more than one `code` file (a service plus helpers), more than one `test` file (one per logical unit), and so on. Per-component artifacts (`functional-design`, `test-plan`, `test`, `code`) are looked up as a list keyed on the triple. Project-wide artifacts (`narrative`, `architecture`, `requirements`, `tech-stack`, `design-plan`) carry `responsibility_code = project_code` and produce a single entry per triple.
 
-For `state = "completed"` the location is under `<project>/src/` or `<project>/gen/` (mirrored at `<project>/.kodo/checkpoints/`). For `state = "in_flight"` the location is under `<project>/.kodo/workspace/`.
+For `state = "completed"` the location is under `<project>/specs/`, `<project>/src/`, or `<project>/test/` (mirrored at `<project>/.kodo/checkpoints/`). For `state = "in_flight"` the location is under `<project>/.kodo/workspace/`.
 
 A completed entry and an in-flight entry may coexist for the same `(project_code, responsibility_code, type, filename_hint)` — the completed entry is the prior accepted version, the in-flight entry is the revision under work. The in-flight entry's `supersedes` list contains the completed entry's `artifact_id`. The two entries are distinct artifacts in the index, not two views of the same logical thing.
 
@@ -173,7 +175,7 @@ Bootstrap runs on every server start. The procedure has four deterministic phase
 
 `MirrorRepo` is in a clean committed state by invariant (every successful checkpoint produced a commit; nothing else writes to `.kodo/checkpoints/`). The mirror's working tree is therefore an authoritative snapshot of "what was completed as of the last checkpoint".
 
-Bootstrap walks `<project>/.kodo/checkpoints/src/` and `<project>/.kodo/checkpoints/gen/`, deriving `(project_code, responsibility_code, type)` from the directory layout and reading the artifact's `.kodo.json` sidecar (written alongside each promoted file by the Promoter, §8.1) for `artifact_id`, `filename_hint`, `supersedes`, `requirement_ids`, and `author`. Each promoted file produces one `IndexEntry` with `state = "completed"` whose `location` points at the materialized file under `src/`/`gen/`. Where a component contributes multiple files of the same type (e.g., AUTH has `auth_service.py` and `auth_helpers.py`), each file produces its own entry — the index is artifact-granular, not type-granular.
+Bootstrap walks `<project>/.kodo/checkpoints/specs/`, `<project>/.kodo/checkpoints/src/`, and `<project>/.kodo/checkpoints/test/`, deriving `(project_code, responsibility_code, type)` from the directory layout and reading the artifact's `.kodo.json` sidecar (written alongside each promoted file by the Promoter, §8.1) for `artifact_id`, `filename_hint`, `supersedes`, `requirement_ids`, and `author`. Each promoted file produces one `IndexEntry` with `state = "completed"` whose `location` points at the materialized file under `specs/`, `src/`, or `test/`. Where a component contributes multiple files of the same type (e.g., AUTH has `auth_service.py` and `auth_helpers.py`), each file produces its own entry — the index is artifact-granular, not type-granular.
 
 If a completed `requirements` artifact exists, its content is parsed to extract the universe of declared requirement IDs. This universe is what the *Requirements coverage* view (§2.2) compares each artifact's `requirement_ids` against. Without a completed `requirements` artifact, the coverage view is empty and the engine treats coverage gaps as not-yet-detectable.
 
@@ -395,11 +397,11 @@ Promotion fires per artifact, on completion. Completion is the explicit `report_
 Promotion is a separate concern from `MirrorRepo`. The promotion mechanism (call it `Promoter`) performs the following atomic-as-possible sequence:
 
 1. Read the completed artifact from the workspace.
-2. Write the artifact to its destination under `<project>/src/` or `<project>/gen/`, per the `(responsibility_code, type)` → directory mapping; the leaf filename is the artifact's `filename_hint`. Multiple files per component are normal — each artifact lands at its own path determined by its `filename_hint` within the component's directory.
-3. Write the same file into `<project>/.kodo/checkpoints/src/` or `<project>/.kodo/checkpoints/gen/`, alongside a `<filename>.kodo.json` sidecar carrying the artifact's metadata (`artifact_id`, `filename_hint`, `supersedes`, `requirement_ids`, `author`) — the durable record bootstrap reads to reconstruct the completed entry (§3, Phase 1).
+2. Write the artifact to its destination under `<project>/specs/`, `<project>/src/`, or `<project>/test/`, per the `(responsibility_code, type)` → directory mapping; the leaf filename is the artifact's `filename_hint`. Multiple files per component are normal — each artifact lands at its own path determined by its `filename_hint` within the component's directory.
+3. Write the same file into the corresponding `<project>/.kodo/checkpoints/specs/`, `<project>/.kodo/checkpoints/src/`, or `<project>/.kodo/checkpoints/test/`, alongside a `<filename>.kodo.json` sidecar carrying the artifact's metadata (`artifact_id`, `filename_hint`, `supersedes`, `requirement_ids`, `author`) — the durable record bootstrap reads to reconstruct the completed entry (§3, Phase 1).
 4. Call `MirrorRepo.stage_and_commit(message)` with a commit message of the form `<project_code>/<responsibility_code>/<type>: <session_id> → <artifact_id>`.
 5. Delete the workspace staging file (the artifact moves out of the workspace).
-6. Update `ProjectIndex`: flip the entry's `state` to `completed` and set its `location` to the materialized `src/`/`gen/` path.
+6. Update `ProjectIndex`: flip the entry's `state` to `completed` and set its `location` to the materialized `specs/`/`src/`/`test/` path.
 
 A crash between steps 2 and 5 leaves the project and mirror inconsistent with the workspace. The next bootstrap detects this — a workspace artifact whose corresponding project file already matches the workspace content — and completes the promotion by resuming from the failed step. This makes promotion crash-safe at the cost of one extra check per in-flight entry on bootstrap.
 
@@ -418,8 +420,8 @@ Rollback restores the project and mirror to a prior checkpoint commit. It is tri
 2. **Terminate the current Guide session.** Same treatment as a sub-agent session: cancel in-flight LLM call, close its log with the rollback entry, retain the file for audit. The reason: the Guide was reasoning about a state that no longer exists; continuing with the same conversation would carry stale assumptions into the post-rollback world.
 3. Clear `<project>/.kodo/workspace/` entirely (in-flight work is discarded; `.retired/` audit history is also cleared since it pertains to the abandoned state).
 4. `MirrorRepo.checkout(target_sha)` — mirror working tree now reflects the target snapshot.
-5. Delete `<project>/src/` and `<project>/gen/` (the directories Kodo owns; the user's broader repo is untouched).
-6. Copy `<project>/.kodo/checkpoints/src/` and `<project>/.kodo/checkpoints/gen/` into `<project>/src/` and `<project>/gen/`.
+5. Delete `<project>/specs/`, `<project>/src/`, and `<project>/test/` (the directories Kodo owns; the user's broader repo is untouched).
+6. Copy `<project>/.kodo/checkpoints/specs/`, `<project>/.kodo/checkpoints/src/`, and `<project>/.kodo/checkpoints/test/` into `<project>/specs/`, `<project>/src/`, and `<project>/test/`.
 7. Rebuild the in-memory index from the new on-disk state (§3 phases 1 and 2 only; phase 3 finds no in-flight entries because the workspace is empty).
 8. **Create a fresh Guide session.** Generate a new POSIX-timestamp `session_id`, create a new session directory (`meta.json`, `transient.json`, `session.jsonl`) with `{Guide system prompt + the rebuilt index snapshot + a "post-rollback start" event in the uncached user block}`, update the `<project>/.kodo/guide.session` marker. The fresh Guide decides what to do based on the restored state; from its perspective, this is a cold start at `target_sha`.
 9. Wire surfaces the rollback completion via a `state` event (the user already knows it happened because they confirmed the `ask_user` prompt that preceded the Guide's `rollback` call).

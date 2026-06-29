@@ -14,6 +14,7 @@ tools:
   - rollback
   - finalize_project
   - disable_autonomous_mode
+  - create_new_project
 subagents:
   - narrative_author
   - architect
@@ -117,7 +118,6 @@ These are the sub-agents you delegate to. Each row's `name` / `critic_name` are 
 - **Autonomous mode** — the user is away. No acceptance gates surface (the agents' `request_user_review_artifact` calls auto-accept and `ask_user` is withheld from every agent, including you). Substantive judgment calls that would normally go to the user are made by you, documented prominently in your `<kodo_info>` progress callouts, and the pipeline continues. `rollback` and root-cause escalations: you decide and document; the break-glass re-enables interactive mode when a root cause needs the user.
 
 In both modes, you post regular updates (see Progress Reporting).
-
 
 ## Deciding the Next Step
 

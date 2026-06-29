@@ -19,8 +19,8 @@ Out of scope: teams, multi-tenant deployments, hosted/cloud variants, non-develo
 
 | Term | Definition |
 | --- | --- |
-| Project | A directory containing `kodo.md`, `src/`, `gen/`, and `.kodo/`. The unit of work. |
-| `.kd` file | Markdown file under `src/` describing some aspect of the project (narrative, responsibilities, requirements, design, test plan). For MVP, `.kd` is plain Markdown. |
+| Project | A directory containing `kodo.md`, `specs/`, `src/`, `test/`, and `.kodo/`. The unit of work. |
+| `.kd` file | Markdown file under `specs/` describing some aspect of the project (narrative, responsibilities, requirements, design, test plan). For MVP, `.kd` is plain Markdown. |
 | `kodo.md` | Project manifest, at `<project>/.kodo/kodo.md` (moved under `.kodo/` post-MVP; was at the project root). Required headings declare a Kodo project. |
 | Narrative | Top-level natural-language description of the end product. The "north star". One per project. |
 | Responsibility | A single, named area of behavior the product must deliver. |
@@ -69,7 +69,7 @@ This is the only acceptance criterion that gates MVP release. Per-feature requir
 - **FR-VSIX-02.** On activation, the extension SHALL ensure a Kodo Server binary is present under `~/.kodo/bin/` and matches the version expected by the extension; if missing or mismatched, the extension SHALL download the matching binary from the published GitHub release for the current OS/arch and store it under `~/.kodo/bin/`.
 - **FR-VSIX-03.** The extension SHALL activate automatically on VS Code window startup (not on first user command), launch one Kodo Server subprocess per VS Code window, passing the project root and a freshly-picked free loopback port as CLI arguments. Multiple VS Code windows SHALL be able to run Kodo concurrently without coordination.
 - **FR-VSIX-04.** The extension SHALL obtain the Anthropic API token as follows: on activation, read the `KODO_ANTHROPIC_API_KEY` environment variable; if it is non-empty, persist it to VS Code SecretStorage (overwriting any prior value) and use it; if the env var is absent or empty, fall back to whatever is already stored in SecretStorage; if neither source yields a key, display a warning instructing the Dev to set `KODO_ANTHROPIC_API_KEY` and restart VS Code, then continue with no key. The token SHALL be passed to the server subprocess via `ANTHROPIC_API_KEY` in the child process environment and SHALL NOT be written to any file by the extension or the server.
-- **FR-VSIX-05.** The extension SHALL provide a `Kodo: Init Project` command that opens a folder-picker dialog; upon folder selection it SHALL create `kodo.md`, `src/`, `gen/`, and `.kodo/` in the chosen directory, add that directory to the current VS Code workspace (if not already present), and open `kodo.md` in the editor.
+- **FR-VSIX-05.** The extension SHALL provide a `Kodo: Init Project` command that opens a folder-picker dialog; upon folder selection it SHALL create `kodo.md`, `specs/`, `src/`, `test/`, and `.kodo/` in the chosen directory, add that directory to the current VS Code workspace (if not already present), and open `kodo.md` in the editor.
 - **FR-VSIX-06.** The extension SHALL provide a `Kodo: Open Panel` command that opens (or reveals) a WebView showing the conversation, file events, approval prompts, and usage panel. The WebView SHALL be a view onto extension-host-resident state: while the panel is closed the WebSocket connection MUST remain open, agent state MUST keep updating, and reopening the panel MUST rehydrate the UI from the cached state without forcing a server-side reconnect.
 - **FR-VSIX-07.** The extension SHALL provide a globally visible **STOP** control inside the WebView that cancels all running agent work for the project.
 - **FR-VSIX-08.** The extension SHALL register URL handlers for diff and file links so that clicking a diff link in the WebView opens VS Code's native diff editor, and clicking a file link opens the file in the editor.
@@ -193,9 +193,9 @@ MVP replaces the prior hardcoded stage machine with an agentic Guide. The Guide 
 ### 5.10 Mirror & checkpoints (FR-MIR)
 
 - **FR-MIR-01.** A git mirror SHALL live at `<project>/.kodo/checkpoints/`. The mirror is initialised by `Kodo: Init Project` and is a regular git repository, not a worktree.
-- **FR-MIR-02.** The mirror SHALL store all generated artifacts under `gen/`, all `.kd` files under `src/`, plus a session metadata file.
+- **FR-MIR-02.** The mirror SHALL store all generated source code under `src/`, all generated tests under `test/`, all `.kd` files under `specs/`, plus a session metadata file.
 - **FR-MIR-03.** A checkpoint SHALL be created automatically each time an artifact is completed and promoted (FR-WKS-10/15) — one commit per promoted artifact — with a commit message identifying the artifact (e.g., `<project_code>/<responsibility_code>/<type>: <session_id> → <artifact_id>`).
-- **FR-MIR-04.** Dev can list checkpoints and roll back to any prior checkpoint via a WebView control. Rollback overwrites the mirror's working tree and the corresponding files in `<project>/src/` and `<project>/gen/`.
+- **FR-MIR-04.** Dev can list checkpoints and roll back to any prior checkpoint via a WebView control. Rollback overwrites the mirror's working tree and the corresponding files in `<project>/specs/`, `<project>/src/`, and `<project>/test/`.
 - **FR-MIR-05.** MVP does NOT commit to the main project repo automatically. Dev manages main-repo commits manually.
 
 ### 5.11 Autonomous mode (FR-AUT)
@@ -208,7 +208,7 @@ MVP replaces the prior hardcoded stage machine with an agentic Guide. The Guide 
 
 - **FR-STA-01.** Transient per-agent state SHALL live at `~/.kodo/transient/<project-hash>/<session-id>/<agent>.jsonl`. Each agent appends one record per LLM call (request hash, response hash, usage).
 - **FR-STA-02.** On server crash, on restart, the workflow engine SHALL detect the most recent transient state and offer to resume the interrupted agent's last call.
-- **FR-STA-03.** "Memory" SHALL live as `.kd` files under `<project>/src/.memory/`. These are committed to the main repo by Dev.
+- **FR-STA-03.** "Memory" SHALL live as `.kd` files under `<project>/specs/.memory/`. These are committed to the main repo by Dev.
 - **FR-STA-04.** Agents SHALL be able to propose memory updates as ordinary file writes (reviewed_artifact_id to security layer); the writes appear in the WebView as file events for Dev review.
 - **FR-STA-05.** Settings SHALL load with precedence: project `<project>/.kodo/settings.json` > user `~/.kodo/settings.json` > built-in defaults.
 - **FR-STA-06.** VS Code workspace settings SHALL only carry VSIX-side concerns (server binary path override, log level).
@@ -221,10 +221,10 @@ MVP replaces the prior hardcoded stage machine with an agentic Guide. The Guide 
 
 ### 5.14 Project layout & lifecycle (FR-PRJ)
 
-- **FR-PRJ-01.** A Kodo project's root SHALL contain: `src/`, `gen/`, `.kodo/` (which in turn contains `kodo.md`; see `_layout.py:ProjectLayout.kodo_md`, moved post-MVP from the project root).
+- **FR-PRJ-01.** A Kodo project's root SHALL contain: `specs/`, `src/`, `test/`, `.kodo/` (which in turn contains `kodo.md`; see `_layout.py:ProjectLayout.kodo_md`, moved post-MVP from the project root).
 - **FR-PRJ-02.** `kodo.md` SHALL contain at minimum these top-level headings: `# Kodo Project`, `## Toolchain`, `## Components`, `## Settings overrides`. The presence of `# Kodo Project` is the marker that identifies a directory as a Kodo project.
-- **FR-PRJ-03.** `src/` SHALL contain `narrative.kd`, `responsibilities.kd`, optionally `.memory/*.kd`, and one subdirectory per component. Each component subdirectory contains `requirements.kd`, `design.kd`, `test_plan.kd`.
-- **FR-PRJ-04.** `gen/` SHALL contain one subdirectory per component plus a `tests/e2e/` directory. Layout inside each component subdirectory is owned by the active toolchain plugin.
+- **FR-PRJ-03.** `specs/` SHALL contain `narrative.kd`, `responsibilities.kd`, optionally `.memory/*.kd`, and one subdirectory per component. Each component subdirectory contains `requirements.kd`, `design.kd`, `test_plan.kd`.
+- **FR-PRJ-04.** `src/` SHALL contain one subdirectory per component, holding that component's source code (including entry points). `test/` SHALL contain one subdirectory per component plus a `tests/e2e/` directory. Layout inside each subdirectory is owned by the active toolchain plugin.
 - **FR-PRJ-05.** `.kodo/` SHALL contain `checkpoints/` (the mirror), `settings.json`, `server.pid`, `security.json` (project-scoped rules), and a `sessions/` directory of session-metadata files.
 - **FR-PRJ-06.** `Kodo: Init Project` SHALL refuse to overwrite a non-empty workspace unless `--force` is passed.
 
@@ -245,7 +245,7 @@ The virtual workspace is the exclusive mechanism through which agents produce an
 
 - **FR-WKS-02.** The workspace SHALL expose two MCP tools — `publish_artifact` and `read_artifact` — whose JSON schemas are the authoritative specification maintained as `ToolSpec`s in `src/kodo/toolspecs/_publish_artifact.py` and `src/kodo/toolspecs/_read_artifact.py` in the Kodo source tree.
 
-- **FR-WKS-03.** The known artifact types are: `narrative`, `architecture`, `requirements`, `plan`, `functional-design`, `design-plan`, `tech-stack`, `test-plan`, `code`, `test`, `feedback`. The `plan` type is project-wide and authored by Planner (FR-AGT-PL); its base directory is `src/plan/`. New types may be introduced by adding an enum value to both schemas; no other registration step is required.
+- **FR-WKS-03.** The known artifact types are: `narrative`, `architecture`, `requirements`, `plan`, `functional-design`, `design-plan`, `tech-stack`, `test-plan`, `code`, `test`, `feedback`. The `plan` type is project-wide and authored by Planner (FR-AGT-PL); its base directory is `specs/plan/`. New types may be introduced by adding an enum value to both schemas; no other registration step is required.
 
 - **FR-WKS-04.** Each artifact SHALL carry: a UUID v4 (`id`), `type`, `author` (the name of the agent that published it), `project_code` (PROJECTCODE), `responsibility_code` (RESPONSIBILITYCODE), optional `requirement_ids` list (each formatted `PROJECTCODE_RESPONSIBILITYCODE_REQUIREMENTCODE`), text `content`, optional `filename_hint` (leaf filename only, no path), optional `supersedes` list (IDs of artifacts being retired), optional `reviewed_artifact_id` (for type `feedback`: the ID of the artifact being reviewed), optional `verdict` (for type `feedback`: `accepted` or `rejected`), optional `concerns` (for type `feedback` with `verdict=rejected`: a list of structured concern objects — see FR-WKS-07), optional `metadata` (string key-value pairs for supplementary context), and a `created_at` timestamp assigned by the workspace engine at publish time. `author` is required on every `publish_artifact` call. `reviewed_artifact_id`, `verdict`, and `concerns` are required on every `feedback` artifact with `verdict=rejected`.
 
@@ -261,9 +261,9 @@ The virtual workspace is the exclusive mechanism through which agents produce an
 
 - **FR-WKS-09.** Retiring an artifact SHALL: remove it from the live index, move its on-disk file to `.kodo/workspace/.retired/{artifact_id}/{exact_filename_with_extension}` (the per-id directory preserves the original leaf filename so audit tooling and diff viewers can key off the extension), and append a `retired` entry to the event log. Retirement is permanent through the workspace API; there is no un-retire operation. A `supersedes` list of `[A, B]` in a single `publish_artifact` call retires A and B atomically with the creation of the new artifact; this covers 1-to-1 replacement, 1-to-N splits (multiple calls each listing the same old ID), and N-to-1 merges (one call listing multiple old IDs).
 
-- **FR-WKS-10.** Materialization of an artifact at its `src/` or `gen/` path defined by FR-PRJ-03 / FR-PRJ-04 SHALL occur only on completion, via the Promoter mechanism specified in [STATE_AND_LIFECYCLE.md §8](STATE_AND_LIFECYCLE.md). Completion is signalled by `report_artifact_completed` (FR-WKS-15); it requires critic acceptance (FR-WKS-07a) and, in interactive mode, the user's acceptance at the review gate (FR-WF-05). On completion the Promoter materializes the artifact to `src/`/`gen/`, mirrors it with a checkpoint commit and a `.kodo.json` sidecar, marks the index entry `completed`, and removes the staging file from the workspace. Before completion the artifact exists only under `.kodo/workspace/`; toolchain plugins, sub-agents, and the wire protocol SHALL NOT assume any presence under `src/`/`gen/` for in-flight artifacts.
+- **FR-WKS-10.** Materialization of an artifact at its `specs/`, `src/`, or `test/` path defined by FR-PRJ-03 / FR-PRJ-04 SHALL occur only on completion, via the Promoter mechanism specified in [STATE_AND_LIFECYCLE.md §8](STATE_AND_LIFECYCLE.md). Completion is signalled by `report_artifact_completed` (FR-WKS-15); it requires critic acceptance (FR-WKS-07a) and, in interactive mode, the user's acceptance at the review gate (FR-WF-05). On completion the Promoter materializes the artifact to `specs/`, `src/`, or `test/`, mirrors it with a checkpoint commit and a `.kodo.json` sidecar, marks the index entry `completed`, and removes the staging file from the workspace. Before completion the artifact exists only under `.kodo/workspace/`; toolchain plugins, sub-agents, and the wire protocol SHALL NOT assume any presence under `specs/`, `src/`, or `test/` for in-flight artifacts.
 
-- **FR-WKS-11.** Promoter SHALL also propagate retirement of accepted artifacts to `src/`/`gen/`. When an accepted artifact is later retired with a superseding artifact, Promoter overwrites the corresponding `src/`/`gen/` file with the successor's content and commits the change to the mirror. When retired with no successor, Promoter deletes the file and commits the deletion. The detailed sequence is in STATE_AND_LIFECYCLE.md §8.1.
+- **FR-WKS-11.** Promoter SHALL also propagate retirement of accepted artifacts to `specs/`, `src/`, or `test/`. When an accepted artifact is later retired with a superseding artifact, Promoter overwrites the corresponding file with the successor's content and commits the change to the mirror. When retired with no successor, Promoter deletes the file and commits the deletion. The detailed sequence is in STATE_AND_LIFECYCLE.md §8.1.
 
 - **FR-WKS-12.** The workspace SHALL maintain an append-only event log at `.kodo/workspace/events.jsonl`. Each JSON line SHALL record: `timestamp`, `event` (`published` or `retired`), `artifact_id`, `type`, `author`, `project_code`, `responsibility_code`, `requirement_ids`, `supersedes`, `reviewed_artifact_id`, `verdict`, and `filename_hint`. The `concerns` list is not duplicated in the event log; it is retrievable from the artifact file itself. The event log combined with the on-disk artifacts SHALL be sufficient to reconstruct the full sequence of artifact lifecycle events for any session.
 

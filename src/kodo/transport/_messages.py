@@ -88,6 +88,14 @@ MSG_WORKSPACE_FOLDERS = "workspace.folders"
 # user first runs Guided after picking a project. Payload: ``{root, name}``.
 # Immutable for the session — a second, different value is rejected.
 MSG_PROJECT_SET = "project.set"
+# Scaffold a new project directly (no LLM round-trip) — backs the VS Code
+# "Create Project" command, which already has a concrete folder from its own
+# picker dialog. Payload: ``{path, name?, force?}`` (``name`` optional, ``path``
+# always supplied by the client). Shares ``WorkflowEngine.__create_project``
+# with the ``create_new_project`` tool. Replies ``project.create.done``
+# ``{path, name}`` on success or ``project.create.error`` ``{message}`` if
+# ``path``'s ``kodo.md`` already exists and ``force`` wasn't set.
+MSG_PROJECT_CREATE = "project.create"
 MSG_SECURITY_ADD_RULE = "security.add_rule"
 # Manually trigger context compaction for this session. Honoured only when the
 # entry agent is idle (``state.phase == "awaiting_user"``) and there is context
@@ -183,6 +191,13 @@ EVT_SUBSESSION_ENDED = "subsession.ended"
 # The session's current project was bound (Guided). Payload: ``{root, name}``.
 # Lets the client display the locked project and stop re-prompting for it.
 EVT_PROJECT_BOUND = "project.bound"
+# An agent created a brand-new project (``create_new_project`` tool) and the
+# server has scaffolded it on disk; ask the VS Code extension to add the new
+# directory to the open workspace (``vscode.workspace.updateWorkspaceFolders``).
+# Payload: ``{path, name}`` (``path`` absolute). The extension's resulting
+# ``onDidChangeWorkspaceFolders`` re-pushes ``workspace.folders``, reconciling
+# the server's folder map.
+EVT_WORKSPACE_ADD_FOLDER = "workspace.add_folder"
 # A submitted prompt carried file attachments that the server has now stored in
 # the session. Emitted right after the user message is persisted so the live
 # WebView can render clickable chips on the just-sent bubble pointing at the

@@ -20,6 +20,7 @@ from ._compliance import (
     normalize_output,
     tool_result_succeeded,
 )
+from ._create_new_project import CREATE_NEW_PROJECT
 from ._disable_autonomous_mode import DISABLE_AUTONOMOUS_MODE
 from ._edit_file import EDIT_FILE
 from ._escalate_blocker import ESCALATE_BLOCKER
@@ -55,6 +56,7 @@ from ._visibility import build_detail_rows, stringify_value
 __all__ = [
     "ALL_TOOLS",
     "ASK_USER",
+    "CREATE_NEW_PROJECT",
     "DISABLE_AUTONOMOUS_MODE",
     "EDIT_FILE",
     "ESCALATE_BLOCKER",
@@ -95,6 +97,7 @@ __all__ = [
 # the `## Tools` section of each agent prompt.
 ALL_TOOLS: tuple[ToolSpec, ...] = (
     ASK_USER,
+    CREATE_NEW_PROJECT,
     DISABLE_AUTONOMOUS_MODE,
     EDIT_FILE,
     ESCALATE_BLOCKER,

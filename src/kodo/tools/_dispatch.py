@@ -18,6 +18,7 @@ from pathlib import Path
 
 from kodo.toolspecs import (
     ASK_USER,
+    CREATE_NEW_PROJECT,
     DISABLE_AUTONOMOUS_MODE,
     EDIT_FILE,
     ESCALATE_BLOCKER,
@@ -43,6 +44,7 @@ from kodo.workspace import ProjectIndex, Workspace
 
 from ._ask_user import AskUserTool
 from ._context import EngineServices, GateLike, RootPath, SessionLike, ToolContext
+from ._create_new_project import CreateNewProjectTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
 from ._edit_file import EditFileTool
 from ._escalate_blocker import EscalateBlockerTool
@@ -92,6 +94,7 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (ROLLBACK, RollbackTool),
     (FINALIZE_PROJECT, FinalizeProjectTool),
     (DISABLE_AUTONOMOUS_MODE, DisableAutonomousModeTool),
+    (CREATE_NEW_PROJECT, CreateNewProjectTool),
 )
 
 _CLASSES_BY_NAME: dict[str, type[Tool]] = {spec.name: cls for spec, cls in _TOOL_CLASSES}

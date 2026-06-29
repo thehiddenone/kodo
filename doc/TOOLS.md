@@ -213,11 +213,16 @@ Protocols**, also defined in `_context.py`:
 - **`EngineServices`** — **one** protocol covering *every* engine-side operation
   a tool can delegate upward: `run_subagent(caller, ...)`,
   `run_author_critic_iteration(caller, ...)`, `rollback(...)`, `complete_artifact(...)`,
-  and `disable_autonomous_mode(...)`. Runtime injects a single
-  `_EngineServices` adapter (built inline in `_engine.py`) wrapping the engine's
-  private `__run_*` / `__complete_artifact` / `__disable_autonomous`
-  methods. (This replaced the former split of a `SubagentRunner`
-  protocol plus four bare `rollback_fn` / `complete_fn` / … callables.)
+  `disable_autonomous_mode(...)`, and `create_project(name)`. Runtime injects a
+  single `_EngineServices` adapter (built inline in `_engine.py`) wrapping the
+  engine's private `__run_*` / `__complete_artifact` / `__disable_autonomous` /
+  `__create_project` methods. (This replaced the former split of a
+  `SubagentRunner` protocol plus four bare `rollback_fn` / `complete_fn` / …
+  callables.) `create_project` is what backs the `create_new_project` tool: the
+  engine slugifies the requested name, makes a fresh directory under the session
+  workspace root (auto-suffixing on collision), scaffolds its `.kodo/`+mirror via
+  `RootMirrorManager.prepare`, and pushes `EVT_WORKSPACE_ADD_FOLDER` so the
+  extension adds it to the open VS Code workspace.
 
 This is the dependency inversion that lets the tool layer sit *below* the engine
 while still calling back into it. `runtime` constructs the concrete objects and

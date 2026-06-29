@@ -183,7 +183,7 @@ backend that `GateOrchestrator` and `KeyBroker` register futures against.
 
 | Module | Defines | Links |
 |---|---|---|
-| [_layout.py](../src/kodo/project/_layout.py) | `ProjectLayout` (frozen dataclass), `ProjectLayoutError`, `kodo_user_dir()` | Pure path algebra over a `root`: `kodo_md`, `src_dir`, `gen_dir`, `kodo_dir`, `workspace_dir`, `checkpoints_dir`, `sessions_dir`, `llm_requests_dir`, etc. `validate()`, `init()`, and **`scaffold_kodo_dir()`**. |
+| [_layout.py](../src/kodo/project/_layout.py) | `ProjectLayout` (frozen dataclass), `ProjectLayoutError`, `kodo_user_dir()` | Pure path algebra over a `root`: `kodo_md`, `specs_dir`, `src_dir`, `test_dir`, `kodo_dir`, `workspace_dir`, `checkpoints_dir`, `sessions_dir`, `llm_requests_dir`, etc. `validate()`, `init()`, and **`scaffold_kodo_dir()`**. |
 | [_manifest.py](../src/kodo/project/_manifest.py) | `Manifest` (frozen), `ManifestError`, `parse_manifest()` | Parses `kodo.md` headings + toolchain list. |
 
 **`kodo_md` moved under `.kodo/`:** the manifest now lives at `<root>/.kodo/kodo.md`
@@ -195,7 +195,7 @@ excludes `.kodo/` entirely, so the manifest is **intentionally never checkpointe
 Kōdo first touches an arbitrary directory that isn't (yet) a full Kodo project —
 e.g. a Problem Solver workspace folder getting its first checkpoint mirror
 (`RootMirrorManager`, §10b/§12.4): it creates only `.kodo/` and a minimal `kodo.md`
-marker, never `src/`/`gen/`, and never overwrites an existing manifest.
+marker, never `specs/`/`src/`/`test/`, and never overwrites an existing manifest.
 
 **Links:** `ProjectLayout` is **used by value** (constructed ad hoc) throughout:
 `Workspace`, `Config`, `Lifecycle`, `CheckpointManager`, `Rollback`,
@@ -254,6 +254,7 @@ All dispatchable specs now share one handler layer (`tools/`, §6A); the
 | `get_root_paths`, `find_files`, `find_text_in_files` | `tools/` | ✅ implemented (workspace search). `get_root_paths` returns the mode-aware root list (bound project in Guided; every workspace folder in Problem Solver) from `ToolContext.root_paths`. `find_files`/`find_text_in_files` resolve `root` through the active resolver then shell out to the bundled `fd`/`rg` (§10a) via `ToolContext.util_paths`. Granted to `guide` + `problem_solver`. |
 | `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `rollback`, `finalize_project` | `tools/` | ✅ implemented |
 | `disable_autonomous_mode` | `tools/` | ✅ implemented (`DisableAutonomousModeTool`, in `_TOOL_CLASSES`). Declared by `guide`; resolved by `tools_for_agent` and dispatched. (Progress reporting is no longer a tool — agents emit `<kodo_info>` callouts in their message text; see the performance preamble.) |
+| `create_new_project` | `tools/` | ✅ implemented (`CreateNewProjectTool`). Granted to `guide` + `problem_solver`. Thin shim over `_EngineServices.create_project(name)`: the engine slugifies the name, makes a fresh directory under the session workspace root (auto-suffix `-2`/`-3`… on collision), scaffolds `.kodo/`+`kodo.md`+checkpoint mirror via `RootMirrorManager.prepare`, records it in the logical-root map, and pushes `EVT_WORKSPACE_ADD_FOLDER` so the extension adds it to the open workspace (WS_PROTOCOL §5.9c). |
 | `toolchain_build`/`toolchain_deps` | — | ⚠️ **spec only, no dispatch.** Declared by `coder`/`problem_solver` frontmatter; rendered into prompts but silently dropped by `tools_for_agent` (no handler in `DISPATCHABLE_TOOLS_BY_NAME`). `toolchain_build` now **absorbs the former `toolchain_test`**: boolean step flags (`build`/`static_analysis`/`test`, default on; `format`, default off) select which `scripts/<step>` run in order — format → build → static_analysis → test — plus a `test_selector` passed through to the `test` script. Running tests = `toolchain_build` with `test: true` and the build/analysis steps disabled. |
 
 **State:** Catalog complete; several specs are intentional placeholders ahead of dispatch.
@@ -318,7 +319,7 @@ from [\_\_init\_\_.py](../src/kodo/workspace/__init__.py).
 | [_index.py](../src/kodo/workspace/_index.py) | `ProjectIndex`, `IndexEntry` (frozen), `ArtifactState` (Literal) | **The in-memory catalog.** Metadata-only; content stays on disk at `IndexEntry.location`. Never persisted — reconstructed at bootstrap. Methods: `add`, `remove`, `mark_completed`, `get_by_id`, `get_by_key`, `all/completed/in_flight_entries`. |
 | [_workspace.py](../src/kodo/workspace/_workspace.py) | `Workspace` | **Composes** a shared `ProjectIndex` (injected) + a `ProjectLayout` (built internally from `project_root`). Owns staging mechanics: writes per-artifact JSON under `.kodo/workspace/`, retires superseded files to `.retired/`, appends `events.jsonl`, validates publish rules. `read()` branches by state (in-flight = staging JSON, completed = raw promoted file). `bind_index()` swaps the index after bootstrap/rollback. `asyncio.Lock` serialises mutations. |
 | [_component_registry.py](../src/kodo/workspace/_component_registry.py) | `ComponentRegistry` | Parses the architecture artifact's markdown table → codename→display-name map → `component_dir()` (snake_case). `.empty()` fallback. |
-| [_materialization.py](../src/kodo/workspace/_materialization.py) | `materialization_path()`, `materialize()`, `dematerialize()` | Pure functions mapping `Artifact` + `ToolchainPlugin` + `ComponentRegistry` → a `src/`/`gen/` path. **Imports `toolchains._interface.ToolchainPlugin`** (the one upward-looking dependency, to a sibling domain). |
+| [_materialization.py](../src/kodo/workspace/_materialization.py) | `materialization_path()`, `materialize()`, `dematerialize()` | Pure functions mapping `Artifact` + `ToolchainPlugin` + `ComponentRegistry` → a `specs/`/`src/`/`test/` path. **Imports `toolchains._interface.ToolchainPlugin`** (the one upward-looking dependency, to a sibling domain). |
 | [_errors.py](../src/kodo/workspace/_errors.py) | `WorkspaceError`, `WorkspaceValidationError`, `ArtifactNotFoundError` | Exception hierarchy. |
 
 **Git mirror (merged from the former `kodo.mirror`):**
@@ -326,7 +327,7 @@ from [\_\_init\_\_.py](../src/kodo/workspace/__init__.py).
 | Module | Defines | Role |
 |---|---|---|
 | [_repo.py](../src/kodo/workspace/_repo.py) | `MirrorRepo`, `MirrorRepoError`, `CheckpointInfo` (frozen) | Async git porcelain over `.kodo/checkpoints/` via `asyncio.create_subprocess_exec`: `init`, `stage_and_commit`, `head_sha`, `checkout`, `log`. No `kodo` imports. |
-| [_promoter.py](../src/kodo/workspace/_promoter.py) | `Promoter`, `PromoterError` | **Composes** `MirrorRepo` + `ToolchainPlugin` + `ComponentRegistry`. `promote()` writes an accepted artifact to its `src/`/`gen/` path **and** the mirror tree + `.kodo.json` sidecar, then commits. Imports siblings `_materialization`, `_component_registry`, `_models`, `_repo`. |
+| [_promoter.py](../src/kodo/workspace/_promoter.py) | `Promoter`, `PromoterError` | **Composes** `MirrorRepo` + `ToolchainPlugin` + `ComponentRegistry`. `promote()` writes an accepted artifact to its `specs/`/`src/`/`test/` path **and** the mirror tree + `.kodo.json` sidecar, then commits. Imports siblings `_materialization`, `_component_registry`, `_models`, `_repo`. |
 | [_checkpoints.py](../src/kodo/workspace/_checkpoints.py) | `CheckpointManager` | **Composes** a `MirrorRepo` built from `ProjectLayout.checkpoints_dir`. `ensure_initialized`, `create_checkpoint`, `list_checkpoints`. |
 
 **Links:** `Workspace` ← composition ← `ProjectIndex` (shared, injected by the
@@ -555,8 +556,8 @@ Write, Match Existing Conventions, Verify Don't Assume, and Stay In Scope.
 
 | Agent | Tools declared | Role |
 |---|---|---|
-| `guide` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. `subagents:` allow-list includes the pipeline agents **+ `python_toolchain`**. |
-| `problem_solver` | filesystem, edit_file, run_command, **toolchain_build/deps**, **run_subagent**, ask_user | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). Now declares `run_subagent` + `subagents: [python_toolchain]` — its first spawn capability, used only to delegate toolchain setup. **Embeds `{PLACEHOLDER:SUBAGENTS}` in a `## Subagents` section** — the live caller of the roster mechanism (renders `python_toolchain`'s row + purpose). |
+| `guide` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode, **create_new_project** | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. `subagents:` allow-list includes the pipeline agents **+ `python_toolchain`**. |
+| `problem_solver` | filesystem, edit_file, run_command, **toolchain_build/deps**, **run_subagent**, ask_user, **create_new_project** | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). Now declares `run_subagent` + `subagents: [python_toolchain]` — its first spawn capability, used only to delegate toolchain setup. **Embeds `{PLACEHOLDER:SUBAGENTS}` in a `## Subagents` section** — the live caller of the roster mechanism (renders `python_toolchain`'s row + purpose). |
 | `python_toolchain` | run_command, filesystem, edit_file, find_files, find_text_in_files, get_root_paths, ask_user | **Toolchain-setup** agent (`bases: [toolchain]`). Spawnable by both `guide` and `problem_solver`. Bootstraps/converts a project: generates the five per-platform build scripts (`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`) + a `DEVELOPMENT.md` (run guide + command-level dependency-management steps). Suggest-then-confirm invocation. |
 | `narrative_author` | publish, read, **ask_user**, request_review, report_completed | Solo, user-facing intake. |
 | `architect`, `requirements_author`, `functional_designer`, `e2e_test_designer`, `test_designer` | publish, read, escalate_blocker | Authors (paired with a critic). |
@@ -658,6 +659,11 @@ bootstrap/rollback). It owns `__orch_messages` (the Guide's running
 - `__disable_autonomous` (exposed via
   `_EngineServices.disable_autonomous_mode`) backs the
   guide's `disable_autonomous_mode` tool.
+- `__create_project` (exposed via `_EngineServices.create_project`) backs the
+  `create_new_project` tool: slugify name → `_unique_child_dir` under the
+  session physical root → `mkdir` → add to the logical-root map →
+  `RootMirrorManager.prepare` (scaffolds `.kodo/`+mirror) → push
+  `EVT_WORKSPACE_ADD_FOLDER`.
 - **Per-tool-call checkpointing (Problem Solver only)** — gated by
   `__checkpoint_enabled()` (`effective_workflow_mode == "problem_solving"`),
   inside `__dispatch_tool_calls` around each of `_MUTATING_TOOLS =
@@ -800,7 +806,7 @@ clears both `autonomous` and `effective_autonomous` immediately and emits
 **Completion → promotion:** a critic/solo agent calls `report_artifact_completed`
 → `tools/_report_artifact_completed.handle` → `EngineServices.complete_artifact`
 → engine `__complete_artifact` → `Promoter.promote` writes the file into
-`src/`/`gen/` **and** the mirror tree +
+`specs/`/`src/`/`test/` **and** the mirror tree +
 `.kodo.json` sidecar, commits, then `Workspace.mark_completed` flips state and
 deletes the staging file.
 
@@ -856,6 +862,7 @@ only on the destination root's checkpoint, not the source's.
 | `mirror`/`shellparser` (§10b) + `runtime/_checkpoints.RootMirrorManager` — generic checkpoint/undo/rollback | ✅ Implemented; wired only into Problem Solver. Two documented limitations (§15). The Guided promotion mirror (`workspace/_checkpoints.CheckpointManager`) is untouched. |
 | Toolchain agent tools (`toolchain_build/deps`) | ⚠️ Spec only — no handler, dropped by `tools_for_agent` |
 | `disable_autonomous_mode` | ✅ Implemented and dispatched (guide) |
+| `create_new_project` | ✅ Implemented and dispatched (guide + problem_solver); scaffolds a new project dir + checkpoint mirror and adds it to the workspace |
 | Native file-IO / `run_command` tools | ✅ Implemented; granted to the `problem_solver` agent |
 | Two workflows (`guided` Guide / `problem_solving` Problem Solver) | ✅ Implemented; selected by `workflow.set` → `SessionState.workflow_mode` |
 | `security/*`, `state/_memory` | ⛔ Stubs |

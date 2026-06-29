@@ -89,6 +89,9 @@ class _StubServices:
     async def disable_autonomous_mode(self) -> None:
         return None
 
+    async def create_project(self, name: str, path: str | None = None) -> dict[str, object]:
+        return {"path": path or f"/tmp/{name}", "name": name}
+
 
 def _make_dispatcher(
     tmp_path: Path,

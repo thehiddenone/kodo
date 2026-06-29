@@ -176,7 +176,7 @@ def test_project_index_add_and_get_by_id(tmp_path: Path) -> None:
         responsibility_code="PROJ",
         type=ArtifactType.NARRATIVE,
         state="completed",
-        location=tmp_path / "src" / "narrative" / "narrative.md",
+        location=tmp_path / "specs" / "narrative" / "narrative.md",
         filename_hint="narrative.md",
         supersedes=[],
         requirement_ids=[],

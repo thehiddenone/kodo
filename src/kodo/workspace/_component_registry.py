@@ -9,8 +9,8 @@ The architecture artifact declares each component as a table row:
 
 :class:`ComponentRegistry` parses that table and provides the
 ``component_dir`` used by :func:`~._materialization.materialization_path`
-to place per-component artifacts under ``src/design/<component_dir>/``,
-``gen/src/<component_dir>/``, etc.
+to place per-component artifacts under ``specs/design/<component_dir>/``,
+``src/<component_dir>/``, etc.
 """
 
 from __future__ import annotations

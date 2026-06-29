@@ -1,16 +1,16 @@
-"""Maps artifact type and codenames to materialized paths in src/ and gen/.
+"""Maps artifact type and codenames to materialized paths in specs/, src/, and test/.
 
 Path layout per STATE_AND_LIFECYCLE.md §1.1:
 
-    src/narrative/          narrative artifacts
-    src/tech_stack/         tech-stack artifacts
-    src/requirements/       requirements artifacts
-    src/architecture/       architecture artifacts
-    src/design/             design-plan artifacts (project-wide)
-    src/design/<comp>/      functional-design artifacts (per-component)
-    src/test_design/<comp>/ test-plan artifacts (per-component)
-    gen/src/<comp>/         code artifacts (per-component)
-    gen/test/<comp>/        test artifacts (per-component)
+    specs/narrative/          narrative artifacts
+    specs/tech_stack/         tech-stack artifacts
+    specs/requirements/       requirements artifacts
+    specs/architecture/       architecture artifacts
+    specs/design/             design-plan artifacts (project-wide)
+    specs/design/<comp>/      functional-design artifacts (per-component)
+    specs/test_design/<comp>/ test-plan artifacts (per-component)
+    src/<comp>/               code artifacts (per-component)
+    test/<comp>/              test artifacts (per-component)
 
 ``<comp>`` is the snake_case component directory derived from the
 component's display name via :class:`ComponentRegistry`.  When no
@@ -38,8 +38,8 @@ def materialization_path(
     """Return the path where content should be materialized, or None.
 
     Feedback artifacts are never materialized.  All other types land in
-    ``src/`` (specification artifacts) or ``gen/`` (code and test artifacts)
-    according to the §1.1 layout.
+    ``specs/`` (specification artifacts), ``src/`` (code), or ``test/``
+    (test artifacts) according to the §1.1 layout.
 
     Args:
         artifact (Artifact): The artifact to place.
@@ -59,29 +59,29 @@ def materialization_path(
 
     match artifact.type:
         case ArtifactType.NARRATIVE:
-            return project_root / "src" / "narrative" / hint
+            return project_root / "specs" / "narrative" / hint
         case ArtifactType.TECH_STACK:
-            return project_root / "src" / "tech_stack" / hint
+            return project_root / "specs" / "tech_stack" / hint
         case ArtifactType.REQUIREMENTS:
-            return project_root / "src" / "requirements" / hint
+            return project_root / "specs" / "requirements" / hint
         case ArtifactType.ARCHITECTURE:
-            return project_root / "src" / "architecture" / hint
+            return project_root / "specs" / "architecture" / hint
         case ArtifactType.DESIGN_PLAN:
-            return project_root / "src" / "design" / hint
+            return project_root / "specs" / "design" / hint
         case ArtifactType.FUNCTIONAL_DESIGN:
             comp = reg.component_dir(artifact.responsibility_code)
-            return project_root / "src" / "design" / comp / hint
+            return project_root / "specs" / "design" / comp / hint
         case ArtifactType.TEST_PLAN:
             comp = reg.component_dir(artifact.responsibility_code)
-            return project_root / "src" / "test_design" / comp / hint
+            return project_root / "specs" / "test_design" / comp / hint
         case ArtifactType.CODE:
             comp = reg.component_dir(artifact.responsibility_code)
             leaf = toolchain.source_filename(hint)
-            return project_root / "gen" / "src" / comp / leaf
+            return project_root / "src" / comp / leaf
         case ArtifactType.TEST:
             comp = reg.component_dir(artifact.responsibility_code)
             leaf = toolchain.test_filename(hint)
-            return project_root / "gen" / "test" / comp / leaf
+            return project_root / "test" / comp / leaf
         case _:
             return None
 
@@ -92,7 +92,7 @@ async def materialize(
     toolchain: ToolchainPlugin,
     registry: ComponentRegistry | None = None,
 ) -> Path | None:
-    """Write artifact content to its conventional src/ or gen/ path.
+    """Write artifact content to its conventional specs/, src/, or test/ path.
 
     Returns the path the artifact was written to, or ``None`` when the
     artifact type is not materialized or content is absent.

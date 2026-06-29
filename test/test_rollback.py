@@ -1,7 +1,7 @@
 """Behavioral tests for Rollback.
 
 Tests verify: session termination events, workspace cleared, mirror checked out,
-project src/gen restored from mirror, sidecar files excluded, index rebuilt.
+project specs/src/test restored from mirror, sidecar files excluded, index rebuilt.
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ async def _setup(tmp_path: Path) -> tuple[MirrorRepo, Rollback, Path]:
     """Return (mirror, rollback, project_root) with an initialised mirror.
 
     ``project_root`` is ``tmp_path`` itself so ``.kodo/`` lives directly inside it,
-    matching the real layout where src/, gen/, and .kodo/ are siblings.
+    matching the real layout where specs/, src/, test/, and .kodo/ are siblings.
     """
     project_root = tmp_path
     mirror = MirrorRepo(tmp_path / ".kodo" / "checkpoints")
@@ -191,7 +191,7 @@ async def test_rollback_restores_project_files_from_mirror_snapshot(tmp_path: Pa
     """
     Given a narrative promoted to commit A, then a requirements promoted to commit B,
     when rollback to commit A executes,
-    then the project src/ contains only the narrative file (as it was at A).
+    then the project specs/ contains only the narrative file (as it was at A).
     """
     mirror, rollback, project_root = await _setup(tmp_path)
 
@@ -207,8 +207,8 @@ async def test_rollback_restores_project_files_from_mirror_snapshot(tmp_path: Pa
 
     await rollback.execute(sha_a)
 
-    narrative_path = project_root / "src" / "narrative" / "narrative.md"
-    requirements_path = project_root / "src" / "requirements" / "req.md"
+    narrative_path = project_root / "specs" / "narrative" / "narrative.md"
+    requirements_path = project_root / "specs" / "requirements" / "req.md"
 
     assert narrative_path.exists()
     assert narrative_path.read_text(encoding="utf-8") == "v1"
@@ -220,7 +220,7 @@ async def test_rollback_does_not_copy_sidecar_files_to_project(tmp_path: Path) -
     """
     Given a promoted narrative (which has a sidecar in the mirror),
     when rollback executes,
-    then no .kodo.json sidecar files appear in the project src/ tree.
+    then no .kodo.json sidecar files appear in the project specs/ tree.
     """
     mirror, rollback, project_root = await _setup(tmp_path)
     sha = await _promote(
@@ -229,27 +229,33 @@ async def test_rollback_does_not_copy_sidecar_files_to_project(tmp_path: Path) -
 
     await rollback.execute(sha)
 
-    sidecars = list((project_root / "src").rglob("*.kodo.json"))
+    sidecars = list((project_root / "specs").rglob("*.kodo.json"))
     assert sidecars == []
 
 
 @pytest.mark.asyncio
-async def test_rollback_deletes_existing_project_src_gen(tmp_path: Path) -> None:
+async def test_rollback_deletes_existing_project_specs_src_test(tmp_path: Path) -> None:
     """
-    Given stale src/ and gen/ directories,
+    Given stale specs/, src/, and test/ directories,
     when rollback to a SHA where those directories were empty executes,
-    then src/ and gen/ do not contain the stale files.
+    then specs/, src/, and test/ do not contain the stale files.
     """
     mirror, rollback, project_root = await _setup(tmp_path)
     sha = await mirror.head_sha()
 
-    stale_src = project_root / "src" / "old.md"
-    stale_src.parent.mkdir(parents=True)
-    stale_src.write_text("stale", encoding="utf-8")
+    stale_files = [
+        project_root / "specs" / "old.md",
+        project_root / "src" / "old.py",
+        project_root / "test" / "old_test.py",
+    ]
+    for stale in stale_files:
+        stale.parent.mkdir(parents=True)
+        stale.write_text("stale", encoding="utf-8")
 
     await rollback.execute(sha)
 
-    assert not stale_src.exists()
+    for stale in stale_files:
+        assert not stale.exists()
 
 
 # ---------------------------------------------------------------------------

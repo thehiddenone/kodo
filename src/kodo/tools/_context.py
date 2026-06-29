@@ -180,6 +180,24 @@ class EngineServices(Protocol):
         """Turn off autonomous mode and notify the client."""
         ...
 
+    async def create_project(self, name: str, path: str | None = None) -> dict[str, object]:
+        """Scaffold a new project directory and add it to the workspace.
+
+        When ``path`` is given it supersedes ``name``: the project is laid out
+        in that exact directory. Otherwise the engine derives a filesystem-safe
+        directory name from ``name`` and creates that directory under the
+        session workspace root (auto-suffixing on collision). Either way it
+        lays out ``specs/``, ``src/``, ``test/`` and the ``.kodo/`` marker +
+        checkpoint mirror, then asks the VS Code extension to add the
+        directory to the open workspace.
+
+        Returns ``{"path": <absolute project dir>, "name": <workspace label>}``.
+
+        Raises:
+            ProjectLayoutError: ``path``'s ``kodo.md`` already exists.
+        """
+        ...
+
 
 @dataclass
 class ToolContext:

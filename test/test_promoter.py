@@ -95,14 +95,14 @@ async def test_promote_writes_artifact_to_project_dir(tmp_path: Path) -> None:
     """
     Given a narrative artifact with content,
     when promote() is called,
-    then the file appears at src/narrative/<filename_hint> under project_root.
+    then the file appears at specs/narrative/<filename_hint> under project_root.
     """
     promoter, _, project_root = await _make_promoter(tmp_path)
     a = _artifact(ArtifactType.NARRATIVE, content="# Narrative", filename_hint="narrative.md")
 
     await promoter.promote(a, "[narrative] approved")
 
-    expected = project_root / "src" / "narrative" / "narrative.md"
+    expected = project_root / "specs" / "narrative" / "narrative.md"
     assert expected.exists()
     assert expected.read_text(encoding="utf-8") == "# Narrative"
 
@@ -124,7 +124,7 @@ async def test_promote_writes_artifact_to_mirror_tree(tmp_path: Path) -> None:
 
     await promoter.promote(a, "[narrative] approved")
 
-    mirror_file = mirror.repo_dir / "src" / "narrative" / "narrative.md"
+    mirror_file = mirror.repo_dir / "specs" / "narrative" / "narrative.md"
     assert mirror_file.exists()
     assert mirror_file.read_text(encoding="utf-8") == "# Narrative"
 

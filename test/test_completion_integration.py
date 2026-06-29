@@ -91,7 +91,7 @@ async def test_completion_promotes_and_moves_out_of_workspace(tmp_path: Path) ->
     # Materialized to the project tree, committed to the mirror with a sidecar.
     assert target.exists()
     assert target.read_text(encoding="utf-8") == "# Narrative"
-    mirror_file = mirror.repo_dir / "src" / "narrative" / "narrative.md"
+    mirror_file = mirror.repo_dir / "specs" / "narrative" / "narrative.md"
     assert mirror_file.exists()
     assert (mirror_file.parent / (mirror_file.name + ".kodo.json")).exists()
 

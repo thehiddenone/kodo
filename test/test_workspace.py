@@ -715,7 +715,7 @@ async def test_mark_completed_with_location_removes_staging_file(tmp_path: Path)
     staging_path = before.location
     assert staging_path.exists()
 
-    promoted = tmp_path / "src" / "narrative" / "narrative.md"
+    promoted = tmp_path / "specs" / "narrative" / "narrative.md"
     await ws.mark_completed(artifact_id, location=promoted)
 
     assert not staging_path.exists()

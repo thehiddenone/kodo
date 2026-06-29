@@ -7,8 +7,9 @@ Rollback procedure (STATE_AND_LIFECYCLE.md §8.3):
 2. Clear ``.kodo/workspace/`` entirely.
 3. ``MirrorRepo.checkout(target_sha)`` — mirror working tree reflects the
    target snapshot.
-4. Delete ``<project>/src/`` and ``<project>/gen/``.
-5. Copy mirror's ``src/`` and ``gen/`` into the project, skipping sidecar files.
+4. Delete ``<project>/specs/``, ``<project>/src/``, and ``<project>/test/``.
+5. Copy mirror's ``specs/``, ``src/``, and ``test/`` into the project,
+   skipping sidecar files.
 6. Rebuild the full artifact index via :class:`ProjectBootstrap`.
 
 The session identity is owned by the driving session (one per VS Code window)
@@ -118,7 +119,7 @@ class Rollback:
             _log.info("Rollback: workspace cleared")
 
     def __step5_delete_project_trees(self) -> None:
-        for name in ("src", "gen"):
+        for name in ("specs", "src", "test"):
             tree = self.__project_root / name
             if tree.exists():
                 shutil.rmtree(tree)
@@ -126,7 +127,7 @@ class Rollback:
 
     def __step6_copy_from_mirror(self) -> None:
         mirror_root = self.__mirror.repo_dir
-        for name in ("src", "gen"):
+        for name in ("specs", "src", "test"):
             mirror_tree = mirror_root / name
             project_tree = self.__project_root / name
             if not mirror_tree.exists():

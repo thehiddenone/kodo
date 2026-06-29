@@ -22,16 +22,17 @@ A Kōdo project treats `.kd` files as its primary source. Generated code lives a
 
 ```text
 kodo.md   project manifest — declares this is a Kōdo project; selects the toolchain
-src/      *.kd files — narrative, responsibilities, per-component specs; the source of truth
-gen/      generated source code, unit tests, integration tests, and the end-to-end test
+specs/    *.kd files — narrative, responsibilities, per-component specs; the source of truth
+src/      generated source code — all components and modules, including entry points
+test/     generated unit tests, integration tests, and the end-to-end test
 .kodo/    Kōdo working state — checkpoint mirror (git), settings, security rules, logs
 ```
 
-The relationship mirrors a traditional compiled project: specs are to generated code as source is to binary. Humans own `src/` and approve everything that lands in `gen/`. For the MVP, `.kd` is plain Markdown — extended-tag variants are post-MVP.
+The relationship mirrors a traditional compiled project: specs are to generated code as source is to binary. Humans own `specs/` and approve everything that lands in `src/`/`test/`. For the MVP, `.kd` is plain Markdown — extended-tag variants are post-MVP.
 
 ## Workflow
 
-1. **Init** — `Kodo: Init Project` lays down `kodo.md`, `src/`, `gen/`, and `.kodo/`.
+1. **Init** — `Kodo: Init Project` lays down `kodo.md`, `specs/`, `src/`, `test/`, and `.kodo/`.
 2. **Prompt** — describe your idea in the WebView. The Narrative Author drafts a top-level description.
 3. **Architecture** — the Architect carves the work into components and emits a dependency graph used later for integration-test scheduling.
 4. **Per-component specs** — for each component, Author/Reviewer pairs iterate on Requirements, then Functional Design, then Test Plan, with an approval gate between every stage.
@@ -49,7 +50,7 @@ At each gate you can **Agree** (proceed) or **provide feedback** (re-run only th
 
 **Behaviour testing, not implementation testing** — generated tests assert observable outcomes (a price change produced an order, a record was written) rather than call counts or internal mocks. LLMs tend toward brittle, implementation-coupled tests; Kōdo's Test Design Critic enforces the opposite by default.
 
-**Approval gates with feedback loops** — every stage ends at a gate. Agree to proceed, or provide feedback that re-runs only the responsible agent pair — never the entire workflow. No work lands in `gen/` until you approve.
+**Approval gates with feedback loops** — every stage ends at a gate. Agree to proceed, or provide feedback that re-runs only the responsible agent pair — never the entire workflow. No work lands in `src/`/`test/` until you approve.
 
 **Mirror checkpoints** — every approval is a git commit inside `.kodo/checkpoints/`. Browse history, roll back to any prior checkpoint, diff between any two states. Your main repository is never modified by Kōdo without explicit promotion.
 

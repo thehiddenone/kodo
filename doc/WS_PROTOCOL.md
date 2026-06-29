@@ -384,6 +384,14 @@ Brackets the silent titling call (which streams nothing) so the client can show 
 { "type": "session.naming", "active": true }
 ```
 
+### 5.9c `workspace.add_folder` — register a freshly-scaffolded project
+
+Emitted when an agent calls the `create_new_project` tool and the server has scaffolded the new project on disk (its directory, `.kodo/`/`kodo.md` marker, and an initial checkpoint mirror). Asks the extension to add the directory to the open workspace via `vscode.workspace.updateWorkspaceFolders` (no-op if already present). The extension's resulting `onDidChangeWorkspaceFolders` re-pushes `workspace.folders` (§7), reconciling the server's logical-root map. `path` is absolute; `name` is the workspace-folder label.
+
+```json
+{ "type": "workspace.add_folder", "path": "/Users/me/projects/my-todo-app", "name": "My Todo App" }
+```
+
 ### 5.10 `error` — unsolicited server error
 
 For errors not tied to a specific request. Errors tied to a request are returned as `response` payloads with an `error` field (§2.2).

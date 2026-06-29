@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import shutil
 import uuid
 from collections.abc import Awaitable, Callable
@@ -102,6 +103,7 @@ from kodo.transport import (
     EVT_TOOL_INCOMPLIANT,
     EVT_USAGE_UPDATE,
     EVT_USER_ATTACHMENTS,
+    EVT_WORKSPACE_ADD_FOLDER,
 )
 from kodo.workspace import (
     ArtifactType,
@@ -203,6 +205,31 @@ def _history_attachment_links(attachments: object, session_dir: Path) -> list[di
     return links
 
 
+def _slugify_project_name(name: str) -> str:
+    """Derive a filesystem-safe directory slug from a human project name.
+
+    Lowercases, turns every run of non-alphanumeric characters into a single
+    dash, and trims leading/trailing dashes. Falls back to ``"project"`` when
+    nothing usable remains (e.g. a name made entirely of punctuation).
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    return slug or "project"
+
+
+def _unique_child_dir(parent: Path, slug: str) -> Path:
+    """Return a not-yet-existing child of *parent* based on *slug*.
+
+    Tries ``parent/slug`` first, then ``slug-2``, ``slug-3``… so an existing
+    project directory is never reused or overwritten.
+    """
+    candidate = parent / slug
+    suffix = 2
+    while candidate.exists():
+        candidate = parent / f"{slug}-{suffix}"
+        suffix += 1
+    return candidate
+
+
 class _EngineServices:
     """Adapts the engine's operations to the tools ``EngineServices`` protocol.
 
@@ -224,12 +251,14 @@ class _EngineServices:
         rollback: Callable[[str], Awaitable[None]],
         complete_artifact: Callable[[str], Awaitable[None]],
         disable_autonomous: Callable[[], Awaitable[None]],
+        create_project: Callable[[str, str | None, bool], Awaitable[dict[str, object]]],
     ) -> None:
         self.__run_subagent = run_subagent
         self.__run_author_critic = run_author_critic
         self.__rollback = rollback
         self.__complete_artifact = complete_artifact
         self.__disable_autonomous = disable_autonomous
+        self.__create_project = create_project
 
     async def run_subagent(
         self, caller: str, name: str, task_input: dict[str, object]
@@ -261,6 +290,12 @@ class _EngineServices:
     async def disable_autonomous_mode(self) -> None:
         """Delegate to the engine's ``__disable_autonomous``."""
         await self.__disable_autonomous()
+
+    async def create_project(
+        self, name: str = "", path: str | None = None, force: bool = False
+    ) -> dict[str, object]:
+        """Delegate to the engine's ``__create_project``."""
+        return await self.__create_project(name, path, force)
 
 
 class WorkflowEngine:
@@ -384,6 +419,7 @@ class WorkflowEngine:
             rollback=self.__run_rollback,
             complete_artifact=self.__complete_artifact,
             disable_autonomous=self.__disable_autonomous,
+            create_project=self.__create_project,
         )
 
     @property
@@ -2870,7 +2906,7 @@ class WorkflowEngine:
     async def __complete_artifact(self, artifact_id: str) -> None:
         """Promote a gate-passed artifact and mark it completed.
 
-        Materializes the artifact into ``src/``/``gen/``, commits it to the
+        Materializes the artifact into ``specs/``, ``src/``, or ``test/``, commits it to the
         mirror with a sidecar, flips its index entry to ``completed`` at the
         promoted location, and removes the workspace staging file. Non-
         materializable artifacts (e.g. feedback) only flip state.
@@ -3357,6 +3393,94 @@ class WorkflowEngine:
         self.__transient.update(autonomous=False)
         await self.__emit_state()
         await self.__sink.send(Envelope.make_event(EVT_AUTONOMOUS_CHANGED, {"autonomous": False}))
+
+    async def handle_project_create(
+        self, name: str = "", path: str | None = None, force: bool = False
+    ) -> dict[str, object]:
+        """Direct (non-tool) entry point backing the ``project.create`` message.
+
+        Used by the VS Code "Create Project" command, which already has a
+        concrete folder from its own picker dialog and so always supplies
+        *path*; shares :meth:`__create_project` with the LLM-facing
+        ``create_new_project`` tool. May raise :class:`ProjectLayoutError` if
+        *path*'s ``kodo.md`` already exists and *force* is not set — the
+        caller should ask the user to confirm overwrite and retry with
+        ``force=True``.
+        """
+        return await self.__create_project(name, path, force)
+
+    async def __create_project(
+        self, name: str, path: str | None = None, force: bool = False
+    ) -> dict[str, object]:
+        """Scaffold a new project directory and add it to the workspace.
+
+        Backs the ``create_new_project`` tool and the ``project.create``
+        message (the VS Code "Create Project" command, which always supplies
+        *path* from its own folder picker). When *path* is given it supersedes
+        *name*: the project is laid out in that exact directory instead of a
+        slug derived from *name*. Otherwise a slug-named directory is created
+        under the session workspace root (auto-suffixed on collision). Either
+        way, ``specs/``, ``src/``, ``test/`` and ``.kodo/``/``kodo.md`` are laid
+        out via :meth:`ProjectLayout.init`, the checkpoint mirror is initialised
+        (done by :meth:`RootMirrorManager.prepare`), the new folder is recorded
+        in the session's logical-root map so ``get_root_paths`` sees it
+        immediately, and ``EVT_WORKSPACE_ADD_FOLDER`` is pushed so the VS Code
+        extension adds the directory to the open workspace (its resulting
+        workspace-folders change re-pushes ``workspace.folders``, reconciling
+        the map).
+
+        Args:
+            name: Human-readable project name. Used as the workspace-folder
+                label and, when *path* is omitted, as the basis for the
+                on-disk directory name. May be empty when *path* is given.
+            path: Absolute directory to lay the project out in, superseding
+                the slug-derived directory. The directory need not exist yet.
+            force: When *path* is given and it already has a ``kodo.md``,
+                overwrite it instead of raising. Ignored when *path* is
+                omitted (a freshly reserved directory never has one).
+
+        Returns:
+            ``{"path": <absolute project dir>, "name": <workspace label>}``.
+
+        Raises:
+            ValueError: Neither *name* nor *path* was given.
+            ProjectLayoutError: *path*'s ``kodo.md`` already exists and
+                *force* is not set.
+        """
+        name = name.strip()
+        if path:
+            project_dir = Path(path)
+            await asyncio.to_thread(ProjectLayout(project_dir).init, force=force)
+        else:
+            if not name:
+                raise ValueError("create_project requires a non-empty 'name' or 'path'.")
+            parent = self.__session_workspace.physical_root
+            slug = _slugify_project_name(name)
+            project_dir = await asyncio.to_thread(self.__reserve_project_dir, parent, slug)
+            await asyncio.to_thread(ProjectLayout(project_dir).init)
+
+        # Make the new root addressable before scaffolding so __root_paths() (and
+        # thus the mirror's known-roots set) includes it.
+        folders = self.__session_workspace.folders
+        label = name if name and name not in folders else project_dir.name
+        folders[label] = project_dir
+        self.__session_workspace.set_folders(folders)
+
+        self.__root_mirrors.set_roots([Path(rp.path) for rp in self.__root_paths()])
+        await self.__root_mirrors.prepare(project_dir)
+
+        await self.__sink.send(
+            Envelope.make_event(EVT_WORKSPACE_ADD_FOLDER, {"path": str(project_dir), "name": label})
+        )
+        _log.info("create_new_project: scaffolded %s (label=%r)", project_dir, label)
+        return {"path": str(project_dir), "name": label}
+
+    @staticmethod
+    def __reserve_project_dir(parent: Path, slug: str) -> Path:
+        """Pick a free child directory of *parent* and create it (blocking)."""
+        project_dir = _unique_child_dir(parent, slug)
+        project_dir.mkdir(parents=True)
+        return project_dir
 
     async def __emit_agent_started(self, agent_name: str) -> None:
         await self.__sink.send(
