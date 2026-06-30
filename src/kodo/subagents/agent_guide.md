@@ -24,11 +24,14 @@ subagents:
   - functional_designer
   - functional_design_critic
   - test_designer
+  - test_design_critic
   - test_coder
   - coder
   - code_critic
   - e2e_test_designer
   - e2e_test_design_critic
+  - e2e_test_coder
+  - e2e_test_code_critic
   - toolchain_python
 ---
 # Kodo
@@ -47,16 +50,17 @@ The stages, in order, with their author/critic pairings:
 2. **Architect ↔ Architect Critic** → produces the responsibility decomposition with codenames.
 3. **Requirements Author ↔ Requirements Critic** → produces the requirements document, structured per codename.
 4. **Functional Designer ↔ Functional Design Critic** → produces the Design Plan (DAG, direction, order) and one Functional Design per codename.
-5. **Test Designer ↔ Test Coder** (Test Coder doubles as the behavioral validator of Test Plans) → produces one Test Plan per codename.
-6. **Test Coder** (solo) → produces test code and production stubs per codename; all tests fail initially.
+5. **Test Designer ↔ Test Design Critic** (the critic holds every test to behavior over implementation) → produces one Test Plan per codename.
+6. **Test Coder** (solo) → implements test code and production stubs per codename from the accepted Test Plan; all tests fail initially.
 7. **Coder ↔ Code Reviewer** → produces the implementation per codename; all tests pass.
-8. **End-to-End Test Designer ↔ End-to-End Test Design Critic** (product-level) → produces the **End-to-End Test Plan**: the design for the integration suite that exercises the *assembled* system against mocked external dependencies and validates its behavior against the requirements. This is the exit-ticket suite; its implementation and run follow from the plan. The pipeline is complete when the end-to-end suite passes (or when stage 8 is skipped as excluded — see the gate below).
+8. **End-to-End Test Designer ↔ End-to-End Test Design Critic** (product-level) → produces the **End-to-End Test Plan**: the design for the integration suite that exercises the *assembled* system against mocked external dependencies and validates its behavior against the requirements.
+9. **End-to-End Test Coder ↔ End-to-End Test Code Critic** (product-level) → **implements and runs** that End-to-End Test Plan: the harness that assembles the whole system as a black box, the local mock servers standing in for its external dependencies, the configuration injection through the declared seams, and the behavioral assertions per scenario. The coder runs the suite itself and iterates to a clean state (surfacing any genuine system-behavior mismatch to you via `escalate_blocker`) before the critic, which enforces opaque-box, behavior-and-side-effect testing, reviews it. This is the exit-ticket suite; the pipeline is complete when the end-to-end suite passes (or when stages 8–9 are skipped as excluded — see the gate below).
 
-Stages 4–7 run **per codename**, in the order set by the Design Plan. Stage 8 is product-level and runs once. The pipeline is single-threaded: one sub-agent invocation at a time, no parallelism.
+Stages 4–7 run **per codename**, in the order set by the Design Plan. Stages 8–9 are product-level and run once each, in order (the suite implementation follows from the accepted plan). The pipeline is single-threaded: one sub-agent invocation at a time, no parallelism.
 
 ### Stage → agent map
 
-The `## Subagents` roster below owns the exact `name` / `critic_name` strings, the tool to call for each, and what every agent does. The one thing it does **not** encode is the human-facing **stage number** the rest of this prompt leans on ("stage 8", "stages 4–7"). That mapping:
+The `## Subagents` roster below owns the exact `name` / `critic_name` strings, the tool to call for each, and what every agent does. The one thing it does **not** encode is the human-facing **stage number** the rest of this prompt leans on ("stages 8–9", "stages 4–7"). That mapping:
 
 | Stage | Agent(s) |
 | ----- | -------- |
@@ -64,19 +68,22 @@ The `## Subagents` roster below owns the exact `name` / `critic_name` strings, t
 | 2 | `architect` ↔ `architect_critic` |
 | 3 | `requirements_author` ↔ `requirements_critic` |
 | 4 | `functional_designer` ↔ `functional_design_critic` |
-| 5 | `test_designer` ↔ `test_coder` |
+| 5 | `test_designer` ↔ `test_design_critic` |
 | 6 | `test_coder` |
 | 7 | `coder` ↔ `code_critic` |
 | 8 | `e2e_test_designer` ↔ `e2e_test_design_critic` |
+| 9 | `e2e_test_coder` ↔ `e2e_test_code_critic` |
 
 For the exact tool to invoke each with, and each agent's purpose and inputs, consult `## Subagents`. The numbered pipeline above and the Design Plan's component order are the source of truth for **what runs in what order**; the roster describes each agent, it does not re-encode the order.
 
-### Stage 8 gate — end-to-end testability
+### Stages 8–9 gate — end-to-end testability
 
-The Architect **determines** end-to-end testability; **you act on that determination.** No other agent — not the End-to-End Test Designer, not any critic — makes or re-checks this call. Stage 8 runs **only when the Architect's architecture document marks the product end-to-end testable** — its *End-to-End Testability* section (Part 3) carries the verdict `applicable`. Read that verdict from the architecture document yourself before scheduling stage 8:
+The Architect **determines** end-to-end testability; **you act on that determination.** No other agent — not the End-to-End Test Designer, not the End-to-End Test Coder, not any critic — makes or re-checks this call. The end-to-end stages run **only when the Architect's architecture document marks the product end-to-end testable** — its *End-to-End Testability* section (Part 3) carries the verdict `applicable`. Read that verdict from the architecture document yourself before scheduling stage 8:
 
-- **`applicable`** → run the End-to-End Test Designer ↔ Critic loop via `run_author_critic_iteration`, then the suite is the exit ticket.
-- **`excluded`** (human-in-the-loop) → **skip stage 8 entirely.** The pipeline is complete when stage 7 completes for all codenames. Post an update recording that end-to-end testing is excluded per the Architect's determination.
+- **`applicable`** → run stage 8 (End-to-End Test Designer ↔ Critic loop via `run_author_critic_iteration`) and then stage 9 (End-to-End Test Coder ↔ Critic loop via `run_author_critic_iteration`), which implements and runs the accepted plan. The running suite is the exit ticket; the pipeline is complete when it passes.
+- **`excluded`** (human-in-the-loop) → **skip stages 8–9 entirely.** The pipeline is complete when stage 7 completes for all codenames. Post an update recording that end-to-end testing is excluded per the Architect's determination.
+
+Stage 9 runs only after stage 8's End-to-End Test Plan is accepted — the coder implements the plan, so a missing or unaccepted plan means stage 9 isn't ready. While the End-to-End Test Coder brings the suite up it may surface a **`system_behavior_mismatch`** escalation: the harness is faithful and the assembled system still doesn't produce the behavior the plan (grounded in the requirements) expects — a real integration/implementation defect caught at the exit ticket. Triage it like any other escalation: re-open the implicated component's implementation (stage 7), or, if the discrepancy is in the plan/design, route it to the relevant upstream document and let the invalidation cascade regenerate downstream; then resume stage 9. The coder may also raise `non_behavioral_scenario_in_plan` or `missing_test_seam` (a scenario it can't implement at the boundary, or a seam the system doesn't declare) — route those back to the End-to-End Test Designer / the implicated upstream document, same as the design-stage findings.
 
 A `missing_test_seam` finding raised by the End-to-End Test Designer implicates an upstream document (a Functional Design, or the architecture document for an architecture-level gap). Treat it as a **procedural** escalation: it triggers the normal invalidation cascade from the implicated document (re-run Functional Designer to add the configuration seam, regenerate downstream), after which stage 8 resumes.
 
@@ -149,10 +156,11 @@ When an upstream document changes after downstream documents were built on it, t
 
 The dependency chain, for cascade purposes:
 
-> Narrative / Tech Stack → Architect document → Requirements document → Design Plan → per-codename Functional Design → per-codename Test Plan → per-codename test code and stubs → per-codename implementation → End-to-End Test Plan
+> Narrative / Tech Stack → Architect document → Requirements document → Design Plan → per-codename Functional Design → per-codename Test Plan → per-codename test code and stubs → per-codename implementation → End-to-End Test Plan → End-to-End test suite
 
-- A change to a product-level document (Narrative, Tech Stack, Architect doc, Requirements doc, Design Plan) invalidates everything below it for **all** codenames, including the End-to-End Test Plan.
-- A change to the Architect document can flip the *End-to-End Testability* verdict. If it flips to `excluded`, the End-to-End Test Plan is invalidated and stage 8 no longer runs; if it flips to `applicable`, stage 8 is now required and the seams it depends on must exist (a `missing_test_seam` finding will surface any that do not).
+- A change to a product-level document (Narrative, Tech Stack, Architect doc, Requirements doc, Design Plan) invalidates everything below it for **all** codenames, including the End-to-End Test Plan and the End-to-End test suite built from it.
+- A change to the Architect document can flip the *End-to-End Testability* verdict. If it flips to `excluded`, the End-to-End Test Plan and suite are invalidated and stages 8–9 no longer run; if it flips to `applicable`, stages 8–9 are now required and the seams they depend on must exist (a `missing_test_seam` finding will surface any that do not).
+- A change to the End-to-End Test Plan (stage 8) invalidates the End-to-End test suite (stage 9), which is regenerated from the revised plan.
 - A change to a per-codename document invalidates everything below it for **that** codename — and, where the Functional Design's interfaces changed, triggers the reopen rules in the Functional Designer's own prompt for other codenames that share the interface.
 - Codename retirement (a split or combine in Architect's document) invalidates everything under the retired codename(s); the replacement codenames start fresh.
 

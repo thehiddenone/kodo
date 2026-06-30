@@ -215,7 +215,8 @@ roster also renders every callee's schemas.
   event's `task` field for the live feed.
 - **Output.** The sub-agent ends its run by calling `return_result` with a
   payload validated/normalized against its `output_schema` (`normalize_output`,
-  which now also handles a top-level `oneOf` for the dual-role `test_coder`). The
+  which also handles a top-level `oneOf` for a dual-role sub-agent returning one
+  of several output shapes). The
   engine reads the structured result off `dispatcher.returned_output`; if the
   agent never called `return_result`, a bare `{schema_compliance: false}`
   fallback is synthesized — there is no artifact index to recover a partial

@@ -22,6 +22,8 @@ from ._architect_critic import ARCHITECT_CRITIC
 from ._code_critic import CODE_CRITIC
 from ._coder import CODER
 from ._compactor import COMPACTOR
+from ._e2e_test_code_critic import E2E_TEST_CODE_CRITIC
+from ._e2e_test_coder import E2E_TEST_CODER
 from ._e2e_test_design_critic import E2E_TEST_DESIGN_CRITIC
 from ._e2e_test_designer import E2E_TEST_DESIGNER
 from ._functional_design_critic import FUNCTIONAL_DESIGN_CRITIC
@@ -31,6 +33,7 @@ from ._requirements_author import REQUIREMENTS_AUTHOR
 from ._requirements_critic import REQUIREMENTS_CRITIC
 from ._session_titler import SESSION_TITLER
 from ._test_coder import TEST_CODER
+from ._test_design_critic import TEST_DESIGN_CRITIC
 from ._test_designer import TEST_DESIGNER
 from ._toolchain_depsmgr import TOOLCHAIN_DEPSMGR
 from ._toolchain_python import TOOLCHAIN_PYTHON
@@ -42,6 +45,8 @@ __all__ = [
     "CODER",
     "CODE_CRITIC",
     "COMPACTOR",
+    "E2E_TEST_CODER",
+    "E2E_TEST_CODE_CRITIC",
     "E2E_TEST_DESIGNER",
     "E2E_TEST_DESIGN_CRITIC",
     "FUNCTIONAL_DESIGNER",
@@ -52,6 +57,7 @@ __all__ = [
     "SESSION_TITLER",
     "TEST_CODER",
     "TEST_DESIGNER",
+    "TEST_DESIGN_CRITIC",
     "TOOLCHAIN_DEPSMGR",
     "TOOLCHAIN_PYTHON",
     "SubAgentSpec",
@@ -69,11 +75,14 @@ ALL_SUBAGENTS: tuple[SubAgentSpec, ...] = (
     FUNCTIONAL_DESIGNER,
     FUNCTIONAL_DESIGN_CRITIC,
     TEST_DESIGNER,
+    TEST_DESIGN_CRITIC,
     TEST_CODER,
     CODER,
     CODE_CRITIC,
     E2E_TEST_DESIGNER,
     E2E_TEST_DESIGN_CRITIC,
+    E2E_TEST_CODER,
+    E2E_TEST_CODE_CRITIC,
     TOOLCHAIN_PYTHON,
     TOOLCHAIN_DEPSMGR,
     COMPACTOR,

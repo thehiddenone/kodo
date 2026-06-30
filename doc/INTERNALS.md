@@ -536,8 +536,9 @@ distinguishing on-demand specialists (e.g. `toolchain_python`) from ordered-pipe
 agents. The roster carries **no ordering column**: ordering lives in the caller's
 prose (the Guide's numbered pipeline + the Design Plan), since a single linear
 predecessor (`depends_on`, now removed) misrepresented the real inter-agent
-dependencies. An agent can be **both** solo and a critic — `test_coder` gets its own
-`run_subagent` row *and* appears as `test_designer`'s `critic_name`.
+dependencies. An agent can be **both** solo and a critic — the renderer still
+supports that (a solo+critic gets its own `run_subagent` row *and* its author's
+`critic_name`), though no live agent currently is one.
 `render_subagents_section(name)` is public so prompt-review tooling can render a
 caller's roster even when its body omits the placeholder. Validated fail-fast at
 construction (every listed sub-agent must exist and carry a `## Purpose`). Live
@@ -563,9 +564,10 @@ Write, Match Existing Conventions, Verify Don't Assume, and Stay In Scope.
 | `toolchain_python` | run_command, filesystem, edit_file, find_files, find_text_in_files, get_root_paths, ask_user | **Toolchain-setup** agent (`bases: [toolchain, dependencies]`). Spawnable by both `guide` and `problem_solver`. Bootstraps/converts a project: generates the five per-platform build scripts (`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`) + a `DEVELOPMENT.md` (build/check/test how-to) + a `DEPENDENCIES.md` (the dependency contract), now actually **executed** by `toolchain_build`/`toolchain_deps` (§8). Suggest-then-confirm invocation. |
 | `toolchain_depsmgr` | get_root_paths, find_files, read_file, run_command, edit_file | **Dependency-management** agent (`bases: [dependencies]`). The acting force behind the `toolchain_deps` tool — **not** spawnable via `run_subagent` by anyone (no agent lists it; the tool drives it through the ungated `run_dependency_manager` service). Per run it performs one add/remove/update op by reading and executing the project's `DEPENDENCIES.md`; returns `status: completed/failed/dependencies_md_missing`. Toolchain-agnostic: all language specifics come from `DEPENDENCIES.md`. |
 | `narrative_author` | filesystem, edit_file, read_file, ask_user | Solo, user-facing intake. Writes the Narrative and Tech Stack documents directly. |
-| `architect`, `requirements_author`, `functional_designer`, `e2e_test_designer`, `test_designer` | filesystem, edit_file, read_file, escalate_blocker | Authors (paired with a critic); `coder` additionally holds `toolchain_build`/`toolchain_deps`. |
-| `architect_critic`, `requirements_critic`, `functional_design_critic`, `e2e_test_design_critic`, `code_critic` | read_file, document_feedback | Critics — record a verdict per file; the engine alone drives the accept/review flow (§7/§12.1). |
-| `test_coder` | filesystem, edit_file, read_file, document_feedback, escalate_blocker | Dual role: critic of `test_designer`'s plan, solo author of test code + stubs. |
+| `architect`, `requirements_author`, `functional_designer`, `e2e_test_designer`, `test_designer` | filesystem, edit_file, read_file, escalate_blocker | Authors (paired with a critic); `coder` and `e2e_test_coder` additionally hold `toolchain_build`/`toolchain_deps`. |
+| `architect_critic`, `requirements_critic`, `functional_design_critic`, `test_design_critic`, `e2e_test_design_critic`, `code_critic`, `e2e_test_code_critic` | read_file, document_feedback | Critics — record a verdict per file; the engine alone drives the accept/review flow (§7/§12.1). `test_design_critic` reviews the per-component Test Plan, holding every test to behavior over implementation; `e2e_test_code_critic` reviews the end-to-end suite *as code*, enforcing opaque-box, behavior-and-side-effect assertions over implementation details. |
+| `test_coder` | filesystem, edit_file, read_file, escalate_blocker | Solo author of test code + stubs from the accepted Test Plan (no longer a critic — plan review moved to `test_design_critic`). |
+| `e2e_test_coder` | filesystem, edit_file, read_file, toolchain_build, toolchain_deps, escalate_blocker | Author (paired with `e2e_test_code_critic`) of the product-level end-to-end integration suite (stage 9). Assembles the whole system as a black box behind local mock servers + injected configuration, runs it via `toolchain_build`, and iterates to a clean state before the critic; a genuine system-behavior mismatch is surfaced to the guide via `escalate_blocker` (`system_behavior_mismatch`), not papered over. |
 
 **State:** Loader/registry complete (incl. `bases:` shared snippets **and the `{PLACEHOLDER:SUBAGENTS}` roster from per-agent `## Purpose` + `solo`/`critic`/`standalone` frontmatter**); agent roster present (pipeline + `problem_solver` + the `toolchain_python` toolchain-setup agent); every declared tool now has a dispatch handler.
 

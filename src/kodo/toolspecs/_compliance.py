@@ -45,8 +45,8 @@ def augment_output_schema(output_schema: dict[str, object]) -> dict[str, object]
 
     The input is not mutated. Any pre-existing ``schema_compliance`` property is
     replaced by the engine's definition and the key is ensured present in
-    ``required``. A top-level ``oneOf`` schema (used by dual-role sub-agents such
-    as ``test_coder``) is augmented branch-by-branch.
+    ``required``. A top-level ``oneOf`` schema (a dual-role sub-agent that returns
+    one of several output shapes) is augmented branch-by-branch.
 
     Args:
         output_schema: The spec's declared output schema (an ``object`` schema,
@@ -125,9 +125,9 @@ def normalize_output(
     if SCHEMA_COMPLIANCE_KEY in raw:
         raw = {k: v for k, v in raw.items() if k != SCHEMA_COMPLIANCE_KEY}
 
-    # A top-level oneOf (dual-role sub-agents such as test_coder): try each
-    # branch and return the first that normalizes cleanly; if none is compliant,
-    # fall back to the first branch's best-effort repair.
+    # A top-level oneOf (a dual-role sub-agent returning one of several shapes):
+    # try each branch and return the first that normalizes cleanly; if none is
+    # compliant, fall back to the first branch's best-effort repair.
     branches = output_schema.get("oneOf")
     if isinstance(branches, list):
         first: tuple[dict[str, object], bool] | None = None

@@ -1,4 +1,4 @@
-"""SubAgentSpec for ``test_designer`` (stage 5 author, critic = test_coder)."""
+"""SubAgentSpec for ``test_designer`` (stage 5 author, critic = test_design_critic)."""
 
 from __future__ import annotations
 

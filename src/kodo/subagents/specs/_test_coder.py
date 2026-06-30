@@ -1,17 +1,17 @@
-"""SubAgentSpec for ``test_coder`` — a dual-role agent.
+"""SubAgentSpec for ``test_coder`` — a solo author.
 
-``test_coder`` is both **test_designer's critic** (stage 5: it validates a Test
-Plan for behavioral soundness, returning a verdict + ``non_behavioral_test``
-concerns) **and** a **solo author** (stage 6: it writes the test code and minimal
-production stubs). A single spec therefore declares a top-level ``oneOf``
-``output_schema``: ``return_result`` accepts whichever branch matches the current
-invocation, and the engine normalizes the payload against the matching branch.
+``test_coder`` is the **solo author** (stage 6) that writes the test code and
+minimal production stubs for a component from a Test Plan that ``test_designer``
+wrote and ``test_design_critic`` already accepted (all tests failing — the TDD
+starting state). It no longer reviews the plan: behavioral review of the Test
+Plan moved to ``test_design_critic``, so this spec is a plain author output, not
+a dual-role ``oneOf``.
 """
 
 from __future__ import annotations
 
 from .._subagentspec import SubAgentSpec
-from ._shapes import author_output, critic_output, pipeline_input
+from ._shapes import author_output, pipeline_input
 
 __all__ = ["TEST_CODER"]
 
@@ -19,17 +19,12 @@ __all__ = ["TEST_CODER"]
 TEST_CODER: SubAgentSpec = SubAgentSpec(
     name="test_coder",
     description=(
-        "As critic, validates a Test Plan for behavioral soundness; as solo author, writes the "
-        "test code and minimal production stubs (all tests failing — the TDD starting state)."
+        "Solo author: writes the test code and minimal production stubs for a component from the "
+        "accepted Test Plan (all tests failing — the TDD starting state)."
     ),
     input_schema=pipeline_input(
         input_paths="The Test Plan, the Functional Design, the Tech Stack, and the requirements.",
         require_responsibility=True,
     ),
-    output_schema={
-        "oneOf": [
-            author_output(),  # stage 6: test + stub code written
-            critic_output(["non_behavioral_test"]),  # stage 5: Test Plan validation
-        ],
-    },
+    output_schema=author_output(),
 )

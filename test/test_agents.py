@@ -423,8 +423,10 @@ def test_load_agent_preserves_subagent_order(tmp_path: Path) -> None:
 def _write_pipeline_fixture(tmp_path: Path) -> None:
     """A mini author/critic + solo pipeline plus a caller that lists them all.
 
-    Mirrors the real shape: an entry-point solo, an author/critic pair, and a
-    second solo that is *also* the author's critic (like ``test_coder``).
+    Mirrors a general shape: an entry-point solo, an author/critic pair, and a
+    second solo that is *also* the author's critic — the renderer must still
+    collapse a solo+critic into one combined row (no live pipeline agent is one
+    today, but the rendering path is still supported).
     """
     _write_preamble(tmp_path)
     _write_agent(
@@ -608,8 +610,19 @@ def test_real_guide_roster_reproduces_pipeline_pairs() -> None:
     assert (
         "| `run_author_critic_iteration` | `architect` | `architect_critic` | workflow |" in section
     )
-    # test_coder appears both as test_designer's critic and as its own solo row.
-    assert "| `run_author_critic_iteration` | `test_designer` | `test_coder` |" in section
+    # test_designer is paired with test_design_critic (a pure critic, absorbed
+    # into the author's row); test_coder is now a plain solo row.
+    assert (
+        "| `run_author_critic_iteration` | `test_designer` | `test_design_critic` |" in section
+    )
     assert "| `run_subagent` | `test_coder` | — | workflow |" in section
+    # The two product-level end-to-end stages, each an author/critic pair.
+    assert (
+        "| `run_author_critic_iteration` | `e2e_test_designer` | `e2e_test_design_critic` |"
+        in section
+    )
+    assert (
+        "| `run_author_critic_iteration` | `e2e_test_coder` | `e2e_test_code_critic` |" in section
+    )
     # The toolchain agent is the one standalone (adjunct) entry in the guide roster.
     assert "| `run_subagent` | `toolchain_python` | — | standalone |" in section

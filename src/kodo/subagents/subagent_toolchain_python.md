@@ -3,7 +3,7 @@ name: toolchain_python
 display_name: Python Toolchain
 solo: true
 standalone: true
-capability: high
+capability: medium
 bases:
   - toolchain
   - dependencies
@@ -26,7 +26,7 @@ Sets up or converts a project's **Python** build model: the five standard build 
 
 ## Explore the Python Environment First
 
-Before choosing tools, probe what is present (`run_command`):
+Applying the explore-first policy from the shared contract to Python, probe what is present (`run_command`):
 
 - The interpreter (`python --version` / `python3 --version`).
 - **`uv`** — the preferred package/environment manager. Kodo bundles it at `~/.kodo/bin/uv/uv`; also accept a `uv` on `PATH`. Prefer `uv`; fall back to `pip` + `venv` only when `uv` is genuinely absent.
@@ -44,13 +44,9 @@ Map each script to concrete Python commands (prefer `uv run <tool>` so the tool 
 - **static_analysis** — `ruff check` for lint/style, plus a type check (`mypy` or `pyright`) when the project is typed. Fall back to the project's existing linters.
 - **test** — `pytest`. Honor the **selector argument** from the shared contract by mapping it to pytest node-id / path / `-k`: with no argument run the whole suite (`pytest`); with a selector run only that test or suite — e.g. `scripts/test.sh tests/test_orders.py::test_refund` or `scripts/test.sh tests/test_orders.py`. Pass the argument straight through to pytest. For a `unittest`-only project, map the selector to `python -m unittest <dotted.path>` and document that form instead.
 
-The `.ps1` members invoke the same `uv run …` / `pytest …` commands in PowerShell.
-
 ## Dependency Management (for DEPENDENCIES.md)
 
-Write dependency management into **`DEPENDENCIES.md`** (the shared *Dependency Contract* above defines its exact structure and the kind vocabulary `toolchain_depsmgr` reads it by) — **not** into `DEVELOPMENT.md`. Document it precisely, by **dependency kind**, matching how this project's manager works. For a `uv` / PEP 621 `pyproject.toml` project:
-
-Map each section to the canonical kind vocabulary (`runtime`, `dev`, `test`, `optional`, `build`) the contract defines:
+Write dependency management into **`DEPENDENCIES.md`** — **not** into `DEVELOPMENT.md`. The shared *Dependency Contract* above defines its required structure (the `## Manager` / `## Kinds` / `## Operations` / `## Conflict Resolution` / `## Verify` sections), the canonical kind vocabulary, and the reserved placeholders; your job here is to fill that structure with the concrete `uv` commands for each kind this project uses, matching how its manager works. For a `uv` / PEP 621 `pyproject.toml` project:
 
 - **`runtime`** (runtime / library) — `[project].dependencies`. *Add:* `uv add <pkg>` (optionally `<pkg>==<version>`), updating `pyproject.toml` and `uv.lock`. *Remove:* `uv remove <pkg>`.
 - **`test`** and **`dev`** — dependency groups (`[dependency-groups]`, e.g. `dev`, `test`): `uv add --group test <pkg>` / `uv add --dev <pkg>`; remove with `uv remove --group test <pkg>`.
@@ -66,7 +62,7 @@ When bootstrapping a fresh project with no manifest, create a minimal `pyproject
 
 ## Cross-Platform Notes
 
-The `.sh`/`.ps1` pairs invoke the same `uv`/`python`/`pytest` commands and work on Linux, macOS, and Windows. Pure-Python projects have no host/target split. If the project builds native extensions or targets another platform, document the required compiler/SDK and any platform selection in `DEVELOPMENT.md` per the shared contract.
+Pure-Python projects have no host/target split, so each `.sh`/`.ps1` pair runs the same `uv`/`python`/`pytest` commands on every host. If the project builds native extensions or cross-compiles, document the required compiler/SDK and any platform selection per the shared *Cross-Platform & Cross-Compilation* contract above.
 
 ## Tools
 

@@ -49,7 +49,7 @@ def test_schemas_are_well_formed(spec: SubAgentSpec) -> None:
     assert spec.input_schema.get("type") == "object"
     out = spec.output_schema
     branches = out.get("oneOf")
-    if isinstance(branches, list):  # dual-role agent (test_coder)
+    if isinstance(branches, list):  # dual-role agent (top-level oneOf of shapes)
         assert all(b.get("type") == "object" for b in branches)
     else:
         assert out.get("type") == "object"
@@ -65,25 +65,34 @@ def test_critic_specs_constrain_concern_kinds() -> None:
         assert kinds, f"{spec.name} declares no concern kinds"
 
 
-def test_test_coder_output_is_oneof() -> None:
-    """The dual-role agent's output is a oneOf of author + critic shapes."""
+def test_test_coder_output_is_solo_author_shape() -> None:
+    """test_coder is now a plain solo author (no dual-role oneOf).
+
+    Behavioral review of the Test Plan moved to ``test_design_critic``, so
+    ``test_coder`` returns only the author shape (the test code + stubs it wrote).
+    """
     spec = _SPECS_BY_NAME["test_coder"]
-    branches = spec.output_schema.get("oneOf")
-    assert isinstance(branches, list) and len(branches) == 2
-    # One branch is the author shape (primary_path), the other the critic shape.
-    has_author = any("primary_path" in b.get("properties", {}) for b in branches)
-    has_critic = any("verdict" in b.get("properties", {}) for b in branches)
-    assert has_author and has_critic
+    assert spec.output_schema.get("oneOf") is None
+    assert spec.output_schema.get("type") == "object"
+    assert "primary_path" in spec.output_schema["properties"]  # type: ignore[index]
 
 
-def test_test_coder_normalizes_either_branch() -> None:
-    """normalize_output accepts either oneOf branch for the dual-role agent."""
+def test_test_coder_normalizes_author_output() -> None:
+    """normalize_output accepts the solo author payload for test_coder."""
     schema = _SPECS_BY_NAME["test_coder"].output_schema
     _, author_ok = normalize_output(
         schema, {"primary_path": "src/a.py", "paths": ["src/a.py"], "summary": "s"}
     )
-    _, critic_ok = normalize_output(schema, {"verdict": "rejected", "concerns": []})
-    assert author_ok and critic_ok
+    assert author_ok
+
+
+def test_test_design_critic_constrains_behavioral_kinds() -> None:
+    """The new critic's concern vocabulary leads with the behavioral kinds."""
+    spec = _SPECS_BY_NAME["test_design_critic"]
+    item = spec.output_schema["properties"]["concerns"]["items"]  # type: ignore[index]
+    kinds = item["properties"]["kind"]["enum"]  # type: ignore[index]
+    assert "non_behavioral_test" in kinds
+    assert "over_specified_test" in kinds
 
 
 def test_return_result_with_engine_owned_compliance_key_stays_compliant() -> None:
