@@ -50,6 +50,9 @@ class _StubServices:
             "summary": "done",
         }
 
+    async def run_dependency_manager(self, task_input: dict[str, object]) -> dict[str, object]:
+        return {"status": "completed", "summary": "done"}
+
     async def run_author_critic_iteration(
         self,
         caller: str,

@@ -251,7 +251,7 @@ placeholders.
 | `run_subagent`, `run_author_critic_iteration`, `rollback`, `finalize_project` | ✅ implemented. `run_author_critic_iteration` now operates on `{author_name, critic_name, path?, input_paths?, instructions, for_revision?}` — a real file path, not artifact IDs. `rollback` now delegates to the same shadow-git mirror Problem Solver uses (§7/§10b). |
 | `disable_autonomous_mode` | ✅ implemented (`DisableAutonomousModeTool`, in `_TOOL_CLASSES`). Declared by `guide`; resolved by `tools_for_agent` and dispatched. (Progress reporting is no longer a tool — agents emit `<kodo_info>` callouts in their message text; see the performance preamble.) |
 | `create_new_project` | ✅ implemented (`CreateNewProjectTool`). Granted to `guide` + `problem_solver`. Thin shim over `_EngineServices.create_project(name)`: the engine slugifies the name, makes a fresh directory under the session workspace root (auto-suffix `-2`/`-3`… on collision), scaffolds `.kodo/`+`kodo.md`+checkpoint mirror via `RootMirrorManager.prepare`, records it in the logical-root map, and pushes `EVT_WORKSPACE_ADD_FOLDER` so the extension adds it to the open workspace (WS_PROTOCOL §5.9c). |
-| `toolchain_build`/`toolchain_deps` | ✅ implemented. `toolchain_build` executes the project's generated `scripts/<step>.{sh,ps1}` pair (the toolchain-setup agent's output, §8/§11) in canonical order — format → build → static_analysis → test — stopping at the first failure; a missing script returns a clear error directing the caller to run the toolchain-setup agent first. `toolchain_deps` is a deliberate stub: dependency management is out of scope for now and every call returns a structured "not implemented" response. |
+| `toolchain_build`/`toolchain_deps` | ✅ implemented. `toolchain_build` executes the project's generated `scripts/<step>.{sh,ps1}` pair (the toolchain-setup agent's output, §8/§11) in canonical order — format → build → static_analysis → test — stopping at the first failure; a missing script returns a clear error directing the caller to run the toolchain-setup agent first. `toolchain_deps` performs **one** add/remove/update dependency op: it does not touch manifests itself but spawns the `toolchain_depsmgr` sub-agent (via the dedicated ungated `_EngineServices.run_dependency_manager`, **not** `run_subagent` — holding the tool is the authorization, so the sub-agent is never in any caller's allow-list/roster) which follows the project's `DEPENDENCIES.md`. When that sub-agent reports `status: "dependencies_md_missing"`, the tool returns the same status plus a remediation `message` telling the caller to run the toolchain-setup sub-agent (`toolchain_python`) first — error-forwarding via the matched tool/sub-agent schemas. |
 
 **State:** Catalog complete; every dispatchable spec has a handler.
 
@@ -272,7 +272,7 @@ to the run's context).
 
 | Module | Defines | Role |
 |---|---|---|
-| [_context.py](../src/kodo/tools/_context.py) | `ToolContext`, `RootPath`, `GateLike`, `SessionLike`, `EngineServices`, `QuestionLike`, `ApprovalLike` | The injected per-run context (collaborators + mutable `stop_requested`/`returned_output`) and the structural Protocols runtime satisfies. `EngineServices` is one protocol covering every engine-side operation a tool can trigger (sub-agent launch, author/critic iteration, rollback, mode disable, project creation). `runtime.GateOrchestrator`/`SessionState` and the engine's `_EngineServices` adapter match them by shape. The mode a tool honours is read live from `SessionLike.effective_autonomous` (frozen per prompt), never snapshotted onto the context. Also carries `mode: str` (`"guided"`/`"problem_solving"`, frozen per prompt — gates `guided_dev_status` and tags `new_revision` jsonl entries) and `project_root: Path \| None` (the bound project's root, independent of mode, so a Problem-Solver edit to a tracked file is still recorded — see §7), plus `root_paths: tuple[RootPath, ...]` and `util_paths: dict[str, Path]` for the search tools. |
+| [_context.py](../src/kodo/tools/_context.py) | `ToolContext`, `RootPath`, `GateLike`, `SessionLike`, `EngineServices`, `QuestionLike`, `ApprovalLike` | The injected per-run context (collaborators + mutable `stop_requested`/`returned_output`) and the structural Protocols runtime satisfies. `EngineServices` is one protocol covering every engine-side operation a tool can trigger (sub-agent launch, **dependency-manager launch** (`run_dependency_manager`, the ungated `toolchain_depsmgr` spawn behind `toolchain_deps`), author/critic iteration, rollback, mode disable, project creation). `runtime.GateOrchestrator`/`SessionState` and the engine's `_EngineServices` adapter match them by shape. The mode a tool honours is read live from `SessionLike.effective_autonomous` (frozen per prompt), never snapshotted onto the context. Also carries `mode: str` (`"guided"`/`"problem_solving"`, frozen per prompt — gates `guided_dev_status` and tags `new_revision` jsonl entries) and `project_root: Path \| None` (the bound project's root, independent of mode, so a Problem-Solver edit to a tracked file is still recorded — see §7), plus `root_paths: tuple[RootPath, ...]` and `util_paths: dict[str, Path]` for the search tools. |
 | [_tool.py](../src/kodo/tools/_tool.py) | `Tool` (ABC) | Binds one run's `ToolContext` (read-only `context` property) and declares the abstract `handle(self, tool_input) -> str`. |
 | `_<tool_name>.py` (one module per dispatchable tool) | one `Tool` subclass each | e.g. `ReadFileTool`, `DocumentFeedbackTool`, `GetRootPathsTool`; implements `handle` reading `self.context`. Mirrors the `toolspecs` one-file-per-tool convention. |
 | [_dispatch.py](../src/kodo/tools/_dispatch.py) | `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME` | The `_TOOL_CLASSES` table pairs each dispatchable `ToolSpec` with its `Tool` subclass; `dispatch` instantiates the class bound to the run's context and calls `handle`; exposes per-run `stop_requested`/`returned_output`. `tools_for_agent(frozenset[str])` resolves an agent's declared names to specs (skipping spec-only placeholders — none today). |
@@ -282,7 +282,7 @@ to the run's context).
 **Links:** `runtime/_engine.py` builds one `ToolDispatcher` per agent run via
 `__make_dispatcher`, injecting `GateOrchestrator`, `SessionState`, and one
 `_EngineServices` adapter (wrapping the engine's `__run_subagent` /
-`__run_author_critic_iteration` / `__run_rollback` /
+`__run_dependency_manager` / `__run_author_critic_iteration` / `__run_rollback` /
 `__disable_autonomous`). The dispatcher takes **no**
 `autonomous` flag — tools read `SessionState.effective_autonomous`, which the
 worker freezes once per prompt, so a mid-prompt mode toggle never rebuilds the
@@ -356,17 +356,21 @@ choose their own paths) and (b) implement `build`/`test`/`add_dependency`
 directly in Python, which the `toolchain_*` tools never actually dispatched.
 Both reasons are gone.
 
-The project's build model instead lives in **agent-generated scripts**: a
-language-specific toolchain-setup sub-agent (`python_toolchain`, sharing the
-`base_toolchain.md` contract, §11) generates five per-platform script pairs —
-`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}` — plus a
-`DEVELOPMENT.md` with command-level dependency-management instructions, at the
-**project root**. The `toolchain_build` tool (§6, `tools/_toolchain_build.py`)
-is a thin, language-agnostic executor: it runs the enabled steps' scripts in
-canonical order (format → build → static_analysis → test), stopping at the
-first failure, and returns a clear "ask the toolchain-setup agent" error when
-a script doesn't exist yet. `toolchain_deps` is an intentional stub —
-dependency management is out of scope for now; see `DEVELOPMENT.md` instead.
+The project's build model instead lives in **agent-generated scripts and docs**: a
+language-specific toolchain-setup sub-agent (`toolchain_python`, sharing the
+`base_toolchain.md` + `base_dependencies.md` contracts, §11) generates five
+per-platform script pairs — `scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`
+— plus two root docs: `DEVELOPMENT.md` (build/check/test how-to) and
+`DEPENDENCIES.md` (the machine-followable **dependency contract** —
+manager, kinds, and command-level add/remove/update steps). The
+`toolchain_build` tool (§6, `tools/_toolchain_build.py`) is a thin,
+language-agnostic executor: it runs the enabled steps' scripts in canonical
+order (format → build → static_analysis → test), stopping at the first failure,
+and returns a clear "ask the toolchain-setup agent" error when a script doesn't
+exist yet. `toolchain_deps` is the dependency counterpart: it spawns the
+`toolchain_depsmgr` sub-agent, which **executes `DEPENDENCIES.md`** for a single
+add/remove/update op (and reports `dependencies_md_missing`, which the tool turns
+into a "run the toolchain-setup agent first" remediation message).
 
 **State:** Both tools have real dispatch (previously spec-only placeholders).
 Dependency management remains deliberately unimplemented.
@@ -511,7 +515,10 @@ each names a `base_<name>.md` file in the subagents dir whose body is prepended
 validates every referenced base exists and is non-empty at construction
 (fail-fast, alongside the tool-resolution check). This lets a family of agents
 share one contract without duplication — used by the **toolchain-setup** family
-(`base_toolchain.md`).
+(`base_toolchain.md`) and the **dependency contract** (`base_dependencies.md`,
+the `DEPENDENCIES.md` format spec) shared by its *writer* (`toolchain_python`,
+`bases: [toolchain, dependencies]`) and its *reader* (`toolchain_depsmgr`,
+`bases: [dependencies]`).
 
 **Sub-agent roster (`{PLACEHOLDER:SUBAGENTS}`):** a *caller* agent (one with a
 `subagents:` allow-list) may embed `{PLACEHOLDER:SUBAGENTS}`. The registry replaces
@@ -525,7 +532,7 @@ an **author** → one `run_author_critic_iteration` row naming the critic; `solo
 → a `run_subagent` row; a **pure critic** (neither) is absorbed into its author's row
 and gets no row of its own (but still gets a purpose paragraph). The **`Kind`** column
 reads `standalone` when the callee declares `standalone: true`, else `workflow` —
-distinguishing on-demand specialists (e.g. `python_toolchain`) from ordered-pipeline
+distinguishing on-demand specialists (e.g. `toolchain_python`) from ordered-pipeline
 agents. The roster carries **no ordering column**: ordering lives in the caller's
 prose (the Guide's numbered pipeline + the Design Plan), since a single linear
 predecessor (`depends_on`, now removed) misrepresented the real inter-agent
@@ -534,8 +541,8 @@ dependencies. An agent can be **both** solo and a critic — `test_coder` gets i
 `render_subagents_section(name)` is public so prompt-review tooling can render a
 caller's roster even when its body omits the placeholder. Validated fail-fast at
 construction (every listed sub-agent must exist and carry a `## Purpose`). Live
-users: **`problem_solver`** (lists `python_toolchain`) and **`guide`** (the full
-pipeline + `python_toolchain`; its `## Subagents` section embeds the placeholder and
+users: **`problem_solver`** (lists `toolchain_python`) and **`guide`** (the full
+pipeline + `toolchain_python`; its `## Subagents` section embeds the placeholder and
 a thin stage→agent map replaces the old hand-written `### Sub-Agent Names` table).
 See [GUIDE_PROMPT_REVIEW.md](GUIDE_PROMPT_REVIEW.md) for the live assembled prompt and
 the amendment record.
@@ -551,15 +558,16 @@ Write, Match Existing Conventions, Verify Don't Assume, and Stay In Scope.
 
 | Agent | Tools declared | Role |
 |---|---|---|
-| `guide` | guided_dev_status, get_root_paths, find_files, find_text_in_files, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode, **create_new_project** | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. `subagents:` allow-list includes the pipeline agents **+ `python_toolchain`**. |
-| `problem_solver` | filesystem, edit_file, run_command, **toolchain_build/deps**, **run_subagent**, ask_user, **create_new_project** | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). Declares `run_subagent` + `subagents: [python_toolchain]`, used only to delegate toolchain setup. **Embeds `{PLACEHOLDER:SUBAGENTS}` in a `## Subagents` section** — the live caller of the roster mechanism. |
-| `python_toolchain` | run_command, filesystem, edit_file, find_files, find_text_in_files, get_root_paths, ask_user | **Toolchain-setup** agent (`bases: [toolchain]`). Spawnable by both `guide` and `problem_solver`. Bootstraps/converts a project: generates the five per-platform build scripts (`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`) + a `DEVELOPMENT.md` (run guide + command-level dependency-management steps), now actually **executed** by `toolchain_build` (§8). Suggest-then-confirm invocation. |
+| `guide` | guided_dev_status, get_root_paths, find_files, find_text_in_files, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode, **create_new_project** | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. `subagents:` allow-list includes the pipeline agents **+ `toolchain_python`**. |
+| `problem_solver` | filesystem, edit_file, run_command, **toolchain_build/deps**, **run_subagent**, ask_user, **create_new_project** | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). Declares `run_subagent` + `subagents: [toolchain_python]`, used only to delegate toolchain setup. **Embeds `{PLACEHOLDER:SUBAGENTS}` in a `## Subagents` section** — the live caller of the roster mechanism. |
+| `toolchain_python` | run_command, filesystem, edit_file, find_files, find_text_in_files, get_root_paths, ask_user | **Toolchain-setup** agent (`bases: [toolchain, dependencies]`). Spawnable by both `guide` and `problem_solver`. Bootstraps/converts a project: generates the five per-platform build scripts (`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`) + a `DEVELOPMENT.md` (build/check/test how-to) + a `DEPENDENCIES.md` (the dependency contract), now actually **executed** by `toolchain_build`/`toolchain_deps` (§8). Suggest-then-confirm invocation. |
+| `toolchain_depsmgr` | get_root_paths, find_files, read_file, run_command, edit_file | **Dependency-management** agent (`bases: [dependencies]`). The acting force behind the `toolchain_deps` tool — **not** spawnable via `run_subagent` by anyone (no agent lists it; the tool drives it through the ungated `run_dependency_manager` service). Per run it performs one add/remove/update op by reading and executing the project's `DEPENDENCIES.md`; returns `status: completed/failed/dependencies_md_missing`. Toolchain-agnostic: all language specifics come from `DEPENDENCIES.md`. |
 | `narrative_author` | filesystem, edit_file, read_file, ask_user | Solo, user-facing intake. Writes the Narrative and Tech Stack documents directly. |
 | `architect`, `requirements_author`, `functional_designer`, `e2e_test_designer`, `test_designer` | filesystem, edit_file, read_file, escalate_blocker | Authors (paired with a critic); `coder` additionally holds `toolchain_build`/`toolchain_deps`. |
 | `architect_critic`, `requirements_critic`, `functional_design_critic`, `e2e_test_design_critic`, `code_critic` | read_file, document_feedback | Critics — record a verdict per file; the engine alone drives the accept/review flow (§7/§12.1). |
 | `test_coder` | filesystem, edit_file, read_file, document_feedback, escalate_blocker | Dual role: critic of `test_designer`'s plan, solo author of test code + stubs. |
 
-**State:** Loader/registry complete (incl. `bases:` shared snippets **and the `{PLACEHOLDER:SUBAGENTS}` roster from per-agent `## Purpose` + `solo`/`critic`/`standalone` frontmatter**); agent roster present (pipeline + `problem_solver` + the `python_toolchain` toolchain-setup agent); every declared tool now has a dispatch handler.
+**State:** Loader/registry complete (incl. `bases:` shared snippets **and the `{PLACEHOLDER:SUBAGENTS}` roster from per-agent `## Purpose` + `solo`/`critic`/`standalone` frontmatter**); agent roster present (pipeline + `problem_solver` + the `toolchain_python` toolchain-setup agent); every declared tool now has a dispatch handler.
 
 ---
 
@@ -634,6 +642,14 @@ Solver) and cumulative USD.
   sub-agent's structured `return_result` output (or a bare
   `{schema_compliance: False}` fallback if it never called it — there is no
   artifact index to recover a partial result from).
+- `__run_dependency_manager` (exposed via `_EngineServices.run_dependency_manager`,
+  the callback the `toolchain_deps` tool invokes) → drives the fixed
+  `toolchain_depsmgr` agent straight through `__spawn_subagent` (the ungated
+  primitive), **bypassing the `__assert_can_spawn` allow-list gate** that
+  `__run_subagent` applies. Possession of the `toolchain_deps` tool is the
+  authorization; the agent is deliberately absent from `_DIRECT_ONLY_AGENTS`
+  (which would make `__spawn_subagent` short-circuit it) and from every
+  `subagents:` list, so the only path to it is the tool.
 - `__run_author_critic_iteration` → spawns the author (`for_revision_path` set
   when revising), reads back `author_output.primary_path`, spawns the critic
   against that path, then reads `kodo.guided_state.read_status(path)` for the
@@ -866,7 +882,7 @@ source's.
 | `toolspecs` catalog, `subagents` loader/registry, `tools` dispatch | ✅ Complete — every dispatchable spec has a handler |
 | `runtime` engine / gates / rollback | ✅ Functional |
 | `mirror`/`shellparser` (§10b) + `runtime/_checkpoints.RootMirrorManager` — generic checkpoint/undo/rollback | ✅ Implemented; now drives **both** workflow modes (§12.1) — there is no longer a second Guided-only mirror. Two documented limitations (§15). |
-| Toolchain agent tools (`toolchain_build`/`toolchain_deps`) | ✅ Implemented. `toolchain_build` executes the toolchain-setup agent's generated `scripts/<step>` (§8). `toolchain_deps` is a deliberate stub — dependency management is out of scope. |
+| Toolchain agent tools (`toolchain_build`/`toolchain_deps`) | ✅ Implemented. `toolchain_build` executes the toolchain-setup agent's generated `scripts/<step>` (§8). `toolchain_deps` spawns the `toolchain_depsmgr` sub-agent (via the ungated `run_dependency_manager` service) to execute the project's `DEPENDENCIES.md` for one add/remove/update op; a missing `DEPENDENCIES.md` comes back as a remediation message pointing at the toolchain-setup agent (§8). |
 | `disable_autonomous_mode` | ✅ Implemented and dispatched (guide) |
 | `create_new_project` | ✅ Implemented and dispatched (guide + problem_solver); scaffolds a new project dir + checkpoint mirror and adds it to the workspace |
 | Native file-IO / `run_command` / `read_file` tools | ✅ Implemented; granted to authoring sub-agents and `problem_solver` |

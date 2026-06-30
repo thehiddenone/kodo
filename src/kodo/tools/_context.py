@@ -153,6 +153,20 @@ class EngineServices(Protocol):
         """
         ...
 
+    async def run_dependency_manager(self, task_input: dict[str, object]) -> dict[str, object]:
+        """Run the ``toolchain_depsmgr`` sub-agent and return its structured result.
+
+        The ungated sibling of :meth:`run_subagent`, dedicated to the
+        ``toolchain_deps`` tool: holding that tool is the authorization, so the
+        dependency-management sub-agent is spawned directly (a fixed engine-side
+        name) without consulting any caller's ``subagents:`` allow-list and never
+        appears in a ``run_subagent`` roster. ``task_input`` conforms to the
+        sub-agent's ``input_schema``; the return is its ``output_schema`` result
+        (carrying the ``status`` the tool translates, including
+        ``dependencies_md_missing``).
+        """
+        ...
+
     async def run_author_critic_iteration(
         self,
         caller: str,

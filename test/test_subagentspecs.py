@@ -96,9 +96,9 @@ def test_return_result_with_engine_owned_compliance_key_stays_compliant() -> Non
     Before the fix, normalize_output treated the supplied key as an undeclared
     extra, dropped it, and wrongly marked the otherwise-perfect result
     non-compliant — flagging the whole sub-agent run as failed. This mirrors the
-    real python_toolchain payload that exhibited the bug.
+    real toolchain_python payload that exhibited the bug.
     """
-    spec = _SPECS_BY_NAME["python_toolchain"]
+    spec = _SPECS_BY_NAME["toolchain_python"]
     payload = {
         "scripts_created": ["scripts/build.sh"],
         "development_md_path": "DEVELOPMENT.md",
@@ -118,7 +118,7 @@ def test_engine_owned_compliance_key_does_not_mask_a_real_violation() -> None:
     A genuinely undeclared field is still dropped and still marks the result
     non-compliant even when ``schema_compliance`` rides along in the input.
     """
-    spec = _SPECS_BY_NAME["python_toolchain"]
+    spec = _SPECS_BY_NAME["toolchain_python"]
     payload = {
         "scripts_created": ["scripts/build.sh"],
         "development_md_path": "DEVELOPMENT.md",

@@ -1,15 +1,18 @@
-"""SubAgentSpec for ``python_toolchain`` (standalone solo; writes files, no artifacts)."""
+"""SubAgentSpec for ``toolchain_python`` (standalone solo; writes files, no artifacts)."""
 
 from __future__ import annotations
 
 from .._subagentspec import SubAgentSpec
 
-__all__ = ["PYTHON_TOOLCHAIN"]
+__all__ = ["TOOLCHAIN_PYTHON"]
 
 
-PYTHON_TOOLCHAIN: SubAgentSpec = SubAgentSpec(
-    name="python_toolchain",
-    description="Sets up the five standard build scripts + DEVELOPMENT.md for a Python project.",
+TOOLCHAIN_PYTHON: SubAgentSpec = SubAgentSpec(
+    name="toolchain_python",
+    description=(
+        "Sets up the five standard build scripts + DEVELOPMENT.md (and DEPENDENCIES.md "
+        "when the project has dependencies) for a Python project."
+    ),
     input_schema={
         "type": "object",
         "properties": {
@@ -43,6 +46,13 @@ PYTHON_TOOLCHAIN: SubAgentSpec = SubAgentSpec(
             "development_md_path": {
                 "type": "string",
                 "description": "Filesystem path to the DEVELOPMENT.md written.",
+            },
+            "dependencies_md_path": {
+                "type": ["string", "null"],
+                "description": (
+                    "Filesystem path to the DEPENDENCIES.md written, or null when the "
+                    "project has no dependencies to manage."
+                ),
             },
             "pyproject_path": {
                 "type": ["string", "null"],

@@ -387,8 +387,8 @@ def test_load_agent_parses_author_critic(tmp_path: Path) -> None:
 def test_load_agent_parses_standalone_flag(tmp_path: Path) -> None:
     path = _write_agent(
         tmp_path,
-        "python_toolchain",
-        "name: python_toolchain\nsolo: true\nstandalone: true\n",
+        "toolchain_python",
+        "name: toolchain_python\nsolo: true\nstandalone: true\n",
         "## Purpose\n\nSets up the toolchain on demand.\n",
     )
     agent = load_agent(path)
@@ -593,9 +593,9 @@ def test_real_problem_solver_renders_subagent_roster() -> None:
     registry = AgentRegistry(_REAL_AGENTS_DIR)
     prompt = registry.get("problem_solver").system_prompt
     assert "{PLACEHOLDER:SUBAGENTS}" not in prompt
-    # Problem Solver spawns only python_toolchain (a standalone solo).
-    assert "| `run_subagent` | `python_toolchain` | — | standalone |" in prompt
-    assert "### Python Toolchain (`python_toolchain`)" in prompt
+    # Problem Solver spawns only toolchain_python (a standalone solo).
+    assert "| `run_subagent` | `toolchain_python` | — | standalone |" in prompt
+    assert "### Python Toolchain (`toolchain_python`)" in prompt
 
 
 def test_real_guide_roster_reproduces_pipeline_pairs() -> None:
@@ -612,4 +612,4 @@ def test_real_guide_roster_reproduces_pipeline_pairs() -> None:
     assert "| `run_author_critic_iteration` | `test_designer` | `test_coder` |" in section
     assert "| `run_subagent` | `test_coder` | — | workflow |" in section
     # The toolchain agent is the one standalone (adjunct) entry in the guide roster.
-    assert "| `run_subagent` | `python_toolchain` | — | standalone |" in section
+    assert "| `run_subagent` | `toolchain_python` | — | standalone |" in section

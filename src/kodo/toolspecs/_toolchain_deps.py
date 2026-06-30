@@ -1,9 +1,13 @@
 """``toolchain_deps`` tool spec.
 
-Dependency management is intentionally not implemented yet — the dispatch
-handler (:mod:`kodo.tools._toolchain_deps`) always returns a clear
-"not implemented" response so an agent gets a usable answer instead of an
-unhandled-tool error.
+The caller-facing surface for changing project dependencies. The dispatch handler
+(:mod:`kodo.tools._toolchain_deps`) does not touch manifests itself — it spawns
+the ``toolchain_depsmgr`` sub-agent, which executes the project's
+``DEPENDENCIES.md``. When no ``DEPENDENCIES.md`` exists, the sub-agent reports
+``dependencies_md_missing`` and the tool returns a ``status`` of the same name
+plus a remediation ``message`` telling the caller how to get one generated (run
+the toolchain-setup sub-agent), so the caller can recover rather than seeing a
+bare failure.
 """
 
 from __future__ import annotations
@@ -18,9 +22,19 @@ TOOLCHAIN_DEPS: ToolSpec = ToolSpec(
     external_name="Manage Dependencies",
     user_description="Manage project dependencies",
     description=(
-        "Add, remove, or update project dependencies in the project's dependency "
-        "configuration. The only sanctioned way to change dependency files — "
-        "agents do not edit them directly."
+        "Add, remove, or update a single project dependency. The only sanctioned "
+        "way to change dependency files — agents do not edit manifests or "
+        "lockfiles directly. The work is performed by the dependency-management "
+        "sub-agent, which follows the project's `DEPENDENCIES.md`.\n\n"
+        "Inputs: `action` (add | remove | update), `name` (the package), optional "
+        "`version` (constraint; omit for latest), optional `kind` (which "
+        "dependency category — `runtime` (default), `dev`, `test`, `optional`, or "
+        "`build`), and optional `extra` (the extras group, for `kind: optional`).\n\n"
+        "Returns `success`, a `status`, and a `message`. A `status` of "
+        "`dependencies_md_missing` means the project has no `DEPENDENCIES.md` yet: "
+        "nothing was changed, and `message` explains how to get one generated "
+        "(run the toolchain-setup sub-agent to bootstrap/convert the project) "
+        "before retrying."
     ),
     input_schema={
         "type": "object",
@@ -33,7 +47,21 @@ TOOLCHAIN_DEPS: ToolSpec = ToolSpec(
             "name": {"type": "string", "description": "Dependency package name."},
             "version": {
                 "type": "string",
-                "description": "Version constraint, required for add/update.",
+                "description": "Version constraint; omit for the latest/unpinned.",
+            },
+            "kind": {
+                "type": "string",
+                "enum": ["runtime", "dev", "test", "optional", "build"],
+                "description": (
+                    "Dependency category. Defaults to `runtime`. Use `dev` for "
+                    "development-only tools, `test` for test-only deps, `optional` "
+                    "for an opt-in feature/extra, `build` for build-backend "
+                    "requirements."
+                ),
+            },
+            "extra": {
+                "type": "string",
+                "description": "Extras/optional-feature group name (only for `kind: optional`).",
             },
         },
         "required": ["action", "name"],
@@ -42,13 +70,51 @@ TOOLCHAIN_DEPS: ToolSpec = ToolSpec(
         "type": "object",
         "properties": {
             "success": {"type": "boolean", "description": "Whether the operation succeeded."},
-            "message": {"type": "string", "description": "Human-readable result detail."},
+            "status": {
+                "type": "string",
+                "enum": ["completed", "dependencies_md_missing", "failed"],
+                "description": (
+                    "completed = applied and verified; dependencies_md_missing = no "
+                    "DEPENDENCIES.md, nothing changed (see `message` for remediation); "
+                    "failed = DEPENDENCIES.md present but the operation could not complete."
+                ),
+            },
+            "message": {
+                "type": "string",
+                "description": (
+                    "Human-readable result detail. For dependencies_md_missing, a "
+                    "step-by-step remediation telling the caller how to get a "
+                    "DEPENDENCIES.md generated before retrying."
+                ),
+            },
+            "commands_run": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "The DEPENDENCIES.md commands executed, in order.",
+            },
+            "files_changed": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Manifest/lockfile paths the operation modified.",
+            },
         },
-        "required": ["success", "message"],
+        "required": ["success", "status", "message"],
     },
     security_impact=SecurityImpact.MODERATE,
-    input_visibility={"action": "always", "name": "always", "version": "visible"},
-    output_visibility={"success": "always", "message": "visible"},
+    input_visibility={
+        "action": "always",
+        "name": "always",
+        "version": "visible",
+        "kind": "visible",
+        "extra": "visible",
+    },
+    output_visibility={
+        "success": "always",
+        "status": "always",
+        "message": "visible",
+        "commands_run": "visible",
+        "files_changed": "visible",
+    },
     when_to_use=(
         "A new library (database driver, HTTP client, message queue "
         "client, parser, etc.) is needed before referencing it in an "

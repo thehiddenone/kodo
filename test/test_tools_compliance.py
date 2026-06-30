@@ -65,6 +65,14 @@ class _FakeServices:
     ) -> dict[str, object]:
         return {"primary_path": "specs/sub.md", "paths": ["specs/sub.md"], "summary": "done"}
 
+    async def run_dependency_manager(self, task_input: dict[str, object]) -> dict[str, object]:
+        return {
+            "status": "completed",
+            "summary": "added foo",
+            "commands_run": ["uv add foo"],
+            "files_changed": ["pyproject.toml", "uv.lock"],
+        }
+
     async def run_author_critic_iteration(
         self,
         caller: str,
@@ -434,9 +442,43 @@ async def test_toolchain_build_compliance(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_toolchain_deps_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path)
-    _assert_compliant(
+    parsed = _assert_compliant(
         "toolchain_deps", await _dispatch(d, "toolchain_deps", {"action": "add", "name": "foo"})
     )
+    # The sub-agent's structured result is mapped onto the tool envelope.
+    assert parsed["success"] is True
+    assert parsed["status"] == "completed"
+    assert parsed["commands_run"] == ["uv add foo"]
+
+
+class _NoDepsMdServices(_FakeServices):
+    """Dependency manager reporting no DEPENDENCIES.md, as on an unset-up project."""
+
+    async def run_dependency_manager(self, task_input: dict[str, object]) -> dict[str, object]:
+        return {"status": "dependencies_md_missing", "summary": "no DEPENDENCIES.md at root"}
+
+
+@pytest.mark.asyncio
+async def test_toolchain_deps_missing_dependencies_md_returns_remediation(tmp_path: Path) -> None:
+    session = SessionState()
+    d = ToolDispatcher(
+        resolver=ProjectPathResolver(tmp_path),
+        gate=_FakeGate(),
+        session=session,
+        services=_NoDepsMdServices(),
+        agent_name="coder",
+        session_id="sess-test",
+        mode="guided",
+        project_root=tmp_path,
+    )
+    parsed = _assert_compliant(
+        "toolchain_deps", await _dispatch(d, "toolchain_deps", {"action": "add", "name": "foo"})
+    )
+    assert parsed["success"] is False
+    assert parsed["status"] == "dependencies_md_missing"
+    # The caller gets an actionable sub-prompt naming the toolchain-setup route.
+    assert "toolchain_python" in parsed["message"]
+    assert "run_subagent" in parsed["message"]
 
 
 # ---------------------------------------------------------------------------

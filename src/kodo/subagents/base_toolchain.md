@@ -71,21 +71,34 @@ Script rules:
 ## DEVELOPMENT.md
 
 Write `DEVELOPMENT.md` at the **project root** (not inside the source tree). It is
-read by humans and is the instruction source a dependency-management agent executes
-from, so keep it precise and command-level, not prose. It must contain at least:
+read by humans, so keep it precise and command-level, not prose. It must contain
+at least:
 
 - **Running the build scripts** — what each does, exactly how to invoke it on
   Linux/macOS and Windows, and the `test` selector syntax for a single test/suite.
 - **Prerequisites** — the tools the scripts assume, the versions you detected, and
   how to obtain any that are missing.
-- **Dependency management** — the heart of the document. **Step-by-step,
-  command-level** guides to **add**, **remove**, and **resolve conflicting**
-  dependencies. Cover **every dependency kind this toolchain distinguishes**
-  (runtime/library, test, dev/build, release, optional/extras, etc.), each with its
-  own concrete steps, the exact manifest section and commands, and how the lockfile
-  (if any) is updated — precise enough to follow mechanically.
 
-Keep `DEVELOPMENT.md` and the scripts **in sync**; drift between them is a defect.
+`DEVELOPMENT.md` is about **building, checking, and testing**. **Dependency
+management does not go here** — it goes in `DEPENDENCIES.md` (next). Keep
+`DEVELOPMENT.md` and the scripts **in sync**; drift between them is a defect.
+
+## DEPENDENCIES.md
+
+Write `DEPENDENCIES.md` at the **project root** whenever the project has
+dependencies to manage. It is the single, machine-followable instruction source
+the dependency-management agent (`toolchain_depsmgr`) executes from — so it must
+match the **Dependency Contract** above *exactly*: the canonical kind vocabulary
+(`runtime`/`dev`/`test`/`optional`/`build`), the required `## Manager` /
+`## Kinds` / `## Operations` / `## Conflict Resolution` / `## Verify` sections,
+and literal command blocks using the reserved placeholders. Cover **every
+dependency kind this toolchain distinguishes**, each with its own command-level
+`Add` / `Remove` / `Update` steps, the exact manifest section, and how the
+lockfile (if any) is updated — precise enough to follow mechanically without
+knowing the language.
+
+Omit `DEPENDENCIES.md` only for a project that genuinely has no dependencies to
+manage; note that in your report. Keep it in sync with the manifest and scripts.
 
 ## Cross-Platform & Cross-Compilation
 
@@ -106,19 +119,20 @@ rather than reporting success.
 ## Change Requests
 
 When re-invoked to change an existing setup, treat it as a targeted edit, not a
-regeneration: read the current scripts and `DEVELOPMENT.md`, make the change with
-`edit_file` (pass whole new content as `new_string` only when regenerating a file
-whole), re-verify by running the affected scripts, and update `DEVELOPMENT.md` to
-match. Do not silently drop capabilities the previous setup had.
+regeneration: read the current scripts, `DEVELOPMENT.md`, and `DEPENDENCIES.md`,
+make the change with `edit_file` (pass whole new content as `new_string` only when
+regenerating a file whole), re-verify by running the affected scripts, and update
+`DEVELOPMENT.md` / `DEPENDENCIES.md` to match. Do not silently drop capabilities
+the previous setup had.
 
 ## Report Back To Your Caller
 
 When done, report to the agent that invoked you (Guide or Problem Solver):
 
 - Whether you **bootstrapped** or **converted**, and what you found on disk.
-- The files you created or changed (`scripts/`, `DEVELOPMENT.md`, any manifest/
-  config touched).
-- Key decisions captured in `DEVELOPMENT.md` — chosen tools, dependency model,
-  `test` selector syntax, host/target assumptions.
+- The files you created or changed (`scripts/`, `DEVELOPMENT.md`,
+  `DEPENDENCIES.md`, any manifest/config touched).
+- Key decisions — chosen tools and `test` selector syntax (in `DEVELOPMENT.md`),
+  the dependency model and manager (in `DEPENDENCIES.md`), host/target assumptions.
 - The **verification result** — what you ran and whether it passed, and any step
   you could not verify and why.

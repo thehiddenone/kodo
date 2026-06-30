@@ -131,6 +131,11 @@ _GUIDE_AGENT_NAME = "guide"
 _PROBLEM_SOLVER_AGENT_NAME = "problem_solver"
 _SESSION_TITLER_AGENT_NAME = "session_titler"
 _COMPACTOR_AGENT_NAME = "compactor"
+# Dependency-management sub-agent behind the ``toolchain_deps`` tool. Spawned only
+# through the tool's dedicated ungated service (``__run_dependency_manager``), so
+# it is intentionally *not* in ``_DIRECT_ONLY_AGENTS`` (which would make
+# ``__spawn_subagent`` short-circuit it) nor in any agent's ``subagents:`` list.
+_DEPSMGR_AGENT_NAME = "toolchain_depsmgr"
 
 # Sub-agents that the engine drives directly and that must never be reachable
 # through the ``run_subagent`` tool (the Guide/Problem Solver cannot
@@ -243,6 +248,7 @@ class _EngineServices:
         self,
         *,
         run_subagent: Callable[[str, str, dict[str, object]], Awaitable[dict[str, object]]],
+        run_dependency_manager: Callable[[dict[str, object]], Awaitable[dict[str, object]]],
         run_author_critic: Callable[
             [str, str, str, str, dict[str, str], str, bool], Awaitable[dict[str, object]]
         ],
@@ -251,6 +257,7 @@ class _EngineServices:
         create_project: Callable[[str, str | None, bool], Awaitable[dict[str, object]]],
     ) -> None:
         self.__run_subagent = run_subagent
+        self.__run_dependency_manager = run_dependency_manager
         self.__run_author_critic = run_author_critic
         self.__rollback = rollback
         self.__disable_autonomous = disable_autonomous
@@ -261,6 +268,10 @@ class _EngineServices:
     ) -> dict[str, object]:
         """Delegate to the engine's caller-gated sub-agent spawn."""
         return await self.__run_subagent(caller, name, task_input)
+
+    async def run_dependency_manager(self, task_input: dict[str, object]) -> dict[str, object]:
+        """Delegate to the engine's ungated dependency-manager spawn."""
+        return await self.__run_dependency_manager(task_input)
 
     async def run_author_critic_iteration(
         self,
@@ -399,6 +410,7 @@ class WorkflowEngine:
         self.__resume_subsession_pending = False
         self.__services = _EngineServices(
             run_subagent=self.__run_subagent,
+            run_dependency_manager=self.__run_dependency_manager,
             run_author_critic=self.__run_author_critic_iteration,
             rollback=self.__run_rollback,
             disable_autonomous=self.__disable_autonomous,
@@ -2337,6 +2349,25 @@ class WorkflowEngine:
         """
         self.__assert_can_spawn(caller, name)
         return await self.__spawn_subagent(name, task_input)
+
+    async def __run_dependency_manager(self, task_input: dict[str, object]) -> dict[str, object]:
+        """Spawn the dependency-management sub-agent for the ``toolchain_deps`` tool.
+
+        Ungated by design: the tool's possession is the authorization, so the
+        fixed ``toolchain_depsmgr`` agent is driven straight through
+        :meth:`__spawn_subagent` without an allow-list check and without sitting
+        in any caller's ``subagents:`` roster — keeping every dependency change on
+        the single ``toolchain_deps`` path (which alone knows how to translate a
+        missing ``DEPENDENCIES.md`` into a remediation message).
+
+        Args:
+            task_input: Structured task conforming to ``toolchain_depsmgr``'s
+                ``input_schema``.
+
+        Returns:
+            dict: The sub-agent's ``output_schema`` result.
+        """
+        return await self.__spawn_subagent(_DEPSMGR_AGENT_NAME, task_input)
 
     @staticmethod
     def __render_task_input(task_input: dict[str, object]) -> str:
