@@ -18,26 +18,37 @@ class RunAuthorCriticIterationTool(Tool):
     async def handle(self, tool_input: dict[str, object]) -> str:
         author_name = str(tool_input.get("author_name", ""))
         critic_name = str(tool_input.get("critic_name", ""))
-        input_ids_raw = tool_input.get("input_artifact_ids", [])
-        input_ids = [str(i) for i in input_ids_raw] if isinstance(input_ids_raw, list) else []
-        revision_raw = tool_input.get("for_revision_artifact_ids", [])
-        revision_ids = [str(i) for i in revision_raw] if isinstance(revision_raw, list) else []
+        path = str(tool_input.get("path", ""))
+        instructions = str(tool_input.get("instructions", ""))
+        for_revision = bool(tool_input.get("for_revision", False))
+        input_paths_raw = tool_input.get("input_paths", {})
+        input_paths = (
+            {str(k): str(v) for k, v in input_paths_raw.items()}
+            if isinstance(input_paths_raw, dict)
+            else {}
+        )
+
+        if for_revision and not path:
+            return json.dumps({"error": "`path` is required when `for_revision` is true."})
 
         caller = self.context.agent_name
         _log.info(
-            "run_author_critic_iteration: caller=%s author=%s critic=%s for_revision=%s",
+            "run_author_critic_iteration: caller=%s author=%s critic=%s path=%s for_revision=%s",
             caller,
             author_name,
             critic_name,
-            revision_ids,
+            path,
+            for_revision,
         )
         try:
             result = await self.context.services.run_author_critic_iteration(
                 caller,
                 author_name,
                 critic_name,
-                input_ids,
-                revision_ids,
+                path,
+                input_paths,
+                instructions,
+                for_revision,
             )
         except PermissionError as exc:
             _log.warning("run_author_critic_iteration denied: %s", exc)

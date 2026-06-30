@@ -20,6 +20,7 @@ from kodo.toolspecs import (
     ASK_USER,
     CREATE_NEW_PROJECT,
     DISABLE_AUTONOMOUS_MODE,
+    DOCUMENT_FEEDBACK,
     EDIT_FILE,
     ESCALATE_BLOCKER,
     FILESYSTEM,
@@ -27,25 +28,23 @@ from kodo.toolspecs import (
     FIND_FILES,
     FIND_TEXT_IN_FILES,
     GET_ROOT_PATHS,
-    LIST_ARTIFACTS,
-    PUBLISH_ARTIFACT,
-    QUERY_FRONTIER,
-    READ_ARTIFACT,
-    REPORT_ARTIFACT_COMPLETED,
-    REQUEST_USER_REVIEW_ARTIFACT,
+    GUIDED_DEV_STATUS,
+    READ_FILE,
     RETURN_RESULT,
     ROLLBACK,
     RUN_AUTHOR_CRITIC_ITERATION,
     RUN_COMMAND,
     RUN_SUBAGENT,
+    TOOLCHAIN_BUILD,
+    TOOLCHAIN_DEPS,
     ToolSpec,
 )
-from kodo.workspace import ProjectIndex, Workspace
 
 from ._ask_user import AskUserTool
 from ._context import EngineServices, GateLike, RootPath, SessionLike, ToolContext
 from ._create_new_project import CreateNewProjectTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
+from ._document_feedback import DocumentFeedbackTool
 from ._edit_file import EditFileTool
 from ._escalate_blocker import EscalateBlockerTool
 from ._filesystem import FilesystemTool
@@ -53,19 +52,17 @@ from ._finalize_project import FinalizeProjectTool
 from ._find_files import FindFilesTool
 from ._find_text_in_files import FindTextInFilesTool
 from ._get_root_paths import GetRootPathsTool
-from ._list_artifacts import ListArtifactsTool
+from ._guided_dev_status import GuidedDevStatusTool
 from ._paths import PathResolver
-from ._publish_artifact import PublishArtifactTool
-from ._query_frontier import QueryFrontierTool
-from ._read_artifact import ReadArtifactTool
-from ._report_artifact_completed import ReportArtifactCompletedTool
-from ._request_user_review_artifact import RequestUserReviewArtifactTool
+from ._read_file import ReadFileTool
 from ._return_result import ReturnResultTool
 from ._rollback import RollbackTool
 from ._run_author_critic_iteration import RunAuthorCriticIterationTool
 from ._run_command import RunCommandTool
 from ._run_subagent import RunSubagentTool
 from ._tool import Tool
+from ._toolchain_build import ToolchainBuildTool
+from ._toolchain_deps import ToolchainDepsTool
 
 __all__ = ["DISPATCHABLE_TOOLS_BY_NAME", "ToolDispatcher", "tools_for_agent"]
 
@@ -74,20 +71,17 @@ _log = logging.getLogger(__name__)
 # Single source of truth pairing each dispatchable ToolSpec with its Tool class.
 # Adding a tool means adding one (spec, Tool-subclass) row here.
 _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
-    (PUBLISH_ARTIFACT, PublishArtifactTool),
-    (READ_ARTIFACT, ReadArtifactTool),
+    (READ_FILE, ReadFileTool),
+    (DOCUMENT_FEEDBACK, DocumentFeedbackTool),
     (ESCALATE_BLOCKER, EscalateBlockerTool),
     (ASK_USER, AskUserTool),
-    (REQUEST_USER_REVIEW_ARTIFACT, RequestUserReviewArtifactTool),
-    (REPORT_ARTIFACT_COMPLETED, ReportArtifactCompletedTool),
     (FILESYSTEM, FilesystemTool),
     (EDIT_FILE, EditFileTool),
     (RUN_COMMAND, RunCommandTool),
     (GET_ROOT_PATHS, GetRootPathsTool),
     (FIND_FILES, FindFilesTool),
     (FIND_TEXT_IN_FILES, FindTextInFilesTool),
-    (QUERY_FRONTIER, QueryFrontierTool),
-    (LIST_ARTIFACTS, ListArtifactsTool),
+    (GUIDED_DEV_STATUS, GuidedDevStatusTool),
     (RUN_SUBAGENT, RunSubagentTool),
     (RUN_AUTHOR_CRITIC_ITERATION, RunAuthorCriticIterationTool),
     (RETURN_RESULT, ReturnResultTool),
@@ -95,6 +89,8 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (FINALIZE_PROJECT, FinalizeProjectTool),
     (DISABLE_AUTONOMOUS_MODE, DisableAutonomousModeTool),
     (CREATE_NEW_PROJECT, CreateNewProjectTool),
+    (TOOLCHAIN_BUILD, ToolchainBuildTool),
+    (TOOLCHAIN_DEPS, ToolchainDepsTool),
 )
 
 _CLASSES_BY_NAME: dict[str, type[Tool]] = {spec.name: cls for spec, cls in _TOOL_CLASSES}
@@ -128,24 +124,24 @@ class ToolDispatcher:
 
     One instance is created per agent run (guide or leaf). It owns a
     :class:`~kodo.tools.ToolContext` carrying the injected collaborators plus
-    the run's mutable state, and exposes that state (``published_ids``,
-    ``stop_requested``) back to the engine after the run.
+    the run's mutable state, and exposes that state (``stop_requested``,
+    ``returned_output``) back to the engine after the run.
 
     The autonomous mode is not passed in: tools read it from
     ``session.effective_autonomous``, which the engine freezes per prompt, so
     one dispatcher serves a prompt regardless of any mode toggle queued mid-run.
 
     Args:
-        workspace: Shared artifact store.
-        index: Live artifact index.
         resolver: Path resolver for the native file/shell tools (project-confined
             in Guided mode, logical/workspace-folder-keyed in Problem Solver).
         gate: Approval/question gate.
         session: Session state (carries the frozen ``effective_autonomous``).
-        services: Engine-side operations (sub-agent launch, rollback,
-            completion, mode disable, client updates).
+        services: Engine-side operations (sub-agent launch, author/critic
+            iteration, rollback, mode disable, project creation).
         agent_name: Name of the running agent.
-        session_id: Session ID attached to published artifacts.
+        session_id: Session ID for this run.
+        mode: The run's workflow mode (``"guided"``/``"problem_solving"``).
+        project_root: The bound project's root, or ``None`` if none is bound.
         output_schema: The running sub-agent's ``output_schema`` (from its
             ``SubAgentSpec``), so ``return_result`` can validate its result.
             ``None`` for entry agents that never call ``return_result``.
@@ -156,36 +152,31 @@ class ToolDispatcher:
     def __init__(
         self,
         *,
-        workspace: Workspace,
-        index: ProjectIndex,
         resolver: PathResolver,
         gate: GateLike,
         session: SessionLike,
         services: EngineServices,
         agent_name: str,
         session_id: str,
+        mode: str = "problem_solving",
+        project_root: Path | None = None,
         root_paths: tuple[RootPath, ...] = (),
         util_paths: dict[str, Path] | None = None,
         output_schema: dict[str, object] | None = None,
     ) -> None:
         self.__ctx = ToolContext(
-            workspace=workspace,
-            index=index,
             resolver=resolver,
             gate=gate,
             session=session,
             services=services,
             agent_name=agent_name,
             session_id=session_id,
+            mode=mode,
+            project_root=project_root,
             root_paths=root_paths,
             util_paths=dict(util_paths or {}),
             output_schema=output_schema,
         )
-
-    @property
-    def published_ids(self) -> list[str]:
-        """Artifact IDs published during this run."""
-        return list(self.__ctx.published_ids)
 
     @property
     def stop_requested(self) -> bool:

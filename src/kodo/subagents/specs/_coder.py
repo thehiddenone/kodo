@@ -12,24 +12,12 @@ CODER: SubAgentSpec = SubAgentSpec(
     name="coder",
     description="Writes the production implementation for a component so its tests pass.",
     input_schema=pipeline_input(
-        input_artifacts=(
-            "This component's Functional Design (type=functional-design), requirements "
-            "(type=requirements), Test Plan (type=test-plan), Tech Stack (type=tech-stack), the "
-            "Functional Designs of consumed/consuming components, and the current stub artifacts "
-            "(type=code, author=test_coder) to supersede. Never the test source or peer code."
+        input_paths=(
+            "This component's Functional Design, requirements, Test Plan, Tech Stack, the "
+            "Functional Designs of consumed/consuming components, and the current stub code "
+            "(written by test_coder) to supersede. Never the test source or peer code."
         ),
         require_responsibility=True,
     ),
-    output_schema=author_output(
-        extra_properties={
-            "routed_feedback_artifact_ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "IDs of any feedback artifacts this round raised to upstream agents "
-                    "(suspected_test_bug to test_coder, spec_ambiguity to functional_designer)."
-                ),
-            },
-        },
-    ),
+    output_schema=author_output(),
 )

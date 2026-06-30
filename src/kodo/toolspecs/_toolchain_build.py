@@ -1,4 +1,4 @@
-"""``toolchain_build`` tool spec — placeholder, dispatch not yet implemented.
+"""``toolchain_build`` tool spec.
 
 One tool that drives the project's standard build scripts (the per-platform
 ``scripts/<step>.{sh,ps1}`` pairs a toolchain-setup agent generates: ``build``,
@@ -6,7 +6,7 @@ One tool that drives the project's standard build scripts (the per-platform
 run; the steps always run in canonical order — **format → build →
 static_analysis → test** — and stop at the first failure. It absorbs the former
 separate ``toolchain_test`` tool: run only the tests by enabling ``test`` and
-disabling the others.
+disabling the others. Dispatch lives in :mod:`kodo.tools._toolchain_build`.
 """
 
 from __future__ import annotations

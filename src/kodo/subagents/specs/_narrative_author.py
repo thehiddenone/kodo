@@ -12,22 +12,23 @@ NARRATIVE_AUTHOR: SubAgentSpec = SubAgentSpec(
     name="narrative_author",
     description="Produces the Narrative and Tech Stack documents from a dialogue with the user.",
     input_schema=pipeline_input(
-        input_artifacts=(
-            "Optional: the agent's own prior Narrative/Tech Stack when handling feedback. "
-            "Works primarily from the user prompt and attachments, so artifacts are not required."
+        input_paths=(
+            "Optional: the agent's own prior Narrative/Tech Stack documents when handling "
+            "feedback. Works primarily from the user prompt and attachments, so inputs are not "
+            "required."
         ),
-        require_input_artifacts=False,
+        require_input_paths=False,
     ),
     output_schema={
         "type": "object",
         "properties": {
-            "narrative_artifact_id": {
+            "narrative_path": {
                 "type": "string",
-                "description": "ID of the published Narrative artifact (type=narrative).",
+                "description": "Path of the Narrative document this round produced or revised.",
             },
-            "tech_stack_artifact_id": {
+            "tech_stack_path": {
                 "type": "string",
-                "description": "ID of the published Tech Stack artifact (type=tech-stack).",
+                "description": "Path of the Tech Stack document this round produced or revised.",
             },
             "project_code": {
                 "type": "string",
@@ -38,6 +39,6 @@ NARRATIVE_AUTHOR: SubAgentSpec = SubAgentSpec(
                 "description": "One line: what was produced or changed.",
             },
         },
-        "required": ["narrative_artifact_id", "tech_stack_artifact_id", "project_code", "summary"],
+        "required": ["narrative_path", "tech_stack_path", "project_code", "summary"],
     },
 )

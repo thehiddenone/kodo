@@ -12,9 +12,8 @@ TEST_DESIGNER: SubAgentSpec = SubAgentSpec(
     name="test_designer",
     description="Produces the per-component Test Plan of behavioral test entries.",
     input_schema=pipeline_input(
-        input_artifacts=(
-            "Must include this component's Functional Design (type=functional-design), the "
-            "requirements (type=requirements), and the Tech Stack (type=tech-stack)."
+        input_paths=(
+            "Must include this component's Functional Design, the requirements, and the Tech Stack."
         ),
         require_responsibility=True,
     ),

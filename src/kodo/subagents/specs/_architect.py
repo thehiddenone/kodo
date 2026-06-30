@@ -15,9 +15,7 @@ ARCHITECT: SubAgentSpec = SubAgentSpec(
         "end-to-end testability."
     ),
     input_schema=pipeline_input(
-        input_artifacts=(
-            "Must include the accepted Narrative (type=narrative) and Tech Stack (type=tech-stack)."
-        ),
+        input_paths="Must include the accepted Narrative and Tech Stack documents.",
     ),
     output_schema=author_output(
         extra_properties={

@@ -177,7 +177,7 @@ class ProjectLayout:
 
     @property
     def kodo_dir(self) -> Path:
-        """``<root>/.kodo/`` — per-project Guided state (workspace, mirror)."""
+        """``<root>/.kodo/`` — per-project Guided state (evolution logs, mirror)."""
         return self.root / ".kodo"
 
     @property
@@ -189,11 +189,6 @@ class ProjectLayout:
     def checkpoints_dir(self) -> Path:
         """``<root>/.kodo/checkpoints/`` — git mirror repository."""
         return self.kodo_dir / "checkpoints"
-
-    @property
-    def workspace_dir(self) -> Path:
-        """``<root>/.kodo/workspace/`` — virtual artifact workspace."""
-        return self.kodo_dir / "workspace"
 
     # ------------------------------------------------------------------
     # Validation

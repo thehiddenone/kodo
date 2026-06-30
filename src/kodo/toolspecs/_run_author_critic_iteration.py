@@ -15,10 +15,11 @@ RUN_AUTHOR_CRITIC_ITERATION: ToolSpec = ToolSpec(
     external_name="Run Author/Critic Round",
     user_description="Run one author/critic round",
     description=(
-        "Execute one round of the Author/Critic loop.  "
-        "Spawns the Author (with previous_artifact_id as feedback context when provided), "
-        "then spawns the Critic against the Author's output.  "
-        "Returns the artifact ID, verdict, and concerns.  "
+        "Execute one round of the Author/Critic loop over a real file.  "
+        "Spawns the Author (passing `for_revision: true` and `path` when revising a "
+        "prior round — omit `path` on a fresh round, since the Author chooses it), "
+        "then spawns the Critic against the Author's reported primary file.  "
+        "Returns the file's path, status, and concerns.  "
         "Call again to iterate; the Guide decides when to stop."
     ),
     input_schema={
@@ -26,48 +27,61 @@ RUN_AUTHOR_CRITIC_ITERATION: ToolSpec = ToolSpec(
         "properties": {
             "author_name": {"type": "string", "description": "Author sub-agent name."},
             "critic_name": {"type": "string", "description": "Critic sub-agent name."},
-            "input_artifact_ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Input artifact IDs passed to the Author.",
-            },
-            "for_revision_artifact_ids": {
-                "type": "array",
-                "items": {"type": "string"},
+            "path": {
+                "type": "string",
                 "description": (
-                    "Artifact IDs of the prior Author outputs to revise.  When non-empty, "
-                    "the Author receives them as revision context alongside the Critic's "
-                    "concerns.  A list because an Author may have published several "
-                    "artifacts that all need revision."
+                    "The file to revise. Required when `for_revision` is true; omit on a "
+                    "fresh round — the Author chooses the path and reports it back."
                 ),
             },
+            "input_paths": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": (
+                    "Named collection (label -> path) of context files for the Author to "
+                    'read this round, e.g. {"requirements": "specs/requirements.md"}.'
+                ),
+            },
+            "instructions": {
+                "type": "string",
+                "description": "What the Author should do this round.",
+            },
+            "for_revision": {
+                "type": "boolean",
+                "description": "True when `path` already exists and this round revises it.",
+            },
         },
-        "required": ["author_name", "critic_name", "input_artifact_ids"],
+        "required": ["author_name", "critic_name", "instructions"],
     },
     output_schema={
         "type": "object",
         "properties": {
-            "artifact_id": {
-                "type": ["string", "null"],
-                "description": "The author's published artifact ID (null if none).",
+            "path": {
+                "type": "string",
+                "description": "The author's primary file path.",
             },
-            "verdict": {"type": "string", "description": "Critic verdict (accepted/rejected)."},
+            "status": {
+                "type": "string",
+                "description": "Status derived from the file's evolution log after this round.",
+            },
             "concerns": {
                 "type": "array",
                 "description": "Concerns raised by the critic.",
                 "items": {"type": "object"},
             },
         },
-        "required": ["artifact_id", "verdict", "concerns"],
+        "required": ["path", "status", "concerns"],
     },
     security_impact=SecurityImpact.LOW,
     input_visibility={
         "author_name": "always",
         "critic_name": "always",
-        "input_artifact_ids": "visible",
-        "for_revision_artifact_ids": "visible",
+        "path": "always",
+        "input_paths": "visible",
+        "instructions": "visible",
+        "for_revision": "visible",
     },
-    output_visibility={"artifact_id": "always", "verdict": "always", "concerns": "visible"},
+    output_visibility={"path": "always", "status": "always", "concerns": "visible"},
     when_to_use=(
         "Any stage with an author/critic pairing, to run one author→critic round.",
         "Called repeatedly within a per-loop iteration budget (a sensible "

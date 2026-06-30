@@ -12,10 +12,7 @@ FUNCTIONAL_DESIGNER: SubAgentSpec = SubAgentSpec(
     name="functional_designer",
     description="Produces the Design Plan (DAG, direction, order) and per-codename designs.",
     input_schema=pipeline_input(
-        input_artifacts=(
-            "Must include the architecture (type=architecture), requirements (type=requirements), "
-            "Narrative (type=narrative), and Tech Stack (type=tech-stack)."
-        ),
+        input_paths="Must include the architecture, requirements, Narrative, and Tech Stack.",
     ),
     output_schema=author_output(
         extra_properties={

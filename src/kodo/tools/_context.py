@@ -1,8 +1,8 @@
 """Injected context and structural protocols for tool handlers.
 
 Every tool handler receives a single :class:`ToolContext` carrying the
-collaborators it may need plus the per-run mutable state (``published_ids``,
-``stop_requested``).  The collaborators that live *above* this package in the
+collaborators it may need plus the per-run mutable state (``stop_requested``,
+``returned_output``).  The collaborators that live *above* this package in the
 import graph — the approval/question gate, the session state, and every
 engine-side operation a tool can trigger — are expressed here as **structural
 Protocols** so that ``kodo.tools`` never imports ``runtime`` (or any T3+
@@ -18,8 +18,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
-
-from kodo.workspace import ProjectIndex, Workspace
 
 from ._paths import PathResolver
 
@@ -104,7 +102,11 @@ class GateLike(Protocol):
         artifact_id: str | None = None,
         summary: str = "",
     ) -> ApprovalLike:
-        """Surface an approval gate to the user and block until they respond."""
+        """Surface an approval gate to the user and block until they respond.
+
+        ``artifact_id`` is a historical name on the wire protocol — its value
+        is now a Guided-mode document path, not a workspace artifact ID.
+        """
         ...
 
 
@@ -156,24 +158,23 @@ class EngineServices(Protocol):
         caller: str,
         author_name: str,
         critic_name: str,
-        input_artifact_ids: list[str],
-        for_revision_artifact_ids: list[str],
+        path: str,
+        input_paths: dict[str, str],
+        instructions: str,
+        for_revision: bool,
     ) -> dict[str, object]:
-        """Run one Author/Critic round and return ``{artifact_id, verdict, concerns}``.
+        """Run one Author/Critic round over a real file; return ``{path, status, concerns}``.
 
-        ``for_revision_artifact_ids`` are the prior Author outputs to revise (empty
-        on the first round). ``caller`` is the agent making the call; the engine
-        gates both ``author_name`` and ``critic_name`` against that caller's
+        ``path`` is the file the Author writes/revises and the Critic reviews;
+        ``for_revision`` is ``True`` when ``path`` already exists and this round
+        revises it. ``caller`` is the agent making the call; the engine gates
+        both ``author_name`` and ``critic_name`` against that caller's
         allow-list and raises ``PermissionError`` when either is not permitted.
         """
         ...
 
     async def rollback(self, target_sha: str) -> None:
-        """Roll the mirror back to ``target_sha`` and rebuild session state."""
-        ...
-
-    async def complete_artifact(self, artifact_id: str) -> None:
-        """Promote a gate-passed artifact and flip its index entry to completed."""
+        """Roll the project's checkpoint mirror back to ``target_sha``."""
         ...
 
     async def disable_autonomous_mode(self) -> None:
@@ -205,7 +206,7 @@ class ToolContext:
 
     One instance is created per agent run (guide or leaf) by the engine
     and shared across every tool call in that run.  Handlers mutate
-    ``published_ids`` and ``stop_requested``; the owning
+    ``stop_requested`` and ``returned_output``; the owning
     :class:`~kodo.tools.ToolDispatcher` exposes them back to the engine.
 
     The autonomous mode a handler should honour is read from
@@ -213,8 +214,16 @@ class ToolContext:
     on the context, so no per-run snapshot can drift from the session.
 
     Attributes:
-        workspace: Shared artifact store.
-        index: Live in-memory artifact index.
+        mode: The run's workflow mode, ``"guided"`` or ``"problem_solving"``.
+            Frozen for the whole prompt, mirroring
+            ``session.effective_workflow_mode``. Used to gate Guided-only
+            tools (``guided_dev_status``) and to tag ``new_revision`` jsonl
+            entries with which workflow produced them.
+        project_root: The bound project's root, or ``None`` if no project is
+            bound. Populated in both modes whenever a project is bound (Guided
+            always has one; Problem Solver may carry one over from a prior
+            Guided binding) — `kodo.guided_state` calls are skipped uniformly
+            when this is ``None``, with no per-tool mode branch needed.
         resolver: Path resolver for the native file/shell tools — a
             project-confined resolver in Guided mode, a logical (workspace-folder
             keyed) resolver in Problem Solver mode.
@@ -222,9 +231,10 @@ class ToolContext:
         session: Session state (protocol); ``effective_autonomous`` is the
             frozen mode for this prompt.
         services: Engine-side operations (protocol): sub-agent launch,
-            rollback, artifact completion, mode disable, client updates.
-        agent_name: Name of the running agent (used as artifact author).
-        session_id: Session ID attached to published artifacts.
+            author/critic iteration, rollback, mode disable, project creation.
+        agent_name: Name of the running agent (used as the jsonl ``author``/
+            ``reviewer`` field).
+        session_id: Session ID for this run.
         root_paths: Filesystem roots the agent may operate within, computed
             mode-aware by the engine (the bound project in Guided; every open
             workspace folder in Problem Solver).  Surfaced by ``get_root_paths``.
@@ -237,25 +247,22 @@ class ToolContext:
             ``return_result`` can validate/normalize the agent's result against
             it. ``None`` for the entry agents (guide/problem_solver), which have
             no spec and never call ``return_result``.
-        published_ids: Artifact IDs published during this run (mutated by
-            ``publish_artifact``).
         stop_requested: Set ``True`` by ``escalate_blocker`` to end the run.
         returned_output: The normalized result the sub-agent passed to
             ``return_result`` (with the engine-owned ``schema_compliance`` field),
             or ``None`` until it calls it. Read back by the engine after the run.
     """
 
-    workspace: Workspace
-    index: ProjectIndex
     resolver: PathResolver
     gate: GateLike
     session: SessionLike
     services: EngineServices
     agent_name: str
     session_id: str
+    mode: str = "problem_solving"
+    project_root: Path | None = None
     root_paths: tuple[RootPath, ...] = ()
     util_paths: dict[str, Path] = field(default_factory=dict)
     output_schema: dict[str, object] | None = None
-    published_ids: list[str] = field(default_factory=list)
     stop_requested: bool = False
     returned_output: dict[str, object] | None = None

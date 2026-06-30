@@ -293,19 +293,19 @@ def test_registry_renders_tools_section_for_agent_tools(tmp_path: Path) -> None:
     _write_agent(
         tmp_path,
         "agent_a",
-        "name: agent_a\ntools:\n  - filesystem\n  - read_artifact\n",
+        "name: agent_a\ntools:\n  - filesystem\n  - read_file\n",
         "Prompt A.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
     )
     registry = AgentRegistry(tmp_path)
     prompt = registry.get("agent_a").system_prompt
     assert "{PLACEHOLDER:TOOLS}" not in prompt
     assert "### Filesystem (`filesystem`)" in prompt
-    assert "### Read Artifact (`read_artifact`)" in prompt
+    assert "### Read File (`read_file`)" in prompt
     assert "- **When to use:**" in prompt
     assert "- **External name:**" not in prompt
     assert "- **Description:**" not in prompt
     # Tools are rendered in a stable, sorted order.
-    assert prompt.index("Filesystem") < prompt.index("Read Artifact")
+    assert prompt.index("Filesystem") < prompt.index("Read File")
 
 
 def test_registry_renders_empty_tools_section_for_agent_with_no_tools(tmp_path: Path) -> None:
@@ -339,14 +339,14 @@ def test_registry_ask_user_unavailable_in_autonomous_mode(tmp_path: Path) -> Non
     _write_agent(
         tmp_path,
         "agent_a",
-        "name: agent_a\ntools:\n  - ask_user\n  - read_artifact\n",
+        "name: agent_a\ntools:\n  - ask_user\n  - read_file\n",
         "Prompt A.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
     )
     registry = AgentRegistry(tmp_path)
     agent = registry.get("agent_a", autonomous=True)
-    assert agent.tools == frozenset(["read_artifact"])
+    assert agent.tools == frozenset(["read_file"])
     assert "ask_user" not in agent.system_prompt
-    assert "### Read Artifact" in agent.system_prompt
+    assert "### Read File" in agent.system_prompt
 
 
 # ---------------------------------------------------------------------------

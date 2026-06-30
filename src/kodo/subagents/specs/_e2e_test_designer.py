@@ -12,10 +12,9 @@ E2E_TEST_DESIGNER: SubAgentSpec = SubAgentSpec(
     name="e2e_test_designer",
     description="Produces the End-to-End Test Plan against mocked external dependencies.",
     input_schema=pipeline_input(
-        input_artifacts=(
-            "The architecture (type=architecture, Part 3 verdict + seams), requirements "
-            "(type=requirements), Narrative (type=narrative), Tech Stack (type=tech-stack), the "
-            "Design Plan (type=design-plan), and all Functional Designs (type=functional-design)."
+        input_paths=(
+            "The architecture (Part 3 verdict + seams), requirements, Narrative, Tech Stack, "
+            "the Design Plan, and all Functional Designs."
         ),
     ),
     output_schema=author_output(

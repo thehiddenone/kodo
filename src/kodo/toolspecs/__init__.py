@@ -22,6 +22,7 @@ from ._compliance import (
 )
 from ._create_new_project import CREATE_NEW_PROJECT
 from ._disable_autonomous_mode import DISABLE_AUTONOMOUS_MODE
+from ._document_feedback import DOCUMENT_FEEDBACK
 from ._edit_file import EDIT_FILE
 from ._escalate_blocker import ESCALATE_BLOCKER
 from ._filesystem import FILESYSTEM
@@ -29,12 +30,8 @@ from ._finalize_project import FINALIZE_PROJECT
 from ._find_files import FIND_FILES
 from ._find_text_in_files import FIND_TEXT_IN_FILES
 from ._get_root_paths import GET_ROOT_PATHS
-from ._list_artifacts import LIST_ARTIFACTS
-from ._publish_artifact import PUBLISH_ARTIFACT
-from ._query_frontier import QUERY_FRONTIER
-from ._read_artifact import READ_ARTIFACT
-from ._report_artifact_completed import REPORT_ARTIFACT_COMPLETED
-from ._request_user_review_artifact import REQUEST_USER_REVIEW_ARTIFACT
+from ._guided_dev_status import GUIDED_DEV_STATUS
+from ._read_file import READ_FILE
 from ._return_result import RETURN_RESULT
 from ._rollback import ROLLBACK
 from ._run_author_critic_iteration import RUN_AUTHOR_CRITIC_ITERATION
@@ -58,6 +55,7 @@ __all__ = [
     "ASK_USER",
     "CREATE_NEW_PROJECT",
     "DISABLE_AUTONOMOUS_MODE",
+    "DOCUMENT_FEEDBACK",
     "EDIT_FILE",
     "ESCALATE_BLOCKER",
     "FILESYSTEM",
@@ -65,13 +63,9 @@ __all__ = [
     "FIND_FILES",
     "FIND_TEXT_IN_FILES",
     "GET_ROOT_PATHS",
-    "LIST_ARTIFACTS",
+    "GUIDED_DEV_STATUS",
     "OUTPUT_VISIBILITY_DEFAULT",
-    "PUBLISH_ARTIFACT",
-    "QUERY_FRONTIER",
-    "READ_ARTIFACT",
-    "REPORT_ARTIFACT_COMPLETED",
-    "REQUEST_USER_REVIEW_ARTIFACT",
+    "READ_FILE",
     "RETURN_RESULT",
     "ROLLBACK",
     "RUN_AUTHOR_CRITIC_ITERATION",
@@ -99,6 +93,7 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     ASK_USER,
     CREATE_NEW_PROJECT,
     DISABLE_AUTONOMOUS_MODE,
+    DOCUMENT_FEEDBACK,
     EDIT_FILE,
     ESCALATE_BLOCKER,
     FILESYSTEM,
@@ -106,12 +101,8 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     GET_ROOT_PATHS,
     FIND_FILES,
     FIND_TEXT_IN_FILES,
-    LIST_ARTIFACTS,
-    PUBLISH_ARTIFACT,
-    QUERY_FRONTIER,
-    READ_ARTIFACT,
-    REPORT_ARTIFACT_COMPLETED,
-    REQUEST_USER_REVIEW_ARTIFACT,
+    GUIDED_DEV_STATUS,
+    READ_FILE,
     RETURN_RESULT,
     ROLLBACK,
     RUN_AUTHOR_CRITIC_ITERATION,

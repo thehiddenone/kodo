@@ -1,4 +1,10 @@
-"""``toolchain_deps`` tool spec — placeholder, dispatch not yet implemented."""
+"""``toolchain_deps`` tool spec.
+
+Dependency management is intentionally not implemented yet — the dispatch
+handler (:mod:`kodo.tools._toolchain_deps`) always returns a clear
+"not implemented" response so an agent gets a usable answer instead of an
+unhandled-tool error.
+"""
 
 from __future__ import annotations
 

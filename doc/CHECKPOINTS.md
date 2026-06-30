@@ -1,28 +1,32 @@
 # Checkpoints: shadow mirror, stateful undo/redo/rollback/roll-forward
 
-This document is the canonical reference for the **generic, Problem-Solver-gated
-checkpoint system** that backs the chat UI's per-tool-call "undo this change" /
-"re-do this change" link and "Rollback to this state" / "Roll forward to this
-state" box. It covers the shadow-git mirror engine, the persisted stateful
-checkpoint model layered on top of it, the exact git mechanics of all four
-operations, the dirty-work-tree safety flow, and the wire protocol.
+This document is the canonical reference for the **generic checkpoint
+system**, used unconditionally in **both workflow modes**, that backs the
+chat UI's per-tool-call "undo this change" / "re-do this change" link and
+"Rollback to this state" / "Roll forward to this state" box. It covers the
+shadow-git mirror engine, the persisted stateful checkpoint model layered on
+top of it, the exact git mechanics of all four operations, the dirty-work-tree
+safety flow, and the wire protocol.
 
-> This is **not** the legacy Guided-mode `Rollback`/`ProjectBootstrap`/
-> `CheckpointManager` (`kodo.workspace.MirrorRepo`) — a separate,
-> project-artifact-index rollback system that predates this one and is wired
-> to a different tool (the agent-invoked `rollback` callback in
-> `_engine.py`'s `__run_rollback`). The two happen to share the
-> `<root>/.kodo/checkpoints` path prefix but use incompatible git layouts;
-> this is exactly why the generic mirror is **PS-gated** (Problem-Solver
-> sessions only) — see `command_may_mutate`'s caller in the engine's tool
-> dispatch hook. Migrating Guided mode onto this system is a deferred,
-> separate piece of work.
+> **Formerly Guided mode ran a second, separate mirror; it is gone.** A
+> bespoke artifact-promotion mirror (`kodo.workspace.MirrorRepo` +
+> `_promoter.Promoter` + `_checkpoints.CheckpointManager`) used to back the
+> Guide's `rollback` tool, walled off from the mechanism documented here
+> specifically to avoid colliding on the same `<root>/.kodo/checkpoints` path
+> with an incompatible git layout — that was the entire reason this mirror
+> used to be gated to Problem-Solver sessions only. `kodo.workspace` is
+> deleted outright (STATE_AND_LIFECYCLE.md §1.1/§8). The Guide's `rollback`
+> tool now delegates straight to `RootMirrorManager.rollback` — the same
+> primitive backing the chat UI's "Rollback to this state" control — and
+> additionally resets the conversation (the engine's `__run_rollback`,
+> STATE_AND_LIFECYCLE.md §8.3). There is exactly **one** shadow-git mirror per
+> root, regardless of which workflow mode touched it.
 
 ## 1. The shadow-git mirror (`kodo.mirror.ShadowMirror`)
 
-Every root the agent may touch (a Problem-Solver workspace folder) gets its
-own git repository whose **git directory** lives apart from its **work
-tree**:
+Every root the agent may touch — a Problem-Solving-mode workspace folder, or
+the single bound project in Guided mode — gets its own git repository whose
+**git directory** lives apart from its **work tree**:
 
 ```
 <root>/.kodo/checkpoints/.git    — the mirror's git metadata

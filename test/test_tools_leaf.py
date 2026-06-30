@@ -1,23 +1,20 @@
 """Behavior tests for the leaf-agent tools in :mod:`kodo.tools`.
 
 Every agent shares one :class:`~kodo.tools.ToolDispatcher`; these tests
-exercise the tools a leaf sub-agent typically holds — workspace I/O
-(``publish_artifact``, ``read_artifact``), the report tools
-(``report_artifact_completed``, ``escalate_blocker``,
-``request_user_review_artifact``), and the native file-I/O / shell tools — plus
-the shared ``tools_for_agent`` resolver.
+exercise the tools a leaf sub-agent typically holds — the file-evolution tools
+(``read_file``, ``document_feedback``), ``escalate_blocker``, and the native
+file-I/O / shell tools — plus the shared ``tools_for_agent`` resolver.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from kodo.guided_state import read_status
 from kodo.runtime import GateOrchestrator, QuestionResponse, SessionState
 from kodo.tools import (
     DISPATCHABLE_TOOLS_BY_NAME,
@@ -25,8 +22,7 @@ from kodo.tools import (
     ToolDispatcher,
     tools_for_agent,
 )
-from kodo.toolspecs import PUBLISH_ARTIFACT, READ_ARTIFACT
-from kodo.workspace import Artifact, ArtifactType, ProjectIndex, Workspace
+from kodo.toolspecs import DOCUMENT_FEEDBACK, READ_FILE
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,38 +54,36 @@ def _make_gate(answer: str = "") -> GateOrchestrator:
 class _StubServices:
     """Engine-side stub satisfying ``kodo.tools.EngineServices``.
 
-    The sub-agent launchers are never invoked by leaf tools; ``complete_artifact``
-    delegates to the injected callback (the workspace's ``mark_completed``).
+    None of the leaf tools under test invoke these; they exist only to
+    satisfy the protocol.
     """
 
-    def __init__(self, complete_artifact: Callable[[str], Awaitable[None]]) -> None:
-        self._complete = complete_artifact
-
     async def run_subagent(
-        self, caller: str, name: str, task_message: str, input_artifact_ids: list[str]
-    ) -> list[str]:
-        return []
+        self, caller: str, name: str, task_input: dict[str, object]
+    ) -> dict[str, object]:
+        return {}
 
     async def run_author_critic_iteration(
         self,
         caller: str,
         author_name: str,
         critic_name: str,
-        input_artifact_ids: list[str],
-        previous_artifact_id: str | None,
+        path: str,
+        input_paths: dict[str, str],
+        instructions: str,
+        for_revision: bool,
     ) -> dict[str, object]:
-        return {"artifact_id": None, "verdict": "accepted", "concerns": []}
+        return {"path": path, "status": "accepted", "concerns": []}
 
     async def rollback(self, target_sha: str) -> None:
         return None
 
-    async def complete_artifact(self, artifact_id: str) -> None:
-        await self._complete(artifact_id)
-
     async def disable_autonomous_mode(self) -> None:
         return None
 
-    async def create_project(self, name: str, path: str | None = None) -> dict[str, object]:
+    async def create_project(
+        self, name: str = "", path: str | None = None, force: bool = False
+    ) -> dict[str, object]:
         return {"path": path or f"/tmp/{name}", "name": name}
 
 
@@ -98,39 +92,21 @@ def _make_dispatcher(
     agent_name: str = "test_agent",
     answer: str = "",
     autonomous: bool = False,
-    workspace: Workspace | None = None,
+    mode: str = "guided",
 ) -> ToolDispatcher:
-    index = ProjectIndex()
-    ws = workspace if workspace is not None else Workspace(tmp_path, index)
     session = SessionState()
     session.autonomous = autonomous
     session.effective_autonomous = autonomous
 
     return ToolDispatcher(
-        workspace=ws,
-        index=index,
         resolver=ProjectPathResolver(tmp_path),
         gate=_make_gate(answer),
         session=session,
-        services=_StubServices(complete_artifact=ws.mark_completed),
+        services=_StubServices(),
         agent_name=agent_name,
         session_id="sess-test",
-    )
-
-
-def _make_artifact(
-    artifact_id: str = "art-1",
-    artifact_type: ArtifactType = ArtifactType.NARRATIVE,
-) -> Artifact:
-    return Artifact(
-        id=artifact_id,
-        type=artifact_type,
-        author="test_agent",
-        project_code="TEST",
-        responsibility_code="TEST",
-        created_at=datetime.now(tz=UTC),
-        content="content",
-        filename_hint="out.md",
+        mode=mode,
+        project_root=tmp_path,
     )
 
 
@@ -139,23 +115,16 @@ def _make_artifact(
 # ---------------------------------------------------------------------------
 
 
-def test_publish_artifact_spec_has_correct_name() -> None:
-    assert PUBLISH_ARTIFACT.name == "publish_artifact"
+def test_read_file_spec_has_correct_name() -> None:
+    assert READ_FILE.name == "read_file"
 
 
-def test_read_artifact_spec_has_correct_name() -> None:
-    assert READ_ARTIFACT.name == "read_artifact"
+def test_document_feedback_spec_has_correct_name() -> None:
+    assert DOCUMENT_FEEDBACK.name == "document_feedback"
 
 
-def test_dispatchable_catalog_includes_workspace_and_report_tools() -> None:
-    for name in (
-        "publish_artifact",
-        "read_artifact",
-        "escalate_blocker",
-        "ask_user",
-        "request_user_review_artifact",
-        "report_artifact_completed",
-    ):
+def test_dispatchable_catalog_includes_file_evolution_tools() -> None:
+    for name in ("read_file", "document_feedback", "escalate_blocker", "ask_user"):
         assert name in DISPATCHABLE_TOOLS_BY_NAME
 
 
@@ -174,140 +143,116 @@ def test_dispatchable_catalog_includes_fileio_and_shell_tools() -> None:
 
 
 def test_tools_for_agent_returns_specs_for_declared_tools() -> None:
-    result = tools_for_agent(frozenset(["publish_artifact", "read_artifact"]))
+    result = tools_for_agent(frozenset(["read_file", "document_feedback"]))
     names = {t.name for t in result}
-    assert names == {"publish_artifact", "read_artifact"}
+    assert names == {"read_file", "document_feedback"}
 
 
 def test_tools_for_agent_skips_unknown_tool_names() -> None:
-    result = tools_for_agent(frozenset(["publish_artifact", "nonexistent_tool"]))
+    result = tools_for_agent(frozenset(["read_file", "nonexistent_tool"]))
     names = {t.name for t in result}
-    assert "publish_artifact" in names
+    assert "read_file" in names
     assert "nonexistent_tool" not in names
 
 
 # ---------------------------------------------------------------------------
-# publish_artifact dispatch
+# read_file dispatch
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_publish_artifact_returns_id(tmp_path: Path) -> None:
+async def test_read_file_returns_whole_file(tmp_path: Path) -> None:
+    (tmp_path / "a.md").write_text("line1\nline2\nline3", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(await dispatcher.dispatch("read_file", {"path": "a.md"}))
+    assert result["total_lines"] == 3
+    assert result["sections"][0]["content"] == "line1\nline2\nline3"
+
+
+@pytest.mark.asyncio
+async def test_read_file_returns_requested_range(tmp_path: Path) -> None:
+    (tmp_path / "a.md").write_text("line1\nline2\nline3", encoding="utf-8")
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
         await dispatcher.dispatch(
-            "publish_artifact",
-            {
-                "type": "narrative",
-                "project_code": "TEST",
-                "responsibility_code": "TEST",
-                "content": "A narrative",
-            },
+            "read_file", {"path": "a.md", "ranges": [{"start_line": 2, "end_line": 2}]}
         )
     )
-    assert isinstance(result["id"], str)
-    assert result["id"] in dispatcher.published_ids
+    assert result["sections"] == [{"start_line": 2, "end_line": 2, "content": "line2"}]
 
 
 @pytest.mark.asyncio
-async def test_publish_artifact_forces_author_from_dispatcher(tmp_path: Path) -> None:
-    """Even if the LLM provides a different author, publish uses agent_name."""
-    workspace = Workspace(tmp_path)
-    dispatcher = _make_dispatcher(tmp_path, agent_name="narrative_author", workspace=workspace)
-    await dispatcher.dispatch(
-        "publish_artifact",
-        {
-            "type": "narrative",
-            "project_code": "TEST",
-            "responsibility_code": "TEST",
-            "content": "test",
-            "author": "impersonated_agent",  # should be ignored
-        },
-    )
-    arts = await workspace.read(artifact_id=dispatcher.published_ids[0])
-    assert arts[0].author == "narrative_author"
-
-
-@pytest.mark.asyncio
-async def test_publish_artifact_missing_required_field_returns_error(tmp_path: Path) -> None:
+async def test_read_file_missing_file_returns_error(tmp_path: Path) -> None:
     dispatcher = _make_dispatcher(tmp_path)
-    result = json.loads(await dispatcher.dispatch("publish_artifact", {"type": "narrative"}))
+    result = json.loads(await dispatcher.dispatch("read_file", {"path": "missing.md"}))
     assert "error" in result
 
 
 @pytest.mark.asyncio
-async def test_publish_artifact_accumulates_multiple_ids(tmp_path: Path) -> None:
-    dispatcher = _make_dispatcher(tmp_path)
-    for _ in range(2):
-        await dispatcher.dispatch(
-            "publish_artifact",
-            {
-                "type": "narrative",
-                "project_code": "TEST",
-                "responsibility_code": "TEST",
-                "content": "content",
-            },
-        )
-    assert len(dispatcher.published_ids) == 2
-
-
-# ---------------------------------------------------------------------------
-# read_artifact dispatch
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_read_artifact_returns_list(tmp_path: Path) -> None:
+async def test_read_file_rejects_ranges_and_pattern_together(tmp_path: Path) -> None:
+    (tmp_path / "a.md").write_text("x", encoding="utf-8")
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
-        await dispatcher.dispatch("read_artifact", {"artifact_id": "nonexistent-id"})
+        await dispatcher.dispatch(
+            "read_file",
+            {"path": "a.md", "ranges": [{"start_line": 1, "end_line": 1}], "pattern": "x"},
+        )
     )
-    assert result == {"artifacts": []}
+    assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# document_feedback dispatch
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_read_artifact_returns_published_artifact(tmp_path: Path) -> None:
-    dispatcher = _make_dispatcher(tmp_path, agent_name="narrative_author")
-    publish_result = json.loads(
+async def test_document_feedback_records_rejection(tmp_path: Path) -> None:
+    (tmp_path / "specs").mkdir()
+    (tmp_path / "specs" / "a.md").write_text("x", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path, agent_name="architect_critic")
+    result = json.loads(
         await dispatcher.dispatch(
-            "publish_artifact",
+            "document_feedback",
             {
-                "type": "narrative",
-                "project_code": "PROJ",
-                "responsibility_code": "PROJ",
-                "content": "Hello narrative",
-                "filename_hint": "narrative.md",
+                "path": "specs/a.md",
+                "accept": False,
+                "concerns": [{"kind": "gap", "description": "missing section"}],
             },
         )
     )
-    artifact_id = publish_result["id"]
-
-    read_result = json.loads(
-        await dispatcher.dispatch("read_artifact", {"artifact_id": artifact_id})
-    )
-    artifacts = read_result["artifacts"]
-    assert len(artifacts) == 1
-    assert artifacts[0]["id"] == artifact_id
-    assert artifacts[0]["content"] == "Hello narrative"
-
-
-# ---------------------------------------------------------------------------
-# report_artifact_completed
-# ---------------------------------------------------------------------------
+    assert result == {"status": "recorded", "path": "specs/a.md"}
+    status = read_status(tmp_path / "specs" / "a.md", tmp_path)
+    assert status is not None
+    assert status["status"] == "needs_revision"
+    assert status["reviewer"] == "architect_critic"
 
 
 @pytest.mark.asyncio
-async def test_report_artifact_completed_does_not_stop(tmp_path: Path) -> None:
-    dispatcher = _make_dispatcher(tmp_path)
-    assert not dispatcher.stop_requested
-
+async def test_document_feedback_rejects_empty_concerns(tmp_path: Path) -> None:
+    (tmp_path / "specs").mkdir()
+    (tmp_path / "specs" / "a.md").write_text("x", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path, agent_name="architect_critic")
     result = json.loads(
-        await dispatcher.dispatch("report_artifact_completed", {"artifact_id": "n1"})
+        await dispatcher.dispatch(
+            "document_feedback", {"path": "specs/a.md", "accept": False, "concerns": []}
+        )
     )
+    assert "error" in result
 
-    assert result["status"] == "completed"
-    assert result["artifact_id"] == "n1"
-    assert not dispatcher.stop_requested
+
+@pytest.mark.asyncio
+async def test_document_feedback_accept_records_pending_acceptance(tmp_path: Path) -> None:
+    (tmp_path / "specs").mkdir()
+    (tmp_path / "specs" / "a.md").write_text("x", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path, agent_name="architect_critic")
+    result = json.loads(
+        await dispatcher.dispatch("document_feedback", {"path": "specs/a.md", "accept": True})
+    )
+    assert result["status"] == "recorded"
+    status = read_status(tmp_path / "specs" / "a.md", tmp_path)
+    assert status is not None
+    assert status["status"] == "pending_acceptance"
 
 
 # ---------------------------------------------------------------------------
@@ -326,21 +271,6 @@ async def test_escalate_blocker_sets_stop_flag(tmp_path: Path) -> None:
     assert result["status"] == "escalated"
     assert "user_response" in result
     assert dispatcher.stop_requested
-
-
-# ---------------------------------------------------------------------------
-# request_user_review_artifact
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_request_user_review_artifact_autonomous_auto_accepts(tmp_path: Path) -> None:
-    dispatcher = _make_dispatcher(tmp_path, autonomous=True)
-    result = json.loads(
-        await dispatcher.dispatch("request_user_review_artifact", {"artifact_id": "a1"})
-    )
-    assert result["action"] == "agree"
-    assert not dispatcher.stop_requested
 
 
 # ---------------------------------------------------------------------------

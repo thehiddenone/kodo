@@ -70,8 +70,8 @@ def test_test_coder_output_is_oneof() -> None:
     spec = _SPECS_BY_NAME["test_coder"]
     branches = spec.output_schema.get("oneOf")
     assert isinstance(branches, list) and len(branches) == 2
-    # One branch is the author shape (artifact_ids), the other the critic shape.
-    has_author = any("artifact_ids" in b.get("properties", {}) for b in branches)
+    # One branch is the author shape (primary_path), the other the critic shape.
+    has_author = any("primary_path" in b.get("properties", {}) for b in branches)
     has_critic = any("verdict" in b.get("properties", {}) for b in branches)
     assert has_author and has_critic
 
@@ -79,7 +79,9 @@ def test_test_coder_output_is_oneof() -> None:
 def test_test_coder_normalizes_either_branch() -> None:
     """normalize_output accepts either oneOf branch for the dual-role agent."""
     schema = _SPECS_BY_NAME["test_coder"].output_schema
-    _, author_ok = normalize_output(schema, {"artifact_ids": ["a"], "summary": "s"})
+    _, author_ok = normalize_output(
+        schema, {"primary_path": "src/a.py", "paths": ["src/a.py"], "summary": "s"}
+    )
     _, critic_ok = normalize_output(schema, {"verdict": "rejected", "concerns": []})
     assert author_ok and critic_ok
 
@@ -153,5 +155,5 @@ def test_guide_roster_embeds_callee_schemas() -> None:
     assert "Input schema" in section
     assert "Output schema" in section
     # A concrete callee field shows the schemas are really rendered.
-    assert "for_revision_artifact_ids" in section
+    assert "for_revision_path" in section
     assert "end_to_end_testable" in section  # architect's extra output field

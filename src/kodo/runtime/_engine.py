@@ -32,6 +32,13 @@ from pathlib import Path
 
 from kodo.binutils import find_util
 from kodo.common import ApiKey, ApiKeyProvider, Envelope, MessageSink
+from kodo.guided_state import (
+    append_accepted,
+    append_new_revision,
+    append_review_result,
+    is_tracked,
+    read_status,
+)
 from kodo.llms import (
     LLMGateway,
     LLMPlugin,
@@ -63,7 +70,6 @@ from kodo.project import (
 from kodo.shellparser import parse_command
 from kodo.state import TransientStore, read_diff_files, render_tool_call_markdown
 from kodo.subagents import AgentLoadError, AgentRegistry, SubAgent
-from kodo.toolchains import ToolchainPlugin, select_toolchain
 from kodo.tools import (
     LogicalPathResolver,
     PathResolver,
@@ -105,16 +111,6 @@ from kodo.transport import (
     EVT_USER_ATTACHMENTS,
     EVT_WORKSPACE_ADD_FOLDER,
 )
-from kodo.workspace import (
-    ArtifactType,
-    CheckpointManager,
-    ComponentRegistry,
-    ProjectIndex,
-    Promoter,
-    PromoterError,
-    Workspace,
-    materialization_path,
-)
 
 from ._attachments import (
     MAX_ATTACHMENTS,
@@ -123,10 +119,8 @@ from ._attachments import (
     load_attachment,
     parse_attachment_marker,
 )
-from ._bootstrap import ProjectBootstrap
 from ._checkpoints import CheckpointRef, CheckpointState, RootMirrorManager, command_may_mutate
 from ._gates import GateOrchestrator
-from ._rollback import Rollback
 from ._session import SessionState
 
 __all__ = ["WorkflowEngine"]
@@ -162,10 +156,14 @@ _COMPACTION_THRESHOLD = 0.9
 # subagent leaves the dangling ``tool_use`` on disk and the run can be resumed.
 _SUBAGENT_SPAWNING_TOOLS = frozenset({"run_subagent", "run_author_critic_iteration"})
 
-# File-mutating tools that earn a shadow-mirror checkpoint after each call. The
-# checkpoint hook is gated to Problem Solver this milestone (Guided keeps its own
-# artifact-gate checkpoint system); the mechanism itself is mode-agnostic.
+# File-mutating tools that earn a shadow-mirror checkpoint after each call, in
+# both workflow modes.
 _MUTATING_TOOLS = frozenset({"filesystem", "edit_file", "run_command"})
+
+# Of those, the two whose commit also earns a `new_revision` entry in a
+# tracked document's .jsonl evolution log (run_command's targets are too
+# coarse-grained — a whole cwd, not a specific file — to attribute cleanly).
+_GUIDED_STATE_TOOLS = frozenset({"filesystem", "edit_file"})
 
 # Maximum length of a generated session title, in characters.
 _MAX_TITLE_LEN = 60
@@ -233,9 +231,9 @@ def _unique_child_dir(parent: Path, slug: str) -> Path:
 class _EngineServices:
     """Adapts the engine's operations to the tools ``EngineServices`` protocol.
 
-    Every engine-side action a tool can trigger — spawning sub-agents, rolling
-    back, promoting a completed artifact, disabling autonomous mode, and
-    pushing client updates — is funnelled through this single adapter. It lets
+    Every engine-side action a tool can trigger — spawning sub-agents, running
+    an Author/Critic round, rolling back, disabling autonomous mode, and
+    creating a project — is funnelled through this single adapter. It lets
     the tools depend only on the protocol declared in :mod:`kodo.tools` while
     agent loading and the LLM tool-loop stay in the engine. The engine builds
     one instance and injects it into every per-run :class:`ToolDispatcher`.
@@ -246,17 +244,15 @@ class _EngineServices:
         *,
         run_subagent: Callable[[str, str, dict[str, object]], Awaitable[dict[str, object]]],
         run_author_critic: Callable[
-            [str, str, str, list[str], list[str]], Awaitable[dict[str, object]]
+            [str, str, str, str, dict[str, str], str, bool], Awaitable[dict[str, object]]
         ],
         rollback: Callable[[str], Awaitable[None]],
-        complete_artifact: Callable[[str], Awaitable[None]],
         disable_autonomous: Callable[[], Awaitable[None]],
         create_project: Callable[[str, str | None, bool], Awaitable[dict[str, object]]],
     ) -> None:
         self.__run_subagent = run_subagent
         self.__run_author_critic = run_author_critic
         self.__rollback = rollback
-        self.__complete_artifact = complete_artifact
         self.__disable_autonomous = disable_autonomous
         self.__create_project = create_project
 
@@ -271,21 +267,19 @@ class _EngineServices:
         caller: str,
         author_name: str,
         critic_name: str,
-        input_artifact_ids: list[str],
-        for_revision_artifact_ids: list[str],
+        path: str,
+        input_paths: dict[str, str],
+        instructions: str,
+        for_revision: bool,
     ) -> dict[str, object]:
         """Delegate to the engine's caller-gated Author/Critic round."""
         return await self.__run_author_critic(
-            caller, author_name, critic_name, input_artifact_ids, for_revision_artifact_ids
+            caller, author_name, critic_name, path, input_paths, instructions, for_revision
         )
 
     async def rollback(self, target_sha: str) -> None:
         """Delegate to the engine's ``__run_rollback``."""
         await self.__rollback(target_sha)
-
-    async def complete_artifact(self, artifact_id: str) -> None:
-        """Delegate to the engine's ``__complete_artifact``."""
-        await self.__complete_artifact(artifact_id)
 
     async def disable_autonomous_mode(self) -> None:
         """Delegate to the engine's ``__disable_autonomous``."""
@@ -309,7 +303,6 @@ class WorkflowEngine:
         transient: Append-only JSONL session store.
         layout: Project filesystem layout.
         registry: Loaded subagent file registry.
-        checkpoints: Mirror checkpoint manager.
     """
 
     __sink: MessageSink
@@ -322,15 +315,13 @@ class WorkflowEngine:
     __gateway: LLMGateway
     __layout: ProjectLayout | None
     __registry: AgentRegistry
-    __checkpoints: CheckpointManager | None
-    # Per-root shadow-git checkpoint mirrors (Problem Solver). Mode-agnostic in
-    # mechanism, but only driven for ``problem_solving`` runs this milestone.
+    # Per-root shadow-git checkpoint mirrors. Drives both workflow modes: a
+    # Guided-mode filesystem/edit_file/run_command call earns a checkpoint
+    # exactly like a Problem-Solver one (see __checkpoint_enabled).
     __root_mirrors: RootMirrorManager
     __current_project: dict[str, str] | None
-    __workspace: Workspace
     __queue: asyncio.Queue[dict[str, object]]
     __session: SessionState
-    __index: ProjectIndex
     __services: _EngineServices
     __worker: asyncio.Task[None] | None
     __cumulative_usd: float
@@ -364,12 +355,12 @@ class WorkflowEngine:
     ) -> None:
         """Initialise the runtime engine.
 
-        The engine is workspace-scoped.  Project-level collaborators (the
-        ``ProjectLayout``, ``CheckpointManager``, and artifact ``Workspace``) are
-        built lazily in :meth:`bind_project` when the current project is selected
-        for Guided mode; until then ``self.__layout`` is ``None`` and the
-        placeholder ``Workspace`` (rooted at the physical root) is never used,
-        because Problem Solver tools touch only the filesystem via the resolver.
+        The engine is workspace-scoped. The project-level collaborator (the
+        ``ProjectLayout``) is built lazily in :meth:`bind_project` when the
+        current project is selected for Guided mode; until then
+        ``self.__layout`` is ``None`` and Guided-only tools (``guided_dev_status``,
+        ``document_feedback``, ``rollback``) are unreachable because no Guided
+        prompt can run without a bound project.
 
         Args:
             sink (MessageSink): Sends outbound envelopes to the client.
@@ -392,14 +383,8 @@ class WorkflowEngine:
         self.__gateway = gateway
         self.__registry = registry
         self.__layout: ProjectLayout | None = None
-        self.__checkpoints: CheckpointManager | None = None
         self.__root_mirrors = RootMirrorManager()
         self.__current_project: dict[str, str] | None = None
-        self.__index = ProjectIndex()
-        # Placeholder workspace at the physical root — replaced by the real,
-        # project-rooted one in bind_project(); never used before then (no
-        # artifact tool runs without a bound project).
-        self.__workspace = Workspace(self.__session_workspace.physical_root, self.__index)
         self.__queue = asyncio.Queue()
         self.__session = SessionState()
         self.__worker = None
@@ -412,12 +397,10 @@ class WorkflowEngine:
         self.__active_model_key = None
         self.__replay_subsessions = None
         self.__resume_subsession_pending = False
-        self.__toolchain: ToolchainPlugin | None = None
         self.__services = _EngineServices(
             run_subagent=self.__run_subagent,
             run_author_critic=self.__run_author_critic_iteration,
             rollback=self.__run_rollback,
-            complete_artifact=self.__complete_artifact,
             disable_autonomous=self.__disable_autonomous,
             create_project=self.__create_project,
         )
@@ -454,22 +437,14 @@ class WorkflowEngine:
     def __require_layout(self) -> ProjectLayout:
         """Return the bound project layout, or raise if none is bound.
 
-        Guards the Guided-only code paths (rollback, promotion, toolchain) that
-        run only after :meth:`bind_project` has set ``self.__layout``.
+        Guards the Guided-only code paths (rollback, document finalization)
+        that run only after :meth:`bind_project` has set ``self.__layout``.
         """
         if self.__layout is None:
             raise RuntimeError(
                 "No current project is bound — Guided mode requires a project selection."
             )
         return self.__layout
-
-    def __require_checkpoints(self) -> CheckpointManager:
-        """Return the bound checkpoint manager, or raise if none is bound."""
-        if self.__checkpoints is None:
-            raise RuntimeError(
-                "No current project is bound — Guided mode requires a project selection."
-            )
-        return self.__checkpoints
 
     async def start(self, session_id: str, resumed: bool) -> None:
         """Attach the given session and start the worker.
@@ -506,7 +481,7 @@ class WorkflowEngine:
                 # A main turn interrupted while a sub-agent held the floor leaves
                 # a dangling assistant ``tool_use`` (the spawning call) with no
                 # following ``tool_result``. Resume needs the bound project's
-                # workspace/index, so it is gated on a successful bind above.
+                # layout, so it is gated on a successful bind above.
                 if self.__layout is not None and self.__has_dangling_tool_use():
                     self.__resume_subsession_pending = True
             if not self.__resume_subsession_pending:
@@ -565,7 +540,13 @@ class WorkflowEngine:
         await self.__bind_project(root, name, emit=True)
 
     async def __bind_project(self, root: str, name: str, *, emit: bool) -> None:
-        """Construct the project-tier collaborators and rebuild the index.
+        """Validate and bind the project layout.
+
+        There is no index to rebuild and no separate checkpoint manager to
+        initialise: ``self.__root_mirrors`` (shared with Problem Solver)
+        lazily scaffolds its mirror on the project root the first time a
+        mutating tool touches it, and a document's state lives entirely in
+        its own ``.jsonl`` evolution log — read on demand, never rebuilt.
 
         Args:
             root (str): Project root path.
@@ -583,16 +564,6 @@ class WorkflowEngine:
             return
 
         self.__layout = layout
-        self.__checkpoints = CheckpointManager(layout)
-        await self.__checkpoints.ensure_initialized()
-
-        self.__index = ProjectBootstrap(
-            mirror_dir=layout.checkpoints_dir,
-            workspace_dir=layout.workspace_dir,
-            sessions_dir=self.__workspace_layout.sessions_dir,
-        ).build_index()
-        self.__workspace = Workspace(layout.root, self.__index)
-        self.__toolchain = None
         self.__current_project = {"root": str(project_root), "name": name}
 
         if emit:
@@ -1803,7 +1774,7 @@ class WorkflowEngine:
 
             calls = [(tc.tool_use_id, tc.tool_name, tc.tool_input) for tc in tool_calls]
             tool_results = await self.__dispatch_tool_calls(
-                calls, tool_dispatch, tool_desc, tool_logger
+                calls, tool_dispatch, tool_desc, tool_logger, agent_name
             )
             messages = messages + [Message(role="user", content=tool_results)]
 
@@ -1837,6 +1808,7 @@ class WorkflowEngine:
         tool_dispatch: Callable[[str, dict[str, object]], Awaitable[str]],
         tool_desc: dict[str, str],
         tool_logger: ToolCallLogger,
+        agent_name: str,
     ) -> list[dict[str, object]]:
         """Dispatch a batch of ``(tool_use_id, name, input)`` calls in order.
 
@@ -1868,7 +1840,7 @@ class WorkflowEngine:
             tool_logger.log_result(tool_name, tc_n, result_text)
             checkpoint = await self.__checkpoint_commit(tool_name, tool_input, ck_paths)
             content = await self.__finalize_tool_result(
-                tool_use_id, tool_name, tool_input, result_text, checkpoint
+                tool_use_id, tool_name, tool_input, result_text, checkpoint, agent_name
             )
             tool_results.append(
                 {
@@ -1886,6 +1858,7 @@ class WorkflowEngine:
         tool_input: dict[str, object],
         result_text: str,
         checkpoint: CheckpointRef | None = None,
+        agent_name: str = _GUIDE_AGENT_NAME,
     ) -> str:
         """Normalize a tool result to its schema; persist and surface its detail.
 
@@ -1901,7 +1874,12 @@ class WorkflowEngine:
         surfaced two ways: its ``sha`` is injected into the LLM-visible result
         (declared as ``checkpoint_sha`` in each mutating tool's output schema),
         and the full ``{root, sha, parent}`` rides the detail event out-of-band
-        so the WebView can render the undo / rollback controls.
+        so the WebView can render the undo / rollback controls. The same
+        ``checkpoint`` also drives :meth:`__record_guided_revision` (a tracked
+        document's ``new_revision`` jsonl entry), and a successful
+        ``document_feedback`` call with ``accept: true`` drives
+        :meth:`__finalize_document` (the accept/review flow) — both below,
+        after the client has already seen this call's own detail event.
 
         A tool with no matching spec (none today) passes through unchanged.
         """
@@ -2000,6 +1978,14 @@ class WorkflowEngine:
                     },
                 )
             )
+
+        if checkpoint is not None and tool_name in _GUIDED_STATE_TOOLS:
+            await self.__record_guided_revision(tool_name, tool_input, checkpoint, agent_name)
+        elif tool_name == "document_feedback" and output.get("status") == "recorded":
+            path = str(tool_input.get("path", ""))
+            if bool(tool_input.get("accept", False)) and path:
+                await self.__finalize_document(path)
+
         return content
 
     # ------------------------------------------------------------------
@@ -2009,10 +1995,11 @@ class WorkflowEngine:
     def __checkpoint_enabled(self) -> bool:
         """Whether per-tool-call checkpointing runs for the current prompt.
 
-        Gated to Problem Solver so it never collides with the Guided artifact
-        checkpoint system (which still owns ``.kodo/checkpoints`` there).
+        Unconditional: Guided mode now drives the same shadow-git mirror
+        Problem Solver always has — there is no separate Guided checkpoint
+        system to collide with anymore.
         """
-        return self.__session.effective_workflow_mode == "problem_solving"
+        return True
 
     async def __checkpoint_prepare(
         self, tool_name: str, tool_input: dict[str, object]
@@ -2091,6 +2078,42 @@ class WorkflowEngine:
             target = tool_input.get("path") or tool_input.get("destination", "")
             return f"filesystem {op}: {target}"
         return f"{tool_name}: {tool_input.get('path', '')}"
+
+    async def __record_guided_revision(
+        self,
+        tool_name: str,
+        tool_input: dict[str, object],
+        checkpoint: CheckpointRef,
+        agent_name: str,
+    ) -> None:
+        """Append a ``new_revision`` jsonl entry for a tracked document's commit.
+
+        Fires in *both* workflow modes whenever the touched path falls under
+        the bound project's ``specs``/``src``/``test`` (see
+        ``kodo.guided_state``) — independent of which mirror root the
+        checkpoint itself committed to. A Problem-Solver edit to a tracked
+        document is recorded too, tagged ``workflow: "problem_solving"``, so
+        the Guide can reconcile state once Guided mode resumes; no other
+        jsonl entry type is ever written outside Guided mode, since
+        ``document_feedback`` (the only producer of the other three) is never
+        granted to Problem Solver.
+        """
+        if self.__current_project is None:
+            return
+        project_root = Path(self.__current_project["root"])
+        paths = self.__mutation_paths(tool_name, tool_input)
+        if not paths or not is_tracked(paths[0], project_root):
+            return
+        await asyncio.to_thread(
+            append_new_revision,
+            paths[0],
+            project_root,
+            commit_hash=checkpoint.sha,
+            author=agent_name,
+            tool=tool_name,
+            summary=self.__checkpoint_label(tool_name, tool_input),
+            workflow=self.__session.effective_workflow_mode,
+        )
 
     async def handle_checkpoint_undo(
         self, root: str, sha: str, resolution: str | None = None
@@ -2193,22 +2216,20 @@ class WorkflowEngine:
     def __make_dispatcher(self, agent_name: str, session_id: str) -> ToolDispatcher:
         """Build a per-run tool dispatcher for *agent_name*.
 
-        Reads ``self.__index`` at call time so post-bootstrap/rollback runs see
-        the current index without any persistent surface to rebuild. The
-        autonomous mode is not snapshotted here: tools read it live from
-        ``self.__session.effective_autonomous``, which the worker freezes per
-        prompt, so the dispatcher needs no rebuild on a mode toggle.
+        ``mode``/``project_root`` are read live from session/current-project
+        state (not snapshotted) — same reasoning as ``effective_autonomous``:
+        a single dispatcher serves the whole prompt.
         """
         spec = self.__registry.spec_for(agent_name)
         return ToolDispatcher(
-            workspace=self.__workspace,
-            index=self.__index,
             resolver=self.__make_resolver(),
             gate=self.__gate,
             session=self.__session,
             services=self.__services,
             agent_name=agent_name,
             session_id=session_id,
+            mode=self.__session.effective_workflow_mode,
+            project_root=(Path(self.__current_project["root"]) if self.__current_project else None),
             root_paths=self.__root_paths(),
             util_paths=self.__util_paths(),
             output_schema=spec.output_schema if spec is not None else None,
@@ -2394,9 +2415,11 @@ class WorkflowEngine:
         rehydrated from the subsession log). Sub-agent messages persist into the
         subsession file at every turn boundary so the run is resumable mid-flight.
         The structured result is whatever the agent passed to ``return_result``
-        (validated against its output schema); if it never called it, a fallback
-        ``{artifact_ids, schema_compliance: False}`` is synthesized from the
-        artifacts it published.
+        (validated against its output schema); if it never called it, a bare
+        ``{schema_compliance: False}`` fallback is synthesized — there is no
+        artifact index to recover a partial result from, so the caller (e.g.
+        ``__run_author_critic_iteration``) just sees an empty result and treats
+        it as if nothing happened.
         """
         agent = self.__registry.get(name, self.__session.effective_autonomous)
         plugin, model_id, routing = await self.__resolve_plugin(agent.capability)
@@ -2431,12 +2454,6 @@ class WorkflowEngine:
 
         await self.__sink.send(Envelope.make_stream_end(stream_id))
         await self.__emit_agent_finished(name)
-        # Union freshly-published IDs with any published before a crash (those
-        # are recoverable because publish_artifact stamps the subsession_id).
-        pre_crash = [
-            e.artifact_id for e in self.__index.all_entries() if e.session_id == subsession_id
-        ]
-        published = list(dict.fromkeys([*pre_crash, *dispatcher.published_ids]))
         output = dispatcher.returned_output
         if output is None:
             _log.warning(
@@ -2444,12 +2461,11 @@ class WorkflowEngine:
                 subsession_id,
                 name,
             )
-            output = {"artifact_ids": published, SCHEMA_COMPLIANCE_KEY: False}
+            output = {SCHEMA_COMPLIANCE_KEY: False}
         _log.info(
-            "subsession completed: name=%s id=%s published=%s keys=%s",
+            "subsession completed: name=%s id=%s keys=%s",
             name,
             subsession_id,
-            published,
             sorted(output.keys()),
         )
         return output
@@ -2538,10 +2554,9 @@ class WorkflowEngine:
         """Consume the next pre-crash subsession marker during resume replay.
 
         Completed subsessions return their stored structured result immediately
-        (the artifacts are already on disk and rebuilt into the index). The single
-        active (un-closed) subsession is rehydrated from its log and driven to
-        completion live; once consumed, replay mode ends. A legacy marker whose
-        ``result`` is a bare artifact-id list is wrapped into the structured shape.
+        (the files they wrote are already on disk). The single active
+        (un-closed) subsession is rehydrated from its log and driven to
+        completion live; once consumed, replay mode ends.
         """
         assert self.__replay_subsessions
         rec = self.__replay_subsessions.pop(0)
@@ -2553,11 +2568,7 @@ class WorkflowEngine:
                 "Replay: subsession %s already complete; returning stored result", subsession_id
             )
             result = rec.get("result", {})
-            if isinstance(result, dict):
-                return result
-            if isinstance(result, list):  # legacy marker: bare artifact-id list
-                return {"artifact_ids": [str(x) for x in result], SCHEMA_COMPLIANCE_KEY: False}
-            return {}
+            return result if isinstance(result, dict) else {}
 
         _log.info("Replay: resuming active subsession %s (%s)", subsession_id, name)
         rehydrated = [
@@ -2657,7 +2668,7 @@ class WorkflowEngine:
             tool_input = raw_input if isinstance(raw_input, dict) else {}
             calls.append((str(b["id"]), str(b["name"]), tool_input))
         tool_results = await self.__dispatch_tool_calls(
-            calls, dispatcher.dispatch, tool_desc, tool_logger
+            calls, dispatcher.dispatch, tool_desc, tool_logger, entry_agent
         )
         self.__replay_subsessions = None
         results_msg = Message(role="user", content=tool_results)
@@ -2716,13 +2727,11 @@ class WorkflowEngine:
             sid = str(m["subsession_id"])
             end = ends.get(sid)
             end_result = end.get("result") if end else None
-            # Preserve the stored result faithfully: a structured (dict) result —
-            # the standard return_result shape — is reused verbatim by
-            # __replay_next_subsession; a bare list is the legacy artifact-id
-            # shape. Anything else (or an active, un-closed subsession) carries no
-            # reusable result. Coercing a dict to [] here would hand the parent an
-            # empty {"artifact_ids": [], schema_compliance: False} and discard the
-            # sub-agent's real output on resume.
+            # Preserve the stored result faithfully — the standard
+            # return_result dict shape is reused verbatim by
+            # __replay_next_subsession; a bare list is an older marker shape
+            # some callers still tolerate. An active, un-closed subsession
+            # carries no reusable result.
             result: object
             if isinstance(end_result, dict):
                 result = dict(end_result)
@@ -2744,53 +2753,17 @@ class WorkflowEngine:
     # Author/Critic iteration
     # ------------------------------------------------------------------
 
-    async def __extract_verdict(
-        self, critic_output: dict[str, object]
-    ) -> tuple[str, list[dict[str, object]]]:
-        """Read a critic's verdict + concerns, preferring its ``return_result``.
-
-        The structured ``return_result`` output is authoritative. As a safety net
-        for a critic that finished without returning a verdict, fall back to
-        reading its published feedback artifact (the pre-schema behaviour).
-        """
-        verdict_raw = critic_output.get("verdict")
-        if isinstance(verdict_raw, str) and verdict_raw:
-            concerns_raw = critic_output.get("concerns", [])
-            concerns = (
-                [c for c in concerns_raw if isinstance(c, dict)]
-                if isinstance(concerns_raw, list)
-                else []
-            )
-            return verdict_raw, concerns
-
-        candidate_ids: list[str] = []
-        feedback_id = critic_output.get("feedback_artifact_id")
-        if isinstance(feedback_id, str) and feedback_id:
-            candidate_ids.append(feedback_id)
-        art_ids = critic_output.get("artifact_ids")
-        if isinstance(art_ids, list):
-            candidate_ids.extend(str(a) for a in reversed(art_ids))
-        for aid in candidate_ids:
-            feedback_arts = await self.__workspace.read(artifact_id=aid)
-            if not feedback_arts:
-                continue
-            fa = feedback_arts[0]
-            if fa.verdict is not None:
-                return (
-                    fa.verdict.value,
-                    [{"kind": c.kind, "description": c.description} for c in fa.concerns],
-                )
-        return "accepted", []
-
     async def __run_author_critic_iteration(
         self,
         caller: str,
         author_name: str,
         critic_name: str,
-        input_artifact_ids: list[str],
-        for_revision_artifact_ids: list[str],
+        path: str,
+        input_paths: dict[str, str],
+        instructions: str,
+        for_revision: bool,
     ) -> dict[str, object]:
-        """Execute one Author/Critic round and return verdict + concerns.
+        """Execute one Author/Critic round over a real file.
 
         Args:
             caller: Agent making the call. Its frontmatter allow-list must permit
@@ -2798,183 +2771,146 @@ class WorkflowEngine:
                 up front so the inner spawns can use the ungated primitive.
             author_name: Author sub-agent name.
             critic_name: Critic sub-agent name.
-            input_artifact_ids: Input artifact IDs for the Author.
-            for_revision_artifact_ids: Prior Author outputs to revise (empty on the
-                first round).
+            path: The file to revise (required when ``for_revision``); ignored on
+                a fresh round, where the Author chooses its own path.
+            input_paths: Named collection of context files for the Author.
+            instructions: What the Author should do this round.
+            for_revision: True when ``path`` already exists and this round
+                revises it.
 
         Returns:
-            dict: ``{artifact_id, verdict, concerns}`` — verdict/concerns come from
-            the Critic's ``return_result`` (falling back to its feedback artifact
-            if it returned none).
+            dict: ``{path, status, concerns}`` — read from the target file's
+            jsonl evolution log after the Critic's ``document_feedback`` call.
+            The jsonl, not the Critic's ``return_result``, is authoritative
+            (the current state of a file is its log's last entry).
 
         Raises:
             PermissionError: ``caller`` may not spawn the author or the critic.
         """
         self.__assert_can_spawn(caller, author_name, critic_name)
-        author_instructions = "Produce your artifact."
-        if for_revision_artifact_ids:
-            author_instructions += " Revise the prior version(s) per the critic's concerns."
         author_task: dict[str, object] = {
-            "instructions": author_instructions,
-            "input_artifact_ids": input_artifact_ids,
-            "for_revision_artifact_ids": for_revision_artifact_ids,
+            "instructions": instructions,
+            "input_paths": input_paths,
+            "for_revision_path": path if for_revision else None,
         }
-
         author_output = await self.__spawn_subagent(author_name, author_task)
-        author_ids_raw = author_output.get("artifact_ids", [])
-        author_ids = [str(a) for a in author_ids_raw] if isinstance(author_ids_raw, list) else []
+        primary_raw = author_output.get("primary_path")
+        primary_path = str(primary_raw) if isinstance(primary_raw, str) and primary_raw else path
 
-        primary_id: str | None = None
-        for aid in reversed(author_ids):
-            arts = await self.__workspace.read(artifact_id=aid)
-            if arts and arts[0].type != ArtifactType.FEEDBACK:
-                primary_id = aid
-                break
-
-        if primary_id is None:
-            _log.warning(
-                "run_author_critic_iteration: %s produced no non-feedback artifact", author_name
-            )
-            return {"artifact_id": None, "verdict": "accepted", "concerns": []}
+        if not primary_path:
+            _log.warning("run_author_critic_iteration: %s produced no primary_path", author_name)
+            return {"path": "", "status": "pending_review", "concerns": []}
 
         await self.__sink.send(
             Envelope.make_event(
                 EVT_REVIEW_STARTED,
                 {
                     "reviewer_name": critic_name,
-                    "target_filename": primary_id[:8],
-                    "target_type": "artifact",
+                    "target_filename": primary_path,
+                    "target_type": "document",
                 },
             )
         )
 
         critic_task: dict[str, object] = {
-            "instructions": (
-                f"Review artifact {primary_id} and publish a feedback artifact "
-                f"with reviewed_artifact_id={primary_id}."
-            ),
-            "input_artifact_ids": [primary_id],
+            "instructions": f"Review {primary_path}.",
+            "input_paths": {"target": primary_path},
         }
-        critic_output = await self.__spawn_subagent(critic_name, critic_task)
-        verdict, concerns = await self.__extract_verdict(critic_output)
+        await self.__spawn_subagent(critic_name, critic_task)
+
+        project_root = self.__require_layout().root
+        resolved = ProjectPathResolver(project_root).resolve(primary_path)
+        status_entry = await asyncio.to_thread(read_status, resolved, project_root)
+        status = str(status_entry["status"]) if status_entry else "pending_review"
+        concerns_raw = status_entry.get("concerns") if status_entry else None
+        concerns = (
+            [c for c in concerns_raw if isinstance(c, dict)]
+            if isinstance(concerns_raw, list)
+            else []
+        )
 
         await self.__sink.send(
             Envelope.make_event(
                 EVT_REVIEW_VERDICT,
                 {
                     "reviewer_name": critic_name,
-                    "target_filename": primary_id[:8],
-                    "verdict": verdict,
+                    "target_filename": primary_path,
+                    "verdict": status,
                     "concern_count": len(concerns),
                 },
             )
         )
 
-        return {"artifact_id": primary_id, "verdict": verdict, "concerns": concerns}
+        return {"path": primary_path, "status": status, "concerns": concerns}
 
     # ------------------------------------------------------------------
     # Rollback callback
     # ------------------------------------------------------------------
 
     async def __run_rollback(self, target_sha: str) -> None:
-        """Execute rollback, rebuild the index, and start a fresh Guide session.
+        """Roll the bound project's checkpoint mirror back and reset the session.
+
+        Delegates to the same :meth:`RootMirrorManager.rollback` primitive
+        Problem Solver already uses — there is no separate index to rebuild;
+        every document's state is read on demand from whichever revision the
+        mirror's working tree now reflects.
 
         Args:
             target_sha: Mirror commit SHA to roll back to.
         """
+        project_root = self.__require_layout().root
         _log.info("Rollback initiated: target_sha=%s", target_sha[:12])
-        rollback = Rollback(
-            self.__require_layout().root,
-            self.__require_checkpoints().repo,
-            self.__workspace_layout.sessions_dir,
-        )
-        index = await rollback.execute(target_sha)
-
-        self.__index = index
-        self.__workspace.bind_index(self.__index)
-        self.__toolchain = None  # tech-stack may differ post-rollback; re-resolve lazily
+        self.__root_mirrors.set_roots([Path(rp.path) for rp in self.__root_paths()])
+        await self.__root_mirrors.rollback(str(project_root), target_sha)
         # Session identity is owned by the driving window and is unchanged; the
         # rollback only invalidates the in-memory conversation, so reset it.
         self.__main_messages = []
         self.__replay_subsessions = None
-        _log.info("Post-rollback: index rebuilt for session %s", self.__orch_session_id)
+        _log.info("Post-rollback: project %s restored to %s", project_root, target_sha[:12])
 
     # ------------------------------------------------------------------
-    # Artifact completion (promotion)
+    # Document finalization (accept/review flow)
     # ------------------------------------------------------------------
 
-    async def __complete_artifact(self, artifact_id: str) -> None:
-        """Promote a gate-passed artifact and mark it completed.
+    async def __finalize_document(self, path: str) -> None:
+        """Drive the post-accept flow for a document a critic just approved.
 
-        Materializes the artifact into ``specs/``, ``src/``, or ``test/``, commits it to the
-        mirror with a sidecar, flips its index entry to ``completed`` at the
-        promoted location, and removes the workspace staging file. Non-
-        materializable artifacts (e.g. feedback) only flip state.
-
-        Args:
-            artifact_id: ID of the artifact reported complete.
+        Called only after ``document_feedback(accept=True)``. Autonomous mode
+        auto-accepts immediately (mirroring every other gate when the user is
+        away). Interactive mode fires the same approval gate
+        ``request_user_review_artifact`` used to — now engine-driven — and
+        records the user's decision: agreement writes ``review_result``
+        (approve) then ``accepted``; feedback writes ``review_result``
+        (reject) only, which the next ``run_author_critic_iteration`` round
+        picks up as ``needs_revision``.
         """
-        arts = await self.__workspace.read(artifact_id=artifact_id)
-        if not arts:
-            _log.warning("complete_artifact: %s not found; flipping state only", artifact_id[:8])
-            await self.__workspace.mark_completed(artifact_id)
-            return
-        artifact = arts[0]
-
-        toolchain = await self.__resolve_toolchain()
-        registry = await self.__component_registry()
-        target = materialization_path(artifact, self.__require_layout().root, toolchain, registry)
-        if target is None:
-            await self.__workspace.mark_completed(artifact_id)
-            return
-
-        promoter = Promoter(
-            self.__require_layout().root, self.__require_checkpoints().repo, toolchain, registry
-        )
-        message = f"[{artifact.type.value}] {artifact.responsibility_code} completed"
+        project_root = self.__require_layout().root
         try:
-            await promoter.promote(artifact, message)
-        except PromoterError:
-            _log.exception("complete_artifact: promote failed for %s", artifact_id[:8])
-            await self.__workspace.mark_completed(artifact_id)
+            resolved = ProjectPathResolver(project_root).resolve(path)
+        except PermissionError:
+            _log.warning("finalize_document: cannot resolve path %r", path)
             return
 
-        await self.__workspace.mark_completed(artifact_id, location=target)
-        _log.info(
-            "complete_artifact: promoted %s (%s) -> %s",
-            artifact_id[:8],
-            artifact.type.value,
-            target,
+        if self.__session.effective_autonomous:
+            await asyncio.to_thread(append_accepted, resolved, project_root)
+            return
+
+        approval = await self.__gate.fire_approval(
+            "document_review", artifact_id=path, summary=f"Review {path}"
         )
-
-    async def __resolve_toolchain(self) -> ToolchainPlugin:
-        """Resolve the active toolchain from the Tech Stack, caching the result.
-
-        Falls back to Python until a Tech Stack artifact exists (only code/test
-        promotion needs a real toolchain, and those stages run well after the
-        Tech Stack is accepted).
-        """
-        if self.__toolchain is not None:
-            return self.__toolchain
-        content = await self.__latest_artifact_content(ArtifactType.TECH_STACK)
-        if content is not None:
-            self.__toolchain = select_toolchain(content, self.__require_layout().root)
-            return self.__toolchain
-        return select_toolchain("", self.__require_layout().root)
-
-    async def __component_registry(self) -> ComponentRegistry:
-        """Build a component registry from the architecture document, if any."""
-        content = await self.__latest_artifact_content(ArtifactType.ARCHITECTURE)
-        return ComponentRegistry(content) if content is not None else ComponentRegistry.empty()
-
-    async def __latest_artifact_content(self, artifact_type: ArtifactType) -> str | None:
-        """Return the content of the most recent artifact of *artifact_type*."""
-        entries = [e for e in self.__index.all_entries() if e.type == artifact_type]
-        if not entries:
-            return None
-        latest = max(entries, key=lambda e: e.created_at)
-        arts = await self.__workspace.read(artifact_id=latest.artifact_id)
-        return arts[0].content if arts else None
+        if approval.action == "agree":
+            await asyncio.to_thread(
+                append_review_result, resolved, project_root, decision="approve", comment=""
+            )
+            await asyncio.to_thread(append_accepted, resolved, project_root)
+        else:
+            await asyncio.to_thread(
+                append_review_result,
+                resolved,
+                project_root,
+                decision="reject",
+                comment=approval.feedback,
+            )
 
     async def history_entries(self) -> list[dict[str, object]]:
         """Rebuild the full client-facing feed for a resumed session.

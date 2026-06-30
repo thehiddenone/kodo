@@ -284,26 +284,26 @@ Emitted when a tool's raw output did not conform to its declared `output_schema`
 
 `schema_compliance` is **engine-owned**: it is never declared in a `ToolSpec.output_schema`; the engine augments every output schema (the one shown to agents) and every result in-flight to carry it.
 
-### 5.6 `review.started` / `review.verdict` — low-fi workspace activity
+### 5.6 `review.started` / `review.verdict` — low-fi review activity
 
-Workspace activity is intentionally low-fidelity: the user sees that critic loops are happening and roughly how they go, but not artifact content, diffs, or feedback bodies.
+Review activity is intentionally low-fidelity: the user sees that critic loops are happening and roughly how they go, but not file content, diffs, or feedback bodies.
 
 ```json
 { "type": "review.started",
   "reviewer_name": "functional_design_critic",
-  "target_filename": "a1b2c3d4",
-  "target_type": "artifact" }
+  "target_filename": "specs/design/auth.md",
+  "target_type": "document" }
 ```
 
 ```json
 { "type": "review.verdict",
   "reviewer_name": "functional_design_critic",
-  "target_filename": "a1b2c3d4",
-  "verdict": "accepted" | "rejected",
+  "target_filename": "specs/design/auth.md",
+  "verdict": "accepted" | "needs_revision" | "pending_acceptance",
   "concern_count": 3 }
 ```
 
-`target_filename` is a short label (the artifact id prefix), not a path the panel can open. Workspace paths and contents stay off the wire.
+`target_filename` is now the document's real, project-relative path (previously an 8-character artifact-id prefix the panel couldn't open) — content still stays off the wire, just the path. `verdict` is whatever `kodo.guided_state.read_status` derives from the file's `.jsonl` log after the critic's `document_feedback` call (§7, STATE_AND_LIFECYCLE.md), not a value the critic invents.
 
 ### 5.7 `usage.update` — cost accounting
 
@@ -428,9 +428,9 @@ These drive the sidebar's llama.cpp / model controls; they carry no workflow mea
 
 `percent: -1` signals failure (the `message` carries the reason). `llama.state` with `starting: true` ⟪planned⟫ may precede a running/error update; the client treats a missing `running` field as "still starting."
 
-### 5.13 ⟪planned⟫ — artifact & compaction events
+### 5.13 ⟪removed⟫ — the former artifact events
 
-`artifact.published`, `artifact.removed`, and `guide.compacted` are **specified but not yet emitted.** Promotion-on-completion happens internally (Promoter writes `src/`/`gen/` + the mirror), but no per-file event reaches the client yet. The legacy `file.change` event name is retained in the client for forward-compatibility but the engine does not emit it. When these land they will be purely additive.
+`artifact.published` and `artifact.removed` were specified but never emitted, and are now meaningless: there is no artifact system to publish or remove anything from (STATE_AND_LIFECYCLE.md §1.1) — agents write real files directly, tracked by a per-document `.jsonl` evolution log instead. `guide.compacted` was superseded by the in-place `context.compacted` scheme (§5.7a) before it ever shipped. The legacy `file.change` event name is retained in the client for forward-compatibility but the engine does not emit it. A future event surfacing per-document jsonl status changes (mirroring `guided_dev_status`) would be purely additive if added.
 
 ---
 
@@ -465,18 +465,20 @@ Response payload (`mode: "choice"`):
 { "type": "prompt.question.response", "choice_key": "yes" }
 ```
 
-### 6.2 `prompt.approval` — review gate
+### 6.2 `prompt.approval` — document review gate
 
-Surfaced when a critic or solo agent calls `request_user_review_artifact` at an FR-WF-05 review gate. In autonomous mode the gate auto-accepts and no `prompt.approval` is emitted (the handler synthesizes the response).
+Surfaced by the engine itself — never by a sub-agent tool call — right after a critic calls `document_feedback(path, accept=True)` (STATE_AND_LIFECYCLE.md §8.1). In autonomous mode the gate auto-accepts and no `prompt.approval` is emitted (the engine writes the `accepted` jsonl entry directly).
 
 Request payload:
 
 ```json
 { "type": "prompt.approval",
-  "gate_type": "narrative" | "responsibilities" | "requirements" | "design" | "test_plan" | "implementation" | "final",
-  "artifact_id": "<uuid>" | null,
-  "summary": "Narrative ready for your review." }
+  "gate_type": "document_review",
+  "artifact_id": "specs/design/auth.md" | null,
+  "summary": "Review specs/design/auth.md" }
 ```
+
+`gate_type` is now always the single literal `"document_review"` (previously a stage name derived from the artifact's type). `artifact_id` is a historical field name kept for wire compatibility — its value is now the document's real, project-relative path, not a workspace artifact UUID.
 
 Response payload:
 
@@ -486,7 +488,7 @@ Response payload:
   "feedback_text": "..." | null }
 ```
 
-`feedback_text` accompanies `action = "feedback"`. On `agree`, the reviewing agent reports the artifact completed (`report_artifact_completed`) and the engine promotes it; on `feedback`, the reviewing agent opens a revision round, escalating to the Guide only when the feedback implicates an upstream artifact.
+`feedback_text` accompanies `action = "feedback"`. On `agree`, the engine appends a `review_result` (`decision: "approve"`) entry to the document's `.jsonl` log, then an `accepted` entry — no sub-agent call is involved. On `feedback`, the engine appends `review_result` (`decision: "reject"`, carrying `feedback_text` as `comment`); the next `run_author_critic_iteration` round on that path reads this as `needs_revision` and the author revises.
 
 > The doc'd `artifact_path` field is **not** sent today — the panel correlates by
 > `artifact_id` only.
@@ -658,9 +660,9 @@ Response:
 
 A `state` event with the updated `command_control` field follows.
 
-### 7.4c `checkpoint.undo` / `checkpoint.rollback` — Problem Solver file checkpoints
+### 7.4c `checkpoint.undo` / `checkpoint.rollback` — per-root file checkpoints
 
-Acts on the per-root **shadow checkpoint mirror** that the engine commits to after every `filesystem`/`edit_file`/`run_command` dispatch in the **problem-solving** workflow (INTERNALS.md §10b/§12.1). Both carry the `{root, sha}` pair the client received on the originating call's `checkpoint` field (§5.5a). This is **unrelated** to the Guide's `rollback` tool / FR-MIR-04 — it never touches conversation history, the `ProjectIndex`, or artifacts; it only restores files.
+Acts on the per-root **shadow checkpoint mirror** that the engine commits to after every `filesystem`/`edit_file`/`run_command` dispatch, in **both** workflow modes (INTERNALS.md §7/§10b/§12.1 — there is no longer a Guided-only special case). Both carry the `{root, sha}` pair the client received on the originating call's `checkpoint` field (§5.5a). This is **distinct** from the Guide's `rollback` tool: both now delegate to the same underlying `RootMirrorManager.rollback` primitive, but only the Guide's tool additionally resets the conversation history (STATE_AND_LIFECYCLE.md §8.3) — `checkpoint.rollback` only restores files.
 
 ```json
 { "type": "checkpoint.undo", "root": "/abs/path/to/root", "sha": "<commit sha>" }
@@ -745,10 +747,10 @@ Pending server-initiated prompts (§6) survive disconnect: the original request 
 The following are deliberately **not** on the wire. Future contributors should not add them without a design conversation.
 
 - **Session log content.** The audit trail (STATE_AND_LIFECYCLE.md §5) lives on disk; the protocol carries no message that exposes session JSONL. (`session.history` replays the *conversation*, not the raw log.)
-- **Workspace artifact content, paths, or diffs (MVP).** Workspace activity is conveyed only by `review.*` (§5.6). Detailed artifact events are the planned "verbose workspace mode" (§9.1).
-- **Guided promotion-mirror operation internals.** Its commits, trees, and refs are not exposed. (Exception, added with the Problem Solver shadow mirror: its `{root, sha, parent}` *is* exposed on `agent.tool_call_detail`/`session.history`, §5.5a, since the user-facing undo/rollback controls need it — but no tree/ref/log browsing exists, only undo-by-sha and rollback-by-sha.)
+- **Document content, paths, or diffs beyond `review.*` (MVP).** Review activity is conveyed only by `review.*` (§5.6), now carrying the real path but never content. Detailed per-document events are the planned "verbose review mode" (§9.1).
+- **Checkpoint mirror operation internals.** Its commits, trees, and refs are not exposed beyond the `{root, sha, parent}` already on `agent.tool_call_detail`/`session.history` (§5.5a), needed for the user-facing undo/rollback controls — no tree/ref/log browsing exists, only undo-by-sha and rollback-by-sha.
 - **Stage-machine transitions.** Internal workflow stages are not pushed as events. The user-visible signal is the `agent.started`/`agent.finished` sequence plus `state.phase`.
-- **Memory writes** as a distinct event class — they flow through the promotion path like any other artifact.
+- **A document's `.jsonl` evolution log** as a distinct event class — its existence and status are summarized only via `review.*` and the Guide's own `guided_dev_status` tool calls (visible as ordinary `agent.tool_call`/`agent.tool_call_detail` events), never pushed as its own message type.
 - **Historical event replay beyond the outbox.** The protocol is "now and forward"; the on-disk logs and mirror are the archives.
 - **Keepalive / backpressure at the application layer.** WebSocket ping/pong handles liveness; the outbox cap is the only bound (FR-WS-04).
 
@@ -756,11 +758,10 @@ The following are deliberately **not** on the wire. Future contributors should n
 
 These are anticipated and structured so adding them is purely additive — no existing message changes shape.
 
-- **Artifact & compaction events** (§5.13): `artifact.published`, `artifact.removed`, `guide.compacted`.
 - **Richer `state` snapshot** (§5.1): `cumulative_usd`, `pending_prompts`, `last_checkpoint_sha`.
-- **Guided checkpoint browsing** (§7.7): `checkpoint.list` for the promotion mirror. (The Problem Solver `checkpoint.undo`/`.rollback` commands, §7.4c, are already implemented.)
+- **Checkpoint browsing** (§7.7): `checkpoint.list`. (The `checkpoint.undo`/`.rollback` commands, §7.4c, are already implemented, in both workflow modes.)
 - **Security prompts & rules** (§6.5, §7.7): `prompt.permission`, `security.add_rule`.
-- **Verbose workspace mode.** New `workspace.*` event types gated by a settings flag, carrying workspace paths and structured content. The `review.*` events stay as the low-fi default.
+- **Verbose review mode.** New event type(s) gated by a settings flag, carrying a document's real path and richer status detail (e.g. its full `.jsonl` history). The `review.*` events stay as the low-fi default.
 - **Streamed tool output.** A streamed form of `agent.tool_call` for long-running shell commands; the single-event form remains valid for short calls.
 
 ---

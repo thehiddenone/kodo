@@ -32,7 +32,6 @@ from kodo.toolspecs import (
     normalize_output,
     tool_result_succeeded,
 )
-from kodo.workspace import ProjectIndex, Workspace
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -61,34 +60,32 @@ class _FakeGate:
 class _FakeServices:
     """Structural ``EngineServices`` returning canned values."""
 
-    def __init__(self, workspace: Workspace) -> None:
-        self._workspace = workspace
-
     async def run_subagent(
         self, caller: str, name: str, task_input: dict[str, object]
     ) -> dict[str, object]:
-        return {"artifact_ids": ["sub-art-1"], "summary": "done"}
+        return {"primary_path": "specs/sub.md", "paths": ["specs/sub.md"], "summary": "done"}
 
     async def run_author_critic_iteration(
         self,
         caller: str,
         author_name: str,
         critic_name: str,
-        input_artifact_ids: list[str],
-        for_revision_artifact_ids: list[str],
+        path: str,
+        input_paths: dict[str, str],
+        instructions: str,
+        for_revision: bool,
     ) -> dict[str, object]:
-        return {"artifact_id": "ac-art-1", "verdict": "accepted", "concerns": []}
+        return {"path": path or "specs/ac.md", "status": "accepted", "concerns": []}
 
     async def rollback(self, target_sha: str) -> None:
         return None
 
-    async def complete_artifact(self, artifact_id: str) -> None:
-        await self._workspace.mark_completed(artifact_id)
-
     async def disable_autonomous_mode(self) -> None:
         return None
 
-    async def create_project(self, name: str, path: str | None = None) -> dict[str, object]:
+    async def create_project(
+        self, name: str = "", path: str | None = None, force: bool = False
+    ) -> dict[str, object]:
         return {"path": path or "/tmp/new-project", "name": name}
 
 
@@ -97,24 +94,25 @@ def _make_dispatcher(
     *,
     agent_name: str = "test_agent",
     autonomous: bool = False,
+    mode: str = "guided",
+    project_root: Path | None | object = ...,
     root_paths: tuple[RootPath, ...] = (),
     util_paths: dict[str, Path] | None = None,
     output_schema: dict[str, object] | None = None,
 ) -> ToolDispatcher:
-    index = ProjectIndex()
-    ws = Workspace(tmp_path, index)
     session = SessionState()
     session.autonomous = autonomous
     session.effective_autonomous = autonomous
+    resolved_project_root = tmp_path if project_root is ... else project_root
     return ToolDispatcher(
-        workspace=ws,
-        index=index,
         resolver=ProjectPathResolver(tmp_path),
         gate=_FakeGate(),
         session=session,
-        services=_FakeServices(ws),
+        services=_FakeServices(),
         agent_name=agent_name,
         session_id="sess-test",
+        mode=mode,
+        project_root=resolved_project_root,
         root_paths=root_paths,
         util_paths=util_paths,
         output_schema=output_schema,
@@ -149,19 +147,11 @@ def _assert_compliant(name: str, parsed: object) -> dict[str, object]:
     return parsed
 
 
-async def _publish(dispatcher: ToolDispatcher, content: str = "body") -> str:
+async def _write_file(dispatcher: ToolDispatcher, path: str, content: str = "body") -> None:
     parsed = await _dispatch(
-        dispatcher,
-        "publish_artifact",
-        {
-            "type": "narrative",
-            "project_code": "TEST",
-            "responsibility_code": "TEST",
-            "content": content,
-        },
+        dispatcher, "filesystem", {"operation": "create_file", "path": path, "content": content}
     )
-    assert isinstance(parsed, dict)
-    return str(parsed["id"])
+    assert isinstance(parsed, dict) and parsed.get("status") == "created", parsed
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +272,38 @@ async def test_run_command_compliance(tmp_path: Path) -> None:
     assert fail["exit_code"] == 3
 
 
+@pytest.mark.asyncio
+async def test_read_file_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path)
+    await _write_file(d, "a.txt", "line1\nline2\nline3\n")
+    _assert_compliant("read_file", await _dispatch(d, "read_file", {"path": "a.txt"}))
+    _assert_compliant(
+        "read_file",
+        await _dispatch(
+            d, "read_file", {"path": "a.txt", "ranges": [{"start_line": 1, "end_line": 2}]}
+        ),
+    )
+    _assert_compliant("read_file", await _dispatch(d, "read_file", {"path": "missing.txt"}))
+    _assert_compliant(
+        "read_file",
+        await _dispatch(
+            d,
+            "read_file",
+            {"path": "a.txt", "ranges": [{"start_line": 1, "end_line": 1}], "pattern": "x"},
+        ),
+    )
+
+    rg = find_util(kodo_user_dir(), "ripgrep")
+    if rg is None:
+        pytest.skip("ripgrep util not installed; pattern success path not exercised")
+    d2 = _make_dispatcher(tmp_path, util_paths={"ripgrep": rg.path})
+    await _write_file(d2, "b.txt", "needle here\nother\n")
+    ok = _assert_compliant(
+        "read_file", await _dispatch(d2, "read_file", {"path": "b.txt", "pattern": "needle"})
+    )
+    assert ok["matches"][0]["line"] == "needle here"
+
+
 # ---------------------------------------------------------------------------
 # Workspace search tools (get_root_paths / find_files / find_text_in_files)
 # ---------------------------------------------------------------------------
@@ -342,80 +364,84 @@ async def test_find_text_in_files_compliance(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Workspace / report tools
+# Guided-dev tools
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_publish_artifact_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="narrative_author")
+async def test_guided_dev_status_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path, mode="guided")
+    _assert_compliant("guided_dev_status", await _dispatch(d, "guided_dev_status", {}))
+    (tmp_path / "specs").mkdir()
+    await _write_file(d, "specs/a.md", "x")
+    _assert_compliant("guided_dev_status", await _dispatch(d, "guided_dev_status", {}))
+    # Wrong mode → compliant error envelope, not an exception.
+    ps = _make_dispatcher(tmp_path, mode="problem_solving")
+    _assert_compliant("guided_dev_status", await _dispatch(ps, "guided_dev_status", {}))
+
+
+@pytest.mark.asyncio
+async def test_document_feedback_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path, agent_name="architect_critic")
+    (tmp_path / "specs").mkdir()
+    await _write_file(d, "specs/a.md", "x")
     _assert_compliant(
-        "publish_artifact",
+        "document_feedback",
+        await _dispatch(d, "document_feedback", {"path": "specs/a.md", "accept": True}),
+    )
+    _assert_compliant(
+        "document_feedback",
         await _dispatch(
             d,
-            "publish_artifact",
+            "document_feedback",
             {
-                "type": "narrative",
-                "project_code": "TEST",
-                "responsibility_code": "TEST",
-                "content": "c",
+                "path": "specs/a.md",
+                "accept": False,
+                "concerns": [{"kind": "gap", "description": "x"}],
             },
         ),
     )
-    # Error: invalid type.
-    _assert_compliant("publish_artifact", await _dispatch(d, "publish_artifact", {"type": "bogus"}))
-    # Error: missing required fields.
+    # Error: rejected with no concerns.
     _assert_compliant(
-        "publish_artifact", await _dispatch(d, "publish_artifact", {"type": "narrative"})
+        "document_feedback",
+        await _dispatch(d, "document_feedback", {"path": "specs/a.md", "accept": False}),
     )
 
 
 @pytest.mark.asyncio
-async def test_read_artifact_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="narrative_author")
-    art_id = await _publish(d)
-    _assert_compliant("read_artifact", await _dispatch(d, "read_artifact", {"artifact_id": art_id}))
-    _assert_compliant("read_artifact", await _dispatch(d, "read_artifact", {"artifact_id": "nope"}))
-
-
-@pytest.mark.asyncio
-async def test_list_artifacts_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="narrative_author")
-    await _publish(d)
-    _assert_compliant("list_artifacts", await _dispatch(d, "list_artifacts", {"type": "narrative"}))
-    # Error: no filter supplied.
-    _assert_compliant("list_artifacts", await _dispatch(d, "list_artifacts", {}))
-
-
-@pytest.mark.asyncio
-async def test_query_frontier_compliance(tmp_path: Path) -> None:
+async def test_toolchain_build_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path)
-    _assert_compliant("query_frontier", await _dispatch(d, "query_frontier", {}))
-
-
-@pytest.mark.asyncio
-async def test_report_artifact_completed_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="narrative_author")
-    art_id = await _publish(d)
+    # No scripts yet → compliant failure envelope with a helpful step log.
     _assert_compliant(
-        "report_artifact_completed",
-        await _dispatch(d, "report_artifact_completed", {"artifact_id": art_id}),
+        "toolchain_build",
+        await _dispatch(
+            d, "toolchain_build", {"build": True, "static_analysis": False, "test": False}
+        ),
+    )
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    build_sh = scripts / "build.sh"
+    build_sh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    build_sh.chmod(0o755)
+    _assert_compliant(
+        "toolchain_build",
+        await _dispatch(
+            d, "toolchain_build", {"build": True, "static_analysis": False, "test": False}
+        ),
     )
 
 
 @pytest.mark.asyncio
-async def test_request_user_review_artifact_compliance(tmp_path: Path) -> None:
-    art_in_auto = _make_dispatcher(tmp_path, autonomous=True)
+async def test_toolchain_deps_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path)
     _assert_compliant(
-        "request_user_review_artifact",
-        await _dispatch(art_in_auto, "request_user_review_artifact", {"artifact_id": "x"}),
+        "toolchain_deps", await _dispatch(d, "toolchain_deps", {"action": "add", "name": "foo"})
     )
-    d = _make_dispatcher(tmp_path, agent_name="narrative_author")
-    art_id = await _publish(d)
-    _assert_compliant(
-        "request_user_review_artifact",
-        await _dispatch(d, "request_user_review_artifact", {"artifact_id": art_id}),
-    )
+
+
+# ---------------------------------------------------------------------------
+# Control / escalation tools
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -472,7 +498,11 @@ async def test_return_result_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path, agent_name="coder")
     _assert_compliant(
         "return_result",
-        await _dispatch(d, "return_result", {"result": {"artifact_ids": ["a"], "summary": "s"}}),
+        await _dispatch(
+            d,
+            "return_result",
+            {"result": {"primary_path": "src/a.py", "paths": ["src/a.py"], "summary": "s"}},
+        ),
     )
 
 
@@ -506,7 +536,16 @@ async def test_run_author_critic_iteration_compliance(tmp_path: Path) -> None:
         await _dispatch(
             d,
             "run_author_critic_iteration",
-            {"author_name": "a", "critic_name": "c", "input_artifact_ids": []},
+            {"author_name": "a", "critic_name": "c", "instructions": "go"},
+        ),
+    )
+    # for_revision without a path → compliant error envelope.
+    _assert_compliant(
+        "run_author_critic_iteration",
+        await _dispatch(
+            d,
+            "run_author_critic_iteration",
+            {"author_name": "a", "critic_name": "c", "instructions": "go", "for_revision": True},
         ),
     )
 
@@ -553,15 +592,14 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "filesystem",
         "edit_file",
         "run_command",
+        "read_file",
         "get_root_paths",
         "find_files",
         "find_text_in_files",
-        "publish_artifact",
-        "read_artifact",
-        "list_artifacts",
-        "query_frontier",
-        "report_artifact_completed",
-        "request_user_review_artifact",
+        "guided_dev_status",
+        "document_feedback",
+        "toolchain_build",
+        "toolchain_deps",
         "escalate_blocker",
         "ask_user",
         "run_subagent",

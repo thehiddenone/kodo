@@ -12,9 +12,9 @@ REQUIREMENTS_CRITIC: SubAgentSpec = SubAgentSpec(
     name="requirements_critic",
     description="Reviews the requirements for clarity, completeness, and North Star alignment.",
     input_schema=pipeline_input(
-        input_artifacts=(
-            "The requirements artifact under review (type=requirements) and the architecture "
-            "(type=architecture) for sub-narratives and decomposition decisions."
+        input_paths=(
+            "The requirements document under review and the architecture for sub-narratives "
+            "and decomposition decisions."
         ),
     ),
     output_schema=critic_output(

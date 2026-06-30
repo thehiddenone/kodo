@@ -12,9 +12,9 @@ E2E_TEST_DESIGN_CRITIC: SubAgentSpec = SubAgentSpec(
     name="e2e_test_design_critic",
     description="Reviews the End-to-End Test Plan for behavioral, in-scope, well-mocked scenarios.",
     input_schema=pipeline_input(
-        input_artifacts=(
-            "The End-to-End Test Plan under review (type=e2e-test-plan), plus the architecture, "
-            "requirements, Narrative, Tech Stack, Design Plan, and all Functional Designs."
+        input_paths=(
+            "The End-to-End Test Plan under review, plus the architecture, requirements, "
+            "Narrative, Tech Stack, Design Plan, and all Functional Designs."
         ),
     ),
     output_schema=critic_output(

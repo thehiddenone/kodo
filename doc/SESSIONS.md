@@ -100,7 +100,7 @@ timestamp). `<subsession-id>` is a random hex ID minted per `run_subagent` call.
   These record, *in chronological position*, when a sub-agent took over and when
   it handed control back. They carry `subsession_id`, `agent`, `display_name`,
   and `parent_display_name`; `subsession_end` also carries the sub-agent's
-  `result` (the artifact IDs it published).
+  structured `result` from `return_result` (e.g. an author's `primary_path`).
 
 `TransientStore.read_messages()` returns only the message lines (for rebuilding
 LLM context); `read_session_lines()` returns everything (for resume and history
@@ -172,7 +172,7 @@ log ends with a dangling assistant `tool_use` that has **no** following
 `tool_result`. That dangling `tool_use` is the signal that a sub-agent was
 in-flight.
 
-Turns that contain no sub-agent (plain text, `query_frontier`, `ask_user`, …)
+Turns that contain no sub-agent (plain text, `guided_dev_status`, `ask_user`, …)
 are *not* flushed until they complete, so a crash mid-`ask_user` leaves nothing
 half-written and the existing `pending_prompt` re-surfacing path is unaffected.
 
@@ -217,15 +217,22 @@ roster also renders every callee's schemas.
   payload validated/normalized against its `output_schema` (`normalize_output`,
   which now also handles a top-level `oneOf` for the dual-role `test_coder`). The
   engine reads the structured result off `dispatcher.returned_output`; if the
-  agent never called `return_result`, a `{artifact_ids, schema_compliance:false}`
-  fallback is synthesized. `run_subagent` returns this structured result (no
-  longer a bare artifact-id list).
-- **Author/critic.** `run_author_critic_iteration` builds each side's
-  `task_input`, reads the author's `artifact_ids` and the critic's
-  `verdict`/`concerns` from their `return_result` outputs (the engine no longer
-  sniffs the feedback artifact; it still falls back to reading it if a critic
-  returns no verdict). Its `previous_artifact_id` arg became
-  `for_revision_artifact_ids` (a list).
+  agent never called `return_result`, a bare `{schema_compliance: false}`
+  fallback is synthesized — there is no artifact index to recover a partial
+  result from anymore. `run_subagent` returns this structured result verbatim.
+- **Author/critic.** `run_author_critic_iteration` spawns the author with
+  `{instructions, input_paths, for_revision_path}` (the last set only when
+  revising), reads the author's `output_schema.primary_path` from its
+  `return_result`, then spawns the critic against that same path. The
+  **verdict itself is never read from the critic's `return_result`** — once the
+  critic subsession ends, the engine reads
+  `kodo.guided_state.read_status(primary_path)`, because `document_feedback`
+  (the critic's only reporting tool) writes straight to that file's `.jsonl`
+  evolution log; the jsonl is the single source of truth for status, not
+  anything the LLM returns structurally. There is no `previous_artifact_id`/
+  `for_revision_artifact_ids` plumbing — `for_revision_path` is a single
+  path, since the author/critic loop now always concerns exactly one file
+  per iteration.
 - **Engine-driven agents.** `compactor` and `session_titler` also carry specs and
   return through `return_result` (`{summary}` / `{title}`); the silent
   `__run_silent_return_turn` grants them the tool and captures the payload, with
@@ -233,8 +240,11 @@ roster also renders every callee's schemas.
 
 ## Resume
 
-On every server start, `ProjectBootstrap` locates the main session and the
-engine reloads `__main_messages` from `session.jsonl`. Then:
+On every server start, `locate_guide_session` locates (or creates) the main
+session and the engine reloads `__main_messages` from `session.jsonl`. There
+is no project-wide index to rebuild — a project's documents are real files
+with their own `.jsonl` evolution logs (STATE_AND_LIFECYCLE.md §1.1/§3), read
+on demand, never reconstructed at startup. Then:
 
 - **If the last main message is a dangling assistant `tool_use`**
   (`__has_dangling_tool_use()`), a sub-agent was interrupted. The engine
@@ -246,9 +256,10 @@ engine reloads `__main_messages` from `session.jsonl`. Then:
   2. Re-dispatch the dangling `tool_use`(s) through the normal dispatcher. During
      this replay, each `run_subagent` call consumes the next ledger entry instead
      of starting fresh:
-     - a **completed** subsession returns its stored result immediately (its
-       artifacts are already on disk and were rebuilt into the index at
-       bootstrap — no LLM call);
+     - a **completed** subsession returns its stored result immediately —
+       whatever it wrote to real files via `filesystem`/`edit_file`/
+       `document_feedback` is already on disk with its own `.jsonl` history,
+       so there is nothing to rebuild and no LLM call;
      - the **active** subsession is rehydrated from its `subsessions/<id>.jsonl`
        log and driven to completion **live**, then closed (`subsession_end`
        marker + `subsession.ended`).
@@ -265,11 +276,13 @@ engine reloads `__main_messages` from `session.jsonl`. Then:
   `ask_user`/approval), it is re-surfaced as before. With neither, the session is
   simply idle and awaits the next prompt.
 
-Published artifacts survive a crash because `publish_artifact` stamps each
-artifact with the producing subsession's ID. On resume, a resumed sub-agent
-unions any pre-crash publishes (found by `session_id == subsession_id` in the
-rebuilt index) with anything it publishes during the resumed run, so the
-Guide receives the complete result.
+Documents survive a crash for the same reason any other file write does: a
+`filesystem`/`edit_file` call only earns its `new_revision` jsonl entry once
+its checkpoint commit has actually landed (STATE_AND_LIFECYCLE.md §1.1), so a
+crash mid-write never leaves a half-recorded revision. There is no
+producing-subsession union step on resume — a rehydrated sub-agent simply
+keeps writing real files and calling `document_feedback`; nothing needs to be
+merged back into a shared index, because there is no shared index.
 
 ### Resume boundaries (what is *not* auto-resumed)
 

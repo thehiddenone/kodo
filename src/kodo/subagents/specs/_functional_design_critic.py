@@ -12,10 +12,9 @@ FUNCTIONAL_DESIGN_CRITIC: SubAgentSpec = SubAgentSpec(
     name="functional_design_critic",
     description="Reviews a Functional Design for completeness and interface consistency.",
     input_schema=pipeline_input(
-        input_artifacts=(
-            "The Functional Design under review (type=functional-design), the Design Plan "
-            "(type=design-plan), the upstream documents, and any locked peer Functional Designs "
-            "for interface-consistency checks."
+        input_paths=(
+            "The Functional Design under review, the Design Plan, the upstream documents, and "
+            "any locked peer Functional Designs for interface-consistency checks."
         ),
     ),
     output_schema=critic_output(

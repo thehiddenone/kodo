@@ -12,9 +12,9 @@ CODE_CRITIC: SubAgentSpec = SubAgentSpec(
     name="code_critic",
     description="Reviews a single code or test artifact in isolation for quality and safety.",
     input_schema=pipeline_input(
-        input_artifacts=(
-            "The code (type=code) or test (type=test) artifact under review. Never the design, "
-            "requirements, or peer code."
+        input_paths=(
+            "The single code or test file under review. Never the design, requirements, or "
+            "peer code."
         ),
     ),
     output_schema=critic_output(

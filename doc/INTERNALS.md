@@ -20,9 +20,10 @@ aiohttp process that speaks a WebSocket wire protocol to a VS Code extension
 The server is deliberately a **thin substrate**. There is no hard-coded stage
 machine or workflow DAG in Python. Every "what runs next" decision belongs to
 the Guide LLM, expressed through a small tool surface. The Python side
-provides: an LLM streaming abstraction, a virtual artifact workspace, a git
-mirror for checkpoints/rollback, a toolchain abstraction, session persistence,
-and the wire transport.
+provides: an LLM streaming abstraction, agents that read and write real
+project files directly (no staging area), a per-document evolution log
+tracking revision/review history, a git mirror for checkpoints/rollback,
+session persistence, and the wire transport.
 
 ---
 
@@ -38,39 +39,40 @@ source:
 |---|---|
 | `common` | *(nothing)* |
 | `project` | *(nothing)* |
-| `toolchains` | *(nothing)* |
+| `guided_state` | *(nothing)* |
 | `state` | *(nothing)* |
 | `security` | *(nothing — stub)* |
 | `mirror` | *(nothing)* |
 | `shellparser` | *(nothing)* |
 | `binutils` | *(nothing)* |
 | `transport` | `common` |
-| `workspace` | `project`, `toolchains` |
-| `toolspecs` | `workspace` |
-| `tools` | `workspace`, `toolspecs` |
+| `toolspecs` | *(nothing — pure data)* |
+| `tools` | `guided_state`, `project`, `toolspecs` |
 | `llms` | `common`, `transport`, `toolspecs` |
 | `subagents` | `toolspecs` |
-| `runtime` | `common`, `transport`, `toolspecs`, `tools`, `workspace`, `toolchains`, `project`, `state`, `subagents`, `llms`, `mirror`, `shellparser`, `binutils` |
-| `server` | `common`, `transport`, `project`, `state`, `workspace`, `subagents`, `llms`, `runtime`, `binutils` |
+| `runtime` | `common`, `transport`, `toolspecs`, `tools`, `guided_state`, `project`, `state`, `subagents`, `llms`, `mirror`, `shellparser`, `binutils` |
+| `server` | `common`, `transport`, `project`, `state`, `subagents`, `llms`, `runtime`, `binutils` |
 
-One edge breaks a clean strict hierarchy:
+`toolspecs` is now a true leaf: the old `toolspecs → workspace` edge (importing
+`ArtifactType` for `list_artifacts`'s schema) is gone along with the artifact
+system. `document_feedback`'s concern-item shape is defined inline in its own
+toolspec rather than imported, to keep `toolspecs` dependency-free.
 
-- **`toolspecs → workspace`.** `toolspecs/_list_artifacts.py` imports
-  `ArtifactType` from `workspace._models`, so the otherwise "pure data" catalog
-  reaches down into `workspace` for that one enum.
-
-> **Note — two packages were merged to flatten the graph:**
+> **Note — `kodo.workspace` and `kodo.toolchains` were deleted outright** (not
+> merged elsewhere). `workspace` was the artifact-staging + promotion system
+> (`Workspace`/`ProjectIndex`/`Promoter`/`MirrorRepo`/`ComponentRegistry`);
+> `toolchains` was the `ToolchainPlugin` ABC + `PythonPlugin`/`NodePlugin`
+> subclasses, whose only two jobs — naming promoted files and (unreachably)
+> implementing build/test in Python — are both gone: agents choose their own
+> file paths (§7) and `toolchain_build` now executes agent-generated shell
+> scripts instead (§8). The new `kodo.guided_state` (§7) is their much smaller
+> replacement — a leaf package, imported only by `tools` and `runtime`.
 >
-> - The git **mirror** subsystem (checkpoints, promotion, the mirror git repo)
->   was a top-level `mirror` package; it now lives inside `workspace`
->   (`_repo.py`, `_promoter.py`, `_checkpoints.py`), as the on-disk counterpart
->   of the in-memory `ProjectIndex`. Importers reference it via `kodo.workspace`.
-> - The local-inference utilities (installer, downloader, llama-server manager)
->   were a top-level `llm_utils` package that formed an **import cycle** with
->   `llms`. They now live inside `llms/llamacpp/` (`_installer.py`,
->   `_downloader.py`, `_llama_server.py`, `_manager.py`), re-exported from
->   `kodo.llms.llamacpp`. Since they are only used by llama.cpp inference, the
->   former `llms ⇄ llm_utils` cycle is gone.
+> The local-inference utilities (installer, downloader, llama-server manager)
+> remain merged into `llms/llamacpp/` (`_installer.py`, `_downloader.py`,
+> `_llama_server.py`, `_manager.py`), re-exported from `kodo.llms.llamacpp` —
+> unrelated to this change, noted here only because it was the other half of
+> the historical "two packages were merged" note this section used to carry.
 
 ### 2.2 Layered diagram
 
@@ -80,62 +82,57 @@ imported); the annotation on each line names the packages pulled in.
 
 ```text
  T5  ┌──────────┐
-     │  server  │  ▼ runtime · llms · workspace · subagents ·
+     │  server  │  ▼ runtime · llms · subagents ·
      └────┬─────┘    state · project · transport · common
           │
           ▼
  T4  ┌──────────┐
-     │ runtime  │  ▼ tools · llms · subagents · toolspecs · workspace ·
-     └────┬─────┘    toolchains · state · project · transport · common
+     │ runtime  │  ▼ tools · llms · subagents · toolspecs · guided_state ·
+     └────┬─────┘    state · project · transport · common
           │
    ┌──────┴───────┬───────────────┐
    ▼              ▼               ▼
  ┌───────────┐   ┌────────┐   ┌───────────┐
  │ subagents │   │  llms  │   │   tools   │              T3   (llms ⊇ llamacpp utils;
  └─────┬─────┘   └───┬────┘   └─────┬─────┘                    tools imported only by runtime)
-       │ toolspecs   │ toolspecs    │ toolspecs · workspace
+       │ toolspecs   │ toolspecs    │ toolspecs · guided_state · project
        │             │ transport    │
        │             │ common       │
        ▼             ▼              ▼
  ┌───────────┐
- │ toolspecs │                                          T2
+ │ toolspecs │                                          T2   (pure data — imports nothing from kodo)
+ └───────────┘
+ ┌───────────┐
+ │ transport │                                           T1
  └─────┬─────┘
-       │ workspace
+       │ common
        ▼
- ┌───────────┐      ┌───────────┐
- │ transport │      │ workspace │                       T1   (workspace ⊇ promotion mirror)
- └─────┬─────┘      └─────┬─────┘
-       │ common           │ project · toolchains
-       ▼                  ▼
- ┌────────┬─────────┬────────────┬───────┬──────────┬────────┬─────────────┬──────────┐
- │ common │ project │ toolchains │ state │ security │ mirror │ shellparser │ binutils │   T0  ← import nothing from kodo
- └────────┴─────────┴────────────┴───────┴──────────┴────────┴─────────────┴──────────┘
+ ┌────────┬─────────┬──────────────┬───────┬──────────┬────────┬─────────────┬──────────┐
+ │ common │ project │ guided_state │ state │ security │ mirror │ shellparser │ binutils │   T0  ← import nothing from kodo
+ └────────┴─────────┴──────────────┴───────┴──────────┴────────┴─────────────┴──────────┘
 ```
 
 `runtime` is the sole importer of `mirror` and `shellparser` (via `runtime/_checkpoints.py`,
-§10b) — neither is reachable from `tools`, `subagents`, or `llms`. Do not confuse the new
-leaf `kodo.mirror` (`ShadowMirror`, §10b) with the unrelated "mirror" *promotion* subsystem
-folded into `workspace` (`MirrorRepo`/`Promoter`/`CheckpointManager`, §7) — same word, two
-independent git mechanisms; see the disambiguation note in §10b.
+§10b) — neither is reachable from `tools`, `subagents`, or `llms`.
 
 (`runtime` and `server` also reach past the tier directly below them — e.g.
-`runtime → toolspecs`/`workspace`/`common` — as the matrix in §2.1 lists in full;
+`runtime → toolspecs`/`guided_state`/`common` — as the matrix in §2.1 lists in full;
 only the principal lines are drawn above to keep the figure readable.)
 
-- **T0 — leaf packages** (`common`, `project`, `toolchains`, `state`,
+- **T0 — leaf packages** (`common`, `project`, `guided_state`, `state`,
   `security`, `mirror`, `shellparser`, `binutils`): import nothing from `kodo`.
   `security` and `state/_memory.py` are **stubs** (see §13); `mirror`/`shellparser`
   are the checkpoint primitives consumed by `runtime` (§10b); `binutils` is the
-  third-party util manager (§10a).
-- **T1**: `transport` (wire framing over `common`), `workspace` (artifact store
-  **plus the merged git mirror** — checkpoints/promotion — over `project` +
-  `toolchains`).
-- **T2**: `toolspecs` (tool catalog, dips into `workspace` for `ArtifactType`).
+  third-party util manager (§10a); `guided_state` is the per-document evolution
+  log (§7) that replaced `kodo.workspace`.
+- **T1**: `transport` (wire framing over `common`).
+- **T2**: `toolspecs` (tool catalog) — now a true leaf, importing nothing from
+  `kodo` (the old `toolspecs → workspace` edge for `ArtifactType` is gone).
 - **T3**: `subagents` (prompt renderer over `toolspecs`), `llms` (LLM streaming;
   its `llamacpp` subpackage also holds the local-inference lifecycle utilities
   merged from the former `llm_utils`), and `tools` (the **dispatch
   implementation** of every tool in the catalog — one `Tool` subclass per tool).
-  `tools` has a hard import ceiling of T2 (it may import only `workspace` +
+  `tools` has a hard import ceiling of T0/T1/T2 (`guided_state` + `project` +
   `toolspecs`); the collaborators it needs from higher tiers — the gate, the
   session, the sub-agent launcher — are inverted via structural Protocols and
   injected by `runtime`. It is imported only by `runtime`, never by `subagents`
@@ -183,8 +180,8 @@ backend that `GateOrchestrator` and `KeyBroker` register futures against.
 
 | Module | Defines | Links |
 |---|---|---|
-| [_layout.py](../src/kodo/project/_layout.py) | `ProjectLayout` (frozen dataclass), `ProjectLayoutError`, `kodo_user_dir()` | Pure path algebra over a `root`: `kodo_md`, `specs_dir`, `src_dir`, `test_dir`, `kodo_dir`, `workspace_dir`, `checkpoints_dir`, `sessions_dir`, `llm_requests_dir`, etc. `validate()`, `init()`, and **`scaffold_kodo_dir()`**. |
-| [_manifest.py](../src/kodo/project/_manifest.py) | `Manifest` (frozen), `ManifestError`, `parse_manifest()` | Parses `kodo.md` headings + toolchain list. |
+| [_layout.py](../src/kodo/project/_layout.py) | `ProjectLayout` (frozen dataclass), `ProjectLayoutError`, `kodo_user_dir()` | Pure path algebra over a `root`: `kodo_md`, `specs_dir`, `src_dir`, `test_dir`, `kodo_dir`, `checkpoints_dir`, `sessions_dir`, `llm_requests_dir`, etc. `validate()`, `init()`, and **`scaffold_kodo_dir()`**. No `workspace_dir` anymore — there is no staging area to point at. |
+| [_manifest.py](../src/kodo/project/_manifest.py) | `Manifest` (frozen), `ManifestError`, `parse_manifest()` | Parses `kodo.md` headings + the `## Toolchain` name. Purely informational now — no engine-side toolchain selection consumes it (§8); a toolchain-setup sub-agent reads it via `read_file` when generating scripts. |
 
 **`kodo_md` moved under `.kodo/`:** the manifest now lives at `<root>/.kodo/kodo.md`
 (was `<root>/kodo.md`) — `init()`/`validate()` updated accordingly, as did the
@@ -226,153 +223,153 @@ input_schema, when_to_use: tuple[str, ...], autonomous_mode: str | None = None
 
 [\_\_init\_\_.py](../src/kodo/toolspecs/__init__.py) exposes one catalog:
 
-- **`ALL_TOOLS: tuple[ToolSpec, ...]`** — all 24 specs (tool names are unique),
+- **`ALL_TOOLS: tuple[ToolSpec, ...]`** — all specs (tool names are unique),
   including the terminal `return_result` every sub-agent uses to return its
   typed result (§11).
   Consumed by `subagents/_registry` to render prompts. (Which of these specs are
   actually *dispatchable* is a `tools/` concern — see
-  `tools.DISPATCHABLE_TOOLS_BY_NAME`, §6A. The former `LEAF_TOOLS_BY_NAME`
-  leaf/guide split was removed when dispatch unified into `tools/`.)
+  `tools.DISPATCHABLE_TOOLS_BY_NAME`, §6A.)
 
 [_ask_user.py](../src/kodo/toolspecs/_ask_user.py) (`ASK_USER`) carries
-`autonomous_mode="unavailable …"`, as does `REQUEST_USER_REVIEW_ARTIFACT`
-(`"auto-accepted …"`). (`ask_user` was once split into a leaf spec and a separate
-guide spec; they were collapsed into one — the runtime contract was
-identical and the guide-only guidance already lives in the guide
+`autonomous_mode="unavailable …"`. (`ask_user` was once split into a leaf spec
+and a separate guide spec; they were collapsed into one — the runtime contract
+was identical and the guide-only guidance already lives in the guide
 prompt body.)
 
-**Implementation state of the specs** (spec exists ≠ dispatch exists):
+**Implementation state of the specs:** every spec in the catalog now has a
+matching dispatch handler in `tools/` (§6A); there are no spec-only
+placeholders.
 
-All dispatchable specs now share one handler layer (`tools/`, §6A); the
-"dispatch site" is a per-tool `tools/_<name>.py:handle`.
+| Spec | Role |
+|---|---|
+| `read_file` | Read a file whole, by one or more 1-based line ranges, or by regex `pattern` (ripgrep-backed, with `context_before`/`context_after`). The general-purpose read tool — granted to authors and critics alike. |
+| `document_feedback` | A critic's review verdict on one file: `{path, accept, concerns?, summary?}` → appends a `feedback` entry to that file's `.jsonl` evolution log (`kodo.guided_state`, §7). Never decides what happens next — the engine alone drives accept/review from the recorded `accept` flag. |
+| `guided_dev_status` | Scans `.kodo/guided_dev_state/` and reports every tracked document's status, derived from its log's last entry. The replacement for the old artifact-index `query_frontier`. Guided-mode only; the handler errors if called from any other workflow mode. |
+| `escalate_blocker`, `ask_user` | ✅ implemented |
+| `filesystem`/`edit_file`/`run_command` | ✅ implemented; granted to authoring sub-agents and the `problem_solver` agent. `filesystem` is **one tool** whose mandatory `operation` field selects among eight file/directory ops — `create_file`/`create_dir`/`delete_file`/`delete_dir`/`copy_file`/`copy_dir`/`move_file`/`move_dir` (dir ops are recursive: `copytree`/`rmtree`/`mkdir -p`; `copy_dir`/`move_dir` fail if the destination exists). `edit_file` stays separate: a **targeted string-match edit** (`old_string` → `new_string`; must match exactly and uniquely or it fails without writing), the **preferred** way to change a file's contents; pass the whole new content as `new_string` to regenerate a file end to end. These three are exactly `runtime/_engine.py:_MUTATING_TOOLS` — the engine checkpoints around every call to them in **both** workflow modes (§12.1) and each one's `output_schema` carries an **optional `checkpoint_sha`** field the engine fills in when a commit happened. `filesystem`/`edit_file` calls additionally earn a `new_revision` entry in a tracked document's `.jsonl` log (§7) when the checkpoint commit landed under `specs/`/`src/`/`test/`. |
+| `get_root_paths`, `find_files`, `find_text_in_files` | ✅ implemented (workspace search). `get_root_paths` returns the mode-aware root list (bound project in Guided; every workspace folder in Problem Solver) from `ToolContext.root_paths`. `find_files`/`find_text_in_files` resolve `root` through the active resolver then shell out to the bundled `fd`/`rg` (§10a) via `ToolContext.util_paths`. Granted to `guide` + `problem_solver`. |
+| `run_subagent`, `run_author_critic_iteration`, `rollback`, `finalize_project` | ✅ implemented. `run_author_critic_iteration` now operates on `{author_name, critic_name, path?, input_paths?, instructions, for_revision?}` — a real file path, not artifact IDs. `rollback` now delegates to the same shadow-git mirror Problem Solver uses (§7/§10b). |
+| `disable_autonomous_mode` | ✅ implemented (`DisableAutonomousModeTool`, in `_TOOL_CLASSES`). Declared by `guide`; resolved by `tools_for_agent` and dispatched. (Progress reporting is no longer a tool — agents emit `<kodo_info>` callouts in their message text; see the performance preamble.) |
+| `create_new_project` | ✅ implemented (`CreateNewProjectTool`). Granted to `guide` + `problem_solver`. Thin shim over `_EngineServices.create_project(name)`: the engine slugifies the name, makes a fresh directory under the session workspace root (auto-suffix `-2`/`-3`… on collision), scaffolds `.kodo/`+`kodo.md`+checkpoint mirror via `RootMirrorManager.prepare`, records it in the logical-root map, and pushes `EVT_WORKSPACE_ADD_FOLDER` so the extension adds it to the open workspace (WS_PROTOCOL §5.9c). |
+| `toolchain_build`/`toolchain_deps` | ✅ implemented. `toolchain_build` executes the project's generated `scripts/<step>.{sh,ps1}` pair (the toolchain-setup agent's output, §8/§11) in canonical order — format → build → static_analysis → test — stopping at the first failure; a missing script returns a clear error directing the caller to run the toolchain-setup agent first. `toolchain_deps` is a deliberate stub: dependency management is out of scope for now and every call returns a structured "not implemented" response. |
 
-| Spec | Dispatch | State |
-|---|---|---|
-| `publish_artifact`, `read_artifact` | `tools/` | ✅ implemented |
-| `escalate_blocker`, `ask_user`, `request_user_review_artifact`, `report_artifact_completed` | `tools/` | ✅ implemented |
-| `filesystem`/`edit_file`/`run_command` | `tools/` | ✅ implemented; granted to the `problem_solver` agent (and `filesystem`/`edit_file` to `python_toolchain`). `filesystem` is **one tool** whose mandatory `operation` field selects among eight file/directory ops — `create_file`/`create_dir`/`delete_file`/`delete_dir`/`copy_file`/`copy_dir`/`move_file`/`move_dir` (dir ops are recursive: `copytree`/`rmtree`/`mkdir -p`; `copy_dir`/`move_dir` fail if the destination exists) — replacing the former per-operation `create_file`/`delete_file`/`copy_file`/`move_file` and `rewrite_file` tools. `edit_file` stays separate: a **targeted string-match edit** (`old_string` → `new_string`; must match exactly and uniquely or it fails without writing), the **preferred** way to change a file's contents; pass the whole new content as `new_string` to regenerate a file end to end. These three are exactly `runtime/_checkpoints.py:_MUTATING_TOOLS` — the engine checkpoints around every call to them in Problem Solver mode (§10b/§12.1) and each one's `output_schema` carries an **optional `checkpoint_sha`** field the engine fills in when a commit happened. |
-| `get_root_paths`, `find_files`, `find_text_in_files` | `tools/` | ✅ implemented (workspace search). `get_root_paths` returns the mode-aware root list (bound project in Guided; every workspace folder in Problem Solver) from `ToolContext.root_paths`. `find_files`/`find_text_in_files` resolve `root` through the active resolver then shell out to the bundled `fd`/`rg` (§10a) via `ToolContext.util_paths`. Granted to `guide` + `problem_solver`. |
-| `query_frontier`, `list_artifacts`, `run_subagent`, `run_author_critic_iteration`, `rollback`, `finalize_project` | `tools/` | ✅ implemented |
-| `disable_autonomous_mode` | `tools/` | ✅ implemented (`DisableAutonomousModeTool`, in `_TOOL_CLASSES`). Declared by `guide`; resolved by `tools_for_agent` and dispatched. (Progress reporting is no longer a tool — agents emit `<kodo_info>` callouts in their message text; see the performance preamble.) |
-| `create_new_project` | `tools/` | ✅ implemented (`CreateNewProjectTool`). Granted to `guide` + `problem_solver`. Thin shim over `_EngineServices.create_project(name)`: the engine slugifies the name, makes a fresh directory under the session workspace root (auto-suffix `-2`/`-3`… on collision), scaffolds `.kodo/`+`kodo.md`+checkpoint mirror via `RootMirrorManager.prepare`, records it in the logical-root map, and pushes `EVT_WORKSPACE_ADD_FOLDER` so the extension adds it to the open workspace (WS_PROTOCOL §5.9c). |
-| `toolchain_build`/`toolchain_deps` | — | ⚠️ **spec only, no dispatch.** Declared by `coder`/`problem_solver` frontmatter; rendered into prompts but silently dropped by `tools_for_agent` (no handler in `DISPATCHABLE_TOOLS_BY_NAME`). `toolchain_build` now **absorbs the former `toolchain_test`**: boolean step flags (`build`/`static_analysis`/`test`, default on; `format`, default off) select which `scripts/<step>` run in order — format → build → static_analysis → test — plus a `test_selector` passed through to the `test` script. Running tests = `toolchain_build` with `test: true` and the build/analysis steps disabled. |
-
-**State:** Catalog complete; several specs are intentional placeholders ahead of dispatch.
+**State:** Catalog complete; every dispatchable spec has a handler.
 
 ---
 
 ## 6A. `tools/` — unified tool dispatch (the handler layer)
 
 A dedicated import tier **between** `toolspecs` (T2) and `subagents`/`llms`
-(T3): it may import only T0/T1/T2 (in practice `workspace` + `toolspecs`) and is
-consumed only by `runtime`. It must never import `subagents`, `llms`, or
+(T3): it may import only T0/T1/T2 (in practice `guided_state` + `toolspecs`)
+and is consumed only by `runtime`. It must never import `subagents`, `llms`, or
 `runtime` — the collaborators those would supply are inverted via structural
 Protocols and injected.
 
 **There is no guide-vs-leaf split.** Every agent (guide included)
 is granted exactly the tools its frontmatter declares, and every tool call is
 routed through a single `ToolDispatcher` to the matching `Tool` subclass (bound
-to the run's context). This replaced the former
-`runtime/_tool_surface.ToolSurface` + `runtime/_subagent_dispatch.SubagentDispatcher`.
+to the run's context).
 
 | Module | Defines | Role |
 |---|---|---|
-| [_context.py](../src/kodo/tools/_context.py) | `ToolContext`, `RootPath`, `GateLike`, `SessionLike`, `EngineServices`, `QuestionLike`, `ApprovalLike` | The injected per-run context (collaborators + mutable `published_ids`/`stop_requested`) and the structural Protocols runtime satisfies. `EngineServices` is one protocol covering every engine-side operation a tool can trigger (sub-agent launch, rollback, completion, mode disable, client updates). `runtime.GateOrchestrator`/`SessionState` and the engine's `_EngineServices` adapter match them by shape. The mode a tool honours is read live from `SessionLike.effective_autonomous` (frozen per prompt), never snapshotted onto the context. Also carries `root_paths: tuple[RootPath, ...]` (mode-aware workspace roots) and `util_paths: dict[str, Path]` (`fd`/`ripgrep` binary paths) for the search tools — the engine computes both, so `tools` never imports `binutils` (tier rule). |
+| [_context.py](../src/kodo/tools/_context.py) | `ToolContext`, `RootPath`, `GateLike`, `SessionLike`, `EngineServices`, `QuestionLike`, `ApprovalLike` | The injected per-run context (collaborators + mutable `stop_requested`/`returned_output`) and the structural Protocols runtime satisfies. `EngineServices` is one protocol covering every engine-side operation a tool can trigger (sub-agent launch, author/critic iteration, rollback, mode disable, project creation). `runtime.GateOrchestrator`/`SessionState` and the engine's `_EngineServices` adapter match them by shape. The mode a tool honours is read live from `SessionLike.effective_autonomous` (frozen per prompt), never snapshotted onto the context. Also carries `mode: str` (`"guided"`/`"problem_solving"`, frozen per prompt — gates `guided_dev_status` and tags `new_revision` jsonl entries) and `project_root: Path \| None` (the bound project's root, independent of mode, so a Problem-Solver edit to a tracked file is still recorded — see §7), plus `root_paths: tuple[RootPath, ...]` and `util_paths: dict[str, Path]` for the search tools. |
 | [_tool.py](../src/kodo/tools/_tool.py) | `Tool` (ABC) | Binds one run's `ToolContext` (read-only `context` property) and declares the abstract `handle(self, tool_input) -> str`. |
-| `_<tool_name>.py` (23 modules) | one `Tool` subclass each | e.g. `PublishArtifactTool`, `GetRootPathsTool`, `FindFilesTool`; implements `handle` reading `self.context`. Mirrors the `toolspecs` one-file-per-tool convention. |
-| [_dispatch.py](../src/kodo/tools/_dispatch.py) | `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME` | The `_TOOL_CLASSES` table pairs each dispatchable `ToolSpec` with its `Tool` subclass; `dispatch` instantiates the class bound to the run's context and calls `handle`; exposes per-run `published_ids`/`stop_requested`. `tools_for_agent(frozenset[str])` resolves an agent's declared names to specs (skipping spec-only placeholders). |
-| [_paths.py](../src/kodo/tools/_paths.py) | `resolve_within` | Project-root path guard shared by the file-I/O, shell, and search handlers. |
-| [_search.py](../src/kodo/tools/_search.py) | `run_util`, `UtilTimeout` | Shared subprocess launcher for `find_files`/`find_text_in_files`: runs the util with stdin closed under a bounded timeout, killing the whole process tree on POSIX. Holds no tool dispatch. |
-| [_serialize.py](../src/kodo/tools/_serialize.py) | `serialize_artifact` | `Artifact` → JSON dict, used by `read_artifact`. |
+| `_<tool_name>.py` (one module per dispatchable tool) | one `Tool` subclass each | e.g. `ReadFileTool`, `DocumentFeedbackTool`, `GetRootPathsTool`; implements `handle` reading `self.context`. Mirrors the `toolspecs` one-file-per-tool convention. |
+| [_dispatch.py](../src/kodo/tools/_dispatch.py) | `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME` | The `_TOOL_CLASSES` table pairs each dispatchable `ToolSpec` with its `Tool` subclass; `dispatch` instantiates the class bound to the run's context and calls `handle`; exposes per-run `stop_requested`/`returned_output`. `tools_for_agent(frozenset[str])` resolves an agent's declared names to specs (skipping spec-only placeholders — none today). |
+| [_paths.py](../src/kodo/tools/_paths.py) | `resolve_within`, `ProjectPathResolver`, `LogicalPathResolver` | Project-root / logical-workspace path guards shared by the file-I/O, shell, and search handlers. |
+| [_search.py](../src/kodo/tools/_search.py) | `run_util`, `UtilTimeout` | Shared subprocess launcher for `find_files`/`find_text_in_files`/`read_file`'s pattern mode and `toolchain_build`'s script execution: runs the util with stdin closed under a bounded timeout, killing the whole process tree on POSIX. Holds no tool dispatch. |
 
 **Links:** `runtime/_engine.py` builds one `ToolDispatcher` per agent run via
 `__make_dispatcher`, injecting `GateOrchestrator`, `SessionState`, and one
 `_EngineServices` adapter (wrapping the engine's `__run_subagent` /
-`__run_author_critic_iteration` / `__run_rollback` / `__complete_artifact` /
+`__run_author_critic_iteration` / `__run_rollback` /
 `__disable_autonomous`). The dispatcher takes **no**
 `autonomous` flag — tools read `SessionState.effective_autonomous`, which the
 worker freezes once per prompt, so a mid-prompt mode toggle never rebuilds the
 dispatcher or splits the prompt's mode. Autonomous filtering of `ask_user`
-happens once, in `subagents/_registry`. `__make_dispatcher` also passes
+happens once, in `subagents/_registry`. `__make_dispatcher` also passes `mode`
+and `project_root` (read live from `current_project`, independent of mode),
 `root_paths` (computed mode-aware from `current_project`/`SessionWorkspace.folders`
 — the latter synced by the extension's `workspace.folders` frames) and
 `util_paths` (resolved from `binutils.find_util(kodo_user_dir(), "fd"/"ripgrep")`).
 
-**State:** Complete; mirrors the prior dispatch behavior with the two surfaces unified.
+**State:** Complete.
 
 ---
 
-## 7. `workspace/` — virtual artifact store + git mirror (single source of truth)
+## 7. `guided_state/` — per-document evolution log (replaces the artifact workspace)
 
-The `workspace` package holds two tightly-coupled halves: the **in-memory
-artifact store** (the `ProjectIndex` + staging) and the **on-disk git mirror**
-(checkpoints, promotion). The mirror was formerly a separate `kodo.mirror`
-package; it is merged here because promotion writes the durable counterpart of
-the in-memory index and rollback restores from it. All public names are exported
-from [\_\_init\_\_.py](../src/kodo/workspace/__init__.py).
+**Authors and critics work directly on real files** under `specs/`/`src/`/
+`test/` via the native `filesystem`/`edit_file`/`read_file` tools — there is no
+staging area, no in-memory index, and no toolchain-driven file naming.
+`guided_state` tracks each document's revision/review history as a per-file,
+append-only `.jsonl` log; **the current state of a file is always the last
+line of its log**, read on demand — nothing is reconstructed at bootstrap.
+This package replaced the former `kodo.workspace` (artifact staging +
+promotion) and the naming half of `kodo.toolchains` (§8) outright; there is no
+successor class hierarchy, just these pure functions. All public names are
+exported from [\_\_init\_\_.py](../src/kodo/guided_state/__init__.py).
 
-**Artifact store:**
+**Storage convention:** `<root>/specs/foo/bar.md` →
+`<root>/.kodo/guided_dev_state/specs/foo/bar.md.jsonl` (`src/`, `test/`
+analogously). A path outside those three roots is untracked — no log applies.
+Because `.kodo/` is already excluded from the shadow-git mirror's tracked
+tree (§10b), these logs are **never committed** by the same mirror that
+commits the real document changes — exactly the "only the author's changes
+are tracked by git" split the design requires.
 
 | Module | Defines | Role |
 |---|---|---|
-| [_models.py](../src/kodo/workspace/_models.py) | `ArtifactType` (StrEnum), `Verdict` (StrEnum), `Concern`, `Artifact` | Data only. |
-| [_index.py](../src/kodo/workspace/_index.py) | `ProjectIndex`, `IndexEntry` (frozen), `ArtifactState` (Literal) | **The in-memory catalog.** Metadata-only; content stays on disk at `IndexEntry.location`. Never persisted — reconstructed at bootstrap. Methods: `add`, `remove`, `mark_completed`, `get_by_id`, `get_by_key`, `all/completed/in_flight_entries`. |
-| [_workspace.py](../src/kodo/workspace/_workspace.py) | `Workspace` | **Composes** a shared `ProjectIndex` (injected) + a `ProjectLayout` (built internally from `project_root`). Owns staging mechanics: writes per-artifact JSON under `.kodo/workspace/`, retires superseded files to `.retired/`, appends `events.jsonl`, validates publish rules. `read()` branches by state (in-flight = staging JSON, completed = raw promoted file). `bind_index()` swaps the index after bootstrap/rollback. `asyncio.Lock` serialises mutations. |
-| [_component_registry.py](../src/kodo/workspace/_component_registry.py) | `ComponentRegistry` | Parses the architecture artifact's markdown table → codename→display-name map → `component_dir()` (snake_case). `.empty()` fallback. |
-| [_materialization.py](../src/kodo/workspace/_materialization.py) | `materialization_path()`, `materialize()`, `dematerialize()` | Pure functions mapping `Artifact` + `ToolchainPlugin` + `ComponentRegistry` → a `specs/`/`src/`/`test/` path. **Imports `toolchains._interface.ToolchainPlugin`** (the one upward-looking dependency, to a sibling domain). |
-| [_errors.py](../src/kodo/workspace/_errors.py) | `WorkspaceError`, `WorkspaceValidationError`, `ArtifactNotFoundError` | Exception hierarchy. |
+| [_paths.py](../src/kodo/guided_state/_paths.py) | `shadow_path()`, `is_tracked()` | The real-path ↔ `.jsonl`-path mapping above. |
+| [_records.py](../src/kodo/guided_state/_records.py) | `ConcernItem`, `Status`, `new_revision_entry()`, `feedback_entry()`, `review_result_entry()`, `accepted_entry()`, `derive_status()` | The four entry-type constructors (pure dict builders) and the status-derivation rule (last line's `type` → one of `pending_review`/`needs_revision`/`pending_acceptance`/`accepted`). |
+| [_store.py](../src/kodo/guided_state/_store.py) | `append_new_revision()`, `append_feedback()`, `append_review_result()`, `append_accepted()`, `read_history()`, `read_status()`, `read_jsonl()` | Append/read the `.jsonl` log for one document. `append_new_revision` is a no-op outside the tracked roots; the other three raise `ValueError` for an untracked path (they should never be called for one). `append_accepted` reads the log's most recent `new_revision` to reuse its `commit_hash` — acceptance never produces a new commit. |
+| [_scan.py](../src/kodo/guided_state/_scan.py) | `scan_tracked_files()` | Walks `.kodo/guided_dev_state/` and returns `{path, status, last_event}` per tracked document. Backs the `guided_dev_status` tool (§6). |
 
-**Git mirror (merged from the former `kodo.mirror`):**
+**The four jsonl entry types** (one append-only line each, see the records
+module above for exact fields):
 
-| Module | Defines | Role |
-|---|---|---|
-| [_repo.py](../src/kodo/workspace/_repo.py) | `MirrorRepo`, `MirrorRepoError`, `CheckpointInfo` (frozen) | Async git porcelain over `.kodo/checkpoints/` via `asyncio.create_subprocess_exec`: `init`, `stage_and_commit`, `head_sha`, `checkout`, `log`. No `kodo` imports. |
-| [_promoter.py](../src/kodo/workspace/_promoter.py) | `Promoter`, `PromoterError` | **Composes** `MirrorRepo` + `ToolchainPlugin` + `ComponentRegistry`. `promote()` writes an accepted artifact to its `specs/`/`src/`/`test/` path **and** the mirror tree + `.kodo.json` sidecar, then commits. Imports siblings `_materialization`, `_component_registry`, `_models`, `_repo`. |
-| [_checkpoints.py](../src/kodo/workspace/_checkpoints.py) | `CheckpointManager` | **Composes** a `MirrorRepo` built from `ProjectLayout.checkpoints_dir`. `ensure_initialized`, `create_checkpoint`, `list_checkpoints`. |
+1. **`new_revision`** — engine-written, immediately after a `filesystem`/
+   `edit_file` call's checkpoint commit lands under a tracked root (§12.1).
+   Carries the commit `sha`, the agent name, the tool used, and a
+   `workflow: "guided"|"problem_solving"` tag — **fired in both workflow
+   modes**, so the Guide can reconcile state after a Problem-Solver session
+   touched a tracked file. This is the *only* entry type Problem Solver ever
+   produces.
+2. **`feedback`** — written by the `document_feedback` tool (critics only):
+   `accept` + `concerns` (the same shape `concern_item` always used).
+3. **`review_result`** — engine-written only, never via a dispatched tool:
+   the user's `approve`/`reject` decision from the interactive review gate.
+4. **`accepted`** — engine-written only: the final marker, `commit_hash`
+   copied from the preceding `new_revision`.
 
-**Links:** `Workspace` ← composition ← `ProjectIndex` (shared, injected by the
-engine). `_materialization.py` and `_component_registry.py` are used by both
-`Workspace` (indirectly) and `_promoter.py` — now intra-package sibling imports.
-The **same `ProjectIndex` instance** is bound into `Workspace` and handed to
-each per-run `ToolDispatcher` (the read-only `query_frontier`/`list_artifacts`
-handlers consult it). The engine takes a
-`CheckpointManager` (param still named `mirror`) and constructs `Promoter`s
-on demand; `Rollback` composes a `MirrorRepo`.
-
-**State:** Complete. This is the most mature subsystem (high test coverage).
+**State:** Complete; high test coverage (`test_guided_state.py`,
+`test_engine_document_flow.py`).
 
 ---
 
-## 8. `toolchains/` — language plugin abstraction
+## 8. Toolchain setup — generated build scripts (no plugin package)
 
-| Module | Defines | Links |
-|---|---|---|
-| [_interface.py](../src/kodo/toolchains/_interface.py) | `ToolchainPlugin` (ABC), `ToolchainBuildResult`, `ToolchainTestResult`, `ToolchainTestCase`, `ToolchainTestScope` | ABC with `name`, `languages`, `init`, `add_dependency`, `build`, `test`, `format`, `source_filename`, `test_filename`. |
-| [python/_plugin.py](../src/kodo/toolchains/python/_plugin.py) | `PythonPlugin(ToolchainPlugin)` | **Subclasses** the ABC. pytest + ruff + uv/pip via `asyncio.create_subprocess_shell`. |
-| [python/_pytest.py](../src/kodo/toolchains/python/_pytest.py) | `parse_pytest_json`, `parse_pytest_stdout` | Output parsers → `ToolchainTestResult`. |
-| [node/_plugin.py](../src/kodo/toolchains/node/_plugin.py) | `NodePlugin(ToolchainPlugin)` | **Subclasses** the ABC. vitest + npm. |
-| [node/_vitest.py](../src/kodo/toolchains/node/_vitest.py) | `parse_vitest_stdout` | Output parser. |
-| [_select.py](../src/kodo/toolchains/_select.py) | `select_toolchain(tech_stack_content, project_root)` | Maps the Tech Stack artifact's "primary programming language" line → `NodePlugin` or `PythonPlugin` (defaults Python). |
+There is **no `toolchains/` package anymore.** The former `ToolchainPlugin`
+ABC + `PythonPlugin`/`NodePlugin` subclasses existed only to (a) decide
+`source_filename`/`test_filename` for artifact promotion (§7, now gone — agents
+choose their own paths) and (b) implement `build`/`test`/`add_dependency`
+directly in Python, which the `toolchain_*` tools never actually dispatched.
+Both reasons are gone.
 
-**Links:** Only `source_filename`/`test_filename`/`materialization_path` are
-exercised at runtime (via `materialization.py` and `Promoter`). `build`/`test`/
-`add_dependency`/`init`/`format` are **fully implemented but unreachable from the
-agent loop today** because the `toolchain_*` tools have no dispatch (§6). The
-engine consumes `select_toolchain` lazily in `__resolve_toolchain` and caches the
-result, resetting it on rollback.
+The project's build model instead lives in **agent-generated scripts**: a
+language-specific toolchain-setup sub-agent (`python_toolchain`, sharing the
+`base_toolchain.md` contract, §11) generates five per-platform script pairs —
+`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}` — plus a
+`DEVELOPMENT.md` with command-level dependency-management instructions, at the
+**project root**. The `toolchain_build` tool (§6, `tools/_toolchain_build.py`)
+is a thin, language-agnostic executor: it runs the enabled steps' scripts in
+canonical order (format → build → static_analysis → test), stopping at the
+first failure, and returns a clear "ask the toolchain-setup agent" error when
+a script doesn't exist yet. `toolchain_deps` is an intentional stub —
+dependency management is out of scope for now; see `DEVELOPMENT.md` instead.
 
-**State:** Plugins complete; not yet wired to agent tool calls.
-
-> **Direction (not yet built):** the project-level build model is moving into
-> agent-generated scripts. The `python_toolchain` toolchain-setup agent (§11)
-> generates `scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}` +
-> `DEVELOPMENT.md` in the user's project. The planned follow-up is to rewrite
-> `toolchain_build` (which now also covers testing, via its step flags, having
-> absorbed the former `toolchain_test`; and `PythonPlugin.build/test`) to
-> **invoke those generated scripts**, and to add a separate dependency-management subagent
-> that executes the step-by-step dependency guides `DEVELOPMENT.md` carries
-> (replacing `toolchain_deps`'s plugin path). Both are out of scope for the first
-> toolchain-setup deliverable.
+**State:** Both tools have real dispatch (previously spec-only placeholders).
+Dependency management remains deliberately unimplemented.
 
 ---
 
@@ -469,17 +466,15 @@ into the per-run `ToolContext.util_paths` (see §12, search tools).
 
 ## 10b. `mirror/` & `shellparser/` — generic checkpoint primitives
 
-> **Disambiguation — two unrelated "mirror" mechanisms share the word:**
-> §7 describes the **promotion mirror** (`workspace._repo.MirrorRepo` /
-> `_promoter.Promoter` / `_checkpoints.CheckpointManager`), which commits one
-> artifact per `report_artifact_completed` call for the **Guide/Guided**
-> pipeline. The packages documented here are a separate, newer, much lower-level
-> mechanism that commits the **real project tree** after every file-mutating
-> tool call, wired only into the **Problem Solver** workflow
-> (`workflow_mode == "problem_solving"`). The two systems do not share code,
-> storage, or commands; the Guided promotion mirror is **untouched** by this
-> feature. A future milestone may rebuild the Guided mirror on top of this one,
-> but that has not happened yet.
+> **Formerly two unrelated "mirror" mechanisms shared the word; now there is
+> one.** Guided mode used to run its own artifact-promotion mirror
+> (`workspace._repo.MirrorRepo` / `_promoter.Promoter` /
+> `_checkpoints.CheckpointManager`), separate from the generic, lower-level
+> mechanism documented here, which commits the **real project tree** after
+> every file-mutating tool call. That bespoke Guided mirror is **deleted** —
+> Guided mode now drives this same generic mechanism, unconditionally, in
+> both workflow modes (§12.1). There is exactly one shadow-git mirror per
+> root, regardless of which workflow touched it.
 
 Both packages are T0 leaves (import nothing from `kodo`) and have no opinion
 about *when* to checkpoint — that judgment lives entirely in `runtime`.
@@ -556,25 +551,15 @@ Write, Match Existing Conventions, Verify Don't Assume, and Stay In Scope.
 
 | Agent | Tools declared | Role |
 |---|---|---|
-| `guide` | query_frontier, list_artifacts, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode, **create_new_project** | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. `subagents:` allow-list includes the pipeline agents **+ `python_toolchain`**. |
-| `problem_solver` | filesystem, edit_file, run_command, **toolchain_build/deps**, **run_subagent**, ask_user, **create_new_project** | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). Now declares `run_subagent` + `subagents: [python_toolchain]` — its first spawn capability, used only to delegate toolchain setup. **Embeds `{PLACEHOLDER:SUBAGENTS}` in a `## Subagents` section** — the live caller of the roster mechanism (renders `python_toolchain`'s row + purpose). |
-| `python_toolchain` | run_command, filesystem, edit_file, find_files, find_text_in_files, get_root_paths, ask_user | **Toolchain-setup** agent (`bases: [toolchain]`). Spawnable by both `guide` and `problem_solver`. Bootstraps/converts a project: generates the five per-platform build scripts (`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`) + a `DEVELOPMENT.md` (run guide + command-level dependency-management steps). Suggest-then-confirm invocation. |
-| `narrative_author` | publish, read, **ask_user**, request_review, report_completed | Solo, user-facing intake. |
-| `architect`, `requirements_author`, `functional_designer`, `e2e_test_designer`, `test_designer` | publish, read, escalate_blocker | Authors (paired with a critic). |
-| `architect_critic`, `requirements_critic`, `functional_design_critic`, `e2e_test_design_critic`, `code_critic` | publish, read, request_review, report_completed | Critics (own the review gate). |
-| `coder` | publish, read, **toolchain_build/deps**, escalate_blocker | Implements code (toolchain tools not yet dispatchable). |
-| `test_coder` | publish, read, escalate_blocker, request_review, report_completed | Writes tests. |
+| `guide` | guided_dev_status, get_root_paths, find_files, find_text_in_files, run_subagent, run_author_critic_iteration, ask_user, rollback, finalize_project, disable_autonomous_mode, **create_new_project** | Arbiter for the **guided** workflow. Resolved through the same `tools_for_agent` path as every other agent. `subagents:` allow-list includes the pipeline agents **+ `python_toolchain`**. |
+| `problem_solver` | filesystem, edit_file, run_command, **toolchain_build/deps**, **run_subagent**, ask_user, **create_new_project** | Standalone generalist for the **problem-solving** workflow — runs *outside* the Guide pipeline, talking to the user directly and editing real files on disk (see §15). Declares `run_subagent` + `subagents: [python_toolchain]`, used only to delegate toolchain setup. **Embeds `{PLACEHOLDER:SUBAGENTS}` in a `## Subagents` section** — the live caller of the roster mechanism. |
+| `python_toolchain` | run_command, filesystem, edit_file, find_files, find_text_in_files, get_root_paths, ask_user | **Toolchain-setup** agent (`bases: [toolchain]`). Spawnable by both `guide` and `problem_solver`. Bootstraps/converts a project: generates the five per-platform build scripts (`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`) + a `DEVELOPMENT.md` (run guide + command-level dependency-management steps), now actually **executed** by `toolchain_build` (§8). Suggest-then-confirm invocation. |
+| `narrative_author` | filesystem, edit_file, read_file, ask_user | Solo, user-facing intake. Writes the Narrative and Tech Stack documents directly. |
+| `architect`, `requirements_author`, `functional_designer`, `e2e_test_designer`, `test_designer` | filesystem, edit_file, read_file, escalate_blocker | Authors (paired with a critic); `coder` additionally holds `toolchain_build`/`toolchain_deps`. |
+| `architect_critic`, `requirements_critic`, `functional_design_critic`, `e2e_test_design_critic`, `code_critic` | read_file, document_feedback | Critics — record a verdict per file; the engine alone drives the accept/review flow (§7/§12.1). |
+| `test_coder` | filesystem, edit_file, read_file, document_feedback, escalate_blocker | Dual role: critic of `test_designer`'s plan, solo author of test code + stubs. |
 
-> ⚠️ **Frontmatter ↔ surface mismatch:** `coder`/`problem_solver`
-> declare `toolchain_build/deps`, which have no handler in `tools/`, so
-> `tools_for_agent` drops them — described to the LLM yet not executable. This is
-> the remaining gap between "described to the LLM" and "executable."
-> (`guide`'s `disable_autonomous_mode` and `problem_solver`'s
-> file-I/O were the former gaps; both now have handlers in `_TOOL_CLASSES` and
-> dispatch normally. Progress reporting is no longer a tool at all — agents emit
-> `<kodo_info>` callouts in their message text, per the performance preamble.)
-
-**State:** Loader/registry complete (incl. `bases:` shared snippets **and the `{PLACEHOLDER:SUBAGENTS}` roster from per-agent `## Purpose` + `solo`/`critic`/`standalone` frontmatter**); agent roster present (pipeline + `problem_solver` + the `python_toolchain` toolchain-setup agent); tool wiring partially complete.
+**State:** Loader/registry complete (incl. `bases:` shared snippets **and the `{PLACEHOLDER:SUBAGENTS}` roster from per-agent `## Purpose` + `solo`/`critic`/`standalone` frontmatter**); agent roster present (pipeline + `problem_solver` + the `python_toolchain` toolchain-setup agent); every declared tool now has a dispatch handler.
 
 ---
 
@@ -595,22 +580,22 @@ transient: TransientStore    layout: ProjectLayout
 registry: AgentRegistry      mirror: CheckpointManager
 ```
 
-It **internally constructs**: a shared `ProjectIndex`, a `Workspace` (wrapping
-that index), a `SessionState`, one `_EngineServices` adapter, and a
-**`__root_mirrors: RootMirrorManager`** (§12.4/§10b — the Problem Solver
-checkpoint coordinator; unrelated to the constructor-injected `mirror:
-CheckpointManager` above, which is the Guided promotion mirror). It builds
-a `tools.ToolDispatcher` **per agent run** (via `__make_dispatcher`, which reads
-the current `ProjectIndex` — no persistent surface to rebuild after
-bootstrap/rollback). It owns `__orch_messages` (the Guide's running
-`list[Message]`), cumulative USD, and a lazily-resolved `ToolchainPlugin`.
+It **internally constructs**: a `SessionState`, one `_EngineServices` adapter,
+and a **`__root_mirrors: RootMirrorManager`** (§12.4/§10b — the *single*
+shadow-git mirror coordinator now shared by both workflow modes; there is no
+separate Guided-only mirror anymore, see §7). It builds a
+`tools.ToolDispatcher` **per agent run** (via `__make_dispatcher`). A document's
+state is never reconstructed at bootstrap — `kodo.guided_state` reads each
+file's `.jsonl` log on demand. It owns `__main_messages` (the shared
+entry-agent running `list[Message]`, agent-agnostic across Guide/Problem
+Solver) and cumulative USD.
 
 **Composition / call graph:**
 
-- `start()` → `CheckpointManager.ensure_initialized()` → `ProjectBootstrap(...).run()`
-  → binds returned `ProjectIndex` into `Workspace` →
-  `TransientStore.attach_session` → spawns `__run_worker` task. If resumed, loads
-  messages and may re-fire a pending prompt.
+- `start()` → `TransientStore.attach_session` → spawns `__run_worker` task. If
+  resumed, loads messages, re-binds the persisted current project (if any) via
+  `__bind_project`, and may re-fire a pending prompt. No index to rebuild —
+  `bind_project`/`__bind_project` now only validate the `ProjectLayout`.
 - **Public client entry points** (registered as WS handlers in `_app`, §14):
   `handle_prompt_submit(text, request_id)` enqueues a prompt;
   `handle_mode_set(autonomous)` sets the **Autonomous/Interactive** mode
@@ -645,17 +630,31 @@ bootstrap/rollback). It owns `__orch_messages` (the Guide's running
   withheld in autonomous mode for the Problem Solver too.
 - `__run_subagent` → builds a per-run `ToolDispatcher`, `tools =
   tools_for_agent(agent.tools)`, `tool_dispatch = dispatcher.dispatch`,
-  `stop_after_tools = lambda: dispatcher.stop_requested`. Returns published IDs.
-- `__run_author_critic_iteration` → calls `__run_subagent` twice (author then
-  critic), reads the critic's feedback artifact from `Workspace`, emits
-  `EVT_REVIEW_STARTED`/`EVT_REVIEW_VERDICT`. **This is the callback the
+  `stop_after_tools = lambda: dispatcher.stop_requested`. Returns the
+  sub-agent's structured `return_result` output (or a bare
+  `{schema_compliance: False}` fallback if it never called it — there is no
+  artifact index to recover a partial result from).
+- `__run_author_critic_iteration` → spawns the author (`for_revision_path` set
+  when revising), reads back `author_output.primary_path`, spawns the critic
+  against that path, then reads `kodo.guided_state.read_status(path)` for the
+  verdict — **the jsonl, not the critic's `return_result`, is authoritative**.
+  Emits `EVT_REVIEW_STARTED`/`EVT_REVIEW_VERDICT`. **This is the callback the
   Guide's `run_author_critic_iteration` tool invokes.**
-- `__complete_artifact` (exposed via `_EngineServices.complete_artifact`) →
-  reads artifact → `__resolve_toolchain` + `__component_registry` →
-  `materialization_path` → `Promoter.promote` (mirror commit + sidecar) →
-  `Workspace.mark_completed(location=...)`. This is **promotion-on-completion**.
-- `__run_rollback` (exposed via `_EngineServices.rollback`) →
-  `Rollback.execute` → rebinds index, resets toolchain, fresh guide session.
+- `__finalize_document(path)` (called from the post-dispatch hook below, not
+  exposed via `EngineServices` — there is no tool indirection) → autonomous
+  mode immediately `append_accepted`s; interactive mode fires the same
+  approval gate `request_user_review_artifact` used to, then records
+  `append_review_result` (+ `append_accepted` on agreement). Replaces the old
+  `__complete_artifact`/promotion path entirely — there is nothing to
+  materialize, since the document was already a real file.
+- `__record_guided_revision(...)` (also called from the post-dispatch hook) →
+  after a `filesystem`/`edit_file` checkpoint commit, if the affected path is
+  tracked under the bound project's `specs`/`src`/`test`, appends a
+  `new_revision` jsonl entry carrying that exact commit's sha — in **both**
+  workflow modes (§7).
+- `__run_rollback` (exposed via `_EngineServices.rollback`) → delegates
+  directly to `RootMirrorManager.rollback` (the same primitive Problem Solver
+  uses) and resets the in-memory conversation. No index to rebuild.
 - `__disable_autonomous` (exposed via
   `_EngineServices.disable_autonomous_mode`) backs the
   guide's `disable_autonomous_mode` tool.
@@ -664,9 +663,10 @@ bootstrap/rollback). It owns `__orch_messages` (the Guide's running
   session physical root → `mkdir` → add to the logical-root map →
   `RootMirrorManager.prepare` (scaffolds `.kodo/`+mirror) → push
   `EVT_WORKSPACE_ADD_FOLDER`.
-- **Per-tool-call checkpointing (Problem Solver only)** — gated by
-  `__checkpoint_enabled()` (`effective_workflow_mode == "problem_solving"`),
-  inside `__dispatch_tool_calls` around each of `_MUTATING_TOOLS =
+- **Per-tool-call checkpointing (both workflow modes)** — `__checkpoint_enabled()`
+  is now unconditional (Guided mode drives the same mirror Problem Solver
+  always has — there is no separate Guided checkpoint system to collide with,
+  see §7). Inside `__dispatch_tool_calls`, around each of `_MUTATING_TOOLS =
   {"filesystem", "edit_file", "run_command"}`: `__checkpoint_prepare(tool_name,
   tool_input)` resolves the affected path(s) (`__mutation_paths` — `edit_file`'s
   `path`; `filesystem`'s `destination`/`path`/`source`; `run_command`'s `cwd`,
@@ -678,19 +678,20 @@ bootstrap/rollback). It owns `__orch_messages` (the Guide's running
   outside the command's `cwd`). `__finalize_tool_result` injects the resulting
   `checkpoint.sha` into the LLM-visible result as `checkpoint_sha` (declared
   optional in each of the 3 tools' `output_schema`, so `normalize_output` keeps
-  it without flagging non-compliance) and rides `{root, sha, parent}` out-of-band
-  on `EVT_AGENT_TOOL_CALL_DETAIL` as a new `"checkpoint"` key (`null` when no
-  commit happened — outside any known root, or a no-op), the same pattern as the
-  existing `"diff"` side-channel (§9, Sub-Agents memory). New public
-  `handle_checkpoint_undo(root, sha)` / `handle_checkpoint_rollback(root, sha)`
-  delegate straight to `RootMirrorManager.undo`/`.rollback` — **files-only**,
-  they never touch conversation history or the `ProjectIndex` (deliberately
-  distinct from the Guide's conversation-rewinding `rollback` tool, which is
-  untouched and still calls `Rollback.execute`).
+  it without flagging non-compliance), rides `{root, sha, parent}` out-of-band
+  on `EVT_AGENT_TOOL_CALL_DETAIL` as a `"checkpoint"` key (`null` when no commit
+  happened), and — for `filesystem`/`edit_file` only — drives
+  `__record_guided_revision` (above). New public `handle_checkpoint_undo(root,
+  sha)` / `handle_checkpoint_rollback(root, sha)` delegate straight to
+  `RootMirrorManager.undo`/`.rollback` — **files-only**, they never touch
+  conversation history (deliberately distinct from the Guide's
+  conversation-rewinding `rollback` tool, which now calls the same
+  `RootMirrorManager.rollback` primitive but additionally resets
+  `__main_messages`).
 
 **The engine injects into every `ToolDispatcher`:** `GateOrchestrator`,
 `SessionState`, and one `_EngineServices` adapter wrapping `__run_subagent` /
-`__run_author_critic_iteration` / `__run_rollback` / `__complete_artifact` /
+`__run_author_critic_iteration` / `__run_rollback` /
 `__disable_autonomous`. The per-prompt autonomous mode is read
 from `SessionState.effective_autonomous` rather than passed in.
 
@@ -699,25 +700,23 @@ from `SessionState.effective_autonomous` rather than passed in.
 Dispatch no longer lives in `runtime`; see §6A. The engine builds one
 `tools.ToolDispatcher` per agent run (guide and leaf alike) and passes its
 `dispatch` as the `tool_dispatch` callback into `__run_agent_turn`. After the run
-it reads `dispatcher.published_ids` (leaf) and uses `dispatcher.stop_requested`
-as the `stop_after_tools` predicate. The former `ToolSurface` /
-`SubagentDispatcher` split is gone — there is one unified surface.
+it reads `dispatcher.returned_output` and uses `dispatcher.stop_requested`
+as the `stop_after_tools` predicate. There is one unified surface — no
+guide-vs-leaf split.
 
 ### 12.4 Supporting runtime modules
 
 | Module | Defines | Role / links |
 |---|---|---|
-| [_bootstrap.py](../src/kodo/runtime/_bootstrap.py) | `ProjectBootstrap`, `BootstrapResult` | 4-phase cold start: scan mirror sidecars (`completed`), scan workspace JSON (`in_flight`), drop orphans/broken lineage, locate/create guide session via `GuideMarker`. Returns a populated `ProjectIndex`. Imports `state._transient._new_session_id`. |
-| [_guide.py](../src/kodo/runtime/_guide.py) | `GuideMarker` | Reads/writes `.kodo/guide.session`. Used by bootstrap + rollback. |
-| [_checkpoints.py](../src/kodo/runtime/_checkpoints.py) | `RootMirrorManager`, `CheckpointRef` (frozen), `command_may_mutate()` | ⚠️ **Name collides with the unrelated `workspace/_checkpoints.py:CheckpointManager`** (the Guided promotion mirror) — different module, different package, different system; see §10b. Bridges the path-agnostic `mirror.ShadowMirror` to Kōdo's conventions: every root a Problem Solver session may touch gets its own independent mirror at `<root>/.kodo/checkpoints`, created **lazily** the first time a file-mutating tool writes under that root (scaffolding `<root>/.kodo/` + `kodo.md` via `ProjectLayout.scaffold_kodo_dir()`, §5, at that moment — not upfront for every root). `_root_for(path)` maps a path to its enclosing root by longest-prefix match. `_KODO_EXCLUDES` (node_modules/.venv/`__pycache__`/dist/build/egg-info/caches + always `.kodo/`+`.git/`) seed each mirror's `info/exclude` **on top of** the project's own `.gitignore` (git honours both). One `asyncio.Lock` serialises `prepare`/`commit_for_path`/`sweep_initialized`/`undo`/`rollback`. The free function `command_may_mutate(parsed: ParsedCommand) -> bool` is the caller-side mutation heuristic the parser (§10b) deliberately omits: `True` if any redirection is an output redirect (`> >> >\| &> &>> <>`), else `True` unless every executable's basename is on a small read-only allow-list (`ls cat grep find rg fd pwd wc diff …` — notably **not** `git`, since even read-only-looking git subcommands can touch `.git/` state) — **defaults to `True` (mutating) whenever uncertain**, so a missed checkpoint is never the failure mode; an unnecessary no-op commit is. |
-| [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse`, `QuestionResponse` | **Composes** `WebSocketDispatcher` + `TransientStore`. `fire_approval`/`fire_question` send `kind=request`, register a future, persist the pending prompt (for restart re-surface), and await. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by every gate-backed tool handler. |
-| [_rollback.py](../src/kodo/runtime/_rollback.py) | `Rollback` | **Composes** `MirrorRepo` + `ProjectLayout`. 7-step restore; rebuilds via `ProjectBootstrap`. Imports `_session_log.SessionLog`, `_guide.GuideMarker`. |
+| [_bootstrap.py](../src/kodo/runtime/_bootstrap.py) | `locate_guide_session()` | Workspace-tier session location only: locate/create the Guide session marker + `sessions/` dir. There is no project-tier bootstrap anymore — a document's state lives entirely in its own `.jsonl` evolution log (§7), read on demand. |
+| [_guide.py](../src/kodo/runtime/_guide.py) | `GuideMarker` | Reads/writes `.kodo/guide.session`. Used by `locate_guide_session`. |
+| [_checkpoints.py](../src/kodo/runtime/_checkpoints.py) | `RootMirrorManager`, `CheckpointRef` (frozen), `command_may_mutate()` | The **single** shadow-git mirror coordinator, now driving both workflow modes (§12.1) — there is no longer a second, Guided-only mirror at the same path to collide with. Bridges the path-agnostic `mirror.ShadowMirror` to Kōdo's conventions: every root a session may touch gets its own independent mirror at `<root>/.kodo/checkpoints`, created **lazily** the first time a file-mutating tool writes under that root (scaffolding `<root>/.kodo/` + `kodo.md` via `ProjectLayout.scaffold_kodo_dir()`, §5, at that moment). `_root_for(path)` maps a path to its enclosing root by longest-prefix match. `_KODO_EXCLUDES` (node_modules/.venv/`__pycache__`/dist/build/egg-info/caches + always `.kodo/`+`.git/`) seed each mirror's `info/exclude` **on top of** the project's own `.gitignore` — this is *why* `.kodo/guided_dev_state/*.jsonl` (§7) is never committed by this same mirror. One `asyncio.Lock` serialises `prepare`/`commit_for_path`/`sweep_initialized`/`undo`/`rollback`. The free function `command_may_mutate(parsed: ParsedCommand) -> bool` is the caller-side mutation heuristic the parser (§10b) deliberately omits: `True` if any redirection is an output redirect (`> >> >\| &> &>> <>`), else `True` unless every executable's basename is on a small read-only allow-list (`ls cat grep find rg fd pwd wc diff …` — notably **not** `git`, since even read-only-looking git subcommands can touch `.git/` state) — **defaults to `True` (mutating) whenever uncertain**, so a missed checkpoint is never the failure mode; an unnecessary no-op commit is. |
+| [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse`, `QuestionResponse` | **Composes** `WebSocketDispatcher` + `TransientStore`. `fire_approval`/`fire_question` send `kind=request`, register a future, persist the pending prompt (for restart re-surface), and await. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by `__finalize_document` (§12.1) for the interactive document-review gate. |
 | [_session.py](../src/kodo/runtime/_session.py) | `SessionState` | Mutable `phase`/`agent`/`component` plus the two mode fields: `autonomous` (user-facing Autonomous/Interactive, set by `handle_mode_set`, reported in `to_dict()`/`EVT_STATE`) and `effective_autonomous` (frozen per prompt by `__run_worker`; what tools/registry actually read), and `workflow_mode` (`"guided"`/`"problem_solving"`, in `to_dict()`). Shared by the engine; satisfies `tools.SessionLike` (`finalize_project` writes `phase`; tools read `effective_autonomous`). |
-| [_session_log.py](../src/kodo/runtime/_session_log.py) | `SessionLog` | Append-only JSONL per session. Used by `Rollback` (termination events). |
+| [_session_log.py](../src/kodo/runtime/_session_log.py) | `SessionLog` | Append-only JSONL per session. |
 
-**State:** Engine, dispatch (now in `tools/`), bootstrap, gates, rollback are
-implemented and exercised by the guide/author-critic flow. Coverage is
-lower here than in `workspace/` (many branches are restart/rollback paths).
+**State:** Engine, dispatch (now in `tools/`), gates, rollback are
+implemented and exercised by the guide/author-critic flow.
 
 ---
 
@@ -779,8 +778,10 @@ llama-server).
 → `__run_agent_turn` streams the Guide LLM → tool calls dispatch through
 the guide's `tools.ToolDispatcher` → `run_subagent`/`run_author_critic_iteration`
 call back into the engine (via the injected `EngineServices`), which spawns leaf
-agents — each with its own `ToolDispatcher` — → artifacts land in
-`Workspace`/`ProjectIndex`. This is the **guided** workflow.
+agents — each with its own `ToolDispatcher` — that write real files directly
+under `specs/`/`src/`/`test/` via `filesystem`/`edit_file`, tracked by a
+`.jsonl` evolution log per file (§7), not an artifact store. This is the
+**guided** workflow.
 
 **Prompt → work (problem-solving):** when `workflow_mode == "problem_solving"`,
 the worker routes the same prompt to `__run_problem_solver_with_input` instead.
@@ -803,37 +804,43 @@ mid-run via the `disable_autonomous_mode` tool (engine `__disable_autonomous`
 clears both `autonomous` and `effective_autonomous` immediately and emits
 `EVT_AUTONOMOUS_CHANGED`).
 
-**Completion → promotion:** a critic/solo agent calls `report_artifact_completed`
-→ `tools/_report_artifact_completed.handle` → `EngineServices.complete_artifact`
-→ engine `__complete_artifact` → `Promoter.promote` writes the file into
-`specs/`/`src/`/`test/` **and** the mirror tree +
-`.kodo.json` sidecar, commits, then `Workspace.mark_completed` flips state and
-deletes the staging file.
+**Document acceptance:** a critic calls `document_feedback(path, accept=True,
+concerns=[])` → `tools/_document_feedback.handle` appends a `feedback` jsonl
+entry (§7) and returns `{"status": "recorded"}` → the engine's post-dispatch
+hook in `__finalize_tool_result` sees `accept: true` and calls
+`__finalize_document(path)`: autonomous mode immediately appends an `accepted`
+entry; interactive mode fires the approval gate, then appends `review_result`
+(+ `accepted` on agreement). There is no promotion step — the file was already
+real.
 
-**User gate:** any `ask_user`/`request_user_review_artifact`/`escalate_blocker`
-→ `GateOrchestrator.fire_*` sends a `kind=request`, registers a future, persists
-`pending_prompt`, and awaits the client's `kind=response`. The autonomous mode
-in force is `SessionState.effective_autonomous`, frozen by the worker when it
-dequeues the prompt; a user toggle mid-prompt updates `autonomous` (UI-facing)
-but only takes effect at the next prompt. In autonomous mode `ask_user` is
-withheld entirely and review auto-accepts.
+**User gate:** any `ask_user`/`escalate_blocker`, or the document-review gate
+inside `__finalize_document` → `GateOrchestrator.fire_*` sends a `kind=request`,
+registers a future, persists `pending_prompt`, and awaits the client's
+`kind=response`. The autonomous mode in force is
+`SessionState.effective_autonomous`, frozen by the worker when it dequeues the
+prompt; a user toggle mid-prompt updates `autonomous` (UI-facing) but only
+takes effect at the next prompt. In autonomous mode `ask_user` is withheld
+entirely and document review auto-accepts.
 
-**Restart:** `ProjectBootstrap` rebuilds the index from disk; `GuideMarker`
-+ `TransientStore` resume the session; an unanswered `pending_prompt` is
-re-surfaced.
+**Restart:** `GuideMarker` + `TransientStore` resume the session; an unanswered
+`pending_prompt` is re-surfaced. There is no index to rebuild — every
+document's state is read from its own `.jsonl` log on demand (§7).
 
 **Rollback:** Guide `rollback` → `tools/_rollback.handle` →
-`EngineServices.rollback` → engine `__run_rollback` → `Rollback.execute` (mirror
-checkout, tree restore, fresh bootstrap) → engine rebinds index + starts a fresh
-guide session.
+`EngineServices.rollback` → engine `__run_rollback` → directly
+`RootMirrorManager.rollback` (the same primitive Problem Solver's
+checkpoint-card "Rollback to this state" control uses) → engine resets the
+in-memory conversation and starts fresh.
 
-**Per-tool-call checkpointing + undo/rollback (Problem Solver only, §10b/§12.1):**
-a `filesystem`/`edit_file`/`run_command` dispatch in `problem_solving` mode is
+**Per-tool-call checkpointing + undo/rollback (both workflow modes, §10b/§12.1):**
+a `filesystem`/`edit_file`/`run_command` dispatch, in **either** mode, is
 bracketed by `__checkpoint_prepare` (baselines the enclosing root's
 `RootMirrorManager` mirror, scaffolding `.kodo/`+`kodo.md` lazily on first touch)
 and `__checkpoint_commit` (commits the real tree, surfacing `{root, sha, parent}`
 on `EVT_AGENT_TOOL_CALL_DETAIL` and `checkpoint_sha` in the tool's own result).
-The WebView renders an **"↩ undo this change"** link next to that tool call and a
+For `filesystem`/`edit_file`, that same checkpoint also drives
+`__record_guided_revision` (§7) when the affected path is tracked. The
+WebView renders an **"↩ undo this change"** link next to that tool call and a
 **"⟲ Rollback to this state"** control below its params box whenever a checkpoint
 rode along. Clicking either sends `checkpoint.undo`/`checkpoint.rollback`
 `{root, sha}` → `_app._handle_checkpoint_undo`/`_rollback` → engine
@@ -841,13 +848,12 @@ rode along. Clicking either sends `checkpoint.undo`/`checkpoint.rollback`
 `.rollback` → `ShadowMirror.undo`/`.rollback`, each producing a **new** append-only
 commit (`undo` restores only the files the target commit touched; `rollback`
 restores the whole tree to that commit). Neither path touches conversation
-history, the `ProjectIndex`, or the Guide's `rollback` tool/`Rollback.execute` —
-this is a files-only, agent-loop-agnostic operation, deliberately decoupled from
-the Guided rollback flow above. **Known limitations:** a `run_command` that
-writes into a root other than its `cwd` is only captured if that other root has
-already been touched at least once (no global "first ever write" sweep across
-every possible root); a cross-root move/copy surfaces an undo/rollback control
-only on the destination root's checkpoint, not the source's.
+history — files-only, agent-loop-agnostic. **Known limitations:** a
+`run_command` that writes into a root other than its `cwd` is only captured if
+that other root has already been touched at least once (no global "first ever
+write" sweep across every possible root); a cross-root move/copy surfaces an
+undo/rollback control only on the destination root's checkpoint, not the
+source's.
 
 ---
 
@@ -855,33 +861,34 @@ only on the destination root's checkpoint, not the source's.
 
 | Subsystem | State |
 |---|---|
-| `common`, `transport`, `project`, `workspace` (incl. merged git mirror), `state/_transient` | ✅ Complete, well-tested |
-| `llms` (Anthropic + llama.cpp, incl. merged local-inference utilities), `toolchains` plugins | ✅ Complete |
-| `toolspecs` catalog, `subagents` loader/registry, `tools` dispatch | ✅ Complete |
-| `runtime` engine / bootstrap / gates / rollback | ✅ Functional; lower branch coverage on restart/rollback |
-| `mirror`/`shellparser` (§10b) + `runtime/_checkpoints.RootMirrorManager` — generic checkpoint/undo/rollback | ✅ Implemented; wired only into Problem Solver. Two documented limitations (§15). The Guided promotion mirror (`workspace/_checkpoints.CheckpointManager`) is untouched. |
-| Toolchain agent tools (`toolchain_build/deps`) | ⚠️ Spec only — no handler, dropped by `tools_for_agent` |
+| `common`, `transport`, `project`, `guided_state` (per-document evolution log, §7), `state/_transient` | ✅ Complete, well-tested |
+| `llms` (Anthropic + llama.cpp, incl. merged local-inference utilities) | ✅ Complete |
+| `toolspecs` catalog, `subagents` loader/registry, `tools` dispatch | ✅ Complete — every dispatchable spec has a handler |
+| `runtime` engine / gates / rollback | ✅ Functional |
+| `mirror`/`shellparser` (§10b) + `runtime/_checkpoints.RootMirrorManager` — generic checkpoint/undo/rollback | ✅ Implemented; now drives **both** workflow modes (§12.1) — there is no longer a second Guided-only mirror. Two documented limitations (§15). |
+| Toolchain agent tools (`toolchain_build`/`toolchain_deps`) | ✅ Implemented. `toolchain_build` executes the toolchain-setup agent's generated `scripts/<step>` (§8). `toolchain_deps` is a deliberate stub — dependency management is out of scope. |
 | `disable_autonomous_mode` | ✅ Implemented and dispatched (guide) |
 | `create_new_project` | ✅ Implemented and dispatched (guide + problem_solver); scaffolds a new project dir + checkpoint mirror and adds it to the workspace |
-| Native file-IO / `run_command` tools | ✅ Implemented; granted to the `problem_solver` agent |
+| Native file-IO / `run_command` / `read_file` tools | ✅ Implemented; granted to authoring sub-agents and `problem_solver` |
 | Two workflows (`guided` Guide / `problem_solving` Problem Solver) | ✅ Implemented; selected by `workflow.set` → `SessionState.workflow_mode` |
 | `security/*`, `state/_memory` | ⛔ Stubs |
-| `project/_manifest` | ◽ Implemented but unused at runtime |
+| `project/_manifest` | ◽ Parsed by `kodo.md`'s `## Toolchain` heading; purely informational now (no engine-side toolchain selection) |
 
 ---
 
 ## 17. Cross-cutting observations
 
-1. **Single shared `ProjectIndex`.** Constructed by the engine, replaced by
-   bootstrap/rollback, and `bind_index`-ed into `Workspace`; each per-run
-   `ToolDispatcher` reads the same reference. All reads (`query_frontier`,
-   `list_artifacts`) and all writes flow through it. It is never persisted.
+1. **No in-memory index at all.** A document's state is the last line of its
+   own `.jsonl` evolution log (`kodo.guided_state`, §7) — read fresh on every
+   query (`guided_dev_status` re-walks the directory each call). There is
+   nothing to construct at bootstrap, nothing to rebuild on rollback, and
+   nothing shared across `ToolDispatcher` instances.
 2. **One tool-dispatch surface, one generic loop.** `__run_agent_turn` is
    agent-agnostic; the only difference between the Guide and a leaf agent
    is the `tools` list (from each agent's frontmatter via `tools_for_agent`). Both
-   route through the same `tools.ToolDispatcher`; per-run state (`published_ids`,
-   `stop_requested`) lives on each run's `ToolContext`, so tools never bleed
-   across agent types.
+   route through the same `tools.ToolDispatcher`; per-run state
+   (`stop_requested`/`returned_output`) lives on each run's `ToolContext`, so
+   tools never bleed across agent types.
 3. **Stateless LLM calls.** Tool specs are re-sent on every `stream_query`; the
    `messages` list (with `tool_use`/`tool_result` blocks) is the only memory.
 4. **Structural protocols decouple the seams.** `MessageSink`

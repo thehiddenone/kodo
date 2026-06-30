@@ -12,7 +12,7 @@ ARCHITECT_CRITIC: SubAgentSpec = SubAgentSpec(
     name="architect_critic",
     description="Reviews the architecture document for sound, single-responsibility decomposition.",
     input_schema=pipeline_input(
-        input_artifacts="The architecture artifact under review (type=architecture).",
+        input_paths="The architecture document under review.",
     ),
     output_schema=critic_output(
         [

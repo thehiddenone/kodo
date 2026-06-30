@@ -12,10 +12,7 @@ REQUIREMENTS_AUTHOR: SubAgentSpec = SubAgentSpec(
     name="requirements_author",
     description="Writes the structured per-responsibility requirements document.",
     input_schema=pipeline_input(
-        input_artifacts=(
-            "Must include the architecture (type=architecture) and the Narrative "
-            "(type=narrative, for the North Star)."
-        ),
+        input_paths="Must include the architecture and the Narrative (for the North Star).",
     ),
     output_schema=author_output(
         extra_properties={

@@ -23,15 +23,12 @@ TEST_CODER: SubAgentSpec = SubAgentSpec(
         "test code and minimal production stubs (all tests failing — the TDD starting state)."
     ),
     input_schema=pipeline_input(
-        input_artifacts=(
-            "The Test Plan (type=test-plan), the Functional Design (type=functional-design), the "
-            "Tech Stack (type=tech-stack), and the requirements (type=requirements)."
-        ),
+        input_paths="The Test Plan, the Functional Design, the Tech Stack, and the requirements.",
         require_responsibility=True,
     ),
     output_schema={
         "oneOf": [
-            author_output(),  # stage 6: published test + stub artifacts
+            author_output(),  # stage 6: test + stub code written
             critic_output(["non_behavioral_test"]),  # stage 5: Test Plan validation
         ],
     },

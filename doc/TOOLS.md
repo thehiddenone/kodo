@@ -29,7 +29,7 @@ place — the dispatch table in [tools/_dispatch.py](../src/kodo/tools/_dispatch
 > (which needs the schema + description) and the prompt renderer (which needs
 > the human-facing metadata). The handler is consumed by the dispatcher. Keeping
 > the spec as inert data lets `subagents` and `llms` depend on the catalog
-> without dragging in dispatch logic (gates, the workspace, the engine).
+> without dragging in dispatch logic (gates, `guided_state`, the engine).
 
 ---
 
@@ -45,20 +45,21 @@ place — the dispatch table in [tools/_dispatch.py](../src/kodo/tools/_dispatch
  T3  subagents · llms · tools      ← tools may import only ↓; imported only by runtime
         │
         ▼
- T2  toolspecs            ← the ToolSpec catalog (pure data)
+ T2  toolspecs            ← the ToolSpec catalog (pure data, imports nothing from kodo)
         │
         ▼
- T1  workspace · transport
+ T1  transport
         │
         ▼
- T0  common · project · toolchains · state · security
+ T0  common · project · guided_state · state · security
 ```
 
 **Hard rule:** `kodo.tools` may import only from T0/T1/T2 — in practice
-`kodo.workspace` and `kodo.toolspecs`. It must **never** import `subagents`,
-`llms`, or `runtime`. The collaborators it needs from higher tiers (the gate,
-the session, the sub-agent launcher) are inverted into **structural Protocols**
-defined inside `tools` and injected by `runtime` (see §5). Verify the ceiling:
+`kodo.guided_state`, `kodo.project`, and `kodo.toolspecs`. It must **never**
+import `subagents`, `llms`, or `runtime`. The collaborators it needs from
+higher tiers (the gate, the session, every engine-side operation) are
+inverted into **structural Protocols** defined inside `tools` and injected by
+`runtime` (see §5). Verify the ceiling:
 
 ```bash
 grep -rE "^\s*(from|import) kodo\.(subagents|llms|runtime|server)" src/kodo/tools   # must be empty
@@ -82,8 +83,8 @@ FINALIZE_PROJECT: ToolSpec = ToolSpec(
     ),
     input_schema={"type": "object", "properties": {}, "required": []},  # JSON Schema
     when_to_use=(                          # rendered into the agent's `## Tools` prompt
-        "All product-level stages have completed and the workspace has "
-        "nothing left in flight — the project is done.",
+        "All product-level stages have completed and no tracked document is "
+        "left pending — the project is done.",
     ),
     autonomous_mode=None,                  # per-mode behavior (see §8)
 )
@@ -139,11 +140,11 @@ truth pairing each dispatchable `ToolSpec` with its `Tool` subclass:
 
 ```python
 _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
-    (PUBLISH_ARTIFACT, PublishArtifactTool),
-    (READ_ARTIFACT,    ReadArtifactTool),
-    (ASK_USER,         AskUserTool),
+    (READ_FILE,           ReadFileTool),
+    (DOCUMENT_FEEDBACK,   DocumentFeedbackTool),
+    (ASK_USER,            AskUserTool),
     ...
-    (FINALIZE_PROJECT, FinalizeProjectTool),
+    (FINALIZE_PROJECT,    FinalizeProjectTool),
 )
 ```
 
@@ -162,16 +163,16 @@ So a `ToolSpec` and its `Tool` class are connected **only** through their shared
 import-time side effect, no name-string magic scattered around — adding a row is
 the entire wiring step.
 
-> A spec that has **no** row here (today only the `toolchain_build` /
-> `toolchain_deps` placeholders) is "spec only": it can be
-> rendered into a prompt but is silently dropped from the LLM-facing tool list,
-> because `tools_for_agent` (§7) only returns specs present in
-> `DISPATCHABLE_TOOLS_BY_NAME`. The table currently holds
-> **20** rows. `filesystem` is one of them:
+> A spec with **no** row here is "spec only": it can be rendered into a prompt
+> but is silently dropped from the LLM-facing tool list, because
+> `tools_for_agent` (§7) only returns specs present in
+> `DISPATCHABLE_TOOLS_BY_NAME`. There are no such placeholders today — every
+> spec in the catalog has a dispatch row, including `toolchain_build`/
+> `toolchain_deps`, which used to be spec-only. `filesystem` is one row:
 > a single `FilesystemTool` dispatches all eight file/directory operations
-> (create/delete/copy/move × file/dir) on its `operation` field, replacing the
-> former per-operation `create_file`/`delete_file`/`copy_file`/`move_file` (and
-> `rewrite_file`) tools; `edit_file` stays a separate tool.
+> (create/delete/copy/move × file/dir) on its `operation` field; `edit_file`
+> stays a separate tool, as does the read-only `read_file` (whole file, line
+> ranges, or a regex `pattern` with context lines).
 
 ---
 
@@ -186,15 +187,16 @@ the per-run mutable state, and it is the seam that keeps `tools` from importing
 ```python
 @dataclass
 class ToolContext:
-    workspace: Workspace          # T1 — publish/read artifacts, project_root for file I/O
-    index: ProjectIndex           # T1 — query_frontier / list_artifacts read this
+    resolver: PathResolver        # T0 — project-confined or logical path resolution
     gate: GateLike                # Protocol — ask_user / approval gates (impl in runtime)
     session: SessionLike          # Protocol — .phase (finalize) + .effective_autonomous
     services: EngineServices      # Protocol — every engine-side op a tool can trigger
-    agent_name: str               # the running agent (used as artifact author)
+    agent_name: str               # the running agent (jsonl author/reviewer field)
     session_id: str
-    published_ids: list[str] = field(default_factory=list)   # mutated by publish_artifact
+    mode: str = "problem_solving" # "guided" | "problem_solving" — frozen per prompt
+    project_root: Path | None = None  # the bound project's root, if any
     stop_requested: bool = False                             # set by escalate_blocker
+    returned_output: dict[str, object] | None = None         # set by return_result
 ```
 
 Note what is **not** here: there is no `autonomous` field. The mode a handler
@@ -212,17 +214,20 @@ Protocols**, also defined in `_context.py`:
   bool`. Runtime's `SessionState` matches.
 - **`EngineServices`** — **one** protocol covering *every* engine-side operation
   a tool can delegate upward: `run_subagent(caller, ...)`,
-  `run_author_critic_iteration(caller, ...)`, `rollback(...)`, `complete_artifact(...)`,
-  `disable_autonomous_mode(...)`, and `create_project(name)`. Runtime injects a
-  single `_EngineServices` adapter (built inline in `_engine.py`) wrapping the
-  engine's private `__run_*` / `__complete_artifact` / `__disable_autonomous` /
-  `__create_project` methods. (This replaced the former split of a
-  `SubagentRunner` protocol plus four bare `rollback_fn` / `complete_fn` / …
-  callables.) `create_project` is what backs the `create_new_project` tool: the
-  engine slugifies the requested name, makes a fresh directory under the session
-  workspace root (auto-suffixing on collision), scaffolds its `.kodo/`+mirror via
-  `RootMirrorManager.prepare`, and pushes `EVT_WORKSPACE_ADD_FOLDER` so the
-  extension adds it to the open VS Code workspace.
+  `run_author_critic_iteration(caller, ..., path, input_paths, instructions,
+  for_revision)`, `rollback(...)`, `disable_autonomous_mode(...)`, and
+  `create_project(name)`. Runtime injects a single `_EngineServices` adapter
+  (built inline in `_engine.py`) wrapping the engine's private `__run_*` /
+  `__disable_autonomous` / `__create_project` methods. There is deliberately
+  **no** `complete_artifact`-style method: the accept/review flow
+  (`__finalize_document`) is purely engine-internal, triggered from a
+  post-dispatch hook after a `document_feedback` call — never through a tool
+  or a protocol indirection. `create_project` is what backs the
+  `create_new_project` tool: the engine slugifies the requested name, makes a
+  fresh directory under the session workspace root (auto-suffixing on
+  collision), scaffolds its `.kodo/`+mirror via `RootMirrorManager.prepare`,
+  and pushes `EVT_WORKSPACE_ADD_FOLDER` so the extension adds it to the open
+  VS Code workspace.
 
 This is the dependency inversion that lets the tool layer sit *below* the engine
 while still calling back into it. `runtime` constructs the concrete objects and
@@ -234,7 +239,7 @@ caller's frontmatter `subagents:` allow-list and raises `PermissionError` (which
 the tool returns to the LLM as `{"error": ...}`) when the target is not permitted.
 
 Per-run state lives on the context, not on the tool instance:
-`PublishArtifactTool` appends to `self.context.published_ids`,
+`ReturnResultTool` sets `self.context.returned_output`,
 `EscalateBlockerTool` sets `self.context.stop_requested`. The dispatcher exposes
 both back to the engine after the run.
 
@@ -306,9 +311,14 @@ rendered `## Tools` section when `registry.get(name, autonomous=True)` is called
 Because the engine builds the LLM tool list from the *already-filtered*
 `agent.tools`, the withheld tool simply never reaches the model.
 
-Tools marked `"auto-accepted"` (e.g. `request_user_review_artifact`) stay
-available; the handler itself short-circuits on `ctx.session.effective_autonomous`
-and synthesizes the response instead of blocking on the gate.
+A tool can also declare `autonomous_mode="auto-accepted …"` for a spec whose
+*handler* short-circuits on `ctx.session.effective_autonomous` and synthesizes
+its response instead of blocking on the gate — no tool does today, since the
+one example (the former `request_user_review_artifact`) moved into the
+engine: `__finalize_document` (triggered after `document_feedback`, not a
+dispatched tool) checks `effective_autonomous` itself and either auto-accepts
+or fires the gate. The mechanism remains available for a future tool that
+needs it.
 
 > **Where `effective_autonomous` comes from.** The user-facing toggle sets
 > `SessionState.autonomous`, but the engine *freezes* that into
@@ -326,14 +336,14 @@ run** by the engine. It owns the run's `ToolContext` and routes calls:
 
 ```python
 class ToolDispatcher:
-    def __init__(self, *, workspace, index, gate, session, services,
-                 agent_name, session_id):
+    def __init__(self, *, resolver, gate, session, services,
+                 agent_name, session_id, mode="problem_solving", project_root=None):
         self.__ctx = ToolContext(...)            # one context for the whole run
 
     @property
-    def published_ids(self) -> list[str]: ...    # read by the engine after the run
-    @property
     def stop_requested(self) -> bool: ...        # read by the engine after each tool batch
+    @property
+    def returned_output(self) -> dict[str, object] | None: ...   # set by return_result
 
     async def dispatch(self, tool_name, tool_input) -> str:
         tool_cls = _CLASSES_BY_NAME.get(tool_name)
@@ -358,9 +368,11 @@ context and the *set* of tools differ.
 1. Resolve the agent (`registry.get(name, autonomous)`), which yields its
    filtered `tools` and rendered system prompt.
 2. Build the dispatcher: `dispatcher = self.__make_dispatcher(agent_name, session_id)`
-   — injecting the gate, session, and the single `_EngineServices` adapter,
-   reading the *current* `ProjectIndex`. No `autonomous` flag is passed; tools
-   read `session.effective_autonomous`.
+   — injecting the gate, session, the single `_EngineServices` adapter, and
+   `mode`/`project_root` (read live from the current workflow mode and bound
+   project, independent of each other — a Problem-Solver run still carries
+   `project_root` if a project happens to be bound). No `autonomous` flag is
+   passed; tools read `session.effective_autonomous`.
 3. Call `__run_agent_turn(..., tools=tools_for_agent(agent.tools),
    tool_dispatch=dispatcher.dispatch, stop_after_tools=lambda: dispatcher.stop_requested)`.
 
@@ -388,15 +400,19 @@ Inside the loop:
 So the handler's returned **JSON string becomes the `content` of a
 `tool_result` block**, fed back to the model on the next iteration. The model
 reads it, reasons, and either calls more tools or ends its turn. After the loop,
-the engine reads `dispatcher.published_ids` (what a leaf produced) and used
-`dispatcher.stop_requested` to decide early exit.
+the engine reads `dispatcher.returned_output` (what a leaf returned via
+`return_result`) and used `dispatcher.stop_requested` to decide early exit. A
+mutating tool call (`filesystem`/`edit_file`) is additionally bracketed by
+`__checkpoint_prepare`/`__checkpoint_commit` (§12.1 in INTERNALS.md) — outside
+this loop, around the `tool_dispatch` call — so every dispatch in this diagram
+that touches a file also earns a mirror commit.
 
 ---
 
 ## 11. Full end-to-end sequence
 
 A concrete trace of the guide calling `run_subagent`, which spawns a leaf
-that publishes an artifact:
+author that writes a file:
 
 ```text
  LLM (guide)                  Engine / ToolDispatcher              tools/ Tool classes
@@ -409,19 +425,22 @@ that publishes an artifact:
    │                                        engine.__run_subagent: builds a NEW
    │                                        ToolDispatcher for the leaf, runs its turn
    │                                                    │
-   │                          leaf LLM  tool_use: publish_artifact ─► dispatch(…)
-   │                                                    └─► PublishArtifactTool(ctx).handle(…)
-   │                                                          └─► self.context.workspace.publish(…)
-   │                                                          └─► self.context.published_ids.append(id)
-   │                                        leaf turn ends → published_ids = [id]
+   │                          leaf LLM  tool_use: filesystem(create_file) ─► dispatch(…)
+   │                                                    └─► FilesystemTool(ctx).handle(…)
+   │                                                          └─► writes the real file on disk
+   │                                        (engine, outside the tool) commits the mirror,
+   │                                        appends a new_revision jsonl entry (§7, INTERNALS.md)
+   │                          leaf LLM  tool_use: return_result({"primary_path": "specs/a.md", …})
+   │                                                    └─► self.context.returned_output = {...}
+   │                                        leaf turn ends → returned_output = {"primary_path": …}
    │                                                    ▼
-   │  tool_result: {"artifact_ids":[id]} ◄──  json.dumps({"artifact_ids": published_ids})
+   │  tool_result: {"primary_path": "specs/a.md", …} ◄──  json.dumps(returned_output)
    │  …reasons, calls next tool…
 ```
 
-The gate-backed tools (`ask_user`, `request_user_review_artifact`,
-`escalate_blocker`) follow the same path but their handler `await`s
-`ctx.gate.fire_*`, which sends a `kind=request` frame to the VS Code client and
+The gate-backed tools (`ask_user`, `escalate_blocker`) follow the same path
+but their handler `await`s `ctx.gate.fire_*`, which sends a `kind=request`
+frame to the VS Code client and
 blocks on a future until the user responds — see
 [INTERNALS.md §15 "User gate"](INTERNALS.md).
 
@@ -463,7 +482,6 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [tools/_&lt;tool&gt;.py](../src/kodo/tools/) | One `Tool` subclass per tool, with `handle(self, tool_input) -> str`. |
 | [tools/_dispatch.py](../src/kodo/tools/_dispatch.py) | `_TOOL_CLASSES` table, `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME`. |
 | [tools/_paths.py](../src/kodo/tools/_paths.py) | `resolve_within` path guard (file-I/O + shell). |
-| [tools/_serialize.py](../src/kodo/tools/_serialize.py) | `serialize_artifact` (used by `read_artifact`). |
 | [subagents/_registry.py](../src/kodo/subagents/_registry.py) | Renders each agent's `## Tools` prompt section from spec metadata; autonomous filtering. |
 | [llms/anthropic/_claude.py](../src/kodo/llms/anthropic/_claude.py) | Converts `ToolSpec` → API `tools` param; parses `tool_use` → `ToolCallEvent`. |
 | [llms/_interface.py](../src/kodo/llms/_interface.py) | `Message`, `ToolCallEvent`, `TurnEnd`, the `stream_query` contract. |
@@ -471,4 +489,4 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [runtime/_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator` (satisfies `GateLike`). |
 
 See also [INTERNALS.md §6A](INTERNALS.md) for the package's place in the
-dependency graph, and `src/kodo/CLAUDE.md` for the import-layer rule.
+dependency graph, and [CLAUDE.md](../CLAUDE.md) for the import-layer rule.

@@ -16,8 +16,8 @@ ROLLBACK: ToolSpec = ToolSpec(
     user_description="Roll back to a checkpoint",
     description=(
         "Invoke the rollback procedure.  "
-        "Restores src/ and gen/ from the target mirror commit, clears the workspace, "
-        "and starts a fresh Guide session.  "
+        "Moves the project's checkpoint mirror back to the target commit, restoring "
+        "specs/, src/, and test/ to that point in history, and resets the session.  "
         "In interactive mode the Guide MUST confirm with the user via ask_user "
         "before calling this.  In autonomous mode it decides and documents via a "
         "<kodo_info> callout; there is no user to confirm with."
