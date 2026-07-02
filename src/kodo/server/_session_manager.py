@@ -148,11 +148,20 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     async def bind_connection(self, session: Session, conn: Connection) -> None:
-        """Attach a live connection to *session* (replays buffered events)."""
+        """Attach a live connection to *session*.
+
+        Does not replay the session's buffered backlog — the caller must send
+        the reconnect base layer (hello.ack/state/session.history) first, then
+        call :meth:`replay_backlog` (see :meth:`SessionChannel.attach`).
+        """
         self.__cancel_grace(session.id)
         self.__live_conn[session.id] = conn.id
         self.__conn_session[conn.id] = session.id
         await session.channel.attach(conn)
+
+    async def replay_backlog(self, session: Session) -> None:
+        """Flush *session*'s buffered backlog now that the base layer is sent."""
+        await session.channel.replay_backlog()
 
     def drop_connection(self, conn: Connection) -> None:
         """Handle a dropped connection: detach + start the grace window."""

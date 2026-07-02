@@ -112,9 +112,26 @@ class SessionChannel:
         return self.__conn
 
     async def attach(self, conn: Connection) -> None:
-        """Bind a live connection and replay any buffered frames to it."""
+        """Bind a live connection. Does not replay the backlog.
+
+        Callers must send the reconnect "base layer" (hello.ack, state,
+        session.history, …) via :meth:`send` first, then call
+        :meth:`replay_backlog` — never the other way around. Otherwise a
+        buffered mid-turn frame (e.g. a stray ``tool_call``) can reach the
+        webview before ``session.history`` does, tripping the reducer's
+        "history already applied" guard and silently dropping the scrollback
+        (see kodo-vsix reducer.ts ``session_history``).
+        """
         self.__conn = conn
-        await self.__outbox.drain_to(conn.ws)
+
+    async def replay_backlog(self) -> None:
+        """Flush any frames buffered while disconnected to the live connection.
+
+        Must be called only after the reconnect base layer has already been
+        sent on this connection (see :meth:`attach`).
+        """
+        if self.__conn is not None:
+            await self.__outbox.drain_to(self.__conn.ws)
 
     def detach(self, conn: Connection | None = None) -> None:
         """Unbind the connection (buffer subsequent frames).
