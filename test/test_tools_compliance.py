@@ -628,6 +628,20 @@ async def test_create_new_project_compliance(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_web_search_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path, agent_name="investigator")
+    # Placeholder handler returns the empty, schema-compliant results/note shape.
+    parsed = _assert_compliant(
+        "web_search",
+        await _dispatch(d, "web_search", {"query": "how to parse RFC 3339 in python"}),
+    )
+    assert parsed["results"] == []
+    assert parsed["note"]
+    # Missing query is rejected with the universal error envelope.
+    _assert_compliant("web_search", await _dispatch(d, "web_search", {}))
+
+
 def test_all_dispatchable_tools_are_covered() -> None:
     """Fail if a new dispatchable tool is added without a compliance scenario."""
     covered = {
@@ -651,6 +665,7 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "finalize_project",
         "disable_autonomous_mode",
         "create_new_project",
+        "web_search",
     }
     assert set(DISPATCHABLE_TOOLS_BY_NAME) == covered, (
         "Dispatchable tools changed; add a compliance scenario for: "

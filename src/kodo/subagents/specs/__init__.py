@@ -22,13 +22,16 @@ from ._architect_critic import ARCHITECT_CRITIC
 from ._code_critic import CODE_CRITIC
 from ._coder import CODER
 from ._compactor import COMPACTOR
+from ._developer import DEVELOPER
 from ._e2e_test_code_critic import E2E_TEST_CODE_CRITIC
 from ._e2e_test_coder import E2E_TEST_CODER
 from ._e2e_test_design_critic import E2E_TEST_DESIGN_CRITIC
 from ._e2e_test_designer import E2E_TEST_DESIGNER
 from ._functional_design_critic import FUNCTIONAL_DESIGN_CRITIC
 from ._functional_designer import FUNCTIONAL_DESIGNER
+from ._investigator import INVESTIGATOR
 from ._narrative_author import NARRATIVE_AUTHOR
+from ._planner import PLANNER
 from ._requirements_author import REQUIREMENTS_AUTHOR
 from ._requirements_critic import REQUIREMENTS_CRITIC
 from ._session_titler import SESSION_TITLER
@@ -45,13 +48,16 @@ __all__ = [
     "CODER",
     "CODE_CRITIC",
     "COMPACTOR",
+    "DEVELOPER",
     "E2E_TEST_CODER",
     "E2E_TEST_CODE_CRITIC",
     "E2E_TEST_DESIGNER",
     "E2E_TEST_DESIGN_CRITIC",
     "FUNCTIONAL_DESIGNER",
     "FUNCTIONAL_DESIGN_CRITIC",
+    "INVESTIGATOR",
     "NARRATIVE_AUTHOR",
+    "PLANNER",
     "REQUIREMENTS_AUTHOR",
     "REQUIREMENTS_CRITIC",
     "SESSION_TITLER",
@@ -83,6 +89,9 @@ ALL_SUBAGENTS: tuple[SubAgentSpec, ...] = (
     E2E_TEST_DESIGN_CRITIC,
     E2E_TEST_CODER,
     E2E_TEST_CODE_CRITIC,
+    INVESTIGATOR,
+    PLANNER,
+    DEVELOPER,
     TOOLCHAIN_PYTHON,
     TOOLCHAIN_DEPSMGR,
     COMPACTOR,

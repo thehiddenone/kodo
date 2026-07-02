@@ -49,6 +49,7 @@ from ._spec import (
 from ._toolchain_build import TOOLCHAIN_BUILD
 from ._toolchain_deps import TOOLCHAIN_DEPS
 from ._visibility import build_detail_rows, stringify_value
+from ._web_search import WEB_SEARCH
 
 __all__ = [
     "ALL_TOOLS",
@@ -78,6 +79,7 @@ __all__ = [
     "VISIBILITY_HIDDEN",
     "VISIBILITY_VALUES",
     "VISIBILITY_VISIBLE",
+    "WEB_SEARCH",
     "SecurityImpact",
     "ToolSpec",
     "augment_output_schema",
@@ -110,4 +112,5 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     RUN_SUBAGENT,
     TOOLCHAIN_BUILD,
     TOOLCHAIN_DEPS,
+    WEB_SEARCH,
 )

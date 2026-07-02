@@ -291,6 +291,9 @@ class LlamaServer:
         cfg = self.__config
         cmd: list[str] = [
             str(cfg.executable),
+            "--log-timestamps",
+            "--log-file",
+            str(cfg.kodo_dir / "logs" / "llama-server.log"),
             "--model",
             str(cfg.model_path),
             "--host",

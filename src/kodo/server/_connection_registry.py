@@ -136,9 +136,20 @@ class ConnectionRegistry:
 
     def __maybe_shutdown(self) -> None:
         self.__idle_timer = None
-        if self.__active <= 0 and self.__idle_cb is not None:
-            _log.info("No clients for %.0fs — self-reaping singleton server", self.__idle_grace)
-            self.__idle_cb()
+        if self.__active > 0 or self.__idle_cb is None:
+            return
+        if self.__manager.any_running():
+            # A turn is still streaming (e.g. every window is mid-reload).
+            # Reaping now would destroy work a reconnecting window is about to
+            # resume — defer for another grace period and check again.
+            _log.info(
+                "No clients for %.0fs but a turn is still running — deferring self-reap",
+                self.__idle_grace,
+            )
+            self.__arm_idle()
+            return
+        _log.info("No clients for %.0fs — self-reaping singleton server", self.__idle_grace)
+        self.__idle_cb()
 
     async def __dispatch(self, conn: Connection, raw: str) -> None:
         try:

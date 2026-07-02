@@ -100,7 +100,7 @@ ESCALATE_BLOCKER: ToolSpec = ToolSpec(
         '(`reason: "feedback_contradiction"`).',
         "A red/green implementation loop stops converging "
         '(`reason: "test_iteration_cap"`), or a planned test cannot be '
-        'implemented as observable behavior '
+        "implemented as observable behavior "
         '(`reason: "non_behavioral_test_in_plan"`).',
         "Validation against a dependency graph fails "
         '(`reason: "dag_validation_failed"`), or a reopen cascade exceeds '

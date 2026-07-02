@@ -11,7 +11,10 @@
 > this: it reuses a live server (port busy / pid alive) and only spawns when the
 > file is absent or stale; a lost launch race (server exit 1) is expected and the
 > client just connects to the winner. The singleton **self-reaps** ~30 s after the
-> last window disconnects (and removes the discovery file). Per-window ownership,
+> last window disconnects (and removes the discovery file) — unless a turn is
+> still mid-flight (any engine in phase `running`), in which case the reap is
+> deferred another grace period so a reloading window can reconnect and resume
+> the live turn. Per-window ownership,
 > the disconnect grace window, and the persisted `owner.json` are covered in
 > [SESSIONS.md](SESSIONS.md); cross-session LLM scheduling in
 > [LLM_GATEWAY.md](LLM_GATEWAY.md).

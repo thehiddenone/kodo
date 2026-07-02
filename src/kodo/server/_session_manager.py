@@ -88,6 +88,15 @@ class SessionManager:
         sid = self.__conn_session.get(conn_id)
         return self.__sessions.get(sid) if sid else None
 
+    def any_running(self) -> bool:
+        """Whether any loaded session's engine is mid-turn (phase ``running``).
+
+        Consulted by the idle self-reap: a window reload can leave the server
+        briefly with zero connections while a turn is still streaming; reaping
+        then would kill work the reconnecting window is about to drain.
+        """
+        return any(s.engine.session.phase == "running" for s in self.__sessions.values())
+
     # ------------------------------------------------------------------
     # Open / create
     # ------------------------------------------------------------------

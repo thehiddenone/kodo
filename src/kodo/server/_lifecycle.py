@@ -13,6 +13,7 @@ one is written for this process.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -121,19 +122,43 @@ class Lifecycle:
     def install_signal_handlers(self, stop_callback: Callable[[], None]) -> None:
         """Install SIGTERM / SIGINT handlers that trigger graceful shutdown.
 
+        Registered on the running event loop (``loop.add_signal_handler``), not
+        via ``signal.signal``: a plain signal handler calling
+        ``asyncio.Event.set`` appends the waiter wake-up with ``call_soon``,
+        which does NOT write the loop's self-pipe — a fully idle loop (no
+        connections, no timers due) stays blocked in ``select()`` and the
+        server keeps running (holding the port and the discovery file) until
+        unrelated I/O happens to wake it. ``add_signal_handler`` delivers the
+        callback through the self-pipe, so shutdown is immediate even when
+        idle. Falls back to ``signal.signal`` where the loop API is unavailable
+        (Windows, or no running loop).
+
         Args:
             stop_callback (Callable[[], None]): Zero-argument callable invoked
                 on signal. Typically ``asyncio.Event.set``.
         """
 
-        def _handle(signum: int, _frame: object) -> None:
-            name = signal.Signals(signum).name
+        def _trigger(name: str) -> None:
             _log.info("Received %s — initiating graceful shutdown", name)
             self.__shutdown_requested = True
             stop_callback()
 
-        signal.signal(signal.SIGTERM, _handle)
-        signal.signal(signal.SIGINT, _handle)
+        def _sync_handler(signum: int, _frame: object) -> None:
+            _trigger(signal.Signals(signum).name)
+
+        try:
+            loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            if loop is not None:
+                try:
+                    loop.add_signal_handler(sig, _trigger, signal.Signals(sig).name)
+                    continue
+                except (NotImplementedError, RuntimeError):
+                    pass  # Windows / non-main thread — fall back below
+            signal.signal(sig, _sync_handler)
 
     # ------------------------------------------------------------------
     # Discovery-file IO

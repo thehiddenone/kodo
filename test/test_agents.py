@@ -595,8 +595,15 @@ def test_real_problem_solver_renders_subagent_roster() -> None:
     registry = AgentRegistry(_REAL_AGENTS_DIR)
     prompt = registry.get("problem_solver").system_prompt
     assert "{PLACEHOLDER:SUBAGENTS}" not in prompt
-    # Problem Solver spawns only toolchain_python (a standalone solo).
+    # Problem Solver orchestrates four standalone solos: its own investigate ->
+    # plan -> develop trio plus the toolchain setup agent.
+    assert "| `run_subagent` | `investigator` | — | standalone |" in prompt
+    assert "| `run_subagent` | `planner` | — | standalone |" in prompt
+    assert "| `run_subagent` | `developer` | — | standalone |" in prompt
     assert "| `run_subagent` | `toolchain_python` | — | standalone |" in prompt
+    assert "### Investigator (`investigator`)" in prompt
+    assert "### Planner (`planner`)" in prompt
+    assert "### Developer (`developer`)" in prompt
     assert "### Python Toolchain (`toolchain_python`)" in prompt
 
 
@@ -612,9 +619,7 @@ def test_real_guide_roster_reproduces_pipeline_pairs() -> None:
     )
     # test_designer is paired with test_design_critic (a pure critic, absorbed
     # into the author's row); test_coder is now a plain solo row.
-    assert (
-        "| `run_author_critic_iteration` | `test_designer` | `test_design_critic` |" in section
-    )
+    assert "| `run_author_critic_iteration` | `test_designer` | `test_design_critic` |" in section
     assert "| `run_subagent` | `test_coder` | — | workflow |" in section
     # The two product-level end-to-end stages, each an author/critic pair.
     assert (

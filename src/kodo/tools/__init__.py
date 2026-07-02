@@ -55,6 +55,7 @@ from ._run_subagent import RunSubagentTool
 from ._tool import Tool
 from ._toolchain_build import ToolchainBuildTool
 from ._toolchain_deps import ToolchainDepsTool
+from ._web_search import WebSearchTool
 
 __all__ = [
     "DISPATCHABLE_TOOLS_BY_NAME",
@@ -90,6 +91,7 @@ __all__ = [
     "ToolDispatcher",
     "ToolchainBuildTool",
     "ToolchainDepsTool",
+    "WebSearchTool",
     "resolve_logical",
     "resolve_within",
     "tools_for_agent",

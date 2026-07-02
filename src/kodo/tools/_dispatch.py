@@ -37,6 +37,7 @@ from kodo.toolspecs import (
     RUN_SUBAGENT,
     TOOLCHAIN_BUILD,
     TOOLCHAIN_DEPS,
+    WEB_SEARCH,
     ToolSpec,
 )
 
@@ -63,6 +64,7 @@ from ._run_subagent import RunSubagentTool
 from ._tool import Tool
 from ._toolchain_build import ToolchainBuildTool
 from ._toolchain_deps import ToolchainDepsTool
+from ._web_search import WebSearchTool
 
 __all__ = ["DISPATCHABLE_TOOLS_BY_NAME", "ToolDispatcher", "tools_for_agent"]
 
@@ -91,6 +93,7 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (CREATE_NEW_PROJECT, CreateNewProjectTool),
     (TOOLCHAIN_BUILD, ToolchainBuildTool),
     (TOOLCHAIN_DEPS, ToolchainDepsTool),
+    (WEB_SEARCH, WebSearchTool),
 )
 
 _CLASSES_BY_NAME: dict[str, type[Tool]] = {spec.name: cls for spec, cls in _TOOL_CLASSES}
