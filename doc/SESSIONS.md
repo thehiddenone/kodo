@@ -160,21 +160,28 @@ replays it exactly where it appeared live, with the same collapsible UI.
 
 ### Main turns
 
-A main turn's messages are normally flushed to `session.jsonl` at the end of the
-turn. The one exception is the **spawning-tool prefix**: right before the engine
-dispatches a `run_subagent` / `run_author_critic_iteration` call, it flushes the
-not-yet-persisted prefix of the turn — **including the assistant message that
-contains the spawning `tool_use`** — to disk. (See `_SUBAGENT_SPAWNING_TOOLS`
-and the `flush_before` argument to `__run_agent_turn`.)
+A main turn's messages are flushed to `session.jsonl` **before every tool
+dispatch** — not just sub-agent spawns. `__run_agent_turn`'s `_flush()` runs
+once immediately after the assistant `tool_use` message is appended (before any
+tool in the batch runs) and again after the tool results land, so the persisted
+prefix — **including the assistant message that contains the `tool_use`** — is
+never behind an in-flight tool call. The added latency is negligible next to the
+LLM round-trip the flush is nested inside.
 
-This is what makes resume possible: if the process dies mid-sub-agent, the main
-log ends with a dangling assistant `tool_use` that has **no** following
-`tool_result`. That dangling `tool_use` is the signal that a sub-agent was
-in-flight.
+This is what makes resume possible: if the process dies (or a tool's *own* side
+effect reloads the client — e.g. `create_new_project` firing
+`workspace.add_folder`, which reloads the VS Code window into a multi-root
+workspace) mid-dispatch, the main log ends with a dangling assistant `tool_use`
+that has **no** following `tool_result`. That dangling `tool_use` is the signal
+that a tool was in-flight. (Before this, only `_SUBAGENT_SPAWNING_TOOLS` were
+flushed before dispatch, so the very turn that triggered a workspace reload was
+the one guaranteed to still be unpersisted — and thus missing from the replayed
+history — when the client reconnected.)
 
-Turns that contain no sub-agent (plain text, `guided_dev_status`, `ask_user`, …)
-are *not* flushed until they complete, so a crash mid-`ask_user` leaves nothing
-half-written and the existing `pending_prompt` re-surfacing path is unaffected.
+Turns that never reach a tool dispatch (a plain-text reply) still flush only at
+the end, so a crash before any tool runs leaves nothing half-written and the
+existing `pending_prompt` re-surfacing path — which covers `ask_user`, whose
+prompt is *not* a persisted tool call — is unaffected.
 
 ### Subsession turns
 
@@ -248,30 +255,38 @@ with their own `.jsonl` evolution logs (STATE_AND_LIFECYCLE.md §1.1/§3), read
 on demand, never reconstructed at startup. Then:
 
 - **If the last main message is a dangling assistant `tool_use`**
-  (`__has_dangling_tool_use()`), a sub-agent was interrupted. The engine
-  schedules `__resume_main_turn()`:
+  (`__has_dangling_tool_use()`), a tool was interrupted mid-dispatch. Because
+  every tool now flushes before dispatch, that call may be *any* tool, not just
+  a sub-agent spawn, so the engine schedules `__resume_main_turn()`, which
+  resolves each pending `tool_use` **by kind**:
   1. Build a **replay ledger** from the `subsession_*` markers recorded after the
      dangling assistant message. Each `subsession_start` paired with a
      `subsession_end` is *completed* (its stored `result` is reused); an unpaired
      start is the single *active* subsession.
-  2. Re-dispatch the dangling `tool_use`(s) through the normal dispatcher. During
-     this replay, each `run_subagent` call consumes the next ledger entry instead
-     of starting fresh:
-     - a **completed** subsession returns its stored result immediately —
-       whatever it wrote to real files via `filesystem`/`edit_file`/
-       `document_feedback` is already on disk with its own `.jsonl` history,
-       so there is nothing to rebuild and no LLM call;
-     - the **active** subsession is rehydrated from its `subsessions/<id>.jsonl`
+  2. For each dangling `tool_use`:
+     - a **sub-agent spawn** (`run_subagent` / `run_author_critic_iteration`) is
+       re-dispatched through the normal dispatcher, where it consumes the next
+       ledger entry instead of starting fresh: a **completed** subsession returns
+       its stored result immediately (whatever it wrote to real files is already
+       on disk with its own `.jsonl` history — nothing to rebuild, no LLM call);
+       the **active** subsession is rehydrated from its `subsessions/<id>.jsonl`
        log and driven to completion **live**, then closed (`subsession_end`
        marker + `subsession.ended`).
+     - **any other tool** (`filesystem`, `edit_file`, `run_command`, read-only
+       tools, …) is **not** re-executed — its side effects may already have
+       landed and there is no per-tool dedup ledger — so it gets a synthesized
+       `error`-envelope `tool_result` (`__interrupted_tool_result`) keyed to the
+       original `tool_use_id`, telling the model the call didn't complete and was
+       not retried.
   3. Append the resulting `tool_result`s to `__main_messages`, persist them, and
      continue the **interrupted entry agent's** turn live (the next LLM call).
      The entry agent is recovered from the `entry_agent` tag on the dangling
      assistant message (`__last_entry_agent`), not assumed to be the Guide
-     — any agent permitted to spawn can be the one resumed.
+     — any entry agent can be the one resumed.
 
   This is why the user sees Kōdo "recover into that mode, load both the main
-  session and the active subsession, and resume the sub-agent's subsession."
+  session and the active subsession, and resume the sub-agent's subsession"
+  when a spawn was in flight.
 
 - **Otherwise**, if `transient.json` holds a `pending_prompt` (an unanswered
   `ask_user`/approval), it is re-surfaced as before. With neither, the session is

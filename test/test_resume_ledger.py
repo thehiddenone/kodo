@@ -9,6 +9,9 @@ agent receives the sub-agent's real output on resume instead of an empty stub.
 
 from __future__ import annotations
 
+import json
+
+from kodo.llms import Message
 from kodo.runtime import WorkflowEngine
 
 
@@ -106,3 +109,61 @@ def test_only_markers_after_last_assistant_count() -> None:
     ledger = _ledger_for(lines)
     assert [entry["subsession_id"] for entry in ledger] == ["new"]
     assert ledger[0]["result"] == {"summary": "fresh", "schema_compliance": True}
+
+
+def _engine_with_messages(messages: list[Message]) -> WorkflowEngine:
+    """A WorkflowEngine with only ``__main_messages`` seeded, bypassing __init__."""
+    engine = object.__new__(WorkflowEngine)
+    engine._WorkflowEngine__main_messages = messages  # type: ignore[attr-defined]
+    return engine
+
+
+def test_dangling_tool_use_detected_for_non_spawn_tool() -> None:
+    """A non-spawn tool cut off mid-dispatch is now a resumable dangling turn.
+
+    Every tool-calling turn flushes its assistant ``tool_use`` before dispatch,
+    so an interrupted ``run_command`` (not just a sub-agent spawn) leaves the
+    dangling assistant message resume must resolve.
+    """
+    engine = _engine_with_messages(
+        [
+            Message(role="user", content="do it"),
+            Message(
+                role="assistant",
+                content=[{"type": "tool_use", "id": "t1", "name": "run_command"}],
+            ),
+        ]
+    )
+    assert engine._WorkflowEngine__has_dangling_tool_use() is True  # type: ignore[attr-defined]
+
+
+def test_no_dangling_when_tool_result_present() -> None:
+    """A completed tool call (result already persisted) is not a resumable turn."""
+    engine = _engine_with_messages(
+        [
+            Message(
+                role="assistant",
+                content=[{"type": "tool_use", "id": "t1", "name": "run_command"}],
+            ),
+            Message(role="user", content=[{"type": "tool_result", "tool_use_id": "t1"}]),
+        ]
+    )
+    assert engine._WorkflowEngine__has_dangling_tool_use() is False  # type: ignore[attr-defined]
+
+
+def test_interrupted_tool_result_is_a_failure_envelope() -> None:
+    """The stand-in result for a non-re-executed tool is a well-formed error block.
+
+    Resume must not re-run an arbitrary interrupted tool (its side effects may
+    already have landed), so it hands the model an ``error`` envelope keyed to
+    the original ``tool_use_id`` instead — read back as a failure and rendered
+    with a failure badge.
+    """
+    block = WorkflowEngine._WorkflowEngine__interrupted_tool_result(  # type: ignore[attr-defined]
+        "t1", "run_command"
+    )
+    assert block["type"] == "tool_result"
+    assert block["tool_use_id"] == "t1"
+    payload = json.loads(block["content"])
+    assert "error" in payload
+    assert "run_command" in payload["error"]

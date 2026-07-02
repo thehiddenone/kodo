@@ -165,17 +165,24 @@ The engine appends to the session log *before* it acts on the message it just re
 4. Engine writes each tool result to the session log.
 5. Engine sends the next API call (with the appended messages).
 
-A crash at any point between steps 1 and 5 leaves the session log either at step 2 (model response logged, tool result missing) or at step 4 (both logged, next call not yet issued). Both states are recoverable: resume reads the log, and either replays from the partial-tool-call state or sends the next API call directly.
+Step 2 is flushed to disk **before every tool dispatch** (not only sub-agent spawns): `__run_agent_turn`'s `_flush()` runs once before the tool batch and again after the results land. So the persisted transcript never trails an in-flight tool call, and even a tool whose *own* side effect interrupts the process — e.g. `create_new_project` firing `workspace.add_folder`, which reloads the VS Code window into a multi-root workspace — has its `tool_use` already on disk when the client reconnects (previously the reload could race ahead of the flush and the whole in-flight turn was lost from the replayed history). The added latency is negligible next to the LLM round-trip the flush is nested inside.
+
+A crash at any point between steps 1 and 5 therefore leaves the session log either at step 2 (model response logged, tool result missing) or at step 4 (both logged, next call not yet issued). Both states are recoverable: resume reads the log, and either resolves the partial-tool-call state (§4.4) or sends the next API call directly.
 
 ### 4.3 Resume on cold start
 
-For an interrupted main turn — the last persisted message is an assistant message with a `tool_use` block and no matching `tool_result` — the engine rebuilds a replay ledger from the markers recorded after that point (`__build_replay_ledger`): a subsession paired with a `subsession_end` marker is `completed` and its stored structured result is reused verbatim; the one unpaired (active) subsession is rehydrated from its own log and driven to completion live. Once every pending tool call is resolved, the engine appends the tool results and continues the interrupted turn.
+For an interrupted main turn — the last persisted message is an assistant message with a `tool_use` block and no matching `tool_result` — the engine rebuilds a replay ledger from the markers recorded after that point (`__build_replay_ledger`): a subsession paired with a `subsession_end` marker is `completed` and its stored structured result is reused verbatim; the one unpaired (active) subsession is rehydrated from its own log and driven to completion live. Once every pending tool call is resolved (§4.4), the engine appends the tool results and continues the interrupted turn.
 
 The model receives the same context it had before the crash. From its perspective the session continues uninterrupted. There is no artifact-index reconciliation step in this path anymore — a sub-agent's output is whatever it returned via `return_result`, or a bare `{schema_compliance: False}` fallback if it never called it.
 
-### 4.4 Tool-call re-execution
+### 4.4 Tool-call resolution on resume
 
-A pending tool call on resume is re-executed through the same `__dispatch_tool_calls` path a live turn uses — there is no special-cased dedup ledger per tool. For a file-mutating tool (`filesystem`/`edit_file`/`run_command`), re-running is safe by construction: `create_file` fails loudly if the file already exists, `edit_file`'s string-match either still applies cleanly or fails with a clear error, and the checkpoint mirror's commit is a no-op when nothing actually changed (`commit_for_path` returns `None` and no `new_revision` entry is appended a second time). Read-only tools (`read_file`, `guided_dev_status`) are naturally idempotent.
+Because every tool now flushes its `tool_use` before dispatch, a dangling call on resume may be *any* tool, not just a sub-agent spawn. The engine resolves each pending call by kind (`__resume_main_turn`):
+
+- **Sub-agent spawns** (`run_subagent`, `run_author_critic_iteration`) are re-dispatched through the replay ledger (§4.3). This is safe because the ledger returns a completed subsession's stored result rather than re-running it, and only the single active subsession is driven live.
+- **Every other tool** (`filesystem`, `edit_file`, `run_command`, read-only tools, …) is **not** re-executed. Its side effects may already have landed before the interruption and there is no per-tool dedup ledger to reconcile against, so re-running could duplicate a shell command or a file write. Instead the engine synthesizes a stand-in `tool_result` — an `error` envelope keyed to the original `tool_use_id` (`__interrupted_tool_result`) — telling the model the call did not complete and was not retried, so the transcript stays well-formed and the model can decide whether to re-issue it. The failure envelope reads back as a failure via `tool_result_succeeded` and renders with a failure badge.
+
+Resume fires whenever a dangling `tool_use` is present, independent of whether a project is bound (the project bind still happens first when one was persisted, since sub-agent-spawn replay and checkpointing need its layout).
 
 ### 4.5 Context compaction
 
@@ -226,7 +233,7 @@ This is the happy path: user opens a project in VS Code with a previously initia
 4. Extension sends `hello`; server responds with `hello.ack` embedding the current state snapshot (WS_PROTOCOL.md §4.1).
 5. Extension renders the Kodo panel from the state snapshot.
 6. The engine drives whatever was found:
-   - **Session existed and was resumed** — the engine loads `transient.json` and replays `session.jsonl` to restore the message history (§4.1), then resumes the next turn, re-executing any pending tool call per §4.4. The Guide's next turn happens automatically; the user sees its `agent.tokens` stream and whichever side effect it produces (a sub-agent spawning, a prompt appearing, a file landing).
+   - **Session existed and was resumed** — the engine loads `transient.json` and replays `session.jsonl` to restore the message history (§4.1), then resumes the next turn, resolving any pending tool call per §4.4 (a spawn is replayed; any other in-flight tool is stubbed as interrupted). The Guide's next turn happens automatically; the user sees its `agent.tokens` stream and whichever side effect it produces (a sub-agent spawning, a prompt appearing, a file landing).
    - **Session was freshly created** — the engine issues its first turn with a "cold start" event. The Guide decides what to do: most commonly, no Narrative document present → drive intake by sending a `prompt.question` asking the user to describe what to build (WS_PROTOCOL.md §6.1, §7.1).
 
 No engine-level branch table selects "what to do next" — that table lives in the Guide's prompt. The engine's job at startup is just to put the Guide in a position to decide (now backed by `guided_dev_status` instead of an index summary).
@@ -245,8 +252,8 @@ On any cold start, regardless of the reason for the previous shutdown:
 
 1. The session is located/resumed (§3, §6).
 2. The Guide session is rehydrated (engine loads `transient.json` + replays `session.jsonl` per §4.1).
-3. Any dangling tool call (a main turn interrupted while a sub-agent held the floor) is resolved per §4.3.
-4. Sub-agent subsessions finish their pending tool calls; their results flow back into the resumed main turn; the entry agent's next turn resumes.
+3. Any dangling tool call (a main turn interrupted mid tool-dispatch — a sub-agent spawn or any other tool) is resolved per §4.4.
+4. Sub-agent subsessions finish their pending tool calls and any other pending call gets its stand-in result; the results flow back into the resumed main turn; the entry agent's next turn resumes.
 
 There is no "are we recovering?" branch. The procedure that handles clean restarts handles crashes; the only difference is whether the last persisted message has a dangling `tool_use`. The Guide does not need to know it was interrupted — its message array is identical to what it was before the crash.
 
@@ -255,7 +262,7 @@ There is no "are we recovering?" branch. The procedure that handles clean restar
 | Recovered | Not recovered |
 |---|---|
 | Guide session (full message history) | In-memory engine state outside session logs |
-| Sub-agent conversation context (full message history) | Tool calls in flight at moment of crash — they are re-run (§4.4) |
+| Sub-agent conversation context (full message history) | A non-spawn tool call in flight at the moment of crash — its result is stubbed as interrupted, not re-run, since its side effects may already have landed (§4.4) |
 | Every document on disk, exactly as last written, with its full `.jsonl` evolution history | Anything the engine held only in RAM (e.g., partial parsing of a streaming response) |
 | The Guide's pending user prompts (rebuilt from session log + outbox) | — |
 
@@ -307,7 +314,7 @@ The user's VCS sees a large file-change set and decides how to record it. Kodo d
 | Checkpoint mirror (both workflow modes) | `kodo.mirror.ShadowMirror` + `runtime._checkpoints.RootMirrorManager` | Real `GIT_DIR`/`GIT_WORK_TREE` split over the actual project tree; commits after every mutating tool call. |
 | Document acceptance / review gate | Engine (`__finalize_document`, `runtime._engine`) | Triggered from the post-dispatch hook after `document_feedback(accept: true)`; no tool fires this — autonomous mode auto-accepts, interactive mode drives the approval gate directly. |
 | Session log append (Guide and sub-agents) | Engine (LLM call wrapper) | Append-before-respond invariant (§4.2). |
-| Session rehydration | Engine | Reads session log, computes resume point, re-runs pending tool call. |
+| Session rehydration | Engine | Reads session log, computes resume point, resolves pending tool call (spawn replayed, other tools stubbed). |
 | Context compaction | Runtime (`runtime/_engine.py`, `compactor` sub-agent) | Auto-triggers at 90% of the current model's context window (or manual `compact.now`, or a switch to a smaller-window model); summarises in place via a `compaction` marker; surfaces `context.stats` / `context.compacting` / `context.compacted` (§4.5). |
 | Session location at startup | `runtime._bootstrap.locate_guide_session` | Workspace-tier marker + `sessions/` lookup only — no project-tier index to populate. |
 | Review-gate and user-prompt blocking | Runtime (`runtime/_gates.py`) | Resolves `ask_user` / document-review Futures; in autonomous mode auto-accepts review gates and withholds `ask_user`. |

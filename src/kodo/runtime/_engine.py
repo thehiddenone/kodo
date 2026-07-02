@@ -155,10 +155,17 @@ _COMPACTION_THRESHOLD = 0.9
 # (``__main_messages``); switching workflow mode only swaps the system prompt
 # and tool set, so the conversation continues seamlessly across a mode change.
 #
-# Tools whose dispatch spawns an isolated sub-agent subsession. When the main
-# agent calls one, the turn's message prefix (including the spawning assistant
-# message) is flushed to ``session.jsonl`` BEFORE dispatch, so a crash mid-
-# subagent leaves the dangling ``tool_use`` on disk and the run can be resumed.
+# ``__run_agent_turn`` flushes the turn's message prefix (including the
+# spawning assistant message) to ``session.jsonl`` BEFORE dispatching *any*
+# tool call, not just these two — see the flush note on that method. That
+# means a crash (or a client-visible side effect a tool triggers mid-dispatch,
+# e.g. a workspace-folder reload) always leaves a dangling ``tool_use`` on
+# disk. Cold-restart resume (``__resume_main_turn``) only safely *re-dispatches*
+# that dangling call when it is one of these two: their sub-agent replay
+# ledger guarantees a completed subsession is never re-run. Any other dangling
+# tool call is reported back to the model as interrupted rather than
+# re-executed, since re-running an arbitrary tool (a shell command, a file
+# write, ...) could duplicate its side effects.
 _SUBAGENT_SPAWNING_TOOLS = frozenset({"run_subagent", "run_author_critic_iteration"})
 
 # File-mutating tools that earn a shadow-mirror checkpoint after each call, in
@@ -489,13 +496,17 @@ class WorkflowEngine:
             self.__session.command_control = self.__transient.command_control
             persisted = self.__transient.current_project
             if persisted is not None:
+                # Re-bind first so sub-agent-spawn replay and checkpointing have
+                # the project's layout; a dangling non-spawn tool call resumes
+                # fine without it.
                 await self.__bind_project(persisted["root"], persisted["name"], emit=False)
-                # A main turn interrupted while a sub-agent held the floor leaves
-                # a dangling assistant ``tool_use`` (the spawning call) with no
-                # following ``tool_result``. Resume needs the bound project's
-                # layout, so it is gated on a successful bind above.
-                if self.__layout is not None and self.__has_dangling_tool_use():
-                    self.__resume_subsession_pending = True
+            # A turn interrupted mid tool-dispatch leaves a dangling assistant
+            # ``tool_use`` with no following ``tool_result``. It must always be
+            # resolved — otherwise the next LLM call sees a malformed sequence —
+            # so resume is gated only on the dangling marker, not on a bound
+            # project (which only sub-agent-spawn replay actually needs).
+            if self.__has_dangling_tool_use():
+                self.__resume_subsession_pending = True
             if not self.__resume_subsession_pending:
                 pending = self.__transient.pending_prompt
                 if pending is not None:
@@ -1528,7 +1539,7 @@ class WorkflowEngine:
             agent_name=agent_name,
             stop_after_tools=lambda: dispatcher.stop_requested,
             persist=self.__persist_main_messages(agent_name),
-            flush_before=_SUBAGENT_SPAWNING_TOOLS,
+            flush_before_dispatch=True,
             track_context=True,
         )
         await self.__sink.send(Envelope.make_stream_end(stream_id))
@@ -1621,8 +1632,7 @@ class WorkflowEngine:
         agent_name: str = _GUIDE_AGENT_NAME,
         stop_after_tools: Callable[[], bool] | None = None,
         persist: Callable[[list[Message]], None] | None = None,
-        flush_before: frozenset[str] = frozenset(),
-        persist_each_iteration: bool = False,
+        flush_before_dispatch: bool = False,
         track_context: bool = False,
     ) -> tuple[list[Message], list[Path]]:
         """Run one LLM turn with tool-use loop until the model stops calling tools.
@@ -1641,14 +1651,23 @@ class WorkflowEngine:
             persist: When provided, called with each batch of newly appended
                 messages so they can be durably logged (main ``session.jsonl``
                 or a subsession file). Messages already present on entry are
-                assumed already persisted and never re-emitted.
-            flush_before: Tool names whose dispatch must be preceded by flushing
-                the not-yet-persisted message prefix (including the spawning
-                assistant message). Used by the main turn so an interrupted
-                sub-agent leaves a recoverable dangling ``tool_use`` on disk.
-            persist_each_iteration: When ``True`` (subsession turns), flush after
-                every tool-result batch so a sub-agent's history is durable at
-                each turn boundary and can be resumed mid-run.
+                assumed already persisted and never re-emitted. The turn always
+                flushes after every tool-result batch, so a completed tool call
+                is durable at each turn boundary.
+            flush_before_dispatch: When ``True`` (the main entry-agent turn),
+                also flush the not-yet-persisted prefix — including the assistant
+                message carrying the ``tool_use`` — *before* dispatching any
+                tool, so the persisted transcript is never behind an in-flight
+                tool call. This makes the main turn resilient to a crash or a
+                client-visible side effect (e.g. ``create_new_project`` firing a
+                workspace-folder reload) a tool triggers mid-dispatch; resume
+                (:meth:`__resume_main_turn`) then re-dispatches a dangling spawn
+                via the replay ledger and stubs any other dangling call as
+                interrupted. Left ``False`` for sub-agent subsessions: their
+                resume re-decides an interrupted leaf tool via the LLM, which
+                requires the log to end at a clean turn boundary (a user
+                ``tool_result``), so they must *not* flush a bare ``tool_use``.
+                The added latency is negligible next to the LLM round-trip.
             track_context: When ``True`` (the shared main entry-agent turn), the
                 measured prompt+output token total of each LLM call updates the
                 live context gauge (:attr:`__context_tokens`) and is pushed to the
@@ -1778,10 +1797,13 @@ class WorkflowEngine:
                 )
             messages = messages + [Message(role="assistant", content=assistant_content)]
 
-            # Persist the spawning assistant message BEFORE dispatching a
-            # sub-agent, so a crash mid-subagent leaves the dangling tool_use on
-            # disk for the resume path to pick up.
-            if any(tc.tool_name in flush_before for tc in tool_calls):
+            # Main turn only: persist the assistant message BEFORE dispatching
+            # ANY tool, not just a sub-agent spawn. A tool's side effects (a
+            # shell command, a workspace-folder change that reloads the client,
+            # ...) can land before its result comes back, so the durable record
+            # must not lag behind dispatch. Subsessions skip this — see the
+            # flush_before_dispatch note above.
+            if flush_before_dispatch:
                 _flush()
 
             calls = [(tc.tool_use_id, tc.tool_name, tc.tool_input) for tc in tool_calls]
@@ -1790,11 +1812,11 @@ class WorkflowEngine:
             )
             messages = messages + [Message(role="user", content=tool_results)]
 
-            if persist_each_iteration:
-                _flush()
+            # Persist the results too, so a durable transcript never trails a
+            # completed tool call either.
+            _flush()
 
             if stop_after_tools is not None and stop_after_tools():
-                _flush()
                 break
 
         return messages, files_written
@@ -2480,7 +2502,6 @@ class WorkflowEngine:
             agent_name=name,
             stop_after_tools=lambda: dispatcher.stop_requested,
             persist=_persist,
-            persist_each_iteration=True,
         )
 
         await self.__sink.send(Envelope.make_stream_end(stream_id))
@@ -2622,12 +2643,16 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     def __has_dangling_tool_use(self) -> bool:
-        """True when the last persisted main message awaits sub-agent results.
+        """True when the last persisted main message awaits tool results.
 
-        A spawning-tool turn flushes the assistant ``tool_use`` to disk before
-        dispatch; an interrupted sub-agent therefore leaves that assistant
-        message as the final persisted main message with no following
-        ``tool_result``. That is the marker of a resumable subsession.
+        Every tool-calling turn now flushes the assistant ``tool_use`` to disk
+        before dispatch (not just sub-agent spawns), so an interrupted turn
+        leaves that assistant message as the final persisted main message with
+        no following ``tool_result``. That is the marker of a resumable turn:
+        :meth:`__resume_main_turn` re-dispatches sub-agent spawns via the
+        replay ledger and reports any other pending call back to the model as
+        interrupted (never re-executing it — its side effects may already have
+        landed).
         """
         if not self.__main_messages:
             return False
@@ -2651,17 +2676,26 @@ class WorkflowEngine:
         return _GUIDE_AGENT_NAME
 
     async def __resume_main_turn(self) -> None:
-        """Resume a main turn that was interrupted while a sub-agent held the floor.
+        """Resume a main turn interrupted mid tool-dispatch after a restart.
 
-        Rebuilds the subsession replay ledger from the markers recorded after
-        the dangling assistant message, re-dispatches the pending spawning tool
-        call(s) — completed sub-sessions return their stored result, the active
-        one is rehydrated and driven to completion — then appends the tool
-        results and continues the interrupted entry agent's turn live.
+        Every tool-calling turn flushes its assistant ``tool_use`` to disk
+        before dispatch, so any interrupted turn leaves a dangling assistant
+        message. Two cases, handled per pending call:
+
+        * **Sub-agent spawns** (:data:`_SUBAGENT_SPAWNING_TOOLS`) are
+          re-dispatched through the subsession replay ledger — a completed
+          sub-session returns its stored result, the active one is rehydrated
+          and driven to completion. Safe because the ledger never re-runs a
+          finished sub-session.
+        * **Every other tool** (a shell command, a file write, ...) is *not*
+          re-executed: its side effects may already have landed before the
+          interruption, and there is no result ledger to dedupe against.
+          Instead the model gets a synthesized ``interrupted`` result so the
+          transcript stays well-formed and it can decide whether to retry.
 
         The entry agent is recovered from the persisted ``entry_agent`` tag, not
-        assumed to be the Guide: any agent permitted to spawn sub-agents
-        can be the one holding the floor at crash time.
+        assumed to be the Guide: any entry agent can be holding the floor at
+        crash time.
         """
         last = self.__main_messages[-1]
         if not isinstance(last.content, list):
@@ -2693,14 +2727,25 @@ class WorkflowEngine:
         await self.__emit_state()
         await self.__emit_agent_started(entry_agent)
 
-        calls: list[tuple[str, str, dict[str, object]]] = []
+        # Preserve the model's original tool_use order: spawning calls are
+        # replayed for real, all others get an interrupted stand-in.
+        tool_results: list[dict[str, object]] = []
         for b in tool_uses:
+            tool_use_id = str(b["id"])
+            tool_name = str(b["name"])
             raw_input = b.get("input")
             tool_input = raw_input if isinstance(raw_input, dict) else {}
-            calls.append((str(b["id"]), str(b["name"]), tool_input))
-        tool_results = await self.__dispatch_tool_calls(
-            calls, dispatcher.dispatch, tool_desc, tool_logger, entry_agent
-        )
+            if tool_name in _SUBAGENT_SPAWNING_TOOLS:
+                spawned = await self.__dispatch_tool_calls(
+                    [(tool_use_id, tool_name, tool_input)],
+                    dispatcher.dispatch,
+                    tool_desc,
+                    tool_logger,
+                    entry_agent,
+                )
+                tool_results.extend(spawned)
+            else:
+                tool_results.append(self.__interrupted_tool_result(tool_use_id, tool_name))
         self.__replay_subsessions = None
         results_msg = Message(role="user", content=tool_results)
         self.__main_messages = self.__main_messages + [results_msg]
@@ -2721,7 +2766,7 @@ class WorkflowEngine:
             agent_name=entry_agent,
             stop_after_tools=lambda: dispatcher.stop_requested,
             persist=self.__persist_main_messages(entry_agent),
-            flush_before=_SUBAGENT_SPAWNING_TOOLS,
+            flush_before_dispatch=True,
             track_context=True,
         )
         await self.__sink.send(Envelope.make_stream_end(stream_id))
@@ -2731,6 +2776,32 @@ class WorkflowEngine:
         self.__session.agent = None
         await self.__emit_state()
         await self.__maybe_auto_compact()
+
+    @staticmethod
+    def __interrupted_tool_result(tool_use_id: str, tool_name: str) -> dict[str, object]:
+        """Stand-in ``tool_result`` for a non-spawn tool cut off by a restart.
+
+        Its side effects (a shell command, a file write, ...) may already have
+        landed before the interruption and there is no result ledger to dedupe
+        against, so resume never re-executes it. The model instead sees an
+        ``error`` envelope (rendered with a failure badge, and read back by
+        :func:`tool_result_succeeded` as a failure) telling it the call did not
+        complete and was not retried, so it can decide whether to re-issue it.
+        """
+        payload = {
+            "error": (
+                f"The '{tool_name}' call did not complete before the session was "
+                "interrupted (server restart or window reload) and was NOT "
+                "re-executed to avoid duplicating side effects. Any changes it "
+                "may have started are reflected in the workspace; re-issue the "
+                "call if you still need it."
+            )
+        }
+        return {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": json.dumps(payload),
+        }
 
     def __build_replay_ledger(self) -> list[dict[str, object]]:
         """Build the ordered subsession replay ledger from ``session.jsonl`` markers.
