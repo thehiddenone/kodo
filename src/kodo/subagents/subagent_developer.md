@@ -58,7 +58,7 @@ Unless `write_tests` is false, cover the new behavior with tests that follow the
 - **Mocks are stubs, not spies** — use them to provide the environment (network, clock, filesystem), not to check how collaborators were called. No strict mocks.
 
 ### 4 — Build and verify
-Build and run with `toolchain_build` (runs build, static analysis, and tests; `test_selector` targets one). On a test failure, find out **why** — never force the suite green:
+Build and run with `toolchain_build` (runs build, static analysis, and tests; `test_selector` targets one). Its required `project_path` is the root of the project you are working in — the directory holding its `.kodo/` dir (an absolute path from `get_root_paths`, or a workspace-folder-name-relative one). On a test failure, find out **why** — never force the suite green:
 
 - **Your code is wrong** → fix the code until it passes.
 - **The test is wrong** (asserts something the instructions don't call for, or couples to internals) → fix or replace the test with a behavioral one.

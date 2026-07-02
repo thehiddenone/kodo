@@ -13,6 +13,7 @@ path against the project root and rejects anything that would escape it.
 
 from __future__ import annotations
 
+from ._intent import INTENT_PROPERTY
 from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["FILESYSTEM"]
@@ -75,6 +76,7 @@ FILESYSTEM: ToolSpec = ToolSpec(
     input_schema={
         "type": "object",
         "properties": {
+            "intent": INTENT_PROPERTY,
             "operation": {
                 "type": "string",
                 "enum": list(_OPERATIONS),
@@ -108,7 +110,7 @@ FILESYSTEM: ToolSpec = ToolSpec(
                 "description": ("Destination path for the copy/move operations. " + _PATH_DESC),
             },
         },
-        "required": ["operation"],
+        "required": ["intent", "operation"],
     },
     output_schema={
         "type": "object",
@@ -155,6 +157,7 @@ FILESYSTEM: ToolSpec = ToolSpec(
     },
     security_impact=SecurityImpact.HIGH,
     input_visibility={
+        "intent": "always",
         "operation": "always",
         "path": "always",
         "content": "visible",

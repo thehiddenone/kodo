@@ -47,7 +47,7 @@ Implement **every** scenario in the accepted plan, faithful to its Given/When/Th
 
 ## Toolchain
 
-- **`toolchain_build`** — runs the project's build scripts. Run the suite with **tests only** (`test: true`, `build: false`, `static_analysis: false`); pass `test_selector` to run a single scenario/suite while diagnosing. Returns overall success plus, per step, success and the output log (assertions, stack traces, your harness's own logs). If the `test` script doesn't exist yet, the tool says so — `escalate_blocker` with `reason: "toolchain_not_set_up"` rather than guessing at a test command.
+- **`toolchain_build`** — runs the project's build scripts. `project_path` is required: pass `"."` (your project root). Run the suite with **tests only** (`test: true`, `build: false`, `static_analysis: false`); pass `test_selector` to run a single scenario/suite while diagnosing. Returns overall success plus, per step, success and the output log (assertions, stack traces, your harness's own logs). If the `test` script doesn't exist yet, the tool says so — `escalate_blocker` with `reason: "toolchain_not_set_up"` rather than guessing at a test command.
 - **`toolchain_deps`** — add a **test-only** dependency the harness needs (e.g. a local HTTP/socket mock-server library) via one add op. Do not hand-edit dependency manifests. If it reports `dependencies_md_missing` or a genuinely new dependency can't be added, `escalate_blocker` rather than working around it.
 
 ## Run, Evaluate, Iterate — Before the Critic

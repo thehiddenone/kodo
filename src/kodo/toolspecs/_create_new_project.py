@@ -12,6 +12,7 @@ the agent can work inside it right away.
 
 from __future__ import annotations
 
+from ._intent import INTENT_PROPERTY
 from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["CREATE_NEW_PROJECT"]
@@ -42,6 +43,7 @@ CREATE_NEW_PROJECT: ToolSpec = ToolSpec(
     input_schema={
         "type": "object",
         "properties": {
+            "intent": INTENT_PROPERTY,
             "name": {
                 "type": "string",
                 "description": (
@@ -61,7 +63,7 @@ CREATE_NEW_PROJECT: ToolSpec = ToolSpec(
                 ),
             },
         },
-        "required": [],
+        "required": ["intent"],
     },
     output_schema={
         "type": "object",
@@ -78,7 +80,7 @@ CREATE_NEW_PROJECT: ToolSpec = ToolSpec(
         "required": ["path", "name"],
     },
     security_impact=SecurityImpact.MODERATE,
-    input_visibility={"name": "always", "path": "always"},
+    input_visibility={"intent": "always", "name": "always", "path": "always"},
     output_visibility={"path": "always", "name": "always"},
     when_to_use=(
         "When the work calls for a brand-new, self-contained project rather than "

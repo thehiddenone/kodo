@@ -5,6 +5,7 @@ Dispatch lives in :mod:`kodo.tools` (one handler module per tool).
 
 from __future__ import annotations
 
+from ._intent import INTENT_PROPERTY
 from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["ROLLBACK"]
@@ -25,12 +26,13 @@ ROLLBACK: ToolSpec = ToolSpec(
     input_schema={
         "type": "object",
         "properties": {
+            "intent": INTENT_PROPERTY,
             "target_sha": {
                 "type": "string",
                 "description": "Mirror commit SHA to roll back to.",
             },
         },
-        "required": ["target_sha"],
+        "required": ["intent", "target_sha"],
     },
     output_schema={
         "type": "object",
@@ -40,7 +42,7 @@ ROLLBACK: ToolSpec = ToolSpec(
         "required": ["status"],
     },
     security_impact=SecurityImpact.HIGH,
-    input_visibility={"target_sha": "always"},
+    input_visibility={"intent": "always", "target_sha": "always"},
     output_visibility={"status": "always"},
     when_to_use=(
         "Rework-in-place would be worse than starting a stage over — "

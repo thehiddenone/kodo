@@ -30,6 +30,7 @@ from kodo.toolspecs import (
     VISIBILITY_VALUES,
     SecurityImpact,
     normalize_output,
+    requires_intent,
     tool_result_succeeded,
 )
 
@@ -128,6 +129,12 @@ def _make_dispatcher(
 
 
 async def _dispatch(dispatcher: ToolDispatcher, name: str, payload: dict[str, object]) -> object:
+    # Mutating tools require a non-blank `intent`; inject a default so each
+    # case stays focused on its own compliance behavior (enforcement itself is
+    # covered in test_tools_leaf.py).
+    spec = DISPATCHABLE_TOOLS_BY_NAME.get(name)
+    if spec is not None and requires_intent(spec) and "intent" not in payload:
+        payload = {"intent": "exercise this tool in a compliance test", **payload}
     return json.loads(await dispatcher.dispatch(name, payload))
 
 
@@ -419,24 +426,29 @@ async def test_document_feedback_compliance(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_toolchain_build_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path)
+    steps = {"build": True, "static_analysis": False, "test": False}
+    # project_path is mandatory → compliant error envelope without it.
+    missing = _assert_compliant("toolchain_build", await _dispatch(d, "toolchain_build", steps))
+    assert isinstance(missing, dict) and "project_path" in str(missing["error"])
     # No scripts yet → compliant failure envelope with a helpful step log.
-    _assert_compliant(
-        "toolchain_build",
-        await _dispatch(
-            d, "toolchain_build", {"build": True, "static_analysis": False, "test": False}
-        ),
+    payload: dict[str, object] = {"project_path": str(tmp_path), **steps}
+    no_scripts = _assert_compliant(
+        "toolchain_build", await _dispatch(d, "toolchain_build", payload)
     )
+    assert isinstance(no_scripts, dict) and no_scripts["success"] is False
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     build_sh = scripts / "build.sh"
     build_sh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     build_sh.chmod(0o755)
-    _assert_compliant(
-        "toolchain_build",
-        await _dispatch(
-            d, "toolchain_build", {"build": True, "static_analysis": False, "test": False}
-        ),
+    # Absolute project_path runs the script; a relative one resolves through
+    # the run's resolver ("." = the project root in Guided mode).
+    built = _assert_compliant("toolchain_build", await _dispatch(d, "toolchain_build", payload))
+    assert isinstance(built, dict) and built["success"] is True
+    relative = _assert_compliant(
+        "toolchain_build", await _dispatch(d, "toolchain_build", {"project_path": ".", **steps})
     )
+    assert isinstance(relative, dict) and relative["success"] is True
 
 
 @pytest.mark.asyncio

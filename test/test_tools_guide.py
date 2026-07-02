@@ -298,7 +298,11 @@ async def test_rollback_calls_rollback_fn() -> None:
         called_with.append(sha)
 
     dispatcher = _make_dispatcher(rollback_fn=_capture_rollback)
-    result = json.loads(await dispatcher.dispatch("rollback", {"target_sha": "abc123"}))
+    result = json.loads(
+        await dispatcher.dispatch(
+            "rollback", {"intent": "restore the pre-refactor checkpoint", "target_sha": "abc123"}
+        )
+    )
     assert result["status"] == "completed"
     assert called_with == ["abc123"]
 

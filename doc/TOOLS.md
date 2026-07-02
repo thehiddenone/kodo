@@ -329,6 +329,35 @@ needs it.
 
 ---
 
+## 8A. The `intent` parameter — mutating tools declare their purpose
+
+Every **first-degree mutator** — a tool whose own dispatch changes content on
+disk: `filesystem`, `edit_file`, `run_command`, `create_new_project`,
+`rollback` — declares a mandatory `intent` string as the **first** property of
+its `input_schema`: one sentence stating what this specific call changes and
+why. The property (and the generic "how to state your intent" guidance the
+model reads) is defined **once**, in
+[toolspecs/_intent.py](../src/kodo/toolspecs/_intent.py) (`INTENT_PROPERTY`),
+and embedded by each mutating spec, so the instructions can never drift
+between tools.
+
+- **Exempt:** tools that mutate only *through other agents* —
+  `run_subagent`, `run_author_critic_iteration`, `toolchain_deps` — because
+  the spawned agent's own first-degree calls carry their own intents;
+  `toolchain_build` (it only executes the project's generated build scripts);
+  and everything read-only or session-state-only.
+- **Enforcement:** `ToolDispatcher.dispatch` generically rejects a call to any
+  spec that requires `intent` (`requires_intent(spec)`) when the field is
+  missing or blank — the handler never runs; the model gets an `{"error": …}`
+  telling it to state the intent and retry.
+- **Visibility:** `intent` is declared `"always"` visible and, as the first
+  schema property, renders as the top row of the WebView's tool-call detail
+  box.
+- **Consumer:** the security layer judges each mutating call by its declared
+  intent — auto-allow, auto-deny, or ask the user.
+
+---
+
 ## 9. The dispatcher
 
 [`ToolDispatcher`](../src/kodo/tools/_dispatch.py) is built **once per agent
@@ -353,7 +382,9 @@ class ToolDispatcher:
 ```
 
 `dispatch` is the single function the engine passes into its turn loop as the
-`tool_dispatch` callback. It instantiates the matching `Tool` subclass bound to
+`tool_dispatch` callback. One generic gate runs before the handler: a spec
+that requires `intent` (§8A) never dispatches without a non-blank one. It then
+instantiates the matching `Tool` subclass bound to
 this run's context and calls its `handle`. Whether the caller is the guide
 or a leaf sub-agent, the routing is identical — only the *contents* of the
 context and the *set* of tools differ.
@@ -451,7 +482,12 @@ blocks on a future until the user responds — see
 1. **Spec** — create `src/kodo/toolspecs/_<tool_name>.py` exporting one
    `ToolSpec` (with `input_schema`, a model-facing `description`, generic
    `when_to_use` bullets, optional `autonomous_mode`). Add it to
-   `toolspecs/__init__.py` imports / `__all__` / `ALL_TOOLS`.
+   `toolspecs/__init__.py` imports / `__all__` / `ALL_TOOLS`. If the tool
+   mutates content directly (a first-degree mutator, §8A), embed
+   `INTENT_PROPERTY` from `toolspecs/_intent.py` as the **first**
+   `input_schema` property, list `intent` first in `required`, and mark it
+   `"always"` in `input_visibility` — the dispatcher's enforcement keys on
+   the `required` entry.
 2. **Tool class** — create `src/kodo/tools/_<tool_name>.py` with a
    `class <Name>Tool(Tool)` implementing
    `async def handle(self, tool_input: dict[str, object]) -> str`.
@@ -475,6 +511,7 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | File | Role |
 |---|---|
 | [toolspecs/_spec.py](../src/kodo/toolspecs/_spec.py) | The `ToolSpec` dataclass. |
+| [toolspecs/_intent.py](../src/kodo/toolspecs/_intent.py) | The shared mandatory `intent` property for first-degree mutating tools + `requires_intent` (§8A). |
 | [toolspecs/_<tool>.py](../src/kodo/toolspecs/) | One `ToolSpec` constant per tool (pure data). |
 | [toolspecs/__init__.py](../src/kodo/toolspecs/__init__.py) | Re-exports specs + `ALL_TOOLS` (for prompt rendering). |
 | [tools/_context.py](../src/kodo/tools/_context.py) | `ToolContext` + the injected Protocols (`GateLike`, `SessionLike`, `EngineServices`, `QuestionLike`, `ApprovalLike`). |

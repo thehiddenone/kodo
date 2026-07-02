@@ -41,7 +41,9 @@ Map each script to concrete Python commands (prefer `uv run <tool>` so the tool 
 
 - **build** — Python is usually not compiled. With a build backend, build the distribution (`uv build`, or `python -m build`); for a plain application with nothing to build, make `build` a **documented no-op** that exits 0 and prints why. Build native extensions if the project has them.
 - **format** — `ruff format` (fall back to `black` + `isort` when already in use).
-- **static_analysis** — `ruff check` for lint/style, plus a type check (`mypy` or `pyright`) when the project is typed. Fall back to the project's existing linters.
+- **static_analysis** — this step has **two mandatory parts; never skip either**:
+    1. **Lint/style** — `ruff check --fix` (always pass `--fix` so ruff auto-applies its safe fixes in place, cutting the fix/re-run loop). Fall back to the project's existing linters only when ruff is genuinely not usable.
+    2. **Type check** — a type checker is **required**, not optional. Default to **`mypy`** (`uv run mypy <package>`); this is the strong preference. Use **`pyright`** *only* when it is already wired into the project (present in `pyproject.toml`, a `pyrightconfig.json`, or the existing dev deps) — do not introduce pyright into a project that has neither. If **neither** type checker is present when bootstrapping, add `mypy` as a `dev`/`test` dependency and wire it in; a project without a type check in `static_analysis` is incomplete. Type-check the project's own source packages (not third-party/`.venv` code).
 - **test** — `pytest`. Honor the **selector argument** from the shared contract by mapping it to pytest node-id / path / `-k`: with no argument run the whole suite (`pytest`); with a selector run only that test or suite — e.g. `scripts/test.sh tests/test_orders.py::test_refund` or `scripts/test.sh tests/test_orders.py`. Pass the argument straight through to pytest. For a `unittest`-only project, map the selector to `python -m unittest <dotted.path>` and document that form instead.
 
 ## Dependency Management (for DEPENDENCIES.md)

@@ -29,6 +29,7 @@ from kodo.toolspecs import (
     FIND_TEXT_IN_FILES,
     GET_ROOT_PATHS,
     GUIDED_DEV_STATUS,
+    INTENT_KEY,
     READ_FILE,
     RETURN_RESULT,
     ROLLBACK,
@@ -39,6 +40,7 @@ from kodo.toolspecs import (
     TOOLCHAIN_DEPS,
     WEB_SEARCH,
     ToolSpec,
+    requires_intent,
 )
 
 from ._ask_user import AskUserTool
@@ -194,7 +196,9 @@ class ToolDispatcher:
     async def dispatch(self, tool_name: str, tool_input: dict[str, object]) -> str:
         """Route one tool call to its handler and return a JSON-encoded result.
 
-        Instantiates the matching :class:`Tool` subclass bound to this run's
+        Enforces the mutating-tool ``intent`` contract first — a spec that
+        requires ``intent`` is rejected without a non-blank one — then
+        instantiates the matching :class:`Tool` subclass bound to this run's
         context and invokes its :meth:`Tool.handle`.
 
         Args:
@@ -210,4 +214,18 @@ class ToolDispatcher:
                 "ToolDispatcher: unknown tool %r from %s", tool_name, self.__ctx.agent_name
             )
             return json.dumps({"error": f"Unknown tool: {tool_name!r}"})
+        # Generic gate for content-mutating tools: a spec that requires `intent`
+        # never dispatches without a non-blank one (the security layer judges
+        # calls by it), regardless of what the LLM API let through.
+        if requires_intent(DISPATCHABLE_TOOLS_BY_NAME[tool_name]):
+            intent = tool_input.get(INTENT_KEY)
+            if not isinstance(intent, str) or not intent.strip():
+                return json.dumps(
+                    {
+                        "error": (
+                            f"'{INTENT_KEY}' is required: state in one sentence what this "
+                            f"{tool_name} call changes and why, then retry."
+                        )
+                    }
+                )
         return await tool_cls(self.__ctx).handle(tool_input)

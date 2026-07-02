@@ -252,7 +252,19 @@ placeholders.
 | `run_subagent`, `run_author_critic_iteration`, `rollback`, `finalize_project` | ✅ implemented. `run_author_critic_iteration` now operates on `{author_name, critic_name, path?, input_paths?, instructions, for_revision?}` — a real file path, not artifact IDs. `rollback` now delegates to the same shadow-git mirror Problem Solver uses (§7/§10b). |
 | `disable_autonomous_mode` | ✅ implemented (`DisableAutonomousModeTool`, in `_TOOL_CLASSES`). Declared by `guide`; resolved by `tools_for_agent` and dispatched. (Progress reporting is no longer a tool — agents emit `<kodo_info>` callouts in their message text; see the performance preamble.) |
 | `create_new_project` | ✅ implemented (`CreateNewProjectTool`). Granted to `guide` + `problem_solver`. Thin shim over `_EngineServices.create_project(name)`: the engine slugifies the name, makes a fresh directory under the session workspace root (auto-suffix `-2`/`-3`… on collision), scaffolds `.kodo/`+`kodo.md`+checkpoint mirror via `RootMirrorManager.prepare`, records it in the logical-root map, and pushes `EVT_WORKSPACE_ADD_FOLDER` so the extension adds it to the open workspace (WS_PROTOCOL §5.9c). |
-| `toolchain_build`/`toolchain_deps` | ✅ implemented. `toolchain_build` executes the project's generated `scripts/<step>.{sh,ps1}` pair (the toolchain-setup agent's output, §8/§11) in canonical order — format → build → static_analysis → test — stopping at the first failure; a missing script returns a clear error directing the caller to run the toolchain-setup agent first. `toolchain_deps` performs **one** add/remove/update dependency op: it does not touch manifests itself but spawns the `toolchain_depsmgr` sub-agent (via the dedicated ungated `_EngineServices.run_dependency_manager`, **not** `run_subagent` — holding the tool is the authorization, so the sub-agent is never in any caller's allow-list/roster) which follows the project's `DEPENDENCIES.md`. When that sub-agent reports `status: "dependencies_md_missing"`, the tool returns the same status plus a remediation `message` telling the caller to run the toolchain-setup sub-agent (`toolchain_python`) first — error-forwarding via the matched tool/sub-agent schemas. |
+| `toolchain_build`/`toolchain_deps` | ✅ implemented. `toolchain_build` executes a project's generated `scripts/<step>.{sh,ps1}` pair (the toolchain-setup agent's output, §8/§11) in canonical order; its mandatory `project_path` names the project root to build (the dir holding `.kodo/`) — supplied by the caller, since Problem Solver runs have no bound project and any kodo project on disk is buildable (absolute paths as-is, relative paths through the run's resolver) — format → build → static_analysis → test — stopping at the first failure; a missing script returns a clear error directing the caller to run the toolchain-setup agent first. `toolchain_deps` performs **one** add/remove/update dependency op: it does not touch manifests itself but spawns the `toolchain_depsmgr` sub-agent (via the dedicated ungated `_EngineServices.run_dependency_manager`, **not** `run_subagent` — holding the tool is the authorization, so the sub-agent is never in any caller's allow-list/roster) which follows the project's `DEPENDENCIES.md`. When that sub-agent reports `status: "dependencies_md_missing"`, the tool returns the same status plus a remediation `message` telling the caller to run the toolchain-setup sub-agent (`toolchain_python`) first — error-forwarding via the matched tool/sub-agent schemas. |
+
+**Intent:** every **first-degree mutator** (`filesystem`, `edit_file`,
+`run_command`, `create_new_project`, `rollback`) requires a mandatory `intent`
+string — one sentence stating what this specific call changes and why — as the
+**first** `input_schema` property, `"always"` visible (the top row of the
+tool-call detail box). The property is defined once in `toolspecs/_intent.py`
+(`INTENT_PROPERTY`) and embedded per spec; `ToolDispatcher.dispatch` rejects a
+call missing a non-blank `intent` before the handler runs (`requires_intent`).
+Second-degree mutators (`run_subagent`, `run_author_critic_iteration`,
+`toolchain_deps`) and `toolchain_build` are exempt. The security layer will
+judge each mutating call by its declared intent (auto-allow / auto-deny / ask).
+See [TOOLS.md §8A](TOOLS.md).
 
 **State:** Catalog complete; every dispatchable spec has a handler.
 
@@ -365,7 +377,11 @@ per-platform script pairs — `scripts/{build,format,static_analysis,test,full_b
 `DEPENDENCIES.md` (the machine-followable **dependency contract** —
 manager, kinds, and command-level add/remove/update steps). The
 `toolchain_build` tool (§6, `tools/_toolchain_build.py`) is a thin,
-language-agnostic executor: it runs the enabled steps' scripts in canonical
+language-agnostic executor: its mandatory `project_path` names the project
+root to build (the directory holding the project's `.kodo/` dir — the caller
+supplies it, since a Problem Solver run has no bound project and any kodo
+project on disk is buildable; absolute paths are taken as-is, relative ones
+get the run's normal resolver). It runs the enabled steps' scripts in canonical
 order (format → build → static_analysis → test), stopping at the first failure,
 and returns a clear "ask the toolchain-setup agent" error when a script doesn't
 exist yet. `toolchain_deps` is the dependency counterpart: it spawns the

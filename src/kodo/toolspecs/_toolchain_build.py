@@ -1,12 +1,16 @@
 """``toolchain_build`` tool spec.
 
-One tool that drives the project's standard build scripts (the per-platform
+One tool that drives a project's standard build scripts (the per-platform
 ``scripts/<step>.{sh,ps1}`` pairs a toolchain-setup agent generates: ``build``,
-``static_analysis``, ``test``, ``format``). Boolean flags select which steps to
-run; the steps always run in canonical order — **format → build →
-static_analysis → test** — and stop at the first failure. It absorbs the former
-separate ``toolchain_test`` tool: run only the tests by enabling ``test`` and
-disabling the others. Dispatch lives in :mod:`kodo.tools._toolchain_build`.
+``static_analysis``, ``test``, ``format``). The mandatory ``project_path``
+names the project root to build — the caller supplies it (there may be no
+bound project, e.g. in Problem Solver mode), following the convention that a
+kodo project root is the directory holding its ``.kodo/`` dir. Boolean flags
+select which steps to run; the steps always run in canonical order —
+**format → build → static_analysis → test** — and stop at the first failure.
+It absorbs the former separate ``toolchain_test`` tool: run only the tests by
+enabling ``test`` and disabling the others. Dispatch lives in
+:mod:`kodo.tools._toolchain_build`.
 """
 
 from __future__ import annotations
@@ -21,8 +25,11 @@ TOOLCHAIN_BUILD: ToolSpec = ToolSpec(
     external_name="Build & Test Project",
     user_description="Build, analyze, and test the project",
     description=(
-        "Run the project's standard build steps in the language/tooling declared "
-        "by the Tech Stack, by invoking the toolchain's generated build scripts. "
+        "Run a project's standard build steps in the language/tooling declared "
+        "by its Tech Stack, by invoking the toolchain's generated build scripts. "
+        "`project_path` (required) is the absolute path of the project root to "
+        "build — the directory that contains the project's `.kodo/` dir (that "
+        "is how a kodo project root is recognized) and its `scripts/` dir. "
         "Boolean flags select which steps run; enabled steps always run in this "
         "order and stop at the first failure: **format → build → "
         "static_analysis → test**.\n\n"
@@ -42,6 +49,19 @@ TOOLCHAIN_BUILD: ToolSpec = ToolSpec(
     input_schema={
         "type": "object",
         "properties": {
+            "project_path": {
+                "type": "string",
+                "description": (
+                    "Path of the project root to build — the directory "
+                    "containing the project's `.kodo/` dir and its `scripts/` "
+                    "dir. Required: there may be no bound project, so the "
+                    "caller names the project (use `get_root_paths` or the "
+                    "location of a `.kodo/` dir to determine it). An absolute "
+                    "path is used as-is; a relative path resolves like any "
+                    "other tool path (against the current project root — pass "
+                    "'.' to build it — or a leading workspace-folder name)."
+                ),
+            },
             "build": {
                 "type": "boolean",
                 "description": "Run the build step (`scripts/build`). Default true.",
@@ -74,7 +94,7 @@ TOOLCHAIN_BUILD: ToolSpec = ToolSpec(
                 ),
             },
         },
-        "required": [],
+        "required": ["project_path"],
     },
     output_schema={
         "type": "object",
@@ -116,6 +136,7 @@ TOOLCHAIN_BUILD: ToolSpec = ToolSpec(
     },
     security_impact=SecurityImpact.MODERATE,
     input_visibility={
+        "project_path": "always",
         "build": "always",
         "static_analysis": "always",
         "test": "always",
@@ -134,5 +155,7 @@ TOOLCHAIN_BUILD: ToolSpec = ToolSpec(
         "that touches code (detecting that feedback breaks tests triggers "
         '`escalate_blocker` with `reason: "feedback_breaks_tests"`).',
         "To run a single test or suite in isolation, pass `test_selector`.",
+        "Works on any kodo project, not just a bound one — pass the project "
+        "root (the directory holding its `.kodo/` dir) as `project_path`.",
     ),
 )

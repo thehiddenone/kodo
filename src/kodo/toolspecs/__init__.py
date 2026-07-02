@@ -31,6 +31,7 @@ from ._find_files import FIND_FILES
 from ._find_text_in_files import FIND_TEXT_IN_FILES
 from ._get_root_paths import GET_ROOT_PATHS
 from ._guided_dev_status import GUIDED_DEV_STATUS
+from ._intent import INTENT_KEY, INTENT_PROPERTY, requires_intent
 from ._read_file import READ_FILE
 from ._return_result import RETURN_RESULT
 from ._rollback import ROLLBACK
@@ -65,6 +66,8 @@ __all__ = [
     "FIND_TEXT_IN_FILES",
     "GET_ROOT_PATHS",
     "GUIDED_DEV_STATUS",
+    "INTENT_KEY",
+    "INTENT_PROPERTY",
     "OUTPUT_VISIBILITY_DEFAULT",
     "READ_FILE",
     "RETURN_RESULT",
@@ -85,6 +88,7 @@ __all__ = [
     "augment_output_schema",
     "build_detail_rows",
     "normalize_output",
+    "requires_intent",
     "stringify_value",
     "tool_result_succeeded",
 ]

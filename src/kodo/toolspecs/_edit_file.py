@@ -12,6 +12,7 @@ directories, use the ``filesystem`` tool instead.
 
 from __future__ import annotations
 
+from ._intent import INTENT_PROPERTY
 from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["EDIT_FILE"]
@@ -44,6 +45,7 @@ EDIT_FILE: ToolSpec = ToolSpec(
     input_schema={
         "type": "object",
         "properties": {
+            "intent": INTENT_PROPERTY,
             "path": {
                 "type": "string",
                 "description": (
@@ -67,7 +69,7 @@ EDIT_FILE: ToolSpec = ToolSpec(
                 ),
             },
         },
-        "required": ["path", "old_string", "new_string"],
+        "required": ["intent", "path", "old_string", "new_string"],
     },
     output_schema={
         "type": "object",
@@ -92,7 +94,12 @@ EDIT_FILE: ToolSpec = ToolSpec(
         "required": ["status", "path"],
     },
     security_impact=SecurityImpact.MODERATE,
-    input_visibility={"path": "always", "old_string": "visible", "new_string": "visible"},
+    input_visibility={
+        "intent": "always",
+        "path": "always",
+        "old_string": "visible",
+        "new_string": "visible",
+    },
     output_visibility={"status": "always", "path": "always"},
     when_to_use=(
         "Making a localized change to an existing file — the default, preferred "

@@ -22,7 +22,7 @@ from kodo.tools import (
     ToolDispatcher,
     tools_for_agent,
 )
-from kodo.toolspecs import DOCUMENT_FEEDBACK, READ_FILE
+from kodo.toolspecs import DOCUMENT_FEEDBACK, READ_FILE, requires_intent
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -90,6 +90,23 @@ class _StubServices:
         return {"path": path or f"/tmp/{name}", "name": name}
 
 
+_TEST_INTENT = "exercise this tool in a behavior test"
+
+
+class _IntentDispatcher(ToolDispatcher):
+    """Injects a default ``intent`` so cases stay focused on their own behavior.
+
+    The dispatcher-level intent enforcement itself is covered by the dedicated
+    intent tests below (which call ``ToolDispatcher.dispatch`` directly).
+    """
+
+    async def dispatch(self, tool_name: str, tool_input: dict[str, object]) -> str:
+        spec = DISPATCHABLE_TOOLS_BY_NAME.get(tool_name)
+        if spec is not None and requires_intent(spec) and "intent" not in tool_input:
+            tool_input = {"intent": _TEST_INTENT, **tool_input}
+        return await super().dispatch(tool_name, tool_input)
+
+
 def _make_dispatcher(
     tmp_path: Path,
     agent_name: str = "test_agent",
@@ -101,7 +118,7 @@ def _make_dispatcher(
     session.autonomous = autonomous
     session.effective_autonomous = autonomous
 
-    return ToolDispatcher(
+    return _IntentDispatcher(
         resolver=ProjectPathResolver(tmp_path),
         gate=_make_gate(answer),
         session=session,
@@ -601,3 +618,68 @@ async def test_dispatch_unknown_tool_returns_error(tmp_path: Path) -> None:
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(await dispatcher.dispatch("no_such_tool", {}))
     assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# intent enforcement (first-degree mutators)
+# ---------------------------------------------------------------------------
+
+# Every tool whose own dispatch mutates content on disk; second-degree
+# mutators (run_subagent, run_author_critic_iteration, toolchain_deps) and
+# toolchain_build (runs the project's own generated scripts) are exempt.
+_INTENT_TOOLS = ("filesystem", "edit_file", "run_command", "create_new_project", "rollback")
+
+
+def test_mutating_specs_declare_intent_first_required_and_visible() -> None:
+    for name in _INTENT_TOOLS:
+        spec = DISPATCHABLE_TOOLS_BY_NAME[name]
+        assert requires_intent(spec), name
+        props = spec.input_schema["properties"]
+        assert isinstance(props, dict), name
+        # `intent` is the TOP field — first in the schema, so first in the
+        # tool-call detail box — and always shown.
+        assert next(iter(props)) == "intent", name
+        assert spec.input_visibility.get("intent") == "always", name
+
+
+def test_non_mutating_and_second_degree_tools_do_not_require_intent() -> None:
+    for name in DISPATCHABLE_TOOLS_BY_NAME:
+        if name not in _INTENT_TOOLS:
+            assert not requires_intent(DISPATCHABLE_TOOLS_BY_NAME[name]), name
+
+
+@pytest.mark.asyncio
+async def test_missing_or_blank_intent_is_rejected_before_dispatch(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    for extra in ({}, {"intent": "   "}, {"intent": 7}):
+        payload: dict[str, object] = {
+            **extra,
+            "operation": "create_file",
+            "path": "never.txt",
+            "content": "hi",
+        }
+        # Call the real ToolDispatcher.dispatch, bypassing the test-only
+        # intent injection, to exercise the generic enforcement.
+        result = json.loads(await ToolDispatcher.dispatch(dispatcher, "filesystem", payload))
+        assert "intent" in result["error"]
+        # Rejected before the handler ran — nothing was written.
+        assert not (tmp_path / "never.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_present_intent_dispatches_normally(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await ToolDispatcher.dispatch(
+            dispatcher,
+            "filesystem",
+            {
+                "intent": "create the fixture file this test asserts on",
+                "operation": "create_file",
+                "path": "made.txt",
+                "content": "hi",
+            },
+        )
+    )
+    assert result["status"] == "created"
+    assert (tmp_path / "made.txt").read_text(encoding="utf-8") == "hi"

@@ -10,6 +10,7 @@ layer's job.
 
 from __future__ import annotations
 
+from ._intent import INTENT_PROPERTY
 from ._spec import SecurityImpact, ToolSpec
 
 __all__ = ["RUN_COMMAND"]
@@ -34,6 +35,7 @@ RUN_COMMAND: ToolSpec = ToolSpec(
     input_schema={
         "type": "object",
         "properties": {
+            "intent": INTENT_PROPERTY,
             "command": {
                 "type": "string",
                 "description": "Shell command to execute.",
@@ -58,7 +60,7 @@ RUN_COMMAND: ToolSpec = ToolSpec(
                 ),
             },
         },
-        "required": ["command", "timeout"],
+        "required": ["intent", "command", "timeout"],
     },
     output_schema={
         "type": "object",
@@ -87,7 +89,12 @@ RUN_COMMAND: ToolSpec = ToolSpec(
         "required": ["exit_code", "stdout", "stderr"],
     },
     security_impact=SecurityImpact.CRITICAL,
-    input_visibility={"command": "always", "timeout": "always", "working_dir": "visible"},
+    input_visibility={
+        "intent": "always",
+        "command": "always",
+        "timeout": "always",
+        "working_dir": "visible",
+    },
     output_visibility={"exit_code": "always", "stdout": "visible", "stderr": "visible"},
     when_to_use=(
         "Running a command the toolchain tools "
