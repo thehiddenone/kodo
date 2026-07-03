@@ -166,6 +166,9 @@ class _FakeBrowserSession:
     installed_now = False
     browser = None
 
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
     async def __aenter__(self) -> _FakeBrowserSession:
         return self
 
@@ -319,6 +322,9 @@ async def test_web_search_browser_unavailable_degrades_to_note(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class _NoBrowser:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
         async def __aenter__(self) -> _NoBrowser:
             raise BrowserUnavailableError("install failed")
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 
+from kodo.project import kodo_user_dir
 from kodo.websearch import (
     AntiBotWallError,
     BrowserSession,
@@ -49,7 +50,8 @@ class ReadWebpageTool(Tool):
             # Validated before touching Chromium: a bad/private-network URL
             # should fail without paying for a browser launch.
             await validate_public_url(url)
-            async with BrowserSession() as session:
+            browser_state_path = kodo_user_dir() / "websearch" / "browser_state.json"
+            async with BrowserSession(browser_state_path) as session:
                 page = await read_page(session.browser, url)
         except InvalidUrlError as exc:
             return json.dumps({"error": str(exc)})

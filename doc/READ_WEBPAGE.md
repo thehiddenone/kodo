@@ -27,7 +27,7 @@ its main content as Markdown.
                  │
                  ▼
  ┌─ Fetch + convert (kodo.websearch.read_page) ─────────────────────────────┐
- │  one headless Chromium page, 20s nav budget                             │
+ │  one headless-browser page, 20s nav budget                              │
  │  strip nav/header/footer/aside/ads/scripts/images/video in-page          │
  │  walk the remaining DOM → Markdown: headings, tables, plain lists,       │
  │  embedded links kept                                                     │
@@ -56,8 +56,9 @@ one call — repeating the call will fail the same way.
 plain-text extractor): they solve different problems — plain text for an LLM
 summarizer vs. structured Markdown for the calling agent to read directly —
 and keeping them separate means a change to one cannot regress the other.
-The only thing the two tools share is `BrowserSession` (Playwright + headless
-Chromium lifecycle) and the `kodo.websearch` package boundary.
+The only thing the two tools share is `BrowserSession` (Playwright's
+host-first, bundled-fallback browser lifecycle — WEB_SEARCH.md §7) and the
+`kodo.websearch` package boundary.
 
 ## 3. The SSRF guard
 
@@ -77,10 +78,10 @@ Before any navigation, `_validate_public_url`:
 
 A rejection raises `InvalidUrlError`. The tool (`ReadWebpageTool.handle`) calls
 `validate_public_url` **before** opening a `BrowserSession` at all, so a bad
-URL never pays for a Chromium launch; `read_page` re-runs the same check
+URL never pays for a browser launch; `read_page` re-runs the same check
 internally regardless, so it stays safe for any other caller. This is a
-best-effort guard (a single DNS check, not re-validated against the IP
-Chromium actually connects to), matching the project's general non-paranoid
+best-effort guard (a single DNS check, not re-validated against the IP the
+browser actually connects to), matching the project's general non-paranoid
 security stance — it stops casual misuse, not a determined DNS-rebinding
 attacker.
 
@@ -153,7 +154,7 @@ Output on failure (the universal `{"error": "..."}` envelope — no separate
 |---|---|
 | Bad scheme / private-network host | Names the problem (`InvalidUrlError`); no request was made. |
 | HTTP 403/429/503, captcha/anti-bot markup detected, or too-thin residual content | Explains what was detected, then: *"Do not retry this exact URL — unlike web_search there is no cooldown here, so an immediate retry will fail the same way; try a different source or ask the user."* |
-| Chromium missing & auto-install fails | `"read_webpage is unavailable: ..."` (same `BrowserUnavailableError` as `web_search`). |
+| No browser available (host Chrome/Edge and bundled Firefox/Chromium fallback all failed) | `"read_webpage is unavailable: ..."` (same `BrowserUnavailableError` as `web_search`). |
 | Any other navigation/JS failure | `"Could not read {url}: {exc}"` — never raised past the tool boundary. |
 
 ## 6. Security posture

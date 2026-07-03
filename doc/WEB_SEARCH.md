@@ -23,7 +23,7 @@ One `web_search` call runs three phases end to end:
               │                                     engine_cooldowns.json
               ▼                                            ▲   │ 30-min cooldowns
  ┌─ Phase 1: DISCOVERY ────────────────────────────────────┴───┴─────────┐
- │  kodo.websearch.discover() — one headless Chromium (Playwright)       │
+ │  kodo.websearch.discover() — one headless browser (Playwright, §7)     │
  │  Google ────┐                                                          │
  │  Bing ──────┼─ queried in parallel; ads/sponsored skipped; captcha     │
  │  DDG ───────┤  walls trip a cooldown; organic hits merged rank-by-rank │
@@ -173,13 +173,40 @@ tool's `note`.
 ## 7. Browser lifecycle
 
 [`kodo/websearch/_browser.py`](../src/kodo/websearch/_browser.py). One
-`BrowserSession` (Playwright + headless Chromium) spans phases 1–2 of a call.
-On a machine where the Chromium binary was never installed, the first
-`web_search` call runs `python -m playwright install chromium` transparently
-(one-time ~150 MB download, 10-minute budget) and retries the launch once —
-the `note` mentions the one-time setup. If the install fails, the tool returns
-`themes: []` with a note telling the user to run `playwright install chromium`
-manually. (`playwright` itself is a hard dependency in `pyproject.toml`.)
+`BrowserSession` spans phases 1–2 of a call. Host browsers draw far less
+anti-bot scrutiny than Playwright's own bundled builds, so on every call the
+session resolves a browser in this order:
+
+1. **Host Google Chrome** (`playwright.chromium.launch(channel="chrome")`).
+2. **Host Microsoft Edge** (`channel="msedge"`).
+3. **Bundled Firefox** — Playwright-managed; auto-installed on first use
+   (`python -m playwright install firefox`, one-time ~90 MB download,
+   10-minute budget).
+4. **Bundled Chromium** — the last resort, only reached if neither host
+   browser nor bundled Firefox is available/installable; also
+   auto-installed on first use the same way.
+
+If a stage fails to launch for a reason other than "not installed" (or the
+installer itself fails), the session cascades to the next stage rather than
+giving up — the tool only returns `themes: []` with a manual-install note once
+every stage, including bundled Chromium, has failed.
+
+Once a call has had to fall back past the host browsers, the choice (`firefox`
+or `chromium`) and the time of the attempt are cached in
+`~/.kodo/websearch/browser_state.json`. For the next 24 hours, subsequent
+calls skip straight to the cached fallback instead of re-probing Chrome/Edge
+every time; after 24 hours the full host → Firefox → Chromium resolution
+runs again, so a host browser installed later is picked back up
+automatically without restarting Kodo.
+
+The very first successful launch on a machine also runs a one-time sanity
+check — navigating to `https://example.com/` — to catch a Playwright install
+that starts a browser process but can't actually load a page (e.g. a missing
+system dependency like `libnss3` on Linux). The result is cached in the same
+`browser_state.json` file and never repeated once it passes; if it fails, the
+whole session fails with `BrowserUnavailableError` (treated as fatal, not
+best-effort) rather than silently handing back a browser that can't be
+trusted. (`playwright` itself is a hard dependency in `pyproject.toml`.)
 
 ## 8. The tool's contract
 
@@ -211,12 +238,14 @@ Degradation ladder (each step reported in `note`):
 | Some pages fail to scrape | dropped; the rest proceed |
 | No page scrapes | `themes: []` + note listing the discovered URLs |
 | Summarizer fails/returns nothing usable | `themes: []` + note listing the scraped URLs |
-| Chromium missing & auto-install fails | `themes: []` + manual-install note |
+| No browser available (host Chrome/Edge and bundled Firefox/Chromium fallback all failed) | `themes: []` + manual-install note |
+| Playwright sanity check (`example.com`) fails | `themes: []` + note; treated as fatal, not degraded |
 
 ## 9. Security posture
 
 `web_search` is `SecurityImpact.LOW` and available in autonomous mode: it is
-read-only toward the user's machine (its only writes are the cooldown file
-under `~/.kodo` and Playwright's own browser cache). Scraped page text is
+read-only toward the user's machine (its only writes are the cooldown file and
+the browser-fallback state file under `~/.kodo/websearch/`, and Playwright's
+own browser cache). Scraped page text is
 untrusted input; the summarizer prompt treats it strictly as data, and the
 engine-side sanitizer constrains the output shape and the citable links.

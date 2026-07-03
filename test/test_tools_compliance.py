@@ -680,6 +680,9 @@ async def test_web_search_compliance(tmp_path: Path, monkeypatch: pytest.MonkeyP
     # Keep the pipeline off the real network: an unopenable browser makes the
     # handler degrade to its schema-compliant empty report (themes/note shape).
     class _NoBrowserSession:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
         async def __aenter__(self) -> object:
             raise WebsearchBrowserUnavailableError("no browser in tests")
 
@@ -703,6 +706,9 @@ async def test_read_webpage_compliance(tmp_path: Path, monkeypatch: pytest.Monke
     # Keep the pipeline off the real network: an unopenable browser makes the
     # handler degrade to the universal error envelope.
     class _NoBrowserSession:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
         async def __aenter__(self) -> object:
             raise WebsearchBrowserUnavailableError("no browser in tests")
 

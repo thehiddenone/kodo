@@ -54,10 +54,13 @@ class WebSearchTool(Tool):
 
         notes: list[str] = []
         cooldowns = CooldownStore(kodo_user_dir() / "websearch" / "engine_cooldowns.json")
+        browser_state_path = kodo_user_dir() / "websearch" / "browser_state.json"
         try:
-            async with BrowserSession() as session:
+            async with BrowserSession(browser_state_path) as session:
                 if session.installed_now:
-                    notes.append("Chromium was downloaded on first use (one-time setup).")
+                    notes.append(
+                        f"{session.installed_browser} was downloaded on first use (one-time setup)."
+                    )
                 discovery = await discover(session.browser, query, cooldowns)
                 notes.append(self.__describe_discovery(discovery))
                 if not discovery.hits:

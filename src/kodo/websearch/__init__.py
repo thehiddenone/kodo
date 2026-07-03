@@ -33,7 +33,13 @@ else, so a change to one cannot regress the other:
   also guards against SSRF (:class:`InvalidUrlError` for non-http(s) schemes
   or hosts resolving to a private/loopback/link-local address).
 
-The browser binary is auto-installed on first use by :class:`BrowserSession`.
+:class:`BrowserSession` prefers the host's own Chrome/Edge (far less likely to
+trip anti-bot walls) and only falls back to a Playwright-managed browser
+(bundled Firefox, then bundled Chromium as a last resort) when neither is
+installed, auto-installing the needed one on first use. The fallback choice
+is cached under ``~/.kodo/websearch/browser_state.json`` for a day before
+host browsers are re-tried; a one-time ``example.com`` sanity check is cached
+in the same file.
 """
 
 from __future__ import annotations
