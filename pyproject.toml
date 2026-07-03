@@ -10,10 +10,11 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = [
-    "aiohttp>=3.9",
-    "anthropic>=0.97.0",
-    "huggingface_hub>=1.17.0",
-    "openai>=2.32.0"
+    "aiohttp>=3.14.0",
+    "anthropic>=0.106.0",
+    "huggingface_hub>=1.18.0",
+    "openai>=2.41.0",
+    "playwright>=1.61.0"
 ]
 
 [project.scripts]
@@ -32,7 +33,7 @@ dependencies = [
     "pytest-cov>=7.0",
     "ruff>=0.9",
     "mypy>=1.13",
-    "aiohttp",
+    "aiohttp>=3.14.0",
 ]
 
 [tool.hatch.envs.default.scripts]

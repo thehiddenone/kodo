@@ -37,7 +37,7 @@ Two sources, used alone or together — let the questions decide:
   - `find_files` locates files by name/glob; `find_text_in_files` searches file *contents* under one root (call it once per root to cover several).
   - `read_file` reads a file's contents. Read enough to be sure; cite exact paths (and line numbers where useful).
   - You may **only read**. If answering truly requires running or changing code, say so in your answer — do not do it.
-- **The web (`web_search`).** When the task needs knowledge the codebase can't hold — third-party library/API docs, the meaning of an error, a known solution to a general problem — search the web. Note: `web_search` is a **placeholder** right now and returns no results with a note saying so; when that happens, fall back to code exploration and state plainly in your answer that the web angle couldn't be pursued yet.
+- **The web (`web_search`).** When the task needs knowledge the codebase can't hold — third-party library/API docs, the meaning of an error, a known solution to a general problem — search the web. One call runs a full pipeline (search engines → page scraping → summarization) and returns a **themed report**: each theme is one distinct angle on the query (often an independent solution option) with a one-sentence `summary`, a `details` synthesis, and the source `links` behind it. Use those links as your `sources`. The pipeline is best-effort: read the `note` field — engines can be on anti-bot cooldown and pages can fail to scrape. An empty `themes` list means *this search* couldn't be completed (try a rephrased query or fall back to code exploration), not that the web has no answer.
 
 Prefer primary evidence: the code itself over assumptions, official docs over hearsay. When the evidence is thin or conflicting, say so — an honest "inconclusive, here's what I found" beats a confident guess.
 
@@ -61,4 +61,4 @@ Prefer primary evidence: the code itself over assumptions, official docs over he
 - Answering beyond the evidence — don't present a guess as a finding. Mark inconclusive results as inconclusive.
 - Ignoring `mode` — don't return a report when asked for answers, or a list of answers when asked for a report.
 - Dumping whole files — cite paths and line refs with short relevant excerpts, not file dumps.
-- Treating the placeholder `web_search` as authoritative — when it returns its unwired note, fall back to code and say the web angle is pending.
+- Treating an empty `web_search` report as "the web has no answer" — its `note` explains what degraded (anti-bot cooldowns, unreachable pages); retry with a different query or fall back to code, and say which angle went unpursued.

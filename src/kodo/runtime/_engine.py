@@ -137,11 +137,19 @@ _COMPACTOR_AGENT_NAME = "compactor"
 # it is intentionally *not* in ``_DIRECT_ONLY_AGENTS`` (which would make
 # ``__spawn_subagent`` short-circuit it) nor in any agent's ``subagents:`` list.
 _DEPSMGR_AGENT_NAME = "toolchain_depsmgr"
+# Theme-summarization sub-agent behind the ``web_search`` tool's phase 3 (see
+# doc/WEB_SEARCH.md). Driven only through the tool's dedicated ungated service
+# (``__run_web_summarizer``) as a *silent* titler-style turn — never as a
+# subsession, since ``web_search`` is typically called from a sub-agent (the
+# investigator) and subsessions do not nest.
+_WEB_SUMMARIZER_AGENT_NAME = "web_summarizer"
 
 # Sub-agents that the engine drives directly and that must never be reachable
 # through the ``run_subagent`` tool (the Guide/Problem Solver cannot
 # invoke them).
-_DIRECT_ONLY_AGENTS = frozenset({_SESSION_TITLER_AGENT_NAME, _COMPACTOR_AGENT_NAME})
+_DIRECT_ONLY_AGENTS = frozenset(
+    {_SESSION_TITLER_AGENT_NAME, _COMPACTOR_AGENT_NAME, _WEB_SUMMARIZER_AGENT_NAME}
+)
 
 # Context compaction. The live main context is measured in tokens after every
 # entry-agent turn; once it reaches ``_COMPACTION_THRESHOLD`` of the current
@@ -264,6 +272,7 @@ class _EngineServices:
         *,
         run_subagent: Callable[[str, str, dict[str, object]], Awaitable[dict[str, object]]],
         run_dependency_manager: Callable[[dict[str, object]], Awaitable[dict[str, object]]],
+        run_web_summarizer: Callable[[dict[str, object]], Awaitable[dict[str, object]]],
         run_author_critic: Callable[
             [str, str, str, str, dict[str, str], str, bool], Awaitable[dict[str, object]]
         ],
@@ -273,6 +282,7 @@ class _EngineServices:
     ) -> None:
         self.__run_subagent = run_subagent
         self.__run_dependency_manager = run_dependency_manager
+        self.__run_web_summarizer = run_web_summarizer
         self.__run_author_critic = run_author_critic
         self.__rollback = rollback
         self.__disable_autonomous = disable_autonomous
@@ -287,6 +297,10 @@ class _EngineServices:
     async def run_dependency_manager(self, task_input: dict[str, object]) -> dict[str, object]:
         """Delegate to the engine's ungated dependency-manager spawn."""
         return await self.__run_dependency_manager(task_input)
+
+    async def run_web_summarizer(self, task_input: dict[str, object]) -> dict[str, object]:
+        """Delegate to the engine's ungated, silent web-summarizer run."""
+        return await self.__run_web_summarizer(task_input)
 
     async def run_author_critic_iteration(
         self,
@@ -430,6 +444,7 @@ class WorkflowEngine:
         self.__services = _EngineServices(
             run_subagent=self.__run_subagent,
             run_dependency_manager=self.__run_dependency_manager,
+            run_web_summarizer=self.__run_web_summarizer,
             run_author_critic=self.__run_author_critic_iteration,
             rollback=self.__run_rollback,
             disable_autonomous=self.__disable_autonomous,
@@ -2433,6 +2448,135 @@ class WorkflowEngine:
             dict: The sub-agent's ``output_schema`` result.
         """
         return await self.__spawn_subagent(_DEPSMGR_AGENT_NAME, task_input)
+
+    async def __run_web_summarizer(self, task_input: dict[str, object]) -> dict[str, object]:
+        """Run the ``web_summarizer`` sub-agent silently for the ``web_search`` tool.
+
+        Phase 3 of the web-search pipeline (doc/WEB_SEARCH.md). Ungated by
+        design (holding ``web_search`` is the authorization, mirroring
+        :meth:`__run_dependency_manager`) — but unlike the depsmgr it is *not*
+        a subsession: ``web_search`` is typically called from the investigator,
+        itself a sub-agent, and subsessions do not nest. Instead the summarizer
+        runs as one silent titler-style LLM turn: no feed events, only its USD
+        cost folded into the session total.
+
+        The model gets one corrective retry when it fails to return any usable
+        theme; after that the tool degrades gracefully (empty ``themes`` +
+        explanatory ``note``). Themes are sanitized here — links are filtered
+        to URLs that actually appear in ``sources`` so the report can never
+        cite a page that was not scraped.
+
+        Args:
+            task_input: ``{query, max_themes, sources}`` per the sub-agent's
+                ``input_schema``.
+
+        Returns:
+            dict: ``{"themes": [...]}``, possibly empty.
+        """
+        agent = self.__registry.get(_WEB_SUMMARIZER_AGENT_NAME)
+        plugin, model_id, routing = await self.__resolve_plugin(agent.capability)
+
+        max_themes_raw = task_input.get("max_themes")
+        max_themes = max_themes_raw if isinstance(max_themes_raw, int) and max_themes_raw > 0 else 5
+        sources = task_input.get("sources")
+        allowed_urls = {
+            str(s.get("url"))
+            for s in (sources if isinstance(sources, list) else [])
+            if isinstance(s, dict) and s.get("url")
+        }
+
+        messages: list[Message] = [
+            Message(role="user", content=self.__render_web_summarizer_input(task_input))
+        ]
+        for _attempt in range(2):
+            result, text = await self.__run_silent_return_turn(
+                routing, plugin, model_id, agent, messages
+            )
+            themes = self.__sanitize_themes(result, max_themes, allowed_urls)
+            if themes:
+                return {"themes": themes}
+            # An empty-but-valid report is a legitimate outcome (thin sources);
+            # only a *missing/malformed* result earns the corrective retry.
+            if result is not None and isinstance(result.get("themes"), list):
+                return {"themes": []}
+            messages.append(Message(role="assistant", content=text or "(no tool call)"))
+            messages.append(
+                Message(
+                    role="user",
+                    content=(
+                        "That was not a usable report. Call `return_result` exactly once "
+                        "with `result.themes`: a list of objects, each with a one-sentence "
+                        "`summary` string, a `details` string, and a `links` list of URLs "
+                        "drawn from the provided sources."
+                    ),
+                )
+            )
+        _log.info("web_summarizer produced no usable themes after retry")
+        return {"themes": []}
+
+    @staticmethod
+    def __render_web_summarizer_input(task_input: dict[str, object]) -> str:
+        """Render the summarizer's structured task as its user message.
+
+        Dedicated renderer (not :meth:`__render_task_input`, which comma-joins
+        lists): each source becomes its own markdown section so the model can
+        attribute themes to URLs.
+        """
+        query = str(task_input.get("query", ""))
+        max_themes = task_input.get("max_themes", 5)
+        parts = [
+            "# Web Search Summarization Task",
+            f"Search query: {query}",
+            f"Maximum themes: {max_themes}",
+            "## Sources",
+        ]
+        sources = task_input.get("sources")
+        for index, source in enumerate(sources if isinstance(sources, list) else [], start=1):
+            if not isinstance(source, dict):
+                continue
+            title = str(source.get("title", "")) or "(untitled)"
+            url = str(source.get("url", ""))
+            text = str(source.get("text", ""))
+            parts.append(f"### Source {index} — {title}\nURL: {url}\n\n{text}")
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def __sanitize_themes(
+        result: dict[str, object] | None, max_themes: int, allowed_urls: set[str]
+    ) -> list[dict[str, object]]:
+        """Validate/normalize the summarizer's ``themes`` payload.
+
+        Keeps only well-formed entries (non-empty ``summary``/``details``),
+        filters ``links`` to URLs that were actually in the input sources, and
+        clamps the list to *max_themes*.
+        """
+        if result is None:
+            return []
+        raw = result.get("themes")
+        if not isinstance(raw, list):
+            return []
+        themes: list[dict[str, object]] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            summary = entry.get("summary")
+            details = entry.get("details")
+            if not isinstance(summary, str) or not summary.strip():
+                continue
+            if not isinstance(details, str) or not details.strip():
+                continue
+            links_raw = entry.get("links")
+            links = [
+                link
+                for link in (links_raw if isinstance(links_raw, list) else [])
+                if isinstance(link, str) and link in allowed_urls
+            ]
+            themes.append(
+                {"summary": summary.strip(), "details": details.strip(), "links": links}
+            )
+            if len(themes) >= max_themes:
+                break
+        return themes
 
     @staticmethod
     def __render_task_input(task_input: dict[str, object]) -> str:

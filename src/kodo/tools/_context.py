@@ -246,6 +246,21 @@ class EngineServices(Protocol):
         """
         ...
 
+    async def run_web_summarizer(self, task_input: dict[str, object]) -> dict[str, object]:
+        """Run the ``web_summarizer`` sub-agent silently and return ``{"themes": [...]}``.
+
+        Phase 3 of the ``web_search`` tool (doc/WEB_SEARCH.md). Like
+        :meth:`run_dependency_manager` it is ungated — holding ``web_search``
+        is the authorization, so the fixed engine-side agent never sits in any
+        caller's ``subagents:`` allow-list. Unlike a ``run_subagent`` spawn it
+        opens **no subsession** (``web_search`` is typically called from a
+        sub-agent, and subsessions do not nest): the engine drives one silent
+        LLM turn, titler-style, and only the structured result comes back.
+        ``task_input`` conforms to the sub-agent's ``input_schema`` (``query``,
+        ``max_themes``, ``sources``).
+        """
+        ...
+
     async def run_author_critic_iteration(
         self,
         caller: str,

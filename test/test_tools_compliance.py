@@ -33,6 +33,7 @@ from kodo.toolspecs import (
     requires_intent,
     tool_result_succeeded,
 )
+from kodo.websearch import BrowserUnavailableError as WebsearchBrowserUnavailableError
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -73,6 +74,9 @@ class _FakeServices:
             "commands_run": ["uv add foo"],
             "files_changed": ["pyproject.toml", "uv.lock"],
         }
+
+    async def run_web_summarizer(self, task_input: dict[str, object]) -> dict[str, object]:
+        return {"themes": []}
 
     async def run_author_critic_iteration(
         self,
@@ -672,14 +676,23 @@ async def test_create_new_project_compliance(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_web_search_compliance(tmp_path: Path) -> None:
+async def test_web_search_compliance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Keep the pipeline off the real network: an unopenable browser makes the
+    # handler degrade to its schema-compliant empty report (themes/note shape).
+    class _NoBrowserSession:
+        async def __aenter__(self) -> object:
+            raise WebsearchBrowserUnavailableError("no browser in tests")
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr("kodo.tools._web_search.BrowserSession", _NoBrowserSession)
     d = _make_dispatcher(tmp_path, agent_name="investigator")
-    # Placeholder handler returns the empty, schema-compliant results/note shape.
     parsed = _assert_compliant(
         "web_search",
         await _dispatch(d, "web_search", {"query": "how to parse RFC 3339 in python"}),
     )
-    assert parsed["results"] == []
+    assert parsed["themes"] == []
     assert parsed["note"]
     # Missing query is rejected with the universal error envelope.
     _assert_compliant("web_search", await _dispatch(d, "web_search", {}))
