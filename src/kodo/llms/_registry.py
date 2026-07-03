@@ -45,7 +45,7 @@ class LLMEntry:
 
 # Fallback context window for an entry whose ``context_window`` is unset or for an
 # unknown model key — keeps auto-compaction working with a sane budget.
-_DEFAULT_CONTEXT_WINDOW = 200_000
+_DEFAULT_CONTEXT_WINDOW = 262_144
 
 
 _REGISTRY: dict[str, LLMEntry] = {

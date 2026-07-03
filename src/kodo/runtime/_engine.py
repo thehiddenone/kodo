@@ -67,6 +67,7 @@ from kodo.project import (
     WorkspaceLayout,
     kodo_user_dir,
 )
+from kodo.security import SecurityLayer
 from kodo.shellparser import parse_command
 from kodo.state import TransientStore, read_diff_files, render_tool_call_markdown
 from kodo.subagents import AgentLoadError, AgentRegistry, SubAgent
@@ -422,6 +423,10 @@ class WorkflowEngine:
         self.__active_model_key = None
         self.__replay_subsessions = None
         self.__resume_subsession_pending = False
+        # The security layer judging every tool call (doc/SECURITY.md). The
+        # judge callable routes SMART-mode intent checks through this engine's
+        # LLM plumbing on the session's active model.
+        self.__security = SecurityLayer(judge=self.__security_judge)
         self.__services = _EngineServices(
             run_subagent=self.__run_subagent,
             run_dependency_manager=self.__run_dependency_manager,
@@ -1130,6 +1135,38 @@ class WorkflowEngine:
             await self.__emit_cost_only()
 
         return result, "".join(text_parts)
+
+    async def __security_judge(self, system: str, user: str) -> str:
+        """One silent LLM call for the security layer's SMART-mode intent judge.
+
+        Runs on the session's active model (entry-agent capability), with no
+        tools and no feed events — only the text verdict is collected. The
+        call's USD cost is folded into the running session total (cost-only
+        ``usage.update``, no feed entry). Exceptions propagate: the security
+        layer treats any failure as an ``ask`` (fail closed).
+        """
+        plugin, model_id, routing = await self.__resolve_plugin(self.__entry_capability())
+        text_parts: list[str] = []
+        turn_end: TurnEnd | None = None
+        async for event in self.__gateway.stream_query(
+            routing=routing,
+            plugin=plugin,
+            sink=self.__sink,
+            stream_id=uuid.uuid4().hex,
+            model=model_id,
+            system=system,
+            messages=[Message(role="user", content=user)],
+            tools=[],
+            cache_breakpoints=[0],
+        ):
+            if isinstance(event, TokenDelta):
+                text_parts.append(event.text)
+            elif isinstance(event, TurnEnd):
+                turn_end = event
+        if turn_end is not None:
+            self.__cumulative_usd += turn_end.usage.usd_cost
+            await self.__emit_cost_only()
+        return "".join(text_parts)
 
     async def __run_titler_turn(
         self,
@@ -2263,6 +2300,7 @@ class WorkflowEngine:
         return ToolDispatcher(
             resolver=self.__make_resolver(),
             gate=self.__gate,
+            security=self.__security,
             session=self.__session,
             services=self.__services,
             agent_name=agent_name,

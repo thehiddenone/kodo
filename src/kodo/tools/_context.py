@@ -25,7 +25,10 @@ __all__ = [
     "ApprovalLike",
     "EngineServices",
     "GateLike",
+    "PermissionLike",
     "RootPath",
+    "SecurityDecisionLike",
+    "SecurityLike",
     "SessionLike",
     "ToolContext",
 ]
@@ -62,6 +65,63 @@ class ApprovalLike(Protocol):
 
     @property
     def feedback(self) -> str: ...
+
+
+class PermissionLike(Protocol):
+    """Structural shape of a user's response to a permission prompt.
+
+    Read-only (``@property``) so it works as a covariant method return type:
+    runtime's concrete ``PermissionResponse`` satisfies it.
+    """
+
+    @property
+    def action(self) -> str:
+        """``'allow'`` or ``'deny'``."""
+        ...
+
+    @property
+    def feedback(self) -> str:
+        """Optional free-text the user attached to the decision."""
+        ...
+
+
+class SecurityDecisionLike(Protocol):
+    """Structural shape of the security layer's verdict on one tool call.
+
+    Satisfied by :class:`kodo.security.SecurityDecision` (by shape).
+    """
+
+    @property
+    def action(self) -> str:
+        """``'allow'`` (dispatch proceeds) or ``'ask'`` (prompt the user)."""
+        ...
+
+    @property
+    def reason(self) -> str:
+        """One sentence explaining the verdict (shown in the prompt)."""
+        ...
+
+
+class SecurityLike(Protocol):
+    """Structural shape of the security layer.
+
+    Satisfied by :class:`kodo.security.SecurityLayer` (by shape, no
+    inheritance — ``kodo.tools`` never imports ``kodo.security``, mirroring
+    how ``GateLike`` decouples it from ``runtime``).
+    """
+
+    async def evaluate(
+        self,
+        *,
+        tool_name: str,
+        tool_input: dict[str, object],
+        command_control: str,
+        autonomous: bool,
+        default_cwd: str,
+        roots: tuple[str, ...],
+    ) -> SecurityDecisionLike:
+        """Judge one tool call: allow it, or ask the user for permission."""
+        ...
 
 
 class GateLike(Protocol):
@@ -101,6 +161,27 @@ class GateLike(Protocol):
         """
         ...
 
+    async def fire_permission(
+        self,
+        *,
+        tool_call_id: str,
+        tool_name: str,
+        external_name: str,
+        risk: str,
+        intent: str,
+        reason: str,
+        params: list[dict[str, str]],
+    ) -> PermissionLike:
+        """Surface a security permission prompt and block until the user decides.
+
+        Emitted when the security layer's verdict on a tool call is ``ask``
+        (``prompt.permission``, WS_PROTOCOL.md §6.5). ``params`` is the
+        customer-visible parameter preview (``{"name", "value"}`` rows);
+        ``risk`` is the tool's :class:`~kodo.toolspecs.SecurityImpact` label.
+        Returns the user's ``allow``/``deny`` decision plus optional feedback.
+        """
+        ...
+
 
 class SessionLike(Protocol):
     """Structural shape of the session state a tool may read or write.
@@ -112,10 +193,16 @@ class SessionLike(Protocol):
     so every tool in a prompt sees one consistent value (unlike the user-facing
     ``SessionState.autonomous``, which may already reflect a toggle queued for
     the *next* prompt).
+
+    ``command_control`` is the never-frozen Command Control posture
+    (``"permissive"`` / ``"defensive"`` / ``"smart"``) — read live per tool
+    call by the security gate in :class:`~kodo.tools.ToolDispatcher`, so a
+    mid-turn toggle takes effect on the very next call.
     """
 
     phase: str
     effective_autonomous: bool
+    command_control: str
 
 
 class EngineServices(Protocol):
@@ -234,6 +321,9 @@ class ToolContext:
             project-confined resolver in Guided mode, a logical (workspace-folder
             keyed) resolver in Problem Solver mode.
         gate: Approval/question gate (protocol).
+        security: The security layer (protocol), consulted by the dispatcher
+            before every dispatch; ``None`` disables gating (tests/legacy
+            callers).
         session: Session state (protocol); ``effective_autonomous`` is the
             frozen mode for this prompt.
         services: Engine-side operations (protocol): sub-agent launch,
@@ -271,6 +361,7 @@ class ToolContext:
     services: EngineServices
     agent_name: str
     session_id: str
+    security: SecurityLike | None = None
     mode: str = "problem_solving"
     project_root: Path | None = None
     root_paths: tuple[RootPath, ...] = ()

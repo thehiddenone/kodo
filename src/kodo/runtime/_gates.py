@@ -8,6 +8,9 @@ client's reply is a ``kind=response`` correlated by ``id``.
 - :meth:`GateOrchestrator.fire_questions` — surfaces one ``ask_user``
   question batch (``prompt.question``, WS_PROTOCOL.md §6.1) and blocks
   until the user confirms answers to all of them.
+- :meth:`GateOrchestrator.fire_permission` — surfaces a security-layer
+  permission prompt (``prompt.permission``, WS_PROTOCOL.md §6.5) and blocks
+  until the user allows or denies the tool call.
 
 Both methods register a :class:`asyncio.Future` via
 :meth:`~kodo.transport.AppState.register_response_future` and await it.
@@ -28,9 +31,9 @@ from dataclasses import dataclass
 
 from kodo.common import Envelope, ResponseChannel
 from kodo.state import TransientStore
-from kodo.transport import SREQ_PROMPT_APPROVAL, SREQ_PROMPT_QUESTION
+from kodo.transport import SREQ_PROMPT_APPROVAL, SREQ_PROMPT_PERMISSION, SREQ_PROMPT_QUESTION
 
-__all__ = ["ApprovalResponse", "GateOrchestrator"]
+__all__ = ["ApprovalResponse", "GateOrchestrator", "PermissionResponse"]
 
 _log = logging.getLogger(__name__)
 
@@ -42,6 +45,20 @@ class ApprovalResponse:
     Attributes:
         action: ``'agree'`` or ``'feedback'``.
         feedback: Free-form feedback text; empty when ``action == 'agree'``.
+    """
+
+    action: str
+    feedback: str
+
+
+@dataclass(frozen=True)
+class PermissionResponse:
+    """Developer response to a security permission prompt.
+
+    Attributes:
+        action: ``'allow'`` or ``'deny'``.
+        feedback: Optional free-text the user attached to the decision
+            (returned to the agent verbatim on a denial).
     """
 
     action: str
@@ -184,6 +201,64 @@ class GateOrchestrator:
         _log.info("Question batch resolved: req_id=%s", req_id[:8])
         return answers
 
+    async def fire_permission(
+        self,
+        *,
+        tool_call_id: str,
+        tool_name: str,
+        external_name: str,
+        risk: str,
+        intent: str,
+        reason: str,
+        params: list[dict[str, str]],
+    ) -> PermissionResponse:
+        """Emit a ``prompt.permission`` ``kind=request`` and block until the
+        user allows or denies the gated tool call.
+
+        Like :meth:`fire_questions`, no ``pending_prompt`` is persisted: the
+        gated ``tool_use`` is flushed to ``session.jsonl`` before dispatch, so
+        a server restart resolves the dangling call through the engine's
+        resume path (the un-executed tool gets an interrupted stand-in; the
+        agent may simply retry, re-triggering the same judgement).
+
+        Args:
+            tool_call_id: The gated ``tool_use`` block's id (feed correlation).
+            tool_name: Internal tool name (``run_command``).
+            external_name: User-facing tool name (``Run Command``).
+            risk: The tool's ``SecurityImpact`` label (``High``, …).
+            intent: The agent's declared intent ("" when the tool has none).
+            reason: The security layer's one-sentence reason for asking.
+            params: Customer-visible ``{"name", "value"}`` parameter rows.
+
+        Returns:
+            PermissionResponse: The user's decision and optional feedback.
+        """
+        req_id = uuid.uuid4().hex
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[dict[str, object]] = loop.create_future()
+        self.__app_state.register_response_future(req_id, future)
+
+        payload: dict[str, object] = {
+            "type": SREQ_PROMPT_PERMISSION,
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+            "external_name": external_name,
+            "risk": risk,
+            "intent": intent,
+            "reason": reason,
+            "params": params,
+        }
+        await self.__app_state.send(Envelope(kind="request", id=req_id, payload=payload))
+        _log.info("Permission prompt fired: tool=%s risk=%s req_id=%s", tool_name, risk, req_id[:8])
+
+        response_payload = await future
+        action = str(response_payload.get("action", "deny"))
+        if action not in ("allow", "deny"):
+            action = "deny"
+        feedback = str(response_payload.get("feedback") or "")
+        _log.info("Permission prompt resolved: req_id=%s action=%s", req_id[:8], action)
+        return PermissionResponse(action=action, feedback=feedback)
+
     @staticmethod
     def __normalize_answers(raw: object, count: int) -> list[dict[str, object]]:
         """Coerce the client's ``answers`` payload to exactly *count* entries.
@@ -197,9 +272,7 @@ class GateOrchestrator:
         for i in range(count):
             entry = entries[i] if i < len(entries) and isinstance(entries[i], dict) else {}
             selected_raw = entry.get("selected")
-            selected = (
-                [str(s) for s in selected_raw] if isinstance(selected_raw, list) else []
-            )
+            selected = [str(s) for s in selected_raw] if isinstance(selected_raw, list) else []
             free_raw = entry.get("free_text")
             free_text = str(free_raw) if isinstance(free_raw, str) and free_raw.strip() else None
             answers.append({"selected": selected, "free_text": free_text})

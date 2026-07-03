@@ -186,10 +186,10 @@ The four header toggles split into **two frozen** and **two never-frozen**:
 - `autonomous` — Autonomous/Interactive mode. Toggled via `mode.set` (§7.5).
 - `workflow_mode` — `guided` (the Guide + full Kodo pipeline) or `problem_solving` (the standalone Problem Solver agent). Toggled via `workflow.set` (§7.6).
 
-**Never-frozen toggles** (`edit_control`, `command_control`) carry a **single** value and **no `effective_*` twin**. The *client* owns them: it keeps the user's selected posture and sends the **shown** value, which it forces to `allow_all`/`permissive` (and locks the toggle in the UI) while Autonomous mode is *in effect* — i.e. the frozen `effective_autonomous` during a turn, the live `autonomous` selection when idle — and restores the user's selection otherwise. The server simply mirrors whatever the client last sent, so its stored value is always exactly what the UI shows. **State tracking only** — enforcement is deferred to the M4 security layer.
+**Never-frozen toggles** (`edit_control`, `command_control`) carry a **single** value and **no `effective_*` twin**. The *client* owns them: it keeps the user's selected posture and sends the **shown** value, which it forces to `allow_all`/`permissive` (and locks the toggle in the UI) while Autonomous mode is *in effect* — i.e. the frozen `effective_autonomous` during a turn, the live `autonomous` selection when idle — and restores the user's selection otherwise. The server simply mirrors whatever the client last sent, so its stored value is always exactly what the UI shows.
 
-- `edit_control` — how file edits are handled: `review_all` (pause for sign-off) / `allow_all` / `smart` (default). Set via `edit_control.set` (§7.4a).
-- `command_control` — how much risky commands are restricted: `defensive` / `permissive` / `smart` (default). Set via `command_control.set` (§7.4b).
+- `edit_control` — how file edits are handled: `review_all` (pause for sign-off) / `allow_all` / `smart` (default). Set via `edit_control.set` (§7.4a). **State tracking only** — no edit gate is enforced yet.
+- `command_control` — how much risky commands are restricted: `defensive` / `permissive` / `smart` (default). Set via `command_control.set` (§7.4b). **Enforced**: this is the security layer's posture — the dispatcher reads it live per tool call and an `ask` verdict fires `prompt.permission` (§6.5). See doc/SECURITY.md.
 
 > **Not yet on the snapshot:** `cumulative_usd`, `pending_prompts`, and
 > `last_checkpoint_sha` are **⟪planned⟫** additions; today cost arrives via
@@ -535,9 +535,30 @@ A `kind=event` (no reply) telling the extension to delete a stored key, e.g. aft
 { "type": "api_key.revoke", "vendor": "anthropic" }
 ```
 
-### 6.5 ⟪planned⟫ `prompt.permission` — security-layer prompt
+### 6.5 `prompt.permission` — security-layer permission prompt
 
-The `SREQ_PROMPT_PERMISSION` constant and a `prompt.permission` shape are reserved for the security layer's `prompt` decision (FR-SEC-05), but the security layer is a stub and nothing emits it today.
+Fired when the security layer's verdict on a tool call is `ask` (doc/SECURITY.md): the dispatcher blocks the gated call until the user decides. `tool_call_id` correlates the prompt with the gated call's feed entry; `risk` is the tool's `SecurityImpact` label; `reason` is the layer's one-sentence justification; `params` is the customer-visible parameter preview (input properties projected through the tool's `input_visibility` map — hidden properties never appear — values truncated at 400 chars).
+
+```json
+{ "type": "prompt.permission",
+  "tool_call_id": "toolu_01",
+  "tool_name": "run_command",
+  "external_name": "Run Command",
+  "risk": "High",
+  "intent": "Install the test runner the plan requires",
+  "reason": "The command targets paths outside the workspace: /etc/hosts.",
+  "params": [ { "name": "command", "value": "cat /etc/hosts" } ] }
+```
+
+Response payload:
+
+```json
+{ "type": "prompt.permission.response", "action": "allow", "feedback": null }
+```
+
+`action` is `allow` or `deny` (anything else is treated as `deny`); `feedback` is optional free text — on a denial it is returned to the agent verbatim inside the tool's error result. On **allow** the call dispatches normally; on **deny** the tool is *not executed* and the agent receives `{"error": "The user DENIED permission …"}`.
+
+The panel is transient client-side (no session entry): the gated tool call's own card records the outcome. No `pending_prompt` is persisted — a server crash mid-prompt resolves through the engine's dangling-tool-use resume path (the un-executed call gets an interrupted stand-in).
 
 ---
 
@@ -640,7 +661,7 @@ A `state` event with the updated `workflow_mode` follows.
 
 ### 7.4a `edit_control.set` — set the Edit Control posture
 
-Sets the Edit Control posture: `review_all` (pause for sign-off on every edit) / `allow_all` (apply without pausing) / `smart` (decide per edit; the default). Unknown values fall back to `smart`. Unlike `mode.set`/`workflow.set` this is **never frozen**: the client owns the value (forcing `allow_all` while Autonomous mode is in effect, restoring the user's pick otherwise) and the server mirrors whatever it last sent, so the stored value is always exactly what the UI shows. **State tracking only** — no edit gate is enforced yet (deferred to the M4 security layer).
+Sets the Edit Control posture: `review_all` (pause for sign-off on every edit) / `allow_all` (apply without pausing) / `smart` (decide per edit; the default). Unknown values fall back to `smart`. Unlike `mode.set`/`workflow.set` this is **never frozen**: the client owns the value (forcing `allow_all` while Autonomous mode is in effect, restoring the user's pick otherwise) and the server mirrors whatever it last sent, so the stored value is always exactly what the UI shows. **State tracking only** — no edit gate is enforced yet (a review-workflow feature; not part of the security layer, see doc/SECURITY.md §9).
 
 ```json
 { "type": "edit_control.set", "edit_control": "review_all" }
@@ -656,7 +677,7 @@ A `state` event with the updated `edit_control` field follows.
 
 ### 7.4b `command_control.set` — set the Command Control posture
 
-Sets the Command Control posture: `defensive` (block risky commands) / `permissive` (allow them) / `smart` (decide per command; the default). Unknown values fall back to `smart`. Mirrored exactly like `edit_control.set` (the client forces `permissive` while Autonomous is in effect). **State tracking only** (M4).
+Sets the Command Control posture: `defensive` (ask on every Moderate-or-above tool call) / `permissive` (allow everything below Critical) / `smart` (judge per call; the default). Unknown values fall back to `smart`. Mirrored exactly like `edit_control.set` (the client forces `permissive` while Autonomous is in effect; the server also operates as permissive while Autonomous is in effect, as its own guard). **Enforced by the security layer** — the tool dispatcher reads the value live per tool call; an `ask` verdict fires `prompt.permission` (§6.5). Full decision logic in doc/SECURITY.md.
 
 ```json
 { "type": "command_control.set", "command_control": "defensive" }
@@ -727,7 +748,7 @@ The following are specified for later milestones but **not handled** today:
   Problem Solver shadow mirror and take an explicit `{root, sha}` rather than
   browsing a list; the Guide's own `rollback` tool still has no client-initiated
   wire command.
-- `security.add_rule` (FR-SEC-07) — the security layer is a stub.
+- `security.add_rule` (FR-SEC-07) — persistent user-defined allow/deny rules ("always allow commands like this") layered ahead of the now-implemented per-call security judgement (doc/SECURITY.md §9).
 - `credentials.set` — superseded by the `api_key.request`/response flow (§6.3):
   the server pulls keys on demand rather than the client pushing them.
 
@@ -770,7 +791,7 @@ These are anticipated and structured so adding them is purely additive — no ex
 
 - **Richer `state` snapshot** (§5.1): `cumulative_usd`, `pending_prompts`, `last_checkpoint_sha`.
 - **Checkpoint browsing** (§7.7): `checkpoint.list`. (The `checkpoint.undo`/`.rollback` commands, §7.4c, are already implemented, in both workflow modes.)
-- **Security prompts & rules** (§6.5, §7.7): `prompt.permission`, `security.add_rule`.
+- **Security rules** (§7.7): `security.add_rule`. (`prompt.permission`, §6.5, is implemented.)
 - **Verbose review mode.** New event type(s) gated by a settings flag, carrying a document's real path and richer status detail (e.g. its full `.jsonl` history). The `review.*` events stay as the low-fi default.
 - **Streamed tool output.** A streamed form of `agent.tool_call` for long-running shell commands; the single-event form remains valid for short calls.
 
@@ -794,4 +815,5 @@ These are anticipated and structured so adding them is purely additive — no ex
 | 7.3 | FR-AUT-01 |
 | 7.4 | two-workflow selection (guided / problem-solving) |
 | 8 | FR-WS-04 |
-| 5.13, 6.5, 7.7, 9.1 | ⟪planned⟫ — FR-MIR-03/04, FR-WKS-10/11, FR-SEC-05/07, FR-COS-03 |
+| 6.5, 7.4b | FR-SEC-05 (security layer permission prompt — doc/SECURITY.md) |
+| 5.13, 7.7, 9.1 | ⟪planned⟫ — FR-MIR-03/04, FR-WKS-10/11, FR-SEC-07, FR-COS-03 |

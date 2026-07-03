@@ -25,7 +25,7 @@ kodo.md   project manifest — declares this is a Kōdo project; selects the too
 specs/    *.kd files — narrative, responsibilities, per-component specs; the source of truth
 src/      generated source code — all components and modules, including entry points
 test/     generated unit tests, integration tests, and the end-to-end test
-.kodo/    Kōdo working state — checkpoint mirror (git), settings, security rules, logs
+.kodo/    Kōdo working state — checkpoint mirror (git), settings, logs
 ```
 
 The relationship mirrors a traditional compiled project: specs are to generated code as source is to binary. Humans own `specs/` and approve everything that lands in `src/`/`test/`. For the MVP, `.kd` is plain Markdown — extended-tag variants are post-MVP.
@@ -60,7 +60,7 @@ At each gate you can **Agree** (proceed) or **provide feedback** (re-run only th
 
 **Visual Studio Code extension** — a dedicated extension hosts a WebView for the Kōdo session: streamed agent output, file diffs (opened in VS Code's native diff editor), shell results, approval prompts, cumulative cost, autonomous toggle, and STOP — all without leaving the IDE.
 
-**MCP integration** — agents call in-process [Model Context Protocol](https://modelcontextprotocol.io) servers for filesystem and shell operations. Every tool call passes through a regex-based security layer with session and global rules; rules ship with sane defaults and you can add your own from the WebView.
+**Security layer** — every tool call passes through a per-call allow-or-ask judgement driven by the Command Control posture (permissive / defensive / smart). Smart mode statically analyzes shell commands for targets outside the workspace and runs an LLM intent judge over high-impact calls; anything it cannot clear raises a permission prompt in the WebView. See [`doc/SECURITY.md`](doc/SECURITY.md).
 
 **Plugin system** — three first-class plugin kinds: LLM plugins (the model provider), agent plugins (a specialised role in the workflow), and toolchain plugins (the language ecosystem). The plugin API is narrow and stable so integrations remain low-maintenance as Kōdo evolves.
 

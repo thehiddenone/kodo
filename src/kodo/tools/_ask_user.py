@@ -52,8 +52,7 @@ class AskUserTool(Tool):
                 return json.dumps(
                     {
                         "error": (
-                            f"questions[{i}].kind must be 'single_choice' or "
-                            "'multi_choice'; retry."
+                            f"questions[{i}].kind must be 'single_choice' or 'multi_choice'; retry."
                         )
                     }
                 )

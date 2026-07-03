@@ -45,13 +45,13 @@ place — the dispatch table in [tools/_dispatch.py](../src/kodo/tools/_dispatch
  T3  subagents · llms · tools      ← tools may import only ↓; imported only by runtime
         │
         ▼
- T2  toolspecs            ← the ToolSpec catalog (pure data, imports nothing from kodo)
-        │
-        ▼
+ T2  toolspecs · security ← the ToolSpec catalog (pure data) and the security
+        │                    layer over it (kodo.security → toolspecs + shellparser;
+        ▼                    consumed only by runtime — doc/SECURITY.md)
  T1  transport
         │
         ▼
- T0  common · project · guided_state · state · security
+ T0  common · project · guided_state · state
 ```
 
 **Hard rule:** `kodo.tools` may import only from T0/T1/T2 — in practice
@@ -357,8 +357,13 @@ between tools.
 - **Visibility:** `intent` is declared `"always"` visible and, as the first
   schema property, renders as the top row of the WebView's tool-call detail
   box.
-- **Consumer:** the security layer judges each mutating call by its declared
-  intent — auto-allow, auto-deny, or ask the user.
+- **Consumer:** the security layer ([doc/SECURITY.md](SECURITY.md)). In SMART
+  Command Control every HIGH-impact call goes through a one-shot LLM *intent
+  judge* that matches the declared intent against the parameters: a clean
+  match on a benign step auto-allows; anything else asks the user via
+  `prompt.permission`. `run_command` is additionally analyzed statically
+  first — a target provably outside the workspace always asks, a provably
+  read-only in-workspace command always passes.
 
 ---
 
@@ -370,7 +375,8 @@ run** by the engine. It owns the run's `ToolContext` and routes calls:
 ```python
 class ToolDispatcher:
     def __init__(self, *, resolver, gate, session, services,
-                 agent_name, session_id, mode="problem_solving", project_root=None):
+                 agent_name, session_id, security=None,
+                 mode="problem_solving", project_root=None):
         self.__ctx = ToolContext(...)            # one context for the whole run
 
     @property
@@ -378,20 +384,26 @@ class ToolDispatcher:
     @property
     def returned_output(self) -> dict[str, object] | None: ...   # set by return_result
 
-    async def dispatch(self, tool_name, tool_input) -> str:
+    async def dispatch(self, tool_name, tool_input, tool_use_id="") -> str:
         tool_cls = _CLASSES_BY_NAME.get(tool_name)
         if tool_cls is None:
             return json.dumps({"error": f"Unknown tool: {tool_name!r}"})
+        # 1. intent presence (§8A)   2. security gate (doc/SECURITY.md)
+        denial = await self.__security_gate(tool_name, tool_input, tool_use_id)
+        if denial is not None:
+            return denial                        # user denied — handler never runs
         return await tool_cls(self.__ctx).handle(tool_input)   # bind context, then run
 ```
 
 `dispatch` is the single function the engine passes into its turn loop as the
-`tool_dispatch` callback. One generic gate runs before the handler: a spec
-that requires `intent` (§8A) never dispatches without a non-blank one. It then
-instantiates the matching `Tool` subclass bound to
-this run's context and calls its `handle`. Whether the caller is the guide
-or a leaf sub-agent, the routing is identical — only the *contents* of the
-context and the *set* of tools differ.
+`tool_dispatch` callback. Two generic gates run before the handler: a spec
+that requires `intent` (§8A) never dispatches without a non-blank one, and the
+**security layer** judges every call — an `ask` verdict fires the
+`prompt.permission` gate and a user denial returns an error result without
+executing the tool (doc/SECURITY.md). It then instantiates the matching
+`Tool` subclass bound to this run's context and calls its `handle`. Whether
+the caller is the guide or a leaf sub-agent, the routing is identical — only
+the *contents* of the context and the *set* of tools differ.
 
 ---
 

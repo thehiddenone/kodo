@@ -46,13 +46,15 @@ class SessionState:
             **never** frozen: the client owns it, drives the value (auto-forcing
             ``"allow_all"`` while Autonomous mode is in effect), and the engine
             simply mirrors whatever the client last sent so its stored value is
-            always exactly what the UI shows. (Enforcement is deferred to the M4
-            security layer — this is state tracking only.)
+            always exactly what the UI shows. (State tracking only — no edit
+            gate is enforced; not part of the security layer.)
         command_control: How much Kodo restricts potentially risky commands —
-            ``"defensive"`` (block risky) | ``"permissive"`` (allow) |
-            ``"smart"`` (decide per command; the default). Mirrors the client
-            exactly, same as ``edit_control`` (auto-forced to ``"permissive"``
-            while Autonomous is in effect). Enforcement deferred to M4.
+            ``"defensive"`` (ask on Moderate+ calls) | ``"permissive"`` (allow
+            below Critical) | ``"smart"`` (judge per call; the default).
+            Mirrors the client exactly, same as ``edit_control`` (auto-forced
+            to ``"permissive"`` while Autonomous is in effect). **Enforced**:
+            this is the security layer's posture, read live per tool call by
+            the dispatcher (doc/SECURITY.md).
     """
 
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)

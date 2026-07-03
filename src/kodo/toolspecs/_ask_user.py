@@ -39,8 +39,7 @@ ASK_USER: ToolSpec = ToolSpec(
                 "type": "array",
                 "minItems": 1,
                 "description": (
-                    "All questions for the current topic, in the order the "
-                    "user should read them."
+                    "All questions for the current topic, in the order the user should read them."
                 ),
                 "items": {
                     "type": "object",

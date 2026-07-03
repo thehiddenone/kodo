@@ -285,7 +285,9 @@ on demand, never reconstructed at startup. Then:
        landed and there is no per-tool dedup ledger — so it gets a synthesized
        `error`-envelope `tool_result` (`__interrupted_tool_result`) keyed to the
        original `tool_use_id`, telling the model the call didn't complete and was
-       not retried.
+       not retried. A call that died *waiting on a security permission prompt*
+       (doc/SECURITY.md §7) lands here too: the tool never ran, the agent sees
+       the interruption and may retry, re-triggering the same judgement.
   3. Append the resulting `tool_result`s to `__main_messages`, persist them, and
      continue the **interrupted entry agent's** turn live (the next LLM call).
      The entry agent is recovered from the `entry_agent` tag on the dangling

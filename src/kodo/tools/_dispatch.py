@@ -44,7 +44,14 @@ from kodo.toolspecs import (
 )
 
 from ._ask_user import AskUserTool
-from ._context import EngineServices, GateLike, RootPath, SessionLike, ToolContext
+from ._context import (
+    EngineServices,
+    GateLike,
+    RootPath,
+    SecurityLike,
+    SessionLike,
+    ToolContext,
+)
 from ._create_new_project import CreateNewProjectTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
 from ._document_feedback import DocumentFeedbackTool
@@ -140,7 +147,11 @@ class ToolDispatcher:
         resolver: Path resolver for the native file/shell tools (project-confined
             in Guided mode, logical/workspace-folder-keyed in Problem Solver).
         gate: Approval/question gate.
-        session: Session state (carries the frozen ``effective_autonomous``).
+        security: The security layer judging every call before dispatch
+            (allow, or ask the user via ``gate.fire_permission``); ``None``
+            disables gating.
+        session: Session state (carries the frozen ``effective_autonomous``
+            and the live ``command_control`` posture the security layer reads).
         services: Engine-side operations (sub-agent launch, author/critic
             iteration, rollback, mode disable, project creation).
         agent_name: Name of the running agent.
@@ -163,6 +174,7 @@ class ToolDispatcher:
         services: EngineServices,
         agent_name: str,
         session_id: str,
+        security: SecurityLike | None = None,
         mode: str = "problem_solving",
         project_root: Path | None = None,
         root_paths: tuple[RootPath, ...] = (),
@@ -172,6 +184,7 @@ class ToolDispatcher:
         self.__ctx = ToolContext(
             resolver=resolver,
             gate=gate,
+            security=security,
             session=session,
             services=services,
             agent_name=agent_name,
@@ -199,9 +212,12 @@ class ToolDispatcher:
         """Route one tool call to its handler and return a JSON-encoded result.
 
         Enforces the mutating-tool ``intent`` contract first — a spec that
-        requires ``intent`` is rejected without a non-blank one — then
-        instantiates the matching :class:`Tool` subclass bound to this run's
-        context and invokes its :meth:`Tool.handle`.
+        requires ``intent`` is rejected without a non-blank one — then asks
+        the security layer to judge the call (an ``ask`` verdict surfaces a
+        ``prompt.permission`` gate; a user denial returns an error result
+        without dispatching), and finally instantiates the matching
+        :class:`Tool` subclass bound to this run's context and invokes its
+        :meth:`Tool.handle`.
 
         Args:
             tool_name: Tool name from :data:`DISPATCHABLE_TOOLS_BY_NAME`.
@@ -234,4 +250,86 @@ class ToolDispatcher:
                         )
                     }
                 )
+        denial = await self.__security_gate(tool_name, tool_input, tool_use_id)
+        if denial is not None:
+            return denial
         return await tool_cls(self.__ctx).handle(tool_input)
+
+    async def __security_gate(
+        self, tool_name: str, tool_input: dict[str, object], tool_use_id: str
+    ) -> str | None:
+        """Judge the call via the security layer; prompt the user on ``ask``.
+
+        Returns ``None`` when dispatch may proceed (allowed outright, or the
+        user granted permission), or a JSON-encoded error result when the user
+        denied the call.
+        """
+        ctx = self.__ctx
+        if ctx.security is None:
+            return None
+        spec = DISPATCHABLE_TOOLS_BY_NAME[tool_name]
+        decision = await ctx.security.evaluate(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            command_control=ctx.session.command_control,
+            autonomous=ctx.session.effective_autonomous,
+            default_cwd=str(ctx.resolver.default_cwd),
+            roots=tuple(rp.path for rp in ctx.root_paths),
+        )
+        if decision.action != "ask":
+            return None
+
+        intent_raw = tool_input.get(INTENT_KEY)
+        response = await ctx.gate.fire_permission(
+            tool_call_id=tool_use_id,
+            tool_name=tool_name,
+            external_name=spec.external_name,
+            risk=spec.security_impact.label,
+            intent=intent_raw if isinstance(intent_raw, str) else "",
+            reason=decision.reason,
+            params=_permission_params(spec, tool_input),
+        )
+        if response.action == "allow":
+            _log.info("security: user ALLOWED %s (%s)", tool_name, ctx.agent_name)
+            return None
+        _log.info("security: user DENIED %s (%s)", tool_name, ctx.agent_name)
+        feedback = response.feedback.strip()
+        detail = (
+            f" The user's feedback: {feedback}"
+            if feedback
+            else (
+                " No feedback was given — reconsider the approach or consult "
+                "the user before retrying."
+            )
+        )
+        return json.dumps(
+            {"error": f"The user DENIED permission for this {tool_name} call.{detail}"}
+        )
+
+
+# Cap for permission-prompt parameter previews; the full value is visible in
+# the tool call's own detail box, the prompt only needs enough to decide.
+_PERMISSION_VALUE_CHARS = 400
+
+
+def _permission_params(spec: ToolSpec, tool_input: dict[str, object]) -> list[dict[str, str]]:
+    """Customer-visible ``{"name", "value"}`` rows for a permission prompt.
+
+    Projects the input through the spec's ``input_visibility`` map (hidden
+    properties never reach the prompt; ``intent`` is carried separately),
+    truncating long values.
+    """
+    rows: list[dict[str, str]] = []
+    properties = spec.input_schema.get("properties")
+    names = properties.keys() if isinstance(properties, dict) else tool_input.keys()
+    for name in names:
+        if name == INTENT_KEY or name not in tool_input:
+            continue
+        if spec.input_visibility.get(name, "hidden") == "hidden":
+            continue
+        value = tool_input[name]
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        if len(text) > _PERMISSION_VALUE_CHARS:
+            text = text[:_PERMISSION_VALUE_CHARS] + f"… [{len(text)} chars total]"
+        rows.append({"name": name, "value": text})
+    return rows

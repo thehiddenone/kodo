@@ -11,7 +11,7 @@ from kodo.tools import ToolDispatcher, tools_for_agent
 from ._bootstrap import locate_guide_session
 from ._checkpoints import CheckpointEntry, CheckpointState, MirrorDirtyError
 from ._engine import WorkflowEngine
-from ._gates import ApprovalResponse, GateOrchestrator
+from ._gates import ApprovalResponse, GateOrchestrator, PermissionResponse
 from ._guide import GuideMarker
 from ._session import SessionState
 from ._session_log import SessionLog
@@ -23,6 +23,7 @@ __all__ = [
     "GateOrchestrator",
     "GuideMarker",
     "MirrorDirtyError",
+    "PermissionResponse",
     "SessionLog",
     "SessionState",
     "ToolDispatcher",

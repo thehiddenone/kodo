@@ -73,11 +73,13 @@ MSG_WORKFLOW_SET = "workflow.set"
 # mode.set/workflow.set this is NEVER frozen: the client owns the value (forcing
 # "allow_all" while Autonomous is in effect) and the server mirrors whatever it
 # last sent, so the stored value is always exactly what the UI shows. (State
-# tracking only — enforcement is deferred to the M4 security layer.)
+# tracking only — no edit gate is enforced yet; not part of the security layer.)
 MSG_EDIT_CONTROL_SET = "edit_control.set"
-# Set the Command Control posture.
+# Set the Command Control posture — the security layer's mode (doc/SECURITY.md).
 # Payload: ``{command_control: "defensive"|"permissive"|"smart"}``. Mirrored
-# exactly like edit_control.set (client forces "permissive" under Autonomous).
+# exactly like edit_control.set (client forces "permissive" under Autonomous);
+# the tool dispatcher reads the stored value live per tool call and an "ask"
+# verdict fires SREQ_PROMPT_PERMISSION.
 MSG_COMMAND_CONTROL_SET = "command_control.set"
 # Push the VS Code workspace folder map (logical name → physical path) plus the
 # physical root. Sent on connect and on every workspace-folders change; the

@@ -1,6 +1,7 @@
-"""Session and global security rule stores.
+"""Session and global security rule stores — future iteration.
 
-Stub for M1; full implementation in M4.
+Will persist the user-defined rules of :mod:`._rules` (per-session and
+globally). Not yet implemented.
 """
 
 from __future__ import annotations

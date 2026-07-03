@@ -41,7 +41,7 @@ source:
 | `project` | *(nothing)* |
 | `guided_state` | *(nothing)* |
 | `state` | *(nothing)* |
-| `security` | *(nothing — stub)* |
+| `security` | `toolspecs`, `shellparser` |
 | `mirror` | *(nothing)* |
 | `shellparser` | *(nothing)* |
 | `binutils` | *(nothing)* |
@@ -99,35 +99,44 @@ imported); the annotation on each line names the packages pulled in.
        │             │ transport    │
        │             │ common       │
        ▼             ▼              ▼
- ┌───────────┐
- │ toolspecs │                                          T2   (pure data — imports nothing from kodo)
- └───────────┘
+ ┌───────────┐   ┌──────────┐
+ │ toolspecs │   │ security │                           T2   (toolspecs: pure data, imports nothing;
+ └───────────┘   └────┬─────┘                                 security: ▼ toolspecs · shellparser,
+                      │ toolspecs · shellparser               imported ONLY by runtime)
+                      ▼
  ┌───────────┐
  │ transport │                                           T1
  └─────┬─────┘
        │ common
        ▼
- ┌────────┬─────────┬──────────────┬───────┬──────────┬────────┬─────────────┬──────────┐
- │ common │ project │ guided_state │ state │ security │ mirror │ shellparser │ binutils │   T0  ← import nothing from kodo
- └────────┴─────────┴──────────────┴───────┴──────────┴────────┴─────────────┴──────────┘
+ ┌────────┬─────────┬──────────────┬───────┬────────┬─────────────┬──────────┐
+ │ common │ project │ guided_state │ state │ mirror │ shellparser │ binutils │   T0  ← import nothing from kodo
+ └────────┴─────────┴──────────────┴───────┴────────┴─────────────┴──────────┘
 ```
 
-`runtime` is the sole importer of `mirror` and `shellparser` (via `runtime/_checkpoints.py`,
-§10b) — neither is reachable from `tools`, `subagents`, or `llms`.
+`runtime` is the sole importer of `mirror`, `security`, and (`security` aside)
+`shellparser` (via `runtime/_checkpoints.py` §10b and `runtime/_engine.py`) —
+none of the three is reachable from `tools`, `subagents`, or `llms`. `tools`
+sees the security layer only through the `SecurityLike` structural protocol
+(doc/SECURITY.md §4).
 
 (`runtime` and `server` also reach past the tier directly below them — e.g.
 `runtime → toolspecs`/`guided_state`/`common` — as the matrix in §2.1 lists in full;
 only the principal lines are drawn above to keep the figure readable.)
 
 - **T0 — leaf packages** (`common`, `project`, `guided_state`, `state`,
-  `security`, `mirror`, `shellparser`, `binutils`): import nothing from `kodo`.
-  `security` and `state/_memory.py` are **stubs** (see §13); `mirror`/`shellparser`
-  are the checkpoint primitives consumed by `runtime` (§10b); `binutils` is the
+  `mirror`, `shellparser`, `binutils`): import nothing from `kodo`.
+  `state/_memory.py` is a **stub** (see §13); `mirror`/`shellparser`
+  are the checkpoint/parse primitives consumed by `runtime` (§10b) — and
+  `shellparser` also by `security`; `binutils` is the
   third-party util manager (§10a); `guided_state` is the per-document evolution
   log (§7) that replaced `kodo.workspace`.
 - **T1**: `transport` (wire framing over `common`).
 - **T2**: `toolspecs` (tool catalog) — now a true leaf, importing nothing from
-  `kodo` (the old `toolspecs → workspace` edge for `ArtifactType` is gone).
+  `kodo` (the old `toolspecs → workspace` edge for `ArtifactType` is gone) —
+  and `security` (the per-call allow/ask judgement engine over the catalog +
+  the shell parse, doc/SECURITY.md). `security` left T0 when it was
+  implemented; it is consumed only by `runtime` and never by `tools`.
 - **T3**: `subagents` (prompt renderer over `toolspecs`), `llms` (LLM streaming;
   its `llamacpp` subpackage also holds the local-inference lifecycle utilities
   merged from the former `llm_utils`), and `tools` (the **dispatch
@@ -268,9 +277,9 @@ tool-call detail box). The property is defined once in `toolspecs/_intent.py`
 (`INTENT_PROPERTY`) and embedded per spec; `ToolDispatcher.dispatch` rejects a
 call missing a non-blank `intent` before the handler runs (`requires_intent`).
 Second-degree mutators (`run_subagent`, `run_author_critic_iteration`,
-`toolchain_deps`) and `toolchain_build` are exempt. The security layer will
-judge each mutating call by its declared intent (auto-allow / auto-deny / ask).
-See [TOOLS.md §8A](TOOLS.md).
+`toolchain_deps`) and `toolchain_build` are exempt. The security layer judges
+each SMART-mode HIGH-impact call by its declared intent (allow / ask the user)
+— see [doc/SECURITY.md](SECURITY.md) and [TOOLS.md §8A](TOOLS.md).
 
 **State:** Catalog complete; every dispatchable spec has a handler.
 
@@ -509,7 +518,7 @@ about *when* to checkpoint — that judgment lives entirely in `runtime`.
 | Module | Defines | Role |
 |---|---|---|
 | [mirror/_mirror.py](../src/kodo/mirror/_mirror.py) | `ShadowMirror`, `CommitInfo` (frozen) | Drives `git` over an **explicit `(work_tree, git_dir)` pair** via `GIT_DIR`/`GIT_WORK_TREE` env vars instead of a `.git` inside the tracked tree — so the tracked files are the real project files (no copy/duplication) while git's metadata lives elsewhere (`<root>/.kodo/checkpoints/.git`). `init(excludes)` seeds `info/exclude` then commits the **current tree as a baseline** (so undoing the very first change restores genuine pre-Kōdo state, not an empty tree). `commit(label) → sha` stages everything and commits; a clean tree short-circuits to the existing `HEAD` (no empty commits). `paths_changed(sha)` lists the work-tree-relative paths a commit touched (`git diff-tree --name-only`). `undo(sha)` restores **only** the paths `sha` touched to their pre-`sha` state (`git checkout sha^ -- <paths>`) — later edits to *other* files are untouched, but later edits to the *same* files are discarded. `rollback(sha)` restores the **entire** tree to `sha`'s state and deletes files created after it. Both `undo` and `rollback` record their effect as a **new commit** — the mirror is append-only, so re-applying an undone change ("redo") is always just rolling forward to a later commit; nothing is ever reset or force-pushed. `log()`/`head_sha()` round out the read side. |
-| [shellparser/_parser.py](../src/kodo/shellparser/_parser.py) | `parse_command(str) → ParsedCommand`, `ParsedCommand`/`Segment`/`Redirection` (frozen) | **Parse-only, judgement-free** — splits a shell command line into pipeline `Segment`s (on `\| \|\| && ; &`) via `shlex`, each with its `executable`/`args`/`redirections`; never raises (falls back to a naive split on malformed input). It does **not** decide whether a command mutates the filesystem — that heuristic is caller-side (`runtime/_checkpoints.py:command_may_mutate`, below) by design, so the parser stays reusable by future callers (e.g. the security layer) without inheriting checkpoint-specific judgment calls. |
+| [shellparser/_parser.py](../src/kodo/shellparser/_parser.py) | `parse_command(str) → ParsedCommand`, `ParsedCommand`/`Segment`/`Redirection` (frozen) | **Parse-only, judgement-free** — splits a shell command line into pipeline `Segment`s (on `\| \|\| && ; &`) via `shlex`, each with its `executable`/`args`/`redirections`; never raises (falls back to a naive split on malformed input). It does **not** decide whether a command mutates the filesystem — that heuristic is caller-side (`runtime/_checkpoints.py:command_may_mutate`, below) by design, so the parser stays reusable by other callers — the security layer (`kodo.security._analysis`) applies its own workspace-target classification over the same parse — without inheriting checkpoint-specific judgment calls. `parse_powershell_command` (`_powershell.py`) is the PowerShell/Windows dialect producing the same dataclasses (doc/SECURITY.md §5). |
 
 **State:** Complete; covered by `test/test_shadow_mirror.py` and `test/test_shellparser.py`.
 
@@ -756,7 +765,7 @@ guide-vs-leaf split.
 | [_bootstrap.py](../src/kodo/runtime/_bootstrap.py) | `locate_guide_session()` | Workspace-tier session location only: locate/create the Guide session marker + `sessions/` dir. There is no project-tier bootstrap anymore — a document's state lives entirely in its own `.jsonl` evolution log (§7), read on demand. |
 | [_guide.py](../src/kodo/runtime/_guide.py) | `GuideMarker` | Reads/writes `.kodo/guide.session`. Used by `locate_guide_session`. |
 | [_checkpoints.py](../src/kodo/runtime/_checkpoints.py) | `RootMirrorManager`, `CheckpointRef` (frozen), `command_may_mutate()` | The **single** shadow-git mirror coordinator, now driving both workflow modes (§12.1) — there is no longer a second, Guided-only mirror at the same path to collide with. Bridges the path-agnostic `mirror.ShadowMirror` to Kōdo's conventions: every root a session may touch gets its own independent mirror at `<root>/.kodo/checkpoints`, created **lazily** the first time a file-mutating tool writes under that root (scaffolding `<root>/.kodo/` + `kodo.md` via `ProjectLayout.scaffold_kodo_dir()`, §5, at that moment). `_root_for(path)` maps a path to its enclosing root by longest-prefix match. `_KODO_EXCLUDES` (node_modules/.venv/`__pycache__`/dist/build/egg-info/caches + always `.kodo/`+`.git/`) seed each mirror's `info/exclude` **on top of** the project's own `.gitignore` — this is *why* `.kodo/guided_dev_state/*.jsonl` (§7) is never committed by this same mirror. One `asyncio.Lock` serialises `prepare`/`commit_for_path`/`sweep_initialized`/`undo`/`rollback`. The free function `command_may_mutate(parsed: ParsedCommand) -> bool` is the caller-side mutation heuristic the parser (§10b) deliberately omits: `True` if any redirection is an output redirect (`> >> >\| &> &>> <>`), else `True` unless every executable's basename is on a small read-only allow-list (`ls cat grep find rg fd pwd wc diff …` — notably **not** `git`, since even read-only-looking git subcommands can touch `.git/` state) — **defaults to `True` (mutating) whenever uncertain**, so a missed checkpoint is never the failure mode; an unnecessary no-op commit is. |
-| [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse` | **Composes** `WebSocketDispatcher` + `TransientStore`. `fire_approval`/`fire_questions` send `kind=request`, register a future, and await. Only approvals persist a `pending_prompt` (for restart re-surface); a question batch is instead re-driven on restart from its flushed `tool_use` (SESSIONS.md), so nothing the user typed pre-confirm is ever stored. `fire_questions(questions, tool_call_id)` carries the whole `ask_user` batch plus the calling tool_use id and returns normalized `{selected, free_text}` answers. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by `__finalize_document` (§12.1) for the interactive document-review gate. |
+| [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse`, `PermissionResponse` | **Composes** `WebSocketDispatcher` + `TransientStore`. `fire_approval`/`fire_questions`/`fire_permission` send `kind=request`, register a future, and await. Only approvals persist a `pending_prompt` (for restart re-surface); a question batch or permission prompt is instead re-driven/stubbed on restart from its flushed `tool_use` (SESSIONS.md, SECURITY.md §7). `fire_questions(questions, tool_call_id)` carries the whole `ask_user` batch plus the calling tool_use id and returns normalized `{selected, free_text}` answers. `fire_permission(...)` carries one gated tool call's preview (tool/risk/intent/reason/params) and returns the user's allow/deny + optional feedback (`prompt.permission`, doc/SECURITY.md §6); malformed actions coerce to deny. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by `__finalize_document` (§12.1) for the interactive document-review gate. |
 | [_session.py](../src/kodo/runtime/_session.py) | `SessionState` | Mutable `phase`/`agent`/`component` plus the two mode fields: `autonomous` (user-facing Autonomous/Interactive, set by `handle_mode_set`, reported in `to_dict()`/`EVT_STATE`) and `effective_autonomous` (frozen per prompt by `__run_worker`; what tools/registry actually read), and `workflow_mode` (`"guided"`/`"problem_solving"`, in `to_dict()`). Shared by the engine; satisfies `tools.SessionLike` (`finalize_project` writes `phase`; tools read `effective_autonomous`). |
 | [_session_log.py](../src/kodo/runtime/_session_log.py) | `SessionLog` | Append-only JSONL per session. |
 
@@ -771,7 +780,10 @@ implemented and exercised by the guide/author-critic flow.
 |---|---|
 | [state/_transient.py](../src/kodo/state/_transient.py) `TransientStore` | ✅ Per-session dir under `.kodo/sessions/<id>/`: `meta.json`, `transient.json` (stage/prompt/autonomous/pending_prompt), `session.jsonl` (guide messages), `agents/*.jsonl`. Injected into engine + gate. |
 | [state/_memory.py](../src/kodo/state/_memory.py) | ⚠️ **Stub** (`__all__ = []`). |
-| [security/](../src/kodo/security/) (`_layer`, `_rules`, `_store`, `_defaults`) | ⚠️ **Stubs.** No rule evaluation gates any tool call. `autonomous` filtering happens in the registry/tool surface, not here. The wire defines `SREQ_PROMPT_PERMISSION` but nothing emits it. |
+| [security/_layer.py](../src/kodo/security/_layer.py) `SecurityLayer` | ✅ **Implemented** — judges every tool call per the live `command_control` posture (permissive/defensive/smart); `ask` verdicts fire `prompt.permission` from the dispatcher. Full design in [doc/SECURITY.md](SECURITY.md). |
+| [security/_analysis.py](../src/kodo/security/_analysis.py) | ✅ Static `run_command` workspace-target analysis over the `shellparser` parse (outside paths / substitutions / read-only fast path). |
+| [security/_judge.py](../src/kodo/security/_judge.py) | ✅ SMART-mode LLM intent judge: prompt builder + fail-closed JSON verdict parser. The LLM callable itself is injected by the engine (`__security_judge`). |
+| [security/](../src/kodo/security/) `_rules`, `_store`, `_defaults` | ⚠️ **Stubs** — reserved for the future persistent-rules iteration (`security.add_rule`, SECURITY.md §9). |
 
 ---
 
@@ -925,7 +937,8 @@ source's.
 | `create_new_project` | ✅ Implemented and dispatched (guide + problem_solver); scaffolds a new project dir + checkpoint mirror and adds it to the workspace |
 | Native file-IO / `run_command` / `read_file` tools | ✅ Implemented; granted to authoring sub-agents and `problem_solver` |
 | Two workflows (`guided` Guide / `problem_solving` Problem Solver) | ✅ Implemented; selected by `workflow.set` → `SessionState.workflow_mode` |
-| `security/*`, `state/_memory` | ⛔ Stubs |
+| `security` layer (allow/ask gate over every tool call, `prompt.permission`, PowerShell parser dialect) | ✅ Implemented (doc/SECURITY.md); `security/_rules`+`_store`+`_defaults` (persistent rules) still stubs |
+| `state/_memory` | ⛔ Stub |
 | `project/_manifest` | ◽ Parsed by `kodo.md`'s `## Toolchain` heading; purely informational now (no engine-side toolchain selection) |
 
 ---

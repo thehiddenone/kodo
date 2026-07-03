@@ -37,6 +37,4 @@ class EscalateBlockerTool(Tool):
             ctx.current_tool_use_id,
         )
         user_response = str(answers[0].get("free_text") or "") if answers else ""
-        return json.dumps(
-            {"status": "escalated", "reason": reason, "user_response": user_response}
-        )
+        return json.dumps({"status": "escalated", "reason": reason, "user_response": user_response})
