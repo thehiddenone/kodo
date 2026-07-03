@@ -9,7 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-__all__ = ["MAX_SOURCES", "DiscoveryOutcome", "PageText", "ScrapeOutcome", "SearchHit"]
+__all__ = [
+    "MAX_SOURCES",
+    "DiscoveryOutcome",
+    "PageMarkdown",
+    "PageText",
+    "ScrapeOutcome",
+    "SearchHit",
+]
 
 # One shared cap on the sources flowing through the pipeline: discovery merges
 # at most this many links (4 engines × 4), and scraping hands at most this many
@@ -53,6 +60,27 @@ class PageText:
     url: str
     title: str
     text: str
+
+
+@dataclass(frozen=True)
+class PageMarkdown:
+    """The extracted main content of one page, converted to Markdown.
+
+    Produced by :func:`~kodo.websearch.read_page` for the ``read_webpage``
+    tool — distinct from :class:`PageText` (plain text for the ``web_search``
+    summarizer): headings, tables, plain lists, and links are preserved as
+    Markdown syntax; images and video are dropped.
+
+    Attributes:
+        url: The page URL (as requested, pre-redirect).
+        title: The page's ``document.title`` ("" if none).
+        markdown: Main content as Markdown, chrome/ads/images/video stripped,
+            truncated to the tool's per-page budget.
+    """
+
+    url: str
+    title: str
+    markdown: str
 
 
 @dataclass

@@ -5,9 +5,12 @@
 > scraping, and LLM theme summarization — plus its anti-bot cooldowns and
 > failure behavior.
 
-Companion to [TOOLS.md](TOOLS.md) (tool subsystem mechanics) and
-[INTERNALS.md](INTERNALS.md) (layering). The tool is currently granted only to
-the Problem Solver's `investigator` sub-agent.
+Companion to [TOOLS.md](TOOLS.md) (tool subsystem mechanics),
+[INTERNALS.md](INTERNALS.md) (layering), and [READ_WEBPAGE.md](READ_WEBPAGE.md)
+(the sibling single-page fetch tool — same `kodo.websearch` package and
+browser lifecycle, but an independent, un-summarized Markdown extraction
+path). The tool is currently granted only to the Problem Solver's
+`investigator` sub-agent.
 
 ---
 

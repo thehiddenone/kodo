@@ -698,6 +698,32 @@ async def test_web_search_compliance(tmp_path: Path, monkeypatch: pytest.MonkeyP
     _assert_compliant("web_search", await _dispatch(d, "web_search", {}))
 
 
+@pytest.mark.asyncio
+async def test_read_webpage_compliance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Keep the pipeline off the real network: an unopenable browser makes the
+    # handler degrade to the universal error envelope.
+    class _NoBrowserSession:
+        async def __aenter__(self) -> object:
+            raise WebsearchBrowserUnavailableError("no browser in tests")
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr("kodo.tools._read_webpage.BrowserSession", _NoBrowserSession)
+    d = _make_dispatcher(tmp_path, agent_name="investigator")
+    _assert_compliant(
+        "read_webpage",
+        await _dispatch(d, "read_webpage", {"url": "https://example.com/docs"}),
+    )
+    # Missing url is rejected with the universal error envelope.
+    _assert_compliant("read_webpage", await _dispatch(d, "read_webpage", {}))
+    # A private-network URL is rejected by the SSRF guard, also as an error.
+    _assert_compliant(
+        "read_webpage",
+        await _dispatch(d, "read_webpage", {"url": "http://127.0.0.1:8080/admin"}),
+    )
+
+
 def test_all_dispatchable_tools_are_covered() -> None:
     """Fail if a new dispatchable tool is added without a compliance scenario."""
     covered = {
@@ -722,6 +748,7 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "disable_autonomous_mode",
         "create_new_project",
         "web_search",
+        "read_webpage",
     }
     assert set(DISPATCHABLE_TOOLS_BY_NAME) == covered, (
         "Dispatchable tools changed; add a compliance scenario for: "

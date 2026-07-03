@@ -56,7 +56,8 @@ place — the dispatch table in [tools/_dispatch.py](../src/kodo/tools/_dispatch
 
 **Hard rule:** `kodo.tools` may import only from T0/T1/T2 — in practice
 `kodo.guided_state`, `kodo.project`, `kodo.websearch` (the Playwright
-discovery/scraping engine behind `web_search` — doc/WEB_SEARCH.md), and
+discovery/scraping engine behind `web_search` — doc/WEB_SEARCH.md — and the
+single-page Markdown fetch behind `read_webpage` — doc/READ_WEBPAGE.md), and
 `kodo.toolspecs`. It must **never**
 import `subagents`, `llms`, or `runtime`. The collaborators it needs from
 higher tiers (the gate, the session, every engine-side operation) are

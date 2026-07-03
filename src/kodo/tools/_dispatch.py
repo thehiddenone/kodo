@@ -31,6 +31,7 @@ from kodo.toolspecs import (
     GUIDED_DEV_STATUS,
     INTENT_KEY,
     READ_FILE,
+    READ_WEBPAGE,
     RETURN_RESULT,
     ROLLBACK,
     RUN_AUTHOR_CRITIC_ITERATION,
@@ -65,6 +66,7 @@ from ._get_root_paths import GetRootPathsTool
 from ._guided_dev_status import GuidedDevStatusTool
 from ._paths import PathResolver
 from ._read_file import ReadFileTool
+from ._read_webpage import ReadWebpageTool
 from ._return_result import ReturnResultTool
 from ._rollback import RollbackTool
 from ._run_author_critic_iteration import RunAuthorCriticIterationTool
@@ -83,6 +85,7 @@ _log = logging.getLogger(__name__)
 # Adding a tool means adding one (spec, Tool-subclass) row here.
 _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (READ_FILE, ReadFileTool),
+    (READ_WEBPAGE, ReadWebpageTool),
     (DOCUMENT_FEEDBACK, DocumentFeedbackTool),
     (ESCALATE_BLOCKER, EscalateBlockerTool),
     (ASK_USER, AskUserTool),

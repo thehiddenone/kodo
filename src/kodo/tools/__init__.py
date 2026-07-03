@@ -49,6 +49,7 @@ from ._paths import (
     resolve_within,
 )
 from ._read_file import ReadFileTool
+from ._read_webpage import ReadWebpageTool
 from ._return_result import ReturnResultTool
 from ._rollback import RollbackTool
 from ._run_author_critic_iteration import RunAuthorCriticIterationTool
@@ -81,6 +82,7 @@ __all__ = [
     "PermissionLike",
     "ProjectPathResolver",
     "ReadFileTool",
+    "ReadWebpageTool",
     "ReturnResultTool",
     "RollbackTool",
     "RootPath",
