@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kodo.common import Envelope
-from kodo.runtime import ApprovalResponse, GateOrchestrator, QuestionResponse
+from kodo.runtime import ApprovalResponse, GateOrchestrator
 from kodo.transport import SREQ_PROMPT_APPROVAL, SREQ_PROMPT_QUESTION
 
 # ---------------------------------------------------------------------------
@@ -65,17 +65,6 @@ def test_approval_response_with_feedback() -> None:
     r = ApprovalResponse(action="feedback", feedback="Please elaborate.")
     assert r.action == "feedback"
     assert r.feedback == "Please elaborate."
-
-
-# ---------------------------------------------------------------------------
-# QuestionResponse
-# ---------------------------------------------------------------------------
-
-
-def test_question_response_fields() -> None:
-    r = QuestionResponse(answer_text="hello", choice_key="")
-    assert r.answer_text == "hello"
-    assert r.choice_key == ""
 
 
 # ---------------------------------------------------------------------------
@@ -178,77 +167,102 @@ async def test_fire_approval_request_id_matches_registered_future() -> None:
 
 
 # ---------------------------------------------------------------------------
-# fire_question emits kind=request
+# fire_questions emits kind=request
 # ---------------------------------------------------------------------------
+
+_QUESTIONS: list[dict[str, object]] = [
+    {
+        "question": "Which DB should the service use?",
+        "kind": "single_choice",
+        "options": ["PostgreSQL", "SQLite"],
+    },
+    {
+        "question": "Which features are in scope?",
+        "kind": "multi_choice",
+        "options": ["Auth", "Billing"],
+    },
+]
 
 
 @pytest.mark.asyncio
-async def test_fire_question_free_text_sends_kind_request() -> None:
+async def test_fire_questions_sends_kind_request_with_batch() -> None:
     """
-    When fire_question is called with mode='free_text',
-    then a kind=request frame with type=prompt.question is emitted.
+    When fire_questions is called,
+    then one kind=request frame with type=prompt.question carries the whole
+    batch plus the calling tool_use id.
     """
     state = _make_app_state()
     gate = GateOrchestrator(state, _make_transient())
 
-    async def _run() -> QuestionResponse:
-        task = asyncio.create_task(gate.fire_question("What should we build?", "free_text"))
+    async def _run() -> list[dict[str, object]]:
+        task = asyncio.create_task(gate.fire_questions(_QUESTIONS, "tc-1"))
         await asyncio.sleep(0)
         req_id = next(iter(state._captured))
-        state._captured[req_id].set_result({"answer_text": "A trading bot"})
+        state._captured[req_id].set_result(
+            {
+                "answers": [
+                    {"selected": ["PostgreSQL"], "free_text": None},
+                    {"selected": ["Auth"], "free_text": "also CSV export"},
+                ]
+            }
+        )
         return await task
 
-    response = await _run()
+    answers = await _run()
 
     env = _get_sent_envelopes(state)[0]
     assert env.kind == "request"
     assert env.payload["type"] == SREQ_PROMPT_QUESTION
-    assert env.payload["mode"] == "free_text"
-    assert response.answer_text == "A trading bot"
+    assert env.payload["tool_call_id"] == "tc-1"
+    assert env.payload["questions"] == _QUESTIONS
+    assert answers == [
+        {"selected": ["PostgreSQL"], "free_text": None},
+        {"selected": ["Auth"], "free_text": "also CSV export"},
+    ]
 
 
 @pytest.mark.asyncio
-async def test_fire_question_choice_mode_returns_choice_key() -> None:
+async def test_fire_questions_normalizes_malformed_answers() -> None:
     """
-    When fire_question is called with mode='choice' and the user picks a key,
-    then QuestionResponse.choice_key carries the selection.
+    When the client response is missing or malformed,
+    then every question still gets a well-formed empty answer entry.
     """
     state = _make_app_state()
     gate = GateOrchestrator(state, _make_transient())
-    choices = [{"key": "yes", "label": "Yes"}, {"key": "no", "label": "No"}]
 
-    async def _run() -> QuestionResponse:
-        task = asyncio.create_task(gate.fire_question("Ready?", "choice", choices=choices))
+    async def _run() -> list[dict[str, object]]:
+        task = asyncio.create_task(gate.fire_questions(_QUESTIONS))
         await asyncio.sleep(0)
         req_id = next(iter(state._captured))
-        state._captured[req_id].set_result({"choice_key": "yes"})
+        state._captured[req_id].set_result({"answers": [{"selected": "not-a-list"}]})
         return await task
 
-    response = await _run()
-    assert response.choice_key == "yes"
-    assert response.answer_text == ""
+    answers = await _run()
+    assert answers == [
+        {"selected": [], "free_text": None},
+        {"selected": [], "free_text": None},
+    ]
 
 
 @pytest.mark.asyncio
-async def test_fire_question_choices_included_in_payload() -> None:
+async def test_fire_questions_does_not_persist_pending_prompt() -> None:
     """
-    When choices are passed to fire_question,
-    then the emitted payload includes the choices list.
+    fire_questions never records a pending_prompt: crash-resume re-drives the
+    batch from the flushed tool_use instead of a persisted prompt record.
     """
     state = _make_app_state()
-    gate = GateOrchestrator(state, _make_transient())
-    choices = [{"key": "a", "label": "A"}, {"key": "b", "label": "B"}]
+    transient = _make_transient()
+    gate = GateOrchestrator(state, transient)
 
     async def _run() -> None:
-        task = asyncio.create_task(gate.fire_question("Pick one", "choice", choices))
+        task = asyncio.create_task(gate.fire_questions(_QUESTIONS, "tc-2"))
         await asyncio.sleep(0)
         req_id = next(iter(state._captured))
-        state._captured[req_id].set_result({"choice_key": "a"})
+        state._captured[req_id].set_result({"answers": []})
         await task
 
     await _run()
-    payload = _get_sent_payloads(state)[0]
-    assert payload["choices"] == choices
+    transient.update.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

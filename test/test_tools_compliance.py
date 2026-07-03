@@ -22,7 +22,7 @@ import pytest
 
 from kodo.binutils import find_util
 from kodo.project import kodo_user_dir
-from kodo.runtime import ApprovalResponse, QuestionResponse, SessionState
+from kodo.runtime import ApprovalResponse, SessionState
 from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, ProjectPathResolver, RootPath, ToolDispatcher
 from kodo.toolspecs import (
     ALL_TOOLS,
@@ -47,10 +47,10 @@ class _FakeGate:
         self._choice = choice
         self._action = action
 
-    async def fire_question(
-        self, question: str, mode: str, choices: list[dict[str, str]] | None = None
-    ) -> QuestionResponse:
-        return QuestionResponse(answer_text=self._answer, choice_key=self._choice)
+    async def fire_questions(
+        self, questions: list[dict[str, object]], tool_call_id: str = ""
+    ) -> list[dict[str, object]]:
+        return [{"selected": [self._choice], "free_text": self._answer} for _ in questions]
 
     async def fire_approval(
         self, gate_type: str, *, artifact_id: str | None = None, summary: str = ""
@@ -516,17 +516,48 @@ async def test_escalate_blocker_compliance(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_ask_user_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path)
-    _assert_compliant(
-        "ask_user", await _dispatch(d, "ask_user", {"question": "q?", "mode": "free_text"})
-    )
-    _assert_compliant(
+    res = _assert_compliant(
         "ask_user",
         await _dispatch(
             d,
             "ask_user",
-            {"question": "q?", "mode": "choice", "choices": [{"key": "yes", "label": "Yes"}]},
+            {
+                "questions": [
+                    {"question": "Which DB?", "kind": "single_choice", "options": ["PostgreSQL"]},
+                    {
+                        "question": "Which features?",
+                        "kind": "multi_choice",
+                        "options": ["Auth", "Billing"],
+                    },
+                ]
+            },
         ),
     )
+    answers = res["answers"]
+    assert isinstance(answers, list) and len(answers) == 2
+    assert all("selected" in a and "free_text" in a for a in answers)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_rejects_malformed_batches(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path)
+    # No questions at all.
+    res = await _dispatch(d, "ask_user", {})
+    assert "error" in res
+    # A question without candidate options.
+    res = await _dispatch(
+        d,
+        "ask_user",
+        {"questions": [{"question": "q?", "kind": "single_choice", "options": []}]},
+    )
+    assert "error" in res
+    # An invalid kind.
+    res = await _dispatch(
+        d,
+        "ask_user",
+        {"questions": [{"question": "q?", "kind": "free_text", "options": ["a"]}]},
+    )
+    assert "error" in res
 
 
 # ---------------------------------------------------------------------------

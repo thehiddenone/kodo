@@ -180,8 +180,12 @@ history — when the client reconnected.)
 
 Turns that never reach a tool dispatch (a plain-text reply) still flush only at
 the end, so a crash before any tool runs leaves nothing half-written and the
-existing `pending_prompt` re-surfacing path — which covers `ask_user`, whose
-prompt is *not* a persisted tool call — is unaffected.
+existing `pending_prompt` re-surfacing path — which now covers **approvals
+only** — is unaffected. `ask_user` no longer persists a `pending_prompt`: its
+`tool_use` (carrying the whole question batch) is flushed before dispatch, so a
+crash while the user is mid-answer resumes through the dangling-tool-use path
+below and the **entire batch is re-asked from scratch** — nothing the user had
+entered is ever stored before they confirm.
 
 ### Subsession turns
 
@@ -272,6 +276,10 @@ on demand, never reconstructed at startup. Then:
        the **active** subsession is rehydrated from its `subsessions/<id>.jsonl`
        log and driven to completion **live**, then closed (`subsession_end`
        marker + `subsession.ended`).
+     - **`ask_user` / `escalate_blocker`** are re-dispatched for real: their
+       only "side effect" is asking the present user, so the question batch is
+       simply re-fired (`prompt.question`) and the user answers the whole set
+       again from scratch — partial answers are never persisted anywhere.
      - **any other tool** (`filesystem`, `edit_file`, `run_command`, read-only
        tools, …) is **not** re-executed — its side effects may already have
        landed and there is no per-tool dedup ledger — so it gets a synthesized
@@ -289,7 +297,8 @@ on demand, never reconstructed at startup. Then:
   when a spawn was in flight.
 
 - **Otherwise**, if `transient.json` holds a `pending_prompt` (an unanswered
-  `ask_user`/approval), it is re-surfaced as before. With neither, the session is
+  **approval** — questions never persist one anymore; a legacy `question`
+  record is dropped), it is re-surfaced as before. With neither, the session is
   simply idle and awaits the next prompt.
 
 Documents survive a crash for the same reason any other file write does: a

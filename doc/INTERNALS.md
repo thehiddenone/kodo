@@ -231,10 +231,16 @@ input_schema, when_to_use: tuple[str, ...], autonomous_mode: str | None = None
   `tools.DISPATCHABLE_TOOLS_BY_NAME`, §6A.)
 
 [_ask_user.py](../src/kodo/toolspecs/_ask_user.py) (`ASK_USER`) carries
-`autonomous_mode="unavailable …"`. (`ask_user` was once split into a leaf spec
-and a separate guide spec; they were collapsed into one — the runtime contract
-was identical and the guide-only guidance already lives in the guide
-prompt body.)
+`autonomous_mode="unavailable …"`. It takes a **question batch** — `questions:
+[{question, kind: single_choice|multi_choice, options: [str, …]}]`, the agent's
+top-choice answer always first, the client appending the free-text option
+itself — and returns `answers: [{selected: [str], free_text: str|null}]` in
+question order. The batching discipline (think first, one call per topic,
+derived candidate answers) lives in `preamble_performance.md` ("Asking the
+User Questions"), shared by every agent. (`ask_user` was once split into a
+leaf spec and a separate guide spec; they were collapsed into one — the
+runtime contract was identical and the guide-only guidance already lives in
+the guide prompt body.)
 
 **Implementation state of the specs:** every spec in the catalog now has a
 matching dispatch handler in `tools/` (§6A); there are no spec-only
@@ -750,7 +756,7 @@ guide-vs-leaf split.
 | [_bootstrap.py](../src/kodo/runtime/_bootstrap.py) | `locate_guide_session()` | Workspace-tier session location only: locate/create the Guide session marker + `sessions/` dir. There is no project-tier bootstrap anymore — a document's state lives entirely in its own `.jsonl` evolution log (§7), read on demand. |
 | [_guide.py](../src/kodo/runtime/_guide.py) | `GuideMarker` | Reads/writes `.kodo/guide.session`. Used by `locate_guide_session`. |
 | [_checkpoints.py](../src/kodo/runtime/_checkpoints.py) | `RootMirrorManager`, `CheckpointRef` (frozen), `command_may_mutate()` | The **single** shadow-git mirror coordinator, now driving both workflow modes (§12.1) — there is no longer a second, Guided-only mirror at the same path to collide with. Bridges the path-agnostic `mirror.ShadowMirror` to Kōdo's conventions: every root a session may touch gets its own independent mirror at `<root>/.kodo/checkpoints`, created **lazily** the first time a file-mutating tool writes under that root (scaffolding `<root>/.kodo/` + `kodo.md` via `ProjectLayout.scaffold_kodo_dir()`, §5, at that moment). `_root_for(path)` maps a path to its enclosing root by longest-prefix match. `_KODO_EXCLUDES` (node_modules/.venv/`__pycache__`/dist/build/egg-info/caches + always `.kodo/`+`.git/`) seed each mirror's `info/exclude` **on top of** the project's own `.gitignore` — this is *why* `.kodo/guided_dev_state/*.jsonl` (§7) is never committed by this same mirror. One `asyncio.Lock` serialises `prepare`/`commit_for_path`/`sweep_initialized`/`undo`/`rollback`. The free function `command_may_mutate(parsed: ParsedCommand) -> bool` is the caller-side mutation heuristic the parser (§10b) deliberately omits: `True` if any redirection is an output redirect (`> >> >\| &> &>> <>`), else `True` unless every executable's basename is on a small read-only allow-list (`ls cat grep find rg fd pwd wc diff …` — notably **not** `git`, since even read-only-looking git subcommands can touch `.git/` state) — **defaults to `True` (mutating) whenever uncertain**, so a missed checkpoint is never the failure mode; an unnecessary no-op commit is. |
-| [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse`, `QuestionResponse` | **Composes** `WebSocketDispatcher` + `TransientStore`. `fire_approval`/`fire_question` send `kind=request`, register a future, persist the pending prompt (for restart re-surface), and await. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by `__finalize_document` (§12.1) for the interactive document-review gate. |
+| [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse` | **Composes** `WebSocketDispatcher` + `TransientStore`. `fire_approval`/`fire_questions` send `kind=request`, register a future, and await. Only approvals persist a `pending_prompt` (for restart re-surface); a question batch is instead re-driven on restart from its flushed `tool_use` (SESSIONS.md), so nothing the user typed pre-confirm is ever stored. `fire_questions(questions, tool_call_id)` carries the whole `ask_user` batch plus the calling tool_use id and returns normalized `{selected, free_text}` answers. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by `__finalize_document` (§12.1) for the interactive document-review gate. |
 | [_session.py](../src/kodo/runtime/_session.py) | `SessionState` | Mutable `phase`/`agent`/`component` plus the two mode fields: `autonomous` (user-facing Autonomous/Interactive, set by `handle_mode_set`, reported in `to_dict()`/`EVT_STATE`) and `effective_autonomous` (frozen per prompt by `__run_worker`; what tools/registry actually read), and `workflow_mode` (`"guided"`/`"problem_solving"`, in `to_dict()`). Shared by the engine; satisfies `tools.SessionLike` (`finalize_project` writes `phase`; tools read `effective_autonomous`). |
 | [_session_log.py](../src/kodo/runtime/_session_log.py) | `SessionLog` | Append-only JSONL per session. |
 
@@ -858,15 +864,20 @@ real.
 
 **User gate:** any `ask_user`/`escalate_blocker`, or the document-review gate
 inside `__finalize_document` → `GateOrchestrator.fire_*` sends a `kind=request`,
-registers a future, persists `pending_prompt`, and awaits the client's
-`kind=response`. The autonomous mode in force is
+registers a future, and awaits the client's `kind=response` (approvals also
+persist `pending_prompt`; question batches don't — they re-drive from the
+flushed `tool_use` on restart). `ask_user`'s batch renders as an in-feed
+question panel in the client (the engine suppresses its `agent.tool_call` /
+`agent.tool_call_detail` events); once confirmed the panel freezes and is
+rebuilt on reload from the persisted call + result alone. The autonomous mode in force is
 `SessionState.effective_autonomous`, frozen by the worker when it dequeues the
 prompt; a user toggle mid-prompt updates `autonomous` (UI-facing) but only
 takes effect at the next prompt. In autonomous mode `ask_user` is withheld
 entirely and document review auto-accepts.
 
 **Restart:** `GuideMarker` + `TransientStore` resume the session; an unanswered
-`pending_prompt` is re-surfaced. There is no index to rebuild — every
+approval `pending_prompt` is re-surfaced, while an unanswered question batch is
+re-asked from scratch via the dangling-tool-use resume path. There is no index to rebuild — every
 document's state is read from its own `.jsonl` log on demand (§7).
 
 **Rollback:** Guide `rollback` → `tools/_rollback.handle` →

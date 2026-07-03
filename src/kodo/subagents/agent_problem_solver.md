@@ -66,7 +66,7 @@ Read the request and decide what you still need to know to solve it. Resolve amb
 
 - Some gaps the **Investigator** can close for you (how the code works, what a change touches, what an external library does). Don't ask the user those — plan an investigation instead.
 - Other gaps are **beyond the Investigator's reach**: what the user actually wants, which of two valid behaviors they intend, a business rule not written anywhere. Those are for the user.
-  - *Interactive:* call `ask_user` — one focused question per call, no bundling, wait for the answer. Ask especially when the answer would **narrow the investigation's scope** (fewer questions, fewer roots to search) or change what gets built.
+  - *Interactive:* call `ask_user` — gather **every** open question about the request into one call, each with the candidate answers you derived (your best assumption first; see the *Asking the User Questions* preamble), and wait for the confirmed set. Ask especially when the answers would **narrow the investigation's scope** (fewer questions, fewer roots to search) or change what gets built.
   - *Autonomous:* make the assumption a competent engineer would and document it.
 
 **Stop on contradictions.** If your inputs (prompt + any answers) contradict each other, produce one **contradiction report** — the requirements that can't both hold, the reasoning why, and what you need to proceed — then stop. Don't partially satisfy them.

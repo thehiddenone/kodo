@@ -25,7 +25,6 @@ __all__ = [
     "ApprovalLike",
     "EngineServices",
     "GateLike",
-    "QuestionLike",
     "RootPath",
     "SessionLike",
     "ToolContext",
@@ -51,25 +50,11 @@ class RootPath:
     path: str
 
 
-class QuestionLike(Protocol):
-    """Structural shape of a user's answer to a question.
-
-    Read-only (``@property``) so it works as a covariant method return type:
-    runtime's concrete ``QuestionResponse`` satisfies it.
-    """
-
-    @property
-    def answer_text(self) -> str: ...
-
-    @property
-    def choice_key(self) -> str: ...
-
-
 class ApprovalLike(Protocol):
     """Structural shape of a user's response to an approval gate.
 
-    Read-only (``@property``) for the same covariance reason as
-    :class:`QuestionLike`.
+    Read-only (``@property``) so it works as a covariant method return type:
+    runtime's concrete ``ApprovalResponse`` satisfies it.
     """
 
     @property
@@ -86,13 +71,20 @@ class GateLike(Protocol):
     inheritance).
     """
 
-    async def fire_question(
+    async def fire_questions(
         self,
-        question: str,
-        mode: str,
-        choices: list[dict[str, str]] | None = None,
-    ) -> QuestionLike:
-        """Surface a question to the user and block until they respond."""
+        questions: list[dict[str, object]],
+        tool_call_id: str = "",
+    ) -> list[dict[str, object]]:
+        """Surface a batch of questions to the user; block until they confirm.
+
+        ``questions`` is the normalized ``ask_user`` batch
+        (``{"question", "kind", "options"}`` per entry); ``tool_call_id`` is
+        the calling ``tool_use`` block's id, forwarded on the wire so the
+        client can correlate the interactive panel with the persisted feed
+        entry. Returns one ``{"selected": [str, ...], "free_text": str | None}``
+        per question, in order.
+        """
         ...
 
     async def fire_approval(
@@ -261,6 +253,12 @@ class ToolContext:
             ``return_result`` can validate/normalize the agent's result against
             it. ``None`` for the entry agents (guide/problem_solver), which have
             no spec and never call ``return_result``.
+        current_tool_use_id: The ``tool_use`` block id of the call currently
+            being handled, set by :class:`~kodo.tools.ToolDispatcher` before
+            each dispatch. Lets a handler correlate out-of-band client frames
+            with its own persisted tool call (``ask_user`` forwards it on the
+            ``prompt.question`` request). Empty for legacy callers that
+            dispatch without an id.
         stop_requested: Set ``True`` by ``escalate_blocker`` to end the run.
         returned_output: The normalized result the sub-agent passed to
             ``return_result`` (with the engine-owned ``schema_compliance`` field),
@@ -278,5 +276,6 @@ class ToolContext:
     root_paths: tuple[RootPath, ...] = ()
     util_paths: dict[str, Path] = field(default_factory=dict)
     output_schema: dict[str, object] | None = None
+    current_tool_use_id: str = ""
     stop_requested: bool = False
     returned_output: dict[str, object] | None = None

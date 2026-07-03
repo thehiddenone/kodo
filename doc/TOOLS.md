@@ -206,10 +206,14 @@ the engine — see §8), so no per-run snapshot can drift from the session.
 The three things a tool needs from *above* its tier are **structural
 Protocols**, also defined in `_context.py`:
 
-- **`GateLike`** — `fire_question(...)` / `fire_approval(...)`. Runtime's
+- **`GateLike`** — `fire_questions(questions, tool_call_id)` /
+  `fire_approval(...)`. Runtime's
   [`GateOrchestrator`](../src/kodo/runtime/_gates.py) satisfies it by shape (no
-  inheritance). Its response types satisfy the read-only `QuestionLike` /
-  `ApprovalLike` protocols.
+  inheritance). `fire_questions` takes one `ask_user` batch
+  (`{question, kind, options}` per entry) plus the calling `tool_use` id
+  (read from `ToolContext.current_tool_use_id`, set by the dispatcher before
+  each call) and returns one `{selected, free_text}` answer per question;
+  approvals return an object satisfying the read-only `ApprovalLike` protocol.
 - **`SessionLike`** — a settable `phase: str` plus a read `effective_autonomous:
   bool`. Runtime's `SessionState` matches.
 - **`EngineServices`** — **one** protocol covering *every* engine-side operation
@@ -475,6 +479,22 @@ frame to the VS Code client and
 blocks on a future until the user responds — see
 [INTERNALS.md §15 "User gate"](INTERNALS.md).
 
+`ask_user` carries a **question batch** — every open question about the
+agent's current topic in one call, each with the candidate answers the agent
+derived itself (top choice first; the client appends the free-text option, so
+specs never include an "Other"). The discipline lives in
+`preamble_performance.md` ("Asking the User Questions"), shared by every
+agent, not in per-agent prompts. The client renders the batch as an
+interactive **in-feed question panel** rather than a tool-call card (the
+engine suppresses `agent.tool_call`/`agent.tool_call_detail` for `ask_user`):
+the user navigates the boxes, revises selections freely, and answers land
+only on *Confirm and Send*. The confirmed panel freezes read-only and is
+rebuilt after a reload purely from the persisted `tool_use` (questions) +
+`tool_result` (answers) — only the tool call and its result ever reach LLM
+context. A crash mid-answer re-drives the whole batch (SESSIONS.md);
+`escalate_blocker`'s interactive prompt rides the same gate as a single
+free-text-only question (`options: []`).
+
 ---
 
 ## 12. Adding a new tool — checklist
@@ -514,7 +534,7 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [toolspecs/_intent.py](../src/kodo/toolspecs/_intent.py) | The shared mandatory `intent` property for first-degree mutating tools + `requires_intent` (§8A). |
 | [toolspecs/_<tool>.py](../src/kodo/toolspecs/) | One `ToolSpec` constant per tool (pure data). |
 | [toolspecs/__init__.py](../src/kodo/toolspecs/__init__.py) | Re-exports specs + `ALL_TOOLS` (for prompt rendering). |
-| [tools/_context.py](../src/kodo/tools/_context.py) | `ToolContext` + the injected Protocols (`GateLike`, `SessionLike`, `EngineServices`, `QuestionLike`, `ApprovalLike`). |
+| [tools/_context.py](../src/kodo/tools/_context.py) | `ToolContext` + the injected Protocols (`GateLike`, `SessionLike`, `EngineServices`, `ApprovalLike`). |
 | [tools/_tool.py](../src/kodo/tools/_tool.py) | The `Tool` ABC: binds a `ToolContext` (read-only `context` property) and declares abstract `handle`. |
 | [tools/_&lt;tool&gt;.py](../src/kodo/tools/) | One `Tool` subclass per tool, with `handle(self, tool_input) -> str`. |
 | [tools/_dispatch.py](../src/kodo/tools/_dispatch.py) | `_TOOL_CLASSES` table, `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME`. |

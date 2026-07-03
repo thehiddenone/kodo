@@ -29,7 +29,14 @@ class EscalateBlockerTool(Tool):
         ctx.stop_requested = True
         if ctx.session.effective_autonomous:
             return json.dumps({"status": "escalated", "reason": reason})
-        response = await ctx.gate.fire_question(summary, "free_text")
+        # A blocker has no candidate answers to offer, so it rides the question
+        # gate as a single free-text-only question (options=[] → the panel
+        # renders just the free-text field).
+        answers = await ctx.gate.fire_questions(
+            [{"question": summary, "kind": "single_choice", "options": []}],
+            ctx.current_tool_use_id,
+        )
+        user_response = str(answers[0].get("free_text") or "") if answers else ""
         return json.dumps(
-            {"status": "escalated", "reason": reason, "user_response": response.answer_text}
+            {"status": "escalated", "reason": reason, "user_response": user_response}
         )

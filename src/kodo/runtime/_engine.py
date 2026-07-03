@@ -161,12 +161,19 @@ _COMPACTION_THRESHOLD = 0.9
 # means a crash (or a client-visible side effect a tool triggers mid-dispatch,
 # e.g. a workspace-folder reload) always leaves a dangling ``tool_use`` on
 # disk. Cold-restart resume (``__resume_main_turn``) only safely *re-dispatches*
-# that dangling call when it is one of these two: their sub-agent replay
-# ledger guarantees a completed subsession is never re-run. Any other dangling
+# a dangling call from _RESUME_REDISPATCH_TOOLS below. Any other dangling
 # tool call is reported back to the model as interrupted rather than
 # re-executed, since re-running an arbitrary tool (a shell command, a file
 # write, ...) could duplicate its side effects.
 _SUBAGENT_SPAWNING_TOOLS = frozenset({"run_subagent", "run_author_critic_iteration"})
+
+# Dangling tool calls that cold-restart resume re-dispatches for real. The two
+# spawners are safe because their sub-agent replay ledger guarantees a
+# completed subsession is never re-run. ``ask_user`` and ``escalate_blocker``
+# are safe because their only "side effect" is asking the present user: the
+# whole question batch is re-driven from scratch (partial answers are never
+# stored anywhere), which is the required crash behaviour for it.
+_RESUME_REDISPATCH_TOOLS = _SUBAGENT_SPAWNING_TOOLS | {"ask_user", "escalate_blocker"}
 
 # File-mutating tools that earn a shadow-mirror checkpoint after each call, in
 # both workflow modes.
@@ -597,37 +604,24 @@ class WorkflowEngine:
         _log.info("Current project bound: %s (%s)", name, project_root)
 
     async def __resume_pending_prompt(self, pending: dict[str, object]) -> None:
-        """Re-surface a ``prompt.question``/``prompt.approval`` lost to a server restart.
+        """Re-surface a ``prompt.approval`` lost to a server restart.
 
-        The original LLM turn that issued the prompt was never persisted (it
-        only lands in ``session.jsonl`` once the turn completes), so it
-        cannot be resumed in place. Instead, re-fire the same prompt to the
-        client and feed the user's answer back to the Guide as a new
-        input describing what was asked and how it was answered.
+        Approvals are engine-fired (document review), not tool calls, so an
+        interrupted one has no dangling ``tool_use`` to resume through —
+        re-fire the same prompt and feed the user's decision back to the Guide
+        as a new input describing what was asked and how it was answered.
+        ``ask_user`` questions no longer persist a pending prompt at all:
+        their ``tool_use`` is flushed before dispatch, so the dangling-tool-use
+        resume path (:meth:`__resume_main_turn`) re-drives the whole batch
+        from scratch instead (a legacy persisted ``kind == "question"`` record
+        is simply ignored here).
         """
         self.__session.phase = "awaiting_user"
         await self.__emit_state()
 
         kind = pending.get("kind")
         try:
-            if kind == "question":
-                question = str(pending.get("question", ""))
-                mode = str(pending.get("mode", "free_text"))
-                raw_choices = pending.get("choices")
-                choices: list[dict[str, str]] | None = None
-                if isinstance(raw_choices, list):
-                    choices = [
-                        {"key": str(c.get("key", "")), "label": str(c.get("label", ""))}
-                        for c in raw_choices
-                        if isinstance(c, dict)
-                    ]
-                response = await self.__gate.fire_question(question, mode, choices)
-                answer = response.choice_key or response.answer_text
-                text = (
-                    f'(Resuming after restart) You previously asked the user: "{question}". '
-                    f"Their answer: {answer}"
-                )
-            elif kind == "approval":
+            if kind == "approval":
                 gate_type = str(pending.get("gate_type", ""))
                 artifact_id = pending.get("artifact_id")
                 summary = str(pending.get("summary", ""))
@@ -641,6 +635,9 @@ class WorkflowEngine:
                 if approval.feedback:
                     text += f" — feedback: {approval.feedback}"
             else:
+                # Legacy/unknown pending kind (e.g. an old-format question
+                # record): drop it so it does not linger across restarts.
+                self.__transient.update(pending_prompt=None)
                 return
         except Exception:
             _log.exception("Failed to resume pending prompt")
@@ -1627,7 +1624,7 @@ class WorkflowEngine:
         system_prompt: str,
         messages: list[Message],
         tools: list[ToolSpec],
-        tool_dispatch: Callable[[str, dict[str, object]], Awaitable[str]],
+        tool_dispatch: Callable[[str, dict[str, object], str], Awaitable[str]],
         stream_id: str,
         agent_name: str = _GUIDE_AGENT_NAME,
         stop_after_tools: Callable[[], bool] | None = None,
@@ -1839,7 +1836,7 @@ class WorkflowEngine:
     async def __dispatch_tool_calls(
         self,
         calls: list[tuple[str, str, dict[str, object]]],
-        tool_dispatch: Callable[[str, dict[str, object]], Awaitable[str]],
+        tool_dispatch: Callable[[str, dict[str, object], str], Awaitable[str]],
         tool_desc: dict[str, str],
         tool_logger: ToolCallLogger,
         agent_name: str,
@@ -1854,23 +1851,27 @@ class WorkflowEngine:
         """
         tool_results: list[dict[str, object]] = []
         for tool_use_id, tool_name, tool_input in calls:
-            payload: dict[str, object] = {
-                "tool_name": tool_name,
-                "description": tool_desc.get(tool_name, ""),
-                "tool_call_id": tool_use_id,
-            }
-            # run_command carries a mandatory timeout; surface it so the client
-            # can render a "waiting for tool output" progress bar that fills
-            # over the timeout window while the command runs.
-            if tool_name == "run_command":
-                payload["timeout_seconds"] = tool_input.get("timeout")
-            await self.__sink.send(Envelope.make_event(EVT_AGENT_TOOL_CALL, payload))
+            # ask_user never gets the generic tool-call card: its handler fires
+            # a prompt.question request (carrying this tool_use_id) that the
+            # client renders as the interactive question panel instead.
+            if tool_name != "ask_user":
+                payload: dict[str, object] = {
+                    "tool_name": tool_name,
+                    "description": tool_desc.get(tool_name, ""),
+                    "tool_call_id": tool_use_id,
+                }
+                # run_command carries a mandatory timeout; surface it so the
+                # client can render a "waiting for tool output" progress bar
+                # that fills over the timeout window while the command runs.
+                if tool_name == "run_command":
+                    payload["timeout_seconds"] = tool_input.get("timeout")
+                await self.__sink.send(Envelope.make_event(EVT_AGENT_TOOL_CALL, payload))
             tc_n = tool_logger.log_invocation(tool_name, tool_input)
             # Snapshot the pre-mutation baseline of any root this tool is about
             # to write to, so the post-dispatch commit records the change as its
             # own checkpoint (see __checkpoint_prepare / __checkpoint_commit).
             ck_paths = await self.__checkpoint_prepare(tool_name, tool_input)
-            result_text = await tool_dispatch(tool_name, tool_input)
+            result_text = await tool_dispatch(tool_name, tool_input, tool_use_id)
             tool_logger.log_result(tool_name, tc_n, result_text)
             checkpoint = await self.__checkpoint_commit(tool_name, tool_input, ck_paths)
             content = await self.__finalize_tool_result(
@@ -1976,20 +1977,24 @@ class WorkflowEngine:
                 "current_index": state.current_index,
             }
 
-        await self.__sink.send(
-            Envelope.make_event(
-                EVT_AGENT_TOOL_CALL_DETAIL,
-                {
-                    "tool_call_id": tool_use_id,
-                    "file": str(doc_path) if doc_path is not None else None,
-                    "rows": build_detail_rows(spec, tool_input, output),
-                    "schema_compliance": compliant,
-                    "success": tool_result_succeeded(output),
-                    "diff": diff_detail,
-                    "checkpoint": checkpoint_detail,
-                },
+        # ask_user has no tool-call card to attach detail to — the client's
+        # question panel freezes itself with the confirmed answers, and history
+        # rebuild re-derives the frozen panel from the persisted call + result.
+        if tool_name != "ask_user":
+            await self.__sink.send(
+                Envelope.make_event(
+                    EVT_AGENT_TOOL_CALL_DETAIL,
+                    {
+                        "tool_call_id": tool_use_id,
+                        "file": str(doc_path) if doc_path is not None else None,
+                        "rows": build_detail_rows(spec, tool_input, output),
+                        "schema_compliance": compliant,
+                        "success": tool_result_succeeded(output),
+                        "diff": diff_detail,
+                        "checkpoint": checkpoint_detail,
+                    },
+                )
             )
-        )
         # A new tool-call commit becomes the tip (its own index == current_index,
         # so its own RollbackBox stays hidden), but it advances current_index past
         # every *earlier* entry. Those earlier tool-call cards carry a now-stale
@@ -2650,9 +2655,9 @@ class WorkflowEngine:
         leaves that assistant message as the final persisted main message with
         no following ``tool_result``. That is the marker of a resumable turn:
         :meth:`__resume_main_turn` re-dispatches sub-agent spawns via the
-        replay ledger and reports any other pending call back to the model as
-        interrupted (never re-executing it — its side effects may already have
-        landed).
+        replay ledger, re-drives ``ask_user`` batches from scratch, and
+        reports any other pending call back to the model as interrupted
+        (never re-executing it — its side effects may already have landed).
         """
         if not self.__main_messages:
             return False
@@ -2680,13 +2685,17 @@ class WorkflowEngine:
 
         Every tool-calling turn flushes its assistant ``tool_use`` to disk
         before dispatch, so any interrupted turn leaves a dangling assistant
-        message. Two cases, handled per pending call:
+        message. Three cases, handled per pending call:
 
         * **Sub-agent spawns** (:data:`_SUBAGENT_SPAWNING_TOOLS`) are
           re-dispatched through the subsession replay ledger — a completed
           sub-session returns its stored result, the active one is rehydrated
           and driven to completion. Safe because the ledger never re-runs a
           finished sub-session.
+        * **``ask_user``** is re-dispatched for real: the question batch is
+          re-fired to the client from scratch. Anything the user had entered
+          before the crash is deliberately not stored anywhere, so there is
+          nothing to restore — they answer the whole batch again.
         * **Every other tool** (a shell command, a file write, ...) is *not*
           re-executed: its side effects may already have landed before the
           interruption, and there is no result ledger to dedupe against.
@@ -2727,15 +2736,16 @@ class WorkflowEngine:
         await self.__emit_state()
         await self.__emit_agent_started(entry_agent)
 
-        # Preserve the model's original tool_use order: spawning calls are
-        # replayed for real, all others get an interrupted stand-in.
+        # Preserve the model's original tool_use order: spawning calls and
+        # ask_user are re-dispatched for real, all others get an interrupted
+        # stand-in.
         tool_results: list[dict[str, object]] = []
         for b in tool_uses:
             tool_use_id = str(b["id"])
             tool_name = str(b["name"])
             raw_input = b.get("input")
             tool_input = raw_input if isinstance(raw_input, dict) else {}
-            if tool_name in _SUBAGENT_SPAWNING_TOOLS:
+            if tool_name in _RESUME_REDISPATCH_TOOLS:
                 spawned = await self.__dispatch_tool_calls(
                     [(tool_use_id, tool_name, tool_input)],
                     dispatcher.dispatch,
@@ -3189,6 +3199,16 @@ class WorkflowEngine:
                     if not isinstance(tool_input, dict):
                         tool_input = {}
                     output = results_by_id.get(tool_use_id)
+                    # ask_user renders as the dedicated question panel, not a
+                    # generic tool-call card (matching the live suppression in
+                    # __dispatch_tool_calls). An error result (validation
+                    # failure, or a legacy single-question call) falls through
+                    # to the generic card so nothing is silently hidden.
+                    if name == "ask_user":
+                        ask_entry = self.__ask_user_entry(name, tool_use_id, tool_input, output)
+                        if ask_entry is not None:
+                            out.append(ask_entry)
+                            continue
                     spec = _SPECS_BY_NAME.get(name)
                     rows = build_detail_rows(spec, tool_input, output) if spec is not None else []
                     doc = toolcalls_dir / f"{tool_use_id}.md"
@@ -3217,6 +3237,14 @@ class WorkflowEngine:
                         "checkpoint": checkpoint,
                     }
                     out.append(entry)
+                    # escalate_blocker rides the question gate with the user's
+                    # free-text response in interactive mode; replay it as a
+                    # question panel *after* its card, matching the live order
+                    # (card at dispatch, panel when the gate fires).
+                    if name == "escalate_blocker":
+                        esc_entry = self.__ask_user_entry(name, tool_use_id, tool_input, output)
+                        if esc_entry is not None:
+                            out.append(esc_entry)
         elif role == "user":
             text = "".join(
                 str(b.get("text", ""))
@@ -3226,6 +3254,61 @@ class WorkflowEngine:
             if text:
                 out.append({"type": "user_message", "content": text, "attachments": []})
         return out
+
+    @staticmethod
+    def __ask_user_entry(
+        name: str,
+        tool_use_id: str,
+        tool_input: dict[str, object],
+        output: dict[str, object] | None,
+    ) -> dict[str, object] | None:
+        """Rebuild an ``ask_user`` call as a question-panel history entry.
+
+        The panel is derived entirely from the persisted ``tool_use`` input
+        (the questions) plus its ``tool_result`` (the confirmed answers) — no
+        extra session content is stored, so nothing beyond the call + result
+        ever reaches LLM context. ``answers`` is ``None`` while the call is
+        still dangling (crash-resume re-drives it and the client re-attaches
+        the live request by ``toolCallId``).
+
+        ``escalate_blocker`` also rides the question gate (one free-text-only
+        question carrying its summary); its panel is synthesized from the
+        persisted ``summary`` input and ``user_response`` output and rendered
+        *alongside* its generic card, not instead of it.
+
+        Returns ``None`` when this block is not a renderable question panel
+        (malformed input, an error result, or an autonomous-mode escalation
+        that never asked) so the caller falls back to the card alone.
+        """
+        if name == "escalate_blocker":
+            summary = str(tool_input.get("summary", ""))
+            if not summary:
+                return None
+            if output is not None and not isinstance(output.get("user_response"), str):
+                return None
+            return {
+                "type": "ask_user",
+                "toolCallId": tool_use_id,
+                "questions": [{"question": summary, "kind": "single_choice", "options": []}],
+                "answers": (
+                    [{"selected": [], "free_text": output.get("user_response") or None}]
+                    if output is not None
+                    else None
+                ),
+            }
+        if name != "ask_user":
+            return None
+        questions = tool_input.get("questions")
+        if not isinstance(questions, list) or not questions:
+            return None
+        if output is not None and not isinstance(output.get("answers"), list):
+            return None
+        return {
+            "type": "ask_user",
+            "toolCallId": tool_use_id,
+            "questions": questions,
+            "answers": output.get("answers") if output is not None else None,
+        }
 
     async def __checkpoint_detail(
         self,

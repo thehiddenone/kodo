@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kodo.guided_state import read_status
-from kodo.runtime import GateOrchestrator, QuestionResponse, SessionState
+from kodo.runtime import GateOrchestrator, SessionState
 from kodo.tools import (
     DISPATCHABLE_TOOLS_BY_NAME,
     ProjectPathResolver,
@@ -39,15 +39,16 @@ def _make_app_state() -> MagicMock:
 
 
 def _make_gate(answer: str = "") -> GateOrchestrator:
-    """Return a GateOrchestrator whose fire_question always resolves to answer."""
+    """Return a GateOrchestrator whose fire_questions resolves every question
+    to the given free-text answer."""
     gate = GateOrchestrator(_make_app_state(), MagicMock())
 
-    async def _instant_question(
-        question: str, mode: str, choices: list[dict[str, str]] | None = None
-    ) -> QuestionResponse:
-        return QuestionResponse(answer_text=answer, choice_key="")
+    async def _instant_questions(
+        questions: list[dict[str, object]], tool_call_id: str = ""
+    ) -> list[dict[str, object]]:
+        return [{"selected": [], "free_text": answer or None} for _ in questions]
 
-    gate.fire_question = _instant_question  # type: ignore[method-assign]
+    gate.fire_questions = _instant_questions  # type: ignore[method-assign]
     return gate
 
 
@@ -100,11 +101,13 @@ class _IntentDispatcher(ToolDispatcher):
     intent tests below (which call ``ToolDispatcher.dispatch`` directly).
     """
 
-    async def dispatch(self, tool_name: str, tool_input: dict[str, object]) -> str:
+    async def dispatch(
+        self, tool_name: str, tool_input: dict[str, object], tool_use_id: str = ""
+    ) -> str:
         spec = DISPATCHABLE_TOOLS_BY_NAME.get(tool_name)
         if spec is not None and requires_intent(spec) and "intent" not in tool_input:
             tool_input = {"intent": _TEST_INTENT, **tool_input}
-        return await super().dispatch(tool_name, tool_input)
+        return await super().dispatch(tool_name, tool_input, tool_use_id)
 
 
 def _make_dispatcher(

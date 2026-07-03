@@ -426,10 +426,12 @@ class TransientStore:
 
     @property
     def pending_prompt(self) -> dict[str, object] | None:
-        """The outstanding ``prompt.question``/``prompt.approval`` request, if any.
+        """The outstanding ``prompt.approval`` request, if any.
 
-        Persisted so that a server restart with an unanswered prompt can
+        Persisted so that a server restart with an unanswered approval can
         re-surface it to the user instead of silently dropping it.
+        (``ask_user`` questions are no longer recorded here — their flushed
+        ``tool_use`` drives the dangling-tool-use resume path instead.)
         """
         return self.__pending_prompt
 
@@ -499,8 +501,8 @@ class TransientStore:
             edit_control (str | None): New Edit Control posture if changed.
             command_control (str | None): New Command Control posture if changed.
             pending_prompt (dict[str, object] | None): Outstanding
-                ``prompt.question``/``prompt.approval`` request to persist,
-                or ``None`` to clear it. Left unchanged if omitted.
+                ``prompt.approval`` request to persist, or ``None`` to clear
+                it. Left unchanged if omitted.
             active_subsession (dict[str, object] | None): The in-flight
                 sub-agent subsession record to persist, or ``None`` to clear it
                 (the main agent holds the turn again). Left unchanged if omitted.

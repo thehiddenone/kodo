@@ -438,32 +438,42 @@ These drive the sidebar's llama.cpp / model controls; they carry no workflow mea
 
 Every server-initiated prompt is a `kind=request` frame. The client's reply is a `kind=response` whose `correlation_id` equals the request's `id`.
 
-### 6.1 `prompt.question` — free-form or choice
+### 6.1 `prompt.question` — a batched question set
 
-Surfaced when any agent calls `ask_user` (e.g. the Narrative Author or the Problem Solver eliciting input, or the Guide's own judgment-call questions). In autonomous mode `ask_user` is withheld from the agent entirely, so no `prompt.question` is emitted.
+Surfaced when any agent calls `ask_user` (e.g. the Narrative Author or the Problem Solver eliciting input, or the Guide's own judgment-call questions), and by `escalate_blocker` for its interactive user prompt (a single free-text-only question). One request carries the agent's **whole question batch**; the client renders it as an in-feed panel of question boxes and replies once, when the user clicks *Confirm and Send*. In autonomous mode `ask_user` is withheld from the agent entirely, so no `prompt.question` is emitted.
 
 Request payload:
 
 ```json
 { "type": "prompt.question",
-  "question": "Should the bot handle pre-market hours?",
-  "mode": "free_text" | "choice",
-  "choices": [ { "key": "yes", "label": "Yes" }, { "key": "no", "label": "No" } ] }
+  "tool_call_id": "toolu_abc123",
+  "questions": [
+    { "question": "Which DB should the service use?",
+      "kind": "single_choice",
+      "options": ["PostgreSQL", "SQLite", "MySQL"] },
+    { "question": "Which features are in scope?",
+      "kind": "multi_choice",
+      "options": ["Auth", "Billing", "Admin UI"] }
+  ] }
 ```
 
-`choices` is present only when `mode = "choice"`.
+- `tool_call_id` — the `ask_user`/`escalate_blocker` `tool_use` block id. The webview uses it to correlate this live request with the `ask_user` feed entry rebuilt from `session.history` (the `tool_use` is flushed to `session.jsonl` before dispatch, so a reconnect mid-question sees both).
+- `options` are plain answer strings, the agent's top choice first. The client always appends its own free-text option, so `options` never contains an "Other". An **empty** `options` list means free-text-only (used by `escalate_blocker`).
+- `kind` — `single_choice` (exactly one of: an option, or free text) or `multi_choice` (one or more; free text counts as a selection).
 
-Response payload (`mode: "free_text"`):
+Response payload — one entry per question, in order:
 
 ```json
-{ "type": "prompt.question.response", "answer_text": "..." }
+{ "type": "prompt.question.response",
+  "answers": [
+    { "selected": ["PostgreSQL"], "free_text": null },
+    { "selected": ["Auth"], "free_text": "also CSV export" }
+  ] }
 ```
 
-Response payload (`mode: "choice"`):
+`selected` echoes the chosen option texts verbatim (empty when the user answered only in free text); `free_text` is `null` when unused. The server normalizes malformed entries to empty answers rather than failing the tool call.
 
-```json
-{ "type": "prompt.question.response", "choice_key": "yes" }
-```
+**Crash behaviour:** nothing the user has entered is persisted before *Confirm and Send*. If the server restarts mid-question, resume re-dispatches the dangling `ask_user` call and the whole batch is re-asked from scratch (`SESSIONS.md`); no `pending_prompt` record is kept for questions (unlike approvals, §6.2).
 
 ### 6.2 `prompt.approval` — document review gate
 

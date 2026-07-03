@@ -5,9 +5,9 @@ client's reply is a ``kind=response`` correlated by ``id``.
 
 - :meth:`GateOrchestrator.fire_approval` — surfaces an approval gate
   (``prompt.approval``, FR-WF-05) and blocks until the user responds.
-- :meth:`GateOrchestrator.fire_question` — surfaces a free-form or choice
-  question (``prompt.question``, WS_PROTOCOL.md §6.1) and blocks until
-  the user responds.
+- :meth:`GateOrchestrator.fire_questions` — surfaces one ``ask_user``
+  question batch (``prompt.question``, WS_PROTOCOL.md §6.1) and blocks
+  until the user confirms answers to all of them.
 
 Both methods register a :class:`asyncio.Future` via
 :meth:`~kodo.transport.AppState.register_response_future` and await it.
@@ -30,7 +30,7 @@ from kodo.common import Envelope, ResponseChannel
 from kodo.state import TransientStore
 from kodo.transport import SREQ_PROMPT_APPROVAL, SREQ_PROMPT_QUESTION
 
-__all__ = ["ApprovalResponse", "GateOrchestrator", "QuestionResponse"]
+__all__ = ["ApprovalResponse", "GateOrchestrator"]
 
 _log = logging.getLogger(__name__)
 
@@ -48,23 +48,10 @@ class ApprovalResponse:
     feedback: str
 
 
-@dataclass(frozen=True)
-class QuestionResponse:
-    """Developer response to a user question.
-
-    Attributes:
-        answer_text: Free-text answer (mode='free_text').
-        choice_key: Selected choice key (mode='choice').
-    """
-
-    answer_text: str
-    choice_key: str
-
-
 class GateOrchestrator:
     """Manages server-initiated ``kind=request`` prompts.
 
-    Both :meth:`fire_approval` and :meth:`fire_question` emit a
+    Both :meth:`fire_approval` and :meth:`fire_questions` emit a
     ``kind=request`` envelope, register a :class:`asyncio.Future` for the
     response, and ``await`` it.  Resolution happens in the WS dispatcher
     when the client sends the matching ``kind=response``.
@@ -153,23 +140,31 @@ class GateOrchestrator:
             self.__transient.update(pending_prompt=None)
             raise
 
-    async def fire_question(
+    async def fire_questions(
         self,
-        question: str,
-        mode: str,
-        choices: list[dict[str, str]] | None = None,
-    ) -> QuestionResponse:
+        questions: list[dict[str, object]],
+        tool_call_id: str = "",
+    ) -> list[dict[str, object]]:
         """Emit a ``prompt.question`` ``kind=request`` and block until the
-        user responds.
+        user confirms answers to every question in the batch.
+
+        No ``pending_prompt`` is persisted: the ``ask_user`` ``tool_use`` that
+        drives this is flushed to ``session.jsonl`` before dispatch, so a
+        server restart re-drives the whole batch from scratch (never partial
+        answers) via the engine's dangling-tool-use resume path.
 
         Args:
-            question: The question text to display.
-            mode: ``'free_text'`` or ``'choice'``.
-            choices: Required when ``mode='choice'``; list of
-                ``{'key': str, 'label': str}`` dicts.
+            questions: Normalized ``ask_user`` batch — one
+                ``{'question': str, 'kind': str, 'options': [str, ...]}`` per
+                question, in display order.
+            tool_call_id: The calling ``tool_use`` block's id, forwarded so
+                the client can correlate the interactive panel with the
+                persisted feed entry.
 
         Returns:
-            QuestionResponse: The user's answer or choice key.
+            list[dict[str, object]]: One
+            ``{'selected': [str, ...], 'free_text': str | None}`` per
+            question, in the same order.
         """
         req_id = uuid.uuid4().hex
         loop = asyncio.get_event_loop()
@@ -178,38 +173,37 @@ class GateOrchestrator:
 
         payload: dict[str, object] = {
             "type": SREQ_PROMPT_QUESTION,
-            "question": question,
-            "mode": mode,
+            "tool_call_id": tool_call_id,
+            "questions": questions,
         }
-        if choices:
-            payload["choices"] = choices
+        await self.__app_state.send(Envelope(kind="request", id=req_id, payload=payload))
+        _log.info("Question batch fired: n=%d req_id=%s", len(questions), req_id[:8])
 
-        self.__transient.update(
-            pending_prompt={
-                "kind": "question",
-                "question": question,
-                "mode": mode,
-                "choices": choices,
-            }
-        )
-        try:
-            await self.__app_state.send(Envelope(kind="request", id=req_id, payload=payload))
-            _log.info("Question fired: mode=%s req_id=%s", mode, req_id[:8])
+        response_payload = await future
+        answers = self.__normalize_answers(response_payload.get("answers"), len(questions))
+        _log.info("Question batch resolved: req_id=%s", req_id[:8])
+        return answers
 
-            response_payload = await future
-            answer_text = str(response_payload.get("answer_text") or "")
-            choice_key = str(response_payload.get("choice_key") or "")
-            _log.info("Question resolved: req_id=%s", req_id[:8])
-            self.__transient.update(pending_prompt=None)
-            return QuestionResponse(answer_text=answer_text, choice_key=choice_key)
-        except asyncio.CancelledError:
-            # Leave pending_prompt persisted — the worker is being cancelled
-            # (e.g. server shutdown) with the prompt still unanswered, so it
-            # can be re-surfaced on resume.
-            raise
-        except Exception:
-            self.__transient.update(pending_prompt=None)
-            raise
+    @staticmethod
+    def __normalize_answers(raw: object, count: int) -> list[dict[str, object]]:
+        """Coerce the client's ``answers`` payload to exactly *count* entries.
+
+        Each entry becomes ``{'selected': [str, ...], 'free_text': str | None}``;
+        malformed or missing entries collapse to an empty selection so the
+        tool result always matches the output schema.
+        """
+        entries = raw if isinstance(raw, list) else []
+        answers: list[dict[str, object]] = []
+        for i in range(count):
+            entry = entries[i] if i < len(entries) and isinstance(entries[i], dict) else {}
+            selected_raw = entry.get("selected")
+            selected = (
+                [str(s) for s in selected_raw] if isinstance(selected_raw, list) else []
+            )
+            free_raw = entry.get("free_text")
+            free_text = str(free_raw) if isinstance(free_raw, str) and free_raw.strip() else None
+            answers.append({"selected": selected, "free_text": free_text})
+        return answers
 
     # Alias so existing call sites use fire() unchanged.
     fire = fire_approval

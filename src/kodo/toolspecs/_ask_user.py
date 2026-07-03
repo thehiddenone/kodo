@@ -1,7 +1,10 @@
-"""``ask_user`` tool spec — leaf sub-agent report tool.
+"""``ask_user`` tool spec — batched user questioning.
 
-An agent asks the user one focused question and acts on the answer itself.
-Withheld in autonomous mode (no answer to synthesize).
+An agent gathers every open question about its current topic of work into one
+call; the user answers them all in a single WebView form. Withheld in
+autonomous mode (no answer to synthesize). The questioning discipline itself —
+think first, derive real candidate answers, top choice first — lives in the
+performance preamble ("Asking the User Questions").
 """
 
 from __future__ import annotations
@@ -14,12 +17,16 @@ __all__ = ["ASK_USER"]
 ASK_USER: ToolSpec = ToolSpec(
     name="ask_user",
     external_name="Ask User",
-    user_description="Ask the user a question",
+    user_description="Ask the user questions",
     description=(
-        "Ask the user a single focused question and block until they respond. "
-        "The user is the source of information the agent needs and can then act "
-        "on itself; the agent keeps ownership of its task. Exactly one question "
-        "per call — bundling is not permitted. Unavailable in autonomous mode "
+        "Present the user a set of questions and block until they confirm "
+        "answers to all of them. Bundle EVERY open question about the topic "
+        "you are working on into one call — never a drip of single-question "
+        "calls. Each question carries the candidate answers you derived "
+        "yourself (your best assumption FIRST); the UI automatically appends "
+        "a free-text option to every question, so never add an 'Other'/'free "
+        "text' option yourself. See the 'Asking the User Questions' preamble "
+        "section for the full discipline. Unavailable in autonomous mode "
         "(there is no answer to synthesize when the user is away); assume and "
         "document, or escalate_blocker, instead. Distinct from "
         "request_user_review_artifact, which is a sign-off on a finished "
@@ -28,55 +35,89 @@ ASK_USER: ToolSpec = ToolSpec(
     input_schema={
         "type": "object",
         "properties": {
-            "question": {
-                "type": "string",
-                "description": (
-                    "The exact question to present to the user. Single focused "
-                    "question, plain language, no bundled sub-questions."
-                ),
-            },
-            "mode": {
-                "type": "string",
-                "enum": ["free_text", "choice"],
-                "description": (
-                    "free_text: the user types a reply; choice: the user picks "
-                    "from the supplied choices. Defaults to free_text."
-                ),
-            },
-            "choices": {
+            "questions": {
                 "type": "array",
+                "minItems": 1,
                 "description": (
-                    "Choices to present when mode='choice'; list of "
-                    "{'key': str, 'label': str} objects."
+                    "All questions for the current topic, in the order the "
+                    "user should read them."
                 ),
                 "items": {
                     "type": "object",
                     "properties": {
-                        "key": {"type": "string"},
-                        "label": {"type": "string"},
+                        "question": {
+                            "type": "string",
+                            "description": (
+                                "One focused question in plain language. No "
+                                "bundled sub-questions — split them into "
+                                "separate entries of this array."
+                            ),
+                        },
+                        "kind": {
+                            "type": "string",
+                            "enum": ["single_choice", "multi_choice"],
+                            "description": (
+                                "single_choice: the answers are mutually "
+                                "exclusive, the user picks exactly one (an "
+                                "option or their free text). multi_choice: "
+                                "several answers can apply, the user picks "
+                                "one or more."
+                            ),
+                        },
+                        "options": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {"type": "string"},
+                            "description": (
+                                "The candidate answers you derived — the "
+                                "assumptions you could make yourself. Your "
+                                "single best assumption comes FIRST (it is "
+                                "not marked in any other way), the rest in "
+                                "descending plausibility. Do NOT add an "
+                                "'Other'/'free text'/'none of the above' "
+                                "option: the UI always appends a free-text "
+                                "field as the last option."
+                            ),
+                        },
                     },
-                    "required": ["key", "label"],
+                    "required": ["question", "kind", "options"],
                 },
             },
         },
-        "required": ["question"],
+        "required": ["questions"],
     },
     output_schema={
         "type": "object",
         "properties": {
-            "answer_text": {"type": "string", "description": "Free-text answer (free_text mode)."},
-            "choice_key": {"type": "string", "description": "Selected choice key (choice mode)."},
+            "answers": {
+                "type": "array",
+                "description": (
+                    "One entry per question, in the same order. 'selected' "
+                    "echoes the chosen option texts verbatim (empty when the "
+                    "user answered only in free text); 'free_text' is the "
+                    "user's own text, or null when they did not use it."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "selected": {"type": "array", "items": {"type": "string"}},
+                        "free_text": {"type": ["string", "null"]},
+                    },
+                    "required": ["selected", "free_text"],
+                },
+            },
         },
-        "required": [],
+        "required": ["answers"],
     },
-    security_impact=SecurityImpact.MINIMAL,
-    input_visibility={"question": "always", "mode": "visible", "choices": "visible"},
-    output_visibility={"answer_text": "always", "choice_key": "always"},
+    security_impact=SecurityImpact.NONE,
+    input_visibility={"questions": "always"},
+    output_visibility={"answers": "always"},
     when_to_use=(
-        "Eliciting the single most important uncovered or partially-covered "
-        "piece of information during gap-filling, or resolving a "
-        "contradiction in user-supplied input before incorporating it — one "
-        "concern per call.",
+        "Eliciting every uncovered or partially-covered piece of information "
+        "about the current topic of work in one batch, or resolving "
+        "contradictions in user-supplied input before incorporating it — all "
+        "open questions in one call, each with your derived candidate "
+        "answers.",
     ),
     autonomous_mode=(
         "Unavailable — there is no answer to synthesize when the user is "

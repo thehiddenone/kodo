@@ -193,7 +193,9 @@ class ToolDispatcher:
         """The normalized result the agent passed to ``return_result``, if any."""
         return self.__ctx.returned_output
 
-    async def dispatch(self, tool_name: str, tool_input: dict[str, object]) -> str:
+    async def dispatch(
+        self, tool_name: str, tool_input: dict[str, object], tool_use_id: str = ""
+    ) -> str:
         """Route one tool call to its handler and return a JSON-encoded result.
 
         Enforces the mutating-tool ``intent`` contract first — a spec that
@@ -204,10 +206,14 @@ class ToolDispatcher:
         Args:
             tool_name: Tool name from :data:`DISPATCHABLE_TOOLS_BY_NAME`.
             tool_input: Parsed JSON input from the LLM tool-use block.
+            tool_use_id: The calling ``tool_use`` block's id, exposed to the
+                handler via ``ToolContext.current_tool_use_id`` (empty when the
+                caller has none).
 
         Returns:
             str: JSON-encoded result returned to the LLM as a tool result.
         """
+        self.__ctx.current_tool_use_id = tool_use_id
         tool_cls = _CLASSES_BY_NAME.get(tool_name)
         if tool_cls is None:
             _log.warning(
