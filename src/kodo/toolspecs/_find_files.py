@@ -92,7 +92,7 @@ FIND_FILES: ToolSpec = ToolSpec(
         },
         "required": ["root", "files", "count", "truncated"],
     },
-    security_impact=SecurityImpact.NONE,
+    security_impact=SecurityImpact.MINIMAL,
     input_visibility={
         "root": "always",
         "pattern": "always",

@@ -114,7 +114,7 @@ FIND_TEXT_IN_FILES: ToolSpec = ToolSpec(
         },
         "required": ["root", "matches", "count", "truncated"],
     },
-    security_impact=SecurityImpact.NONE,
+    security_impact=SecurityImpact.MINIMAL,
     input_visibility={
         "query": "always",
         "root": "always",

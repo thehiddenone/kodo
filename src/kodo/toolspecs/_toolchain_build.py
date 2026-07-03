@@ -134,7 +134,7 @@ TOOLCHAIN_BUILD: ToolSpec = ToolSpec(
         },
         "required": ["success", "steps"],
     },
-    security_impact=SecurityImpact.MODERATE,
+    security_impact=SecurityImpact.LOW,
     input_visibility={
         "project_path": "always",
         "build": "always",

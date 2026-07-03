@@ -43,7 +43,7 @@ RUN_SUBAGENT: ToolSpec = ToolSpec(
         "type": "object",
         "description": "The sub-agent's structured result (its declared output schema).",
     },
-    security_impact=SecurityImpact.LOW,
+    security_impact=SecurityImpact.NONE,
     input_visibility={
         "name": "always",
         "task_input": "visible",

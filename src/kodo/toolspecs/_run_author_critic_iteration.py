@@ -72,7 +72,7 @@ RUN_AUTHOR_CRITIC_ITERATION: ToolSpec = ToolSpec(
         },
         "required": ["path", "status", "concerns"],
     },
-    security_impact=SecurityImpact.LOW,
+    security_impact=SecurityImpact.NONE,
     input_visibility={
         "author_name": "always",
         "critic_name": "always",

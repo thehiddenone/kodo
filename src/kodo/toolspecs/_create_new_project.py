@@ -79,7 +79,7 @@ CREATE_NEW_PROJECT: ToolSpec = ToolSpec(
         },
         "required": ["path", "name"],
     },
-    security_impact=SecurityImpact.MODERATE,
+    security_impact=SecurityImpact.LOW,
     input_visibility={"intent": "always", "name": "always", "path": "always"},
     output_visibility={"path": "always", "name": "always"},
     when_to_use=(

@@ -125,7 +125,7 @@ READ_FILE: ToolSpec = ToolSpec(
         },
         "required": ["path", "total_lines"],
     },
-    security_impact=SecurityImpact.NONE,
+    security_impact=SecurityImpact.MINIMAL,
     input_visibility={
         "path": "always",
         "ranges": "visible",

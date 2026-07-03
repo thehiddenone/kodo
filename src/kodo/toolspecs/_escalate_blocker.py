@@ -79,7 +79,7 @@ ESCALATE_BLOCKER: ToolSpec = ToolSpec(
         },
         "required": ["status", "reason"],
     },
-    security_impact=SecurityImpact.LOW,
+    security_impact=SecurityImpact.NONE,
     input_visibility={
         "reason": "always",
         "summary": "visible",

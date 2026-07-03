@@ -88,7 +88,7 @@ RUN_COMMAND: ToolSpec = ToolSpec(
         },
         "required": ["exit_code", "stdout", "stderr"],
     },
-    security_impact=SecurityImpact.CRITICAL,
+    security_impact=SecurityImpact.HIGH,
     input_visibility={
         "intent": "always",
         "command": "always",

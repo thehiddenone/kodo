@@ -100,7 +100,7 @@ TOOLCHAIN_DEPS: ToolSpec = ToolSpec(
         },
         "required": ["success", "status", "message"],
     },
-    security_impact=SecurityImpact.MODERATE,
+    security_impact=SecurityImpact.HIGH,
     input_visibility={
         "action": "always",
         "name": "always",
