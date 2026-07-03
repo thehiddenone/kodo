@@ -1,4 +1,4 @@
-"""The three search-engine adapters: query URL + in-page extraction JS.
+"""The four search-engine adapters: query URL + in-page extraction JS.
 
 Each :class:`Engine` is pure data — a results-page URL template plus two
 JavaScript snippets evaluated *in the results page*: one that detects an
@@ -16,11 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import quote_plus
 
-__all__ = ["ENGINES", "Engine"]
+__all__ = ["SEARCH_ENGINES", "SearchEngine"]
 
 
 @dataclass(frozen=True)
-class Engine:
+class SearchEngine:
     """One search engine the discovery phase can query.
 
     Attributes:
@@ -48,7 +48,7 @@ class Engine:
         return self.url_template.format(query=quote_plus(query))
 
 
-_GOOGLE = Engine(
+_GOOGLE = SearchEngine(
     name="google",
     url_template="https://www.google.com/search?q={query}&num=20&hl=en",
     ready_selector="#search h3, #rso h3",
@@ -92,7 +92,7 @@ _GOOGLE = Engine(
 """,
 )
 
-_BING = Engine(
+_BING = SearchEngine(
     name="bing",
     url_template="https://www.bing.com/search?q={query}&count=20",
     ready_selector="#b_results > li.b_algo",
@@ -138,7 +138,7 @@ _BING = Engine(
 """,
 )
 
-_DUCKDUCKGO = Engine(
+_DUCKDUCKGO = SearchEngine(
     name="duckduckgo",
     # The plain-HTML endpoint: no JS app shell, stable markup.
     url_template="https://html.duckduckgo.com/html/?q={query}",
@@ -179,6 +179,40 @@ _DUCKDUCKGO = Engine(
 """,
 )
 
+_WIKIPEDIA = SearchEngine(
+    name="wikipedia",
+    # English Wikipedia's full-text search results page. fulltext=1 forces a
+    # results *list* (an exact title match would otherwise redirect straight to
+    # the article); ns0=1 restricts to the article namespace.
+    url_template="https://en.wikipedia.org/w/index.php?search={query}&fulltext=1&ns0=1&limit=20",
+    ready_selector="li.mw-search-result, p.mw-search-nonefound",
+    # Wikipedia serves no reader-facing captcha; rate limiting arrives as HTTP
+    # 403/429 and is caught by the generic status check in discovery.
+    blocked_js="""
+() => false
+""",
+    # Organic hits are the li.mw-search-result entries (no ads on Wikipedia);
+    # links are plain absolute article URLs, no redirect wrappers.
+    extract_js="""
+() => {
+  const out = [];
+  for (const li of document.querySelectorAll('li.mw-search-result')) {
+    const a = li.querySelector('.mw-search-result-heading a');
+    if (!a || !a.href) continue;
+    if (!/^https?:\\/\\//.test(a.href)) continue;
+    const snip = li.querySelector('.searchresult');
+    out.push({
+      url: a.href,
+      title: (a.innerText || a.textContent || '').trim(),
+      snippet: snip ? (snip.innerText || snip.textContent || '').trim() : '',
+    });
+  }
+  return out;
+}
+""",
+)
+
 # Discovery queries these in parallel; the tuple order is also the merge
-# (interleave) order, so it encodes a mild preference: google, bing, duckduckgo.
-ENGINES: tuple[Engine, ...] = (_GOOGLE, _BING, _DUCKDUCKGO)
+# (interleave) order, so it encodes a mild preference: google, bing,
+# duckduckgo, wikipedia.
+SEARCH_ENGINES: tuple[SearchEngine, ...] = (_GOOGLE, _BING, _DUCKDUCKGO, _WIKIPEDIA)

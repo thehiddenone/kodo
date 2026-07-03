@@ -19,14 +19,12 @@ from collections.abc import Sequence
 from playwright.async_api import Browser, BrowserContext
 from playwright.async_api import Error as PlaywrightError
 
-from ._models import PageText, ScrapeOutcome, SearchHit
+from ._models import MAX_SOURCES, PageText, ScrapeOutcome, SearchHit
 
-__all__ = ["MAX_BLOCKS", "scrape_pages"]
+__all__ = ["scrape_pages"]
 
 _log = logging.getLogger(__name__)
 
-# Cap on the number of text blocks handed to the summarizer.
-MAX_BLOCKS = 15
 # Parallel page fetches.
 _CONCURRENCY = 5
 # Navigation budget per page.
@@ -66,13 +64,13 @@ _EXTRACT_TEXT_JS = """
 
 
 async def scrape_pages(browser: Browser, hits: Sequence[SearchHit]) -> ScrapeOutcome:
-    """Scrape *hits* into up to :data:`MAX_BLOCKS` text blocks.
+    """Scrape *hits* into up to :data:`~kodo.websearch.MAX_SOURCES` text blocks.
 
     Args:
         browser: The session's shared headless browser.
         hits: Discovered pages in priority order; the returned blocks keep
-            that order, so when more than :data:`MAX_BLOCKS` pages succeed the
-            top-priority ones win.
+            that order, so when more than :data:`~kodo.websearch.MAX_SOURCES`
+            pages succeed the top-priority ones win.
 
     Returns:
         ScrapeOutcome: The extracted blocks plus a per-URL failure map.
@@ -100,7 +98,7 @@ async def scrape_pages(browser: Browser, hits: Sequence[SearchHit]) -> ScrapeOut
             outcome.failed[hit.url] = str(result)
         elif result is None:
             outcome.failed[hit.url] = "page yielded too little text content"
-        elif len(outcome.pages) < MAX_BLOCKS:
+        elif len(outcome.pages) < MAX_SOURCES:
             outcome.pages.append(result)
     return outcome
 

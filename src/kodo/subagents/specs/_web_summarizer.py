@@ -78,9 +78,7 @@ WEB_SUMMARIZER: SubAgentSpec = SubAgentSpec(
                         },
                         "links": {
                             "type": "array",
-                            "description": (
-                                "URLs of the input sources this theme was drawn from."
-                            ),
+                            "description": ("URLs of the input sources this theme was drawn from."),
                             "items": {"type": "string"},
                         },
                     },

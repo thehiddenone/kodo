@@ -20,6 +20,8 @@ import pytest
 from kodo.runtime import SessionState
 from kodo.tools import ProjectPathResolver, ToolContext, WebSearchTool
 from kodo.websearch import (
+    MAX_SOURCES,
+    SEARCH_ENGINES,
     BrowserUnavailableError,
     CooldownStore,
     DiscoveryOutcome,
@@ -28,6 +30,25 @@ from kodo.websearch import (
     SearchHit,
     merge_hits,
 )
+
+# ---------------------------------------------------------------------------
+# Engine roster
+# ---------------------------------------------------------------------------
+
+
+def test_engine_roster_and_merge_order() -> None:
+    assert [e.name for e in SEARCH_ENGINES] == ["google", "bing", "duckduckgo", "wikipedia"]
+
+
+def test_wikipedia_queries_english_fulltext_search() -> None:
+    wikipedia = next(e for e in SEARCH_ENGINES if e.name == "wikipedia")
+    url = wikipedia.search_url("rust borrow checker")
+    assert url.startswith("https://en.wikipedia.org/w/index.php?search=rust+borrow+checker")
+    # fulltext=1 forces a results list (no exact-match article redirect);
+    # ns0=1 keeps it to the article namespace.
+    assert "fulltext=1" in url
+    assert "ns0=1" in url
+
 
 # ---------------------------------------------------------------------------
 # CooldownStore
@@ -68,9 +89,7 @@ def test_cooldown_corrupt_file_reads_as_empty(tmp_path: Path) -> None:
 
 def test_cooldown_ignores_malformed_entries(tmp_path: Path) -> None:
     path = tmp_path / "cooldowns.json"
-    path.write_text(
-        json.dumps({"google": "soon", "bing": time.time() + 600}), encoding="utf-8"
-    )
+    path.write_text(json.dumps({"google": "soon", "bing": time.time() + 600}), encoding="utf-8")
     store = CooldownStore(path)
     assert store.remaining("google") == 0.0
     assert store.remaining("bing") > 0
@@ -115,7 +134,7 @@ def test_merge_dedupes_on_normalized_url() -> None:
 
 def test_merge_caps_total_links() -> None:
     hits = [[_hit("google", i, f"https://example.com/{i}") for i in range(1, 21)]]
-    assert len(merge_hits(hits, max_links=15)) == 15
+    assert len(merge_hits(hits, max_links=MAX_SOURCES)) == 16
 
 
 def test_merge_handles_uneven_lists() -> None:

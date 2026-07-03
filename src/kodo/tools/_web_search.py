@@ -1,7 +1,7 @@
 """``web_search`` tool — three-phase themed web research (doc/WEB_SEARCH.md).
 
 Dispatch handler for :data:`kodo.toolspecs.WEB_SEARCH`. Phases 1–2 (discovery
-via Google/Bing/DuckDuckGo, then scraping) run in :mod:`kodo.websearch` inside
+via Google/Bing/DuckDuckGo/Wikipedia, then scraping) run in :mod:`kodo.websearch` inside
 one shared headless Chromium; phase 3 hands the scraped text to the silent
 ``web_summarizer`` sub-agent through the engine's dedicated ungated service
 (:meth:`~kodo.tools.EngineServices.run_web_summarizer` — holding this tool *is*

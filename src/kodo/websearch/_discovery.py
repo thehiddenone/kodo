@@ -5,7 +5,7 @@ browser context each). A blocked engine trips its 30-minute cooldown in the
 :class:`~kodo.websearch.CooldownStore`; a failed one is recorded as an error;
 the survivors' hits are merged rank-by-rank (all the #1 hits first, then the
 #2s, …) so the engines' top results are prioritized, deduplicated by
-normalized URL, and capped at :data:`MAX_LINKS`.
+normalized URL, and capped at :data:`~kodo.websearch.MAX_SOURCES`.
 """
 
 from __future__ import annotations
@@ -19,15 +19,13 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from ._cooldown import CooldownStore
-from ._engines import ENGINES, Engine
-from ._models import DiscoveryOutcome, SearchHit
+from ._engines import SEARCH_ENGINES, SearchEngine
+from ._models import MAX_SOURCES, DiscoveryOutcome, SearchHit
 
-__all__ = ["MAX_LINKS", "discover", "merge_hits"]
+__all__ = ["discover", "merge_hits"]
 
 _log = logging.getLogger(__name__)
 
-# Cap on the merged link list handed to the scraping phase.
-MAX_LINKS = 15
 # Cap on hits taken from any single engine (before merging).
 _PER_ENGINE_CAP = 10
 # Navigation budget for one results page.
@@ -38,7 +36,9 @@ _READY_TIMEOUT_MS = 8_000
 # HTTP statuses that mean "you are rate-limited / blocked" without a captcha page.
 _BLOCKED_STATUSES = frozenset({403, 429, 503})
 # Hosts that are engine-internal (support pages, image/maps verticals, the DDG
-# redirector) — never useful as scrape targets.
+# redirector) — never useful as scrape targets. wikipedia.org is deliberately
+# NOT here: unlike the others, the Wikipedia engine's own results (and plenty
+# of legitimate hits from the other engines) ARE wikipedia.org articles.
 _ENGINE_HOST_MARKERS = ("google.", "bing.com", "duckduckgo.com", "microsoft.com/en-us/bing")
 
 
@@ -53,12 +53,12 @@ async def discover(browser: Browser, query: str, cooldowns: CooldownStore) -> Di
             this call are tripped.
 
     Returns:
-        DiscoveryOutcome: Merged hits (≤ :data:`MAX_LINKS`) plus the per-engine
-        bookkeeping the tool folds into its ``note``.
+        DiscoveryOutcome: Merged hits (≤ :data:`~kodo.websearch.MAX_SOURCES`)
+        plus the per-engine bookkeeping the tool folds into its ``note``.
     """
     outcome = DiscoveryOutcome()
-    active: list[Engine] = []
-    for engine in ENGINES:
+    active: list[SearchEngine] = []
+    for engine in SEARCH_ENGINES:
         remaining = cooldowns.remaining(engine.name)
         if remaining > 0:
             minutes = max(1, round(remaining / 60))
@@ -87,7 +87,7 @@ async def discover(browser: Browser, query: str, cooldowns: CooldownStore) -> Di
         else:
             per_engine.append(hits)
 
-    outcome.hits = merge_hits(per_engine, MAX_LINKS)
+    outcome.hits = merge_hits(per_engine, MAX_SOURCES)
     return outcome
 
 
@@ -130,7 +130,7 @@ def _is_engine_internal(url: str) -> bool:
 
 
 async def _query_engine(
-    browser: Browser, engine: Engine, query: str
+    browser: Browser, engine: SearchEngine, query: str
 ) -> tuple[str, list[SearchHit]]:
     """Query one engine; return ``("ok", hits)`` or ``("blocked", [])``.
 

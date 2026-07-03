@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-__all__ = ["DiscoveryOutcome", "PageText", "ScrapeOutcome", "SearchHit"]
+__all__ = ["MAX_SOURCES", "DiscoveryOutcome", "PageText", "ScrapeOutcome", "SearchHit"]
+
+# One shared cap on the sources flowing through the pipeline: discovery merges
+# at most this many links (4 engines × 4), and scraping hands at most this many
+# text blocks to the summarizer — so every discovered link can become a block.
+MAX_SOURCES = 16
 
 
 @dataclass(frozen=True)
@@ -18,7 +23,7 @@ class SearchHit:
 
     Attributes:
         engine: Engine that produced the hit (``"google"`` / ``"bing"`` /
-            ``"duckduckgo"``).
+            ``"duckduckgo"`` / ``"wikipedia"``).
         rank: 1-based position within that engine's organic results (ads are
             never counted).
         url: Absolute result URL (redirect wrappers already unwrapped).

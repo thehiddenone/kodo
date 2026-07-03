@@ -1,9 +1,9 @@
 """``web_search`` tool spec — themed web research for the Investigator.
 
 Backed by the three-phase pipeline in doc/WEB_SEARCH.md: **discovery** (query
-Google/Bing/DuckDuckGo in parallel via headless Chromium, collect ≤ 15 organic
-links, ads skipped), **scraping** (extract ≤ 15 blocks of main text content,
-UI/navigation chrome stripped), and **summarization** (the silent
+Google/Bing/DuckDuckGo/English-Wikipedia in parallel via headless Chromium,
+collect ≤ 16 organic links, ads skipped), **scraping** (extract ≤ 16 blocks of
+main text content, UI/navigation chrome stripped), and **summarization** (the silent
 ``web_summarizer`` sub-agent groups the findings into themes). The output is a
 themed report: each theme is one distinct angle — ideally an independent way to
 solve the problem — with a one-sentence ``summary``, a synthesized ``details``
@@ -28,8 +28,9 @@ WEB_SEARCH: ToolSpec = ToolSpec(
     user_description="Search the web",
     description=(
         "Search the public web and get back a *themed report* rather than raw hits. "
-        "The tool queries Google, Bing, and DuckDuckGo in parallel, collects up to "
-        "15 organic result links (ads ignored, top results prioritized), scrapes the "
+        "The tool queries Google, Bing, DuckDuckGo, and English Wikipedia in "
+        "parallel, collects up to "
+        "16 organic result links (ads ignored, top results prioritized), scrapes the "
         "main text content of those pages, and distills everything into `themes`: "
         "each theme has a one-sentence `summary`, a `details` text carrying the core "
         "idea (a perspective on the problem, a variant of a solution, ...), and the "

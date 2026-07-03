@@ -2571,9 +2571,7 @@ class WorkflowEngine:
                 for link in (links_raw if isinstance(links_raw, list) else [])
                 if isinstance(link, str) and link in allowed_urls
             ]
-            themes.append(
-                {"summary": summary.strip(), "details": details.strip(), "links": links}
-            )
+            themes.append({"summary": summary.strip(), "details": details.strip(), "links": links})
             if len(themes) >= max_themes:
                 break
         return themes

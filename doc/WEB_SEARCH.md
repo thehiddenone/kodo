@@ -21,17 +21,18 @@ One `web_search` call runs three phases end to end:
               ▼                                            ▲   │ 30-min cooldowns
  ┌─ Phase 1: DISCOVERY ────────────────────────────────────┴───┴─────────┐
  │  kodo.websearch.discover() — one headless Chromium (Playwright)       │
- │  Google ─┐                                                            │
- │  Bing ───┼─ queried in parallel; ads/sponsored skipped; captcha walls │
- │  DDG ────┘  trip a cooldown; organic hits merged rank-by-rank         │
- └──────────────── ≤ 15 deduplicated links, top results first ───────────┘
+ │  Google ────┐                                                          │
+ │  Bing ──────┼─ queried in parallel; ads/sponsored skipped; captcha     │
+ │  DDG ───────┤  walls trip a cooldown; organic hits merged rank-by-rank │
+ │  Wikipedia ─┘  (English Wikipedia full-text search)                    │
+ └──────────────── ≤ 16 deduplicated links, top results first ───────────┘
               │
               ▼
  ┌─ Phase 2: SCRAPING ────────────────────────────────────────────────────┐
  │  kodo.websearch.scrape_pages() — same browser, ≤ 5 pages in flight     │
  │  per page: strip script/style/nav/header/footer/aside/form/UI chrome   │
  │  in the live DOM, take innerText of <article>/<main>/[role=main]/body  │
- └──────────────── ≤ 15 blocks of main text (≤ 6000 chars each) ──────────┘
+ └──────────────── ≤ 16 blocks of main text (≤ 6000 chars each) ──────────┘
               │
               ▼
  ┌─ Phase 3: SUMMARIZATION ───────────────────────────────────────────────┐
@@ -68,7 +69,7 @@ caller — only the tool handler knows about `~/.kodo` (via
 [`kodo/websearch/_discovery.py`](../src/kodo/websearch/_discovery.py) +
 [`_engines.py`](../src/kodo/websearch/_engines.py).
 
-Three engines are defined as pure data (`Engine`): a results-page URL template
+Four engines are defined as pure data (`Engine`): a results-page URL template
 plus two JavaScript snippets evaluated *in the loaded results page* — one that
 detects an anti-bot/captcha wall, one that extracts the organic hits. The
 Python side never parses HTML; the browser's DOM does the work.
@@ -78,6 +79,7 @@ Python side never parses HTML; the browser's DOM does the work.
 | `google` | `google.com/search?q=…&num=20&hl=en` | excluding `#tads`/`#bottomads`/`[data-text-ad]` containers | `/sorry/` interstitial, reCAPTCHA form/iframe |
 | `bing` | `bing.com/search?q=…&count=20` | only `li.b_algo` entries are read (ads are `li.b_ad`) | `#b_captcha`, "verify you are human" text |
 | `duckduckgo` | `html.duckduckgo.com/html/?q=…` (plain-HTML endpoint) | excluding `.result--ad` blocks; `uddg=` redirects decoded | anomaly page ("bots use DuckDuckGo too") |
+| `wikipedia` | `en.wikipedia.org/w/index.php?search=…&fulltext=1&ns0=1&limit=20` (English full-text search; `fulltext=1` forces a results *list* instead of an exact-match article redirect, `ns0=1` = article namespace only) | no ads on Wikipedia; only `li.mw-search-result` entries are read | none — Wikipedia has no reader-facing captcha; rate limiting arrives as HTTP 403/429 (generic status check) |
 
 Mechanics:
 
@@ -89,12 +91,15 @@ Mechanics:
   layout change → zero hits) is recorded as an engine *error*. Either way the
   other engines proceed.
 - Links pointing back into engine properties (google.*, bing.com,
-  duckduckgo.com) are discarded.
+  duckduckgo.com) are discarded. wikipedia.org is deliberately *not* filtered:
+  the Wikipedia engine's own hits (and plenty of legitimate hits from the
+  other engines) are wikipedia.org articles.
 - **Merge** (`merge_hits`): hits interleave *rank-by-rank* — every engine's #1
-  first (in google→bing→ddg order), then the #2s, … — so top results are
-  prioritized over any single engine's tail; URLs are deduplicated on a
+  first (in google→bing→ddg→wikipedia order), then the #2s, … — so top results
+  are prioritized over any single engine's tail; URLs are deduplicated on a
   normalized form (lowercase scheme/host, no fragment, no trailing slash);
-  the merged list caps at **15 links**.
+  the merged list caps at **16 links** (`MAX_SOURCES`, 4 engines × 4 — one
+  shared constant also caps the scrape phase).
 
 ## 4. Phase 2 — scraping
 
@@ -115,7 +120,8 @@ context, 20 s per page). Extraction happens in-page:
 3. Python-side: whitespace normalized, blocks under **200 chars** dropped as
    too thin (error pages, cookie walls), the rest truncated to **6000 chars**.
 
-The result: up to **15 text blocks**, in discovery priority order. Failures
+The result: up to **16 text blocks** (`MAX_SOURCES` — same cap as discovery,
+so every discovered link can become a block), in discovery priority order. Failures
 are per-page (recorded, reported in `note`) — one dead link never spoils the
 batch.
 
