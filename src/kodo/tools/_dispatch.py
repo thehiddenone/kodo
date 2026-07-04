@@ -256,6 +256,15 @@ class ToolDispatcher:
         denial = await self.__security_gate(tool_name, tool_input, tool_use_id)
         if denial is not None:
             return denial
+        # run_command is the only call the client animates a timeout bar for;
+        # tell it execution is genuinely starting now, past whatever judging
+        # round or permission wait the gate above may have taken (the "Waiting
+        # for tool output" clock must start here, not when the card first
+        # appeared — see doc/SECURITY.md §6). ``services`` is None only in
+        # tests that don't wire it (never in production, where the engine
+        # always injects a real EngineServices).
+        if tool_name == RUN_COMMAND.name and self.__ctx.services is not None:
+            await self.__ctx.services.notify_tool_call_in_progress(tool_use_id)
         return await tool_cls(self.__ctx).handle(tool_input)
 
     async def __security_gate(

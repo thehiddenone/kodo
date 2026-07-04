@@ -8,8 +8,9 @@ from ._messages import (
     EVT_AGENT_FINISHED,
     EVT_AGENT_STARTED,
     EVT_AGENT_TOKENS,
-    EVT_AGENT_TOOL_CALL,
     EVT_AGENT_TOOL_CALL_DETAIL,
+    EVT_AGENT_TOOL_CALL_IN_PROGRESS,
+    EVT_AGENT_TOOL_CALL_PREP,
     # Server → Client events — API key management
     EVT_API_KEY_REVOKE,
     # Deprecated / legacy — retained until handler wiring is migrated
@@ -138,8 +139,9 @@ __all__ = [
     "EVT_AGENT_STARTED",
     "EVT_AGENT_FINISHED",
     "EVT_AGENT_TOKENS",
-    "EVT_AGENT_TOOL_CALL",
     "EVT_AGENT_TOOL_CALL_DETAIL",
+    "EVT_AGENT_TOOL_CALL_IN_PROGRESS",
+    "EVT_AGENT_TOOL_CALL_PREP",
     "EVT_TOOL_INCOMPLIANT",
     "EVT_REVIEW_STARTED",
     "EVT_REVIEW_VERDICT",

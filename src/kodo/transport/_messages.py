@@ -141,8 +141,15 @@ EVT_STATE = "state"
 EVT_AGENT_STARTED = "agent.started"
 EVT_AGENT_FINISHED = "agent.finished"
 EVT_AGENT_TOKENS = "agent.tokens"  # carried inside stream_chunk / stream_end
-EVT_AGENT_TOOL_CALL = "agent.tool_call"
-# Post-dispatch follow-up to EVT_AGENT_TOOL_CALL: carries the customer-visible
+EVT_AGENT_TOOL_CALL_PREP = "agent.tool_call_prep"
+# Emitted once the security gate has cleared (allowed outright, or the user
+# granted permission) and the tool is about to actually run — the moment a
+# run_command timeout genuinely starts. Sent between EVT_AGENT_TOOL_CALL_PREP
+# and EVT_AGENT_TOOL_CALL_DETAIL so the client can defer the "waiting for
+# tool output" timeout animation past any judging round / permission wait
+# (see doc/SECURITY.md §6).
+EVT_AGENT_TOOL_CALL_IN_PROGRESS = "agent.tool_call_in_progress"
+# Post-dispatch follow-up to EVT_AGENT_TOOL_CALL_PREP: carries the customer-visible
 # input/output projection, the persisted Markdown doc path, and the
 # schema-compliance flag, correlated by tool_call_id (= the tool_use block id).
 EVT_AGENT_TOOL_CALL_DETAIL = "agent.tool_call_detail"
@@ -222,7 +229,7 @@ EVT_USER_ATTACHMENTS = "user.attachments"
 #                                  SREQ_PROMPT_APPROVAL.
 # - EVT_FILE_CHANGE              — superseded by EVT_ARTIFACT_PUBLISHED /
 #                                  EVT_ARTIFACT_REMOVED.
-# - EVT_SHELL_RUN                — superseded by EVT_AGENT_TOOL_CALL.
+# - EVT_SHELL_RUN                — superseded by EVT_AGENT_TOOL_CALL_PREP.
 # - EVT_APPROVAL_REQUEST         — superseded by SREQ_PROMPT_APPROVAL
 #                                  (kind=request, not kind=event).
 # - EVT_SECURITY_PROMPT          — superseded by SREQ_PROMPT_PERMISSION.

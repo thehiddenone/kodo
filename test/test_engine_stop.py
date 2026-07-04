@@ -64,7 +64,7 @@ def test_persist_interrupted_turn_with_dangling_tool_use_synthesizes_result() ->
     engine._WorkflowEngine__persist_interrupted_turn("guide")  # type: ignore[attr-defined]
 
     main = engine._WorkflowEngine__main_messages  # type: ignore[attr-defined]
-    assert [m.role for m in main[-2:]] == ["user", "user"]
+    assert [m.role for m in main[-2:]] == ["user", "assistant"]
 
     tool_results_msg = main[-2]
     assert isinstance(tool_results_msg.content, list)
@@ -72,20 +72,20 @@ def test_persist_interrupted_turn_with_dangling_tool_use_synthesizes_result() ->
     result_block = tool_results_msg.content[0]
     assert result_block["type"] == "tool_result"
     assert result_block["tool_use_id"] == "tu_1"
-    assert "user clicked Stop" in result_block["content"]
+    assert "did not complete before the user clicked Stop" in result_block["content"]
     assert "run_command" in result_block["content"]
 
     notice_msg = main[-1]
-    assert "clicked Stop" in notice_msg.content
+    assert "The ongoing session was interrupted by the user" in notice_msg.content
 
     # Both new messages were persisted, tagged with the entry agent that was
     # actually running, and in the right order; only the notice carries
     # kind="stopped_notice" (so history replay renders it as the red callout,
     # not a fake user-typed bubble — see __message_to_entries).
-    assert [role for role, _content, _agent, _kind in transient.appended] == ["user", "user"]
+    assert [role for role, _content, _agent, _kind in transient.appended] == ["user", "assistant"]
     assert all(agent == "guide" for _role, _content, agent, _kind in transient.appended)
     assert transient.appended[0] == ("user", tool_results_msg.content, "guide", None)
-    assert transient.appended[1] == ("user", notice_msg.content, "guide", "stopped_notice")
+    assert transient.appended[1] == ("assistant", notice_msg.content, "guide", "stopped_notice")
 
 
 def test_persist_interrupted_turn_without_dangling_tool_use_only_adds_notice() -> None:
@@ -99,10 +99,12 @@ def test_persist_interrupted_turn_without_dangling_tool_use_only_adds_notice() -
 
     main = engine._WorkflowEngine__main_messages  # type: ignore[attr-defined]
     assert len(main) == 3
-    assert main[-1].role == "user"
-    assert "clicked Stop" in main[-1].content
+    assert main[-1].role == "assistant"
+    assert "The ongoing session was interrupted by the user" in main[-1].content
 
-    assert transient.appended == [("user", main[-1].content, "problem_solver", "stopped_notice")]
+    assert transient.appended == [
+        ("assistant", main[-1].content, "problem_solver", "stopped_notice")
+    ]
 
 
 def test_persist_interrupted_turn_resolves_every_pending_tool_use() -> None:

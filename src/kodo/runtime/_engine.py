@@ -89,8 +89,9 @@ from kodo.toolspecs import (
 from kodo.transport import (
     EVT_AGENT_FINISHED,
     EVT_AGENT_STARTED,
-    EVT_AGENT_TOOL_CALL,
     EVT_AGENT_TOOL_CALL_DETAIL,
+    EVT_AGENT_TOOL_CALL_IN_PROGRESS,
+    EVT_AGENT_TOOL_CALL_PREP,
     EVT_API_KEY_REVOKE,
     EVT_AUTONOMOUS_CHANGED,
     EVT_CHECKPOINT_STATE,
@@ -292,6 +293,7 @@ class _EngineServices:
         rollback: Callable[[str], Awaitable[None]],
         disable_autonomous: Callable[[], Awaitable[None]],
         create_project: Callable[[str, str | None, bool], Awaitable[dict[str, object]]],
+        notify_tool_call_in_progress: Callable[[str], Awaitable[None]],
     ) -> None:
         self.__run_subagent = run_subagent
         self.__run_dependency_manager = run_dependency_manager
@@ -300,6 +302,7 @@ class _EngineServices:
         self.__rollback = rollback
         self.__disable_autonomous = disable_autonomous
         self.__create_project = create_project
+        self.__notify_tool_call_in_progress = notify_tool_call_in_progress
 
     async def run_subagent(
         self, caller: str, name: str, task_input: dict[str, object]
@@ -343,6 +346,10 @@ class _EngineServices:
     ) -> dict[str, object]:
         """Delegate to the engine's ``__create_project``."""
         return await self.__create_project(name, path, force)
+
+    async def notify_tool_call_in_progress(self, tool_call_id: str) -> None:
+        """Delegate to the engine's ``__notify_tool_call_in_progress``."""
+        await self.__notify_tool_call_in_progress(tool_call_id)
 
 
 class WorkflowEngine:
@@ -462,6 +469,7 @@ class WorkflowEngine:
             rollback=self.__run_rollback,
             disable_autonomous=self.__disable_autonomous,
             create_project=self.__create_project,
+            notify_tool_call_in_progress=self.__notify_tool_call_in_progress,
         )
 
     @property
@@ -2023,7 +2031,7 @@ class WorkflowEngine:
                 # that fills over the timeout window while the command runs.
                 if tool_name == "run_command":
                     payload["timeout_seconds"] = tool_input.get("timeout")
-                await self.__sink.send(Envelope.make_event(EVT_AGENT_TOOL_CALL, payload))
+                await self.__sink.send(Envelope.make_event(EVT_AGENT_TOOL_CALL_PREP, payload))
             tc_n = tool_logger.log_invocation(tool_name, tool_input)
             # Snapshot the pre-mutation baseline of any root this tool is about
             # to write to, so the post-dispatch commit records the change as its
@@ -3829,6 +3837,19 @@ class WorkflowEngine:
         the (potentially long) judge round-trip does not look like a stall.
         """
         await self.__sink.send(Envelope.make_event(EVT_SECURITY_JUDGING, {"active": active}))
+
+    async def __notify_tool_call_in_progress(self, tool_call_id: str) -> None:
+        """Tell the client a tool call has cleared the security gate and is now
+        actually running (doc/SECURITY.md §6). Sent from
+        ``ToolDispatcher.dispatch`` right after ``__security_gate`` returns —
+        allowed outright, or the user granted permission — and right before
+        the tool handler runs, so the client's run_command timeout animation
+        starts on real execution time instead of ticking through any judging
+        round or permission wait that preceded it.
+        """
+        await self.__sink.send(
+            Envelope.make_event(EVT_AGENT_TOOL_CALL_IN_PROGRESS, {"tool_call_id": tool_call_id})
+        )
 
     async def __emit_cost_only(self) -> None:
         """Push a cost-only ``usage.update`` (no per-call token entry).

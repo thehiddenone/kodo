@@ -237,20 +237,30 @@ Emitted just before each `stream_query` so the panel can show an "awaiting" indi
 { "type": "llm.turn_start", "agent": "guide", "model": "claude-sonnet-4-6" }
 ```
 
-### 5.5 `agent.tool_call` — visible tool invocations
+### 5.5 `agent.tool_call_prep` — visible tool invocations
 
-Emitted before **every** dispatched tool call so the panel can show a one-line activity entry.
+Emitted before **every** dispatched tool call so the panel can show a one-line activity entry. Note this precedes the security gate (§6 in SECURITY.md): the card appears before it's known whether the call will be judged, ask the user for permission, or run immediately.
 
 ```json
-{ "type": "agent.tool_call",
+{ "type": "agent.tool_call_prep",
   "tool_name": "run_command",
   "description": "Run a shell command",
   "tool_call_id": "<tool_use block id>" }
 ```
 
-`description` is the tool's `user_description` (a short UI label from the `ToolSpec`), never the model-facing schema. The panel decides which tool calls are worth surfacing. `tool_call_id` is the LLM `tool_use` block id; it correlates this event with the follow-up `agent.tool_call_detail` (§5.5a) and with the persisted tool-call document.
+`description` is the tool's `user_description` (a short UI label from the `ToolSpec`), never the model-facing schema. The panel decides which tool calls are worth surfacing. `tool_call_id` is the LLM `tool_use` block id; it correlates this event with the follow-up `agent.tool_call_in_progress` (§5.5a), `agent.tool_call_detail` (§5.5b), and with the persisted tool-call document.
 
-### 5.5a `agent.tool_call_detail` — customer-visible input/output + doc link
+### 5.5a `agent.tool_call_in_progress` — execution genuinely starting
+
+Emitted for `run_command` only, right after the security gate clears (allowed outright, or the user granted permission via `prompt.permission`) and immediately before the tool handler actually runs.
+
+```json
+{ "type": "agent.tool_call_in_progress", "tool_call_id": "<tool_use block id>" }
+```
+
+Exists solely to fix the run_command timeout bar's clock: `agent.tool_call_prep` can arrive well before execution truly begins (a SMART-mode judge round, or a `prompt.permission` wait on the user, can both take much longer than the command's own timeout). The panel does not start the "Waiting for tool output" progress bar's `startedAt` until this event arrives, so the bar's elapsed time reflects real run time, not gate-wait time (see SECURITY.md §6 for the full sequencing).
+
+### 5.5b `agent.tool_call_detail` — customer-visible input/output + doc link
 
 Emitted **after** a tool call is dispatched and its output normalized. Carries the customer-visible projection of the call (driven by the `ToolSpec`'s `input_visibility` / `output_visibility` maps), the absolute path of the persisted Markdown document (full input + output, for the user to open), and the engine-owned `schema_compliance` flag.
 
@@ -267,11 +277,11 @@ Emitted **after** a tool call is dispatched and its output normalized. Carries t
   "checkpoint": { "root": "/abs/path/to/root", "sha": "<commit sha>", "parent": "<parent sha>" } }
 ```
 
-Each row is one property the customer may see: `always` rows are shown in full, `visible` rows are cropped client-side (3 lines / 200 chars); `hidden` properties (and any property absent from the visibility map) are omitted entirely. The panel renders these rows as a clickable table beneath the `agent.tool_call` one-liner; clicking opens `file`. On reconnect the same fields ride along on `session.history` `tool_call` entries (`rows`, `detailFile`, `schemaCompliance`).
+Each row is one property the customer may see: `always` rows are shown in full, `visible` rows are cropped client-side (3 lines / 200 chars); `hidden` properties (and any property absent from the visibility map) are omitted entirely. The panel renders these rows as a clickable table beneath the `agent.tool_call_prep` one-liner; clicking opens `file`. On reconnect the same fields ride along on `session.history` `tool_call` entries (`rows`, `detailFile`, `schemaCompliance`).
 
-`checkpoint` is `null` unless the call was a `filesystem`/`edit_file`/`run_command` dispatch in the **problem-solving** workflow that produced a commit in that path's per-root shadow mirror (see §7.4c). When present, the panel renders an "↩ undo this change" link next to the `agent.tool_call` line and a "⟲ Rollback to this state" control below the detail table; both are absent when `checkpoint` is `null` (e.g. every call in the Guided workflow, or a no-op in Problem Solver).
+`checkpoint` is `null` unless the call was a `filesystem`/`edit_file`/`run_command` dispatch in the **problem-solving** workflow that produced a commit in that path's per-root shadow mirror (see §7.4c). When present, the panel renders an "↩ undo this change" link next to the `agent.tool_call_prep` line and a "⟲ Rollback to this state" control below the detail table; both are absent when `checkpoint` is `null` (e.g. every call in the Guided workflow, or a no-op in Problem Solver).
 
-### 5.5b `tool.incompliant` — output did not match its schema
+### 5.5c `tool.incompliant` — output did not match its schema
 
 Emitted when a tool's raw output did not conform to its declared `output_schema` and the engine had to repair it (drop undeclared fields and/or backfill missing required ones with empty strings, then set `schema_compliance: false` on the result the agent sees). Drives a VSIX error message box naming the tool.
 
@@ -701,7 +711,7 @@ A `state` event with the updated `command_control` field follows.
 
 ### 7.4c `checkpoint.undo` / `checkpoint.rollback` — per-root file checkpoints
 
-Acts on the per-root **shadow checkpoint mirror** that the engine commits to after every `filesystem`/`edit_file`/`run_command` dispatch, in **both** workflow modes (INTERNALS.md §7/§10b/§12.1 — there is no longer a Guided-only special case). Both carry the `{root, sha}` pair the client received on the originating call's `checkpoint` field (§5.5a). This is **distinct** from the Guide's `rollback` tool: both now delegate to the same underlying `RootMirrorManager.rollback` primitive, but only the Guide's tool additionally resets the conversation history (STATE_AND_LIFECYCLE.md §8.3) — `checkpoint.rollback` only restores files.
+Acts on the per-root **shadow checkpoint mirror** that the engine commits to after every `filesystem`/`edit_file`/`run_command` dispatch, in **both** workflow modes (INTERNALS.md §7/§10b/§12.1 — there is no longer a Guided-only special case). Both carry the `{root, sha}` pair the client received on the originating call's `checkpoint` field (§5.5b). This is **distinct** from the Guide's `rollback` tool: both now delegate to the same underlying `RootMirrorManager.rollback` primitive, but only the Guide's tool additionally resets the conversation history (STATE_AND_LIFECYCLE.md §8.3) — `checkpoint.rollback` only restores files.
 
 ```json
 { "type": "checkpoint.undo", "root": "/abs/path/to/root", "sha": "<commit sha>" }
@@ -787,9 +797,9 @@ The following are deliberately **not** on the wire. Future contributors should n
 
 - **Session log content.** The audit trail (STATE_AND_LIFECYCLE.md §5) lives on disk; the protocol carries no message that exposes session JSONL. (`session.history` replays the *conversation*, not the raw log.)
 - **Document content, paths, or diffs beyond `review.*` (MVP).** Review activity is conveyed only by `review.*` (§5.6), now carrying the real path but never content. Detailed per-document events are the planned "verbose review mode" (§9.1).
-- **Checkpoint mirror operation internals.** Its commits, trees, and refs are not exposed beyond the `{root, sha, parent}` already on `agent.tool_call_detail`/`session.history` (§5.5a), needed for the user-facing undo/rollback controls — no tree/ref/log browsing exists, only undo-by-sha and rollback-by-sha.
+- **Checkpoint mirror operation internals.** Its commits, trees, and refs are not exposed beyond the `{root, sha, parent}` already on `agent.tool_call_detail`/`session.history` (§5.5b), needed for the user-facing undo/rollback controls — no tree/ref/log browsing exists, only undo-by-sha and rollback-by-sha.
 - **Stage-machine transitions.** Internal workflow stages are not pushed as events. The user-visible signal is the `agent.started`/`agent.finished` sequence plus `state.phase`.
-- **A document's `.jsonl` evolution log** as a distinct event class — its existence and status are summarized only via `review.*` and the Guide's own `guided_dev_status` tool calls (visible as ordinary `agent.tool_call`/`agent.tool_call_detail` events), never pushed as its own message type.
+- **A document's `.jsonl` evolution log** as a distinct event class — its existence and status are summarized only via `review.*` and the Guide's own `guided_dev_status` tool calls (visible as ordinary `agent.tool_call_prep`/`agent.tool_call_detail` events), never pushed as its own message type.
 - **Historical event replay beyond the outbox.** The protocol is "now and forward"; the on-disk logs and mirror are the archives.
 - **Keepalive / backpressure at the application layer.** WebSocket ping/pong handles liveness; the outbox cap is the only bound (FR-WS-04).
 
@@ -801,7 +811,7 @@ These are anticipated and structured so adding them is purely additive — no ex
 - **Checkpoint browsing** (§7.7): `checkpoint.list`. (The `checkpoint.undo`/`.rollback` commands, §7.4c, are already implemented, in both workflow modes.)
 - **Security rules** (§7.7): `security.add_rule`. (`prompt.permission`, §6.5, is implemented.)
 - **Verbose review mode.** New event type(s) gated by a settings flag, carrying a document's real path and richer status detail (e.g. its full `.jsonl` history). The `review.*` events stay as the low-fi default.
-- **Streamed tool output.** A streamed form of `agent.tool_call` for long-running shell commands; the single-event form remains valid for short calls.
+- **Streamed tool output.** A streamed form of `agent.tool_call_prep` for long-running shell commands; the single-event form remains valid for short calls.
 
 ---
 

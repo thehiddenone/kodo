@@ -238,6 +238,31 @@ shows an "Evaluating Kōdo's action…" indicator (`SecurityJudgingIndicator` in
 either the call proceeding silently (`allow`) or the permission panel above
 appearing (`ask`).
 
+**`agent.tool_call_prep` vs. `agent.tool_call_in_progress`** (WS_PROTOCOL.md
+§5.5/§5.5a): the tool call's card appears on `agent.tool_call_prep`, sent
+*before* `ToolDispatcher.__security_gate` runs — before it's known whether
+the call will be judged, asked, or waved straight through. For `run_command`
+this used to be a bug: the client stamped the card's `startedAt` (which drives
+the "Waiting for tool output" timeout progress bar) at that same moment, so
+the bar's clock ran through the SMART judge round and/or the `prompt.permission`
+wait — both of which can outlast the command's own timeout, making an
+in-flight, healthy command look like it had already timed out while
+"Evaluating Kōdo's action…" was still showing.
+
+The fix: `ToolDispatcher.dispatch` now calls
+`EngineServices.notify_tool_call_in_progress(tool_use_id)` — which fires
+`agent.tool_call_in_progress` — right after `__security_gate` returns (allowed
+outright, *or* the user granted permission), immediately before the tool
+handler runs, gated to `run_command` (the only tool the client animates a
+timeout for). The client no longer stamps `startedAt` on
+`agent.tool_call_prep`; it stays `null` (progress bar hidden) until
+`agent.tool_call_in_progress` arrives for that `tool_call_id`, which is when
+the bar actually starts. This holds for **every** posture: permissive/defensive
+`ask` verdicts skip the judge round entirely and go straight to
+`prompt.permission`, but they still funnel through the same
+post-`__security_gate` choke point in `dispatch()`, so the bar is deferred
+past that wait too — not just past SMART-mode judging.
+
 ## 7. Crash / resume semantics
 
 The gated `tool_use` is flushed to `session.jsonl` **before** dispatch (the

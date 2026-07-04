@@ -307,6 +307,18 @@ class EngineServices(Protocol):
         """
         ...
 
+    async def notify_tool_call_in_progress(self, tool_call_id: str) -> None:
+        """Tell the client this call has cleared the security gate and its
+        tool handler is about to run.
+
+        Fired by :class:`ToolDispatcher` right after the gate resolves
+        (allowed outright, or the user granted permission) — the moment a
+        run_command timeout genuinely starts. Lets the client defer its
+        "waiting for tool output" timeout animation past whatever judging
+        round or permission wait preceded this point (doc/SECURITY.md §6).
+        """
+        ...
+
 
 @dataclass
 class ToolContext:

@@ -101,6 +101,9 @@ class _FakeServices:
     ) -> dict[str, object]:
         return {"path": path or "/tmp/new-project", "name": name}
 
+    async def notify_tool_call_in_progress(self, tool_call_id: str) -> None:
+        return None
+
 
 def _make_dispatcher(
     tmp_path: Path,
