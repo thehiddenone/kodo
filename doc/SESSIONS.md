@@ -50,12 +50,12 @@ seamlessly across the change.
 > (`run_subagent`/`run_author_critic_iteration`) and (b) its frontmatter
 > declares a `subagents:` allow-list naming the sub-agents it may call. The
 > engine gates every spawn against the **calling** agent's allow-list
-> (`AgentRegistry.allowed_subagents` → `__assert_can_spawn`), so the permission
+> (`AgentRegistry.allowed_subagents` → `_assert_can_spawn`), so the permission
 > travels with whichever agent makes the call — not with a hard-coded
 > guide identity. Today only the Guide opts in (the Problem Solver
 > ships without a spawning tool, so in Problem-Solving mode there are no
 > subsessions), but the path is fully agent-agnostic and crash-resume recovers
-> *whichever* entry agent was holding the floor (see `__last_entry_agent`).
+> *whichever* entry agent was holding the floor (see `_last_entry_agent`).
 
 ## On-disk layout
 
@@ -87,7 +87,7 @@ timestamp). `<subsession-id>` is a random hex ID minted per `run_subagent` call.
 - **Message lines** — `{"role": "user"|"assistant", "content": ..., "entry_agent": "guide"|"problem_solver"}`.
   These are the top-level LLM context. `entry_agent` is a display/audit tag only;
   because the two entry agents share context, every message replays into the one
-  `__main_messages` list regardless of tag.
+  `_main_messages` list regardless of tag.
   A user message that carried file attachments also gets `"attachments":
   [{"name", "stored"}]` — opaque links to the copies under `attachments/`
   (`stored` is the session-relative path). The persisted `content` is the user's
@@ -109,7 +109,7 @@ rebuild).
 ## Thinking blocks
 
 Extended-thinking text is not a UI-only side channel. The engine's shared turn
-loop (`__run_agent_turn`) accumulates every `ThinkingDelta` it streams to the
+loop (`_run_agent_turn`) accumulates every `ThinkingDelta` it streams to the
 client into one `{"type": "thinking", "thinking": "<text>"}` content block,
 prepended as the **first** block of the assistant `Message` it appends to
 `messages` — ahead of any `text`/`tool_use` blocks in that same turn. Because
@@ -151,7 +151,7 @@ engine.
 **Display + reload.** The WebView's `thinking_block` session-entry type
 already rendered a collapsible, toggleable block for the *live* streamed
 text; the only missing piece was that nothing rebuilt it after a reload.
-`WorkflowEngine.__message_to_entries` now also emits a `thinking_block` entry
+`WorkflowEngine.HistoryProjector._message_to_entries` now also emits a `thinking_block` entry
 (sourced from the persisted `"thinking"` block) ahead of the
 `assistant_response` entry for an assistant message, so `session.history`
 replays it exactly where it appeared live, with the same collapsible UI.
@@ -161,7 +161,7 @@ replays it exactly where it appeared live, with the same collapsible UI.
 ### Main turns
 
 A main turn's messages are flushed to `session.jsonl` **before every tool
-dispatch** — not just sub-agent spawns. `__run_agent_turn`'s `_flush()` runs
+dispatch** — not just sub-agent spawns. `_run_agent_turn`'s `_flush()` runs
 once immediately after the assistant `tool_use` message is appended (before any
 tool in the batch runs) and again after the tool results land, so the persisted
 prefix — **including the assistant message that contains the `tool_use`** — is
@@ -220,7 +220,7 @@ roster also renders every callee's schemas.
 
 - **Input.** `run_subagent` takes `{name, task_input}` where `task_input` is a
   structured object conforming to the callee's `input_schema`. The engine renders
-  it to the seed user turn (`__render_task_input`) but persists that seed with
+  it to the seed user turn (`_render_task_input`) but persists that seed with
   `kind="subagent_task"`, so the UI shows it as a distinct **task brief** card,
   not a user-prompt bubble. The rendered task also rides the `subsession.started`
   event's `task` field for the live feed.
@@ -247,21 +247,21 @@ roster also renders every callee's schemas.
   per iteration.
 - **Engine-driven agents.** `compactor` and `session_titler` also carry specs and
   return through `return_result` (`{summary}` / `{title}`); the silent
-  `__run_silent_return_turn` grants them the tool and captures the payload, with
+  `_run_silent_return_turn` grants them the tool and captures the payload, with
   raw text as a fallback.
 
 ## Resume
 
 On every server start, `locate_guide_session` locates (or creates) the main
-session and the engine reloads `__main_messages` from `session.jsonl`. There
+session and the engine reloads `_main_messages` from `session.jsonl`. There
 is no project-wide index to rebuild — a project's documents are real files
 with their own `.jsonl` evolution logs (STATE_AND_LIFECYCLE.md §1.1/§3), read
 on demand, never reconstructed at startup. Then:
 
 - **If the last main message is a dangling assistant `tool_use`**
-  (`__has_dangling_tool_use()`), a tool was interrupted mid-dispatch. Because
+  (`_has_dangling_tool_use()`), a tool was interrupted mid-dispatch. Because
   every tool now flushes before dispatch, that call may be *any* tool, not just
-  a sub-agent spawn, so the engine schedules `__resume_main_turn()`, which
+  a sub-agent spawn, so the engine schedules `_resume_main_turn()`, which
   resolves each pending `tool_use` **by kind**:
   1. Build a **replay ledger** from the `subsession_*` markers recorded after the
      dangling assistant message. Each `subsession_start` paired with a
@@ -283,15 +283,15 @@ on demand, never reconstructed at startup. Then:
      - **any other tool** (`filesystem`, `edit_file`, `run_command`, read-only
        tools, …) is **not** re-executed — its side effects may already have
        landed and there is no per-tool dedup ledger — so it gets a synthesized
-       `error`-envelope `tool_result` (`__interrupted_tool_result`) keyed to the
+       `error`-envelope `tool_result` (`_interrupted_tool_result`) keyed to the
        original `tool_use_id`, telling the model the call didn't complete and was
        not retried. A call that died *waiting on a security permission prompt*
        (doc/SECURITY.md §7) lands here too: the tool never ran, the agent sees
        the interruption and may retry, re-triggering the same judgement.
-  3. Append the resulting `tool_result`s to `__main_messages`, persist them, and
+  3. Append the resulting `tool_result`s to `_main_messages`, persist them, and
      continue the **interrupted entry agent's** turn live (the next LLM call).
      The entry agent is recovered from the `entry_agent` tag on the dangling
-     assistant message (`__last_entry_agent`), not assumed to be the Guide
+     assistant message (`_last_entry_agent`), not assumed to be the Guide
      — any entry agent can be the one resumed.
 
   This is why the user sees Kōdo "recover into that mode, load both the main
@@ -359,11 +359,11 @@ reconstructed from the `kind="subagent_task"` seed message.
 | Concern | Location |
 | --- | --- |
 | Main log + subsession files + active pointer | `kodo/state/_transient.py` (`TransientStore`) |
-| Shared entry-agent loop + persistence | `kodo/runtime/_engine.py` (`__run_entry_agent`, `__run_agent_turn`) |
-| Subsession lifecycle + replay | `_engine.py` (`__run_subagent`, `__spawn_subagent`, `__drive_subsession`, `__open_subsession`, `__close_subsession`, `__replay_next_subsession`) |
-| Spawn permission gate (per-caller `subagents:` allow-list) | `_engine.py` (`__assert_can_spawn`), `subagents/_registry.py` (`allowed_subagents`), `subagents/_loader.py` (`SubAgent.subagents`) |
-| Crash resume | `_engine.py` (`start`, `__has_dangling_tool_use`, `__resume_main_turn`, `__last_entry_agent`, `__build_replay_ledger`) |
-| History rebuild (full inner replay) | `_engine.py` (`history_entries`, `__message_to_entries`, `__divider_entry`) |
+| Shared entry-agent loop + persistence | `kodo/runtime/_engine/` (`_run_entry_agent`, `_run_agent_turn`) |
+| Subsession lifecycle + replay | `runtime/_engine/` (`_run_subagent`, `_spawn_subagent`, `_drive_subsession`, `_open_subsession`, `_close_subsession`, `_replay_next_subsession`) |
+| Spawn permission gate (per-caller `subagents:` allow-list) | `runtime/_engine/` (`_assert_can_spawn`), `subagents/_registry.py` (`allowed_subagents`), `subagents/_loader.py` (`SubAgent.subagents`) |
+| Crash resume | `runtime/_engine/` (`start`, `_has_dangling_tool_use`, `_resume_main_turn`, `_last_entry_agent`, `_build_replay_ledger`) |
+| History rebuild (full inner replay) | `runtime/_engine/` (`history_entries`, `HistoryProjector._message_to_entries`, `HistoryProjector._divider_entry`) |
 | Orphan detection by subsession log | `kodo/runtime/_bootstrap.py` (`__is_orphan`) |
 | Display names | `kodo/subagents/_loader.py` (`SubAgent.display_name`) |
 | Client dividers | `kodo-vsix/src/extension.ts`, `kodo-vsix/src/webview/main.tsx` |

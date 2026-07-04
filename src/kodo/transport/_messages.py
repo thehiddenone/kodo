@@ -162,7 +162,7 @@ EVT_ARTIFACT_PUBLISHED = "artifact.published"
 EVT_ARTIFACT_REMOVED = "artifact.removed"
 EVT_GUIDE_COMPACTED = "guide.compacted"
 # Context-compaction events (in-place compaction of an entry agent's main
-# context; see runtime/_engine.py + doc/STATE_AND_LIFECYCLE.md §4.5).
+# context; see runtime/_engine/_compaction.py + doc/STATE_AND_LIFECYCLE.md §4.5).
 # - context.stats   {current_tokens, limit_tokens, percent, can_compact}: pushed
 #   on every state change and after each measured turn so the WebView header can
 #   show the live context gauge and enable/disable its "Compact now" button.

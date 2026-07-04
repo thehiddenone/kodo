@@ -181,7 +181,7 @@ Pushed on connect (also embedded in `hello.ack`), and whenever a field below cha
 
 The four header toggles split into **two frozen** and **two never-frozen**:
 
-**Frozen toggles** (`autonomous`, `workflow_mode`) are reported as a **pair**: the user-facing *selected* value and its per-turn frozen *effective* twin (`effective_*`). The selected value flips the instant the user clicks; the effective value is the one the **in-flight prompt** actually runs under — the engine freezes both from their selected values when it dequeues a prompt (`__freeze_effective_modes`), so a toggle flipped mid-run takes effect only on the *next* prompt. The client renders each as "in effect" (selected == effective, or idle) or "queued for the next prompt" (a turn is running and they differ).
+**Frozen toggles** (`autonomous`, `workflow_mode`) are reported as a **pair**: the user-facing *selected* value and its per-turn frozen *effective* twin (`effective_*`). The selected value flips the instant the user clicks; the effective value is the one the **in-flight prompt** actually runs under — the engine freezes both from their selected values when it dequeues a prompt (`_freeze_effective_modes`), so a toggle flipped mid-run takes effect only on the *next* prompt. The client renders each as "in effect" (selected == effective, or idle) or "queued for the next prompt" (a turn is running and they differ).
 
 - `autonomous` — Autonomous/Interactive mode. Toggled via `mode.set` (§7.5).
 - `workflow_mode` — `guided` (the Guide + full Kodo pipeline) or `problem_solving` (the standalone Problem Solver agent). Toggled via `workflow.set` (§7.6).
@@ -396,7 +396,7 @@ Brackets the silent titling call (which streams nothing) so the client can show 
 
 ### 5.9b.1 `security.judging` — intent judge in flight
 
-Brackets the security layer's silent SMART-mode intent-judge LLM call (SECURITY.md §3.2), which streams nothing and can take several seconds to tens of seconds. Emitted `true` before the call and `false` when it finishes (allow, ask, or failure — see `finally` in `WorkflowEngine.__security_judge`). Lets the client show an "Evaluating…" indicator instead of an unexplained pause. Not persisted/replayed on reconnect (same as `session.naming`): if the server dies mid-judge the call itself is gone, so there is nothing to resume.
+Brackets the security layer's silent SMART-mode intent-judge LLM call (SECURITY.md §3.2), which streams nothing and can take several seconds to tens of seconds. Emitted `true` before the call and `false` when it finishes (allow, ask, or failure — see `finally` in `WorkflowEngine._security_judge`). Lets the client show an "Evaluating…" indicator instead of an unexplained pause. Not persisted/replayed on reconnect (same as `session.naming`): if the server dies mid-judge the call itself is gone, so there is nothing to resume.
 
 ```json
 { "type": "security.judging", "active": true }
@@ -613,7 +613,7 @@ The server (a localhost singleton co-located with the files) parses + strips thi
 2. **copies** it into the session at `sessions/<id>/attachments/<token>__<basename>` (an immutable snapshot).
 3. **injects** its content into the LLM context only — each file under a `## Attached file: <basename>` heading, the user's prompt last.
 
-Crucially, **file content is never written to `session.jsonl`.** The persisted user message stores the *clean* prompt plus opaque links (`attachments: [{name, stored}]`, `stored` relative to the session dir). On resume the links are re-expanded from the stored copies (`__load_main_messages`), so the reconstructed LLM context is byte-identical — without the content ever bloating the log or re-appearing as if the user typed it. This fixes the prior client-side scheme where injected content was persisted and replayed verbatim on reload.
+Crucially, **file content is never written to `session.jsonl`.** The persisted user message stores the *clean* prompt plus opaque links (`attachments: [{name, stored}]`, `stored` relative to the session dir). On resume the links are re-expanded from the stored copies (`HistoryProjector.load_main_messages`), so the reconstructed LLM context is byte-identical — without the content ever bloating the log or re-appearing as if the user typed it. This fixes the prior client-side scheme where injected content was persisted and replayed verbatim on reload.
 
 After persisting, the server emits `user.attachments` (§5) carrying the stored copies' absolute paths so the live webview retargets the just-sent bubble's clickable chips at the durable copies (clicking posts `open_file`). On reload, `session.history` user-message entries carry the same `attachments: [{name, path}]` links. The chip opens the session's **stored copy**, so the session stays intact even if the original file is moved or deleted.
 

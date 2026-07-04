@@ -1,9 +1,9 @@
 """Behavior tests for the engine's document accept/review flow.
 
 Replaces the old artifact-promotion integration test. Exercises
-``WorkflowEngine.__finalize_document`` (the autonomous-auto-accept vs.
+``WorkflowEngine._finalize_document`` (the autonomous-auto-accept vs.
 interactive-gate behavior that replaced ``__complete_artifact``) and
-``WorkflowEngine.__run_author_critic_iteration`` (retargeted to operate on a
+``WorkflowEngine._run_author_critic_iteration`` (retargeted to operate on a
 real file path instead of an artifact ID) directly, the same
 ``object.__new__(WorkflowEngine)`` + minimal-stub pattern already used by
 ``test_resume_ledger.py`` — these are private engine methods with no public
@@ -58,10 +58,10 @@ def _bare_engine(*, project_root: Path, autonomous: bool, gate: _FakeGate) -> ob
     session.effective_autonomous = autonomous
     layout = ProjectLayout(project_root)
     layout.init()
-    engine._WorkflowEngine__layout = layout  # type: ignore[attr-defined]
-    engine._WorkflowEngine__session = session  # type: ignore[attr-defined]
-    engine._WorkflowEngine__gate = gate  # type: ignore[attr-defined]
-    engine._WorkflowEngine__sink = _FakeSink()  # type: ignore[attr-defined]
+    engine._layout = layout
+    engine._session = session
+    engine._gate = gate
+    engine._sink = _FakeSink()
     return engine
 
 
@@ -82,7 +82,7 @@ def _seed_revision(project_root: Path, rel_path: str, *, sha: str = "deadbeef") 
 
 
 # ---------------------------------------------------------------------------
-# __finalize_document
+# _finalize_document
 # ---------------------------------------------------------------------------
 
 
@@ -92,7 +92,7 @@ async def test_finalize_document_autonomous_mode_auto_accepts(tmp_path: Path) ->
     gate = _FakeGate()
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
 
-    await engine._WorkflowEngine__finalize_document("specs/architecture.md")  # type: ignore[attr-defined]
+    await engine._finalize_document("specs/architecture.md")
 
     assert gate.calls == []  # never consulted in autonomous mode
     history = read_history(doc, tmp_path)
@@ -108,7 +108,7 @@ async def test_finalize_document_interactive_agree_records_approval_then_accepte
     gate = _FakeGate(action="agree")
     engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
 
-    await engine._WorkflowEngine__finalize_document("specs/architecture.md")  # type: ignore[attr-defined]
+    await engine._finalize_document("specs/architecture.md")
 
     assert len(gate.calls) == 1
     history = read_history(doc, tmp_path)
@@ -125,7 +125,7 @@ async def test_finalize_document_interactive_feedback_records_rejection_only(
     gate = _FakeGate(action="feedback", feedback="needs a North Star")
     engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
 
-    await engine._WorkflowEngine__finalize_document("specs/architecture.md")  # type: ignore[attr-defined]
+    await engine._finalize_document("specs/architecture.md")
 
     history = read_history(doc, tmp_path)
     assert [e["type"] for e in history] == ["new_revision", "review_result"]
@@ -136,7 +136,7 @@ async def test_finalize_document_interactive_feedback_records_rejection_only(
 
 
 # ---------------------------------------------------------------------------
-# __run_author_critic_iteration
+# _run_author_critic_iteration
 # ---------------------------------------------------------------------------
 
 
@@ -146,7 +146,7 @@ async def test_run_author_critic_iteration_uses_authors_reported_primary_path(
 ) -> None:
     gate = _FakeGate()
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
-    engine._WorkflowEngine__assert_can_spawn = lambda *a, **k: None  # type: ignore[attr-defined]
+    engine._assert_can_spawn = lambda *a, **k: None
 
     doc = _seed_revision(tmp_path, "specs/architecture.md", sha="sha-3")
 
@@ -164,9 +164,9 @@ async def test_run_author_critic_iteration_uses_authors_reported_primary_path(
         )
         return {"verdict": "accepted", "concerns": []}
 
-    engine._WorkflowEngine__spawn_subagent = _fake_spawn  # type: ignore[attr-defined]
+    engine._spawn_subagent = _fake_spawn
 
-    result = await engine._WorkflowEngine__run_author_critic_iteration(  # type: ignore[attr-defined]
+    result = await engine._run_author_critic_iteration(
         "guide", "architect", "architect_critic", "", {}, "Produce the architecture.", False
     )
 
@@ -185,7 +185,7 @@ async def test_run_author_critic_iteration_revision_round_passes_for_revision_pa
 ) -> None:
     gate = _FakeGate()
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
-    engine._WorkflowEngine__assert_can_spawn = lambda *a, **k: None  # type: ignore[attr-defined]
+    engine._assert_can_spawn = lambda *a, **k: None
     _seed_revision(tmp_path, "specs/architecture.md")
 
     calls: list[tuple[str, dict[str, object]]] = []
@@ -196,9 +196,9 @@ async def test_run_author_critic_iteration_revision_round_passes_for_revision_pa
             return {"primary_path": "specs/architecture.md", "paths": ["specs/architecture.md"]}
         return {"verdict": "rejected", "concerns": [{"kind": "gap", "description": "x"}]}
 
-    engine._WorkflowEngine__spawn_subagent = _fake_spawn  # type: ignore[attr-defined]
+    engine._spawn_subagent = _fake_spawn
 
-    await engine._WorkflowEngine__run_author_critic_iteration(  # type: ignore[attr-defined]
+    await engine._run_author_critic_iteration(
         "guide",
         "architect",
         "architect_critic",
@@ -223,15 +223,14 @@ def test_checkpoint_enabled_regardless_of_workflow_mode() -> None:
     There is no longer a separate Guided checkpoint system to collide with,
     so per-tool-call checkpointing must run unconditionally.
     """
-    from kodo.runtime import WorkflowEngine
+    from kodo.runtime._engine._checkpointing import CheckpointCoordinator
 
-    engine = object.__new__(WorkflowEngine)
+    coordinator = object.__new__(CheckpointCoordinator)
     for mode in ("guided", "problem_solving"):
         session = SessionState()
         session.workflow_mode = mode
         session.effective_workflow_mode = mode
-        engine._WorkflowEngine__session = session  # type: ignore[attr-defined]
-        assert engine._WorkflowEngine__checkpoint_enabled() is True  # type: ignore[attr-defined]
+        assert coordinator._enabled() is True
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +244,7 @@ async def test_guided_filesystem_write_earns_both_a_commit_and_a_new_revision(
 ) -> None:
     """The post-dispatch hook's two effects, composed at the primitive level.
 
-    Mirrors what ``WorkflowEngine.__record_guided_revision`` does after a
+    Mirrors what ``CheckpointCoordinator.record_guided_revision`` does after a
     real ``filesystem``/``edit_file`` call: commit the mirror, then append a
     ``new_revision`` entry carrying that exact commit's sha.
     """

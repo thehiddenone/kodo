@@ -27,8 +27,8 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
     # NOTE: the main-context token budget is no longer a global setting. It is
     # the *current model's* context window (the per-model `context_window` in
     # kodo/llms/_registry.py), so switching models changes the limit and the
-    # auto-compaction threshold. See runtime/_engine.py:__context_limit and
-    # doc/STATE_AND_LIFECYCLE.md §4.5.
+    # auto-compaction threshold. See ContextCompactor.context_limit
+    # (runtime/_engine/_compaction.py) and doc/STATE_AND_LIFECYCLE.md §4.5.
     "models": {
         "high": "claude-opus-4-6",
         "medium": "claude-sonnet-4-6",

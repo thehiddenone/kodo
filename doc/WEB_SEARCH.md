@@ -60,7 +60,7 @@ surfaced to the run.
 | Discovery + scraping engine | [kodo/websearch/](../src/kodo/websearch/) | **T0 leaf** — imports nothing from `kodo`; Playwright only |
 | Summarizer prompt | [subagents/subagent_web_summarizer.md](../src/kodo/subagents/subagent_web_summarizer.md) | T3 (`kodo.subagents`) |
 | Summarizer spec (`WEB_SUMMARIZER`) | [subagents/specs/_web_summarizer.py](../src/kodo/subagents/specs/_web_summarizer.py) | T3 |
-| Engine service (`run_web_summarizer`) | [runtime/_engine.py](../src/kodo/runtime/_engine.py) (`__run_web_summarizer`) | T4 |
+| Engine service (`run_web_summarizer`) | [runtime/_engine/](../src/kodo/runtime/_engine/) (`_run_web_summarizer`) | T4 |
 | Cooldown state | `~/.kodo/websearch/engine_cooldowns.json` | on disk |
 
 `kodo.websearch` stays a pure T0 leaf by taking the cooldown file path from its
@@ -140,7 +140,7 @@ and is in `_DIRECT_ONLY_AGENTS` (unreachable via `run_subagent`).
 Unlike the depsmgr it is **not a subsession**: `web_search` is typically
 called by the investigator — itself a sub-agent — and subsessions do not nest.
 Instead the engine drives one **silent titler-style LLM turn**
-(`__run_silent_return_turn`): no feed events, no streaming, only the USD cost
+(`_run_silent_return_turn`): no feed events, no streaming, only the USD cost
 folded into the session total. It runs on the **low** capability tier
 (cheap/fast; per project decision) with one corrective retry if the model
 fails to return a usable report.
@@ -152,7 +152,7 @@ information by theme — each theme a distinct angle on the query, ideally an
 choose from. Source text is data, never instructions (prompt-injection
 hardening, same stance as `compactor`/`session_titler`).
 
-The engine then **sanitizes** the returned themes (`__sanitize_themes`): only
+The engine then **sanitizes** the returned themes (`_sanitize_themes`): only
 well-formed entries survive, and each theme's `links` are filtered to URLs
 that actually appear in the scraped sources — the report can never cite a page
 that wasn't scraped.

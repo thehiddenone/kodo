@@ -1,4 +1,4 @@
-"""Crash-resume replay-ledger reconstruction (WorkflowEngine.__build_replay_ledger).
+"""Crash-resume replay-ledger reconstruction (WorkflowEngine._build_replay_ledger).
 
 When a main turn is interrupted while a sub-agent held the floor, resume rebuilds
 an ordered ledger of the subsessions recorded after the last persisted assistant
@@ -16,7 +16,7 @@ from kodo.runtime import WorkflowEngine
 
 
 class _StubTransient:
-    """Minimal stand-in exposing only what __build_replay_ledger reads."""
+    """Minimal stand-in exposing only what _build_replay_ledger reads."""
 
     def __init__(self, lines: list[dict[str, object]]) -> None:
         self._lines = lines
@@ -26,10 +26,10 @@ class _StubTransient:
 
 
 def _ledger_for(lines: list[dict[str, object]]) -> list[dict[str, object]]:
-    """Run __build_replay_ledger against canned session lines, bypassing __init__."""
+    """Run _build_replay_ledger against canned session lines, bypassing __init__."""
     engine = object.__new__(WorkflowEngine)
-    engine._WorkflowEngine__transient = _StubTransient(lines)  # type: ignore[attr-defined]
-    return engine._WorkflowEngine__build_replay_ledger()  # type: ignore[attr-defined]
+    engine._transient = _StubTransient(lines)
+    return engine._build_replay_ledger()
 
 
 def test_completed_subsession_preserves_structured_dict_result() -> None:
@@ -112,9 +112,9 @@ def test_only_markers_after_last_assistant_count() -> None:
 
 
 def _engine_with_messages(messages: list[Message]) -> WorkflowEngine:
-    """A WorkflowEngine with only ``__main_messages`` seeded, bypassing __init__."""
+    """A WorkflowEngine with only ``_main_messages`` seeded, bypassing __init__."""
     engine = object.__new__(WorkflowEngine)
-    engine._WorkflowEngine__main_messages = messages  # type: ignore[attr-defined]
+    engine._main_messages = messages
     return engine
 
 
@@ -134,7 +134,7 @@ def test_dangling_tool_use_detected_for_non_spawn_tool() -> None:
             ),
         ]
     )
-    assert engine._WorkflowEngine__has_dangling_tool_use() is True  # type: ignore[attr-defined]
+    assert engine._has_dangling_tool_use() is True
 
 
 def test_no_dangling_when_tool_result_present() -> None:
@@ -148,7 +148,7 @@ def test_no_dangling_when_tool_result_present() -> None:
             Message(role="user", content=[{"type": "tool_result", "tool_use_id": "t1"}]),
         ]
     )
-    assert engine._WorkflowEngine__has_dangling_tool_use() is False  # type: ignore[attr-defined]
+    assert engine._has_dangling_tool_use() is False
 
 
 def test_interrupted_tool_result_is_a_failure_envelope() -> None:
@@ -159,9 +159,7 @@ def test_interrupted_tool_result_is_a_failure_envelope() -> None:
     the original ``tool_use_id`` instead — read back as a failure and rendered
     with a failure badge.
     """
-    block = WorkflowEngine._WorkflowEngine__interrupted_tool_result(  # type: ignore[attr-defined]
-        "t1", "run_command"
-    )
+    block = WorkflowEngine._interrupted_tool_result("t1", "run_command")
     assert block["type"] == "tool_result"
     assert block["tool_use_id"] == "t1"
     payload = json.loads(block["content"])

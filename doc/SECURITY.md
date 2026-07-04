@@ -123,9 +123,9 @@ benign development step**.
   anything that isn't a clean `allow` — including unreadable output — is an
   `ask`.
 - **Model**: the session's active model. The engine injects
-  `WorkflowEngine.__security_judge` as the layer's judge callable: it
+  `WorkflowEngine._security_judge` as the layer's judge callable: it
   resolves the entry-agent capability through the normal
-  plugin/gateway/routing path (`__resolve_plugin`), streams silently (no feed
+  plugin/gateway/routing path (`_resolve_plugin`), streams silently (no feed
   events), and folds the call's USD cost into the session total as a
   cost-only `usage.update`.
 - **Failure = ask.** A `None` judge, a raised exception, or an unparseable
@@ -162,7 +162,7 @@ ToolDispatcher.dispatch(tool, input, tool_use_id)          kodo/tools/_dispatch.
   `SecurityDecisionLike` structural protocols in `tools/_context.py`, exactly
   as `GateLike` decouples it from `runtime`. The engine constructs one
   `SecurityLayer` per `WorkflowEngine` and passes it into every dispatcher
-  via `__make_dispatcher` — so the Guide, the Problem Solver, and **every
+  via `_make_dispatcher` — so the Guide, the Problem Solver, and **every
   sub-agent** flow through the same gate.
 - **`SessionLike`** gained `command_control` (read live per call);
   `SessionState` already carried it.
@@ -227,7 +227,7 @@ the standard `Outbox` buffer-and-replay.
 
 **`security.judging`** (server → client, `kind=event`; WS_PROTOCOL.md §5.9b.1):
 brackets the SMART-mode intent judge's LLM round (§3.2) — `{"active": true}`
-right before `WorkflowEngine.__security_judge` calls the model, `{"active":
+right before `WorkflowEngine._security_judge` calls the model, `{"active":
 false}` in its `finally` once the verdict text (or an exception) comes back.
 Only that judge round is slow; the static fast paths (§3.1) and the
 threshold-only postures never touch the LLM, so they never fire this event.

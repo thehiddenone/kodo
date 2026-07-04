@@ -1,8 +1,8 @@
 """Behavior tests for folding a user-initiated Stop into session.jsonl.
 
-Exercises ``WorkflowEngine.__persist_interrupted_turn`` (the dangling-tool_use
+Exercises ``WorkflowEngine._persist_interrupted_turn`` (the dangling-tool_use
 resolution + LLM-visible "you were stopped" notice appended by ``stop()``) and
-``WorkflowEngine.__partial_assistant_message`` (how a stream cut short by
+``WorkflowEngine._partial_assistant_message`` (how a stream cut short by
 Stop is folded into a real, persisted assistant message) directly, using the
 same ``object.__new__(WorkflowEngine)`` + minimal-stub pattern as
 ``test_engine_document_flow.py`` — both are private engine methods with no
@@ -40,13 +40,13 @@ def _bare_engine(*, main_messages: list[Message]) -> tuple[WorkflowEngine, _Fake
     """Construct a WorkflowEngine with only the attributes these methods read."""
     engine = object.__new__(WorkflowEngine)
     transient = _FakeTransient()
-    engine._WorkflowEngine__main_messages = main_messages  # type: ignore[attr-defined]
-    engine._WorkflowEngine__transient = transient  # type: ignore[attr-defined]
+    engine._main_messages = main_messages
+    engine._transient = transient
     return engine, transient
 
 
 # ---------------------------------------------------------------------------
-# __persist_interrupted_turn
+# _persist_interrupted_turn
 # ---------------------------------------------------------------------------
 
 
@@ -61,9 +61,9 @@ def test_persist_interrupted_turn_with_dangling_tool_use_synthesizes_result() ->
     )
     engine, transient = _bare_engine(main_messages=[Message(role="user", content="go"), dangling])
 
-    engine._WorkflowEngine__persist_interrupted_turn("guide")  # type: ignore[attr-defined]
+    engine._persist_interrupted_turn("guide")
 
-    main = engine._WorkflowEngine__main_messages  # type: ignore[attr-defined]
+    main = engine._main_messages
     assert [m.role for m in main[-2:]] == ["user", "assistant"]
 
     tool_results_msg = main[-2]
@@ -81,7 +81,7 @@ def test_persist_interrupted_turn_with_dangling_tool_use_synthesizes_result() ->
     # Both new messages were persisted, tagged with the entry agent that was
     # actually running, and in the right order; only the notice carries
     # kind="stopped_notice" (so history replay renders it as the red callout,
-    # not a fake user-typed bubble — see __message_to_entries).
+    # not a fake user-typed bubble — see HistoryProjector._message_to_entries).
     assert [role for role, _content, _agent, _kind in transient.appended] == ["user", "assistant"]
     assert all(agent == "guide" for _role, _content, agent, _kind in transient.appended)
     assert transient.appended[0] == ("user", tool_results_msg.content, "guide", None)
@@ -95,9 +95,9 @@ def test_persist_interrupted_turn_without_dangling_tool_use_only_adds_notice() -
         main_messages=[Message(role="user", content="go"), plain_reply]
     )
 
-    engine._WorkflowEngine__persist_interrupted_turn("problem_solver")  # type: ignore[attr-defined]
+    engine._persist_interrupted_turn("problem_solver")
 
-    main = engine._WorkflowEngine__main_messages  # type: ignore[attr-defined]
+    main = engine._main_messages
     assert len(main) == 3
     assert main[-1].role == "assistant"
     assert "The ongoing session was interrupted by the user" in main[-1].content
@@ -118,9 +118,9 @@ def test_persist_interrupted_turn_resolves_every_pending_tool_use() -> None:
     )
     engine, _transient = _bare_engine(main_messages=[dangling])
 
-    engine._WorkflowEngine__persist_interrupted_turn("guide")  # type: ignore[attr-defined]
+    engine._persist_interrupted_turn("guide")
 
-    tool_results_msg = engine._WorkflowEngine__main_messages[-2]  # type: ignore[attr-defined]
+    tool_results_msg = engine._main_messages[-2]
     ids = {block["tool_use_id"] for block in tool_results_msg.content}
     assert ids == {"tu_1", "tu_2"}
 
@@ -135,14 +135,18 @@ async def test_stopped_notice_replays_as_interrupted_not_user_message() -> None:
     """A reload must show the same red callout, never a fake user-typed line."""
     from pathlib import Path
 
-    engine, _ = _bare_engine(main_messages=[])
+    from kodo.runtime._engine._checkpointing import CheckpointCoordinator
+    from kodo.runtime._engine._history import HistoryProjector
+
+    checkpoints = object.__new__(CheckpointCoordinator)
+    projector = HistoryProjector(_FakeTransient(), checkpoints)  # type: ignore[arg-type]
     line = {
         "role": "user",
         "content": "The user clicked Stop, cutting the previous turn short...",
         "kind": "stopped_notice",
     }
 
-    entries = await engine._WorkflowEngine__message_to_entries(  # type: ignore[attr-defined]
+    entries = await projector._message_to_entries(
         line, {}, {}, Path("/nonexistent"), Path("/nonexistent"), {}
     )
 
@@ -150,12 +154,12 @@ async def test_stopped_notice_replays_as_interrupted_not_user_message() -> None:
 
 
 # ---------------------------------------------------------------------------
-# __partial_assistant_message
+# _partial_assistant_message
 # ---------------------------------------------------------------------------
 
 
 def _method(engine: WorkflowEngine):
-    return engine._WorkflowEngine__partial_assistant_message  # type: ignore[attr-defined]
+    return engine._partial_assistant_message
 
 
 def test_partial_assistant_message_returns_none_when_nothing_arrived() -> None:
@@ -187,17 +191,13 @@ def test_partial_assistant_message_captures_thinking_and_tool_calls() -> None:
 
 
 # ---------------------------------------------------------------------------
-# __interrupted_tool_result reason wording
+# _interrupted_tool_result reason wording
 # ---------------------------------------------------------------------------
 
 
 def test_interrupted_tool_result_reason_selects_wording() -> None:
     engine, _ = _bare_engine(main_messages=[])
-    restart = engine._WorkflowEngine__interrupted_tool_result(  # type: ignore[attr-defined]
-        "tu_1", "run_command"
-    )
-    stopped = engine._WorkflowEngine__interrupted_tool_result(  # type: ignore[attr-defined]
-        "tu_1", "run_command", reason="stopped"
-    )
+    restart = engine._interrupted_tool_result("tu_1", "run_command")
+    stopped = engine._interrupted_tool_result("tu_1", "run_command", reason="stopped")
     assert "server restart or window reload" in restart["content"]
     assert "user clicked Stop" in stopped["content"]

@@ -18,7 +18,7 @@ safety flow, and the wire protocol.
 > deleted outright (STATE_AND_LIFECYCLE.md §1.1/§8). The Guide's `rollback`
 > tool now delegates straight to `RootMirrorManager.rollback` — the same
 > primitive backing the chat UI's "Rollback to this state" control — and
-> additionally resets the conversation (the engine's `__run_rollback`,
+> additionally resets the conversation (the engine's `_run_rollback`,
 > STATE_AND_LIFECYCLE.md §8.3). There is exactly **one** shadow-git mirror per
 > root, regardless of which workflow mode touched it.
 
@@ -245,20 +245,20 @@ without performing a mutation).
 Per-tool-call checkpoint data travels two ways:
 
 1. **Live**: `EVT_AGENT_TOOL_CALL_DETAIL`'s `checkpoint` field
-   (`__finalize_tool_result`) — `{root, sha, parent, index, undone,
+   (`_finalize_tool_result`) — `{root, sha, parent, index, undone,
    current_index}`, looked up from the just-updated `CheckpointState`
    immediately after the commit.
 2. **History replay** (session resume / window reconnect): `checkpoint_sha`
    and `checkpoint_root` are persisted as declared (optional) output-schema
    fields on the three mutating tools (`filesystem`, `edit_file`,
    `run_command` — see their `output_schema`s) and injected into the
-   LLM-visible tool result at `__finalize_tool_result`. `history_entries()` /
-   `__message_to_entries()` reconstruct the same `{root, sha, parent, index,
+   LLM-visible tool result at `_finalize_tool_result`. `history_entries()` /
+   `HistoryProjector._message_to_entries()` reconstruct the same `{root, sha, parent, index,
    undone, current_index}` shape from those two fields plus a
    per-`history_entries()`-call cache of each touched root's
-   `CheckpointState` (`__checkpoint_detail`, loaded at most once per root).
+   `CheckpointState` (`HistoryProjector._checkpoint_detail`, loaded at most once per root).
    Before this feature, `checkpoint_sha` was persisted but `checkpoint_root`
-   was not, and `__message_to_entries` never reconstructed a `checkpoint`
+   was not, and `HistoryProjector._message_to_entries` never reconstructed a `checkpoint`
    field at all — **undo/rollback controls silently vanished after every
    reload.** Both gaps are closed by this change.
 

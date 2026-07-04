@@ -228,10 +228,10 @@ Protocols**, also defined in `_context.py`:
   path, input_paths, instructions,
   for_revision)`, `rollback(...)`, `disable_autonomous_mode(...)`, and
   `create_project(name)`. Runtime injects a single `_EngineServices` adapter
-  (built inline in `_engine.py`) wrapping the engine's private `__run_*` /
-  `__disable_autonomous` / `__create_project` methods. There is deliberately
+  (built inline in `runtime/_engine/`) wrapping the engine's private `_run_*` /
+  `_disable_autonomous` / `_create_project` methods. There is deliberately
   **no** `complete_artifact`-style method: the accept/review flow
-  (`__finalize_document`) is purely engine-internal, triggered from a
+  (`_finalize_document`) is purely engine-internal, triggered from a
   post-dispatch hook after a `document_feedback` call — never through a tool
   or a protocol indirection. `create_project` is what backs the
   `create_new_project` tool: the engine slugifies the requested name, makes a
@@ -326,7 +326,7 @@ A tool can also declare `autonomous_mode="auto-accepted …"` for a spec whose
 *handler* short-circuits on `ctx.session.effective_autonomous` and synthesizes
 its response instead of blocking on the gate — no tool does today, since the
 one example (the former `request_user_review_artifact`) moved into the
-engine: `__finalize_document` (triggered after `document_feedback`, not a
+engine: `_finalize_document` (triggered after `document_feedback`, not a
 dispatched tool) checks `effective_autonomous` itself and either auto-accepts
 or fires the gate. The mechanism remains available for a future tool that
 needs it.
@@ -416,18 +416,18 @@ the *contents* of the context and the *set* of tools differ.
 
 ## 10. The engine turn loop — putting it together
 
-[runtime/_engine.py](../src/kodo/runtime/_engine.py) drives the generic loop
-(`__run_agent_turn`), shared by the guide and every leaf agent. Per run:
+[runtime/_engine/](../src/kodo/runtime/_engine/) drives the generic loop
+(`_run_agent_turn`), shared by the guide and every leaf agent. Per run:
 
 1. Resolve the agent (`registry.get(name, autonomous)`), which yields its
    filtered `tools` and rendered system prompt.
-2. Build the dispatcher: `dispatcher = self.__make_dispatcher(agent_name, session_id)`
+2. Build the dispatcher: `dispatcher = self._make_dispatcher(agent_name, session_id)`
    — injecting the gate, session, the single `_EngineServices` adapter, and
    `mode`/`project_root` (read live from the current workflow mode and bound
    project, independent of each other — a Problem-Solver run still carries
    `project_root` if a project happens to be bound). No `autonomous` flag is
    passed; tools read `session.effective_autonomous`.
-3. Call `__run_agent_turn(..., tools=tools_for_agent(agent.tools),
+3. Call `_run_agent_turn(..., tools=tools_for_agent(agent.tools),
    tool_dispatch=dispatcher.dispatch, stop_after_tools=lambda: dispatcher.stop_requested)`.
 
 Inside the loop:
@@ -457,7 +457,7 @@ reads it, reasons, and either calls more tools or ends its turn. After the loop,
 the engine reads `dispatcher.returned_output` (what a leaf returned via
 `return_result`) and used `dispatcher.stop_requested` to decide early exit. A
 mutating tool call (`filesystem`/`edit_file`) is additionally bracketed by
-`__checkpoint_prepare`/`__checkpoint_commit` (§12.1 in INTERNALS.md) — outside
+`CheckpointCoordinator.prepare`/`CheckpointCoordinator.commit` (§12.1 in INTERNALS.md) — outside
 this loop, around the `tool_dispatch` call — so every dispatch in this diagram
 that touches a file also earns a mirror commit.
 
@@ -476,7 +476,7 @@ author that writes a file:
    │                                              └─► self.context.services.run_subagent(name, …)
    │                                                    │  (_EngineServices adapter)
    │                                                    ▼
-   │                                        engine.__run_subagent: builds a NEW
+   │                                        engine._run_subagent: builds a NEW
    │                                        ToolDispatcher for the leaf, runs its turn
    │                                                    │
    │                          leaf LLM  tool_use: filesystem(create_file) ─► dispatch(…)
@@ -539,7 +539,7 @@ free-text-only question (`options: []`).
    list in `src/kodo/subagents/subagent_<agent>.md`.
 5. If the handler needs a new collaborator from above its tier, add a **Protocol**
    to `tools/_context.py` and a field to `ToolContext`; inject the concrete
-   implementation from the engine's `__make_dispatcher`.
+   implementation from the engine's `_make_dispatcher`.
 
 Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 
@@ -561,7 +561,7 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [subagents/_registry.py](../src/kodo/subagents/_registry.py) | Renders each agent's `## Tools` prompt section from spec metadata; autonomous filtering. |
 | [llms/anthropic/_claude.py](../src/kodo/llms/anthropic/_claude.py) | Converts `ToolSpec` → API `tools` param; parses `tool_use` → `ToolCallEvent`. |
 | [llms/_interface.py](../src/kodo/llms/_interface.py) | `Message`, `ToolCallEvent`, `TurnEnd`, the `stream_query` contract. |
-| [runtime/_engine.py](../src/kodo/runtime/_engine.py) | `__make_dispatcher`, `__run_agent_turn` (the tool loop), the `_EngineServices` adapter. |
+| [runtime/_engine/](../src/kodo/runtime/_engine/) | `_make_dispatcher`, `_run_agent_turn` (the tool loop), the `_EngineServices` adapter. |
 | [runtime/_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator` (satisfies `GateLike`). |
 
 See also [INTERNALS.md §6A](INTERNALS.md) for the package's place in the

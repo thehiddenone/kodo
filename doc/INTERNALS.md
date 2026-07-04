@@ -115,7 +115,7 @@ imported); the annotation on each line names the packages pulled in.
 ```
 
 `runtime` is the sole importer of `mirror`, `security`, and (`security` aside)
-`shellparser` (via `runtime/_checkpoints.py` §10b and `runtime/_engine.py`) —
+`shellparser` (via `runtime/_checkpoints.py` §10b and `runtime/_engine/`) —
 none of the three is reachable from `tools`, `subagents`, or `llms`. `tools`
 sees the security layer only through the `SecurityLike` structural protocol
 (doc/SECURITY.md §4).
@@ -264,7 +264,7 @@ placeholders.
 | `document_feedback` | A critic's review verdict on one file: `{path, accept, concerns?, summary?}` → appends a `feedback` entry to that file's `.jsonl` evolution log (`kodo.guided_state`, §7). Never decides what happens next — the engine alone drives accept/review from the recorded `accept` flag. |
 | `guided_dev_status` | Scans `.kodo/guided_dev_state/` and reports every tracked document's status, derived from its log's last entry. The replacement for the old artifact-index `query_frontier`. Guided-mode only; the handler errors if called from any other workflow mode. |
 | `escalate_blocker`, `ask_user` | ✅ implemented |
-| `filesystem`/`edit_file`/`run_command` | ✅ implemented; granted to authoring sub-agents and the `problem_solver` agent. `filesystem` is **one tool** whose mandatory `operation` field selects among eight file/directory ops — `create_file`/`create_dir`/`delete_file`/`delete_dir`/`copy_file`/`copy_dir`/`move_file`/`move_dir` (dir ops are recursive: `copytree`/`rmtree`/`mkdir -p`; `copy_dir`/`move_dir` fail if the destination exists). `edit_file` stays separate: a **targeted string-match edit** (`old_string` → `new_string`; must match exactly and uniquely or it fails without writing), the **preferred** way to change a file's contents; pass the whole new content as `new_string` to regenerate a file end to end. These three are exactly `runtime/_engine.py:_MUTATING_TOOLS` — the engine checkpoints around every call to them in **both** workflow modes (§12.1) and each one's `output_schema` carries an **optional `checkpoint_sha`** field the engine fills in when a commit happened. `filesystem`/`edit_file` calls additionally earn a `new_revision` entry in a tracked document's `.jsonl` log (§7) when the checkpoint commit landed under `specs/`/`src/`/`test/`. |
+| `filesystem`/`edit_file`/`run_command` | ✅ implemented; granted to authoring sub-agents and the `problem_solver` agent. `filesystem` is **one tool** whose mandatory `operation` field selects among eight file/directory ops — `create_file`/`create_dir`/`delete_file`/`delete_dir`/`copy_file`/`copy_dir`/`move_file`/`move_dir` (dir ops are recursive: `copytree`/`rmtree`/`mkdir -p`; `copy_dir`/`move_dir` fail if the destination exists). `edit_file` stays separate: a **targeted string-match edit** (`old_string` → `new_string`; must match exactly and uniquely or it fails without writing), the **preferred** way to change a file's contents; pass the whole new content as `new_string` to regenerate a file end to end. These three are exactly `runtime/_engine/_checkpointing.py:_MUTATING_TOOLS` — the engine checkpoints around every call to them in **both** workflow modes (§12.1) and each one's `output_schema` carries an **optional `checkpoint_sha`** field the engine fills in when a commit happened. `filesystem`/`edit_file` calls additionally earn a `new_revision` entry in a tracked document's `.jsonl` log (§7) when the checkpoint commit landed under `specs/`/`src/`/`test/`. |
 | `get_root_paths`, `find_files`, `find_text_in_files` | ✅ implemented (workspace search). `get_root_paths` returns the mode-aware root list (bound project in Guided; every workspace folder in Problem Solver) from `ToolContext.root_paths`. `find_files`/`find_text_in_files` resolve `root` through the active resolver then shell out to the bundled `fd`/`rg` (§10a) via `ToolContext.util_paths`. Granted to `guide` + `problem_solver` + the Problem Solver's `investigator`/`developer`. |
 | `web_search` | ✅ implemented (`WebSearchTool`) — a **three-phase pipeline** (doc/WEB_SEARCH.md): ① *discovery* — query Google/Bing/DuckDuckGo(HTML)/English-Wikipedia(full-text) in parallel through one headless browser (`kodo.websearch`, T0 — host Chrome/Edge preferred, bundled Firefox then Chromium as fallback, doc/WEB_SEARCH.md §7), skip ads/sponsored results, merge ≤ 16 organic links rank-by-rank; ② *scraping* — fetch the pages concurrently, strip UI/nav chrome in-page, keep ≤ 16 main-text blocks (one shared `MAX_SOURCES` cap for both phases); ③ *summarization* — the silent `web_summarizer` sub-agent (via the ungated `_EngineServices.run_web_summarizer`, titler-style — **no subsession**, so it works from inside the investigator's subsession) groups the blocks into `themes` (`{summary, details, links}` — ideally independent solution options). Best-effort: no anti-bot evasion; an engine serving a captcha is cooled down 30 min (state in `~/.kodo/websearch/engine_cooldowns.json`); the fallback browser choice and a one-time Playwright sanity check are cached in `~/.kodo/websearch/browser_state.json`; every degradation lands in `note`. `max_results` caps the theme count (default 5). Granted only to the Problem Solver's `investigator` (read-only external research). Security impact `LOW`; available in autonomous mode. |
 | `read_webpage` | ✅ implemented (`ReadWebpageTool`, doc/READ_WEBPAGE.md) — fetch **one caller-given URL** via `kodo.websearch.read_page` and convert its main content root to Markdown in-page (headings/tables/plain non-numbered lists/embedded links kept; nav/ads/scripts/images/video stripped). Shares `BrowserSession` with `web_search` but not the discovery/scrape/summarize pipeline — its own single-page path (`kodo/websearch/_readpage.py`). Since the URL comes straight from the agent (not a search engine), it's SSRF-guarded: non-http(s) schemes and hosts resolving to a private/loopback/link-local/reserved address raise before any request is made. A captcha/anti-bot wall, an HTTP 403/429/503, or too-thin residual content raises the same way and the tool returns `{"error": "..."}` advising against retrying the URL — **no cooldown state**, unlike `web_search`'s per-engine 30-minute backoff. Granted only to the Problem Solver's `investigator`. Security impact `LOW`; available in autonomous mode. |
@@ -311,15 +311,15 @@ to the run's context).
 | [_paths.py](../src/kodo/tools/_paths.py) | `resolve_within`, `ProjectPathResolver`, `LogicalPathResolver` | Project-root / logical-workspace path guards shared by the file-I/O, shell, and search handlers. |
 | [_search.py](../src/kodo/tools/_search.py) | `run_util`, `UtilTimeout` | Shared subprocess launcher for `find_files`/`find_text_in_files`/`read_file`'s pattern mode and `toolchain_build`'s script execution: runs the util with stdin closed under a bounded timeout, killing the whole process tree on POSIX. Holds no tool dispatch. |
 
-**Links:** `runtime/_engine.py` builds one `ToolDispatcher` per agent run via
-`__make_dispatcher`, injecting `GateOrchestrator`, `SessionState`, and one
-`_EngineServices` adapter (wrapping the engine's `__run_subagent` /
-`__run_dependency_manager` / `__run_author_critic_iteration` / `__run_rollback` /
-`__disable_autonomous`). The dispatcher takes **no**
+**Links:** `runtime/_engine/` builds one `ToolDispatcher` per agent run via
+`_make_dispatcher`, injecting `GateOrchestrator`, `SessionState`, and one
+`_EngineServices` adapter (wrapping the engine's `_run_subagent` /
+`_run_dependency_manager` / `_run_author_critic_iteration` / `_run_rollback` /
+`_disable_autonomous`). The dispatcher takes **no**
 `autonomous` flag — tools read `SessionState.effective_autonomous`, which the
 worker freezes once per prompt, so a mid-prompt mode toggle never rebuilds the
 dispatcher or splits the prompt's mode. Autonomous filtering of `ask_user`
-happens once, in `subagents/_registry`. `__make_dispatcher` also passes `mode`
+happens once, in `subagents/_registry`. `_make_dispatcher` also passes `mode`
 and `project_root` (read live from `current_project`, independent of mode),
 `root_paths` (computed mode-aware from `current_project`/`SessionWorkspace.folders`
 — the latter synced by the extension's `workspace.folders` frames) and
@@ -421,7 +421,7 @@ Dependency management remains deliberately unimplemented.
 | [_registry.py](../src/kodo/llms/_registry.py) | `LLMEntry` (frozen), `get_llm_registry()` | Static catalog of cloud (Claude Opus/Sonnet/Haiku) + local (llama.cpp Qwen/Gemma GGUF) models. Maps name → plugin module + model/repo IDs. |
 | [_logger.py](../src/kodo/llms/_logger.py) | `LoggingLLMPlugin(LLMPlugin)` | **Decorator** wrapping any `LLMPlugin`; writes `NNNN_request.json`/`NNNN_response.json`. Process-wide counter. |
 | [_tool_logger.py](../src/kodo/llms/_tool_logger.py) | `ToolCallLogger` | Writes per-tool invocation/result JSON; turn counter. Used by the engine, not a plugin. |
-| [_sanitize.py](../src/kodo/llms/_sanitize.py) | `strip_kodo_callouts` | Regex-strips `<kodo_info>`/`<kodo_warn>`/`<kodo_crit>`/`<kodo>` callout tags (incl. their content) from assistant text. These tags are a one-way notification to the human user (§ performance preamble), so their content is never replayed back into the model's own context. Called only by the wire-format builders below and by `_engine.py`'s `__render_transcript` (compaction input) — never by anything that persists or renders history, so `session.jsonl`/the WebView still see the tags verbatim. |
+| [_sanitize.py](../src/kodo/llms/_sanitize.py) | `strip_kodo_callouts` | Regex-strips `<kodo_info>`/`<kodo_warn>`/`<kodo_crit>`/`<kodo>` callout tags (incl. their content) from assistant text. These tags are a one-way notification to the human user (§ performance preamble), so their content is never replayed back into the model's own context. Called only by the wire-format builders below and by `runtime/_engine/`'s `render_transcript` (compaction input) — never by anything that persists or renders history, so `session.jsonl`/the WebView still see the tags verbatim. |
 | [anthropic/_claude.py](../src/kodo/llms/anthropic/_claude.py) | `ClaudePlugin(LLMPlugin)`, `UnrecoverableError` | **Subclasses** ABC. Uses `anthropic.AsyncAnthropic`; composes `_cache` (breakpoints) + `_retry` (`with_retry_iter`). Enables extended thinking on every call (`thinking={"type": "enabled", "budget_tokens": 4096}`); yields `ThinkingDelta` from the SDK's raw thinking delta and `ThinkingSignature` from its `signature_delta`. Cancellation via per-`stream_id` `asyncio.Event`. |
 | [anthropic/_cache.py](../src/kodo/llms/anthropic/_cache.py) | `build_system_blocks`, `build_message_params`, `_drop_unsigned_thinking`, `_strip_callout_text` | Prompt-cache breakpoint construction. `_drop_unsigned_thinking` strips any persisted `"thinking"` block lacking a `signature` (e.g. one originated by llama.cpp in a mixed-provider session) before it reaches Claude, which rejects unsigned thinking blocks. `_strip_callout_text` runs `_sanitize.strip_kodo_callouts` over every assistant `"text"` block (and bare string content) before it is sent. |
 | [anthropic/_retry.py](../src/kodo/llms/anthropic/_retry.py) | `with_retry`, `with_retry_iter`, `UnrecoverableError`, `RetryExhaustedError` | Exponential backoff (2/8/32s); classifies auth/billing as unrecoverable. |
@@ -429,7 +429,7 @@ Dependency management remains deliberately unimplemented.
 | [llamacpp/_llama.py](../src/kodo/llms/llamacpp/_llama.py) | `LlamaPlugin(LLMPlugin)`, `ThinkingStreamParser` | **Subclasses** ABC. OpenAI-compatible client against `llama-server`; converts Anthropic-style content blocks ↔ OpenAI chat messages; parses `<think>` tags into `ThinkingDelta`. `_expand_assistant` re-wraps any persisted `"thinking"` content block (this provider's or a Claude-origin signed one) back into `<think>...</think>` text, dropping any signature, since llama.cpp has no use for it; it also runs assistant `"text"` blocks (and `_expand_message`'s bare string case) through `strip_kodo_callouts`. **Composes** `MessageSink` (to emit `EVT_LLAMA_STATE`) and calls its sibling `_manager.ensure_llama_running`. |
 
 **Links:** Every plugin is wrapped in `LoggingLLMPlugin` by the engine's
-`__resolve_plugin`. `LlamaPlugin` reaches *up* into `transport` (for state
+`_resolve_plugin`. `LlamaPlugin` reaches *up* into `transport` (for state
 events) and *sideways* into its sibling local-inference utilities (§10).
 
 **State:** Complete for both providers.
@@ -618,7 +618,7 @@ Write, Match Existing Conventions, Verify Don't Assume, and Stay In Scope.
 This is the orchestration core. [\_\_init\_\_.py](../src/kodo/runtime/__init__.py)
 re-exports the public surface.
 
-### 12.1 `WorkflowEngine` ([_engine.py](../src/kodo/runtime/_engine.py))
+### 12.1 `WorkflowEngine` ([_engine/](../src/kodo/runtime/_engine/))
 
 The single-worker substrate. **Constructor-injected dependencies** (all from the
 server composition root):
@@ -626,26 +626,62 @@ server composition root):
 ```
 sink: MessageSink            gate: GateOrchestrator
 key_provider: ApiKeyProvider get_settings: Callable[[], dict]
-transient: TransientStore    layout: ProjectLayout
-registry: AgentRegistry      mirror: CheckpointManager
+transient: TransientStore    workspace_layout: WorkspaceLayout
+registry: AgentRegistry      gateway: LLMGateway
+session_workspace: SessionWorkspace | None
 ```
 
+(The engine is workspace-scoped: the `ProjectLayout` is *not* injected — it is
+built lazily in `bind_project` when Guided mode selects a project, and stays
+`None` until then.)
+
 It **internally constructs**: a `SessionState`, one `_EngineServices` adapter,
-and a **`__root_mirrors: RootMirrorManager`** (§12.4/§10b — the *single*
+and a **`CheckpointCoordinator.mirrors: RootMirrorManager`** (§12.4/§10b — the *single*
 shadow-git mirror coordinator now shared by both workflow modes; there is no
 separate Guided-only mirror anymore, see §7). It builds a
-`tools.ToolDispatcher` **per agent run** (via `__make_dispatcher`). A document's
+`tools.ToolDispatcher` **per agent run** (via `_make_dispatcher`). A document's
 state is never reconstructed at bootstrap — `kodo.guided_state` reads each
-file's `.jsonl` log on demand. It owns `__main_messages` (the shared
+file's `.jsonl` log on demand. It owns `_main_messages` (the shared
 entry-agent running `list[Message]`, agent-agnostic across Guide/Problem
 Solver) and cumulative USD.
 
+**Package layout** — the former single 4000-line module is a package split
+along its concern seams, assembled from **mixins** (behaviour slices sharing
+the one engine instance's state; every mixin method annotates
+`self: EngineHost`, the explicit protocol in
+[_proto.py](../src/kodo/runtime/_engine/_proto.py) that is the single map of
+the state and cross-module methods mixins may touch — a mixin needing
+something new must add it there first, keeping the coupling visible) and
+**collaborators** (objects that own their state and reach back through
+narrow per-collaborator host protocols living next to each collaborator):
+
+| Module | Kind | Contents |
+| ------ | ---- | -------- |
+| [_core.py](../src/kodo/runtime/_engine/_core.py) | class | `WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin, ResumeMixin)` — constructor wiring, `start()`, every public `handle_*` WS entry point, project bind/create, `_run_rollback`, `_finalize_document`, `_disable_autonomous`. |
+| [_proto.py](../src/kodo/runtime/_engine/_proto.py) | protocol | `EngineHost` — the typed mixin seam. |
+| [_worker.py](../src/kodo/runtime/_engine/_worker.py) | mixin | `WorkerMixin` — `_run_worker` (the single queue-driven coroutine) + `_handle_input_no_agent`. |
+| [_llm.py](../src/kodo/runtime/_engine/_llm.py) | mixin | `LLMPlumbingMixin` — `_resolve_plugin`/`_resolve_model_key`, `_run_silent_return_turn`, `_security_judge`. |
+| [_turns.py](../src/kodo/runtime/_engine/_turns.py) | mixin | `TurnLoopMixin` — `_run_entry_agent` (+ the two entry wrappers below), `_run_agent_turn` (the generic LLM tool loop), `_dispatch_tool_calls`, `_finalize_tool_result`, `_make_dispatcher`, attachment storing. |
+| [_subagents.py](../src/kodo/runtime/_engine/_subagents.py) | mixin | `SubagentMixin` — `_run_subagent`/`_spawn_subagent` + the `_assert_can_spawn` gate, subsession lifecycle/replay, `_run_dependency_manager`, `_run_web_summarizer`, `_run_author_critic_iteration`. |
+| [_resume.py](../src/kodo/runtime/_engine/_resume.py) | mixin | `ResumeMixin` — Stop folding (`_persist_interrupted_turn`) + cold-restart resume (`_resume_main_turn`, `_build_replay_ledger`). |
+| [_events.py](../src/kodo/runtime/_engine/_events.py) | collaborator | `EngineEmitters` — every client event emitter + cumulative cost. |
+| [_compaction.py](../src/kodo/runtime/_engine/_compaction.py) | collaborator | `ContextCompactor` (+ `CompactorHost`) — context gauge, in-place compaction, `render_transcript`/`estimate_tokens`. |
+| [_titling.py](../src/kodo/runtime/_engine/_titling.py) | collaborator | `SessionTitler` (+ `TitlerHost`) — silent session titling. |
+| [_checkpointing.py](../src/kodo/runtime/_engine/_checkpointing.py) | collaborator | `CheckpointCoordinator` (+ `CheckpointHost`) — `_MUTATING_TOOLS`, prepare/commit around mutating dispatches, `record_guided_revision`, owns the `RootMirrorManager` (`.mirrors`). |
+| [_history.py](../src/kodo/runtime/_engine/_history.py) | collaborator | `HistoryProjector` — `session.jsonl` read-back: feed rebuild (`history_entries`) + context rehydration (`load_main_messages`). |
+| [_services.py](../src/kodo/runtime/_engine/_services.py) | adapter | `_EngineServices` — adapts engine callbacks to the `tools.EngineServices` protocol. |
+| [_shared.py](../src/kodo/runtime/_engine/_shared.py) | helpers | Shared agent-name constants, `_slugify_project_name`, `_unique_child_dir`. |
+
+The package's public surface is unchanged by the split:
+[\_\_init\_\_.py](../src/kodo/runtime/_engine/__init__.py) exports
+`WorkflowEngine` (plus the two project-dir helpers `runtime/__init__` re-uses).
+
 **Composition / call graph:**
 
-- `start()` → `TransientStore.attach_session` → spawns `__run_worker` task. If
+- `start()` → `TransientStore.attach_session` → spawns `_run_worker` task. If
   resumed, loads messages, re-binds the persisted current project (if any) via
-  `__bind_project`, and may re-fire a pending prompt. No index to rebuild —
-  `bind_project`/`__bind_project` now only validate the `ProjectLayout`.
+  `_bind_project`, and may re-fire a pending prompt. No index to rebuild —
+  `bind_project`/`_bind_project` now only validate the `ProjectLayout`.
 - **Public client entry points** (registered as WS handlers in `_app`, §14):
   `handle_prompt_submit(text, request_id)` enqueues a prompt;
   `handle_mode_set(autonomous)` sets the **Autonomous/Interactive** mode
@@ -653,111 +689,114 @@ Solver) and cumulative USD.
   sets the **Guided/Problem-Solving** workflow (`SessionState.workflow_mode`,
   normalised to `"guided"` | `"problem_solving"`); `stop()` cancels the worker.
   Both setters emit `EVT_STATE` and never interrupt an in-flight prompt.
-- `__run_worker()` — dequeues one task at a time. **First it freezes the
+- `_run_worker()` — dequeues one task at a time. **First it freezes the
   per-prompt autonomous mode** (`effective_autonomous = autonomous`), then
   **routes by `workflow_mode`**: `"problem_solving"` →
-  `__run_problem_solver_with_input` (if the `problem_solver` agent is present,
-  else `__handle_input_no_agent`); otherwise → `__run_guide_with_input`.
+  `_run_problem_solver_with_input` (if the `problem_solver` agent is present,
+  else `_handle_input_no_agent`); otherwise → `_run_guide_with_input`.
   Exits the loop once `phase == "done"`.
-- `__resolve_plugin(capability)` → reads fresh settings → `get_llm_registry()` →
+- `_resolve_plugin(capability)` → reads fresh settings → `get_llm_registry()` →
   builds `ClaudePlugin` (via `ApiKeyProvider.get_key`) or `LlamaPlugin`, wrapped
   in `LoggingLLMPlugin`.
-- `__run_agent_turn(...)` — the **generic LLM tool loop**, shared by guide
+- `_run_agent_turn(...)` — the **generic LLM tool loop**, shared by guide
   and leaf agents: streams events → emits `EVT_LLM_TURN_START`, stream chunks,
   `EVT_AGENT_TOOL_CALL`, `EVT_USAGE_UPDATE` → logs via `ToolCallLogger` +
   `TransientStore.write_agent_record` → dispatches each tool via an injected
   `tool_dispatch` callback → loops until no tool calls (or `stop_after_tools`).
-- `__run_guide_with_input` → builds a `ToolDispatcher` for the
-  guide, `tool_dispatch = dispatcher.dispatch`,
+- `_run_guide_with_input` / `_run_problem_solver_with_input` → thin wrappers;
+  both delegate to `_run_entry_agent(agent_name, text, attachments)`.
+- `_run_entry_agent(agent_name, ...)` → the shared entry-agent driver: loads
+  the agent, resolves its plugin, stores + injects prompt attachments, appends
+  the seed user message to the shared `_main_messages` (persisted immediately
+  to `session.jsonl`), then builds a per-run `ToolDispatcher` and runs
+  `_run_agent_turn` with `tool_dispatch = dispatcher.dispatch`,
   `tools = tools_for_agent(agent.tools)` (the registry already filtered the
-  agent's tools for `effective_autonomous`).
-- `__run_problem_solver_with_input` → the **problem-solving** counterpart of the
-  guide loop: loads the `problem_solver` agent, keeps its own running
-  history (`__ps_messages`), and runs the same `__run_agent_turn` with its own
-  per-run `ToolDispatcher` and `stop_after_tools = lambda: dispatcher.stop_requested`.
-  It works the prompt end to end alone (no sub-agents, no critics) and yields
-  back to the user. Both loops read `effective_autonomous`, so `ask_user` is
-  withheld in autonomous mode for the Problem Solver too.
-- `__run_subagent` → builds a per-run `ToolDispatcher`, `tools =
+  agent's tools for `effective_autonomous`, so `ask_user` is withheld in
+  autonomous mode for both entry agents),
+  `stop_after_tools = lambda: dispatcher.stop_requested`,
+  `persist = _persist_main_messages(agent_name)` and
+  `flush_before_dispatch=True`. The two entry agents differ only in system
+  prompt and tool set — switching workflow mode continues one conversation.
+- `_run_subagent` → builds a per-run `ToolDispatcher`, `tools =
   tools_for_agent(agent.tools)`, `tool_dispatch = dispatcher.dispatch`,
   `stop_after_tools = lambda: dispatcher.stop_requested`. Returns the
   sub-agent's structured `return_result` output (or a bare
   `{schema_compliance: False}` fallback if it never called it — there is no
   artifact index to recover a partial result from).
-- `__run_dependency_manager` (exposed via `_EngineServices.run_dependency_manager`,
+- `_run_dependency_manager` (exposed via `_EngineServices.run_dependency_manager`,
   the callback the `toolchain_deps` tool invokes) → drives the fixed
-  `toolchain_depsmgr` agent straight through `__spawn_subagent` (the ungated
-  primitive), **bypassing the `__assert_can_spawn` allow-list gate** that
-  `__run_subagent` applies. Possession of the `toolchain_deps` tool is the
+  `toolchain_depsmgr` agent straight through `_spawn_subagent` (the ungated
+  primitive), **bypassing the `_assert_can_spawn` allow-list gate** that
+  `_run_subagent` applies. Possession of the `toolchain_deps` tool is the
   authorization; the agent is deliberately absent from `_DIRECT_ONLY_AGENTS`
-  (which would make `__spawn_subagent` short-circuit it) and from every
+  (which would make `_spawn_subagent` short-circuit it) and from every
   `subagents:` list, so the only path to it is the tool.
-- `__run_author_critic_iteration` → spawns the author (`for_revision_path` set
+- `_run_author_critic_iteration` → spawns the author (`for_revision_path` set
   when revising), reads back `author_output.primary_path`, spawns the critic
   against that path, then reads `kodo.guided_state.read_status(path)` for the
   verdict — **the jsonl, not the critic's `return_result`, is authoritative**.
   Emits `EVT_REVIEW_STARTED`/`EVT_REVIEW_VERDICT`. **This is the callback the
   Guide's `run_author_critic_iteration` tool invokes.**
-- `__finalize_document(path)` (called from the post-dispatch hook below, not
+- `_finalize_document(path)` (called from the post-dispatch hook below, not
   exposed via `EngineServices` — there is no tool indirection) → autonomous
   mode immediately `append_accepted`s; interactive mode fires the same
   approval gate `request_user_review_artifact` used to, then records
   `append_review_result` (+ `append_accepted` on agreement). Replaces the old
   `__complete_artifact`/promotion path entirely — there is nothing to
   materialize, since the document was already a real file.
-- `__record_guided_revision(...)` (also called from the post-dispatch hook) →
+- `CheckpointCoordinator.record_guided_revision(...)` (also called from the post-dispatch hook) →
   after a `filesystem`/`edit_file` checkpoint commit, if the affected path is
   tracked under the bound project's `specs`/`src`/`test`, appends a
   `new_revision` jsonl entry carrying that exact commit's sha — in **both**
   workflow modes (§7).
-- `__run_rollback` (exposed via `_EngineServices.rollback`) → delegates
+- `_run_rollback` (exposed via `_EngineServices.rollback`) → delegates
   directly to `RootMirrorManager.rollback` (the same primitive Problem Solver
   uses) and resets the in-memory conversation. No index to rebuild.
-- `__disable_autonomous` (exposed via
+- `_disable_autonomous` (exposed via
   `_EngineServices.disable_autonomous_mode`) backs the
   guide's `disable_autonomous_mode` tool.
-- `__create_project` (exposed via `_EngineServices.create_project`) backs the
+- `_create_project` (exposed via `_EngineServices.create_project`) backs the
   `create_new_project` tool: slugify name → `_unique_child_dir` under the
   session physical root → `mkdir` → add to the logical-root map →
   `RootMirrorManager.prepare` (scaffolds `.kodo/`+mirror) → push
   `EVT_WORKSPACE_ADD_FOLDER`.
-- **Per-tool-call checkpointing (both workflow modes)** — `__checkpoint_enabled()`
+- **Per-tool-call checkpointing (both workflow modes)** — `CheckpointCoordinator._enabled()`
   is now unconditional (Guided mode drives the same mirror Problem Solver
   always has — there is no separate Guided checkpoint system to collide with,
-  see §7). Inside `__dispatch_tool_calls`, around each of `_MUTATING_TOOLS =
-  {"filesystem", "edit_file", "run_command"}`: `__checkpoint_prepare(tool_name,
-  tool_input)` resolves the affected path(s) (`__mutation_paths` — `edit_file`'s
+  see §7). Inside `_dispatch_tool_calls`, around each of `_MUTATING_TOOLS =
+  {"filesystem", "edit_file", "run_command"}`: `CheckpointCoordinator.prepare(tool_name,
+  tool_input)` resolves the affected path(s) (`CheckpointCoordinator.mutation_paths` — `edit_file`'s
   `path`; `filesystem`'s `destination`/`path`/`source`; `run_command`'s `cwd`,
   gated by `command_may_mutate(parse_command(cmd))`, §10b) and calls
-  `__root_mirrors.prepare(path)` **before** dispatch, so the baseline commit
-  captures pre-change state. After dispatch, `__checkpoint_commit(...)` calls
-  `__root_mirrors.commit_for_path(path, label)` (`run_command` additionally
+  `CheckpointCoordinator.mirrors.prepare(path)` **before** dispatch, so the baseline commit
+  captures pre-change state. After dispatch, `CheckpointCoordinator.commit(...)` calls
+  `CheckpointCoordinator.mirrors.commit_for_path(path, label)` (`run_command` additionally
   `sweep_initialized`s every other already-initialised mirror, to catch writes
-  outside the command's `cwd`). `__finalize_tool_result` injects the resulting
+  outside the command's `cwd`). `_finalize_tool_result` injects the resulting
   `checkpoint.sha` into the LLM-visible result as `checkpoint_sha` (declared
   optional in each of the 3 tools' `output_schema`, so `normalize_output` keeps
   it without flagging non-compliance), rides `{root, sha, parent}` out-of-band
   on `EVT_AGENT_TOOL_CALL_DETAIL` as a `"checkpoint"` key (`null` when no commit
   happened), and — for `filesystem`/`edit_file` only — drives
-  `__record_guided_revision` (above). New public `handle_checkpoint_undo(root,
+  `CheckpointCoordinator.record_guided_revision` (above). New public `handle_checkpoint_undo(root,
   sha)` / `handle_checkpoint_rollback(root, sha)` delegate straight to
   `RootMirrorManager.undo`/`.rollback` — **files-only**, they never touch
   conversation history (deliberately distinct from the Guide's
   conversation-rewinding `rollback` tool, which now calls the same
   `RootMirrorManager.rollback` primitive but additionally resets
-  `__main_messages`).
+  `_main_messages`).
 
 **The engine injects into every `ToolDispatcher`:** `GateOrchestrator`,
-`SessionState`, and one `_EngineServices` adapter wrapping `__run_subagent` /
-`__run_author_critic_iteration` / `__run_rollback` /
-`__disable_autonomous`. The per-prompt autonomous mode is read
+`SessionState`, and one `_EngineServices` adapter wrapping `_run_subagent` /
+`_run_author_critic_iteration` / `_run_rollback` /
+`_disable_autonomous`. The per-prompt autonomous mode is read
 from `SessionState.effective_autonomous` rather than passed in.
 
 ### 12.2 Tool dispatch (`tools.ToolDispatcher`)
 
 Dispatch no longer lives in `runtime`; see §6A. The engine builds one
 `tools.ToolDispatcher` per agent run (guide and leaf alike) and passes its
-`dispatch` as the `tool_dispatch` callback into `__run_agent_turn`. After the run
+`dispatch` as the `tool_dispatch` callback into `_run_agent_turn`. After the run
 it reads `dispatcher.returned_output` and uses `dispatcher.stop_requested`
 as the `stop_after_tools` predicate. There is one unified surface — no
 guide-vs-leaf split.
@@ -769,8 +808,8 @@ guide-vs-leaf split.
 | [_bootstrap.py](../src/kodo/runtime/_bootstrap.py) | `locate_guide_session()` | Workspace-tier session location only: locate/create the Guide session marker + `sessions/` dir. There is no project-tier bootstrap anymore — a document's state lives entirely in its own `.jsonl` evolution log (§7), read on demand. |
 | [_guide.py](../src/kodo/runtime/_guide.py) | `GuideMarker` | Reads/writes `.kodo/guide.session`. Used by `locate_guide_session`. |
 | [_checkpoints.py](../src/kodo/runtime/_checkpoints.py) | `RootMirrorManager`, `CheckpointRef` (frozen), `command_may_mutate()` | The **single** shadow-git mirror coordinator, now driving both workflow modes (§12.1) — there is no longer a second, Guided-only mirror at the same path to collide with. Bridges the path-agnostic `mirror.ShadowMirror` to Kōdo's conventions: every root a session may touch gets its own independent mirror at `<root>/.kodo/checkpoints`, created **lazily** the first time a file-mutating tool writes under that root (scaffolding `<root>/.kodo/` + `kodo.md` via `ProjectLayout.scaffold_kodo_dir()`, §5, at that moment). `_root_for(path)` maps a path to its enclosing root by longest-prefix match. `_KODO_EXCLUDES` (node_modules/.venv/`__pycache__`/dist/build/egg-info/caches + always `.kodo/`+`.git/`) seed each mirror's `info/exclude` **on top of** the project's own `.gitignore` — this is *why* `.kodo/guided_dev_state/*.jsonl` (§7) is never committed by this same mirror. One `asyncio.Lock` serialises `prepare`/`commit_for_path`/`sweep_initialized`/`undo`/`rollback`. The free function `command_may_mutate(parsed: ParsedCommand) -> bool` is the caller-side mutation heuristic the parser (§10b) deliberately omits: `True` if any redirection is an output redirect (`> >> >\| &> &>> <>`), else `True` unless every executable's basename is on a small read-only allow-list (`ls cat grep find rg fd pwd wc diff …` — notably **not** `git`, since even read-only-looking git subcommands can touch `.git/` state) — **defaults to `True` (mutating) whenever uncertain**, so a missed checkpoint is never the failure mode; an unnecessary no-op commit is. |
-| [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse`, `PermissionResponse` | **Composes** `WebSocketDispatcher` + `TransientStore`. `fire_approval`/`fire_questions`/`fire_permission` send `kind=request`, register a future, and await. Only approvals persist a `pending_prompt` (for restart re-surface); a question batch or permission prompt is instead re-driven/stubbed on restart from its flushed `tool_use` (SESSIONS.md, SECURITY.md §7). `fire_questions(questions, tool_call_id)` carries the whole `ask_user` batch plus the calling tool_use id and returns normalized `{selected, free_text}` answers. `fire_permission(...)` carries one gated tool call's preview (tool/risk/intent/reason/params) and returns the user's allow/deny + optional feedback (`prompt.permission`, doc/SECURITY.md §6); malformed actions coerce to deny. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by `__finalize_document` (§12.1) for the interactive document-review gate. |
-| [_session.py](../src/kodo/runtime/_session.py) | `SessionState` | Mutable `phase`/`agent`/`component` plus the two mode fields: `autonomous` (user-facing Autonomous/Interactive, set by `handle_mode_set`, reported in `to_dict()`/`EVT_STATE`) and `effective_autonomous` (frozen per prompt by `__run_worker`; what tools/registry actually read), and `workflow_mode` (`"guided"`/`"problem_solving"`, in `to_dict()`). Shared by the engine; satisfies `tools.SessionLike` (`finalize_project` writes `phase`; tools read `effective_autonomous`). |
+| [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse`, `PermissionResponse` | **Composes** `WebSocketDispatcher` + `TransientStore`. `fire_approval`/`fire_questions`/`fire_permission` send `kind=request`, register a future, and await. Only approvals persist a `pending_prompt` (for restart re-surface); a question batch or permission prompt is instead re-driven/stubbed on restart from its flushed `tool_use` (SESSIONS.md, SECURITY.md §7). `fire_questions(questions, tool_call_id)` carries the whole `ask_user` batch plus the calling tool_use id and returns normalized `{selected, free_text}` answers. `fire_permission(...)` carries one gated tool call's preview (tool/risk/intent/reason/params) and returns the user's allow/deny + optional feedback (`prompt.permission`, doc/SECURITY.md §6); malformed actions coerce to deny. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by `_finalize_document` (§12.1) for the interactive document-review gate. |
+| [_session.py](../src/kodo/runtime/_session.py) | `SessionState` | Mutable `phase`/`agent`/`component` plus the two mode fields: `autonomous` (user-facing Autonomous/Interactive, set by `handle_mode_set`, reported in `to_dict()`/`EVT_STATE`) and `effective_autonomous` (frozen per prompt by `_run_worker`; what tools/registry actually read), and `workflow_mode` (`"guided"`/`"problem_solving"`, in `to_dict()`). Shared by the engine; satisfies `tools.SessionLike` (`finalize_project` writes `phase`; tools read `effective_autonomous`). |
 | [_session_log.py](../src/kodo/runtime/_session_log.py) | `SessionLog` | Append-only JSONL per session. |
 
 **State:** Engine, dispatch (now in `tools/`), gates, rollback are
@@ -786,7 +825,7 @@ implemented and exercised by the guide/author-critic flow.
 | [state/_memory.py](../src/kodo/state/_memory.py) | ⚠️ **Stub** (`__all__ = []`). |
 | [security/_layer.py](../src/kodo/security/_layer.py) `SecurityLayer` | ✅ **Implemented** — judges every tool call per the live `command_control` posture (permissive/defensive/smart); `ask` verdicts fire `prompt.permission` from the dispatcher. Full design in [doc/SECURITY.md](SECURITY.md). |
 | [security/_analysis.py](../src/kodo/security/_analysis.py) | ✅ Static `run_command` workspace-target analysis over the `shellparser` parse (outside paths / substitutions / read-only fast path). |
-| [security/_judge.py](../src/kodo/security/_judge.py) | ✅ SMART-mode LLM intent judge: prompt builder + fail-closed JSON verdict parser. The LLM callable itself is injected by the engine (`__security_judge`). |
+| [security/_judge.py](../src/kodo/security/_judge.py) | ✅ SMART-mode LLM intent judge: prompt builder + fail-closed JSON verdict parser. The LLM callable itself is injected by the engine (`_security_judge`). |
 | [security/](../src/kodo/security/) `_rules`, `_store`, `_defaults` | ⚠️ **Stubs** — reserved for the future persistent-rules iteration (`security.add_rule`, SECURITY.md §9). |
 
 ---
@@ -835,8 +874,8 @@ llama-server).
 ## 15. End-to-end flows
 
 **Prompt → work:** client `prompt.submit` → `_app` handler →
-`engine.handle_prompt_submit` (enqueues) → worker → `__run_guide_with_input`
-→ `__run_agent_turn` streams the Guide LLM → tool calls dispatch through
+`engine.handle_prompt_submit` (enqueues) → worker → `_run_guide_with_input`
+→ `_run_agent_turn` streams the Guide LLM → tool calls dispatch through
 the guide's `tools.ToolDispatcher` → `run_subagent`/`run_author_critic_iteration`
 call back into the engine (via the injected `EngineServices`), which spawns leaf
 agents — each with its own `ToolDispatcher` — that write real files directly
@@ -845,8 +884,8 @@ under `specs/`/`src/`/`test/` via `filesystem`/`edit_file`, tracked by a
 **guided** workflow.
 
 **Prompt → work (problem-solving):** when `workflow_mode == "problem_solving"`,
-the worker routes the same prompt to `__run_problem_solver_with_input` instead.
-The `problem_solver` agent runs `__run_agent_turn` with its own dispatcher,
+the worker routes the same prompt to `_run_problem_solver_with_input` instead.
+The `problem_solver` agent runs `_run_agent_turn` with its own dispatcher,
 reading/writing the project's real files via the file-I/O and `run_command`
 tools and talking to the user directly (`ask_user`, plus `<kodo_info>` progress
 callouts in its message text). Unlike the Guide it has no fixed pipeline, but it
@@ -859,27 +898,27 @@ trivial ask. No critics, no artifact index.
 **Mode toggles (both apply to the *next* prompt):** the VSIX sidebar has two
 toggles. *Autonomous/Interactive* → `toggle_autonomous` → `mode.set {autonomous}`
 → `handle_mode_set` sets `SessionState.autonomous` (and persists it); it does
-**not** touch the in-flight prompt — `__run_worker` copies it into
+**not** touch the in-flight prompt — `_run_worker` copies it into
 `effective_autonomous` only when the next prompt is dequeued, so the sidebar
 shows a "applies to your next prompt" notice. *Guided/Problem-Solving* →
 `toggle_workflow_mode` → `workflow.set {mode}` → `handle_workflow_set` sets
 `SessionState.workflow_mode`, which the worker reads at the next dequeue to pick
 the entry agent. Both emit `EVT_STATE`; the Guide can also drop autonomous
-mid-run via the `disable_autonomous_mode` tool (engine `__disable_autonomous`
+mid-run via the `disable_autonomous_mode` tool (engine `_disable_autonomous`
 clears both `autonomous` and `effective_autonomous` immediately and emits
 `EVT_AUTONOMOUS_CHANGED`).
 
 **Document acceptance:** a critic calls `document_feedback(path, accept=True,
 concerns=[])` → `tools/_document_feedback.handle` appends a `feedback` jsonl
 entry (§7) and returns `{"status": "recorded"}` → the engine's post-dispatch
-hook in `__finalize_tool_result` sees `accept: true` and calls
-`__finalize_document(path)`: autonomous mode immediately appends an `accepted`
+hook in `_finalize_tool_result` sees `accept: true` and calls
+`_finalize_document(path)`: autonomous mode immediately appends an `accepted`
 entry; interactive mode fires the approval gate, then appends `review_result`
 (+ `accepted` on agreement). There is no promotion step — the file was already
 real.
 
 **User gate:** any `ask_user`/`escalate_blocker`, or the document-review gate
-inside `__finalize_document` → `GateOrchestrator.fire_*` sends a `kind=request`,
+inside `_finalize_document` → `GateOrchestrator.fire_*` sends a `kind=request`,
 registers a future, and awaits the client's `kind=response` (approvals also
 persist `pending_prompt`; question batches don't — they re-drive from the
 flushed `tool_use` on restart). `ask_user`'s batch renders as an in-feed
@@ -897,19 +936,19 @@ re-asked from scratch via the dangling-tool-use resume path. There is no index t
 document's state is read from its own `.jsonl` log on demand (§7).
 
 **Rollback:** Guide `rollback` → `tools/_rollback.handle` →
-`EngineServices.rollback` → engine `__run_rollback` → directly
+`EngineServices.rollback` → engine `_run_rollback` → directly
 `RootMirrorManager.rollback` (the same primitive Problem Solver's
 checkpoint-card "Rollback to this state" control uses) → engine resets the
 in-memory conversation and starts fresh.
 
 **Per-tool-call checkpointing + undo/rollback (both workflow modes, §10b/§12.1):**
 a `filesystem`/`edit_file`/`run_command` dispatch, in **either** mode, is
-bracketed by `__checkpoint_prepare` (baselines the enclosing root's
+bracketed by `CheckpointCoordinator.prepare` (baselines the enclosing root's
 `RootMirrorManager` mirror, scaffolding `.kodo/`+`kodo.md` lazily on first touch)
-and `__checkpoint_commit` (commits the real tree, surfacing `{root, sha, parent}`
+and `CheckpointCoordinator.commit` (commits the real tree, surfacing `{root, sha, parent}`
 on `EVT_AGENT_TOOL_CALL_DETAIL` and `checkpoint_sha` in the tool's own result).
 For `filesystem`/`edit_file`, that same checkpoint also drives
-`__record_guided_revision` (§7) when the affected path is tracked. The
+`CheckpointCoordinator.record_guided_revision` (§7) when the affected path is tracked. The
 WebView renders an **"↩ undo this change"** link next to that tool call and a
 **"⟲ Rollback to this state"** control below its params box whenever a checkpoint
 rode along. Clicking either sends `checkpoint.undo`/`checkpoint.rollback`
@@ -954,7 +993,7 @@ source's.
    query (`guided_dev_status` re-walks the directory each call). There is
    nothing to construct at bootstrap, nothing to rebuild on rollback, and
    nothing shared across `ToolDispatcher` instances.
-2. **One tool-dispatch surface, one generic loop.** `__run_agent_turn` is
+2. **One tool-dispatch surface, one generic loop.** `_run_agent_turn` is
    agent-agnostic; the only difference between the Guide and a leaf agent
    is the `tools` list (from each agent's frontmatter via `tools_for_agent`). Both
    route through the same `tools.ToolDispatcher`; per-run state
