@@ -102,6 +102,7 @@ from kodo.transport import (
     EVT_PROJECT_BOUND,
     EVT_REVIEW_STARTED,
     EVT_REVIEW_VERDICT,
+    EVT_SECURITY_JUDGING,
     EVT_SESSION_NAME,
     EVT_SESSION_NAMING,
     EVT_STATE,
@@ -187,6 +188,18 @@ _RESUME_REDISPATCH_TOOLS = _SUBAGENT_SPAWNING_TOOLS | {"ask_user", "escalate_blo
 # File-mutating tools that earn a shadow-mirror checkpoint after each call, in
 # both workflow modes.
 _MUTATING_TOOLS = frozenset({"filesystem", "edit_file", "run_command"})
+
+# Appended to session.jsonl (as a real, LLM-visible ``assistant`` message)
+# whenever the user clicks Stop mid-turn — see ``stop``/``__persist_interrupted_turn``.
+# This is the context-visible counterpart to the client-only, display-only
+# ``<kodo_crit>`` callout the WebView renders for the human (SessionEntryView's
+# ``interrupted`` case, tagged ``exclude_from_context`` and never sent here):
+# that one tells the *user* what happened, this one tells the *model*.
+_STOPPED_TURN_NOTICE = (
+    "The ongoing session was interrupted by the user before this turn finished "
+    "responding — anything above from this turn may be incomplete. I will not "
+    "silently resume or retry it; I'll wait for the user's next message."
+)
 
 # Of those, the two whose commit also earns a `new_revision` entry in a
 # tracked document's .jsonl evolution log (run_command's targets are too
@@ -686,16 +699,31 @@ class WorkflowEngine:
                 entry.unlink()
 
     async def stop(self) -> None:
-        """Cancel the worker and transition the session to stopped state."""
+        """Cancel the in-flight turn and return the session to awaiting_user.
+
+        Cancelling the worker task abandons whatever it had in flight, so
+        before anything else this folds that into ``session.jsonl`` exactly
+        like a normal turn boundary would (see
+        :meth:`__persist_interrupted_turn`) — nothing streamed to the client
+        is silently dropped from the record. The worker is then restarted:
+        the one it replaces was the sole consumer of ``__queue``, so without
+        this the engine would report "not running" (accepting input) while
+        actually never processing another queued prompt.
+        """
+        was_running = self.__session.phase == "running"
+        entry_agent = self.__session.agent
         if self.__worker is not None:
             self.__worker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.__worker
             self.__worker = None
+        if was_running and entry_agent is not None:
+            self.__persist_interrupted_turn(entry_agent)
         self.__session.phase = "stopped"
         self.__session.agent = None
         await self.__emit_state()
-        _log.info("Runtime worker stopped")
+        self.__worker = asyncio.create_task(self.__run_worker(), name="kodo-worker")
+        _log.info("Runtime worker stopped by user (entry_agent=%s); session ready", entry_agent)
 
     async def handle_prompt_submit(self, text: str, request_id: str) -> None:
         """Enqueue a user prompt for the Guide to process.
@@ -1159,29 +1187,38 @@ class WorkflowEngine:
         call's USD cost is folded into the running session total (cost-only
         ``usage.update``, no feed entry). Exceptions propagate: the security
         layer treats any failure as an ``ask`` (fail closed).
+
+        Brackets the call with ``security.judging`` (true/false) so the client
+        can show an "Evaluating…" indicator — this round streams nothing and
+        can take several seconds to tens of seconds, which otherwise looks
+        like an unexplained stall.
         """
-        plugin, model_id, routing = await self.__resolve_plugin(self.__entry_capability())
-        text_parts: list[str] = []
-        turn_end: TurnEnd | None = None
-        async for event in self.__gateway.stream_query(
-            routing=routing,
-            plugin=plugin,
-            sink=self.__sink,
-            stream_id=uuid.uuid4().hex,
-            model=model_id,
-            system=system,
-            messages=[Message(role="user", content=user)],
-            tools=[],
-            cache_breakpoints=[0],
-        ):
-            if isinstance(event, TokenDelta):
-                text_parts.append(event.text)
-            elif isinstance(event, TurnEnd):
-                turn_end = event
-        if turn_end is not None:
-            self.__cumulative_usd += turn_end.usage.usd_cost
-            await self.__emit_cost_only()
-        return "".join(text_parts)
+        await self.__emit_security_judging(True)
+        try:
+            plugin, model_id, routing = await self.__resolve_plugin(self.__entry_capability())
+            text_parts: list[str] = []
+            turn_end: TurnEnd | None = None
+            async for event in self.__gateway.stream_query(
+                routing=routing,
+                plugin=plugin,
+                sink=self.__sink,
+                stream_id=uuid.uuid4().hex,
+                model=model_id,
+                system=system,
+                messages=[Message(role="user", content=user)],
+                tools=[],
+                cache_breakpoints=[0],
+            ):
+                if isinstance(event, TokenDelta):
+                    text_parts.append(event.text)
+                elif isinstance(event, TurnEnd):
+                    turn_end = event
+            if turn_end is not None:
+                self.__cumulative_usd += turn_end.usage.usd_cost
+                await self.__emit_cost_only()
+            return "".join(text_parts)
+        finally:
+            await self.__emit_security_judging(False)
 
     async def __run_titler_turn(
         self,
@@ -1773,6 +1810,27 @@ class WorkflowEngine:
                         tool_calls.append(event)
                     elif isinstance(event, TurnEnd):
                         turn_end = event
+            except asyncio.CancelledError:
+                # The user clicked Stop mid-stream (see ``stop``). Whatever
+                # text/thinking/tool_use had arrived so far lives only in the
+                # local accumulators above and would vanish silently when this
+                # coroutine unwinds, so fold it into a real (possibly partial)
+                # assistant message and persist it now — same durability a
+                # normal turn boundary gets — before letting the cancellation
+                # continue propagating. Only for the shared main-turn call
+                # (``track_context``): a subsession must leave its log ending
+                # on a clean tool_result boundary (see ``flush_before_dispatch``
+                # note above), so it does not get a dangling partial reply.
+                await self.__sink.send(Envelope.make_stream_end(stream_id))
+                if track_context:
+                    partial = self.__partial_assistant_message(
+                        text_parts, thinking_parts, thinking_signature, tool_calls
+                    )
+                    if partial is not None:
+                        messages = messages + [partial]
+                        _flush()
+                    self.__main_messages = messages
+                raise
             except Exception:
                 await self.__sink.send(Envelope.make_stream_end(stream_id))
                 raise
@@ -1828,6 +1886,8 @@ class WorkflowEngine:
                         Message(role="assistant", content="".join(text_parts) or "(no text)")
                     ]
                 _flush()
+                if track_context:
+                    self.__main_messages = messages
                 break
 
             assistant_content: list[dict[str, object]] = []
@@ -1854,6 +1914,14 @@ class WorkflowEngine:
             # flush_before_dispatch note above.
             if flush_before_dispatch:
                 _flush()
+                # Keep the in-memory main history exactly in sync with what is
+                # now durable, so a cancellation during dispatch below (the
+                # user clicking Stop while a tool is running) leaves
+                # ``__main_messages`` — not just session.jsonl — ending on
+                # this tool_use, which is what ``__has_dangling_tool_use``
+                # (called from ``stop`` right after) reads.
+                if track_context:
+                    self.__main_messages = messages
 
             calls = [(tc.tool_use_id, tc.tool_name, tc.tool_input) for tc in tool_calls]
             tool_results = await self.__dispatch_tool_calls(
@@ -1864,6 +1932,8 @@ class WorkflowEngine:
             # Persist the results too, so a durable transcript never trails a
             # completed tool call either.
             _flush()
+            if track_context:
+                self.__main_messages = messages
 
             if stop_after_tools is not None and stop_after_tools():
                 break
@@ -1884,6 +1954,42 @@ class WorkflowEngine:
         if signature is not None:
             block["signature"] = signature
         return block
+
+    def __partial_assistant_message(
+        self,
+        text_parts: list[str],
+        thinking_parts: list[str],
+        thinking_signature: str | None,
+        tool_calls: list[ToolCallEvent],
+    ) -> Message | None:
+        """Build an assistant message from a stream cut short by Stop.
+
+        Mirrors the normal end-of-turn construction (same method, just reached
+        via ``CancelledError`` instead of a clean ``async for`` exit), so a
+        turn interrupted mid-stream persists exactly what the client already
+        rendered — no more, no less. Returns ``None`` if nothing had arrived
+        yet (Stop raced the very start of the call), so the caller adds
+        nothing rather than persisting an empty placeholder.
+        """
+        thinking_text = "".join(thinking_parts)
+        text = "".join(text_parts)
+        if not thinking_text and not text and not tool_calls:
+            return None
+        content: list[dict[str, object]] = []
+        if thinking_text:
+            content.append(self.__thinking_block(thinking_text, thinking_signature))
+        if text:
+            content.append({"type": "text", "text": text})
+        for tc in tool_calls:
+            content.append(
+                {
+                    "type": "tool_use",
+                    "id": tc.tool_use_id,
+                    "name": tc.tool_name,
+                    "input": tc.tool_input,
+                }
+            )
+        return Message(role="assistant", content=content)
 
     async def __dispatch_tool_calls(
         self,
@@ -2846,6 +2952,54 @@ class WorkflowEngine:
             return False
         return any(isinstance(b, dict) and b.get("type") == "tool_use" for b in last.content)
 
+    def __persist_interrupted_turn(self, entry_agent: str) -> None:
+        """Fold a user-initiated Stop into ``session.jsonl`` instead of losing it.
+
+        Called from :meth:`stop` right after the worker task is cancelled.
+        Cancellation can land in one of two places, and both are already
+        durable by the time we get here:
+
+        * mid tool-dispatch — the main turn always flushes the assistant's
+          ``tool_use`` message to disk *before* dispatching any tool (see
+          ``flush_before_dispatch`` on :meth:`__run_agent_turn`), so
+          :meth:`__has_dangling_tool_use` finds it and this synthesizes the
+          missing ``tool_result`` for each pending call, exactly like
+          :meth:`__resume_main_turn` does for a cold restart.
+        * mid LLM stream — :meth:`__run_agent_turn`'s own ``CancelledError``
+          handler already turned whatever text/thinking/tool_use had arrived
+          into a persisted (possibly partial) assistant message before
+          re-raising, so there is nothing further to flush here.
+
+        Either way this appends one more, LLM-visible ``assistant`` message
+        telling the agent the previous turn was cut short — see
+        :data:`_STOPPED_TURN_NOTICE`.
+        """
+        if self.__has_dangling_tool_use():
+            last = self.__main_messages[-1]
+            assert isinstance(last.content, list)
+            tool_uses = [
+                b for b in last.content if isinstance(b, dict) and b.get("type") == "tool_use"
+            ]
+            tool_results = [
+                self.__interrupted_tool_result(str(b["id"]), str(b["name"]), reason="stopped")
+                for b in tool_uses
+            ]
+            results_msg = Message(role="user", content=tool_results)
+            self.__main_messages = self.__main_messages + [results_msg]
+            self.__transient.append_message(
+                results_msg.role, results_msg.content, entry_agent=entry_agent
+            )
+
+        notice = Message(role="assistant", content=_STOPPED_TURN_NOTICE)
+        self.__main_messages = self.__main_messages + [notice]
+        # kind="stopped_notice" keeps this out of the LLM wire format (only
+        # role/content round-trip into __main_messages) but lets
+        # __message_to_entries replay it as the same red "interrupted" callout
+        # the live client shows, instead of a fake user-typed chat bubble.
+        self.__transient.append_message(
+            notice.role, notice.content, entry_agent=entry_agent, kind="stopped_notice"
+        )
+
     def __last_entry_agent(self) -> str:
         """Entry agent that produced the last persisted main message.
 
@@ -2968,21 +3122,33 @@ class WorkflowEngine:
         await self.__maybe_auto_compact()
 
     @staticmethod
-    def __interrupted_tool_result(tool_use_id: str, tool_name: str) -> dict[str, object]:
-        """Stand-in ``tool_result`` for a non-spawn tool cut off by a restart.
+    def __interrupted_tool_result(
+        tool_use_id: str, tool_name: str, reason: str = "restart"
+    ) -> dict[str, object]:
+        """Stand-in ``tool_result`` for a non-spawn tool cut off mid-dispatch.
 
         Its side effects (a shell command, a file write, ...) may already have
         landed before the interruption and there is no result ledger to dedupe
-        against, so resume never re-executes it. The model instead sees an
+        against, so it is never re-executed. The model instead sees an
         ``error`` envelope (rendered with a failure badge, and read back by
         :func:`tool_result_succeeded` as a failure) telling it the call did not
         complete and was not retried, so it can decide whether to re-issue it.
+
+        Args:
+            reason: ``"restart"`` for a cold crash-resume (see
+                :meth:`__resume_main_turn`) or ``"stopped"`` for a live
+                user-initiated Stop (see :meth:`__persist_interrupted_turn`) —
+                selects the wording of the cause only.
         """
+        cause = (
+            "the session was interrupted (server restart or window reload)"
+            if reason == "restart"
+            else "the user clicked Stop"
+        )
         payload = {
             "error": (
-                f"The '{tool_name}' call did not complete before the session was "
-                "interrupted (server restart or window reload) and was NOT "
-                "re-executed to avoid duplicating side effects. Any changes it "
+                f"The '{tool_name}' call did not complete before {cause} and was "
+                "NOT re-executed to avoid duplicating side effects. Any changes it "
                 "may have started are reflected in the workspace; re-issue the "
                 "call if you still need it."
             )
@@ -3346,6 +3512,13 @@ class WorkflowEngine:
                 {"type": "subagent_task", "content": content if isinstance(content, str) else ""}
             )
             return out
+        # The LLM-only "you were stopped" note __persist_interrupted_turn
+        # appends (see _STOPPED_TURN_NOTICE) — replay it as the same red
+        # callout the live client shows on the Stop itself, not as a user
+        # message the human never actually typed.
+        if msg.get("kind") == "stopped_notice":
+            out.append({"type": "interrupted"})
+            return out
         if isinstance(content, str):
             if role == "user":
                 atts = _history_attachment_links(msg.get("attachments"), session_dir)
@@ -3649,6 +3822,13 @@ class WorkflowEngine:
         titling round-trip (which streams nothing) does not look like a stall.
         """
         await self.__sink.send(Envelope.make_event(EVT_SESSION_NAMING, {"active": active}))
+
+    async def __emit_security_judging(self, active: bool) -> None:
+        """Tell the client whether the security layer's silent intent-judge
+        LLM call is running — drives a transient "Evaluating…" indicator so
+        the (potentially long) judge round-trip does not look like a stall.
+        """
+        await self.__sink.send(Envelope.make_event(EVT_SECURITY_JUDGING, {"active": active}))
 
     async def __emit_cost_only(self) -> None:
         """Push a cost-only ``usage.update`` (no per-call token entry).

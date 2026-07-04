@@ -225,6 +225,19 @@ already in the feed and its result records the outcome (a denial is visible
 as the tool's error result). Reconnects re-deliver an unanswered request via
 the standard `Outbox` buffer-and-replay.
 
+**`security.judging`** (server → client, `kind=event`; WS_PROTOCOL.md §5.9b.1):
+brackets the SMART-mode intent judge's LLM round (§3.2) — `{"active": true}`
+right before `WorkflowEngine.__security_judge` calls the model, `{"active":
+false}` in its `finally` once the verdict text (or an exception) comes back.
+Only that judge round is slow; the static fast paths (§3.1) and the
+threshold-only postures never touch the LLM, so they never fire this event.
+Forwarded statelessly (like `session.naming`, no reconnect replay — the call
+itself doesn't survive a restart) as `security_judging` to the webview, which
+shows an "Evaluating Kōdo's action…" indicator (`SecurityJudgingIndicator` in
+`indicators.tsx`) for the gap between the tool call appearing in the feed and
+either the call proceeding silently (`allow`) or the permission panel above
+appearing (`ask`).
+
 ## 7. Crash / resume semantics
 
 The gated `tool_use` is flushed to `session.jsonl` **before** dispatch (the

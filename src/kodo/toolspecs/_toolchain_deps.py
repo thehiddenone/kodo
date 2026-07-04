@@ -8,6 +8,11 @@ the ``toolchain_depsmgr`` sub-agent, which executes the project's
 plus a remediation ``message`` telling the caller how to get one generated (run
 the toolchain-setup sub-agent), so the caller can recover rather than seeing a
 bare failure.
+
+``project_root_path`` is required (mirrors ``toolchain_build``'s mandatory
+``project_path``) and is forwarded verbatim into the sub-agent's task input,
+which is itself required there too — the sub-agent never discovers its own
+project root, so the caller must always name one.
 """
 
 from __future__ import annotations
@@ -26,7 +31,9 @@ TOOLCHAIN_DEPS: ToolSpec = ToolSpec(
         "way to change dependency files — agents do not edit manifests or "
         "lockfiles directly. The work is performed by the dependency-management "
         "sub-agent, which follows the project's `DEPENDENCIES.md`.\n\n"
-        "Inputs: `action` (add | remove | update), `name` (the package), optional "
+        "Inputs: `project_root_path` (required — absolute path of the project "
+        "root to operate on; the sub-agent never touches anything outside it), "
+        "`action` (add | remove | update), `name` (the package), optional "
         "`version` (constraint; omit for latest), optional `kind` (which "
         "dependency category — `runtime` (default), `dev`, `test`, `optional`, or "
         "`build`), and optional `extra` (the extras group, for `kind: optional`).\n\n"
@@ -39,6 +46,13 @@ TOOLCHAIN_DEPS: ToolSpec = ToolSpec(
     input_schema={
         "type": "object",
         "properties": {
+            "project_root_path": {
+                "type": "string",
+                "description": (
+                    "Absolute path of the project root to operate on (the directory "
+                    "holding, or that should hold, DEPENDENCIES.md)."
+                ),
+            },
             "action": {
                 "type": "string",
                 "enum": ["add", "remove", "update"],
@@ -64,7 +78,7 @@ TOOLCHAIN_DEPS: ToolSpec = ToolSpec(
                 "description": "Extras/optional-feature group name (only for `kind: optional`).",
             },
         },
-        "required": ["action", "name"],
+        "required": ["project_root_path", "action", "name"],
     },
     output_schema={
         "type": "object",
@@ -102,6 +116,7 @@ TOOLCHAIN_DEPS: ToolSpec = ToolSpec(
     },
     security_impact=SecurityImpact.HIGH,
     input_visibility={
+        "project_root_path": "always",
         "action": "always",
         "name": "always",
         "version": "visible",

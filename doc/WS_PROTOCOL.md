@@ -384,6 +384,14 @@ Brackets the silent titling call (which streams nothing) so the client can show 
 { "type": "session.naming", "active": true }
 ```
 
+### 5.9b.1 `security.judging` — intent judge in flight
+
+Brackets the security layer's silent SMART-mode intent-judge LLM call (SECURITY.md §3.2), which streams nothing and can take several seconds to tens of seconds. Emitted `true` before the call and `false` when it finishes (allow, ask, or failure — see `finally` in `WorkflowEngine.__security_judge`). Lets the client show an "Evaluating…" indicator instead of an unexplained pause. Not persisted/replayed on reconnect (same as `session.naming`): if the server dies mid-judge the call itself is gone, so there is nothing to resume.
+
+```json
+{ "type": "security.judging", "active": true }
+```
+
 ### 5.9c `workspace.add_folder` — register a freshly-scaffolded project
 
 Emitted when an agent calls the `create_new_project` tool and the server has scaffolded the new project on disk (its directory, `.kodo/`/`kodo.md` marker, and an initial checkpoint mirror). Asks the extension to add the directory to the open workspace via `vscode.workspace.updateWorkspaceFolders` (no-op if already present). The extension's resulting `onDidChangeWorkspaceFolders` re-pushes `workspace.folders` (§7), reconciling the server's logical-root map. `path` is absolute; `name` is the workspace-folder label.

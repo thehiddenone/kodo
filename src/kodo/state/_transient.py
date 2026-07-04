@@ -536,6 +536,7 @@ class TransientStore:
         content: str | list[dict[str, object]],
         entry_agent: str | None = None,
         attachments: list[dict[str, str]] | None = None,
+        kind: str | None = None,
     ) -> None:
         """Append one top-level LLM message to the main ``session.jsonl``.
 
@@ -556,6 +557,15 @@ class TransientStore:
                 this message, if known.
             attachments (list[dict[str, str]] | None): Attachment links to bind
                 to this message, or ``None``/empty for a plain message.
+            kind (str | None): Optional entry discriminator (mirrors
+                :meth:`append_subsession_message`'s ``kind``), read by
+                ``history_entries``/``__message_to_entries`` to render the line
+                as something other than a plain chat bubble — e.g.
+                ``"stopped_notice"`` for the LLM-only "you were stopped" note
+                :meth:`WorkflowEngine.__persist_interrupted_turn` appends, which
+                replays as the same ``interrupted`` callout as the live one
+                instead of a fake user message. Never part of ``content``, so it
+                never reaches the LLM wire format on reload.
         """
         if self.__paths is None:
             return
@@ -564,6 +574,8 @@ class TransientStore:
             record["entry_agent"] = entry_agent
         if attachments:
             record["attachments"] = attachments
+        if kind is not None:
+            record["kind"] = kind
         self.__append_line(self.__paths.session_log, record)
         self.__touch_last_modified()
 

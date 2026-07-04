@@ -458,8 +458,19 @@ async def test_toolchain_build_compliance(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_toolchain_deps_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path)
-    parsed = _assert_compliant(
+    # project_root_path is mandatory → compliant error envelope without it.
+    missing = _assert_compliant(
         "toolchain_deps", await _dispatch(d, "toolchain_deps", {"action": "add", "name": "foo"})
+    )
+    assert isinstance(missing, dict) and missing["success"] is False
+    assert "project_root_path" in missing["message"]
+    parsed = _assert_compliant(
+        "toolchain_deps",
+        await _dispatch(
+            d,
+            "toolchain_deps",
+            {"project_root_path": str(tmp_path), "action": "add", "name": "foo"},
+        ),
     )
     # The sub-agent's structured result is mapped onto the tool envelope.
     assert parsed["success"] is True
@@ -488,7 +499,12 @@ async def test_toolchain_deps_missing_dependencies_md_returns_remediation(tmp_pa
         project_root=tmp_path,
     )
     parsed = _assert_compliant(
-        "toolchain_deps", await _dispatch(d, "toolchain_deps", {"action": "add", "name": "foo"})
+        "toolchain_deps",
+        await _dispatch(
+            d,
+            "toolchain_deps",
+            {"project_root_path": str(tmp_path), "action": "add", "name": "foo"},
+        ),
     )
     assert parsed["success"] is False
     assert parsed["status"] == "dependencies_md_missing"

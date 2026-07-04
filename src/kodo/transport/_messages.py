@@ -186,6 +186,10 @@ EVT_LLAMA_STATE = "llama.state"
 EVT_AUTONOMOUS_CHANGED = "autonomous.changed"
 EVT_SESSION_NAME = "session.name"
 EVT_SESSION_NAMING = "session.naming"
+# Brackets the security layer's silent LLM intent-judge round (SECURITY.md §3.2),
+# which streams nothing and can take several seconds to tens of seconds. Lets
+# the client show an "Evaluating…" indicator instead of an unexplained stall.
+EVT_SECURITY_JUDGING = "security.judging"
 # Subsession (sub-agent takeover) boundaries — drive the WebView feed dividers
 # ("Narrative Author subagent took over from Kōdo" / "Kōdo resumed").
 EVT_SUBSESSION_STARTED = "subsession.started"

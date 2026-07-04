@@ -6,6 +6,12 @@ project's ``DEPENDENCIES.md`` (the *Dependency Contract*, ``base_dependencies``)
 Its ``output_schema`` carries a ``status`` whose ``dependencies_md_missing``
 value is how it tells the tool the project has no ``DEPENDENCIES.md`` yet, so the
 tool can hand the caller a remediation sub-prompt instead of a bare failure.
+
+``project_root_path`` is a mandatory input: this agent never discovers or
+infers which project to operate on (e.g. via ``get_root_paths``) — the caller
+always hands it a concrete root, and it is a hard rule (see
+``subagent_toolchain_depsmgr.md``) that every file/search/command it issues
+stays inside that root.
 """
 
 from __future__ import annotations
@@ -27,6 +33,14 @@ TOOLCHAIN_DEPSMGR: SubAgentSpec = SubAgentSpec(
             "instructions": {
                 "type": "string",
                 "description": "Human-readable statement of the operation to perform.",
+            },
+            "project_root_path": {
+                "type": "string",
+                "description": (
+                    "Absolute path to the project root to operate in — the directory "
+                    "that holds (or should hold) DEPENDENCIES.md. The agent MUST NOT "
+                    "read, search, or run commands outside this root."
+                ),
             },
             "action": {
                 "type": "string",
@@ -54,7 +68,7 @@ TOOLCHAIN_DEPSMGR: SubAgentSpec = SubAgentSpec(
                 "description": "Extras/optional-feature group name (only for kind=optional).",
             },
         },
-        "required": ["instructions", "action", "name"],
+        "required": ["instructions", "project_root_path", "action", "name"],
     },
     output_schema={
         "type": "object",

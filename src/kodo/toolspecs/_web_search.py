@@ -102,7 +102,7 @@ WEB_SEARCH: ToolSpec = ToolSpec(
         },
         "required": ["themes", "note"],
     },
-    security_impact=SecurityImpact.LOW,
+    security_impact=SecurityImpact.MODERATE,
     input_visibility={
         "query": "always",
         "max_results": "visible",

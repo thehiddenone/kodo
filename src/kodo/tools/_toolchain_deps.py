@@ -11,6 +11,10 @@ sub-agent reports ``status: "dependencies_md_missing"`` and changes nothing, and
 this tool turns that into a ``message`` telling the caller how to get one
 generated (run the toolchain-setup sub-agent) before retrying — exactly the
 error-forwarding the schemas exist to support.
+
+The caller's mandatory ``project_root_path`` is required here too (before the
+sub-agent is even spawned) and forwarded verbatim into its task input — the
+sub-agent operates only inside that root and never discovers it on its own.
 """
 
 from __future__ import annotations
@@ -43,18 +47,21 @@ class ToolchainDepsTool(Tool):
     """Delegate one dependency operation to the ``toolchain_depsmgr`` sub-agent."""
 
     async def handle(self, tool_input: dict[str, object]) -> str:
+        project_root_path = str(tool_input.get("project_root_path", "")).strip()
         action = str(tool_input.get("action", "")).strip()
         name = str(tool_input.get("name", "")).strip()
-        if not action or not name:
+        if not project_root_path or not action or not name:
             return json.dumps(
                 {
                     "success": False,
                     "status": "failed",
-                    "message": "toolchain_deps requires both `action` and `name`.",
+                    "message": (
+                        "toolchain_deps requires `project_root_path`, `action`, and `name`."
+                    ),
                 }
             )
 
-        task_input = self.__build_task_input(tool_input, action, name)
+        task_input = self.__build_task_input(tool_input, project_root_path, action, name)
         result = await self.context.services.run_dependency_manager(task_input)
 
         status = str(result.get("status", "")).strip()
@@ -93,7 +100,7 @@ class ToolchainDepsTool(Tool):
 
     @staticmethod
     def __build_task_input(
-        tool_input: dict[str, object], action: str, name: str
+        tool_input: dict[str, object], project_root_path: str, action: str, name: str
     ) -> dict[str, object]:
         """Render the caller's request into the sub-agent's ``input_schema`` task."""
         version = str(tool_input.get("version", "")).strip()
@@ -107,12 +114,14 @@ class ToolchainDepsTool(Tool):
         if extra:
             parts.append(f"in the optional extras group `{extra}`")
         instructions = (
-            " ".join(parts) + ", by following the project's DEPENDENCIES.md. If DEPENDENCIES.md is "
-            "missing, report status `dependencies_md_missing` and change nothing."
+            " ".join(parts) + f", by following the project's DEPENDENCIES.md at "
+            f"`{project_root_path}`. If DEPENDENCIES.md is missing, report status "
+            "`dependencies_md_missing` and change nothing."
         )
 
         task: dict[str, object] = {
             "instructions": instructions,
+            "project_root_path": project_root_path,
             "action": action,
             "name": name,
             "kind": kind,

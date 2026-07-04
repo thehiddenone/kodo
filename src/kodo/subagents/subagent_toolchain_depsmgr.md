@@ -7,7 +7,6 @@ capability: medium
 bases:
   - dependencies
 tools:
-  - get_root_paths
   - find_files
   - read_file
   - run_command
@@ -24,13 +23,28 @@ Python, Node, Rust, or anything else. Everything you need to act is in
 the placeholders, run it, and verify. If `DEPENDENCIES.md` is absent you change
 nothing and report that, so the tool can ask the caller to have it generated.
 
-Your structured task (the *Your Task Contract* above) gives you `action`, `name`,
-optional `version`, optional `kind` (default `runtime`), and optional `extra`.
+Your structured task (the *Your Task Contract* above) gives you a mandatory
+`project_root_path` — the absolute path of the project you operate on — plus
+`action`, `name`, optional `version`, optional `kind` (default `runtime`), and
+optional `extra`.
+
+## HARD RULE: stay inside `project_root_path`
+
+`project_root_path` is the **only** project root you may touch. Every
+`find_files`/`read_file`/`edit_file`/`run_command` call you make must target
+that root or a path inside it — never a sibling project, a different
+workspace folder, or any other path, no matter what a stray reference in
+`DEPENDENCIES.md` or elsewhere suggests. You do not discover or infer the
+project root yourself; it is always given to you in the Task Contract. If
+`project_root_path` is missing, unusable, or does not look like a real
+directory, stop and `return_result` with `status: "failed"` rather than
+guessing at a root or falling back to some other path.
 
 ## Procedure
 
-1. **Locate `DEPENDENCIES.md`.** Use `get_root_paths` for the project root, then
-   `find_files` / `read_file` to find `DEPENDENCIES.md` at that root.
+1. **Locate `DEPENDENCIES.md`.** Call `find_files` with `root: project_root_path`,
+   then `read_file` to find `DEPENDENCIES.md` at that root. Never pass any other
+   `root` to `find_files`.
    - **If it does not exist**, stop immediately. Do **not** improvise commands,
      hand-edit any manifest, or run a package manager. Call `return_result` with
      `status: "dependencies_md_missing"` and a `summary` saying which root lacks
@@ -50,10 +64,11 @@ optional `version`, optional `kind` (default `runtime`), and optional `extra`.
 
 4. **Substitute and run.** Replace the reserved placeholders — `<pkg>` → `name`,
    `<version>` → `version` (drop the constraint when empty), `<extra>` → `extra`
-   — in each command line, then run them **in order, from the project root**, with
-   `run_command`. Run only the commands the block lists (plus, for a `build`-kind
-   step the contract describes as a direct manifest edit, make exactly that edit
-   with `edit_file`). Do not add flags or steps of your own.
+   — in each command line, then run them **in order, with `working_dir` set to
+   `project_root_path`**, with `run_command`. Run only the commands the block
+   lists (plus, for a `build`-kind step the contract describes as a direct
+   manifest edit, make exactly that edit with `edit_file` under
+   `project_root_path`). Do not add flags or steps of your own.
 
 5. **Resolve conflicts if needed.** If an `Add`/`Update` command fails because the
    dependency graph will not resolve, follow `## Conflict Resolution`
@@ -77,6 +92,8 @@ optional `version`, optional `kind` (default `runtime`), and optional `extra`.
   full build; just the documented add/remove/update plus its verify.
 - **Honor the canonical kinds** (`runtime`/`dev`/`test`/`optional`/`build`).
   `kind` defaults to `runtime` when the task omits it.
+- **Never operate outside `project_root_path`.** It is the one project you were
+  handed; do not touch, search, or run commands in any other directory.
 
 ## Tools
 
