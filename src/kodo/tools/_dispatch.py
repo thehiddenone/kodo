@@ -284,10 +284,7 @@ class ToolDispatcher:
         # doc/SECURITY.md §6, doc/WEB_SEARCH.md §6). ``services`` is None only
         # in tests that don't wire it (never in production, where the engine
         # always injects a real EngineServices).
-        if (
-            tool_name in (RUN_COMMAND.name, WEB_SEARCH.name)
-            and self.__ctx.services is not None
-        ):
+        if tool_name in (RUN_COMMAND.name, WEB_SEARCH.name) and self.__ctx.services is not None:
             await self.__ctx.services.notify_tool_call_in_progress(tool_use_id)
         return await tool_cls(self.__ctx).handle(tool_input)
 

@@ -298,8 +298,6 @@ EVT_STATE = "state"
 EVT_AGENT_STARTED = "agent.started"
 EVT_AGENT_FINISHED = "agent.finished"
 
-# EVT_AGENT_TOKENS = "agent.tokens"  # carried inside stream_chunk / stream_end
-
 # Server → Client event. Emitted before every dispatched tool call except
 # ``ask_user`` (which fires SREQ_PROMPT_QUESTION instead of a tool-call card),
 # so the client can render a one-line activity entry keyed by ``tool_call_id``
@@ -349,19 +347,6 @@ EVT_WEB_SEARCH_NOTE = "web_search.note"
 # the events are silently dropped on arrival (no UI surfaces them yet).
 EVT_REVIEW_STARTED = "review.started"
 EVT_REVIEW_VERDICT = "review.verdict"
-
-# Server → Client event. Defined but never emitted: there is no artifact system
-# to publish/remove from — agents write real files directly, tracked by a
-# per-document ``.jsonl`` evolution log instead (STATE_AND_LIFECYCLE.md §1.1).
-# Was meant to supersede EVT_FILE_CHANGE (deprecated below), which itself is
-# also no longer emitted.
-EVT_ARTIFACT_PUBLISHED = "artifact.published"
-EVT_ARTIFACT_REMOVED = "artifact.removed"
-
-# Server → Client event. Defined but never emitted: superseded by the
-# context.stats/context.compacting/context.compacted trio below before it ever
-# shipped.
-EVT_GUIDE_COMPACTED = "guide.compacted"
 
 # Context-compaction events (in-place compaction of an entry agent's main
 # context; see runtime/_engine/_compaction.py + doc/STATE_AND_LIFECYCLE.md §4.5).

@@ -4,25 +4,18 @@ from kodo.common import Envelope, MessageKind
 
 from ._connection import Connection, SessionChannel
 from ._messages import (
-    # Server → Client events (WS_PROTOCOL.md §5)
     EVT_AGENT_FINISHED,
     EVT_AGENT_STARTED,
-    # EVT_AGENT_TOKENS,
     EVT_AGENT_TOOL_CALL_DETAIL,
     EVT_AGENT_TOOL_CALL_IN_PROGRESS,
     EVT_AGENT_TOOL_CALL_PREP,
-    # Server → Client events — API key management
     EVT_API_KEY_REVOKE,
-    # Deprecated / legacy — retained until handler wiring is migrated
-    EVT_ARTIFACT_PUBLISHED,
-    EVT_ARTIFACT_REMOVED,
     EVT_AUTONOMOUS_CHANGED,
     EVT_CHECKPOINT_STATE,
     EVT_CONTEXT_COMPACTED,
     EVT_CONTEXT_COMPACTING,
     EVT_CONTEXT_STATS,
     EVT_ERROR,
-    EVT_GUIDE_COMPACTED,
     EVT_LLAMA_STATE,
     EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_LLM_TURN_START,
@@ -42,7 +35,6 @@ from ._messages import (
     EVT_USER_ATTACHMENTS,
     EVT_WEB_SEARCH_NOTE,
     EVT_WORKSPACE_ADD_FOLDER,
-    # Client → Server requests (WS_PROTOCOL.md §7)
     MSG_CHECKPOINT_LIST,
     MSG_CHECKPOINT_REDO,
     MSG_CHECKPOINT_ROLL_FORWARD,
@@ -68,7 +60,6 @@ from ._messages import (
     MSG_STOP,
     MSG_WORKFLOW_SET,
     MSG_WORKSPACE_FOLDERS,
-    # Server → Client requests — user prompts (WS_PROTOCOL.md §6)
     SREQ_API_KEY_REQUEST,
     SREQ_PROMPT_APPROVAL,
     SREQ_PROMPT_PERMISSION,
@@ -87,7 +78,6 @@ __all__ = [
     "Envelope",
     "MessageKind",
     "Outbox",
-    # WS_PROTOCOL.md §7 — client requests
     "MSG_HELLO",
     "MSG_PROMPT_SUBMIT",
     "MSG_STOP",
@@ -113,14 +103,11 @@ __all__ = [
     "MSG_PROJECT_SET",
     "MSG_PROJECT_CREATE",
     "MSG_SECURITY_ADD_RULE",
-    # WS_PROTOCOL.md §6 — server-initiated requests
     "SREQ_API_KEY_REQUEST",
     "SREQ_PROMPT_QUESTION",
     "SREQ_PROMPT_APPROVAL",
     "SREQ_PROMPT_PERMISSION",
-    # API key management events
     "EVT_API_KEY_REVOKE",
-    # WS_PROTOCOL.md §5 — visibility events
     "EVT_AUTONOMOUS_CHANGED",
     "EVT_SESSION_NAME",
     "EVT_SESSION_NAMING",
@@ -131,7 +118,6 @@ __all__ = [
     "EVT_STATE",
     "EVT_AGENT_STARTED",
     "EVT_AGENT_FINISHED",
-    # "EVT_AGENT_TOKENS",
     "EVT_AGENT_TOOL_CALL_DETAIL",
     "EVT_AGENT_TOOL_CALL_IN_PROGRESS",
     "EVT_AGENT_TOOL_CALL_PREP",
@@ -139,11 +125,8 @@ __all__ = [
     "EVT_WEB_SEARCH_NOTE",
     "EVT_REVIEW_STARTED",
     "EVT_REVIEW_VERDICT",
-    "EVT_ARTIFACT_PUBLISHED",
-    "EVT_ARTIFACT_REMOVED",
     "EVT_LLM_TURN_START",
     "EVT_LLM_WAITING",
-    "EVT_GUIDE_COMPACTED",
     "EVT_CONTEXT_STATS",
     "EVT_CONTEXT_COMPACTING",
     "EVT_CONTEXT_COMPACTED",
