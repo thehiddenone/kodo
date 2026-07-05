@@ -629,5 +629,7 @@ def test_real_guide_roster_reproduces_pipeline_pairs() -> None:
     assert (
         "| `run_author_critic_iteration` | `e2e_test_coder` | `e2e_test_code_critic` |" in section
     )
-    # The toolchain agent is the one standalone (adjunct) entry in the guide roster.
+    # The toolchain agent and the shared investigator are the standalone
+    # (adjunct) entries in the guide roster.
     assert "| `run_subagent` | `toolchain_python` | — | standalone |" in section
+    assert "| `run_subagent` | `investigator` | — | standalone |" in section
