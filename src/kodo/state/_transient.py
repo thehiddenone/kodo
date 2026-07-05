@@ -18,7 +18,10 @@ use and reused across restarts when the session is resumed.  Layout::
                            a tool call that captured a before/after diff (see
                            ``write_diff_files``) additionally gets a sibling
                            ``<tool_use_id>_diff/`` directory holding the two
-                           file versions plus a ``meta.json`` sidecar
+                           file versions plus a ``meta.json`` sidecar; a
+                           ``web_search`` call additionally gets a sibling
+                           ``<tool_use_id>_websearch_notes.json`` holding its
+                           live-narration notes (see ``write_web_search_notes``)
         attachments/      — immutable copies of files the user attached to a
                            prompt (``store_attachment``). ``session.jsonl`` keeps
                            only a link (relative path + display name); the copy
@@ -40,7 +43,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-__all__ = ["TransientStore", "new_session_id", "read_diff_files"]
+__all__ = ["TransientStore", "new_session_id", "read_diff_files", "read_web_search_notes"]
 
 _log = logging.getLogger(__name__)
 
@@ -66,6 +69,29 @@ def _diff_file_paths(diff_dir: Path, filename: str) -> tuple[Path, Path]:
     stem = Path(name).stem
     suffix = Path(name).suffix
     return diff_dir / f"{stem}_prev{suffix}", diff_dir / name
+
+
+def read_web_search_notes(toolcalls_dir: Path, tool_call_id: str) -> list[str]:
+    """Read back a ``web_search`` call's persisted live-narration notes.
+
+    Used by history rebuild (:meth:`~kodo.runtime._engine._history.HistoryProjector.
+    history_entries`, which has no live :class:`TransientStore` reference beyond
+    the directory itself) to replay the "Web Search" block's narration into a
+    reloaded/resumed session, mirroring :func:`read_diff_files`.
+
+    Returns:
+        list[str]: The notes in order, or ``[]`` if none were written (no
+        call, no free text produced, or the run was aborted before its
+        best-effort flush at the end of :meth:`TransientStore.write_web_search_notes`).
+    """
+    path = toolcalls_dir / f"{tool_call_id}_websearch_notes.json"
+    if not path.exists():
+        return []
+    try:
+        notes = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [str(n) for n in notes] if isinstance(notes, list) else []
 
 
 def read_diff_files(toolcalls_dir: Path, tool_call_id: str) -> dict[str, object] | None:
@@ -322,6 +348,34 @@ class TransientStore:
             return None
         self.__touch_last_modified()
         return path
+
+    def write_web_search_notes(self, tool_call_id: str, notes: list[str]) -> None:
+        """Persist a ``web_search`` call's live-narration notes, best-effort.
+
+        Written once, after the agent's run ends (see ``_run_web_search_agent``),
+        as ``toolcalls/<tool_call_id>_websearch_notes.json`` — a sidecar file
+        keyed purely by ``tool_call_id`` like the tool-call Markdown doc and
+        diff-file pair, so it works identically whether the call happened in
+        the main turn or inside any subsession, and never touches
+        ``session.jsonl``/a subsession log (so it can never leak into LLM
+        context or a crash-resume replay). A failed write is only logged: this
+        is a UI visibility aid, not part of the durable conversation, and it
+        is fine to lose it (see doc/WEB_SEARCH.md §6).
+
+        Args:
+            tool_call_id (str): The tool-use block id (stable link key).
+            notes (list[str]): The narration notes, in order.
+        """
+        if self.__paths is None:
+            return
+        path = self.__paths.toolcalls / f"{tool_call_id}_websearch_notes.json"
+        try:
+            self.__paths.toolcalls.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(notes), encoding="utf-8")
+        except OSError as exc:
+            _log.warning("Failed to write web_search notes %s: %s", path, exc)
+            return
+        self.__touch_last_modified()
 
     def write_diff_files(
         self,

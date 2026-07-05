@@ -203,6 +203,52 @@ timed out before a report could be produced."}`.
 `web_search` is engine-driven only (`_DIRECT_ONLY_AGENTS`) — never spawnable
 via `run_subagent`, exactly like the agents it replaced.
 
+### Live narration — the "Web Search is in progress" panel
+
+`web_search` runs silently to the *calling agent* (the investigator never sees
+intermediate steps, only the final report), but the panel shows the user a
+live, collapsible "Web Search is in progress" block so a multi-minute run
+doesn't look like a stall. The agent's prompt (`subagent_web_search.md`,
+"Narrating Your Work") requires it to write one or two plain sentences before
+each tool call (or small group of calls) explaining what it's about to do and
+why — not a caption of the call, an actual decision.
+
+Wiring: `_run_silent_tool_loop_turn` takes an optional `on_round_text`
+callback, invoked with a round's assistant text (if any) right before that
+round's tool calls dispatch — the loop itself stays agent-agnostic and knows
+nothing about feed events or persistence. `_run_web_search_agent` is the only
+caller today; it buffers every round's text and streams it live via
+`EVT_WEB_SEARCH_NOTE` (`web_search.note`, `{tool_call_id, text}`,
+WS_PROTOCOL.md §5.5e), correlated with the `web_search` call's own
+`agent.tool_call_prep` card by `tool_call_id` (the calling agent's
+`ToolContext.current_tool_use_id`, threaded through
+`EngineServices.run_web_search_agent(task_input, tool_call_id)`).
+
+Once the run ends (success, timeout, or exception), the buffered notes are
+written once to a best-effort sidecar file,
+`toolcalls/<tool_call_id>_websearch_notes.json`
+(`TransientStore.write_web_search_notes`/`read_web_search_notes`) — keyed
+purely by `tool_call_id` like the tool-call Markdown doc and diff-file pair,
+so it works identically whether the call happened in the main turn or inside
+any subsession. This is deliberately **not** persisted via `session.jsonl` or
+the subsession log: doing so would either leak the narration into the calling
+agent's own LLM context (a role-based message survives crash-resume replay) or
+break replay outright (a role-less marker line isn't a valid `Message`).
+Keeping it a side channel means a crash mid-run just loses whatever wasn't
+flushed yet — acceptable, since this is a UI visibility aid, not part of the
+agent's real conversation. `session.history`'s `tool_call` entries carry the
+result as `webSearchNotes: string[]` (empty for every tool other than
+`web_search`).
+
+The client also reuses the existing `run_command` machinery for two more
+pieces of visibility, gated to `web_search` alongside `run_command`: (1)
+`agent.tool_call_prep` carries `timeout_seconds` (the caller's `timeout`, or
+`_DEFAULT_WEB_SEARCH_TIMEOUT_S` when omitted) and (2)
+`agent.tool_call_in_progress` fires once the security gate clears, so the
+elapsed-vs-timeout progress bar starts at the same moment
+`_run_web_search_agent` computes its own `deadline` — not at card-creation
+time (`ToolDispatcher.dispatch`, SECURITY.md §6).
+
 ## 7. Anti-bot posture
 
 Findings from a dedicated investigation

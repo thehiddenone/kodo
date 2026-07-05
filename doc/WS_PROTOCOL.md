@@ -248,17 +248,17 @@ Emitted before **every** dispatched tool call so the panel can show a one-line a
   "tool_call_id": "<tool_use block id>" }
 ```
 
-`description` is the tool's `user_description` (a short UI label from the `ToolSpec`), never the model-facing schema. The panel decides which tool calls are worth surfacing. `tool_call_id` is the LLM `tool_use` block id; it correlates this event with the follow-up `agent.tool_call_in_progress` (§5.5a), `agent.tool_call_detail` (§5.5b), and with the persisted tool-call document.
+`description` is the tool's `user_description` (a short UI label from the `ToolSpec`), never the model-facing schema. The panel decides which tool calls are worth surfacing. `tool_call_id` is the LLM `tool_use` block id; it correlates this event with the follow-up `agent.tool_call_in_progress` (§5.5a), `agent.tool_call_detail` (§5.5b), and with the persisted tool-call document. `run_command` and `web_search` additionally carry `timeout_seconds` (for `web_search`, the caller's `timeout` input or `_DEFAULT_WEB_SEARCH_TIMEOUT_S` when omitted), driving each one's elapsed-vs-timeout progress bar.
 
 ### 5.5a `agent.tool_call_in_progress` — execution genuinely starting
 
-Emitted for `run_command` only, right after the security gate clears (allowed outright, or the user granted permission via `prompt.permission`) and immediately before the tool handler actually runs.
+Emitted for `run_command` and `web_search` only, right after the security gate clears (allowed outright, or the user granted permission via `prompt.permission`) and immediately before the tool handler actually runs.
 
 ```json
 { "type": "agent.tool_call_in_progress", "tool_call_id": "<tool_use block id>" }
 ```
 
-Exists solely to fix the run_command timeout bar's clock: `agent.tool_call_prep` can arrive well before execution truly begins (a SMART-mode judge round, or a `prompt.permission` wait on the user, can both take much longer than the command's own timeout). The panel does not start the "Waiting for tool output" progress bar's `startedAt` until this event arrives, so the bar's elapsed time reflects real run time, not gate-wait time (see SECURITY.md §6 for the full sequencing).
+Exists solely to fix each progress bar's clock: `agent.tool_call_prep` can arrive well before execution truly begins (a SMART-mode judge round, or a `prompt.permission` wait on the user, can both take much longer than the call's own timeout). The panel does not start the "Waiting for tool output" / "Web Search" progress bar's `startedAt` until this event arrives, so the bar's elapsed time reflects real run time, not gate-wait time (see SECURITY.md §6 for the full sequencing).
 
 ### 5.5b `agent.tool_call_detail` — customer-visible input/output + doc link
 
@@ -294,9 +294,36 @@ Emitted when a tool's raw output did not conform to its declared `output_schema`
 
 `schema_compliance` is **engine-owned**: it is never declared in a `ToolSpec.output_schema`; the engine augments every output schema (the one shown to agents) and every result in-flight to carry it.
 
+### 5.5d `checkpoint.state` — broadcast one root's checkpoint list
+
+Pushed after any successful `checkpoint.undo`/`.redo`/`.rollback`/`.roll_forward` (§7.4c) — a single action can change every other entry's eligible undo/redo/rollback/roll-forward action for that root — and also after a fresh mutating tool call's own commit (it advances `current_index` past every earlier entry on that root, so their "Rollback to this state" links would otherwise go stale). Lets the panel recompute every tool-call card's checkpoint controls for that root in one pass, not just the one acted on.
+
+```json
+{ "type": "checkpoint.state",
+  "root": "/abs/path/to/root",
+  "current_index": 3,
+  "entries": [ { "sha": "<commit sha>", "undone": false }, ... ] }
+```
+
+`entries` is the root's full, flat, chronological checkpoint list; `current_index` is the root's current position in it. Same shape as the `checkpoint.list.done` response (§7.4d) and the `checkpoint.<verb>.done` responses (§7.4c).
+
+### 5.5e `web_search.note` — live narration from the web_search agent
+
+Emitted by `_run_web_search_agent` (doc/WEB_SEARCH.md §6) once per tool-loop round in which the agent produced free text — its own account of what it just decided/did, required by its prompt ("Narrating Your Work"). Drives the "Web Search is in progress" collapsible block shown beneath the `web_search` call's card.
+
+```json
+{ "type": "web_search.note",
+  "tool_call_id": "<tool_use block id>",
+  "text": "Google looks the most promising for this query; trying it first." }
+```
+
+`tool_call_id` correlates this event with the `web_search` call's own `agent.tool_call_prep` (§5.5) and, like `run_command`, its `agent.tool_call_prep` also carries `timeout_seconds` and it receives `agent.tool_call_in_progress` (§5.5a) — so the panel can show the same elapsed-vs-timeout progress bar below the narration block.
+
+Live-only on the wire: a crash mid-run loses whatever notes weren't flushed yet. The durable copy is a best-effort sidecar file the engine writes once the run ends (`TransientStore.write_web_search_notes`, keyed by `tool_call_id`, never `session.jsonl`/the subsession log — see doc/WEB_SEARCH.md §6 for why), replayed on reload as the `tool_call` entry's `webSearchNotes: string[]` field (§5.11) rather than by replaying this event.
+
 ### 5.6 `review.started` / `review.verdict` — low-fi review activity
 
-Review activity is intentionally low-fidelity: the user sees that critic loops are happening and roughly how they go, but not file content, diffs, or feedback bodies.
+Review activity is intentionally low-fidelity: the design is for the user to see that critic loops are happening and roughly how they go, but not file content, diffs, or feedback bodies. **Emitted by the server today, but the current VSIX client has no handler for either event** — they arrive and are silently dropped; no UI surfaces them yet.
 
 ```json
 { "type": "review.started",
@@ -432,6 +459,8 @@ Pushed once after `hello.ack` when the resumed session has prior turns, so a fre
 ```
 
 Entries mirror the WebView's session model. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed. Other display-only entries (status) are still ephemeral and dropped on rehydrate.
+
+A `web_search` `tool_call` entry additionally carries `webSearchNotes: string[]` — its live narration (§5.5e), read back from the best-effort sidecar file rather than from `session.jsonl` (empty if the run was aborted before it flushed, or for every non-`web_search` tool call).
 
 ### 5.12 Local-model lifecycle events
 
@@ -709,25 +738,51 @@ Response:
 
 A `state` event with the updated `command_control` field follows.
 
-### 7.4c `checkpoint.undo` / `checkpoint.rollback` — per-root file checkpoints
+### 7.4c `checkpoint.undo` / `checkpoint.redo` / `checkpoint.rollback` / `checkpoint.roll_forward` — per-root file checkpoints
 
-Acts on the per-root **shadow checkpoint mirror** that the engine commits to after every `filesystem`/`edit_file`/`run_command` dispatch, in **both** workflow modes (INTERNALS.md §7/§10b/§12.1 — there is no longer a Guided-only special case). Both carry the `{root, sha}` pair the client received on the originating call's `checkpoint` field (§5.5b). This is **distinct** from the Guide's `rollback` tool: both now delegate to the same underlying `RootMirrorManager.rollback` primitive, but only the Guide's tool additionally resets the conversation history (STATE_AND_LIFECYCLE.md §8.3) — `checkpoint.rollback` only restores files.
+Acts on the per-root **shadow checkpoint mirror** that the engine commits to after every `filesystem`/`edit_file`/`run_command` dispatch, in **both** workflow modes (INTERNALS.md §7/§10b/§12.1 — there is no longer a Guided-only special case). All four carry the `{root, sha}` pair the client received on the originating call's `checkpoint` field (§5.5b), plus an optional `resolution` (`"stash"|"discard"`) supplied only on retry after a `*.needs_confirmation` reply (see below). This is **distinct** from the Guide's `rollback` tool: both now delegate to the same underlying `RootMirrorManager` primitives, but only the Guide's tool additionally resets the conversation history (STATE_AND_LIFECYCLE.md §8.3) — these four only restore files.
 
 ```json
 { "type": "checkpoint.undo", "root": "/abs/path/to/root", "sha": "<commit sha>" }
+{ "type": "checkpoint.redo", "root": "/abs/path/to/root", "sha": "<commit sha>" }
 { "type": "checkpoint.rollback", "root": "/abs/path/to/root", "sha": "<commit sha>" }
+{ "type": "checkpoint.roll_forward", "root": "/abs/path/to/root", "sha": "<commit sha>" }
 ```
 
-`undo` restores only the files that commit `sha` touched, to their state immediately before it (discarding any later edits to those same files). `rollback` restores the entire root's tree to `sha`'s state. Both are recorded as **new** mirror commits — the mirror is append-only — so there is no destructive reset and a later checkpoint can always be reached again.
+`undo`/`redo` are a per-entry toggle: `undo` restores only the files that commit `sha` touched, to their state immediately before it (discarding any later edits to those same files) and flips that entry's `undone` flag to `true`; `redo` reapplies them and flips it back. `rollback`/`roll_forward` move the entire root's tree to `sha`'s state (the mirror's branch ref), in either direction — whatever tip a `rollback` orphans is preserved under a `rollback_<ts>` branch (never a detached HEAD), so a later `roll_forward` can always reach it again. All four are recorded as **new** mirror commits — the mirror is append-only — so there is no destructive reset.
+
+If the work tree has edits Kodo didn't make (e.g. typed directly into the editor), the server refuses to silently overwrite them: it replies `checkpoint.<verb>.needs_confirmation` instead of applying the change. The client asks the user to "Stash & Continue" (`resolution: "stash"`, edits are re-applied afterwards) or "Discard & Continue" (`resolution: "discard"`) and resubmits the same request with that `resolution` set.
+
+```json
+{ "type": "checkpoint.undo.needs_confirmation", "root": "/abs/path/to/root", "sha": "<commit sha>" }
+```
+
+Every successful mutation also pushes a `checkpoint.state` event (§5.5d) so every checkpoint control in the transcript — not just the one acted on — can refresh its eligible action.
 
 Response:
 
 ```json
-{ "type": "checkpoint.undo.done", "root": "/abs/path/to/root", "sha": "<new commit sha>" }
-{ "type": "checkpoint.rollback.done", "root": "/abs/path/to/root", "sha": "<new commit sha>" }
+{ "type": "checkpoint.undo.done", "root": "/abs/path/to/root", "sha": "<new commit sha>", "current_index": 2, "entries": [...] }
+{ "type": "checkpoint.redo.done", "root": "/abs/path/to/root", "sha": "<new commit sha>", "current_index": 3, "entries": [...] }
+{ "type": "checkpoint.rollback.done", "root": "/abs/path/to/root", "sha": "<new commit sha>", "current_index": 1, "entries": [...] }
+{ "type": "checkpoint.roll_forward.done", "root": "/abs/path/to/root", "sha": "<new commit sha>", "current_index": 3, "entries": [...] }
 ```
 
 No `state` event follows — only the targeted root's files on disk change; the running conversation is untouched.
+
+### 7.4d `checkpoint.list` — full checkpoint history for one root
+
+Fetches the persisted `CheckpointState` for `payload.root` — the exact same shape as the `checkpoint.<verb>.done` responses above and the `checkpoint.state` event (§5.5d), just requested directly instead of received as a side effect. **Implemented server-side** (`WorkflowEngine.handle_checkpoint_list`), but the current VSIX client never sends it — there is no dedicated checkpoint-browsing UI yet, so this request is reachable but currently unused. (This corrects an earlier version of this document, which listed `checkpoint.list` under §7.7 as unimplemented; the server-side handler has existed since the checkpoint undo/redo/rollback/roll-forward work landed.)
+
+```json
+{ "type": "checkpoint.list", "root": "/abs/path/to/root" }
+```
+
+Response:
+
+```json
+{ "type": "checkpoint.list.done", "root": "/abs/path/to/root", "current_index": 3, "entries": [ { "sha": "<commit sha>", "undone": false }, ... ] }
+```
 
 ### 7.5 `config.reload` — apply settings.json changes
 
@@ -756,16 +811,10 @@ These drive the sidebar's local-LLM controls; progress/results come back as the 
 { "type": "llama.stop" }             // stop llama-server
 ```
 
-### 7.7 ⟪planned⟫ — checkpoint browsing, security rules, credential push
+### 7.7 ⟪planned⟫ — security rules, credential push
 
 The following are specified for later milestones but **not handled** today:
 
-- `checkpoint.list` (FR-MIR-04) — listing the **Guided** promotion mirror's
-  commits for a browsing UI. Note this is distinct from the now-implemented
-  `checkpoint.undo`/`checkpoint.rollback` (§7.4c), which act on the unrelated
-  Problem Solver shadow mirror and take an explicit `{root, sha}` rather than
-  browsing a list; the Guide's own `rollback` tool still has no client-initiated
-  wire command.
 - `security.add_rule` (FR-SEC-07) — persistent user-defined allow/deny rules ("always allow commands like this") layered ahead of the now-implemented per-call security judgement (doc/SECURITY.md §9).
 - `credentials.set` — superseded by the `api_key.request`/response flow (§6.3):
   the server pulls keys on demand rather than the client pushing them.
@@ -797,7 +846,7 @@ The following are deliberately **not** on the wire. Future contributors should n
 
 - **Session log content.** The audit trail (STATE_AND_LIFECYCLE.md §5) lives on disk; the protocol carries no message that exposes session JSONL. (`session.history` replays the *conversation*, not the raw log.)
 - **Document content, paths, or diffs beyond `review.*` (MVP).** Review activity is conveyed only by `review.*` (§5.6), now carrying the real path but never content. Detailed per-document events are the planned "verbose review mode" (§9.1).
-- **Checkpoint mirror operation internals.** Its commits, trees, and refs are not exposed beyond the `{root, sha, parent}` already on `agent.tool_call_detail`/`session.history` (§5.5b), needed for the user-facing undo/rollback controls — no tree/ref/log browsing exists, only undo-by-sha and rollback-by-sha.
+- **Checkpoint mirror operation internals.** Its commits, trees, and refs are not exposed beyond the `{root, sha, parent}` already on `agent.tool_call_detail`/`session.history` (§5.5b) and the flat `{sha, undone}` list `checkpoint.list`/`checkpoint.state` return (§7.4d/§5.5d) — no tree/ref/log browsing exists beyond that flat list.
 - **Stage-machine transitions.** Internal workflow stages are not pushed as events. The user-visible signal is the `agent.started`/`agent.finished` sequence plus `state.phase`.
 - **A document's `.jsonl` evolution log** as a distinct event class — its existence and status are summarized only via `review.*` and the Guide's own `guided_dev_status` tool calls (visible as ordinary `agent.tool_call_prep`/`agent.tool_call_detail` events), never pushed as its own message type.
 - **Historical event replay beyond the outbox.** The protocol is "now and forward"; the on-disk logs and mirror are the archives.
@@ -808,7 +857,7 @@ The following are deliberately **not** on the wire. Future contributors should n
 These are anticipated and structured so adding them is purely additive — no existing message changes shape.
 
 - **Richer `state` snapshot** (§5.1): `cumulative_usd`, `pending_prompts`, `last_checkpoint_sha`.
-- **Checkpoint browsing** (§7.7): `checkpoint.list`. (The `checkpoint.undo`/`.rollback` commands, §7.4c, are already implemented, in both workflow modes.)
+- **Checkpoint-browsing UI.** `checkpoint.list` (§7.4d) is already implemented server-side and returns the full per-root checkpoint list today; only a client-side UI that calls it is planned — the undo/redo/rollback/roll-forward commands (§7.4c) are already implemented and in use, in both workflow modes.
 - **Security rules** (§7.7): `security.add_rule`. (`prompt.permission`, §6.5, is implemented.)
 - **Verbose review mode.** New event type(s) gated by a settings flag, carrying a document's real path and richer status detail (e.g. its full `.jsonl` history). The `review.*` events stay as the low-fi default.
 - **Streamed tool output.** A streamed form of `agent.tool_call_prep` for long-running shell commands; the single-event form remains valid for short calls.
@@ -834,4 +883,5 @@ These are anticipated and structured so adding them is purely additive — no ex
 | 7.4 | two-workflow selection (guided / problem-solving) |
 | 8 | FR-WS-04 |
 | 6.5, 7.4b | FR-SEC-05 (security layer permission prompt — doc/SECURITY.md) |
-| 5.13, 7.7, 9.1 | ⟪planned⟫ — FR-MIR-03/04, FR-WKS-10/11, FR-SEC-07, FR-COS-03 |
+| 7.4c, 7.4d, 5.5d | FR-MIR-03/04 (checkpoint undo/redo/rollback/roll-forward + listing — implemented; only the client browsing UI is planned) |
+| 5.13, 7.7, 9.1 | ⟪planned⟫ — FR-WKS-10/11, FR-SEC-07, FR-COS-03 |

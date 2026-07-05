@@ -121,6 +121,7 @@ class EngineHost(Protocol):
         dispatcher: ToolDispatcher,
         deadline: float,
         max_rounds: int = 60,
+        on_round_text: Callable[[str], Awaitable[None]] | None = None,
     ) -> dict[str, object] | None: ...
 
     def _entry_agent_name(self) -> str: ...

@@ -75,7 +75,9 @@ class _FakeServices:
             "files_changed": ["pyproject.toml", "uv.lock"],
         }
 
-    async def run_web_search_agent(self, task_input: dict[str, object]) -> dict[str, object]:
+    async def run_web_search_agent(
+        self, task_input: dict[str, object], tool_call_id: str
+    ) -> dict[str, object]:
         return {"themes": [], "note": "stub"}
 
     async def run_author_critic_iteration(
@@ -697,7 +699,9 @@ async def test_create_new_project_compliance(tmp_path: Path) -> None:
 class _WebSearchAgentFailsServices(_FakeServices):
     """``run_web_search_agent`` blows up, as if the agent turn itself failed."""
 
-    async def run_web_search_agent(self, task_input: dict[str, object]) -> dict[str, object]:
+    async def run_web_search_agent(
+        self, task_input: dict[str, object], tool_call_id: str
+    ) -> dict[str, object]:
         raise RuntimeError("agent turn exploded")
 
 

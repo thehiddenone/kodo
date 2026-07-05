@@ -184,15 +184,8 @@ async def test_resume_in_use_session_is_rejected(server: TestServer) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ping / unknown / session.list
+# unknown / session.list
 # ---------------------------------------------------------------------------
-
-
-async def test_ping_returns_pong(ws: aiohttp.ClientWebSocketResponse) -> None:
-    req = _make_request("ping")
-    await ws.send_str(req.to_json())
-    resp = await _recv_response(ws, req.id)
-    assert resp.payload["type"] == "pong"
 
 
 async def test_unknown_message_returns_error(ws: aiohttp.ClientWebSocketResponse) -> None:
@@ -309,28 +302,41 @@ async def test_session_delete_closes_socket_and_drops_listing(server: TestServer
         await csession2.close()
 
 
-async def test_session_delete_unknown_session_errors(ws: aiohttp.ClientWebSocketResponse) -> None:
-    req = _make_request("session.delete", session_id="nope")
-    await ws.send_str(req.to_json())
-    resp = await _recv_response(ws, req.id)
-    assert resp.payload["type"] == "error"
-    assert resp.payload["code"] == "unknown_session"
-    # The socket stays open: a follow-up ping still round-trips.
-    ping = _make_request("ping")
-    await ws.send_str(ping.to_json())
-    pong = await _recv_response(ws, ping.id)
-    assert pong.payload["type"] == "pong"
+async def test_session_delete_unknown_session_errors(server: TestServer) -> None:
+    # autoping=False so the raw PONG frame below is observable via receive()
+    # instead of being swallowed by aiohttp's automatic control-frame handling.
+    csession = aiohttp.ClientSession()
+    conn = await csession.ws_connect(f"http://127.0.0.1:{server.port}/ws", autoping=False)
+    try:
+        req = _make_request("session.delete", session_id="nope")
+        await conn.send_str(req.to_json())
+        resp = await _recv_response(conn, req.id)
+        assert resp.payload["type"] == "error"
+        assert resp.payload["code"] == "unknown_session"
+        # The socket stays open: a raw WS ping still round-trips a pong.
+        await conn.ping()
+        msg = await asyncio.wait_for(conn.receive(), timeout=_RECV_TIMEOUT)
+        assert msg.type == aiohttp.WSMsgType.PONG
+    finally:
+        await conn.close()
+        await csession.close()
 
 
-async def test_orphan_response_is_silently_dropped(ws: aiohttp.ClientWebSocketResponse) -> None:
-    orphan = Envelope(
-        kind="response", correlation_id="no-such-request", payload={"action": "agree"}
-    )
-    await ws.send_str(orphan.to_json())
-    ping = _make_request("ping")
-    await ws.send_str(ping.to_json())
-    resp = await _recv_response(ws, ping.id)
-    assert resp.payload["type"] == "pong"
+async def test_orphan_response_is_silently_dropped(server: TestServer) -> None:
+    csession = aiohttp.ClientSession()
+    conn = await csession.ws_connect(f"http://127.0.0.1:{server.port}/ws", autoping=False)
+    try:
+        orphan = Envelope(
+            kind="response", correlation_id="no-such-request", payload={"action": "agree"}
+        )
+        await conn.send_str(orphan.to_json())
+        # The socket stays open: a raw WS ping still round-trips a pong.
+        await conn.ping()
+        msg = await asyncio.wait_for(conn.receive(), timeout=_RECV_TIMEOUT)
+        assert msg.type == aiohttp.WSMsgType.PONG
+    finally:
+        await conn.close()
+        await csession.close()
 
 
 # ---------------------------------------------------------------------------

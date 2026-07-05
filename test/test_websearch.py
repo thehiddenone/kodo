@@ -252,7 +252,9 @@ class _AgentServices:
         self.error = error
         self.task_input: dict[str, object] | None = None
 
-    async def run_web_search_agent(self, task_input: dict[str, object]) -> dict[str, object]:
+    async def run_web_search_agent(
+        self, task_input: dict[str, object], tool_call_id: str
+    ) -> dict[str, object]:
         if self.error:
             raise RuntimeError("agent turn exploded")
         self.task_input = task_input

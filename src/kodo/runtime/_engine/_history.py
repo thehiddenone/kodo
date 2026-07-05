@@ -20,7 +20,7 @@ import logging
 from pathlib import Path
 
 from kodo.llms import Message
-from kodo.state import TransientStore, read_diff_files
+from kodo.state import TransientStore, read_diff_files, read_web_search_notes
 from kodo.toolspecs import ALL_TOOLS, build_detail_rows, tool_result_succeeded
 
 from .._attachments import inject_attachments
@@ -279,6 +279,16 @@ class HistoryProjector:
                             else None
                         ),
                         "checkpoint": checkpoint,
+                        # Live narration the web_search agent produced while
+                        # running (doc/WEB_SEARCH.md §6); [] for every other
+                        # tool and for a web_search call that never flushed one
+                        # (e.g. aborted mid-run — acceptable, see the sidecar's
+                        # own docstring).
+                        "webSearchNotes": (
+                            read_web_search_notes(toolcalls_dir, tool_use_id)
+                            if name == "web_search"
+                            else []
+                        ),
                     }
                     out.append(entry)
                     # escalate_blocker rides the question gate with the user's

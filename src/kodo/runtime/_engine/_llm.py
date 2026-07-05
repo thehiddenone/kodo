@@ -11,6 +11,7 @@ from __future__ import annotations
 import shutil
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from kodo.common import ApiKey
@@ -201,6 +202,7 @@ class LLMPlumbingMixin:
         dispatcher: ToolDispatcher,
         deadline: float,
         max_rounds: int = 60,
+        on_round_text: Callable[[str], Awaitable[None]] | None = None,
     ) -> dict[str, object] | None:
         """Drive a silent, multi-round tool-calling turn for an engine-driven agent.
 
@@ -230,6 +232,14 @@ class LLMPlumbingMixin:
                 ``ToolContext.deadline`` already set to *deadline*.
             deadline: Unix timestamp this run must wrap up by.
             max_rounds: Hard cap on LLM round-trips, independent of *deadline*.
+            on_round_text: Called with a round's assistant text, whenever the
+                round produced any (whether or not it also made tool calls),
+                right before that round's tool calls (if any) are dispatched.
+                Lets a caller surface the agent's own narration of its
+                actions/decisions (doc/WEB_SEARCH.md §6) without this method
+                knowing anything about feed events or persistence — the
+                caller (``_run_web_search_agent``) owns both. ``None`` skips
+                narration entirely (this loop shape has no other consumer today).
 
         Returns:
             dict[str, object] | None: The sub-agent's ``return_result``
@@ -280,9 +290,10 @@ class LLMPlumbingMixin:
             if not tool_calls:
                 # No tool call this round — nudge the model rather than
                 # silently ending the loop on a stray text-only reply.
-                assistant_content.append(
-                    {"type": "text", "text": "".join(text_parts) or "(no text)"}
-                )
+                round_text = "".join(text_parts)
+                if on_round_text is not None and round_text:
+                    await on_round_text(round_text)
+                assistant_content.append({"type": "text", "text": round_text or "(no text)"})
                 messages = messages + [Message(role="assistant", content=assistant_content)]
                 messages = messages + [
                     Message(
@@ -298,7 +309,10 @@ class LLMPlumbingMixin:
                 continue
 
             if text_parts:
-                assistant_content.append({"type": "text", "text": "".join(text_parts)})
+                round_text = "".join(text_parts)
+                if on_round_text is not None and round_text:
+                    await on_round_text(round_text)
+                assistant_content.append({"type": "text", "text": round_text})
             for tc in tool_calls:
                 assistant_content.append(
                     {

@@ -32,6 +32,7 @@ from kodo.transport import (
     EVT_SESSION_NAMING,
     EVT_STATE,
     EVT_USAGE_UPDATE,
+    EVT_WEB_SEARCH_NOTE,
 )
 
 from .._session import SessionState
@@ -131,6 +132,19 @@ class EngineEmitters:
         the (potentially long) judge round-trip does not look like a stall.
         """
         await self._sink.send(Envelope.make_event(EVT_SECURITY_JUDGING, {"active": active}))
+
+    async def emit_web_search_note(self, tool_call_id: str, text: str) -> None:
+        """Push one live narration note from the ``web_search`` agent's tool loop.
+
+        Appended to the "Web Search is in progress" collapsible block
+        (doc/WEB_SEARCH.md §6) as it runs; ``tool_call_id`` correlates it with
+        the ``web_search`` call's ``agent.tool_call_prep`` card. Live-only —
+        the durable copy is the sidecar file ``_run_web_search_agent`` writes
+        via ``TransientStore.write_web_search_notes`` once the run ends.
+        """
+        await self._sink.send(
+            Envelope.make_event(EVT_WEB_SEARCH_NOTE, {"tool_call_id": tool_call_id, "text": text})
+        )
 
     async def notify_tool_call_in_progress(self, tool_call_id: str) -> None:
         """Tell the client a tool call has cleared the security gate and is now

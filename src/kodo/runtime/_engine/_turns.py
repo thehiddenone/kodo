@@ -55,6 +55,7 @@ from .._checkpoints import CheckpointRef
 from ._checkpointing import _GUIDED_STATE_TOOLS
 from ._proto import EngineHost
 from ._shared import _GUIDE_AGENT_NAME, _PROBLEM_SOLVER_AGENT_NAME, _SPECS_BY_NAME
+from ._subagents import _DEFAULT_WEB_SEARCH_TIMEOUT_S
 
 _log = logging.getLogger(__name__)
 
@@ -544,11 +545,18 @@ class TurnLoopMixin:
                     "description": tool_desc.get(tool_name, ""),
                     "tool_call_id": tool_use_id,
                 }
-                # run_command carries a mandatory timeout; surface it so the
-                # client can render a "waiting for tool output" progress bar
-                # that fills over the timeout window while the command runs.
+                # run_command carries a mandatory timeout; web_search's is
+                # optional (defaults to _DEFAULT_WEB_SEARCH_TIMEOUT_S when the
+                # caller omits it — mirroring the clamp WebSearchTool applies
+                # at dispatch time). Either way, surface it so the client can
+                # render a progress bar that fills over the timeout window
+                # while the call runs.
                 if tool_name == "run_command":
                     payload["timeout_seconds"] = tool_input.get("timeout")
+                elif tool_name == "web_search":
+                    payload["timeout_seconds"] = (
+                        tool_input.get("timeout") or _DEFAULT_WEB_SEARCH_TIMEOUT_S
+                    )
                 await self._sink.send(Envelope.make_event(EVT_AGENT_TOOL_CALL_PREP, payload))
             tc_n = tool_logger.log_invocation(tool_name, tool_input)
             # Snapshot the pre-mutation baseline of any root this tool is about

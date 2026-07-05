@@ -123,7 +123,7 @@ class SubagentMixin:
         return await self._spawn_subagent(_DEPSMGR_AGENT_NAME, task_input)
 
     async def _run_web_search_agent(
-        self: EngineHost, task_input: dict[str, object]
+        self: EngineHost, task_input: dict[str, object], tool_call_id: str
     ) -> dict[str, object]:
         """Run the ``web_search`` agent for the ``web_search`` tool (doc/WEB_SEARCH.md).
 
@@ -142,9 +142,23 @@ class SubagentMixin:
         is synthesized rather than raising — ``web_search`` never errors the
         calling agent's turn.
 
+        Every round in which the agent produces free text is streamed live to
+        the client as ``web_search.note`` (``tool_call_id`` correlates it with
+        the ``web_search`` call's own tool-call card) and buffered; once the
+        run ends the full buffer is written to a best-effort sidecar file
+        (:meth:`~kodo.state.TransientStore.write_web_search_notes`) so
+        ``session.history`` can replay it into the "Web Search" block on
+        reload. Nothing here touches ``session.jsonl``/the subsession log, so
+        a crash mid-run just loses whatever wasn't written yet — acceptable,
+        since this narration is a visibility aid, not part of the agent's own
+        conversation (doc/WEB_SEARCH.md §6).
+
         Args:
             task_input: ``{query, max_themes, timeout}`` per the sub-agent's
                 ``input_schema``.
+            tool_call_id: The ``web_search`` tool_use block id (the calling
+                agent's ``ToolContext.current_tool_use_id``), correlating the
+                live notes and their sidecar file with that call's card.
 
         Returns:
             dict: ``{"themes": [...], "note": "..."}``.
@@ -166,9 +180,27 @@ class SubagentMixin:
             Message(role="user", content=self._render_task_input(task_input))
         ]
 
-        result = await self._run_silent_tool_loop_turn(
-            routing, plugin, model_id, agent, messages, dispatcher, deadline
-        )
+        notes: list[str] = []
+
+        async def _on_round_text(text: str) -> None:
+            notes.append(text)
+            await self._emitters.emit_web_search_note(tool_call_id, text)
+
+        try:
+            result = await self._run_silent_tool_loop_turn(
+                routing,
+                plugin,
+                model_id,
+                agent,
+                messages,
+                dispatcher,
+                deadline,
+                on_round_text=_on_round_text,
+            )
+        finally:
+            if notes:
+                self._transient.write_web_search_notes(tool_call_id, notes)
+
         if result is not None:
             themes = result.get("themes")
             note = result.get("note")

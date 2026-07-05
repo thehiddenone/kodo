@@ -21,7 +21,7 @@ class _EngineServices:
         *,
         run_subagent: Callable[[str, str, dict[str, object]], Awaitable[dict[str, object]]],
         run_dependency_manager: Callable[[dict[str, object]], Awaitable[dict[str, object]]],
-        run_web_search_agent: Callable[[dict[str, object]], Awaitable[dict[str, object]]],
+        run_web_search_agent: Callable[[dict[str, object], str], Awaitable[dict[str, object]]],
         run_author_critic: Callable[
             [str, str, str, str, dict[str, str], str, bool], Awaitable[dict[str, object]]
         ],
@@ -49,9 +49,11 @@ class _EngineServices:
         """Delegate to the engine's ungated dependency-manager spawn."""
         return await self.__run_dependency_manager(task_input)
 
-    async def run_web_search_agent(self, task_input: dict[str, object]) -> dict[str, object]:
+    async def run_web_search_agent(
+        self, task_input: dict[str, object], tool_call_id: str
+    ) -> dict[str, object]:
         """Delegate to the engine's ungated, silent web_search agent run."""
-        return await self.__run_web_search_agent(task_input)
+        return await self.__run_web_search_agent(task_input, tool_call_id)
 
     async def run_author_critic_iteration(
         self,

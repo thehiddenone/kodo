@@ -44,7 +44,8 @@ class WebSearchTool(Tool):
 
         try:
             result = await self.context.services.run_web_search_agent(
-                {"query": query, "max_themes": max_themes, "timeout": timeout}
+                {"query": query, "max_themes": max_themes, "timeout": timeout},
+                self.context.current_tool_use_id,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort tool, never crash the run
             _log.warning("web_search agent failed: %s", exc, exc_info=True)

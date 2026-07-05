@@ -246,7 +246,9 @@ class EngineServices(Protocol):
         """
         ...
 
-    async def run_web_search_agent(self, task_input: dict[str, object]) -> dict[str, object]:
+    async def run_web_search_agent(
+        self, task_input: dict[str, object], tool_call_id: str
+    ) -> dict[str, object]:
         """Run the ``web_search`` agent and return ``{"themes": [...], "note": "..."}``.
 
         Backs the ``web_search`` tool (doc/WEB_SEARCH.md). Like
@@ -260,6 +262,11 @@ class EngineServices(Protocol):
         ``task_input["timeout"]``, and only the structured result comes back.
         ``task_input`` conforms to the sub-agent's ``input_schema`` (``query``,
         ``max_themes``, ``timeout``).
+
+        ``tool_call_id`` (the ``web_search`` call's own ``tool_use`` block id)
+        correlates the agent's live narration (``web_search.note``) and its
+        persisted notes sidecar file with that call's card — see
+        doc/WEB_SEARCH.md §6.
         """
         ...
 

@@ -51,7 +51,6 @@ from kodo.transport import (
     MSG_LLAMACPP_INSTALL,
     MSG_MODE_SET,
     MSG_MODEL_INSTALL,
-    MSG_PING,
     MSG_PROJECT_CREATE,
     MSG_PROJECT_SET,
     MSG_PROMPT_SUBMIT,
@@ -706,7 +705,6 @@ def create_app(config: Config) -> web.Application:
     conn_registry = ConnectionRegistry(manager)
 
     conn_registry.register_handler(MSG_HELLO, _handle_hello)
-    conn_registry.register_handler(MSG_PING, _handle_ping)
     conn_registry.register_handler(MSG_SESSION_LIST, _handle_session_list)
     conn_registry.register_handler(MSG_SESSION_RELEASE, _handle_session_release)
     conn_registry.register_handler(MSG_SESSION_DELETE, _handle_session_delete)
