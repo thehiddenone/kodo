@@ -1,82 +1,63 @@
-"""Playwright-backed web access: discovery/scraping for ``web_search``, and
-single-page Markdown extraction for ``read_webpage``.
+"""Playwright- and ``curl_cffi``-backed web access for ``read_webpage`` and
+``query_search_engine``.
 
-A **T0 leaf package** (imports nothing from ``kodo``). Two independent
-pipelines share the browser lifecycle (:class:`BrowserSession`) but nothing
-else, so a change to one cannot regress the other:
+A **T0 leaf package** (imports nothing from ``kodo``). Three fetch backends
+share the SSRF guard (:mod:`._validate`) but are otherwise fully decoupled —
+a change to one cannot regress another:
 
-``web_search`` (doc/WEB_SEARCH.md), three phases:
+- **Browser** (:mod:`._browser`, :mod:`._readpage`, :mod:`._engines`) —
+  Playwright, any of ``firefox``/``chrome``/``edge``/``webkit``/``chromium``.
+  :class:`BrowserSession` launches exactly the requested kind, no cascade —
+  the caller (an agent) picks deliberately, so silent substitution would
+  defeat that choice.
+- **curl** (:mod:`._curlfetch`) — ``curl_cffi`` TLS/HTTP2 fingerprint
+  impersonation, no browser process. Passes some anti-bot checks a real
+  headless browser doesn't (doc/hidden/WEB_SEARCH_TOOL_REPORT.md); the one
+  deliberate exception to this project's historical "no anti-bot
+  circumvention" stance — network-layer impersonation, not JS-fingerprint
+  spoofing or CAPTCHA solving.
+- **Static HTML extraction** (:mod:`._htmlextract`) — a from-scratch Python
+  port of the browser path's in-page JS extraction/wall-detection, used only
+  when the curl backend has no live DOM to evaluate against.
 
-1. **Discovery** (:func:`discover`) — query Google, Bing, DuckDuckGo (HTML
-   endpoint), and English Wikipedia (full-text search) in parallel through one
-   headless Chromium, skip sponsored results, and merge the organic hits
-   rank-by-rank into ≤ :data:`MAX_SOURCES` (16) prioritized, deduplicated
-   links.
-2. **Scraping** (:func:`scrape_pages`) — fetch the discovered pages
-   concurrently, strip UI/navigation chrome in-page, and return ≤
-   :data:`MAX_SOURCES` blocks of main text content.
-3. Theme summarization is LLM work and lives above this package — the tool
-   hands the blocks to the engine's ``web_summarizer`` sub-agent.
-
-   Best-effort and non-evasive: an engine that serves an anti-bot / captcha
-   wall is put on a 30-minute cooldown via :class:`CooldownStore`, whose JSON
-   state file path is supplied by the caller (the tool keeps it under
-   ``~/.kodo/websearch/``) so this package stays layout-agnostic.
-
-``read_webpage`` (doc/READ_WEBPAGE.md), one phase:
-
-- **Reading** (:func:`read_page`) — fetch one caller-given URL and convert its
-  main content root to Markdown in-page (headings/tables/plain lists/links
-  preserved, images/video dropped). No cooldown: a blocked/anti-bot page just
-  raises :class:`AntiBotWallError` for the caller to report. Because the URL
-  comes directly from the agent rather than a search engine, :func:`read_page`
-  also guards against SSRF (:class:`InvalidUrlError` for non-http(s) schemes
-  or hosts resolving to a private/loopback/link-local address).
-
-:class:`BrowserSession` prefers the host's own Chrome/Edge (far less likely to
-trip anti-bot walls) and only falls back to a Playwright-managed browser
-(bundled Firefox, then bundled Chromium as a last resort) when neither is
-installed, auto-installing the needed one on first use. The fallback choice
-is cached under ``~/.kodo/websearch/browser_state.json`` for a day before
-host browsers are re-tried; a one-time ``example.com`` sanity check is cached
-in the same file.
+``read_webpage`` (doc/READ_WEBPAGE.md) fetches one caller-given URL and
+returns content shaped by ``content_filter`` (``off``/``html``/``text``).
+``query_search_engine`` (doc/WEB_SEARCH.md) queries one of four engines
+(:data:`SEARCH_ENGINES`) and returns organic hits — the ``web_search``
+agent's discovery primitive, replacing the old deterministic
+discover-all-four-in-parallel pipeline.
 """
 
 from __future__ import annotations
 
-from ._browser import BrowserSession, BrowserUnavailableError
-from ._cooldown import COOLDOWN_SECONDS, CooldownStore
-from ._discovery import discover, merge_hits
-from ._engines import SEARCH_ENGINES, SearchEngine
-from ._models import (
-    MAX_SOURCES,
-    DiscoveryOutcome,
-    PageMarkdown,
-    PageText,
-    ScrapeOutcome,
-    SearchHit,
-)
-from ._readpage import AntiBotWallError, InvalidUrlError, read_page, validate_public_url
-from ._scrape import scrape_pages
+from . import _curlfetch as curlfetch
+from . import _engines_static as engines_static
+from . import _htmlextract as htmlextract
+from ._browser import BrowserKind, BrowserSession, BrowserUnavailableError
+from ._enginequery import query_via_browser
+from ._engines import SEARCH_ENGINES, SearchEngine, is_engine_internal
+from ._readpage import BrowserContent, ContentFilter, fetch_via_browser
+from ._state import TIME_MARK, TTL_SECONDS, WebSearchStateStore
+from ._validate import AntiBotWallError, InvalidUrlError, validate_public_url
 
 __all__ = [
-    "COOLDOWN_SECONDS",
     "SEARCH_ENGINES",
-    "MAX_SOURCES",
+    "TIME_MARK",
+    "TTL_SECONDS",
     "AntiBotWallError",
+    "BrowserContent",
+    "BrowserKind",
     "BrowserSession",
     "BrowserUnavailableError",
-    "CooldownStore",
-    "DiscoveryOutcome",
+    "ContentFilter",
     "InvalidUrlError",
     "SearchEngine",
-    "PageMarkdown",
-    "PageText",
-    "ScrapeOutcome",
-    "SearchHit",
-    "discover",
-    "merge_hits",
-    "read_page",
-    "scrape_pages",
+    "WebSearchStateStore",
+    "curlfetch",
+    "engines_static",
+    "fetch_via_browser",
+    "htmlextract",
+    "is_engine_internal",
+    "query_via_browser",
     "validate_public_url",
 ]

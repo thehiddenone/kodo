@@ -40,6 +40,7 @@ from ._finalize_project import FinalizeProjectTool
 from ._find_files import FindFilesTool
 from ._find_text_in_files import FindTextInFilesTool
 from ._get_root_paths import GetRootPathsTool
+from ._get_web_search_state import GetWebSearchStateTool
 from ._guided_dev_status import GuidedDevStatusTool
 from ._paths import (
     LogicalPathResolver,
@@ -48,8 +49,10 @@ from ._paths import (
     resolve_logical,
     resolve_within,
 )
+from ._query_search_engine import QuerySearchEngineTool
 from ._read_file import ReadFileTool
 from ._read_webpage import ReadWebpageTool
+from ._remaining_time import RemainingTimeTool
 from ._return_result import ReturnResultTool
 from ._rollback import RollbackTool
 from ._run_author_critic_iteration import RunAuthorCriticIterationTool
@@ -58,6 +61,8 @@ from ._run_subagent import RunSubagentTool
 from ._tool import Tool
 from ._toolchain_build import ToolchainBuildTool
 from ._toolchain_deps import ToolchainDepsTool
+from ._update_web_search_state import UpdateWebSearchStateTool
+from ._wait import WaitTool
 from ._web_search import WebSearchTool
 
 __all__ = [
@@ -76,13 +81,16 @@ __all__ = [
     "FindTextInFilesTool",
     "GateLike",
     "GetRootPathsTool",
+    "GetWebSearchStateTool",
     "GuidedDevStatusTool",
     "LogicalPathResolver",
     "PathResolver",
     "PermissionLike",
     "ProjectPathResolver",
+    "QuerySearchEngineTool",
     "ReadFileTool",
     "ReadWebpageTool",
+    "RemainingTimeTool",
     "ReturnResultTool",
     "RollbackTool",
     "RootPath",
@@ -97,6 +105,8 @@ __all__ = [
     "ToolDispatcher",
     "ToolchainBuildTool",
     "ToolchainDepsTool",
+    "UpdateWebSearchStateTool",
+    "WaitTool",
     "WebSearchTool",
     "resolve_logical",
     "resolve_within",

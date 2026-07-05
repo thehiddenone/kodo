@@ -55,9 +55,10 @@ place — the dispatch table in [tools/_dispatch.py](../src/kodo/tools/_dispatch
 ```
 
 **Hard rule:** `kodo.tools` may import only from T0/T1/T2 — in practice
-`kodo.guided_state`, `kodo.project`, `kodo.websearch` (the Playwright
-discovery/scraping engine behind `web_search` — doc/WEB_SEARCH.md — and the
-single-page Markdown fetch behind `read_webpage` — doc/READ_WEBPAGE.md), and
+`kodo.guided_state`, `kodo.project`, `kodo.websearch` (the Playwright- and
+`curl_cffi`-backed fetch engine behind `query_search_engine`/`web_search` —
+doc/WEB_SEARCH.md — and the single-page fetch behind `read_webpage` —
+doc/READ_WEBPAGE.md), and
 `kodo.toolspecs`. It must **never**
 import `subagents`, `llms`, or `runtime`. The collaborators it needs from
 higher tiers (the gate, the session, every engine-side operation) are
@@ -222,9 +223,10 @@ Protocols**, also defined in `_context.py`:
 - **`EngineServices`** — **one** protocol covering *every* engine-side operation
   a tool can delegate upward: `run_subagent(caller, ...)`,
   `run_dependency_manager(task_input)` (ungated `toolchain_depsmgr` spawn for
-  `toolchain_deps`), `run_web_summarizer(task_input)` (ungated *silent*
-  `web_summarizer` turn for `web_search` phase 3 — titler-style, no
-  subsession; doc/WEB_SEARCH.md), `run_author_critic_iteration(caller, ...,
+  `toolchain_deps`), `run_web_search_agent(task_input)` (ungated *silent,
+  multi-round tool-calling* `web_search` agent turn — no subsession, since
+  `web_search` is typically called from a sub-agent; doc/WEB_SEARCH.md),
+  `run_author_critic_iteration(caller, ...,
   path, input_paths, instructions,
   for_revision)`, `rollback(...)`, `disable_autonomous_mode(...)`, and
   `create_project(name)`. Runtime injects a single `_EngineServices` adapter

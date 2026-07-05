@@ -111,6 +111,18 @@ class EngineHost(Protocol):
         messages: list[Message],
     ) -> tuple[dict[str, object] | None, str]: ...
 
+    async def _run_silent_tool_loop_turn(
+        self,
+        routing: LLMRouting,
+        plugin: LLMPlugin,
+        model_id: str,
+        agent: SubAgent,
+        messages: list[Message],
+        dispatcher: ToolDispatcher,
+        deadline: float,
+        max_rounds: int = 60,
+    ) -> dict[str, object] | None: ...
+
     def _entry_agent_name(self) -> str: ...
 
     def _entry_capability(self) -> str: ...
@@ -184,7 +196,9 @@ class EngineHost(Protocol):
         agent_name: str = _GUIDE_AGENT_NAME,
     ) -> str: ...
 
-    def _make_dispatcher(self, agent_name: str, session_id: str) -> ToolDispatcher: ...
+    def _make_dispatcher(
+        self, agent_name: str, session_id: str, deadline: float | None = None
+    ) -> ToolDispatcher: ...
 
     # -- sub-agent dispatch (defined in _subagents) --------------------------------
     def _assert_can_spawn(self, caller: str, *names: str) -> None: ...
@@ -211,14 +225,6 @@ class EngineHost(Protocol):
 
     @staticmethod
     def _render_task_input(task_input: dict[str, object]) -> str: ...
-
-    @staticmethod
-    def _render_web_summarizer_input(task_input: dict[str, object]) -> str: ...
-
-    @staticmethod
-    def _sanitize_themes(
-        result: dict[str, object] | None, max_themes: int, allowed_urls: set[str]
-    ) -> list[dict[str, object]]: ...
 
     # -- crash resume (defined in _resume) ------------------------------------------
     def _has_dangling_tool_use(self) -> bool: ...

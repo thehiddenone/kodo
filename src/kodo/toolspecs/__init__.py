@@ -30,10 +30,13 @@ from ._finalize_project import FINALIZE_PROJECT
 from ._find_files import FIND_FILES
 from ._find_text_in_files import FIND_TEXT_IN_FILES
 from ._get_root_paths import GET_ROOT_PATHS
+from ._get_web_search_state import GET_WEB_SEARCH_STATE
 from ._guided_dev_status import GUIDED_DEV_STATUS
 from ._intent import INTENT_KEY, INTENT_PROPERTY, requires_intent
+from ._query_search_engine import QUERY_SEARCH_ENGINE
 from ._read_file import READ_FILE
 from ._read_webpage import READ_WEBPAGE
+from ._remaining_time import REMAINING_TIME
 from ._return_result import RETURN_RESULT
 from ._rollback import ROLLBACK
 from ._run_author_critic_iteration import RUN_AUTHOR_CRITIC_ITERATION
@@ -50,7 +53,9 @@ from ._spec import (
 )
 from ._toolchain_build import TOOLCHAIN_BUILD
 from ._toolchain_deps import TOOLCHAIN_DEPS
+from ._update_web_search_state import UPDATE_WEB_SEARCH_STATE
 from ._visibility import build_detail_rows, stringify_value
+from ._wait import WAIT
 from ._web_search import WEB_SEARCH
 
 __all__ = [
@@ -66,12 +71,15 @@ __all__ = [
     "FIND_FILES",
     "FIND_TEXT_IN_FILES",
     "GET_ROOT_PATHS",
+    "GET_WEB_SEARCH_STATE",
     "GUIDED_DEV_STATUS",
     "INTENT_KEY",
     "INTENT_PROPERTY",
     "OUTPUT_VISIBILITY_DEFAULT",
+    "QUERY_SEARCH_ENGINE",
     "READ_FILE",
     "READ_WEBPAGE",
+    "REMAINING_TIME",
     "RETURN_RESULT",
     "ROLLBACK",
     "RUN_AUTHOR_CRITIC_ITERATION",
@@ -80,10 +88,12 @@ __all__ = [
     "SCHEMA_COMPLIANCE_KEY",
     "TOOLCHAIN_BUILD",
     "TOOLCHAIN_DEPS",
+    "UPDATE_WEB_SEARCH_STATE",
     "VISIBILITY_ALWAYS",
     "VISIBILITY_HIDDEN",
     "VISIBILITY_VALUES",
     "VISIBILITY_VISIBLE",
+    "WAIT",
     "WEB_SEARCH",
     "SecurityImpact",
     "ToolSpec",
@@ -109,9 +119,12 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     GET_ROOT_PATHS,
     FIND_FILES,
     FIND_TEXT_IN_FILES,
+    GET_WEB_SEARCH_STATE,
     GUIDED_DEV_STATUS,
+    QUERY_SEARCH_ENGINE,
     READ_FILE,
     READ_WEBPAGE,
+    REMAINING_TIME,
     RETURN_RESULT,
     ROLLBACK,
     RUN_AUTHOR_CRITIC_ITERATION,
@@ -119,5 +132,7 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     RUN_SUBAGENT,
     TOOLCHAIN_BUILD,
     TOOLCHAIN_DEPS,
+    UPDATE_WEB_SEARCH_STATE,
+    WAIT,
     WEB_SEARCH,
 )

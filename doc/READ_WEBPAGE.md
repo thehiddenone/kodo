@@ -1,46 +1,51 @@
 # Read Webpage — How the `read_webpage` Tool Works
 
-> From a URL to Markdown: the single-page fetch-and-convert behind the
-> `read_webpage` tool, its SSRF guard, and its anti-bot failure behavior.
+> From a URL to content: the single-page fetch behind the `read_webpage`
+> tool, its two backends (Playwright browsers and `curl_cffi`), its
+> `content_filter` levels, its SSRF guard, and its anti-bot failure behavior.
 
-Companion to [WEB_SEARCH.md](WEB_SEARCH.md) (the sibling `web_search`
-pipeline, which shares the same `kodo.websearch` package and browser
-lifecycle but nothing else) and [TOOLS.md](TOOLS.md) (tool subsystem
-mechanics). The tool is currently granted only to the Problem Solver's
-`investigator` sub-agent.
+Companion to [WEB_SEARCH.md](WEB_SEARCH.md) (the sibling `query_search_engine`/
+`web_search` tools, which share the same `kodo.websearch` fetch backends but
+serve a different purpose — querying a search engine vs. reading a known
+page) and [TOOLS.md](TOOLS.md) (tool subsystem mechanics). The tool is
+currently granted only to the Problem Solver's `investigator` sub-agent and
+the `web_search` agent.
 
 ---
 
 ## 1. Overview
 
-One `read_webpage` call does one thing: fetch a caller-given URL and return
-its main content as Markdown.
+One `read_webpage` call fetches a caller-given URL and returns its content,
+shaped by `content_filter`:
 
 ```text
-                url
-                 │
-                 ▼
- ┌─ Validate ──────────────────────────────────────────────────────────────┐
- │  scheme must be http/https; host must NOT resolve to a private/         │
- │  loopback/link-local/reserved address (SSRF guard — §3)                 │
- └───────────────────────────────────────────────────────────────────────┘
-                 │
-                 ▼
- ┌─ Fetch + convert (kodo.websearch.read_page) ─────────────────────────────┐
- │  one headless-browser page, 20s nav budget                              │
- │  strip nav/header/footer/aside/ads/scripts/images/video in-page          │
- │  walk the remaining DOM → Markdown: headings, tables, plain lists,       │
- │  embedded links kept                                                     │
- └───────────────────────────────────────────────────────────────────────┘
-                 │
-                 ▼
-        {"markdown": "# Title\n\n..."}     or     {"error": "..."}
+                url, browser?, headed?, content_filter?
+                              │
+                              ▼
+ ┌─ Validate (kodo.websearch.validate_public_url) ───────────────────────────┐
+ │  scheme must be http/https; host must NOT resolve to a private/          │
+ │  loopback/link-local/reserved address (SSRF guard — §3)                  │
+ └────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+ ┌─ Fetch (backend picked by `browser`, §2) ─────────────────────────────────┐
+ │  Playwright kind (default `firefox`) → kodo.websearch.fetch_via_browser  │
+ │  `curl` → kodo.websearch.curlfetch + htmlextract                        │
+ └────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+ ┌─ Shape per content_filter (§4), cap length, "too thin" gate (text only) ──┐
+ └────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                {"content": "..."}     or     {"error": "..."}
 ```
 
-Unlike `web_search`, there is no discovery phase (the URL is given), no
-summarization phase (the whole page's content is the point), and **no
-cooldown**: a page that walls the tool off just returns an `error` for that
-one call — repeating the call will fail the same way.
+Unlike `web_search`/`query_search_engine`, there is no discovery phase (the
+URL is given) and no cooldown: a page that walls the tool off just returns an
+`error` for that one call — repeating the exact same call (same URL, same
+`browser`) will fail the same way, though a *different* `browser` choice may
+succeed where another was walled.
 
 ## 2. The pieces and where they live
 
@@ -48,120 +53,128 @@ one call — repeating the call will fail the same way.
 |---|---|---|
 | Tool spec (`READ_WEBPAGE`) | [toolspecs/_read_webpage.py](../src/kodo/toolspecs/_read_webpage.py) | T2 |
 | Tool handler (`ReadWebpageTool`) | [tools/_read_webpage.py](../src/kodo/tools/_read_webpage.py) | T3 (`kodo.tools`) |
-| Fetch + Markdown conversion (`read_page`) | [kodo/websearch/_readpage.py](../src/kodo/websearch/_readpage.py) | **T0 leaf** — imports nothing from `kodo`; Playwright + stdlib only |
-| Shared value object (`PageMarkdown`) | [kodo/websearch/_models.py](../src/kodo/websearch/_models.py) | T0 leaf |
-| Browser lifecycle (`BrowserSession`) | [kodo/websearch/_browser.py](../src/kodo/websearch/_browser.py) | T0 leaf — **shared with `web_search`** |
+| Browser lifecycle (`BrowserSession`) | [kodo/websearch/_browser.py](../src/kodo/websearch/_browser.py) | T0 leaf — shared with `query_search_engine` |
+| Browser-path fetch + extraction (`fetch_via_browser`) | [kodo/websearch/_readpage.py](../src/kodo/websearch/_readpage.py) | T0 leaf |
+| `curl` backend fetch (`curlfetch.fetch`) | [kodo/websearch/_curlfetch.py](../src/kodo/websearch/_curlfetch.py) | T0 leaf |
+| `curl` backend extraction (`htmlextract`) | [kodo/websearch/_htmlextract.py](../src/kodo/websearch/_htmlextract.py) | T0 leaf |
+| SSRF guard + shared exceptions | [kodo/websearch/_validate.py](../src/kodo/websearch/_validate.py) | T0 leaf |
 
-`_readpage.py` is deliberately independent of `_scrape.py` (`web_search`'s
-plain-text extractor): they solve different problems — plain text for an LLM
-summarizer vs. structured Markdown for the calling agent to read directly —
-and keeping them separate means a change to one cannot regress the other.
-The only thing the two tools share is `BrowserSession` (Playwright's
-host-first, bundled-fallback browser lifecycle — WEB_SEARCH.md §7) and the
-`kodo.websearch` package boundary.
+`_readpage.py` is deliberately independent of `_htmlextract.py`: they solve
+the same problem (extract content per `content_filter`) for two different
+data sources — a live browser DOM vs. raw fetched HTML — and keeping them
+separate means a change to one cannot regress the other. Both share only
+`_validate.py`'s SSRF guard/exceptions.
 
 ## 3. The SSRF guard
 
-`web_search` never validates the URLs it scrapes because they all come from a
-search engine's own results page — the caller (the agent) never names a raw
-URL. `read_webpage` breaks that assumption: the agent hands it an arbitrary
-URL directly, which on a tool that runs a real browser on the user's machine
+The agent hands `read_webpage` an arbitrary URL directly, which on a tool
+that can launch a real browser or make an HTTP request on the user's machine
 is a direct SSRF vector (probing `localhost`, a LAN service, or a cloud
 metadata endpoint like `169.254.169.254`).
 
-Before any navigation, `_validate_public_url`:
+Before any request, `validate_public_url` ([`_validate.py`](../src/kodo/websearch/_validate.py)):
 
 1. Rejects any scheme other than `http`/`https`.
 2. Resolves the hostname (`socket.getaddrinfo`) and rejects the URL if **any**
    resolved address is loopback, private, link-local, multicast, reserved, or
    unspecified (`ipaddress.ip_address(...).is_*`).
 
-A rejection raises `InvalidUrlError`. The tool (`ReadWebpageTool.handle`) calls
-`validate_public_url` **before** opening a `BrowserSession` at all, so a bad
-URL never pays for a browser launch; `read_page` re-runs the same check
-internally regardless, so it stays safe for any other caller. This is a
-best-effort guard (a single DNS check, not re-validated against the IP the
-browser actually connects to), matching the project's general non-paranoid
-security stance — it stops casual misuse, not a determined DNS-rebinding
-attacker.
+A rejection raises `InvalidUrlError`. `ReadWebpageTool.handle` calls this
+**before** touching either backend (a bad URL never pays for a browser
+launch or a `curl_cffi` request); both `fetch_via_browser` and
+`curlfetch.fetch` re-run the same check internally regardless, so the guard
+stays safe for any other caller. This is a best-effort guard (a single DNS
+check, not re-validated against the IP the backend actually connects to),
+matching the project's general non-paranoid security stance.
 
-## 4. Fetch + Markdown conversion
+## 4. `browser` — picking a fetch backend
 
-[`kodo/websearch/_readpage.py`](../src/kodo/websearch/_readpage.py).
+| Value | What it is |
+|---|---|
+| `firefox` (default) | Bundled Playwright Firefox — the browser least likely to be flagged as a bot (doc/hidden/WEB_SEARCH_TOOL_REPORT.md). |
+| `chrome` / `edge` | The host's own install, launched via a Chromium channel. **Errors immediately if not installed** — no fallback to any other kind. |
+| `webkit` / `chromium` | Bundled Playwright browsers. |
+| `curl` | `curl_cffi` — impersonates a real browser's TLS/HTTP2 fingerprint with no browser process at all. Often the fastest and least-detected choice for a page that doesn't need JavaScript. |
 
-One page, one navigation (20s budget, `domcontentloaded`), in a fresh
-browser context:
+`headed` (default `false`) runs a visible window instead of headless;
+ignored for `curl`.
 
-1. **Status/wall check.** An HTTP 403/429/503 response, or a generic
-   anti-bot/captcha heuristic evaluated in-page (`_BLOCKED_JS` — looks for
-   reCAPTCHA/hCaptcha iframes, Cloudflare challenge markup, and common wall
-   phrases like "verify you are human" / "just a moment..." / "ddos
-   protection by"), raises `AntiBotWallError`. This is vendor-agnostic by
-   necessity: `read_webpage` visits arbitrary sites, not the four known
-   search engines `web_search`'s `_engines.py` has bespoke detectors for.
-2. **Chrome removal.** The same category of elements `_scrape.py` strips for
-   `web_search` (`script`/`style`/`nav`/`header`/`footer`/`aside`/`form`/
-   navigation-role ARIA chrome/`[aria-hidden]`), **plus** `img`/`picture`/
-   `video`/`audio`/`source`/`track` — images and video are dropped entirely,
-   per the tool's contract. (Duplicated rather than imported from
-   `_scrape.py` so the two extractors stay fully decoupled.)
-3. **Content root.** Same priority as `web_search`: `<article>` → `<main>` →
-   `[role=main]` → `<body>`.
-4. **Markdown walk.** A small recursive DOM walker (not innerText) converts
-   the remaining tree:
-   - `h1`–`h6` → `#`…`######` headings.
-   - `ul`/`ol` → **plain, non-numbered** `-` bullets at any nesting depth
-     (ordered lists are deliberately flattened to bullets too — the tool's
-     contract calls for "simple non-numbered lists").
-   - `table` → a Markdown pipe table (first row as header, `---` separator).
-   - `a[href]` → inline `[text](url)`, resolved to an absolute URL via
-     `document.baseURI`; anchors with no href, a `#` fragment, or a
-     `javascript:` target are inlined as plain text.
-   - `pre` → a fenced ```` ``` ```` code block (its rendered `innerText`, so
-     internal line breaks survive).
-   - `blockquote` → `>` prefix.
-   - `hr` → `---`.
-   - Everything else is flattened to prose and joined with blank lines
-     between blocks.
-5. **Python-side normalization.** Trailing whitespace trimmed per line, runs
-   of 3+ blank lines collapsed to one, then truncated to **20,000 characters**
-   (`_MAX_MARKDOWN_CHARS` — a single-page budget, much larger than
-   `web_search`'s per-source 6,000-char cap since this tool's whole point is
-   one page in full).
-6. **Too-thin check.** Markdown under 40 characters (`_MIN_MARKDOWN_CHARS`)
-   after normalization also raises `AntiBotWallError` — in practice this is
-   usually a wall or login gate the heuristics above didn't recognize, or a
-   JavaScript-only app shell this tool can't render (no `wait_until:
-   "networkidle"`, matching `web_search`'s `domcontentloaded`-only stance).
+### Browser lifecycle ([`_browser.py`](../src/kodo/websearch/_browser.py))
 
-On success the tool prepends the page's `document.title` as an `#` heading
-(when non-empty) ahead of the extracted Markdown body.
+`BrowserSession` launches **exactly** the requested kind — there is no
+cascade. Earlier versions of this tool tried host Chrome → host Edge →
+bundled Firefox → bundled Chromium in order and fell back silently; now that
+the caller names a specific kind explicitly (often for anti-bot reasons —
+picking Firefox because it passes DuckDuckGo, or `curl` because it's
+lighter), silently substituting a different one would defeat that choice and
+could mask a broken host-browser setup. If the requested kind can't be
+launched, `BrowserUnavailableError` is raised immediately.
 
-## 5. The tool's contract
+Bundled kinds (`firefox`/`webkit`/`chromium`) auto-install on first use
+(one-time download via `python -m playwright install <name>`). Each kind
+gets its own one-time `example.com` sanity check (catches an install that
+starts a process but can't load a page), cached **per kind** in
+`~/.kodo/websearch/browser_state.json` — a kind that has already proven
+itself is never re-checked, but a kind that has never been used gets its own
+independent check.
 
-Input: `url` (required, absolute `http`/`https`).
+### The `curl` backend
 
-Output on success:
+[`_curlfetch.py`](../src/kodo/websearch/_curlfetch.py) fetches with
+`curl_cffi`, impersonating a current Chrome build's TLS/HTTP2 signature —
+this passes some anti-bot checks a real headless browser doesn't (see
+WEB_SEARCH.md §7) and needs no browser process at all. Since there is no
+live DOM to evaluate JS in, [`_htmlextract.py`](../src/kodo/websearch/_htmlextract.py)
+is a from-scratch Python port (using `selectolax`) of the same
+wall-detection and `content_filter` extraction the browser path runs in-page
+— deliberately a separate implementation, not shared, so a change to one
+can't regress the other. One accepted gap: with no CSS engine, elements
+hidden via `display:none`/`visibility:hidden` aren't detected, only
+structurally-removed/`aria-hidden` markup is.
 
-```json
-{"markdown": "# Page Title\n\n## Section\n\nSome text with a [link](https://example.com).\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n"}
-```
+## 5. `content_filter` — how much to strip
 
-Output on failure (the universal `{"error": "..."}` envelope — no separate
-`note` field, unlike `web_search`):
+| Value | Behavior |
+|---|---|
+| `off` | The page exactly as fetched — nothing removed. For the browser path this is the live DOM's current `outerHTML` (**after** the page's own scripts have run — pick `curl` if byte-for-byte source matters); for `curl` it's the raw response body. |
+| `html` | The full page's HTML with only `<script>`/`<style>`/`<noscript>` removed — everything else (nav, forms, images, head/meta) intact. |
+| `text` (default) | Content-root selection (`<article>`→`<main>`→`[role=main]`→`<body>`), chrome stripped (nav/header/footer/aside/forms/images/etc.), the remainder converted to Markdown: headings, tables, plain (non-numbered) lists, and embedded links `[text](url)` preserved. This is the tool's original, unchanged behavior. |
+
+`text` mode prepends the page's `<title>` as a Markdown `#` heading (when
+non-empty); `off`/`html` do not synthesize any heading — they return the
+page's own markup as-is.
+
+Length caps (a safety valve, not a quality signal, for `off`/`html`):
+`text` is capped at 20,000 characters and gated by a "too thin" check (under
+40 characters after extraction raises `AntiBotWallError` — usually a wall or
+login gate the heuristics didn't recognize, or a JS-only app shell this tool
+can't render); `off`/`html` are capped at 50,000 characters with no thinness
+check, since the page's own content is whatever it is.
+
+## 6. The tool's contract
+
+Input: `url` (required, absolute `http`/`https`), `browser` (optional, see
+§4), `headed` (optional boolean), `content_filter` (optional, see §5).
+
+Output on success: `{"content": "..."}` — shaped per `content_filter`.
+
+Output on failure (the universal `{"error": "..."}` envelope):
 
 | Situation | `error` message advises |
 |---|---|
 | Bad scheme / private-network host | Names the problem (`InvalidUrlError`); no request was made. |
-| HTTP 403/429/503, captcha/anti-bot markup detected, or too-thin residual content | Explains what was detected, then: *"Do not retry this exact URL — unlike web_search there is no cooldown here, so an immediate retry will fail the same way; try a different source or ask the user."* |
-| No browser available (host Chrome/Edge and bundled Firefox/Chromium fallback all failed) | `"read_webpage is unavailable: ..."` (same `BrowserUnavailableError` as `web_search`). |
-| Any other navigation/JS failure | `"Could not read {url}: {exc}"` — never raised past the tool boundary. |
+| Unsupported `browser`/`content_filter` value | Names the bad value; no request was made. |
+| HTTP 403/429/503, captcha/anti-bot markup detected, or too-thin residual content (`text` mode only) | Explains what was detected, then: *"Do not retry this exact URL with the same browser — ... a different `browser` choice may succeed, or try a different source, or ask the user."* |
+| Requested browser unavailable (host kind not installed, or a bundled kind's install failed) | `"read_webpage is unavailable: ..."` (`BrowserUnavailableError`) — no fallback to another kind. |
+| Any other navigation/JS/request failure | `"Could not read {url}: {exc}"` — never raised past the tool boundary. |
 
-## 6. Security posture
+## 7. Security posture
 
-`read_webpage` is `SecurityImpact.LOW` and available in autonomous mode: like
-`web_search`, its only side effect toward the user's machine is Playwright's
-own browser cache, and its SSRF guard (§3) keeps it from being used to probe
-the user's local network. Fetched page content is untrusted input handed
-straight back to the calling agent as data (there is no LLM summarization
-step in this tool to harden, unlike `web_search`'s `web_summarizer`).
+`read_webpage` is `SecurityImpact.LOW` and available in autonomous mode: it
+is read-only toward the user's machine (its only writes are
+`~/.kodo/websearch/browser_state.json` and Playwright's own browser cache),
+and its SSRF guard (§3) keeps it from being used to probe the user's local
+network. Fetched page content is untrusted input handed straight back to the
+calling agent as data — there is no LLM synthesis step in this tool to
+harden (unlike `web_search`'s agent, which treats fetched text strictly as
+data per its own prompt).

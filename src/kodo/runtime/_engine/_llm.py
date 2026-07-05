@@ -9,6 +9,7 @@ the security layer's SMART-mode intent judge.
 from __future__ import annotations
 
 import shutil
+import time
 import uuid
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from kodo.llms import (
     LLMRouting,
     LoggingLLMPlugin,
     Message,
+    ThinkingDelta,
+    ThinkingSignature,
     TokenDelta,
     ToolCallEvent,
     TurnEnd,
@@ -27,7 +30,7 @@ from kodo.llms.anthropic import ClaudePlugin
 from kodo.llms.llamacpp import LlamaPlugin
 from kodo.project import kodo_user_dir
 from kodo.subagents import SubAgent
-from kodo.tools import tools_for_agent
+from kodo.tools import ToolDispatcher, tools_for_agent
 
 from ._proto import EngineHost
 from ._shared import _GUIDE_AGENT_NAME, _PROBLEM_SOLVER_AGENT_NAME
@@ -187,6 +190,179 @@ class LLMPlumbingMixin:
             await self._emitters.emit_cost_only()
 
         return result, "".join(text_parts)
+
+    async def _run_silent_tool_loop_turn(
+        self: EngineHost,
+        routing: LLMRouting,
+        plugin: LLMPlugin,
+        model_id: str,
+        agent: SubAgent,
+        messages: list[Message],
+        dispatcher: ToolDispatcher,
+        deadline: float,
+        max_rounds: int = 60,
+    ) -> dict[str, object] | None:
+        """Drive a silent, multi-round tool-calling turn for an engine-driven agent.
+
+        Unlike :meth:`_run_silent_return_turn` (one call, no dispatch — used by
+        ``session_titler``/``compactor``), this actually dispatches the agent's
+        tool calls and loops until it returns a result. Unlike
+        :meth:`_drive_subsession` (a real subsession: feed events, markers, a
+        genuine subsession slot), nothing here reaches the feed and no
+        subsession is opened. ``web_search`` needs the former's tool loop and
+        the latter's invisibility: it is typically called *from* a sub-agent
+        (the investigator), and subsessions cannot nest.
+
+        Bounded two ways: *deadline* (a wall-clock unix timestamp — once
+        reached, the agent gets one final forced turn to call
+        ``return_result`` with whatever it has) and *max_rounds* (a hard
+        safety valve independent of the clock, in case of a runaway loop).
+        Cost is folded into the session total exactly like
+        :meth:`_run_silent_return_turn`; no stream/thinking/tool-call events
+        reach the feed, and tool dispatch skips the checkpoint/tool-call-card
+        machinery :meth:`_dispatch_tool_calls` uses for a visible turn — the
+        caller's *dispatcher* still runs every call through the real security
+        gate and :class:`~kodo.tools.Tool` handler, just without the UI side
+        effects.
+
+        Args:
+            dispatcher: Pre-built for the ``web_search`` agent, with
+                ``ToolContext.deadline`` already set to *deadline*.
+            deadline: Unix timestamp this run must wrap up by.
+            max_rounds: Hard cap on LLM round-trips, independent of *deadline*.
+
+        Returns:
+            dict[str, object] | None: The sub-agent's ``return_result``
+            payload (already validated/normalized against its output schema
+            by the ``return_result`` tool), or ``None`` if it never produced
+            one even after the final forced turn.
+        """
+        tools = tools_for_agent(agent.tools)
+
+        for _round in range(max_rounds):
+            text_parts: list[str] = []
+            thinking_parts: list[str] = []
+            thinking_signature: str | None = None
+            tool_calls: list[ToolCallEvent] = []
+            turn_end: TurnEnd | None = None
+
+            async for event in self._gateway.stream_query(
+                routing=routing,
+                plugin=plugin,
+                sink=self._sink,
+                stream_id=uuid.uuid4().hex,
+                model=model_id,
+                system=agent.system_prompt,
+                messages=messages,
+                tools=tools,
+                cache_breakpoints=[0],
+            ):
+                if isinstance(event, TokenDelta):
+                    text_parts.append(event.text)
+                elif isinstance(event, ThinkingDelta):
+                    thinking_parts.append(event.text)
+                elif isinstance(event, ThinkingSignature):
+                    thinking_signature = event.signature
+                elif isinstance(event, ToolCallEvent):
+                    tool_calls.append(event)
+                elif isinstance(event, TurnEnd):
+                    turn_end = event
+
+            if turn_end is not None:
+                self._emitters.add_cost(turn_end.usage.usd_cost)
+                await self._emitters.emit_cost_only()
+
+            thinking_text = "".join(thinking_parts)
+            assistant_content: list[dict[str, object]] = []
+            if thinking_text:
+                assistant_content.append(self._thinking_block(thinking_text, thinking_signature))
+
+            if not tool_calls:
+                # No tool call this round — nudge the model rather than
+                # silently ending the loop on a stray text-only reply.
+                assistant_content.append(
+                    {"type": "text", "text": "".join(text_parts) or "(no text)"}
+                )
+                messages = messages + [Message(role="assistant", content=assistant_content)]
+                messages = messages + [
+                    Message(
+                        role="user",
+                        content=(
+                            "Continue the search, or call return_result if you already "
+                            "have enough to produce the report."
+                        ),
+                    )
+                ]
+                if time.time() >= deadline:
+                    break
+                continue
+
+            if text_parts:
+                assistant_content.append({"type": "text", "text": "".join(text_parts)})
+            for tc in tool_calls:
+                assistant_content.append(
+                    {
+                        "type": "tool_use",
+                        "id": tc.tool_use_id,
+                        "name": tc.tool_name,
+                        "input": tc.tool_input,
+                    }
+                )
+            messages = messages + [Message(role="assistant", content=assistant_content)]
+
+            tool_results: list[dict[str, object]] = []
+            for tc in tool_calls:
+                result_text = await dispatcher.dispatch(tc.tool_name, tc.tool_input, tc.tool_use_id)
+                tool_results.append(
+                    {"type": "tool_result", "tool_use_id": tc.tool_use_id, "content": result_text}
+                )
+            messages = messages + [Message(role="user", content=tool_results)]
+
+            if dispatcher.stop_requested:
+                return dispatcher.returned_output
+            if time.time() >= deadline:
+                break
+
+        if dispatcher.stop_requested:
+            return dispatcher.returned_output
+
+        # Time or rounds ran out without a result — one last forced turn:
+        # tell the model plainly, and dispatch only a return_result call if
+        # it makes one (this is the final word either way).
+        messages = messages + [
+            Message(
+                role="user",
+                content=(
+                    "Time is up. Call return_result immediately with your best report "
+                    "from what you have gathered so far — do not call any other tool."
+                ),
+            )
+        ]
+        final_calls: list[ToolCallEvent] = []
+        final_turn_end: TurnEnd | None = None
+        async for event in self._gateway.stream_query(
+            routing=routing,
+            plugin=plugin,
+            sink=self._sink,
+            stream_id=uuid.uuid4().hex,
+            model=model_id,
+            system=agent.system_prompt,
+            messages=messages,
+            tools=tools,
+            cache_breakpoints=[0],
+        ):
+            if isinstance(event, ToolCallEvent):
+                final_calls.append(event)
+            elif isinstance(event, TurnEnd):
+                final_turn_end = event
+        if final_turn_end is not None:
+            self._emitters.add_cost(final_turn_end.usage.usd_cost)
+            await self._emitters.emit_cost_only()
+        for tc in final_calls:
+            if tc.tool_name == "return_result":
+                await dispatcher.dispatch(tc.tool_name, tc.tool_input, tc.tool_use_id)
+                break
+        return dispatcher.returned_output
 
     async def _security_judge(self: EngineHost, system: str, user: str) -> str:
         """One silent LLM call for the security layer's SMART-mode intent judge.

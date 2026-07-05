@@ -1,69 +1,61 @@
-"""Single-page fetch + HTML→Markdown extraction for the ``read_webpage`` tool.
+"""Single-page fetch + extraction for the ``read_webpage`` tool, browser path.
 
-Independent of the ``web_search`` pipeline (:mod:`kodo.websearch._scrape`):
-that module extracts *plain text* for the summarizer and is left untouched
-here so this addition cannot regress it. :func:`read_page` instead converts
-one page's main content root to Markdown — headings, tables, plain
-(non-numbered) lists, and links preserved; images/video dropped — using the
-same live-DOM-mutation philosophy (strip chrome, then let the browser's own
-layout stand in for a full HTML parser).
+Independent of the ``query_search_engine`` pipeline (:mod:`kodo.websearch._engines`)
+and of the ``curl`` backend (:mod:`kodo.websearch._curlfetch` /
+``_htmlextract``): this module is the Playwright-driven path used for every
+``browser`` choice except ``"curl"``. It supports all three
+``content_filter`` modes:
+
+- ``"off"`` — the live DOM's current ``outerHTML``, unmodified (note: for a
+  browser this is *after* the page's own scripts have run, not the exact
+  network response bytes — pick ``browser: "curl"`` if byte-for-byte source
+  matters).
+- ``"html"`` — the same, with ``<script>``/``<style>``/``<noscript>``
+  removed.
+- ``"text"`` — content-root selection (``<article>``→``<main>``→
+  ``[role=main]``→``<body>``), chrome stripped, DOM→Markdown walk (headings,
+  tables, plain lists, links preserved) — this is the tool's original,
+  still-default behavior.
 
 Two failure modes are raised as distinct exceptions so the tool can shape its
 ``error`` message:
 
-- :class:`InvalidUrlError` — the URL fails validation *before* any request is
-  made (bad scheme, or the host resolves to a private/loopback/link-local
-  address — an SSRF guard, since this tool fetches whatever URL the agent
-  hands it, unlike ``web_search`` which only ever visits engine-discovered
-  links).
-- :class:`AntiBotWallError` — the request went out but the page is a
-  captcha/anti-bot wall (or, after stripping chrome, yielded essentially no
-  content — usually the same thing wearing a different hat: a JS-only app
-  shell, a login wall, a rate-limit page). Unlike ``web_search``'s per-engine
-  cooldown, there is no persisted backoff here: the caller is simply told not
-  to retry the same URL.
+- :class:`~kodo.websearch._validate.InvalidUrlError` — the URL fails
+  validation *before* any request is made (bad scheme, or the host resolves
+  to a private/loopback/link-local address — an SSRF guard, since this tool
+  fetches whatever URL the agent hands it).
+- :class:`~kodo.websearch._validate.AntiBotWallError` — the request went out
+  but the page is a captcha/anti-bot wall. Unlike ``query_search_engine``'s
+  per-engine cooldown bookkeeping, this module raises and lets the caller
+  (the ``web_search`` agent, or the tool handler for a direct
+  ``read_webpage`` call) decide what to do about it.
 """
 
 from __future__ import annotations
 
-import asyncio
-import ipaddress
 import logging
-import socket
-from urllib.parse import urlsplit
+from dataclasses import dataclass
+from typing import Literal
 
 from playwright.async_api import Browser
 from playwright.async_api import Error as PlaywrightError
 
-from ._models import PageMarkdown
+from ._validate import AntiBotWallError, validate_public_url
 
-__all__ = ["AntiBotWallError", "InvalidUrlError", "read_page", "validate_public_url"]
+__all__ = ["BrowserContent", "ContentFilter", "fetch_via_browser"]
 
 _log = logging.getLogger(__name__)
 
+ContentFilter = Literal["off", "html", "text"]
+
 # Navigation budget for the target page.
 _NAV_TIMEOUT_MS = 20_000
-# Per-page character budget (keeps the tool result bounded).
-_MAX_MARKDOWN_CHARS = 20_000
-# Pages with less residual Markdown than this carry no usable content.
-_MIN_MARKDOWN_CHARS = 40
-# Schemes read_page will navigate to.
-_ALLOWED_SCHEMES = frozenset({"http", "https"})
 # HTTP statuses that mean "you are rate-limited / blocked" without a captcha page.
 _BLOCKED_STATUSES = frozenset({403, 429, 503})
 
-
-class InvalidUrlError(Exception):
-    """Raised when *url* fails validation before any request is made."""
-
-
-class AntiBotWallError(Exception):
-    """Raised when the page is an anti-bot wall or yields no usable content."""
-
-
-# Chrome stripped before extraction — the same categories _scrape.py removes
-# for the web_search pipeline, plus media elements (images/video are dropped
-# from read_webpage's output entirely, per the tool's contract).
+# Chrome stripped before "text"-mode extraction — script/style/UI/navigation
+# chrome, plus media (images/video are dropped from read_webpage's text
+# output entirely, per the tool's contract).
 _REMOVE_SELECTORS = """[
     'script', 'style', 'noscript', 'template', 'svg', 'canvas', 'iframe',
     'nav', 'header', 'footer', 'aside', 'form', 'button', 'select', 'dialog',
@@ -76,6 +68,7 @@ _REMOVE_SELECTORS = """[
 # in _engines.py (which knows each search engine's specific wall markup),
 # read_webpage visits arbitrary sites, so this looks for the vendor-agnostic
 # signatures common to Cloudflare/reCAPTCHA/hCaptcha/PerimeterX-style walls.
+# Mirrored (not shared) in _htmlextract.py's is_blocked() for the curl path.
 _BLOCKED_JS = """
 () => {
   if (document.querySelector(
@@ -102,13 +95,24 @@ _BLOCKED_JS = """
 }
 """
 
-# Converts the page's main content root to Markdown in-page: strips chrome,
-# then walks the remaining DOM converting headings/tables/lists/links to
-# Markdown syntax while flattening everything else to prose. Deliberately
-# simple — no bold/italic/code-span handling — matching the tool's contract
-# of "plain text with a few H-styles, simple non-numbered lists, tables, and
-# embedded links."
-_EXTRACT_MARKDOWN_JS = (
+# content_filter: "off" — the live DOM's current outerHTML, untouched.
+_EXTRACT_OFF_JS = "() => document.documentElement.outerHTML"
+
+# content_filter: "html" — same, with script/style/noscript removed.
+_EXTRACT_HTML_JS = """
+() => {
+  for (const el of document.querySelectorAll('script, style, noscript')) el.remove();
+  return document.documentElement.outerHTML;
+}
+"""
+
+# content_filter: "text" — converts the page's main content root to Markdown
+# in-page: strips chrome, then walks the remaining DOM converting
+# headings/tables/lists/links to Markdown syntax while flattening everything
+# else to prose. Deliberately simple — no bold/italic/code-span handling —
+# matching the tool's contract of "plain text with a few H-styles, simple
+# non-numbered lists, tables, and embedded links."
+_EXTRACT_TEXT_JS = (
     """
 () => {
   const REMOVE = """
@@ -135,34 +139,38 @@ _EXTRACT_MARKDOWN_JS = (
     return style.display === 'none' || style.visibility === 'hidden';
   }
 
+  // Renders one non-block node (and its subtree) as inline text/markdown.
+  // Handling `<a>`/`<br>` here -- not only when nested a level deeper inside
+  // a wrapper -- matters because a link with no wrapping inline element
+  // (e.g. `<p>Hello <a href="/x">link</a></p>`, the common case) is passed
+  // to this function *as the node itself* from walk()'s non-block branch.
+  function inlineOne(node) {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+    if (isHidden(node)) return '';
+    const tag = node.tagName;
+    if (tag === 'BR') return ' ';
+    if (tag === 'A') {
+      const href = node.getAttribute('href');
+      const text = inline(node).replace(/\\s+/g, ' ').trim();
+      if (href && !href.startsWith('javascript:') && !href.startsWith('#') && text) {
+        let abs;
+        try {
+          abs = new URL(href, document.baseURI).href;
+        } catch (e) {
+          abs = href;
+        }
+        return `[${text}](${abs})`;
+      }
+      return text;
+    }
+    return inline(node);
+  }
+
   function inline(node) {
     let out = '';
     for (const child of node.childNodes) {
-      if (child.nodeType === Node.TEXT_NODE) {
-        out += child.textContent;
-      } else if (child.nodeType === Node.ELEMENT_NODE) {
-        if (isHidden(child)) continue;
-        const tag = child.tagName;
-        if (tag === 'BR') {
-          out += ' ';
-        } else if (tag === 'A') {
-          const href = child.getAttribute('href');
-          const text = inline(child).replace(/\\s+/g, ' ').trim();
-          if (href && !href.startsWith('javascript:') && !href.startsWith('#') && text) {
-            let abs;
-            try {
-              abs = new URL(href, document.baseURI).href;
-            } catch (e) {
-              abs = href;
-            }
-            out += `[${text}](${abs})`;
-          } else {
-            out += text;
-          }
-        } else {
-          out += inline(child);
-        }
-      }
+      out += inlineOne(child);
     }
     return out;
   }
@@ -219,9 +227,9 @@ _EXTRACT_MARKDOWN_JS = (
           const md = walk(child);
           if (md) blocks.push(md);
         } else {
-          // Wrapping <p>/<div> and plain inline elements flow into the
-          // bullet's own text.
-          inlineText += inline(child);
+          // Wrapping <p>/<div> and plain inline elements (including a bare
+          // <a>) flow into the bullet's own text.
+          inlineText += inlineOne(child);
         }
       }
       inlineText = inlineText.replace(/\\s+/g, ' ').trim();
@@ -279,7 +287,7 @@ _EXTRACT_MARKDOWN_JS = (
         const md = blockToMarkdown(child);
         if (md) parts.push(md);
       } else {
-        buffer += inline(child);
+        buffer += inlineOne(child);
       }
     }
     flush();
@@ -292,25 +300,50 @@ _EXTRACT_MARKDOWN_JS = (
 )
 
 
-async def read_page(browser: Browser, url: str) -> PageMarkdown:
-    """Fetch *url* and return its main content as Markdown.
+@dataclass(frozen=True)
+class BrowserContent:
+    """One page fetched + extracted via a Playwright browser.
+
+    Attributes:
+        title: The page's ``document.title`` — only meaningful for
+            ``content_filter: "text"`` (``""`` for ``"off"``/``"html"``,
+            whose ``content`` already carries the page's own ``<title>``).
+        content: The extracted content, shaped per the requested
+            ``content_filter`` (raw/stripped HTML, or Markdown body without
+            a synthesized title heading — the caller prepends one).
+    """
+
+    title: str
+    content: str
+
+
+async def fetch_via_browser(
+    browser: Browser, url: str, content_filter: ContentFilter
+) -> BrowserContent:
+    """Fetch *url* and extract its content per *content_filter*.
 
     Callers that can validate *url* before paying for a browser launch (the
-    ``read_webpage`` tool does, via :func:`validate_public_url`) should do so;
-    this function re-validates regardless, so it stays safe to call directly.
+    ``read_webpage`` tool does, via
+    :func:`~kodo.websearch._validate.validate_public_url`) should do so; this
+    function re-validates regardless, so it stays safe to call directly.
 
     Args:
-        browser: The caller's shared headless browser.
+        browser: The caller's already-launched browser (any kind but curl —
+            curl never touches this module).
         url: Absolute ``http``/``https`` URL to fetch.
+        content_filter: Which extraction to run.
 
     Returns:
-        PageMarkdown: The page's title and Markdown content.
+        BrowserContent: Unbounded — the caller applies its own length cap
+            and "too thin" quality gate (policy that's shared with the curl
+            backend, so it lives once in the tool handler, not duplicated
+            per backend).
 
     Raises:
         InvalidUrlError: *url* has a disallowed scheme, or its host resolves
             to a private/loopback/link-local/reserved address.
-        AntiBotWallError: The page is a captcha/anti-bot wall, was blocked
-            (HTTP 403/429/503), or yielded no usable content after stripping.
+        AntiBotWallError: The page is a captcha/anti-bot wall, or was
+            blocked (HTTP 403/429/503).
     """
     await validate_public_url(url)
 
@@ -329,7 +362,17 @@ async def read_page(browser: Browser, url: str) -> PageMarkdown:
                     "The page appears to be an anti-bot/captcha wall (e.g. a "
                     "Cloudflare, reCAPTCHA, or hCaptcha challenge)."
                 )
-            raw = await page.evaluate(_EXTRACT_MARKDOWN_JS)
+            if content_filter == "off":
+                raw_html = await page.evaluate(_EXTRACT_OFF_JS)
+                return BrowserContent(
+                    title="", content=raw_html if isinstance(raw_html, str) else ""
+                )
+            if content_filter == "html":
+                raw_html = await page.evaluate(_EXTRACT_HTML_JS)
+                return BrowserContent(
+                    title="", content=raw_html if isinstance(raw_html, str) else ""
+                )
+            raw = await page.evaluate(_EXTRACT_TEXT_JS)
         finally:
             try:
                 await page.close()
@@ -342,60 +385,11 @@ async def read_page(browser: Browser, url: str) -> PageMarkdown:
             _log.debug("Context close failed for %s", url, exc_info=True)
 
     title, markdown = _parse_extraction(raw)
-    markdown = _normalize_markdown(markdown)
-    if len(markdown) < _MIN_MARKDOWN_CHARS:
-        raise AntiBotWallError(
-            "The page yielded almost no readable content after stripping "
-            "navigation/ads/scripts; it may be gated behind an anti-bot check, "
-            "a login wall, or a JavaScript-only app shell this tool can't render."
-        )
-    return PageMarkdown(url=url, title=title, markdown=markdown[:_MAX_MARKDOWN_CHARS])
-
-
-async def validate_public_url(url: str) -> None:
-    """Reject non-http(s) schemes and hosts resolving to a non-public address.
-
-    A standalone SSRF guard (DNS lookup only, no browser) so callers like the
-    ``read_webpage`` tool can reject a bad URL before launching Chromium.
-
-    Raises:
-        InvalidUrlError: *url* has a disallowed scheme, its host cannot be
-            resolved, or a resolved address is private/loopback/link-local/
-            reserved/unspecified.
-    """
-    parts = urlsplit(url)
-    if parts.scheme not in _ALLOWED_SCHEMES:
-        raise InvalidUrlError(
-            f"Unsupported URL scheme {parts.scheme!r}; only http/https are allowed."
-        )
-    host = parts.hostname
-    if not host:
-        raise InvalidUrlError(f"URL {url!r} has no host.")
-    try:
-        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
-    except socket.gaierror as exc:
-        raise InvalidUrlError(f"Could not resolve host {host!r}: {exc}") from exc
-    for info in infos:
-        try:
-            addr = ipaddress.ip_address(str(info[4][0]).split("%", 1)[0])
-        except ValueError as exc:
-            raise InvalidUrlError(f"Could not parse resolved address for {host!r}: {exc}") from exc
-        if (
-            addr.is_private
-            or addr.is_loopback
-            or addr.is_link_local
-            or addr.is_multicast
-            or addr.is_reserved
-            or addr.is_unspecified
-        ):
-            raise InvalidUrlError(
-                f"URL host {host!r} resolves to a private/internal address ({addr}); "
-                "read_webpage only fetches public internet pages."
-            )
+    return BrowserContent(title=title, content=_normalize_markdown(markdown))
 
 
 def _parse_extraction(raw: object) -> tuple[str, str]:
-    """Pull ``(title, markdown)`` out of the extractor's payload, defensively."""
+    """Pull ``(title, markdown)`` out of the "text"-mode extractor's payload."""
     if not isinstance(raw, dict):
         return "", ""
     title = raw.get("title")

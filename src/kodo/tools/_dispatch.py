@@ -28,10 +28,13 @@ from kodo.toolspecs import (
     FIND_FILES,
     FIND_TEXT_IN_FILES,
     GET_ROOT_PATHS,
+    GET_WEB_SEARCH_STATE,
     GUIDED_DEV_STATUS,
     INTENT_KEY,
+    QUERY_SEARCH_ENGINE,
     READ_FILE,
     READ_WEBPAGE,
+    REMAINING_TIME,
     RETURN_RESULT,
     ROLLBACK,
     RUN_AUTHOR_CRITIC_ITERATION,
@@ -39,6 +42,8 @@ from kodo.toolspecs import (
     RUN_SUBAGENT,
     TOOLCHAIN_BUILD,
     TOOLCHAIN_DEPS,
+    UPDATE_WEB_SEARCH_STATE,
+    WAIT,
     WEB_SEARCH,
     ToolSpec,
     requires_intent,
@@ -63,10 +68,13 @@ from ._finalize_project import FinalizeProjectTool
 from ._find_files import FindFilesTool
 from ._find_text_in_files import FindTextInFilesTool
 from ._get_root_paths import GetRootPathsTool
+from ._get_web_search_state import GetWebSearchStateTool
 from ._guided_dev_status import GuidedDevStatusTool
 from ._paths import PathResolver
+from ._query_search_engine import QuerySearchEngineTool
 from ._read_file import ReadFileTool
 from ._read_webpage import ReadWebpageTool
+from ._remaining_time import RemainingTimeTool
 from ._return_result import ReturnResultTool
 from ._rollback import RollbackTool
 from ._run_author_critic_iteration import RunAuthorCriticIterationTool
@@ -75,6 +83,8 @@ from ._run_subagent import RunSubagentTool
 from ._tool import Tool
 from ._toolchain_build import ToolchainBuildTool
 from ._toolchain_deps import ToolchainDepsTool
+from ._update_web_search_state import UpdateWebSearchStateTool
+from ._wait import WaitTool
 from ._web_search import WebSearchTool
 
 __all__ = ["DISPATCHABLE_TOOLS_BY_NAME", "ToolDispatcher", "tools_for_agent"]
@@ -86,6 +96,7 @@ _log = logging.getLogger(__name__)
 _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (READ_FILE, ReadFileTool),
     (READ_WEBPAGE, ReadWebpageTool),
+    (QUERY_SEARCH_ENGINE, QuerySearchEngineTool),
     (DOCUMENT_FEEDBACK, DocumentFeedbackTool),
     (ESCALATE_BLOCKER, EscalateBlockerTool),
     (ASK_USER, AskUserTool),
@@ -106,6 +117,10 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (TOOLCHAIN_BUILD, ToolchainBuildTool),
     (TOOLCHAIN_DEPS, ToolchainDepsTool),
     (WEB_SEARCH, WebSearchTool),
+    (GET_WEB_SEARCH_STATE, GetWebSearchStateTool),
+    (UPDATE_WEB_SEARCH_STATE, UpdateWebSearchStateTool),
+    (WAIT, WaitTool),
+    (REMAINING_TIME, RemainingTimeTool),
 )
 
 _CLASSES_BY_NAME: dict[str, type[Tool]] = {spec.name: cls for spec, cls in _TOOL_CLASSES}
@@ -164,6 +179,9 @@ class ToolDispatcher:
         output_schema: The running sub-agent's ``output_schema`` (from its
             ``SubAgentSpec``), so ``return_result`` can validate its result.
             ``None`` for entry agents that never call ``return_result``.
+        deadline: Unix timestamp this run must wrap up by, or ``None`` if
+            untimed. Populated only for the ``web_search`` agent's dispatcher;
+            see :attr:`ToolContext.deadline`.
     """
 
     __ctx: ToolContext
@@ -183,6 +201,7 @@ class ToolDispatcher:
         root_paths: tuple[RootPath, ...] = (),
         util_paths: dict[str, Path] | None = None,
         output_schema: dict[str, object] | None = None,
+        deadline: float | None = None,
     ) -> None:
         self.__ctx = ToolContext(
             resolver=resolver,
@@ -197,6 +216,7 @@ class ToolDispatcher:
             root_paths=root_paths,
             util_paths=dict(util_paths or {}),
             output_schema=output_schema,
+            deadline=deadline,
         )
 
     @property

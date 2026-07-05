@@ -1,55 +1,59 @@
 # Web Search — How the `web_search` Tool Works
 
-> From a free-text query to a themed research report: the three-phase
-> pipeline behind the `web_search` tool — search-engine discovery, page
-> scraping, and LLM theme summarization — plus its anti-bot cooldowns and
-> failure behavior.
+> From a free-text query to a themed research report: the `web_search`
+> agent that plans its own discovery/read/synthesis loop, its two backends
+> (Playwright browsers and `curl_cffi`), its pacing/memory tools, and its
+> timeout model.
 
 Companion to [TOOLS.md](TOOLS.md) (tool subsystem mechanics),
 [INTERNALS.md](INTERNALS.md) (layering), and [READ_WEBPAGE.md](READ_WEBPAGE.md)
-(the sibling single-page fetch tool — same `kodo.websearch` package and
-browser lifecycle, but an independent, un-summarized Markdown extraction
-path). The tool is currently granted only to the Problem Solver's
-`investigator` sub-agent.
+(the sibling single-page fetch tool — same `kodo.websearch` package and fetch
+backends, but an independent, un-agent-driven path). `web_search` is
+currently granted only to the Problem Solver's `investigator` sub-agent.
 
 ---
 
 ## 1. Overview
 
-One `web_search` call runs three phases end to end:
+`web_search` used to be a fixed, deterministic three-phase pipeline
+(discover all four engines in parallel → scrape every page → summarize with
+a second silent LLM pass). It is now driven by a real agent:
 
 ```text
-            query                                   ~/.kodo/websearch/
-              │                                     engine_cooldowns.json
-              ▼                                            ▲   │ 30-min cooldowns
- ┌─ Phase 1: DISCOVERY ────────────────────────────────────┴───┴─────────┐
- │  kodo.websearch.discover() — one headless browser (Playwright, §7)     │
- │  Google ────┐                                                          │
- │  Bing ──────┼─ queried in parallel; ads/sponsored skipped; captcha     │
- │  DDG ───────┤  walls trip a cooldown; organic hits merged rank-by-rank │
- │  Wikipedia ─┘  (English Wikipedia full-text search)                    │
- └──────────────── ≤ 16 deduplicated links, top results first ───────────┘
-              │
-              ▼
- ┌─ Phase 2: SCRAPING ────────────────────────────────────────────────────┐
- │  kodo.websearch.scrape_pages() — same browser, ≤ 5 pages in flight     │
- │  per page: strip script/style/nav/header/footer/aside/form/UI chrome   │
- │  in the live DOM, take innerText of <article>/<main>/[role=main]/body  │
- └──────────────── ≤ 16 blocks of main text (≤ 6000 chars each) ──────────┘
-              │
-              ▼
- ┌─ Phase 3: SUMMARIZATION ───────────────────────────────────────────────┐
- │  web_summarizer sub-agent — silent engine-driven LLM turn (low tier)   │
- │  groups the blocks into themes: distinct angles / solution options     │
- └──────────────── {themes: [{summary, details, links}], note} ───────────┘
+                 query, max_results, timeout
+                              │
+                              ▼
+ ┌─ web_search tool (tools/_web_search.py) ─────────────────────────────────┐
+ │  validates `query`, clamps max_results (≤10) and timeout (≤600s),        │
+ │  delegates to EngineServices.run_web_search_agent                       │
+ └───────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+ ┌─ web_search agent (subagent_web_search.md, capability: medium) ──────────┐
+ │  a silent, multi-round tool-calling turn (_run_silent_tool_loop_turn)    │
+ │  the agent itself decides, round by round:                              │
+ │   - query_search_engine(engine, query, browser?) — one engine per call  │
+ │   - read_webpage(url, browser?, content_filter?) — read a promising page│
+ │   - get_web_search_state / update_web_search_state — pacing memory      │
+ │   - wait — space out requests                                          │
+ │   - remaining_time — check its own clock                                │
+ │  until it calls return_result with {themes, note}                       │
+ └───────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                     {themes: [...], note: "..."}
 ```
 
-Design stance: **best effort, non-evasive**. No anti-bot circumvention is ever
-attempted — an engine that walls us off is simply left alone for 30 minutes.
-Whatever degrades along the way is *reported*, not raised: the tool always
-returns a schema-compliant `{themes, note}`, and an empty `themes` list with an
-explanatory `note` means "this search couldn't be completed", never an error
-surfaced to the run.
+Design stance: **best effort**, with one deliberate, bounded exception to the
+project's historical "no anti-bot circumvention" posture. `browser: "curl"`
+(§7) impersonates a real browser's TLS/HTTP2 fingerprint via `curl_cffi` —
+that is network-layer impersonation, not JS-fingerprint spoofing, a proxy, or
+CAPTCHA solving, and it is the agent's own explicit choice per call, not a
+silent default. Whatever the agent could not do — an engine wall it hit, a
+page it could not read, running out of time — is *reported* in `note`, never
+raised: the tool always returns a schema-compliant `{themes, note}`, and an
+empty `themes` list with an explanatory `note` means "this search couldn't be
+completed", never an error surfaced to the run.
 
 ## 2. The pieces and where they live
 
@@ -57,195 +61,182 @@ surfaced to the run.
 |---|---|---|
 | Tool spec (`WEB_SEARCH`) | [toolspecs/_web_search.py](../src/kodo/toolspecs/_web_search.py) | T2 |
 | Tool handler (`WebSearchTool`) | [tools/_web_search.py](../src/kodo/tools/_web_search.py) | T3 (`kodo.tools`) |
-| Discovery + scraping engine | [kodo/websearch/](../src/kodo/websearch/) | **T0 leaf** — imports nothing from `kodo`; Playwright only |
-| Summarizer prompt | [subagents/subagent_web_summarizer.md](../src/kodo/subagents/subagent_web_summarizer.md) | T3 (`kodo.subagents`) |
-| Summarizer spec (`WEB_SUMMARIZER`) | [subagents/specs/_web_summarizer.py](../src/kodo/subagents/specs/_web_summarizer.py) | T3 |
-| Engine service (`run_web_summarizer`) | [runtime/_engine/](../src/kodo/runtime/_engine/) (`_run_web_summarizer`) | T4 |
-| Cooldown state | `~/.kodo/websearch/engine_cooldowns.json` | on disk |
+| Discovery tool spec/handler (`QUERY_SEARCH_ENGINE`) | [toolspecs/_query_search_engine.py](../src/kodo/toolspecs/_query_search_engine.py), [tools/_query_search_engine.py](../src/kodo/tools/_query_search_engine.py) | T2/T3 |
+| Pacing tool specs/handlers | `toolspecs/_get_web_search_state.py`, `_update_web_search_state.py`, `_wait.py`, `_remaining_time.py` + matching `tools/_*.py` | T2/T3 |
+| Fetch backends (browser + curl) | [kodo/websearch/](../src/kodo/websearch/) | **T0 leaf** — imports nothing from `kodo` |
+| Engine definitions (URL templates, JS extractors) | [kodo/websearch/_engines.py](../src/kodo/websearch/_engines.py) | T0 leaf |
+| Browser-backed single-engine query | [kodo/websearch/_enginequery.py](../src/kodo/websearch/_enginequery.py) | T0 leaf |
+| `curl` backend fetch | [kodo/websearch/_curlfetch.py](../src/kodo/websearch/_curlfetch.py) | T0 leaf |
+| `curl` backend extraction (no live DOM) | [kodo/websearch/_htmlextract.py](../src/kodo/websearch/_htmlextract.py), [_engines_static.py](../src/kodo/websearch/_engines_static.py) | T0 leaf |
+| Agent-managed pacing/memory store | [kodo/websearch/_state.py](../src/kodo/websearch/_state.py) (`WebSearchStateStore`) | T0 leaf |
+| `web_search` agent prompt | [subagents/subagent_web_search.md](../src/kodo/subagents/subagent_web_search.md) | T3 (`kodo.subagents`) |
+| `web_search` agent spec | [subagents/specs/_web_search_agent.py](../src/kodo/subagents/specs/_web_search_agent.py) | T3 |
+| Silent tool-loop turn primitive | [runtime/_engine/_llm.py](../src/kodo/runtime/_engine/_llm.py) (`_run_silent_tool_loop_turn`) | T4 |
+| Engine service (`run_web_search_agent`) | [runtime/_engine/_subagents.py](../src/kodo/runtime/_engine/_subagents.py) (`_run_web_search_agent`) | T4 |
+| Agent-memory state file | `~/.kodo/websearch/agent_state.json` | on disk |
+| Browser-lifecycle cache | `~/.kodo/websearch/browser_state.json` | on disk |
 
-`kodo.websearch` stays a pure T0 leaf by taking the cooldown file path from its
-caller — only the tool handler knows about `~/.kodo` (via
+`kodo.websearch` stays a pure T0 leaf by taking every state-file path from
+its caller (the tool handlers) — only they know about `~/.kodo` (via
 `kodo.project.kodo_user_dir()`).
 
-## 3. Phase 1 — discovery
+## 3. `query_search_engine` — the discovery primitive
 
-[`kodo/websearch/_discovery.py`](../src/kodo/websearch/_discovery.py) +
-[`_engines.py`](../src/kodo/websearch/_engines.py).
+[`toolspecs/_query_search_engine.py`](../src/kodo/toolspecs/_query_search_engine.py) /
+[`tools/_query_search_engine.py`](../src/kodo/tools/_query_search_engine.py).
 
-Four engines are defined as pure data (`Engine`): a results-page URL template
-plus two JavaScript snippets evaluated *in the loaded results page* — one that
-detects an anti-bot/captcha wall, one that extracts the organic hits. The
-Python side never parses HTML; the browser's DOM does the work.
+One engine, one call: `{engine, query, browser?, headed?}` →
+`{hits: [{url, title, snippet}]}` or `{"error": "..."}` on a wall. This
+replaced the old `discover()` phase that queried all four engines in
+parallel and merged their hits rank-by-rank — the agent now decides which
+engine to query, in what order, and how many to try, using its own judgment
+(and the pacing tools below) instead of a fixed schedule.
+
+Four engines, defined as pure data in
+[`_engines.py`](../src/kodo/websearch/_engines.py) — a results-page URL
+template plus wall-detection/extraction logic:
 
 | Engine | Endpoint | Ads skipped by | Wall detected by |
 |---|---|---|---|
 | `google` | `google.com/search?q=…&num=20&hl=en` | excluding `#tads`/`#bottomads`/`[data-text-ad]` containers | `/sorry/` interstitial, reCAPTCHA form/iframe |
 | `bing` | `bing.com/search?q=…&count=20` | only `li.b_algo` entries are read (ads are `li.b_ad`) | `#b_captcha`, "verify you are human" text |
 | `duckduckgo` | `html.duckduckgo.com/html/?q=…` (plain-HTML endpoint) | excluding `.result--ad` blocks; `uddg=` redirects decoded | anomaly page ("bots use DuckDuckGo too") |
-| `wikipedia` | `en.wikipedia.org/w/index.php?search=…&fulltext=1&ns0=1&limit=20` (English full-text search; `fulltext=1` forces a results *list* instead of an exact-match article redirect, `ns0=1` = article namespace only) | no ads on Wikipedia; only `li.mw-search-result` entries are read | none — Wikipedia has no reader-facing captcha; rate limiting arrives as HTTP 403/429 (generic status check) |
+| `wikipedia` | `en.wikipedia.org/w/index.php?search=…&fulltext=1&ns0=1&limit=20` (English full-text search) | no ads on Wikipedia; only `li.mw-search-result` entries are read | none — rate limiting arrives as HTTP 403/429 |
 
-Mechanics:
+Links pointing back into engine properties (`google.*`, `bing.com`,
+`duckduckgo.com`) are discarded (`is_engine_internal`); `wikipedia.org` is
+deliberately **not** filtered, since it's a legitimate hit source for every
+engine. Up to 20 hits per call.
 
-- All engines **not on cooldown** are queried **in parallel**, one isolated
-  browser context each, 20 s navigation budget, ≤ 10 hits taken per engine.
-- HTTP 403/429/503 on the results page counts as a wall too (blocked without a
-  captcha page).
-- A walled engine **trips a 30-minute cooldown** (§6); a failed one (timeout,
-  layout change → zero hits) is recorded as an engine *error*. Either way the
-  other engines proceed.
-- Links pointing back into engine properties (google.*, bing.com,
-  duckduckgo.com) are discarded. wikipedia.org is deliberately *not* filtered:
-  the Wikipedia engine's own hits (and plenty of legitimate hits from the
-  other engines) are wikipedia.org articles.
-- **Merge** (`merge_hits`): hits interleave *rank-by-rank* — every engine's #1
-  first (in google→bing→ddg→wikipedia order), then the #2s, … — so top results
-  are prioritized over any single engine's tail; URLs are deduplicated on a
-  normalized form (lowercase scheme/host, no fragment, no trailing slash);
-  the merged list caps at **16 links** (`MAX_SOURCES`, 4 engines × 4 — one
-  shared constant also caps the scrape phase).
+**Two backends**, chosen per call via `browser` (same choices as
+`read_webpage`, §7 of READ_WEBPAGE.md):
 
-## 4. Phase 2 — scraping
+- Any Playwright kind (`firefox` default, `chrome`, `edge`, `webkit`,
+  `chromium`) — [`_enginequery.py`](../src/kodo/websearch/_enginequery.py)
+  runs the same wall-detection/extraction JS the old discovery phase used,
+  in a live page.
+- `curl` — [`_curlfetch.py`](../src/kodo/websearch/_curlfetch.py) fetches the
+  results page (TLS/browser-signature impersonation, no browser process),
+  and [`_engines_static.py`](../src/kodo/websearch/_engines_static.py) — a
+  from-scratch Python/`selectolax` port of the same per-engine logic —
+  extracts hits from the raw HTML.
 
-[`kodo/websearch/_scrape.py`](../src/kodo/websearch/_scrape.py).
+## 4. `read_webpage` — reading a chosen page
 
-All discovered pages are fetched concurrently (semaphore of 5, one shared
-context, 20 s per page). Extraction happens in-page:
+Full contract in [READ_WEBPAGE.md](READ_WEBPAGE.md). The agent uses it to
+read whichever pages `query_search_engine` surfaced as promising, with
+`content_filter: "text"` (the default) for reading material.
 
-1. UI and navigation elements are removed from the **live DOM**:
-   `script`/`style`/`noscript`/`svg`/`canvas`/`iframe`/`nav`/`header`/
-   `footer`/`aside`/`form`/`button` plus ARIA chrome roles
-   (`navigation`/`banner`/`contentinfo`/`complementary`/`search`) and
-   `[aria-hidden]` nodes. (Live-DOM mutation keeps `innerText`'s layout-aware
-   semantics — hidden elements excluded, block elements producing line breaks;
-   the page closes right after.)
-2. The best content root wins: `<article>` → `<main>` → `[role=main]` →
-   `<body>`; its `innerText` is taken.
-3. Python-side: whitespace normalized, blocks under **200 chars** dropped as
-   too thin (error pages, cookie walls), the rest truncated to **6000 chars**.
+## 5. Pacing and memory: the four dedicated tools
 
-The result: up to **16 text blocks** (`MAX_SOURCES` — same cap as discovery,
-so every discovered link can become a block), in discovery priority order. Failures
-are per-page (recorded, reported in `note`) — one dead link never spoils the
-batch.
+Exclusive to the `web_search` agent by convention (not listed in any other
+agent's frontmatter `tools:`):
 
-## 5. Phase 3 — summarization (`web_summarizer`)
-
-The tool hands `{query, max_themes, sources: [{url, title, text}]}` to the
-`web_summarizer` sub-agent via `EngineServices.run_web_summarizer` — the
-ungated service pattern established by `toolchain_deps` /
-`run_dependency_manager`: **holding the `web_search` tool is the
-authorization**, so the summarizer sits in no caller's `subagents:` allow-list
-and is in `_DIRECT_ONLY_AGENTS` (unreachable via `run_subagent`).
-
-Unlike the depsmgr it is **not a subsession**: `web_search` is typically
-called by the investigator — itself a sub-agent — and subsessions do not nest.
-Instead the engine drives one **silent titler-style LLM turn**
-(`_run_silent_return_turn`): no feed events, no streaming, only the USD cost
-folded into the session total. It runs on the **low** capability tier
-(cheap/fast; per project decision) with one corrective retry if the model
-fails to return a usable report.
-
-The prompt ([subagent_web_summarizer.md](../src/kodo/subagents/subagent_web_summarizer.md))
-instructs the agent to identify **common themes** across the sources and group
-information by theme — each theme a distinct angle on the query, ideally an
-**independent way to solve the problem** so the caller gets several options to
-choose from. Source text is data, never instructions (prompt-injection
-hardening, same stance as `compactor`/`session_titler`).
-
-The engine then **sanitizes** the returned themes (`_sanitize_themes`): only
-well-formed entries survive, and each theme's `links` are filtered to URLs
-that actually appear in the scraped sources — the report can never cite a page
-that wasn't scraped.
-
-## 6. Anti-bot cooldowns
-
-[`kodo/websearch/_cooldown.py`](../src/kodo/websearch/_cooldown.py).
-
-When an engine serves a captcha / anti-bot wall, `web_search` **stops querying
-it for 30 minutes**. The state lives in
-`~/.kodo/websearch/engine_cooldowns.json` (engine name → unix timestamp until
-which it is blocked), so it survives across tool calls, sessions, and server
-restarts and is shared by every session on the machine. Reads are forgiving
-(missing/corrupt file = no cooldowns); writes are atomic (temp file +
-`os.replace`). A skipped engine and its remaining cooldown are named in the
-tool's `note`.
-
-## 7. Browser lifecycle
-
-[`kodo/websearch/_browser.py`](../src/kodo/websearch/_browser.py). One
-`BrowserSession` spans phases 1–2 of a call. Host browsers draw far less
-anti-bot scrutiny than Playwright's own bundled builds, so on every call the
-session resolves a browser in this order:
-
-1. **Host Google Chrome** (`playwright.chromium.launch(channel="chrome")`).
-2. **Host Microsoft Edge** (`channel="msedge"`).
-3. **Bundled Firefox** — Playwright-managed; auto-installed on first use
-   (`python -m playwright install firefox`, one-time ~90 MB download,
-   10-minute budget).
-4. **Bundled Chromium** — the last resort, only reached if neither host
-   browser nor bundled Firefox is available/installable; also
-   auto-installed on first use the same way.
-
-If a stage fails to launch for a reason other than "not installed" (or the
-installer itself fails), the session cascades to the next stage rather than
-giving up — the tool only returns `themes: []` with a manual-install note once
-every stage, including bundled Chromium, has failed.
-
-Once a call has had to fall back past the host browsers, the choice (`firefox`
-or `chromium`) and the time of the attempt are cached in
-`~/.kodo/websearch/browser_state.json`. For the next 24 hours, subsequent
-calls skip straight to the cached fallback instead of re-probing Chrome/Edge
-every time; after 24 hours the full host → Firefox → Chromium resolution
-runs again, so a host browser installed later is picked back up
-automatically without restarting Kodo.
-
-The very first successful launch on a machine also runs a one-time sanity
-check — navigating to `https://example.com/` — to catch a Playwright install
-that starts a browser process but can't actually load a page (e.g. a missing
-system dependency like `libnss3` on Linux). The result is cached in the same
-`browser_state.json` file and never repeated once it passes; if it fails, the
-whole session fails with `BrowserUnavailableError` (treated as fatal, not
-best-effort) rather than silently handing back a browser that can't be
-trusted. (`playwright` itself is a hard dependency in `pyproject.toml`.)
-
-## 8. The tool's contract
-
-Input: `query` (required, free text) and `max_results` — the cap on **themes**
-in the report (default 5, clamped to 10).
-
-Output (always schema-compliant, never an exception):
-
-```json
-{
-  "themes": [
-    {
-      "summary": "One-sentence description of the theme.",
-      "details": "The core idea / perspective / solution variant, synthesized across sources.",
-      "links": ["https://…", "https://…"]
-    }
-  ],
-  "note": "Queried google, bing. Skipped duckduckgo (anti-bot cooldown, ~12m left). Collected 14 link(s). Scraped 11 of 14 page(s). Generated 4 theme(s)."
-}
-```
-
-Degradation ladder (each step reported in `note`):
-
-| Situation | Result |
+| Tool | Purpose |
 |---|---|
-| Engine on cooldown | skipped; others proceed |
-| Engine serves a wall now | 30-min cooldown recorded; others proceed |
-| No links discovered at all | `themes: []` + note |
-| Some pages fail to scrape | dropped; the rest proceed |
-| No page scrapes | `themes: []` + note listing the discovered URLs |
-| Summarizer fails/returns nothing usable | `themes: []` + note listing the scraped URLs |
-| No browser available (host Chrome/Edge and bundled Firefox/Chromium fallback all failed) | `themes: []` + manual-install note |
-| Playwright sanity check (`example.com`) fails | `themes: []` + note; treated as fatal, not degraded |
+| `get_web_search_state` | Read the agent's full persistent key-value memory. |
+| `update_web_search_state` | Write one key: a note, a deletion (`value: ""`), or a `<time_mark>` (records `time.time()` under that key). |
+| `wait` | Sleep (default 5s, capped 30s/call) — the agent's lever against bursting requests. |
+| `remaining_time` | Seconds left before this run's timeout. |
 
-## 9. Security posture
+### `WebSearchStateStore` ([`_state.py`](../src/kodo/websearch/_state.py))
 
-`web_search` is `SecurityImpact.LOW` and available in autonomous mode: it is
-read-only toward the user's machine (its only writes are the cooldown file and
-the browser-fallback state file under `~/.kodo/websearch/`, and Playwright's
-own browser cache). Scraped page text is
-untrusted input; the summarizer prompt treats it strictly as data, and the
-engine-side sanitizer constrains the output shape and the citable links.
+Replaces the old deterministic 30-minute `CooldownStore`. A generic
+key-value store persisted at `~/.kodo/websearch/agent_state.json`, **shared
+machine-wide across sessions** (its 12-hour TTL per entry far outlives any
+single, 600s-capped `web_search` call, so this memory has to survive across
+calls). Same atomic-write/forgiving-read conventions as every other file
+under `~/.kodo/websearch/`.
+
+Each entry's TTL resets on every write to that key. Two kinds of value:
+
+- A plain string — a note to itself (e.g. `google_status: "blocked: captcha"`).
+- `<time_mark>` (the literal string `update_web_search_state` recognizes) —
+  records `time.time()` under that key instead of storing the literal text.
+  Reading it back via `get_web_search_state` returns **the number of seconds
+  elapsed since it was recorded**, freshly computed on every read — not the
+  timestamp, and not the string `<time_mark>`.
+
+The agent's prompt (`subagent_web_search.md`) spells out the protocol with a
+worked example: time-mark `<engine>_last_query` right before querying an
+engine, so a later `get_web_search_state` call tells it how long it's been;
+record a `<engine>_status` note when an engine serves a wall, so it isn't
+retried this session. This replaces the old code-enforced 30-minute cooldown
+with agent judgment — the model decides pacing instead of a fixed timer.
+
+## 6. The silent tool-loop turn
+
+Two turn-loop shapes already existed in the engine before this: the full,
+feed-visible `_run_agent_turn`/`_drive_subsession` (a real subsession — but
+subsessions can't nest, and `web_search` is typically called *from* a
+sub-agent, the investigator), and the single-shot, no-dispatch
+`_run_silent_return_turn` (`session_titler`/`compactor`/the retired
+`web_summarizer` — no tool loop at all, just one call captured for its
+`return_result`). Neither fits an agent that needs a real multi-round tool
+loop without opening a subsession.
+
+`_run_silent_tool_loop_turn` ([`runtime/_engine/_llm.py`](../src/kodo/runtime/_engine/_llm.py))
+is the new primitive: modeled on `_run_agent_turn`'s loop, stripped of every
+feed-visible/subsession side effect (no `EVT_AGENT_TOOL_CALL_PREP`/`DETAIL`,
+no checkpoint prepare/commit, no tool-call markdown doc, no subsession
+markers). It still dispatches every tool call through the real
+`ToolDispatcher` (so the intent-check + security gate + actual `Tool.handle()`
+call are unchanged), just without the UI side effects. Cost is folded into
+the session total exactly like `_run_silent_return_turn`.
+
+Bounded two ways:
+
+- **`deadline`** (a wall-clock unix timestamp, from the tool's `timeout`) —
+  once reached, the agent gets one final forced turn ("time is up, call
+  return_result now") before the engine synthesizes a fallback.
+- **A hard round cap** (60 rounds), independent of the clock, as a safety
+  valve against a runaway loop.
+
+`_run_web_search_agent` ([`runtime/_engine/_subagents.py`](../src/kodo/runtime/_engine/_subagents.py))
+drives this: resolves the `web_search` agent (medium capability), computes
+the deadline, builds a dispatcher scoped to it (`ToolContext.deadline` set,
+read by `remaining_time`/`wait`), and returns the agent's `return_result`
+payload — or, if it never produced one, `{"themes": [], "note": "Search
+timed out before a report could be produced."}`.
+
+`web_search` is engine-driven only (`_DIRECT_ONLY_AGENTS`) — never spawnable
+via `run_subagent`, exactly like the agents it replaced.
+
+## 7. Anti-bot posture
+
+Findings from a dedicated investigation
+([doc/hidden/WEB_SEARCH_TOOL_REPORT.md](hidden/WEB_SEARCH_TOOL_REPORT.md))
+drove two of this rework's decisions:
+
+- **Bundled headless Chromium is the most fingerprintable config** (software
+  WebGL, missing `window.chrome`, a `HeadlessChrome` UA) — yet it used to be
+  the pipeline's last-resort fallback. Callers now pick a specific browser
+  explicitly; there is no more cascade that could land there by accident.
+- **`curl_cffi` (TLS/HTTP2 fingerprint impersonation, no browser process)
+  passes DuckDuckGo/Bing/Wikipedia** — including cases where Playwright's own
+  Chrome/Chromium signature gets walled — and is far cheaper for engines
+  that are plain static HTML. It is now a first-class `browser` choice on
+  both `query_search_engine` and `read_webpage`.
+- **Google and DuckDuckGo are dominated by request-volume/IP reputation**,
+  not fingerprint — no browser or stealth choice fixes a burned IP. This is
+  the whole reason the pacing tools (§5) exist: the agent's own judgment
+  about *when* to query, not a fixed schedule, is the actual lever.
+
+Adopting `curl_cffi` is a deliberate, bounded exception to this project's
+historical "no anti-bot circumvention" stance: it is network-layer signature
+impersonation, not JS-fingerprint spoofing (no `playwright-stealth`, no
+patched `navigator.webdriver`), not a residential proxy, and not CAPTCHA
+solving. Every other posture — no bypass of an engine's actual wall, no
+attempt to defeat rate-limiting beyond pacing — is unchanged.
+
+## 8. Security posture
+
+`web_search` is `SecurityImpact.MODERATE` and available in autonomous mode.
+`query_search_engine` and `read_webpage` are `SecurityImpact.LOW`
+(read-only network access); the four pacing tools are `SecurityImpact.NONE`
+(no real-world effect beyond an ephemeral local state file or a sleep). The
+only writes toward the user's machine, across the whole subsystem, are
+`~/.kodo/websearch/agent_state.json`, `~/.kodo/websearch/browser_state.json`,
+and Playwright's own browser cache. Fetched page text is untrusted input;
+the agent's prompt treats it strictly as data (never instructions), the same
+prompt-injection stance the retired `web_summarizer` used.

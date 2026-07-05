@@ -246,18 +246,20 @@ class EngineServices(Protocol):
         """
         ...
 
-    async def run_web_summarizer(self, task_input: dict[str, object]) -> dict[str, object]:
-        """Run the ``web_summarizer`` sub-agent silently and return ``{"themes": [...]}``.
+    async def run_web_search_agent(self, task_input: dict[str, object]) -> dict[str, object]:
+        """Run the ``web_search`` agent and return ``{"themes": [...], "note": "..."}``.
 
-        Phase 3 of the ``web_search`` tool (doc/WEB_SEARCH.md). Like
+        Backs the ``web_search`` tool (doc/WEB_SEARCH.md). Like
         :meth:`run_dependency_manager` it is ungated — holding ``web_search``
         is the authorization, so the fixed engine-side agent never sits in any
         caller's ``subagents:`` allow-list. Unlike a ``run_subagent`` spawn it
         opens **no subsession** (``web_search`` is typically called from a
-        sub-agent, and subsessions do not nest): the engine drives one silent
-        LLM turn, titler-style, and only the structured result comes back.
+        sub-agent, and subsessions do not nest): the engine drives a silent,
+        multi-round tool-calling turn (the agent plans its own discovery/read/
+        synthesis loop via ``query_search_engine``/``read_webpage``) bounded by
+        ``task_input["timeout"]``, and only the structured result comes back.
         ``task_input`` conforms to the sub-agent's ``input_schema`` (``query``,
-        ``max_themes``, ``sources``).
+        ``max_themes``, ``timeout``).
         """
         ...
 
@@ -380,6 +382,11 @@ class ToolContext:
         returned_output: The normalized result the sub-agent passed to
             ``return_result`` (with the engine-owned ``schema_compliance`` field),
             or ``None`` until it calls it. Read back by the engine after the run.
+        deadline: Unix timestamp this run must wrap up by, or ``None`` if the
+            run is not time-boxed. Populated only for the ``web_search``
+            agent's dispatcher (from its caller-supplied, 600s-capped
+            ``timeout``); read by ``remaining_time`` and ``wait`` (which
+            clamps its own sleep so it never sleeps past the deadline).
     """
 
     resolver: PathResolver
@@ -397,3 +404,4 @@ class ToolContext:
     current_tool_use_id: str = ""
     stop_requested: bool = False
     returned_output: dict[str, object] | None = None
+    deadline: float | None = None

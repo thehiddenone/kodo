@@ -14,9 +14,21 @@ list, which discovery reports as an engine *error*, not a block.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit
 
-__all__ = ["SEARCH_ENGINES", "SearchEngine"]
+__all__ = ["SEARCH_ENGINES", "SearchEngine", "is_engine_internal"]
+
+# Hosts that are engine-internal (support pages, image/maps verticals, the
+# DDG redirector) — never useful as a query_search_engine hit. wikipedia.org
+# is deliberately NOT here: the wikipedia engine's own hits (and plenty of
+# legitimate hits from the other engines) ARE wikipedia.org articles.
+_ENGINE_HOST_MARKERS = ("google.", "bing.com", "duckduckgo.com", "microsoft.com/en-us/bing")
+
+
+def is_engine_internal(url: str) -> bool:
+    """``True`` for links pointing back into a search engine's own properties."""
+    host = urlsplit(url).netloc.lower()
+    return any(marker in host for marker in _ENGINE_HOST_MARKERS)
 
 
 @dataclass(frozen=True)

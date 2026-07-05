@@ -717,12 +717,18 @@ class TurnLoopMixin:
     # ToolDispatcher factory
     # ------------------------------------------------------------------
 
-    def _make_dispatcher(self: EngineHost, agent_name: str, session_id: str) -> ToolDispatcher:
+    def _make_dispatcher(
+        self: EngineHost, agent_name: str, session_id: str, deadline: float | None = None
+    ) -> ToolDispatcher:
         """Build a per-run tool dispatcher for *agent_name*.
 
         ``mode``/``project_root`` are read live from session/current-project
         state (not snapshotted) — same reasoning as ``effective_autonomous``:
         a single dispatcher serves the whole prompt.
+
+        ``deadline`` is only ever passed for the ``web_search`` agent's
+        silent tool-loop turn (see ``_run_silent_tool_loop_turn``); every
+        other caller leaves it ``None`` (untimed).
         """
         spec = self._registry.spec_for(agent_name)
         return ToolDispatcher(
@@ -738,4 +744,5 @@ class TurnLoopMixin:
             root_paths=self._root_paths(),
             util_paths=self._util_paths(),
             output_schema=spec.output_schema if spec is not None else None,
+            deadline=deadline,
         )

@@ -1,33 +1,29 @@
-"""Browser lifecycle for the web-search pipeline (doc/WEB_SEARCH.md §7).
+"""Browser lifecycle for ``read_webpage`` / ``query_search_engine``
+(doc/READ_WEBPAGE.md, doc/WEB_SEARCH.md).
 
-:class:`BrowserSession` is an async context manager that starts Playwright and
-launches one browser shared by the discovery and scraping phases of a single
-``web_search`` (or ``read_webpage``) call.
+:class:`BrowserSession` launches exactly the browser kind the caller asks
+for — there is no cascade/fallback. Both tools take an explicit ``browser``
+input, so the caller (an agent) is making a deliberate choice (e.g.
+``curl``/Firefox to dodge a particular anti-bot signature); silently
+substituting a different browser would defeat that choice and could mask a
+broken host-browser setup. If the requested kind can't be launched,
+:class:`BrowserUnavailableError` is raised immediately — no fallback to any
+other kind.
 
-Host browsers are attracted to far less anti-bot scrutiny than Playwright's
-own bundled builds, so on every call the session first tries the machine's own
-Google Chrome (``channel="chrome"``) and Microsoft Edge (``channel="msedge"``)
-before ever touching a bundled download. Only when neither is installed does
-it fall back to a Playwright-managed browser — bundled Firefox first, then
-bundled Chromium as the last resort — auto-installing whichever one is needed
-(a one-time ~150 MB download) via ``python -m playwright install <name>``.
+Bundled kinds (``firefox``/``webkit``/``chromium``) auto-install on first use
+(one-time ~90-150 MB download via ``python -m playwright install <name>``).
+Host kinds (``chrome``/``edge``) are launched via
+``chromium.launch(channel=...)`` and are never installed — if missing, the
+call fails.
 
-Once a call has had to fall back, the outcome is cached in the caller-supplied
-state file for :data:`_HOST_RECHECK_INTERVAL_S` (24h): subsequent sessions
-skip straight to the last-known-good fallback browser instead of re-probing
-Chrome/Edge every time. The cache expires once a day so a host browser
-installed later is picked back up automatically.
+Each kind gets its own one-time ``example.com`` sanity check (catches a
+Playwright install that starts a browser process but can't actually load a
+page, e.g. a missing system dependency), cached **per kind** in the
+caller-supplied state file so a kind that has already proven itself is never
+re-checked.
 
-The very first successful launch on a machine also runs a one-time sanity
-check — navigating to ``https://example.com/`` — to catch a Playwright
-install that starts a browser process but can't actually load a page (e.g. a
-missing system dependency). Once this passes it is recorded in the same state
-file and never repeated; if it fails, the whole session fails with
-:class:`BrowserUnavailableError` rather than silently handing back a browser
-that can't be trusted.
-
-No anti-bot evasion is attempted anywhere: this is a best-effort pipeline, and
-an engine that walls us off is simply put on cooldown by the discovery phase.
+``curl`` is not a Playwright browser at all and never touches this module —
+see :mod:`kodo.websearch._curlfetch`.
 """
 
 from __future__ import annotations
@@ -37,45 +33,47 @@ import json
 import logging
 import os
 import sys
-import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
+from typing import Literal
 
 from playwright.async_api import Browser, BrowserType, Playwright, async_playwright
 from playwright.async_api import Error as PlaywrightError
 
-__all__ = ["BrowserSession", "BrowserUnavailableError"]
+__all__ = ["BrowserKind", "BrowserSession", "BrowserUnavailableError"]
 
 _log = logging.getLogger(__name__)
 
 # Upper bound on a one-time `playwright install <browser>` download.
 _INSTALL_TIMEOUT_S = 600.0
 
-# Host-installed browsers tried (in order) before any bundled fallback.
-_HOST_CHANNELS = ("chrome", "msedge")
-
-# How long a fallback decision is trusted before host browsers are re-tried.
-_HOST_RECHECK_INTERVAL_S = 24 * 60 * 60
-
 # One-time sanity check that Playwright can actually load a page.
 _VALIDATION_URL = "https://example.com/"
 _VALIDATION_TIMEOUT_MS = 15_000
 
+BrowserKind = Literal["firefox", "chrome", "edge", "webkit", "chromium"]
+
+# Bundled kinds Playwright manages itself (auto-installed on first use).
+_BUNDLED_KINDS = frozenset({"firefox", "webkit", "chromium"})
+# Host kinds launched via a Chromium channel; never auto-installed.
+_HOST_CHANNELS: dict[str, str] = {"chrome": "chrome", "edge": "msedge"}
+
 
 class BrowserUnavailableError(Exception):
-    """Raised when no browser could be launched, or the sanity check failed."""
+    """Raised when the requested browser kind could not be launched."""
 
 
 @dataclass
 class _BrowserState:
-    """Persisted across calls under the caller-supplied ``state_path``."""
+    """Persisted across calls under the caller-supplied ``state_path``.
 
-    example_check_passed: bool = False
-    last_host_check: float = 0.0
-    # Which bundled browser to use directly while the host-recheck cache is
-    # still warm; ``None`` means the last successful launch was a host browser.
-    fallback_kind: str | None = None
+    One-time ``example.com`` sanity-check result, cached **per browser
+    kind** — unlike the old cascade-era state, there is no single "fallback
+    decision" to remember, just which kinds have already proven themselves.
+    """
+
+    sanity_passed: dict[str, bool] = field(default_factory=dict)
 
 
 def _load_state(path: Path) -> _BrowserState:
@@ -88,24 +86,22 @@ def _load_state(path: Path) -> _BrowserState:
         return _BrowserState()
     if not isinstance(raw, dict):
         return _BrowserState()
-    fallback_kind = raw.get("fallback_kind")
-    if fallback_kind not in ("firefox", "chromium", None):
-        fallback_kind = None
-    last_host_check = raw.get("last_host_check")
-    return _BrowserState(
-        example_check_passed=bool(raw.get("example_check_passed", False)),
-        last_host_check=(
-            float(last_host_check) if isinstance(last_host_check, (int, float)) else 0.0
-        ),
-        fallback_kind=fallback_kind,
+    sanity_raw = raw.get("sanity_passed")
+    sanity = (
+        {k: bool(v) for k, v in sanity_raw.items() if isinstance(k, str)}
+        if isinstance(sanity_raw, dict)
+        else {}
     )
+    return _BrowserState(sanity_passed=sanity)
 
 
 def _save_state(path: Path, state: _BrowserState) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(asdict(state), indent=2), encoding="utf-8")
+        tmp.write_text(
+            json.dumps({"sanity_passed": state.sanity_passed}, indent=2), encoding="utf-8"
+        )
         os.replace(tmp, path)
     except OSError:
         # Best effort — a failed save only means the caching is forgotten.
@@ -113,39 +109,44 @@ def _save_state(path: Path, state: _BrowserState) -> None:
 
 
 class BrowserSession:
-    """Owns one Playwright + browser pair for one ``web_search``/``read_webpage`` call.
+    """Owns one Playwright + browser pair for one tool call.
 
     Usage::
 
-        async with BrowserSession(state_path) as session:
+        async with BrowserSession(state_path, "firefox", headed=False) as session:
             page = await session.browser.new_page()
 
     Args:
-        state_path: JSON file used to cache the fallback decision and the
-            one-time sanity-check result across calls (parent directories are
-            created on first write).
+        state_path: JSON file used to cache the one-time per-kind
+            sanity-check result across calls (parent directories are created
+            on first write).
+        kind: Which browser to launch — ``firefox``/``webkit``/``chromium``
+            are Playwright-bundled (auto-installed on first use);
+            ``chrome``/``edge`` are the host's own installs, launched via a
+            Chromium channel.
+        headed: Launch with a visible window instead of headless.
 
     Attributes:
-        installed_now: ``True`` when this session had to download a bundled
-            browser before it could launch (first use on this machine, or the
-            first time a given fallback kind was needed).
-        installed_browser: Which bundled browser was installed (``"firefox"``
-            or ``"chromium"``), or ``None`` if nothing was installed.
+        installed_now: ``True`` when this session had to download *kind*
+            before it could launch (first use of that bundled browser on
+            this machine).
     """
 
     installed_now: bool
-    installed_browser: str | None
 
     __playwright: Playwright | None
     __browser: Browser | None
     __state_path: Path
+    __kind: BrowserKind
+    __headed: bool
 
-    def __init__(self, state_path: Path) -> None:
+    def __init__(self, state_path: Path, kind: BrowserKind, headed: bool = False) -> None:
         self.installed_now = False
-        self.installed_browser = None
         self.__playwright = None
         self.__browser = None
         self.__state_path = state_path
+        self.__kind = kind
+        self.__headed = headed
 
     @property
     def browser(self) -> Browser:
@@ -178,28 +179,18 @@ class BrowserSession:
             self.__playwright = None
 
     async def __launch(self) -> Browser:
-        """Resolve a browser (host-first, bundled-fallback) and sanity-check it.
+        """Launch :attr:`__kind` and sanity-check it.
 
         Raises:
-            BrowserUnavailableError: Nothing could be launched, or the launched
-                browser failed the one-time ``example.com`` sanity check.
+            BrowserUnavailableError: *kind* could not be launched, or it
+                failed the one-time ``example.com`` sanity check.
         """
+        browser = (
+            await self.__launch_host(self.__kind)
+            if self.__kind in _HOST_CHANNELS
+            else await self.__launch_bundled(self.__kind)
+        )
         state = _load_state(self.__state_path)
-        now = time.time()
-        cache_is_fresh = now - state.last_host_check < _HOST_RECHECK_INTERVAL_S
-        browser: Browser
-        if state.fallback_kind is not None and cache_is_fresh:
-            browser = await self.__launch_fallback(state, start_from=state.fallback_kind)
-        else:
-            state.last_host_check = now
-            host_browser = await self.__try_host_browsers()
-            if host_browser is not None:
-                browser = host_browser
-                state.fallback_kind = None
-            else:
-                browser = await self.__launch_fallback(state, start_from=None)
-        _save_state(self.__state_path, state)
-
         try:
             await self.__validate(browser, state)
         except BaseException:
@@ -207,70 +198,58 @@ class BrowserSession:
             raise
         return browser
 
-    async def __try_host_browsers(self) -> Browser | None:
-        """Try the machine's own Chrome, then Edge; ``None`` if neither exists."""
-        assert self.__playwright is not None
-        for channel in _HOST_CHANNELS:
-            try:
-                return await self.__playwright.chromium.launch(headless=True, channel=channel)
-            except PlaywrightError:
-                _log.debug("Host browser channel=%r unavailable", channel, exc_info=True)
-        return None
+    async def __launch_host(self, kind: str) -> Browser:
+        """Launch a host-installed browser via its Chromium channel.
 
-    async def __launch_fallback(self, state: _BrowserState, start_from: str | None) -> Browser:
-        """Launch a Playwright-managed browser: Firefox first, Chromium last.
-
-        ``start_from`` lets the 24h-cached fast path jump straight to the
-        last-known-good kind without retrying Firefox when it was Chromium.
+        Raises:
+            BrowserUnavailableError: The channel isn't installed on this
+                host — no fallback to any other kind.
         """
         assert self.__playwright is not None
-        if start_from == "chromium":
-            browser = await self.__launch_bundled(self.__playwright.chromium, "chromium")
-            state.fallback_kind = "chromium"
-            return browser
+        channel = _HOST_CHANNELS[kind]
         try:
-            browser = await self.__launch_bundled(self.__playwright.firefox, "firefox")
-            state.fallback_kind = "firefox"
-            return browser
-        except BrowserUnavailableError:
-            _log.warning("Bundled Firefox unavailable; falling back to bundled Chromium")
-            browser = await self.__launch_bundled(self.__playwright.chromium, "chromium")
-            state.fallback_kind = "chromium"
-            return browser
+            return await self.__playwright.chromium.launch(
+                headless=not self.__headed, channel=channel
+            )
+        except PlaywrightError as exc:
+            raise BrowserUnavailableError(
+                f"{kind!r} is not installed on this host (channel={channel!r}): {exc}"
+            ) from exc
 
-    async def __launch_bundled(self, browser_type: BrowserType, name: str) -> Browser:
+    async def __launch_bundled(self, kind: str) -> Browser:
         """Launch a Playwright-bundled browser, auto-installing it on first use.
 
         Raises:
             BrowserUnavailableError: The launch failed and the automatic
-                ``playwright install <name>`` could not fix it.
+                ``playwright install <kind>`` could not fix it.
         """
+        assert self.__playwright is not None
+        browser_type: BrowserType = getattr(self.__playwright, kind)
         try:
-            return await browser_type.launch(headless=True)
+            return await browser_type.launch(headless=not self.__headed)
         except PlaywrightError as exc:
             # Playwright's missing-binary error says "Executable doesn't exist"
             # and suggests running install; anything else is not fixable here.
             if "install" not in str(exc).lower():
-                raise BrowserUnavailableError(f"{name} failed to launch: {exc}") from exc
-        _log.info("%s not installed; running one-time `playwright install %s`", name, name)
-        await self.__install(name)
+                raise BrowserUnavailableError(f"{kind} failed to launch: {exc}") from exc
+        _log.info("%s not installed; running one-time `playwright install %s`", kind, kind)
+        await self.__install(kind)
         self.installed_now = True
-        self.installed_browser = name
         try:
-            return await browser_type.launch(headless=True)
+            return await browser_type.launch(headless=not self.__headed)
         except PlaywrightError as exc:
             raise BrowserUnavailableError(
-                f"{name} still failed to launch after install: {exc}"
+                f"{kind} still failed to launch after install: {exc}"
             ) from exc
 
     async def __validate(self, browser: Browser, state: _BrowserState) -> None:
-        """One-time ``example.com`` sanity check; cached in ``state`` once passed.
+        """One-time ``example.com`` sanity check; cached per kind in ``state``.
 
         Raises:
-            BrowserUnavailableError: The check has not passed before and this
-                attempt failed — the browser cannot be trusted to load pages.
+            BrowserUnavailableError: :attr:`__kind` has not passed the check
+                before and this attempt failed.
         """
-        if state.example_check_passed:
+        if state.sanity_passed.get(self.__kind, False):
             return
         try:
             page = await browser.new_page()
@@ -285,7 +264,7 @@ class BrowserSession:
                 await page.close()
         except PlaywrightError as exc:
             raise BrowserUnavailableError(f"Playwright sanity check failed: {exc}") from exc
-        state.example_check_passed = True
+        state.sanity_passed[self.__kind] = True
         _save_state(self.__state_path, state)
 
     @staticmethod
@@ -317,7 +296,7 @@ class BrowserSession:
                 f"Automatic {name} install failed; run `playwright install {name}` "
                 f"manually. Installer output tail: {tail}"
             )
-        _log.info("%s installed for web_search", name)
+        _log.info("%s installed", name)
 
     @staticmethod
     async def __safe_close(browser: Browser) -> None:

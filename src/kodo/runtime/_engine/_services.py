@@ -21,7 +21,7 @@ class _EngineServices:
         *,
         run_subagent: Callable[[str, str, dict[str, object]], Awaitable[dict[str, object]]],
         run_dependency_manager: Callable[[dict[str, object]], Awaitable[dict[str, object]]],
-        run_web_summarizer: Callable[[dict[str, object]], Awaitable[dict[str, object]]],
+        run_web_search_agent: Callable[[dict[str, object]], Awaitable[dict[str, object]]],
         run_author_critic: Callable[
             [str, str, str, str, dict[str, str], str, bool], Awaitable[dict[str, object]]
         ],
@@ -32,7 +32,7 @@ class _EngineServices:
     ) -> None:
         self.__run_subagent = run_subagent
         self.__run_dependency_manager = run_dependency_manager
-        self.__run_web_summarizer = run_web_summarizer
+        self.__run_web_search_agent = run_web_search_agent
         self.__run_author_critic = run_author_critic
         self.__rollback = rollback
         self.__disable_autonomous = disable_autonomous
@@ -49,9 +49,9 @@ class _EngineServices:
         """Delegate to the engine's ungated dependency-manager spawn."""
         return await self.__run_dependency_manager(task_input)
 
-    async def run_web_summarizer(self, task_input: dict[str, object]) -> dict[str, object]:
-        """Delegate to the engine's ungated, silent web-summarizer run."""
-        return await self.__run_web_summarizer(task_input)
+    async def run_web_search_agent(self, task_input: dict[str, object]) -> dict[str, object]:
+        """Delegate to the engine's ungated, silent web_search agent run."""
+        return await self.__run_web_search_agent(task_input)
 
     async def run_author_critic_iteration(
         self,

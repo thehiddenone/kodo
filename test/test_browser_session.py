@@ -1,17 +1,19 @@
-"""Tests for :class:`kodo.websearch.BrowserSession`'s browser-resolution logic.
+"""Tests for :class:`kodo.websearch.BrowserSession`'s per-kind launch logic.
 
 No real Playwright browser is launched: :func:`kodo.websearch._browser.async_playwright`
-is replaced with a fake whose ``chromium``/``firefox`` browser types record
-launch attempts and can be scripted to succeed, raise a "not installed" style
-error, or raise an unrelated failure. This lets the host-first / bundled-
-fallback / daily-recheck-cache / one-time-sanity-check logic be exercised
-without any network access or installed browser binaries.
+is replaced with a fake whose ``chromium``/``firefox``/``webkit`` browser types
+record launch attempts and can be scripted to succeed, raise a "not installed"
+style error, or raise an unrelated failure. Since the caller now names the
+exact ``kind`` to launch (no cascade), these tests focus on: host channels
+(chrome/edge) launch via the chromium type with the right channel; bundled
+kinds (firefox/webkit/chromium) auto-install on a missing binary; any other
+failure raises immediately with no fallback to a different kind; and the
+one-time ``example.com`` sanity check is cached **per kind**.
 """
 
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +21,6 @@ import pytest
 from playwright.async_api import Error as PlaywrightError
 
 from kodo.websearch import BrowserSession, BrowserUnavailableError
-from kodo.websearch._browser import _HOST_RECHECK_INTERVAL_S
 
 
 class _FakePage:
@@ -64,7 +65,7 @@ class _FakeBrowser:
 
 
 class _FakeBrowserType:
-    """Stands in for ``playwright.chromium`` / ``playwright.firefox``."""
+    """Stands in for ``playwright.chromium`` / ``.firefox`` / ``.webkit``."""
 
     def __init__(self, name: str, script: list[Any]) -> None:
         self.name = name
@@ -82,9 +83,12 @@ class _FakeBrowserType:
 
 
 class _FakePlaywright:
-    def __init__(self, chromium: _FakeBrowserType, firefox: _FakeBrowserType) -> None:
+    def __init__(
+        self, chromium: _FakeBrowserType, firefox: _FakeBrowserType, webkit: _FakeBrowserType
+    ) -> None:
         self.chromium = chromium
         self.firefox = firefox
+        self.webkit = webkit
 
     async def stop(self) -> None:
         pass
@@ -103,15 +107,17 @@ def _patch_playwright(
     *,
     chromium_script: list[Any] | None = None,
     firefox_script: list[Any] | None = None,
-) -> tuple[_FakeBrowserType, _FakeBrowserType]:
+    webkit_script: list[Any] | None = None,
+) -> tuple[_FakeBrowserType, _FakeBrowserType, _FakeBrowserType]:
     chromium = _FakeBrowserType("chromium", list(chromium_script or []))
     firefox = _FakeBrowserType("firefox", list(firefox_script or []))
-    playwright = _FakePlaywright(chromium, firefox)
+    webkit = _FakeBrowserType("webkit", list(webkit_script or []))
+    playwright = _FakePlaywright(chromium, firefox, webkit)
     monkeypatch.setattr(
         "kodo.websearch._browser.async_playwright",
         lambda: _FakePlaywrightContextManager(playwright),
     )
-    return chromium, firefox
+    return chromium, firefox, webkit
 
 
 def _not_installed_error() -> PlaywrightError:
@@ -119,63 +125,57 @@ def _not_installed_error() -> PlaywrightError:
 
 
 @pytest.mark.asyncio
-async def test_prefers_host_chrome_over_everything(
+async def test_launches_host_chrome_via_chromium_channel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    chromium, firefox = _patch_playwright(
-        monkeypatch,
-        chromium_script=[_FakeBrowser("chrome")],
-    )
+    chromium, firefox, _ = _patch_playwright(monkeypatch, chromium_script=[_FakeBrowser("chrome")])
     state_path = tmp_path / "browser_state.json"
-    async with BrowserSession(state_path) as session:
+    async with BrowserSession(state_path, "chrome") as session:
         assert session.browser.kind == "chrome"  # type: ignore[attr-defined]
     assert chromium.launch_calls == [{"headless": True, "channel": "chrome"}]
     assert firefox.launch_calls == []
 
 
 @pytest.mark.asyncio
-async def test_falls_back_to_host_edge_when_chrome_missing(
+async def test_launches_host_edge_via_chromium_channel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    chromium, firefox = _patch_playwright(
-        monkeypatch,
-        chromium_script=[_not_installed_error(), _FakeBrowser("msedge")],
-    )
+    chromium, _, _ = _patch_playwright(monkeypatch, chromium_script=[_FakeBrowser("msedge")])
     state_path = tmp_path / "browser_state.json"
-    async with BrowserSession(state_path) as session:
+    async with BrowserSession(state_path, "edge") as session:
         assert session.browser.kind == "msedge"  # type: ignore[attr-defined]
-    assert [c["channel"] for c in chromium.launch_calls] == ["chrome", "msedge"]
+    assert chromium.launch_calls == [{"headless": True, "channel": "msedge"}]
+
+
+@pytest.mark.asyncio
+async def test_headed_flag_maps_to_headless_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chromium, _, _ = _patch_playwright(monkeypatch, chromium_script=[_FakeBrowser("chrome")])
+    state_path = tmp_path / "browser_state.json"
+    async with BrowserSession(state_path, "chrome", headed=True):
+        pass
+    assert chromium.launch_calls == [{"headless": False, "channel": "chrome"}]
+
+
+@pytest.mark.asyncio
+async def test_host_kind_missing_raises_immediately_no_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chromium, firefox, _ = _patch_playwright(monkeypatch, chromium_script=[_not_installed_error()])
+    state_path = tmp_path / "browser_state.json"
+    with pytest.raises(BrowserUnavailableError):
+        async with BrowserSession(state_path, "chrome"):
+            pass
+    # No cascade to firefox or any other kind.
     assert firefox.launch_calls == []
 
 
 @pytest.mark.asyncio
-async def test_falls_back_to_bundled_firefox_when_no_host_browser(
+async def test_bundled_firefox_installs_on_missing_binary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    chromium, firefox = _patch_playwright(
-        monkeypatch,
-        chromium_script=[_not_installed_error(), _not_installed_error()],
-        firefox_script=[_FakeBrowser("firefox")],
-    )
-    state_path = tmp_path / "browser_state.json"
-    async with BrowserSession(state_path) as session:
-        assert session.browser.kind == "firefox"  # type: ignore[attr-defined]
-    assert not session.installed_now
-
-    state = json.loads(state_path.read_text())
-    assert state["fallback_kind"] == "firefox"
-    assert state["example_check_passed"] is True
-
-
-@pytest.mark.asyncio
-async def test_installs_firefox_when_binary_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _patch_playwright(
-        monkeypatch,
-        chromium_script=[_not_installed_error(), _not_installed_error()],
-        firefox_script=[_not_installed_error(), _FakeBrowser("firefox")],
-    )
+    _patch_playwright(monkeypatch, firefox_script=[_not_installed_error(), _FakeBrowser("firefox")])
 
     async def _fake_install(name: str) -> None:
         assert name == "firefox"
@@ -183,122 +183,82 @@ async def test_installs_firefox_when_binary_missing(
     monkeypatch.setattr(BrowserSession, "_BrowserSession__install", staticmethod(_fake_install))
 
     state_path = tmp_path / "browser_state.json"
-    async with BrowserSession(state_path) as session:
+    async with BrowserSession(state_path, "firefox") as session:
         assert session.installed_now
-        assert session.installed_browser == "firefox"
+        assert session.browser.kind == "firefox"  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
-async def test_cascades_to_chromium_when_firefox_totally_unavailable(
+async def test_bundled_kind_other_failure_raises_without_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _patch_playwright(
-        monkeypatch,
-        chromium_script=[_not_installed_error(), _not_installed_error(), _FakeBrowser("chromium")],
-        firefox_script=[PlaywrightError("some unrelated fatal error")],
-    )
-    state_path = tmp_path / "browser_state.json"
-    async with BrowserSession(state_path) as session:
-        assert session.browser.kind == "chromium"  # type: ignore[attr-defined]
-
-    state = json.loads(state_path.read_text())
-    assert state["fallback_kind"] == "chromium"
-
-
-@pytest.mark.asyncio
-async def test_raises_when_nothing_launches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _patch_playwright(
-        monkeypatch,
-        chromium_script=[
-            _not_installed_error(),
-            _not_installed_error(),
-            _not_installed_error(),
-            _not_installed_error(),
-        ],
-        firefox_script=[_not_installed_error(), _not_installed_error()],
-    )
+    _patch_playwright(monkeypatch, webkit_script=[PlaywrightError("some unrelated fatal error")])
     state_path = tmp_path / "browser_state.json"
     with pytest.raises(BrowserUnavailableError):
-        async with BrowserSession(state_path):
+        async with BrowserSession(state_path, "webkit"):
             pass
 
 
 @pytest.mark.asyncio
-async def test_cached_fallback_skips_host_probe_within_a_day(
+async def test_bundled_kind_still_failing_after_install_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _patch_playwright(monkeypatch, chromium_script=[_not_installed_error(), _not_installed_error()])
+
+    async def _fake_install(name: str) -> None:
+        return None
+
+    monkeypatch.setattr(BrowserSession, "_BrowserSession__install", staticmethod(_fake_install))
+
     state_path = tmp_path / "browser_state.json"
-    state_path.write_text(
-        json.dumps(
-            {
-                "example_check_passed": True,
-                "last_host_check": time.time(),
-                "fallback_kind": "firefox",
-            }
-        )
-    )
-    chromium, firefox = _patch_playwright(
-        monkeypatch,
-        firefox_script=[_FakeBrowser("firefox")],
-    )
-    async with BrowserSession(state_path) as session:
-        assert session.browser.kind == "firefox"  # type: ignore[attr-defined]
-    assert chromium.launch_calls == []
-    assert len(firefox.launch_calls) == 1
+    with pytest.raises(BrowserUnavailableError):
+        async with BrowserSession(state_path, "chromium"):
+            pass
 
 
 @pytest.mark.asyncio
-async def test_cached_fallback_expires_after_a_day_and_retries_host(
+async def test_sanity_check_cached_per_kind_independently(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    state_path = tmp_path / "browser_state.json"
-    state_path.write_text(
-        json.dumps(
-            {
-                "example_check_passed": True,
-                "last_host_check": time.time() - _HOST_RECHECK_INTERVAL_S - 1,
-                "fallback_kind": "firefox",
-            }
-        )
-    )
-    chromium, firefox = _patch_playwright(
+    chromium, firefox, _ = _patch_playwright(
         monkeypatch,
         chromium_script=[_FakeBrowser("chrome")],
-    )
-    async with BrowserSession(state_path) as session:
-        assert session.browser.kind == "chrome"  # type: ignore[attr-defined]
-    assert chromium.launch_calls == [{"headless": True, "channel": "chrome"}]
-    assert firefox.launch_calls == []
-
-    state = json.loads(state_path.read_text())
-    assert state["fallback_kind"] is None
-
-
-@pytest.mark.asyncio
-async def test_example_check_runs_once_and_is_cached(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    chromium, _ = _patch_playwright(
-        monkeypatch,
-        chromium_script=[_FakeBrowser("chrome"), _FakeBrowser("chrome")],
+        firefox_script=[_FakeBrowser("firefox")],
     )
     state_path = tmp_path / "browser_state.json"
 
-    async with BrowserSession(state_path) as session:
+    async with BrowserSession(state_path, "chrome"):
         pass
     state = json.loads(state_path.read_text())
-    assert state["example_check_passed"] is True
+    assert state["sanity_passed"] == {"chrome": True}
 
-    # Second session: the cached pass means no new_page()/goto() round trip is
-    # required (nothing to assert on directly here besides "it still works").
-    async with BrowserSession(state_path) as session:
+    # A different kind still gets its own sanity check — the cache is keyed
+    # per kind, not a single "we've checked once" flag.
+    async with BrowserSession(state_path, "firefox"):
+        pass
+    state = json.loads(state_path.read_text())
+    assert state["sanity_passed"] == {"chrome": True, "firefox": True}
+
+
+@pytest.mark.asyncio
+async def test_sanity_check_skipped_once_cached_for_that_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chromium, _, _ = _patch_playwright(
+        monkeypatch, chromium_script=[_FakeBrowser("chrome"), _FakeBrowser("chrome")]
+    )
+    state_path = tmp_path / "browser_state.json"
+
+    async with BrowserSession(state_path, "chrome"):
+        pass
+    # Second session for the same kind: no new_page()/goto() round trip is
+    # required (nothing to assert on directly besides "it still works").
+    async with BrowserSession(state_path, "chrome") as session:
         assert session.browser.kind == "chrome"  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
-async def test_example_check_failure_is_fatal_and_closes_the_browser(
+async def test_sanity_check_failure_is_fatal_and_closes_the_browser(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     browser = _FakeBrowser("chrome", page_response=_FakeResponse(ok=False, status=503))
@@ -306,8 +266,10 @@ async def test_example_check_failure_is_fatal_and_closes_the_browser(
     state_path = tmp_path / "browser_state.json"
 
     with pytest.raises(BrowserUnavailableError):
-        async with BrowserSession(state_path):
+        async with BrowserSession(state_path, "chrome"):
             pass
 
     assert browser.closed
-    assert not state_path.exists() or not json.loads(state_path.read_text())["example_check_passed"]
+    assert not state_path.exists() or "chrome" not in json.loads(state_path.read_text()).get(
+        "sanity_passed", {}
+    )

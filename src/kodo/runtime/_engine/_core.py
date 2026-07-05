@@ -203,7 +203,7 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
         self._services = _EngineServices(
             run_subagent=self._run_subagent,
             run_dependency_manager=self._run_dependency_manager,
-            run_web_summarizer=self._run_web_summarizer,
+            run_web_search_agent=self._run_web_search_agent,
             run_author_critic=self._run_author_critic_iteration,
             rollback=self._run_rollback,
             disable_autonomous=self._disable_autonomous,

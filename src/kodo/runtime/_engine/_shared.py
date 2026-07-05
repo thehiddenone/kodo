@@ -23,18 +23,19 @@ _COMPACTOR_AGENT_NAME = "compactor"
 # it is intentionally *not* in ``_DIRECT_ONLY_AGENTS`` (which would make
 # ``_spawn_subagent`` short-circuit it) nor in any agent's ``subagents:`` list.
 _DEPSMGR_AGENT_NAME = "toolchain_depsmgr"
-# Theme-summarization sub-agent behind the ``web_search`` tool's phase 3 (see
-# doc/WEB_SEARCH.md). Driven only through the tool's dedicated ungated service
-# (``_run_web_summarizer``) as a *silent* titler-style turn — never as a
-# subsession, since ``web_search`` is typically called from a sub-agent (the
-# investigator) and subsessions do not nest.
-_WEB_SUMMARIZER_AGENT_NAME = "web_summarizer"
+# The agent behind the ``web_search`` tool (doc/WEB_SEARCH.md): drives its own
+# discovery/read/synthesis loop via query_search_engine/read_webpage plus the
+# pacing tools. Driven only through the tool's dedicated ungated service
+# (``_run_web_search_agent``) as a *silent, multi-round tool-calling* turn —
+# never as a subsession, since ``web_search`` is typically called from a
+# sub-agent (the investigator) and subsessions do not nest.
+_WEB_SEARCH_AGENT_NAME = "web_search"
 
 # Sub-agents that the engine drives directly and that must never be reachable
 # through the ``run_subagent`` tool (the Guide/Problem Solver cannot
 # invoke them).
 _DIRECT_ONLY_AGENTS = frozenset(
-    {_SESSION_TITLER_AGENT_NAME, _COMPACTOR_AGENT_NAME, _WEB_SUMMARIZER_AGENT_NAME}
+    {_SESSION_TITLER_AGENT_NAME, _COMPACTOR_AGENT_NAME, _WEB_SEARCH_AGENT_NAME}
 )
 
 # Every tool spec keyed by name — used to normalize each tool's output against

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 
 from kodo.common import Envelope
@@ -30,8 +31,13 @@ from ._shared import (
     _DEPSMGR_AGENT_NAME,
     _DIRECT_ONLY_AGENTS,
     _GUIDE_AGENT_NAME,
-    _WEB_SUMMARIZER_AGENT_NAME,
+    _WEB_SEARCH_AGENT_NAME,
 )
+
+# Default web_search timeout when the tool's caller omits `timeout`, and the
+# hard cap the tool itself already enforces before this is ever reached.
+_DEFAULT_WEB_SEARCH_TIMEOUT_S = 180.0
+_MAX_WEB_SEARCH_TIMEOUT_S = 600.0
 
 _log = logging.getLogger(__name__)
 
@@ -116,134 +122,62 @@ class SubagentMixin:
         """
         return await self._spawn_subagent(_DEPSMGR_AGENT_NAME, task_input)
 
-    async def _run_web_summarizer(
+    async def _run_web_search_agent(
         self: EngineHost, task_input: dict[str, object]
     ) -> dict[str, object]:
-        """Run the ``web_summarizer`` sub-agent silently for the ``web_search`` tool.
+        """Run the ``web_search`` agent for the ``web_search`` tool (doc/WEB_SEARCH.md).
 
-        Phase 3 of the web-search pipeline (doc/WEB_SEARCH.md). Ungated by
-        design (holding ``web_search`` is the authorization, mirroring
-        :meth:`_run_dependency_manager`) — but unlike the depsmgr it is *not*
-        a subsession: ``web_search`` is typically called from the investigator,
-        itself a sub-agent, and subsessions do not nest. Instead the summarizer
-        runs as one silent titler-style LLM turn: no feed events, only its USD
-        cost folded into the session total.
+        Ungated by design (holding ``web_search`` is the authorization,
+        mirroring :meth:`_run_dependency_manager`) — but unlike the depsmgr it
+        is *not* a subsession: ``web_search`` is typically called from the
+        investigator, itself a sub-agent, and subsessions do not nest.
+        Instead the agent drives its own multi-round research loop via
+        :meth:`_run_silent_tool_loop_turn`: no feed events or subsession
+        markers, only its USD cost folded into the session total.
 
-        The model gets one corrective retry when it fails to return any usable
-        theme; after that the tool degrades gracefully (empty ``themes`` +
-        explanatory ``note``). Themes are sanitized here — links are filtered
-        to URLs that actually appear in ``sources`` so the report can never
-        cite a page that was not scraped.
+        ``task_input["timeout"]`` (already clamped to
+        :data:`_MAX_WEB_SEARCH_TIMEOUT_S` by the tool) bounds the run; it is
+        re-clamped here too so this method stays safe for any other caller.
+        On a timeout with no usable result, a fallback ``{themes: [], note}``
+        is synthesized rather than raising — ``web_search`` never errors the
+        calling agent's turn.
 
         Args:
-            task_input: ``{query, max_themes, sources}`` per the sub-agent's
+            task_input: ``{query, max_themes, timeout}`` per the sub-agent's
                 ``input_schema``.
 
         Returns:
-            dict: ``{"themes": [...]}``, possibly empty.
+            dict: ``{"themes": [...], "note": "..."}``.
         """
-        agent = self._registry.get(_WEB_SUMMARIZER_AGENT_NAME)
+        agent = self._registry.get(_WEB_SEARCH_AGENT_NAME)
         plugin, model_id, routing = await self._resolve_plugin(agent.capability)
 
-        max_themes_raw = task_input.get("max_themes")
-        max_themes = max_themes_raw if isinstance(max_themes_raw, int) and max_themes_raw > 0 else 5
-        sources = task_input.get("sources")
-        allowed_urls = {
-            str(s.get("url"))
-            for s in (sources if isinstance(sources, list) else [])
-            if isinstance(s, dict) and s.get("url")
-        }
+        timeout_raw = task_input.get("timeout")
+        timeout = (
+            min(float(timeout_raw), _MAX_WEB_SEARCH_TIMEOUT_S)
+            if isinstance(timeout_raw, (int, float)) and timeout_raw > 0
+            else _DEFAULT_WEB_SEARCH_TIMEOUT_S
+        )
+        deadline = time.time() + timeout
 
+        session_id = f"web-search-{uuid.uuid4().hex}"
+        dispatcher = self._make_dispatcher(_WEB_SEARCH_AGENT_NAME, session_id, deadline=deadline)
         messages: list[Message] = [
-            Message(role="user", content=self._render_web_summarizer_input(task_input))
+            Message(role="user", content=self._render_task_input(task_input))
         ]
-        for _attempt in range(2):
-            result, text = await self._run_silent_return_turn(
-                routing, plugin, model_id, agent, messages
-            )
-            themes = self._sanitize_themes(result, max_themes, allowed_urls)
-            if themes:
-                return {"themes": themes}
-            # An empty-but-valid report is a legitimate outcome (thin sources);
-            # only a *missing/malformed* result earns the corrective retry.
-            if result is not None and isinstance(result.get("themes"), list):
-                return {"themes": []}
-            messages.append(Message(role="assistant", content=text or "(no tool call)"))
-            messages.append(
-                Message(
-                    role="user",
-                    content=(
-                        "That was not a usable report. Call `return_result` exactly once "
-                        "with `result.themes`: a list of objects, each with a one-sentence "
-                        "`summary` string, a `details` string, and a `links` list of URLs "
-                        "drawn from the provided sources."
-                    ),
-                )
-            )
-        _log.info("web_summarizer produced no usable themes after retry")
-        return {"themes": []}
 
-    @staticmethod
-    def _render_web_summarizer_input(task_input: dict[str, object]) -> str:
-        """Render the summarizer's structured task as its user message.
-
-        Dedicated renderer (not :meth:`_render_task_input`, which comma-joins
-        lists): each source becomes its own markdown section so the model can
-        attribute themes to URLs.
-        """
-        query = str(task_input.get("query", ""))
-        max_themes = task_input.get("max_themes", 5)
-        parts = [
-            "# Web Search Summarization Task",
-            f"Search query: {query}",
-            f"Maximum themes: {max_themes}",
-            "## Sources",
-        ]
-        sources = task_input.get("sources")
-        for index, source in enumerate(sources if isinstance(sources, list) else [], start=1):
-            if not isinstance(source, dict):
-                continue
-            title = str(source.get("title", "")) or "(untitled)"
-            url = str(source.get("url", ""))
-            text = str(source.get("text", ""))
-            parts.append(f"### Source {index} — {title}\nURL: {url}\n\n{text}")
-        return "\n\n".join(parts)
-
-    @staticmethod
-    def _sanitize_themes(
-        result: dict[str, object] | None, max_themes: int, allowed_urls: set[str]
-    ) -> list[dict[str, object]]:
-        """Validate/normalize the summarizer's ``themes`` payload.
-
-        Keeps only well-formed entries (non-empty ``summary``/``details``),
-        filters ``links`` to URLs that were actually in the input sources, and
-        clamps the list to *max_themes*.
-        """
-        if result is None:
-            return []
-        raw = result.get("themes")
-        if not isinstance(raw, list):
-            return []
-        themes: list[dict[str, object]] = []
-        for entry in raw:
-            if not isinstance(entry, dict):
-                continue
-            summary = entry.get("summary")
-            details = entry.get("details")
-            if not isinstance(summary, str) or not summary.strip():
-                continue
-            if not isinstance(details, str) or not details.strip():
-                continue
-            links_raw = entry.get("links")
-            links = [
-                link
-                for link in (links_raw if isinstance(links_raw, list) else [])
-                if isinstance(link, str) and link in allowed_urls
-            ]
-            themes.append({"summary": summary.strip(), "details": details.strip(), "links": links})
-            if len(themes) >= max_themes:
-                break
-        return themes
+        result = await self._run_silent_tool_loop_turn(
+            routing, plugin, model_id, agent, messages, dispatcher, deadline
+        )
+        if result is not None:
+            themes = result.get("themes")
+            note = result.get("note")
+            return {
+                "themes": themes if isinstance(themes, list) else [],
+                "note": note if isinstance(note, str) else "",
+            }
+        _log.info("web_search agent produced no result within its time budget")
+        return {"themes": [], "note": "Search timed out before a report could be produced."}
 
     @staticmethod
     def _render_task_input(task_input: dict[str, object]) -> str:

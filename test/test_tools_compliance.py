@@ -75,8 +75,8 @@ class _FakeServices:
             "files_changed": ["pyproject.toml", "uv.lock"],
         }
 
-    async def run_web_summarizer(self, task_input: dict[str, object]) -> dict[str, object]:
-        return {"themes": []}
+    async def run_web_search_agent(self, task_input: dict[str, object]) -> dict[str, object]:
+        return {"themes": [], "note": "stub"}
 
     async def run_author_critic_iteration(
         self,
@@ -694,30 +694,46 @@ async def test_create_new_project_compliance(tmp_path: Path) -> None:
     )
 
 
+class _WebSearchAgentFailsServices(_FakeServices):
+    """``run_web_search_agent`` blows up, as if the agent turn itself failed."""
+
+    async def run_web_search_agent(self, task_input: dict[str, object]) -> dict[str, object]:
+        raise RuntimeError("agent turn exploded")
+
+
 @pytest.mark.asyncio
-async def test_web_search_compliance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Keep the pipeline off the real network: an unopenable browser makes the
-    # handler degrade to its schema-compliant empty report (themes/note shape).
-    class _NoBrowserSession:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            pass
-
-        async def __aenter__(self) -> object:
-            raise WebsearchBrowserUnavailableError("no browser in tests")
-
-        async def __aexit__(self, *args: object) -> None:
-            return None
-
-    monkeypatch.setattr("kodo.tools._web_search.BrowserSession", _NoBrowserSession)
+async def test_web_search_compliance(tmp_path: Path) -> None:
+    # WebSearchTool is a thin wrapper: it validates/clamps input and returns
+    # whatever the web_search agent (via EngineServices.run_web_search_agent)
+    # produced, verbatim.
     d = _make_dispatcher(tmp_path, agent_name="investigator")
     parsed = _assert_compliant(
         "web_search",
         await _dispatch(d, "web_search", {"query": "how to parse RFC 3339 in python"}),
     )
     assert parsed["themes"] == []
-    assert parsed["note"]
+    assert parsed["note"] == "stub"
     # Missing query is rejected with the universal error envelope.
     _assert_compliant("web_search", await _dispatch(d, "web_search", {}))
+
+    # A service-level failure (the agent turn itself blowing up) degrades to a
+    # compliant themes:[]/note result rather than raising.
+    session = SessionState()
+    failing = ToolDispatcher(
+        resolver=ProjectPathResolver(tmp_path),
+        gate=_FakeGate(),
+        session=session,
+        services=_WebSearchAgentFailsServices(),
+        agent_name="investigator",
+        session_id="sess-test",
+        mode="guided",
+        project_root=tmp_path,
+    )
+    failed = _assert_compliant(
+        "web_search", await _dispatch(failing, "web_search", {"query": "anything"})
+    )
+    assert failed["themes"] == []
+    assert "failed" in failed["note"].lower()
 
 
 @pytest.mark.asyncio
@@ -747,6 +763,120 @@ async def test_read_webpage_compliance(tmp_path: Path, monkeypatch: pytest.Monke
         "read_webpage",
         await _dispatch(d, "read_webpage", {"url": "http://127.0.0.1:8080/admin"}),
     )
+    # An unsupported browser/content_filter value is also a universal error.
+    _assert_compliant(
+        "read_webpage",
+        await _dispatch(d, "read_webpage", {"url": "https://example.com/docs", "browser": "nope"}),
+    )
+
+
+@pytest.mark.asyncio
+async def test_query_search_engine_compliance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _FakeSession:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _FakeSession:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        @property
+        def browser(self) -> object:
+            return object()
+
+    monkeypatch.setattr("kodo.tools._query_search_engine.BrowserSession", _FakeSession)
+
+    async def _fake_hits(browser: object, engine: object, query: str) -> list[dict[str, str]]:
+        return [{"url": "https://example.com/a", "title": "A", "snippet": "..."}]
+
+    monkeypatch.setattr("kodo.tools._query_search_engine.query_via_browser", _fake_hits)
+    d = _make_dispatcher(tmp_path, agent_name="web_search")
+    parsed = _assert_compliant(
+        "query_search_engine",
+        await _dispatch(d, "query_search_engine", {"engine": "duckduckgo", "query": "asyncio"}),
+    )
+    assert parsed["hits"][0]["url"] == "https://example.com/a"
+
+    # An engine wall (the query function returns None) is a compliant error,
+    # distinct from a legitimate empty hits list.
+    async def _fake_blocked(browser: object, engine: object, query: str) -> None:
+        return None
+
+    monkeypatch.setattr("kodo.tools._query_search_engine.query_via_browser", _fake_blocked)
+    blocked = _assert_compliant(
+        "query_search_engine",
+        await _dispatch(d, "query_search_engine", {"engine": "google", "query": "x"}),
+    )
+    assert "error" in blocked
+
+    # Unknown engine / query missing / bad browser -> universal error envelope.
+    _assert_compliant(
+        "query_search_engine",
+        await _dispatch(d, "query_search_engine", {"engine": "altavista", "query": "x"}),
+    )
+    _assert_compliant(
+        "query_search_engine", await _dispatch(d, "query_search_engine", {"engine": "google"})
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_and_update_web_search_state_compliance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Redirect the state file away from the real ~/.kodo home, same reasoning
+    # as monkeypatching BrowserSession for the browser-backed tools above.
+    monkeypatch.setattr("kodo.tools._get_web_search_state.kodo_user_dir", lambda: tmp_path)
+    monkeypatch.setattr("kodo.tools._update_web_search_state.kodo_user_dir", lambda: tmp_path)
+    d = _make_dispatcher(tmp_path, agent_name="web_search")
+
+    empty = _assert_compliant(
+        "get_web_search_state", await _dispatch(d, "get_web_search_state", {})
+    )
+    assert empty["state"] == {}
+
+    _assert_compliant(
+        "update_web_search_state",
+        await _dispatch(d, "update_web_search_state", {"key": "google_status", "value": "blocked"}),
+    )
+    after_write = _assert_compliant(
+        "get_web_search_state", await _dispatch(d, "get_web_search_state", {})
+    )
+    assert after_write["state"] == {"google_status": "blocked"}
+
+    # Deleting via an empty-string value.
+    _assert_compliant(
+        "update_web_search_state",
+        await _dispatch(d, "update_web_search_state", {"key": "google_status", "value": ""}),
+    )
+    after_delete = _assert_compliant(
+        "get_web_search_state", await _dispatch(d, "get_web_search_state", {})
+    )
+    assert after_delete["state"] == {}
+
+    # Missing key/value -> universal error envelope.
+    _assert_compliant(
+        "update_web_search_state", await _dispatch(d, "update_web_search_state", {"key": "x"})
+    )
+
+
+@pytest.mark.asyncio
+async def test_wait_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path, agent_name="web_search")
+    _assert_compliant("wait", await _dispatch(d, "wait", {"seconds": 0.01}))
+    # Omitted seconds still compliant (falls back to the tool's own default);
+    # not exercised at full length here to keep the test fast.
+
+
+@pytest.mark.asyncio
+async def test_remaining_time_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path, agent_name="web_search")
+    # No deadline set on this context -> fails closed at 0, still compliant.
+    parsed = _assert_compliant("remaining_time", await _dispatch(d, "remaining_time", {}))
+    assert parsed["remaining_seconds"] == 0.0
 
 
 def test_all_dispatchable_tools_are_covered() -> None:
@@ -774,6 +904,11 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "create_new_project",
         "web_search",
         "read_webpage",
+        "query_search_engine",
+        "get_web_search_state",
+        "update_web_search_state",
+        "wait",
+        "remaining_time",
     }
     assert set(DISPATCHABLE_TOOLS_BY_NAME) == covered, (
         "Dispatchable tools changed; add a compliance scenario for: "
