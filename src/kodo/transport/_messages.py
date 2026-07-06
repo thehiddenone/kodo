@@ -193,7 +193,7 @@ MSG_COMPACT_NOW = "compact.now"
 
 # Client → Server. Tells the server to re-read ``settings.json`` (user +
 # project layers). The primary use is model switching: the VSIX writes the
-# ``models`` map (or ``mode``) to ``~/.kodo/settings.json`` and sends this so
+# ``models`` map (or ``mode``) to ``~/.kodo/etc/settings.json`` and sends this so
 # every *live* session's engine notices before its next LLM dispatch (settings
 # are read fresh per call) and, via ``handle_config_changed``, compacts right
 # away if the newly selected model's context window is smaller than what's
@@ -203,13 +203,38 @@ MSG_CONFIG_RELOAD = "config.reload"
 # Client → Server. Window-global local-model management, sent over the
 # session-less control connection (extension.ts sidebar), never a session
 # connection. Progress/results come back as the EVT_LLAMACPP_INSTALL_PROGRESS /
-# EVT_MODEL_INSTALL_PROGRESS / EVT_LLAMA_STATE events below rather than as a
+# EVT_LOCAL_LLM_INSTALL_PROGRESS / EVT_LLAMA_STATE events below rather than as a
 # direct response — the handler streams events on the connection until done.
-# ``model.install`` payload is ``{name}``; the rest carry no payload.
+# ``local_llm.install`` payload is ``{name}``; the rest carry no payload.
 MSG_LLAMACPP_INSTALL = "llamacpp.install"
-MSG_MODEL_INSTALL = "model.install"
+MSG_LOCAL_LLM_INSTALL = "local_llm.install"
 MSG_LLAMA_START = "llama.start"
 MSG_LLAMA_STOP = "llama.stop"
+
+# Client → Server. Local Inference Settings webview actions (doc/LLM_REGISTRY.md),
+# sent over the control connection like the block above. All mutate the
+# server-owned ``~/.kodo/etc/local-llm-registry.json`` and reply with
+# ``local_llm.registry_state`` (the merged registry + override path) on the
+# same connection — there is no separate ack payload.
+#   local_llm.add_huggingface {name, description, repo_id, filename}
+#   local_llm.add_file        {name, description, path}
+#   local_llm.add_server_url  {name, description, url}
+#   local_llm.uninstall       {name} — frees the downloaded GGUF, keeps the entry
+#   local_llm.remove          {name} — removes a custom entry (hardcoded ones
+#                                       are rejected); uninstalls first if needed
+MSG_LOCAL_LLM_ADD_HUGGINGFACE = "local_llm.add_huggingface"
+MSG_LOCAL_LLM_ADD_FILE = "local_llm.add_file"
+MSG_LOCAL_LLM_ADD_SERVER_URL = "local_llm.add_server_url"
+MSG_LOCAL_LLM_UNINSTALL = "local_llm.uninstall"
+MSG_LOCAL_LLM_REMOVE = "local_llm.remove"
+
+# Client → Server. Global llama-server binary override (doc/LLM_REGISTRY.md) —
+# not a model, a replacement for the executable kodo launches for every local
+# model (hardcoded and custom alike), e.g. a CUDA-enabled custom build on
+# Linux. ``llama_server_override.set`` payload is ``{path}``; ``.remove``
+# carries no payload. Both reply with ``local_llm.registry_state``.
+MSG_LLAMA_SERVER_OVERRIDE_SET = "llama_server_override.set"
+MSG_LLAMA_SERVER_OVERRIDE_REMOVE = "llama_server_override.remove"
 
 # ---------------------------------------------------------------------------
 # Server → Client — API key management  (WS_PROTOCOL.md §6.3/§6.4)
@@ -402,17 +427,26 @@ EVT_ERROR = "error"
 
 # Server → Client events. Drive the sidebar's llama.cpp/model controls only —
 # no workflow meaning. ``llamacpp.install.progress`` and
-# ``model.install.progress`` stream ``{percent, message}`` (plus ``name`` for
-# the model being installed) for their respective installs; ``percent == -1``
-# signals failure (``message`` carries why). ``llama.state`` reports
+# ``local_llm.install.progress`` stream ``{percent, message}`` (plus ``name``
+# for the model being installed) for their respective installs; ``percent ==
+# -1`` signals failure (``message`` carries why). ``llama.state`` reports
 # ``{running, model, port?}`` or ``{running: false, error}`` whenever the local
 # server starts, stops, or fails — including an auto-start triggered mid-prompt
 # by a local-model dispatch, which is why it can arrive on a *session*
 # connection instead of the control connection (see ``onLlamaState`` in
 # kodo-vsix), not only after explicit ``llama.start``/``llama.stop``.
 EVT_LLAMACPP_INSTALL_PROGRESS = "llamacpp.install.progress"
-EVT_MODEL_INSTALL_PROGRESS = "model.install.progress"
+EVT_LOCAL_LLM_INSTALL_PROGRESS = "local_llm.install.progress"
 EVT_LLAMA_STATE = "llama.state"
+
+# Server → Client event. Sent once after every ``local_llm.*``/
+# ``llama_server_override.*`` mutation (add/install/uninstall/remove/
+# override), on the same connection that issued the request — mirrors
+# ``llama.state``'s single-connection-reply shape rather than a broadcast.
+# Payload: ``{local_registry: [...], llama_server_override_path}`` — the full
+# merged registry (hardcoded + custom, each with ``installed``) so the webview
+# can just replace its whole card list rather than patching it.
+EVT_LOCAL_LLM_REGISTRY_STATE = "local_llm.registry_state"
 
 # Server → Client event. Pushed when the engine itself disables Autonomous mode
 # (the Guide's ``disable_autonomous_mode`` tool) — as opposed to a user toggle

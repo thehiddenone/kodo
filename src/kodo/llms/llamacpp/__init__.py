@@ -8,8 +8,8 @@ lifecycle utilities formerly in the top-level ``kodo.llm_utils`` package:
   ``~/.kodo/llama.cpp/b{N}/`` (:func:`install_llamacpp`, :func:`uninstall_llamacpp`,
   :func:`update_llamacpp`, :func:`check_llamacpp_update`, :func:`find_installed`,
   :func:`server_executable`).
-* **Downloader** — :mod:`huggingface_hub` wrapper fetching a specific GGUF
-  (:func:`download_model`, :func:`get_model_path`).
+* **Downloader** — :mod:`huggingface_hub` wrapper fetching/removing a specific
+  GGUF (:func:`download_model`, :func:`delete_model`, :func:`get_model_path`).
 * **Server** — async ``llama-server`` process manager (:class:`LlamaServer`,
   :class:`LlamaServerConfig`, :class:`RunningServer`, :func:`find_running_server`,
   :func:`ensure_llama_running`).
@@ -19,7 +19,7 @@ cycle: they are only ever used by llama.cpp inference, so they belong under the
 ``llamacpp`` subpackage.
 """
 
-from ._downloader import download_model, get_model_path
+from ._downloader import delete_model, download_model, get_model_path
 from ._installer import (
     LlamaInstall,
     check_llamacpp_update,
@@ -46,6 +46,7 @@ __all__ = [
     "RunningServer",
     "ThinkingStreamParser",
     "check_llamacpp_update",
+    "delete_model",
     "download_model",
     "ensure_llama_running",
     "find_installed",

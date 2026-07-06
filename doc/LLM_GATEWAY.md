@@ -35,7 +35,7 @@ One `_Feed` per key:
 - **`local`** — `max_slots = 1`. **All** local plugins (any model) share this one
   serial gate, so the local server is never asked to serve two requests at once.
 - **`cloud:<vendor>`** — `max_slots = cloud_concurrency()` (read fresh from
-  `~/.kodo/settings.json` `cloud_concurrency`, default **2**, so the limit is
+  `~/.kodo/etc/settings.json` `cloud_concurrency`, default **2**, so the limit is
   live-configurable). One feed per vendor → different vendors run in parallel.
 
 A feed is a **delay-aware FIFO admission controller**: a request first sleeps out

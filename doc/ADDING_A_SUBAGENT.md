@@ -17,7 +17,7 @@ A new sub-agent named `foo` needs **all** of these, or the registry raises
 
 1. **Prompt** — `src/kodo/subagents/subagent_foo.md`
    - Filename stem must be exactly `subagent_foo` (matches `name: foo`).
-   - Frontmatter: `name`, `display_name`, `capability` (`high`/`medium`/`low`,
+   - Frontmatter: `name`, `display_name`, `capability` (`max`/`high`/`medium`/`low`,
      default `medium`), `tools:` (each must resolve to a `ToolSpec` in
      `kodo.toolspecs`). For an **author** add `critic: <critic_name>`; for a
      **solo** add `solo: true`; for an on-demand specialist add

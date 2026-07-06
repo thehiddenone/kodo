@@ -421,7 +421,9 @@ Dependency management remains deliberately unimplemented.
 | Module | Defines | Links |
 |---|---|---|
 | [_interface.py](../src/kodo/llms/_interface.py) | `LLMPlugin` (ABC); `Message`, `Usage`, `StreamEvent` + subclasses `ThinkingDelta`/`ThinkingSignature`/`TokenDelta`/`ToolCallEvent`/`TurnEnd`; re-exports `ToolSpec` | `Usage.usd_cost` lazily imports `anthropic._usage.compute_cost`. Stream contract: yields token/thinking deltas, an optional `ThinkingSignature` once a thinking block closes, then `ToolCallEvent`s, then one `TurnEnd`. See SESSIONS.md "Thinking blocks". |
-| [_registry.py](../src/kodo/llms/_registry.py) | `LLMEntry` (frozen), `get_llm_registry()` | Static catalog of cloud (Claude Opus/Sonnet/Haiku) + local (llama.cpp Qwen/Gemma GGUF) models. Maps name → plugin module + model/repo IDs. |
+| [_cloud_registry.py](../src/kodo/llms/_cloud_registry.py) | `CloudLLMEntry` (frozen), `get_cloud_registry()`, `get_cloud_entry()`, `get_cloud_vendor_module()` | Hardcoded two-tier vendor→model tree (Anthropic today). See LLM_REGISTRY.md §3. |
+| [_local_registry.py](../src/kodo/llms/_local_registry.py) | `LocalLLMEntry` (frozen), `get_local_registry()`, `add_local_entry()`, `remove_local_entry()`, llama-server override getters/setters | Hardcoded GGUFs merged with the external `~/.kodo/etc/local-llm-registry.json` collection (4 entry kinds — see LLM_REGISTRY.md §4). No `residence` field; every entry here is local. |
+| [_context.py](../src/kodo/llms/_context.py) | `get_context_window()` | Cross-registry lookup — checks cloud (`model_id`) then local (`name`) so callers with just a resolved key don't need to know which registry it came from. |
 | [_logger.py](../src/kodo/llms/_logger.py) | `LoggingLLMPlugin(LLMPlugin)` | **Decorator** wrapping any `LLMPlugin`; writes `NNNN_request.json`/`NNNN_response.json`. Process-wide counter. |
 | [_tool_logger.py](../src/kodo/llms/_tool_logger.py) | `ToolCallLogger` | Writes per-tool invocation/result JSON; turn counter. Used by the engine, not a plugin. |
 | [_sanitize.py](../src/kodo/llms/_sanitize.py) | `strip_kodo_callouts` | Regex-strips `<kodo_info>`/`<kodo_warn>`/`<kodo_crit>`/`<kodo>` callout tags (incl. their content) from assistant text. These tags are a one-way notification to the human user (§ performance preamble), so their content is never replayed back into the model's own context. Called only by the wire-format builders below and by `runtime/_engine/`'s `render_transcript` (compaction input) — never by anything that persists or renders history, so `session.jsonl`/the WebView still see the tags verbatim. |
@@ -450,9 +452,9 @@ handlers) — via `kodo.llms.llamacpp`, never from the private modules.
 | Module | Defines | Links |
 |---|---|---|
 | [_installer.py](../src/kodo/llms/llamacpp/_installer.py) | `LlamaInstall`, `install/uninstall/update_llamacpp`, `check_llamacpp_update`, `find_installed`, `server_executable` | Platform-aware llama.cpp binary install into `~/.kodo/llama.cpp/bN/`. No `kodo` imports. |
-| [_downloader.py](../src/kodo/llms/llamacpp/_downloader.py) | `download_model`, `get_model_path` | `huggingface_hub` GGUF fetch + JSON index. Imports `LLMEntry` from `llms._registry` (intra-`llms`, no longer a cross-package cycle). |
+| [_downloader.py](../src/kodo/llms/llamacpp/_downloader.py) | `download_model`, `delete_model`, `get_model_path` | `huggingface_hub` GGUF fetch/evict + JSON index. Imports `LocalLLMEntry` from `llms._local_registry` (intra-`llms`, no longer a cross-package cycle). |
 | [_llama_server.py](../src/kodo/llms/llamacpp/_llama_server.py) | `LlamaServer`, `LlamaServerConfig`, `RunningServer`, `find_running_server` | PID-managed `llama-server` subprocess; class-level singleton via `get_active_llama_server()`; `adopt()` reclaims a survivor after restart. |
-| [_manager.py](../src/kodo/llms/llamacpp/_manager.py) | `ensure_llama_running` | Composes installer + downloader + server: ensures the right model server is up. |
+| [_manager.py](../src/kodo/llms/llamacpp/_manager.py) | `ensure_llama_running` | Composes installer + downloader + server: ensures the right model server is up for a `LocalLLMEntry` (not valid for `custom_server_url` — see LLM_REGISTRY.md §4), honoring the llama-server binary override if set. |
 
 **Links:** Consumed by `llms/llamacpp/_llama.py` (runtime) and `server/_app.py`
 (install/start/stop handlers). Self-contained otherwise.

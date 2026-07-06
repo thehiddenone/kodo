@@ -4,8 +4,9 @@ Three concepts (see the ``project-kodo`` memory):
 
 * :class:`WorkspaceLayout` — the **global home** tier.  Rooted at ``~/.kodo``
   and shared by the singleton server across every VS Code window.  Owns the
-  global ``sessions/``, ``logs/``, ``settings.json`` and the ``kodo-server``
-  discovery file.  It is window-agnostic — there is exactly one per machine.
+  global ``sessions/``, ``logs/``, ``etc/settings.json`` and the
+  ``kodo-server`` discovery file.  It is window-agnostic — there is exactly
+  one per machine.
 
 * :class:`SessionWorkspace` — the **per-session window view**.  Holds the
   physical root (the parent directory of the window's first folder) plus the
@@ -38,9 +39,9 @@ class WorkspaceLayout:
 
     Rooted at ``~/.kodo`` (``kodo_user_dir()``).  There is one instance per
     machine, shared by every VS Code window's session.  It owns the global
-    ``sessions/``/``logs/``/``settings.json`` plus the ``kodo-server`` discovery
-    file.  Per-window state (physical root, the logical folder map, the bound
-    project) lives in :class:`SessionWorkspace`, not here.
+    ``sessions/``/``logs/``/``etc/settings.json`` plus the ``kodo-server``
+    discovery file.  Per-window state (physical root, the logical folder map,
+    the bound project) lives in :class:`SessionWorkspace`, not here.
 
     Args:
         root: Home directory; defaults to ``~/.kodo``.
@@ -67,6 +68,14 @@ class WorkspaceLayout:
         return self.__root / "logs"
 
     @property
+    def etc_dir(self) -> Path:
+        """``~/.kodo/etc/`` — small owned-config files (global settings, the
+        local LLM registry and download index, cloud API key settings; see
+        :mod:`kodo.llms._local_registry`, :mod:`kodo.llms.llamacpp._downloader`
+        and kodo-vsix's ``cloud-credentials.ts``)."""
+        return self.__root / "etc"
+
+    @property
     def server_log(self) -> Path:
         """``~/.kodo/logs/server.log``."""
         return self.logs_dir / "server.log"
@@ -78,8 +87,8 @@ class WorkspaceLayout:
 
     @property
     def settings_json(self) -> Path:
-        """``~/.kodo/settings.json`` — the single global settings file."""
-        return self.__root / "settings.json"
+        """``~/.kodo/etc/settings.json`` — the single global settings file."""
+        return self.etc_dir / "settings.json"
 
     @property
     def server_discovery(self) -> Path:
@@ -87,10 +96,11 @@ class WorkspaceLayout:
         return self.__root / "kodo-server"
 
     def init(self) -> None:
-        """Create the global ``~/.kodo/`` skeleton (sessions + logs)."""
+        """Create the global ``~/.kodo/`` skeleton (sessions + logs + etc)."""
         self.kodo_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        self.etc_dir.mkdir(parents=True, exist_ok=True)
 
 
 class SessionWorkspace:

@@ -131,14 +131,36 @@ The server replies with the current world plus local-model status:
     "server_version": "0.1.0",
     "project_root": "/abs/path",
     "state": { ...state snapshot per §5.1... },
-    "models": [ { "name": "...", "residence": "local"|"cloud", "description": "...",
-                  "model_id": "...", "repo_id": "...", "filename": "..." } ],
+    "cloud_registry": {
+      "anthropic": { "display_name": "Anthropic", "models": [
+        { "model_id": "claude-opus-4-8", "name": "Claude Opus 4.8",
+          "description": "...", "context_window": 1000000 }, "..." ] }
+    },
+    "active_cloud_vendor": "anthropic",
+    "local_registry": [
+      { "name": "llamacpp-qwen36-27b-q4-k-xl", "kind": "hardcoded_hf",
+        "description": "...", "repo_id": "...", "filename": "...",
+        "path": "", "url": "", "installed": true }
+    ],
+    "llama_server_override_path": null,
     "llama_installed": true,
     "llama_version": "b1234" | null,
     "llama_running": false,
     "llama_model": "qwen36-27b" | null
   } }
 ```
+
+The LLM registry itself (both `cloud_registry` and the catalogue behind
+`local_registry`) is documented in full in `doc/LLM_REGISTRY.md` — this
+section only covers the wire shape. `cloud_registry` is 100% hardcoded and
+static for the process lifetime; `local_registry` is hardcoded entries merged
+with the user's custom collection and can change mid-session (see §5.12a).
+`kind` is one of `hardcoded_hf` / `custom_hf` / `custom_file` /
+`custom_server_url`; `installed` is always present and pre-computed
+server-side per §LLM_REGISTRY.md's installed-state rules — the client never
+needs to compute it itself except for `custom_file` entries, where the
+extension's own startup-time filesystem check is authoritative for the rest
+of the process lifetime (see doc/LLM_REGISTRY.md §4).
 
 Immediately after the ack the server **also pushes** a `state` event (§5.1) and, if the resumed session has history, a `session.history` event (§5.11). The redundant `state` keeps first-connect and reconnect on identical client logic.
 
@@ -470,10 +492,22 @@ These drive the sidebar's llama.cpp / model controls; they carry no workflow mea
 { "type": "llama.state", "running": true, "model": "qwen36-27b", "port": 8080 }
 { "type": "llama.state", "running": false, "model": null, "error": "..." }
 { "type": "llamacpp.install.progress", "percent": 42, "message": "..." }
-{ "type": "model.install.progress", "name": "qwen36-27b", "percent": 100, "message": "..." }
+{ "type": "local_llm.install.progress", "name": "qwen36-27b", "percent": 100, "message": "..." }
 ```
 
-`percent: -1` signals failure (the `message` carries the reason). `llama.state` with `starting: true` ⟪planned⟫ may precede a running/error update; the client treats a missing `running` field as "still starting."
+`percent: -1` signals failure (the `message` carries the reason). `llama.state` with `starting: true` ⟪planned⟫ may precede a running/error update; the client treats a missing `running` field as "still starting." Selecting a `custom_server_url` local entry (§7.6, doc/LLM_REGISTRY.md) reports `llama.state {running: false, model: null}` — that entry isn't a process kodo manages, so "running" here always describes kodo's *own* llama-server, which stays stopped until a kodo-managed local model is selected again.
+
+### 5.12a `local_llm.registry_state` — local registry changed
+
+Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6), on the connection that issued the request — same single-connection-reply shape as `llama.state` above, not a broadcast to other windows.
+
+```json
+{ "type": "local_llm.registry_state",
+  "local_registry": [ { "name": "...", "kind": "...", "installed": true, "...": "..." } ],
+  "llama_server_override_path": "/usr/local/bin/llama-server-cuda" | null }
+```
+
+Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it.
 
 ### 5.13 ⟪removed⟫ — the former artifact events
 
@@ -574,9 +608,16 @@ Response payload (user declined / no key):
 
 Concurrent requests for the same vendor are serialized client-side: the second waits for the first to store the key, then returns it without a second prompt. The server may also push `api_key.revoke` (§6.4) to clear a rejected key.
 
+This wire contract is unchanged by the named multi-key credential management
+in the Cloud AI Settings webview (LLM_REGISTRY.md §6) — the extension answers
+`api_key.request` with whichever key is currently marked *active* for that
+vendor (falling back to the reactive add-a-key flow if none is configured
+yet). The server is never aware of key names, UUIDs, or how many keys are
+configured; it only ever sees the resolved secret.
+
 ### 6.4 `api_key.revoke` — discard a stored key
 
-A `kind=event` (no reply) telling the extension to delete a stored key, e.g. after a 401.
+A `kind=event` (no reply) telling the extension to delete a stored key, e.g. after a 401. The extension forgets whichever key was active for that vendor (LLM_REGISTRY.md §6) — the user re-adds or activates another from the Cloud AI Settings key list.
 
 ```json
 { "type": "api_key.revoke", "vendor": "anthropic" }
@@ -786,7 +827,7 @@ Response:
 
 ### 7.5 `config.reload` — apply settings.json changes
 
-Tells the server to re-read `settings.json` (user + project layers). The primary use is model switching: the VSIX edits the `models` map in `<project>/.kodo/settings.json` and sends this message; the engine resolves the new active plugin on its next dispatch (settings are read fresh per call). It also carries `mode` (local/cloud) changes.
+Tells the server to re-read `~/.kodo/etc/settings.json`. The primary use is model switching: the VSIX edits `mode`, `active_cloud_vendor`, and/or the `models` map and sends this message; the engine resolves the new active plugin on its next dispatch (settings are read fresh per call).
 
 ```json
 { "type": "config.reload" }
@@ -798,18 +839,33 @@ Response:
 { "type": "config.reload.ack" }
 ```
 
-The full `models` schema is documented in [SETTINGS.md](SETTINGS.md) §2.2. **Model registration** is just adding an entry to that dict and sending `config.reload`; there is no separate registration message.
+The full `mode`/`active_cloud_vendor`/`models` schema is documented in [SETTINGS.md](SETTINGS.md) §2.2 and [LLM_REGISTRY.md](LLM_REGISTRY.md) §5. Cloud vendor/effort-tier selection (the Cloud AI Settings 2×2 panels) and local-model selection are both plain settings.json writes followed by `config.reload` — there is no dedicated WS message for either. **Adding a new cloud model** requires a code change to `kodo/llms/_cloud_registry.py` (it is 100% hardcoded); **adding a local model** is done live via the §7.6 `local_llm.add_*` commands.
 
 ### 7.6 Local-model management commands
 
-These drive the sidebar's local-LLM controls; progress/results come back as the §5.12 events, not as responses.
+These drive the Local Inference Settings webview and the sidebar's llama.cpp
+controls; progress/results come back as the §5.12/§5.12a events, not as
+responses. Full semantics (entry kinds, installed-state rules, the
+llama-server override) are in [LLM_REGISTRY.md](LLM_REGISTRY.md).
 
 ```json
 { "type": "llamacpp.install" }       // install the llama.cpp binary
-{ "type": "model.install", "name": "qwen36-27b" }   // download a GGUF model
+{ "type": "local_llm.install", "name": "qwen36-27b" }   // download a GGUF model
+{ "type": "local_llm.uninstall", "name": "qwen36-27b" } // free the downloaded GGUF, keep the entry
+{ "type": "local_llm.remove", "name": "my-model" }      // remove a custom entry (uninstalls first if needed)
+{ "type": "local_llm.add_huggingface", "name": "...", "description": "...",
+  "repo_id": "org/repo", "filename": "model.gguf" }
+{ "type": "local_llm.add_file", "name": "...", "description": "...", "path": "/abs/model.gguf" }
+{ "type": "local_llm.add_server_url", "name": "...", "description": "...", "url": "http://host:port" }
+{ "type": "llama_server_override.set", "path": "/usr/local/bin/llama-server-cuda" }
+{ "type": "llama_server_override.remove" }
 { "type": "llama.start" }            // start (or restart) llama-server for the active model
 { "type": "llama.stop" }             // stop llama-server
 ```
+
+`llama.start` on a `custom_server_url` active entry stops kodo's own
+llama-server (if running) and reports `llama.state {running: false}` — it
+does not start a process for that entry (see §5.12).
 
 ### 7.7 ⟪planned⟫ — security rules, credential push
 

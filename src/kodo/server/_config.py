@@ -1,9 +1,9 @@
 """CLI argument parsing and settings for the singleton Kōdo server.
 
 The server is a machine-wide singleton rooted at the global home ``~/.kodo``.
-Settings live in a single ``~/.kodo/settings.json`` (no per-workspace layering —
-there is no per-workspace state any more).  Compiled-in defaults fill any
-missing keys.
+Settings live in a single ``~/.kodo/etc/settings.json`` (no per-workspace
+layering — there is no per-workspace state any more).  Compiled-in defaults
+fill any missing keys.
 """
 
 from __future__ import annotations
@@ -24,16 +24,25 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
     "log_level": "INFO",
     "mode": "local",
     "cloud_concurrency": 2,
+    # The active cloud vendor when mode=="cloud" — selects which sub-map of
+    # models.cloud below is used to resolve a capability. See doc/LLM_REGISTRY.md.
+    "active_cloud_vendor": "anthropic",
     # NOTE: the main-context token budget is no longer a global setting. It is
     # the *current model's* context window (the per-model `context_window` in
-    # kodo/llms/_registry.py), so switching models changes the limit and the
-    # auto-compaction threshold. See ContextCompactor.context_limit
-    # (runtime/_engine/_compaction.py) and doc/STATE_AND_LIFECYCLE.md §4.5.
+    # kodo/llms/_cloud_registry.py or kodo/llms/_local_registry.py), so
+    # switching models changes the limit and the auto-compaction threshold.
+    # See ContextCompactor.context_limit (runtime/_engine/_compaction.py) and
+    # doc/STATE_AND_LIFECYCLE.md §4.5.
     "models": {
-        "high": "claude-opus-4-6",
-        "medium": "claude-sonnet-4-6",
-        "low": "claude-haiku-4-5",
-        "local": "llamacpp-qwen36-27b",
+        "local": "llamacpp-qwen36-27b-q4-k-xl",
+        "cloud": {
+            "anthropic": {
+                "low": "claude-haiku-4-5-20251001",
+                "medium": "claude-sonnet-5",
+                "high": "claude-opus-4-8",
+                "max": "claude-fable-5",
+            },
+        },
     },
 }
 
@@ -80,7 +89,7 @@ class Config:
             default=None,  # None = not explicitly set; settings file wins over built-in default
             choices=["DEBUG", "INFO", "WARNING", "ERROR"],
             metavar="LEVEL",
-            help=f"Logging level (default: {_DEFAULT_LOG_LEVEL}; overrides settings.json).",
+            help=f"Logging level (default: {_DEFAULT_LOG_LEVEL}; overrides etc/settings.json).",
         )
         args = parser.parse_args(argv)
 
@@ -105,7 +114,7 @@ class Config:
 
 
 def _ensure_user_settings() -> None:
-    """Write ``~/.kodo/settings.json`` with defaults if it does not exist."""
+    """Write ``~/.kodo/etc/settings.json`` with defaults if it does not exist."""
     path = WorkspaceLayout().settings_json
     if path.exists():
         return
@@ -115,7 +124,7 @@ def _ensure_user_settings() -> None:
 
 
 def _load_settings() -> dict[str, object]:
-    """Load the single global ``~/.kodo/settings.json`` over compiled defaults.
+    """Load the single global ``~/.kodo/etc/settings.json`` over compiled defaults.
 
     Returns:
         dict[str, object]: Merged settings (defaults overridden by the file).

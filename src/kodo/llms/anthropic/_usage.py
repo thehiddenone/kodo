@@ -7,11 +7,15 @@ from kodo.llms._interface import Usage
 __all__ = ["compute_cost"]
 
 # Pricing table: (input, output, cache_write, cache_read) USD per million tokens.
-# Keyed by model name prefix; first prefix match wins.
+# Keyed by model name prefix; first prefix match wins. Prefixes are version-
+# agnostic (family only) so a new version of an existing family (e.g.
+# claude-sonnet-5) is priced correctly without a table update.
 _PRICING: list[tuple[str, tuple[float, float, float, float]]] = [
-    ("claude-opus-4", (15.0, 75.0, 18.75, 1.50)),
-    ("claude-sonnet-4", (3.0, 15.0, 3.75, 0.30)),
-    ("claude-haiku-4", (0.80, 4.0, 1.0, 0.08)),
+    ("claude-opus", (15.0, 75.0, 18.75, 1.50)),
+    ("claude-sonnet", (3.0, 15.0, 3.75, 0.30)),
+    ("claude-haiku", (0.80, 4.0, 1.0, 0.08)),
+    # Fable is the max-effort tier — priced at Opus-tier rates.
+    ("claude-fable", (15.0, 75.0, 18.75, 1.50)),
     # Fallback for any other claude-* variant — use Sonnet-tier pricing
     ("claude", (3.0, 15.0, 3.75, 0.30)),
 ]

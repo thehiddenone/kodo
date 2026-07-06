@@ -1,5 +1,13 @@
 """LLM plugin interfaces and Anthropic implementation."""
 
+from ._cloud_registry import (
+    CloudLLMEntry,
+    get_cloud_entry,
+    get_cloud_registry,
+    get_cloud_vendor_display_name,
+    get_cloud_vendor_module,
+)
+from ._context import get_context_window
 from ._gateway import EventSink, LLMGateway, LLMRouting
 from ._interface import (
     LLMPlugin,
@@ -15,17 +23,26 @@ from ._interface import (
     TurnEnd,
     Usage,
 )
+from ._local_registry import (
+    LocalLLMEntry,
+    add_local_entry,
+    clear_llama_server_override_path,
+    get_llama_server_override_path,
+    get_local_registry,
+    remove_local_entry,
+    set_llama_server_override_path,
+)
 from ._logger import LoggingLLMPlugin
-from ._registry import LLMEntry, get_context_window, get_llm_registry
 from ._sanitize import strip_kodo_callouts
 from ._tool_logger import ToolCallLogger
 
 __all__ = [
+    "CloudLLMEntry",
     "EventSink",
-    "LLMEntry",
     "LLMGateway",
     "LLMPlugin",
     "LLMRouting",
+    "LocalLLMEntry",
     "LoggingLLMPlugin",
     "Message",
     "RateLimited",
@@ -39,7 +56,16 @@ __all__ = [
     "ToolCallArgDelta",
     "ToolCallEvent",
     "TurnEnd",
+    "add_local_entry",
+    "clear_llama_server_override_path",
+    "get_cloud_entry",
+    "get_cloud_registry",
+    "get_cloud_vendor_display_name",
+    "get_cloud_vendor_module",
     "get_context_window",
-    "get_llm_registry",
+    "get_llama_server_override_path",
+    "get_local_registry",
+    "remove_local_entry",
+    "set_llama_server_override_path",
     "strip_kodo_callouts",
 ]

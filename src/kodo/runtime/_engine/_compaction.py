@@ -31,6 +31,7 @@ from kodo.llms import (
     get_context_window,
     strip_kodo_callouts,
 )
+from kodo.project import kodo_user_dir
 from kodo.state import TransientStore
 from kodo.subagents import AgentRegistry, SubAgent
 from kodo.transport import EVT_CONTEXT_COMPACTED
@@ -205,7 +206,8 @@ class ContextCompactor:
         compaction threshold follow it on the next stats emission (or
         immediately, via ``handle_config_changed``).
         """
-        return get_context_window(self._host._resolve_model_key(self._host._entry_capability()))
+        model_key = self._host._resolve_model_key(self._host._entry_capability())
+        return get_context_window(model_key, kodo_user_dir())
 
     def can_compact(self) -> bool:
         """True when a manual compaction would be honoured right now.
@@ -273,7 +275,7 @@ class ContextCompactor:
         new_key = self._host._resolve_model_key(self._host._entry_capability())
         old_key = self._active_model_key
         if old_key is not None and new_key != old_key:
-            new_limit = get_context_window(new_key)
+            new_limit = get_context_window(new_key, kodo_user_dir())
             if self._context_tokens > new_limit and self.can_compact():
                 _log.info(
                     "Model switch %s → %s shrinks context window to %d < %d live tokens "

@@ -31,7 +31,7 @@ from kodo.llms import (
     ToolSpec,
     TurnEnd,
     Usage,
-    get_llm_registry,
+    get_local_registry,
     strip_kodo_callouts,
 )
 from kodo.transport import EVT_LLAMA_STATE
@@ -337,8 +337,28 @@ class LlamaPlugin(LLMPlugin):
     # ------------------------------------------------------------------
 
     async def __ensure_running(self, model_name: str) -> None:
+        registry = get_local_registry(self.__kodo_dir)
+        entry = registry.get(model_name)
+
+        if entry is not None and entry.kind == "custom_server_url":
+            # Externally-managed server: stop kodo's own managed process (if
+            # any) and never start one — it stays stopped until the user picks
+            # a kodo-managed local model again (see doc/LLM_REGISTRY.md).
+            managed = LlamaServer.get_active_llama_server()
+            if managed is not None and managed.is_running:
+                await managed.stop()
+                await self.__sink.send(
+                    Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "model": None})
+                )
+            self.__client = openai.AsyncOpenAI(
+                api_key=_API_KEY,
+                base_url=f"{entry.url}/v1",
+                default_headers=_NO_COMPRESSION_HEADERS,
+            )
+            return
+
         server = LlamaServer.get_active_llama_server()
-        if server is not None and server.is_running:
+        if server is not None and server.is_running and server.model_name == model_name:
             if self.__client is None:
                 self.__client = openai.AsyncOpenAI(
                     api_key=_API_KEY,
@@ -351,12 +371,17 @@ class LlamaPlugin(LLMPlugin):
             Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "starting": True})
         )
 
-        registry = get_llm_registry()
-        entry = registry.get(model_name)
-        llama_args = entry.llama_args if entry is not None else {}
+        if entry is None:
+            error = f"Unknown local model: {model_name!r}"
+            await self.__sink.send(
+                Envelope.make_event(
+                    EVT_LLAMA_STATE, {"running": False, "model": None, "error": error}
+                )
+            )
+            raise RuntimeError(error)
 
         try:
-            server = await ensure_llama_running(model_name, self.__kodo_dir, llama_args=llama_args)
+            server = await ensure_llama_running(entry, self.__kodo_dir)
         except Exception as exc:
             await self.__sink.send(
                 Envelope.make_event(

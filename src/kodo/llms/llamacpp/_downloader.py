@@ -5,7 +5,7 @@ model cache directory, then records the installed path in a JSON index so
 other components can locate the file without re-scanning the filesystem.
 
 The cache directory defaults to ``~/.kodo/llama.cpp/models`` and can be
-overridden by setting ``llm_models_dir`` in ``~/.kodo/settings.json``.
+overridden by setting ``llm_models_dir`` in ``~/.kodo/etc/settings.json``.
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ from typing import cast
 
 import huggingface_hub
 
-from kodo.llms import LLMEntry
+from kodo.llms import LocalLLMEntry
 
-__all__ = ["download_model", "get_model_path"]
+__all__ = ["delete_model", "download_model", "get_model_path"]
 
 ProgressCb = Callable[[int, str], None]
 
@@ -32,8 +32,8 @@ _INDEX_FILE = "local-llm-index.json"
 def _models_dir(kodo_dir: Path) -> Path:
     """Return the directory where GGUF model files are stored.
 
-    Reads ``llm_models_dir`` from ``kodo_dir/settings.json``; falls back to
-    ``kodo_dir/llama.cpp/models``.
+    Reads ``llm_models_dir`` from ``kodo_dir/etc/settings.json``; falls back
+    to ``kodo_dir/llama.cpp/models``.
 
     Args:
         kodo_dir (Path): User-level ``~/.kodo`` directory.
@@ -41,7 +41,7 @@ def _models_dir(kodo_dir: Path) -> Path:
     Returns:
         Path: Directory for model files.
     """
-    settings_file = kodo_dir / "settings.json"
+    settings_file = kodo_dir / "etc" / "settings.json"
     if settings_file.is_file():
         try:
             parsed = json.loads(settings_file.read_text(encoding="utf-8"))
@@ -53,7 +53,7 @@ def _models_dir(kodo_dir: Path) -> Path:
 
 
 def _read_index(kodo_dir: Path) -> dict[str, str]:
-    index_file = kodo_dir / _INDEX_FILE
+    index_file = kodo_dir / "etc" / _INDEX_FILE
     if index_file.is_file():
         parsed = json.loads(index_file.read_text(encoding="utf-8"))
         if not isinstance(parsed, dict):
@@ -63,30 +63,33 @@ def _read_index(kodo_dir: Path) -> dict[str, str]:
 
 
 def _write_index(kodo_dir: Path, index: dict[str, str]) -> None:
-    index_file = kodo_dir / _INDEX_FILE
+    index_file = kodo_dir / "etc" / _INDEX_FILE
+    index_file.parent.mkdir(parents=True, exist_ok=True)
     index_file.write_text(json.dumps(index, indent=2), encoding="utf-8")
 
 
 def download_model(
-    model: LLMEntry,
+    model: LocalLLMEntry,
     kodo_dir: Path,
     *,
     progress_cb: ProgressCb | None = None,
 ) -> Path:
     """Download a GGUF model file from HuggingFace Hub.
 
-    Delegates to :func:`huggingface_hub.hf_hub_download`, which handles
-    resumable downloads, integrity verification, and caching.  Subsequent
-    calls with the same *model* skip the network round-trip and return the
-    cached path.  The resolved path is recorded in ``~/.kodo/local-llm-index.json``
-    keyed by the model's registry name.
+    Works for both ``hardcoded_hf`` and ``custom_hf`` entries — they share the
+    same ``repo_id``/``filename`` shape.  Delegates to
+    :func:`huggingface_hub.hf_hub_download`, which handles resumable
+    downloads, integrity verification, and caching.  Subsequent calls with the
+    same *model* skip the network round-trip and return the cached path.  The
+    resolved path is recorded in ``~/.kodo/etc/local-llm-index.json`` keyed by
+    the model's registry name.
 
     Progress is reported via *progress_cb* as ``(percent: int, message: str)``
     calls.  ``percent == 100`` signals success; ``percent == -1`` signals an
     error (the message contains the reason).
 
     Args:
-        model (LLMEntry): Registry entry for the model to download.
+        model (LocalLLMEntry): Registry entry for the model to download.
         kodo_dir (Path): User-level ``~/.kodo`` directory.
         progress_cb (ProgressCb | None): Optional progress callback.
 
@@ -94,7 +97,8 @@ def download_model(
         Path: Local path to the downloaded ``.gguf`` file.
 
     Raises:
-        ValueError: If *model* has no ``repo_id`` or ``filename`` (i.e. not local).
+        ValueError: If *model* has no ``repo_id`` or ``filename`` (i.e. not
+            an HF-backed kind).
     """
 
     def _progress(pct: int, msg: str) -> None:
@@ -135,6 +139,43 @@ def download_model(
         raise
     except Exception as exc:
         raise _fail(f"Download failed: {exc}") from exc
+
+
+def delete_model(name: str, kodo_dir: Path) -> None:
+    """Uninstall a downloaded GGUF, freeing disk space, and drop it from the index.
+
+    Uses :mod:`huggingface_hub`'s cache utilities to actually delete the
+    cached blob (a plain file delete would leave HF's dedup cache holding the
+    same bytes), then removes the index entry.  A no-op if *name* is not
+    installed.
+
+    Args:
+        name (str): Registry name of the model to uninstall.
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
+    """
+    index = _read_index(kodo_dir)
+    raw = index.get(name)
+    if raw is None:
+        return
+
+    dest_dir = _models_dir(kodo_dir)
+    try:
+        cache_info = huggingface_hub.scan_cache_dir(cache_dir=dest_dir)
+        target = Path(raw).resolve()
+        revision_hashes = {
+            revision.commit_hash
+            for repo in cache_info.repos
+            for revision in repo.revisions
+            if any(Path(file.file_path).resolve() == target for file in revision.files)
+        }
+        if revision_hashes:
+            cache_info.delete_revisions(*revision_hashes).execute()
+    except Exception:
+        _log.warning("Could not evict HF cache blob for %r — removing index entry only", name)
+
+    del index[name]
+    _write_index(kodo_dir, index)
+    _log.info("Uninstalled model %r", name)
 
 
 def get_model_path(name: str, kodo_dir: Path) -> Path | None:

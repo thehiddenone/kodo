@@ -49,8 +49,9 @@ class SubAgent:
             sub-agents, and the engine enforces the allow-list at dispatch time.
         system_prompt: Full system prompt body.
         source_path: Absolute path to the source ``.md`` file.
-        capability: Preferred LLM capability tier — ``'high'``, ``'medium'``,
-            or ``'low'``.  Defaults to ``'medium'`` when not set in frontmatter.
+        capability: Preferred LLM capability tier — ``'max'``, ``'high'``,
+            ``'medium'``, or ``'low'``.  Defaults to ``'medium'`` when not set
+            in frontmatter.
         display_name: User-friendly name shown in the UI (e.g. in subsession
             takeover dividers). Falls back to a title-cased ``name`` when the
             frontmatter does not set ``display_name``.
@@ -156,7 +157,7 @@ def load_agent(path: Path) -> SubAgent:
 
     capability_raw = fm_dict.get("capability", "medium")
     capability = str(capability_raw) if isinstance(capability_raw, str) else "medium"
-    if capability not in ("high", "medium", "low"):
+    if capability not in ("max", "high", "medium", "low"):
         capability = "medium"
 
     display_raw = fm_dict.get("display_name")

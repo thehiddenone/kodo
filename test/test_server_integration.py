@@ -125,7 +125,8 @@ async def test_control_hello_creates_no_session(server: TestServer) -> None:
         assert resp.payload["type"] == "hello.ack"
         assert resp.payload["role"] == "control"
         assert "session_id" not in resp.payload  # no session was minted
-        assert "models" in resp.payload  # window-global llama/model snapshot
+        assert "cloud_registry" in resp.payload  # window-global llama/model snapshot
+        assert "local_registry" in resp.payload
         # The control connection did not create any session.
         list_req = _make_request("session.list")
         await c.send_str(list_req.to_json())

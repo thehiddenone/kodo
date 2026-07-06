@@ -574,7 +574,7 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
     async def handle_config_changed(self) -> None:
         """React to a window-global settings change (e.g. a model switch).
 
-        The model selection lives in the singleton's ``~/.kodo/settings.json`` and
+        The model selection lives in the singleton's ``~/.kodo/etc/settings.json`` and
         is read fresh per turn, so a switch normally takes effect lazily. This
         hook (fired by the ``config.reload`` handler for every live session) lets
         the engine act *immediately*: if the new model's context window is smaller

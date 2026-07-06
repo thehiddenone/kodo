@@ -18,10 +18,22 @@ from pathlib import Path
 from aiohttp import web
 
 from kodo.binutils import ensure_all_utils
-from kodo.llms import LLMEntry, LLMGateway, get_llm_registry
+from kodo.llms import (
+    LLMGateway,
+    LocalLLMEntry,
+    add_local_entry,
+    clear_llama_server_override_path,
+    get_cloud_registry,
+    get_cloud_vendor_display_name,
+    get_llama_server_override_path,
+    get_local_registry,
+    remove_local_entry,
+    set_llama_server_override_path,
+)
 from kodo.llms.llamacpp import (
     LlamaServer,
     LlamaServerConfig,
+    delete_model,
     download_model,
     ensure_llama_running,
     find_installed,
@@ -33,9 +45,11 @@ from kodo.project import ProjectLayoutError, WorkspaceLayout, kodo_user_dir
 from kodo.runtime import CheckpointState, MirrorDirtyError
 from kodo.subagents import AgentRegistry
 from kodo.transport import (
+    EVT_ERROR,
     EVT_LLAMA_STATE,
     EVT_LLAMACPP_INSTALL_PROGRESS,
-    EVT_MODEL_INSTALL_PROGRESS,
+    EVT_LOCAL_LLM_INSTALL_PROGRESS,
+    EVT_LOCAL_LLM_REGISTRY_STATE,
     MSG_CHECKPOINT_LIST,
     MSG_CHECKPOINT_REDO,
     MSG_CHECKPOINT_ROLL_FORWARD,
@@ -46,11 +60,18 @@ from kodo.transport import (
     MSG_CONFIG_RELOAD,
     MSG_EDIT_CONTROL_SET,
     MSG_HELLO,
+    MSG_LLAMA_SERVER_OVERRIDE_REMOVE,
+    MSG_LLAMA_SERVER_OVERRIDE_SET,
     MSG_LLAMA_START,
     MSG_LLAMA_STOP,
     MSG_LLAMACPP_INSTALL,
+    MSG_LOCAL_LLM_ADD_FILE,
+    MSG_LOCAL_LLM_ADD_HUGGINGFACE,
+    MSG_LOCAL_LLM_ADD_SERVER_URL,
+    MSG_LOCAL_LLM_INSTALL,
+    MSG_LOCAL_LLM_REMOVE,
+    MSG_LOCAL_LLM_UNINSTALL,
     MSG_MODE_SET,
-    MSG_MODEL_INSTALL,
     MSG_PROJECT_CREATE,
     MSG_PROJECT_SET,
     MSG_PROMPT_SUBMIT,
@@ -132,29 +153,40 @@ async def _require_session(req: Request) -> Session | None:
 # ------------------------------------------------------------------
 
 
-async def _handle_hello(req: Request) -> None:
-    payload = req.env.payload
-    window_id = str(payload.get("window_id") or req.connection.id)
-    role = str(payload.get("role") or "session")
+def _make_hello_handler(config: Config) -> HandlerFn:
+    async def _handle_hello(req: Request) -> None:
+        payload = req.env.payload
+        window_id = str(payload.get("window_id") or req.connection.id)
+        role = str(payload.get("role") or "session")
 
-    # A control connection (the window's sidebar) drives window-global, session-
-    # less frames only (llama / model management, session.list).  It must NOT
-    # create or bind a session — it just needs the model/llama snapshot.
-    if role == "control":
-        _log.info(
-            "Hello (control) from client=%s window=%s",
-            payload.get("client", "unknown"),
-            window_id[:8],
-        )
-        await req.reply(
-            {
-                "type": "hello.ack",
-                "role": "control",
-                "server_version": _SERVER_VERSION,
-                **_llama_payload(),
-            }
-        )
-        return
+        # A control connection (the window's sidebar) drives window-global,
+        # session-less frames only (llama / model management, session.list).
+        # It must NOT create or bind a session — it just needs the
+        # model/llama snapshot.
+        if role == "control":
+            _log.info(
+                "Hello (control) from client=%s window=%s",
+                payload.get("client", "unknown"),
+                window_id[:8],
+            )
+            await req.reply(
+                {
+                    "type": "hello.ack",
+                    "role": "control",
+                    "server_version": _SERVER_VERSION,
+                    **_llama_payload(config.reload_settings()),
+                }
+            )
+            return
+
+        await _handle_session_hello(req, config, payload, window_id)
+
+    return _handle_hello
+
+
+async def _handle_session_hello(
+    req: Request, config: Config, payload: dict[str, object], window_id: str
+) -> None:
 
     requested = str(payload.get("session_id") or "")
     _log.info(
@@ -181,7 +213,7 @@ async def _handle_hello(req: Request) -> None:
             "session_id": session.id,
             "current_project": session.engine.current_project,
             "state": session.engine.session.to_dict(),
-            **_llama_payload(),
+            **_llama_payload(config.reload_settings()),
         }
     )
 
@@ -209,24 +241,65 @@ async def _handle_ping(req: Request) -> None:
     await req.reply({"type": "pong"})
 
 
-def _llama_payload() -> dict[str, object]:
-    llm_registry = get_llm_registry()
-    models_payload = [
+def _local_entry_installed(entry: LocalLLMEntry, kodo_dir: Path) -> bool:
+    if entry.kind == "custom_server_url":
+        return True
+    if entry.kind == "custom_file":
+        return Path(entry.path).is_file()
+    return get_model_path(entry.name, kodo_dir) is not None
+
+
+def _local_registry_payload() -> dict[str, object]:
+    """The ``{local_registry, llama_server_override_path}`` shape shared by
+    ``hello.ack`` and every ``local_llm.registry_state`` event."""
+    kodo_dir = kodo_user_dir()
+    registry = get_local_registry(kodo_dir)
+    local_payload = [
         {
             "name": e.name,
-            "residence": e.residence,
+            "kind": e.kind,
             "description": e.description,
-            "model_id": e.model_id,
             "repo_id": e.repo_id,
             "filename": e.filename,
+            "path": e.path,
+            "url": e.url,
+            "installed": _local_entry_installed(e, kodo_dir),
         }
-        for e in llm_registry.values()
+        for e in registry.values()
     ]
+    return {
+        "local_registry": local_payload,
+        "llama_server_override_path": get_llama_server_override_path(kodo_dir),
+    }
+
+
+def _cloud_registry_payload() -> dict[str, object]:
+    return {
+        vendor: {
+            "display_name": get_cloud_vendor_display_name(vendor),
+            "models": [
+                {
+                    "model_id": m.model_id,
+                    "name": m.name,
+                    "description": m.description,
+                    "context_window": m.context_window,
+                }
+                for m in models
+            ],
+        }
+        for vendor, models in get_cloud_registry().items()
+    }
+
+
+def _llama_payload(settings: dict[str, object] | None = None) -> dict[str, object]:
     llama = find_installed(kodo_user_dir())
     active = LlamaServer.get_active_llama_server()
     llama_is_running = active is not None and active.is_running
+    active_vendor = str((settings or {}).get("active_cloud_vendor", "anthropic"))
     return {
-        "models": models_payload,
+        "cloud_registry": _cloud_registry_payload(),
+        "active_cloud_vendor": active_vendor,
+        **_local_registry_payload(),
         "llama_installed": llama is not None,
         "llama_version": f"b{llama.build}" if llama is not None else None,
         "llama_running": llama_is_running,
@@ -549,17 +622,17 @@ async def _handle_llamacpp_install(req: Request) -> None:
         )
 
 
-async def _handle_model_install(req: Request) -> None:
+async def _handle_local_llm_install(req: Request) -> None:
     name = str(req.env.payload.get("name", "")).strip()
     if not name:
         return
-    registry = get_llm_registry()
-    entry: LLMEntry | None = registry.get(name)
-    if entry is None or entry.residence != "local":
+    registry = get_local_registry(kodo_user_dir())
+    entry = registry.get(name)
+    if entry is None or entry.kind not in ("hardcoded_hf", "custom_hf"):
+        message = f"Unknown or non-downloadable model: {name!r}"
         await req.connection.send(
             Envelope.make_event(
-                EVT_MODEL_INSTALL_PROGRESS,
-                {"name": name, "percent": -1, "message": f"Unknown local model: {name!r}"},
+                EVT_LOCAL_LLM_INSTALL_PROGRESS, {"name": name, "percent": -1, "message": message}
             )
         )
         return
@@ -586,9 +659,119 @@ async def _handle_model_install(req: Request) -> None:
         pct, msg = item
         await req.connection.send(
             Envelope.make_event(
-                EVT_MODEL_INSTALL_PROGRESS, {"name": name, "percent": pct, "message": msg}
+                EVT_LOCAL_LLM_INSTALL_PROGRESS, {"name": name, "percent": pct, "message": msg}
             )
         )
+    await _send_registry_state(req)
+
+
+async def _handle_local_llm_uninstall(req: Request) -> None:
+    name = str(req.env.payload.get("name", "")).strip()
+    if name:
+        await asyncio.to_thread(delete_model, name, kodo_user_dir())
+    await _send_registry_state(req)
+
+
+async def _send_registry_state(req: Request) -> None:
+    await req.connection.send(
+        Envelope.make_event(EVT_LOCAL_LLM_REGISTRY_STATE, _local_registry_payload())
+    )
+
+
+async def _reply_local_llm_error(req: Request, message: str) -> None:
+    await req.connection.send(
+        Envelope.make_event(
+            EVT_ERROR, {"code": "local_llm_error", "message": message, "recoverable": True}
+        )
+    )
+
+
+async def _handle_local_llm_add_huggingface(req: Request) -> None:
+    payload = req.env.payload
+    entry = LocalLLMEntry(
+        name=str(payload.get("name", "")).strip(),
+        kind="custom_hf",
+        description=str(payload.get("description", "")),
+        repo_id=str(payload.get("repo_id", "")).strip(),
+        filename=str(payload.get("filename", "")).strip(),
+    )
+    if not entry.name or not entry.repo_id or not entry.filename:
+        await _reply_local_llm_error(req, "name, repo_id, and filename are all required")
+        return
+    try:
+        add_local_entry(kodo_user_dir(), entry)
+    except ValueError as exc:
+        await _reply_local_llm_error(req, str(exc))
+        return
+    await _send_registry_state(req)
+
+
+async def _handle_local_llm_add_file(req: Request) -> None:
+    payload = req.env.payload
+    entry = LocalLLMEntry(
+        name=str(payload.get("name", "")).strip(),
+        kind="custom_file",
+        description=str(payload.get("description", "")),
+        path=str(payload.get("path", "")).strip(),
+    )
+    if not entry.name or not entry.path:
+        await _reply_local_llm_error(req, "name and path are both required")
+        return
+    try:
+        add_local_entry(kodo_user_dir(), entry)
+    except ValueError as exc:
+        await _reply_local_llm_error(req, str(exc))
+        return
+    await _send_registry_state(req)
+
+
+async def _handle_local_llm_add_server_url(req: Request) -> None:
+    payload = req.env.payload
+    entry = LocalLLMEntry(
+        name=str(payload.get("name", "")).strip(),
+        kind="custom_server_url",
+        description=str(payload.get("description", "")),
+        url=str(payload.get("url", "")).strip(),
+    )
+    if not entry.name or not entry.url:
+        await _reply_local_llm_error(req, "name and url are both required")
+        return
+    try:
+        add_local_entry(kodo_user_dir(), entry)
+    except ValueError as exc:
+        await _reply_local_llm_error(req, str(exc))
+        return
+    await _send_registry_state(req)
+
+
+async def _handle_local_llm_remove(req: Request) -> None:
+    name = str(req.env.payload.get("name", "")).strip()
+    kodo_dir = kodo_user_dir()
+    try:
+        entry = get_local_registry(kodo_dir).get(name)
+        is_downloadable = entry is not None and entry.kind in ("hardcoded_hf", "custom_hf")
+        if is_downloadable and get_model_path(name, kodo_dir) is not None:
+            await asyncio.to_thread(delete_model, name, kodo_dir)
+        remove_local_entry(kodo_dir, name)
+    except ValueError as exc:
+        await _reply_local_llm_error(req, str(exc))
+        return
+    await _send_registry_state(req)
+
+
+async def _handle_llama_server_override_set(req: Request) -> None:
+    path = str(req.env.payload.get("path", "")).strip()
+    try:
+        set_llama_server_override_path(kodo_user_dir(), path)
+    except ValueError as exc:
+        await _reply_local_llm_error(req, str(exc))
+        return
+    await _send_registry_state(req)
+
+
+async def _handle_llama_server_override_remove(req: Request) -> None:
+    clear_llama_server_override_path(kodo_user_dir())
+    await _send_registry_state(req)
 
 
 def _make_llama_start_handler(config: Config) -> HandlerFn:
@@ -605,11 +788,31 @@ def _make_llama_start_handler(config: Config) -> HandlerFn:
                 )
             )
             return
-        registry = get_llm_registry()
-        entry: LLMEntry | None = registry.get(model_name)
-        llama_args = entry.llama_args if entry is not None else {}
+        registry = get_local_registry(user_dir)
+        entry = registry.get(model_name)
+        if entry is None:
+            error = f"Unknown local model: {model_name!r}"
+            await req.connection.send(
+                Envelope.make_event(
+                    EVT_LLAMA_STATE, {"running": False, "model": None, "error": error}
+                )
+            )
+            return
+
+        if entry.kind == "custom_server_url":
+            # Not managed by kodo — stop our own server (if any) and report it
+            # stopped; the plugin itself points its client at entry.url on the
+            # next dispatch (see LlamaPlugin.__ensure_running).
+            managed = LlamaServer.get_active_llama_server()
+            if managed is not None and managed.is_running:
+                await managed.stop()
+            await req.connection.send(
+                Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "model": None})
+            )
+            return
+
         try:
-            server = await ensure_llama_running(model_name, user_dir, llama_args=llama_args)
+            server = await ensure_llama_running(entry, user_dir)
         except Exception as exc:  # noqa: BLE001
             await req.connection.send(
                 Envelope.make_event(
@@ -704,7 +907,7 @@ def create_app(config: Config) -> web.Application:
     )
     conn_registry = ConnectionRegistry(manager)
 
-    conn_registry.register_handler(MSG_HELLO, _handle_hello)
+    conn_registry.register_handler(MSG_HELLO, _make_hello_handler(config))
     conn_registry.register_handler(MSG_SESSION_LIST, _handle_session_list)
     conn_registry.register_handler(MSG_SESSION_RELEASE, _handle_session_release)
     conn_registry.register_handler(MSG_SESSION_DELETE, _handle_session_delete)
@@ -725,7 +928,16 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_CHECKPOINT_LIST, _handle_checkpoint_list)
     conn_registry.register_handler(MSG_CONFIG_RELOAD, _make_config_reload_handler(config))
     conn_registry.register_handler(MSG_LLAMACPP_INSTALL, _handle_llamacpp_install)
-    conn_registry.register_handler(MSG_MODEL_INSTALL, _handle_model_install)
+    conn_registry.register_handler(MSG_LOCAL_LLM_INSTALL, _handle_local_llm_install)
+    conn_registry.register_handler(MSG_LOCAL_LLM_UNINSTALL, _handle_local_llm_uninstall)
+    conn_registry.register_handler(MSG_LOCAL_LLM_REMOVE, _handle_local_llm_remove)
+    conn_registry.register_handler(MSG_LOCAL_LLM_ADD_HUGGINGFACE, _handle_local_llm_add_huggingface)
+    conn_registry.register_handler(MSG_LOCAL_LLM_ADD_FILE, _handle_local_llm_add_file)
+    conn_registry.register_handler(MSG_LOCAL_LLM_ADD_SERVER_URL, _handle_local_llm_add_server_url)
+    conn_registry.register_handler(MSG_LLAMA_SERVER_OVERRIDE_SET, _handle_llama_server_override_set)
+    conn_registry.register_handler(
+        MSG_LLAMA_SERVER_OVERRIDE_REMOVE, _handle_llama_server_override_remove
+    )
     conn_registry.register_handler(MSG_LLAMA_START, _make_llama_start_handler(config))
     conn_registry.register_handler(MSG_LLAMA_STOP, _handle_llama_stop)
 

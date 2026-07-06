@@ -1,7 +1,7 @@
 """Behavior tests for kodo.server._config.Config.
 
 The server is a machine-wide singleton rooted at ``~/.kodo``; ``from_args`` takes
-no ``--workspace`` and loads a single ``~/.kodo/settings.json``.  Tests redirect
+no ``--workspace`` and loads a single ``~/.kodo/etc/settings.json``.  Tests redirect
 ``HOME`` to a temp dir so they never touch the real user settings.
 """
 
@@ -23,9 +23,9 @@ def _temp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _write_settings(home: Path, settings: dict[str, object]) -> None:
-    kodo_dir = home / ".kodo"
-    kodo_dir.mkdir(exist_ok=True)
-    (kodo_dir / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    etc_dir = home / ".kodo" / "etc"
+    etc_dir.mkdir(parents=True, exist_ok=True)
+    (etc_dir / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ def test_from_args_custom_log_level() -> None:
 
 
 # ---------------------------------------------------------------------------
-# settings file (single ~/.kodo/settings.json)
+# settings file (single ~/.kodo/etc/settings.json)
 # ---------------------------------------------------------------------------
 
 
@@ -65,9 +65,9 @@ def test_settings_override_log_level(_temp_home: Path) -> None:
 
 
 def test_invalid_settings_json_does_not_crash(_temp_home: Path) -> None:
-    kodo_dir = _temp_home / ".kodo"
-    kodo_dir.mkdir()
-    (kodo_dir / "settings.json").write_text("{broken}", encoding="utf-8")
+    etc_dir = _temp_home / ".kodo" / "etc"
+    etc_dir.mkdir(parents=True)
+    (etc_dir / "settings.json").write_text("{broken}", encoding="utf-8")
     # Falls back to compiled defaults rather than raising.
     assert Config.from_args([]).port == 9042
 

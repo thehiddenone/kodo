@@ -25,7 +25,9 @@ from kodo.llms import (
     TokenDelta,
     ToolCallEvent,
     TurnEnd,
-    get_llm_registry,
+    get_cloud_registry,
+    get_cloud_vendor_module,
+    get_local_registry,
 )
 from kodo.llms.anthropic import ClaudePlugin
 from kodo.llms.llamacpp import LlamaPlugin
@@ -35,6 +37,14 @@ from kodo.tools import ToolDispatcher, tools_for_agent
 
 from ._proto import EngineHost
 from ._shared import _GUIDE_AGENT_NAME, _PROBLEM_SOLVER_AGENT_NAME
+
+
+def _find_cloud_vendor_for_model_id(model_id: str) -> str | None:
+    """Return the vendor key whose hardcoded registry contains *model_id*."""
+    for vendor, models in get_cloud_registry().items():
+        if any(m.model_id == model_id for m in models):
+            return vendor
+    return None
 
 
 class LLMPlumbingMixin:
@@ -50,14 +60,16 @@ class LLMPlumbingMixin:
         Pure settings lookup (no plugin construction, no key request), so it is
         safe to call synchronously from the context-limit/auto-compaction paths.
         In ``local`` mode every capability maps to the single selected local
-        model; otherwise the per-capability cloud model is used (falling back to
-        the ``medium`` entry, then the capability name itself).
+        model; otherwise the per-vendor, per-capability cloud model is used
+        (falling back to the vendor's ``medium`` entry, then the capability
+        name itself).
 
         Args:
-            capability: ``'high'``, ``'medium'``, or ``'low'``.
+            capability: ``'max'``, ``'high'``, ``'medium'``, or ``'low'``.
 
         Returns:
-            str: The registry key (e.g. ``'claude-opus-4-8'``).
+            str: A local registry name (local mode) or a cloud ``model_id``
+                (cloud mode).
         """
         settings = self._get_settings()
         mode = str(settings.get("mode", "cloud"))
@@ -65,46 +77,61 @@ class LLMPlumbingMixin:
         if not isinstance(models_map, dict):
             models_map = {}
         if mode == "local":
-            return str(models_map.get("local", "llamacpp-qwen36-27b"))
-        return str(models_map.get(capability, models_map.get("medium", capability)))
+            return str(models_map.get("local", "llamacpp-qwen36-27b-q4-k-xl"))
+
+        vendor = str(settings.get("active_cloud_vendor", "anthropic"))
+        cloud_map = models_map.get("cloud", {})
+        vendor_map = cloud_map.get(vendor, {}) if isinstance(cloud_map, dict) else {}
+        if not isinstance(vendor_map, dict):
+            vendor_map = {}
+        return str(vendor_map.get(capability, vendor_map.get("medium", capability)))
 
     async def _resolve_plugin(
         self: EngineHost, capability: str, force_model_key: str | None = None
     ) -> tuple[LLMPlugin, str, LLMRouting]:
         """Resolve an LLM plugin + gateway routing for *capability*.
 
-        Reads fresh settings each call.  The returned :class:`LLMRouting` tells
+        Reads fresh settings each call. The returned :class:`LLMRouting` tells
         the shared :class:`LLMGateway` which feed to schedule the request on
-        (local serial gate, or a per-vendor cloud feed).  The API key (cloud) is
+        (local serial gate, or a per-vendor cloud feed). The API key (cloud) is
         resolved here, per session — the gateway never touches keys.
 
+        Residence (local vs. cloud) is determined by registry membership of
+        the resolved key, not by the *current* ``mode`` setting — this matters
+        for ``force_model_key``, used so a model-switch compaction runs on the
+        *previous* model even if ``mode`` itself changed since that model was
+        selected (see ``ContextCompactor.handle_config_changed``).
+
         Args:
-            capability: ``'high'``, ``'medium'``, or ``'low'``.
-            force_model_key: When set, use this exact registry key instead of
-                resolving from settings — used so a model-switch compaction runs
-                on the *previous* model rather than the just-selected one.
+            capability: ``'max'``, ``'high'``, ``'medium'``, or ``'low'``.
+            force_model_key: When set, use this exact key instead of resolving
+                from settings.
 
         Returns:
             tuple[LLMPlugin, str, LLMRouting]: ``(plugin, model_id, routing)``.
 
         Raises:
-            RuntimeError: If the client rejects or cancels the key request.
+            RuntimeError: If the client rejects or cancels the key request, or
+                the resolved cloud vendor has no registered plugin.
         """
+        settings = self._get_settings()
         model_key = force_model_key or self._resolve_model_key(capability)
 
-        registry = get_llm_registry()
-        entry = registry.get(model_key)
-        module = entry.module if entry is not None else "kodo.llms.anthropic"
-
-        if module == "kodo.llms.llamacpp":
+        kodo_dir = kodo_user_dir()
+        if model_key in get_local_registry(kodo_dir):
             self._current_vendor = None
-            plugin: LLMPlugin = LlamaPlugin(sink=self._sink, kodo_dir=kodo_user_dir())
+            plugin: LLMPlugin = LlamaPlugin(sink=self._sink, kodo_dir=kodo_dir)
             routing = LLMRouting(residence="local")
             return LoggingLLMPlugin(plugin, self._llm_logs_dir()), model_key, routing
 
-        model_id = entry.model_id if entry is not None else model_key
-        vendor = module.rsplit(".", 1)[-1]
+        vendor = _find_cloud_vendor_for_model_id(model_key) or str(
+            settings.get("active_cloud_vendor", "anthropic")
+        )
         self._current_vendor = vendor
+
+        module = get_cloud_vendor_module(vendor)
+        if module != "kodo.llms.anthropic":
+            raise RuntimeError(f"Unsupported cloud vendor: {vendor!r}")
 
         key_result: ApiKey = await self._key_provider.get_key(vendor)
         if key_result.error:
@@ -112,7 +139,7 @@ class LLMPlumbingMixin:
 
         plugin = ClaudePlugin(api_key=key_result.api_key)
         routing = LLMRouting(residence="cloud", vendor=vendor)
-        return LoggingLLMPlugin(plugin, self._llm_logs_dir()), model_id, routing
+        return LoggingLLMPlugin(plugin, self._llm_logs_dir()), model_key, routing
 
     def _llm_logs_dir(self: EngineHost) -> Path:
         """Per-session LLM request/response log dir (sessions never share one).
