@@ -236,7 +236,11 @@ class ToolDispatcher:
         return self.__ctx.returned_output
 
     async def dispatch(
-        self, tool_name: str, tool_input: dict[str, object], tool_use_id: str = ""
+        self,
+        tool_name: str,
+        tool_input: dict[str, object],
+        tool_use_id: str = "",
+        recovered: bool = False,
     ) -> str:
         """Route one tool call to its handler and return a JSON-encoded result.
 
@@ -254,6 +258,11 @@ class ToolDispatcher:
             tool_use_id: The calling ``tool_use`` block's id, exposed to the
                 handler via ``ToolContext.current_tool_use_id`` (empty when the
                 caller has none).
+            recovered: ``True`` when this call was *salvaged* from a model that
+                emitted it as plain text (the tool was inferred from the
+                argument shape). Outside autonomous mode it forces a permission
+                prompt so the user can reject a wrong guess — see
+                :meth:`__security_gate` and doc/SECURITY.md §7.
 
         Returns:
             str: JSON-encoded result returned to the LLM as a tool result.
@@ -279,7 +288,7 @@ class ToolDispatcher:
                         )
                     }
                 )
-        denial = await self.__security_gate(tool_name, tool_input, tool_use_id)
+        denial = await self.__security_gate(tool_name, tool_input, tool_use_id, recovered)
         if denial is not None:
             return denial
         # run_command and web_search are the only calls the client animates a
@@ -295,28 +304,56 @@ class ToolDispatcher:
         return await tool_cls(self.__ctx).handle(tool_input)
 
     async def __security_gate(
-        self, tool_name: str, tool_input: dict[str, object], tool_use_id: str
+        self,
+        tool_name: str,
+        tool_input: dict[str, object],
+        tool_use_id: str,
+        recovered: bool = False,
     ) -> str | None:
         """Judge the call via the security layer; prompt the user on ``ask``.
 
         Returns ``None`` when dispatch may proceed (allowed outright, or the
         user granted permission), or a JSON-encoded error result when the user
         denied the call.
+
+        A *recovered* call (salvaged from a model that emitted it as plain
+        text — see :meth:`dispatch`) forces the prompt whenever the run is not
+        autonomous, regardless of the security verdict: the tool name was
+        inferred from the argument shape, so the user gets to reject a wrong
+        guess before it runs. In autonomous mode it just runs, exactly like any
+        other call the security layer would allow.
         """
         ctx = self.__ctx
-        if ctx.security is None:
-            return None
         spec = DISPATCHABLE_TOOLS_BY_NAME[tool_name]
-        decision = await ctx.security.evaluate(
-            tool_name=tool_name,
-            tool_input=tool_input,
-            command_control=ctx.session.command_control,
-            autonomous=ctx.session.effective_autonomous,
-            default_cwd=str(ctx.resolver.default_cwd),
-            roots=tuple(rp.path for rp in ctx.root_paths),
-        )
-        if decision.action != "ask":
+        force_ask = recovered and not ctx.session.effective_autonomous
+
+        decision_action = "allow"
+        decision_reason = ""
+        if ctx.security is not None:
+            decision = await ctx.security.evaluate(
+                tool_name=tool_name,
+                tool_input=tool_input,
+                command_control=ctx.session.command_control,
+                autonomous=ctx.session.effective_autonomous,
+                default_cwd=str(ctx.resolver.default_cwd),
+                roots=tuple(rp.path for rp in ctx.root_paths),
+            )
+            decision_action = decision.action
+            decision_reason = decision.reason
+
+        if not force_ask and decision_action != "ask":
             return None
+
+        if force_ask:
+            reason = (
+                "Kōdo recovered a malformed tool call: the model emitted it as plain text "
+                "instead of a proper tool call, so the tool was inferred from the arguments "
+                "below. Review them before allowing it to run."
+            )
+            if decision_action == "ask" and decision_reason:
+                reason = f"{reason} Security also flagged it: {decision_reason}"
+        else:
+            reason = decision_reason
 
         intent_raw = tool_input.get(INTENT_KEY)
         response = await ctx.gate.fire_permission(
@@ -325,8 +362,9 @@ class ToolDispatcher:
             external_name=spec.external_name,
             risk=spec.security_impact.label,
             intent=intent_raw if isinstance(intent_raw, str) else "",
-            reason=decision.reason,
+            reason=reason,
             params=_permission_params(spec, tool_input),
+            recovered=force_ask,
         )
         if response.action == "allow":
             _log.info("security: user ALLOWED %s (%s)", tool_name, ctx.agent_name)

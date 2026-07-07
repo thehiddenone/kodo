@@ -171,6 +171,7 @@ class GateLike(Protocol):
         intent: str,
         reason: str,
         params: list[dict[str, str]],
+        recovered: bool = False,
     ) -> PermissionLike:
         """Surface a security permission prompt and block until the user decides.
 
@@ -178,7 +179,9 @@ class GateLike(Protocol):
         (``prompt.permission``, WS_PROTOCOL.md §6.5). ``params`` is the
         customer-visible parameter preview (``{"name", "value"}`` rows);
         ``risk`` is the tool's :class:`~kodo.toolspecs.SecurityImpact` label.
-        Returns the user's ``allow``/``deny`` decision plus optional feedback.
+        ``recovered`` is ``True`` when the prompt is for a salvaged
+        malformed tool call (the client renders a distinct banner). Returns the
+        user's ``allow``/``deny`` decision plus optional feedback.
         """
         ...
 

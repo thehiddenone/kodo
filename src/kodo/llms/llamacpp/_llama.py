@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -39,7 +40,7 @@ from kodo.transport import EVT_LLAMA_STATE
 from ._llama_server import LlamaServer
 from ._manager import ensure_llama_running
 
-__all__ = ["LlamaPlugin"]
+__all__ = ["LlamaPlugin", "MalformedToolCallError"]
 
 _log = logging.getLogger(__name__)
 _DEFAULT_MAX_TOKENS = 8192
@@ -238,6 +239,143 @@ class ThinkingStreamParser:
         )
         self._buffer = ""
         return [event]
+
+
+# ---------------------------------------------------------------------------
+# Stray <think> tag stripping inside thinking text
+# ---------------------------------------------------------------------------
+
+
+def _next_think_tag(text: str, start: int) -> tuple[int, str] | None:
+    """Earliest ``<think>`` or ``</think>`` in ``text`` at/after ``start``.
+
+    Returns ``(index, tag)`` for whichever comes first, or ``None`` if neither
+    appears.
+    """
+    open_at = text.find(_THINK_OPEN, start)
+    close_at = text.find(_THINK_CLOSE, start)
+    if open_at == -1 and close_at == -1:
+        return None
+    if close_at == -1 or (open_at != -1 and open_at < close_at):
+        return open_at, _THINK_OPEN
+    return close_at, _THINK_CLOSE
+
+
+class _ThinkTagStripper:
+    """Removes the tag *tokens* of balanced ``<think>…</think>`` pairs.
+
+    gpt-oss (harmony format) reasoning frequently carries literal
+    ``<think>…</think>`` tags — sometimes many in a row, sometimes nested —
+    which are noise once the text is already displayed as a thinking block.
+    This strips the *tags* of a **balanced** region (keeping the inner text);
+    an *unmatched* tag is emitted verbatim so nothing is ever silently
+    swallowed. Streams safely: a tag split across two chunks is held until it
+    can be resolved, and an unclosed region is released verbatim on
+    :meth:`flush`.
+
+    Applied to a model's thinking/reasoning text only (never to user-facing
+    output), so a legitimate ``<think>`` an agent might quote in an answer is
+    untouched.
+    """
+
+    def __init__(self) -> None:
+        self._depth = 0
+        self._region = ""  # raw text (tags included) withheld while depth > 0
+        self._tail = ""  # trailing bytes that may be the start of a split tag
+
+    def feed(self, text: str) -> str:
+        """Process a chunk; return the cleaned text safe to emit now."""
+        buf = self._tail + text
+        self._tail = ""
+        out: list[str] = []
+        pos = 0
+        while True:
+            found = _next_think_tag(buf, pos)
+            if found is None:
+                remainder = buf[pos:]
+                hold = max(
+                    _partial_tag_suffix_len(remainder, _THINK_OPEN),
+                    _partial_tag_suffix_len(remainder, _THINK_CLOSE),
+                )
+                safe = len(remainder) - hold
+                if self._depth > 0:
+                    self._region += remainder[:safe]
+                else:
+                    out.append(remainder[:safe])
+                self._tail = remainder[safe:]
+                break
+            idx, tag = found
+            if self._depth > 0:
+                # Inside a (possibly nested) region: keep the raw text + tag,
+                # adjusting depth; on balance, emit the region with tags removed.
+                self._region += buf[pos:idx] + tag
+                self._depth += 1 if tag == _THINK_OPEN else -1
+                pos = idx + len(tag)
+                if self._depth == 0:
+                    out.append(self._region.replace(_THINK_OPEN, "").replace(_THINK_CLOSE, ""))
+                    self._region = ""
+            elif tag == _THINK_OPEN:
+                out.append(buf[pos:idx])
+                self._region = _THINK_OPEN
+                self._depth = 1
+                pos = idx + len(_THINK_OPEN)
+            else:
+                # Lone </think> at depth 0 — unmatched close; keep it verbatim.
+                out.append(buf[pos : idx + len(_THINK_CLOSE)])
+                pos = idx + len(_THINK_CLOSE)
+        return "".join(out)
+
+    def flush(self) -> str:
+        """Release any withheld remainder at end of stream.
+
+        An unclosed region is emitted *verbatim* (tags kept) — it was never
+        balanced, so per the balanced-pairs-only rule its tags stay.
+        """
+        out = self._tail
+        self._tail = ""
+        if self._depth > 0:
+            out += self._region
+            self._region = ""
+            self._depth = 0
+        return out
+
+
+# ---------------------------------------------------------------------------
+# Salvaging a tool call a model emitted as plain text
+# ---------------------------------------------------------------------------
+
+
+class MalformedToolCallError(RuntimeError):
+    """A local model emitted a tool call as plain text that could not be
+    unambiguously recovered — its arguments matched zero tools or several.
+
+    Raised from the stream so the engine surfaces a recoverable notice and
+    resets the turn (the model is expected to simply retry) instead of
+    persisting the raw JSON blob as if it were a finished answer.
+    """
+
+
+def _match_salvage_tools(args: dict[str, object], tools: list[ToolSpec]) -> list[str]:
+    """Tools whose input schema plausibly owns *args* (the name having been lost).
+
+    A model that dumps a tool call into its text channel loses the function
+    name (it lived in a header the model never emitted), so the tool is
+    inferred from the argument *shape*: every provided key must be a declared
+    property of the tool, and every required property must be present. Returns
+    all matching tool names — the caller salvages only on an unambiguous single
+    match.
+    """
+    keys = set(args.keys())
+    matches: list[str] = []
+    for tool in tools:
+        schema = tool.input_schema if isinstance(tool.input_schema, dict) else {}
+        properties = schema.get("properties")
+        prop_names = set(properties.keys()) if isinstance(properties, dict) else set()
+        required_raw = schema.get("required")
+        required = set(required_raw) if isinstance(required_raw, list) else set()
+        if keys and keys <= prop_names and required <= keys:
+            matches.append(tool.name)
+    return matches
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +593,34 @@ class LlamaPlugin(LLMPlugin):
         input_tokens = 0
         output_tokens = 0
         parser = ThinkingStreamParser()
+        # Separate strippers for the two thinking channels (a <think> opened in
+        # one never closes in the other): the model's own reasoning channel and
+        # any <think> the ThinkingStreamParser lifts out of the content channel.
+        reasoning_stripper = _ThinkTagStripper()
+        thinking_stripper = _ThinkTagStripper()
+
+        # Salvage buffering: if the content channel *starts* with '{' we withhold
+        # it instead of streaming live, because it may be a whole tool call the
+        # model wrongly emitted as plain text (harmony wrong-channel slip). The
+        # decision is made once, on the first non-whitespace character:
+        #   None  → undecided (nothing but whitespace seen yet)
+        #   True  → looks like a JSON object; buffer for the end-of-stream check
+        #   False → ordinary prose; stream live through the parser as usual
+        content_candidate: bool | None = None
+        content_buf = ""
+
+        def _through_parser(text: str) -> list[StreamEvent]:
+            """Feed content text to the parser, stripping stray tags from the
+            thinking it lifts out; return the resulting stream events."""
+            events: list[StreamEvent] = []
+            for event in parser.feed(text):
+                if isinstance(event, ThinkingDelta):
+                    cleaned = thinking_stripper.feed(event.text)
+                    if cleaned:
+                        events.append(ThinkingDelta(text=cleaned))
+                else:
+                    events.append(event)
+            return events
 
         response = await self.__client.chat.completions.create(  # type: ignore[call-overload]
             model=model,
@@ -483,11 +649,23 @@ class LlamaPlugin(LLMPlugin):
             delta = choice.delta
             reasoning_content = getattr(delta, "reasoning_content", None)
             if reasoning_content:
-                yield ThinkingDelta(text=reasoning_content)
+                cleaned = reasoning_stripper.feed(reasoning_content)
+                if cleaned:
+                    yield ThinkingDelta(text=cleaned)
 
             if delta.content:
-                for event in parser.feed(delta.content):
-                    yield event
+                content_buf += delta.content
+                if content_candidate is None:
+                    lead = content_buf.lstrip()
+                    if lead:
+                        content_candidate = lead[0] == "{"
+                if content_candidate is False:
+                    # Ordinary prose — release everything buffered so far and
+                    # keep streaming live from here on.
+                    for event in _through_parser(content_buf):
+                        yield event
+                    content_buf = ""
+                # content_candidate True/None → keep buffering (decided at end)
 
             if delta.tool_calls:
                 for tc in delta.tool_calls:
@@ -514,8 +692,61 @@ class LlamaPlugin(LLMPlugin):
         if cancel_event.is_set():
             return
 
+        # The reasoning channel is independent of the content-salvage path and
+        # always flushes.
+        reasoning_tail = reasoning_stripper.flush()
+        if reasoning_tail:
+            yield ThinkingDelta(text=reasoning_tail)
+
+        # Salvage: the content channel looked like a JSON object and the model
+        # made no structured tool call — it may have dumped a tool call into its
+        # text channel (the name is lost; infer the tool from the argument shape).
+        salvaged_call: ToolCallEvent | None = None
+        if content_candidate is True and not tool_ids:
+            stripped = content_buf.strip()
+            parsed: object = None
+            try:
+                parsed = json.loads(stripped) if stripped else None
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                matches = _match_salvage_tools(parsed, tools)
+                if len(matches) == 1:
+                    salvaged_call = ToolCallEvent(
+                        tool_use_id=f"recovered_{uuid.uuid4().hex}",
+                        tool_name=matches[0],
+                        tool_input=parsed,
+                        recovered=True,
+                    )
+                    content_buf = ""  # consumed as a tool call, not shown as text
+                    _log.info("Salvaged a malformed tool call as %s", matches[0])
+                else:
+                    _log.warning(
+                        "Malformed tool call matched %d tools — cannot recover", len(matches)
+                    )
+                    raise MalformedToolCallError(
+                        "The model emitted a tool call as plain text and its arguments matched "
+                        f"{len(matches)} tools, so Kōdo could not tell which one to run. "
+                        "Please try again."
+                    )
+
+        # Anything still buffered (prose that merely began with '{', or a
+        # leading-'{' preamble that preceded a real structured call) is ordinary
+        # text — release it, then flush the parser and both thinking strippers.
+        if content_buf:
+            for event in _through_parser(content_buf):
+                yield event
+            content_buf = ""
         for event in parser.flush():
-            yield event
+            if isinstance(event, ThinkingDelta):
+                cleaned = thinking_stripper.feed(event.text)
+                if cleaned:
+                    yield ThinkingDelta(text=cleaned)
+            else:
+                yield event
+        thinking_tail = thinking_stripper.flush()
+        if thinking_tail:
+            yield ThinkingDelta(text=thinking_tail)
 
         for idx in sorted(tool_ids):
             raw_json = "".join(tool_arg_parts.get(idx, []))
@@ -528,6 +759,9 @@ class LlamaPlugin(LLMPlugin):
                 tool_name=tool_names.get(idx, ""),
                 tool_input=tool_input,
             )
+
+        if salvaged_call is not None:
+            yield salvaged_call
 
         yield TurnEnd(
             usage=Usage(

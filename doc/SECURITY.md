@@ -201,8 +201,13 @@ The security layer picks the dialect by platform (`os.name`).
   "risk": "High",
   "intent": "Install the test runner the plan's step 3 requires",
   "reason": "The command targets paths outside the workspace: /etc/hosts.",
-  "params": [ { "name": "command", "value": "…" }, … ] }
+  "params": [ { "name": "command", "value": "…" }, … ],
+  "recovered": false }
 ```
+
+`recovered` (default `false`) is `true` only when the prompt is for a
+*salvaged malformed tool call* — see §9. The client renders an extra warning
+banner above the reason when it is set.
 
 `params` is the customer-visible preview: input properties projected through
 the tool's `input_visibility` map (hidden properties never reach the prompt),
@@ -283,7 +288,43 @@ modes (permissive/defensive) never call the LLM at all. There is no verdict
 caching: identical repeated calls are re-judged (cheap, and context — the
 intent — should differ anyway).
 
-## 9. Future work (deliberately out of scope)
+## 9. Recovered (malformed) tool calls
+
+A local model can emit a tool call as **plain text** instead of a structured
+tool call — the gpt-oss "harmony" wrong-channel slip (see
+[LOCAL_INFERENCE.md](LOCAL_INFERENCE.md)). `LlamaPlugin` salvages this: when a
+turn makes no structured tool call but its content channel is a JSON object
+whose keys match exactly one available tool's schema, the plugin synthesises a
+`ToolCallEvent(recovered=True)` instead of persisting the JSON as an answer.
+The tool *name* was lost with the wrong channel, so it is inferred from the
+argument shape — which the user must be given a chance to reject.
+
+That confirmation is layered onto **this** security gate rather than a separate
+mechanism:
+
+- `ToolDispatcher.dispatch(..., recovered=True)` flows the flag into
+  `__security_gate`. Outside autonomous mode a recovered call **forces**
+  `fire_permission` regardless of the security verdict (`force_ask`), with a
+  reason that explains the recovery; if the security layer *also* returned
+  `ask`, its reason is appended so the user sees both. In autonomous mode the
+  flag is ignored — the call runs exactly as any other allowed call would
+  (`In autonomous mode, just run the tool`).
+- The forced prompt sets `recovered: true` on the `prompt.permission` payload;
+  `PermissionPanel.tsx` shows a distinct "the agent produced a malformed tool
+  call, which Kōdo recovered" banner above the usual reason.
+- The engine threads the flag from the stream to dispatch by tool_use id:
+  `_run_agent_turn` collects `{tc.tool_use_id … if tc.recovered}` into a
+  `recovered_ids` set and passes it to `_dispatch_tool_calls`, which dispatches
+  each matching id with `recovered=True`. The crash-resume path never passes
+  the set — a persisted call replays as an ordinary call.
+
+If the salvaged JSON matches **zero or several** tools, it cannot be recovered
+unambiguously: the plugin raises `MalformedToolCallError`, which the worker's
+generic handler turns into a recoverable `error_notice` and resets the phase to
+`awaiting_user` — the raw JSON is *not* shown as an answer and the model is
+expected to simply retry.
+
+## 10. Future work (deliberately out of scope)
 
 - **Persistent rules** — `kodo/security/_rules.py`, `_store.py`,
   `_defaults.py` remain stubs for a "always allow commands like this"

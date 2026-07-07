@@ -29,7 +29,7 @@ from ._installer import (
     uninstall_llamacpp,
     update_llamacpp,
 )
-from ._llama import LlamaPlugin, ThinkingStreamParser
+from ._llama import LlamaPlugin, MalformedToolCallError, ThinkingStreamParser
 from ._llama_server import (
     LlamaServer,
     LlamaServerConfig,
@@ -43,6 +43,7 @@ __all__ = [
     "LlamaPlugin",
     "LlamaServer",
     "LlamaServerConfig",
+    "MalformedToolCallError",
     "RunningServer",
     "ThinkingStreamParser",
     "check_llamacpp_update",

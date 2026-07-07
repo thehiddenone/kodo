@@ -158,7 +158,7 @@ class EngineHost(Protocol):
         system_prompt: str,
         messages: list[Message],
         tools: list[ToolSpec],
-        tool_dispatch: Callable[[str, dict[str, object], str], Awaitable[str]],
+        tool_dispatch: Callable[[str, dict[str, object], str, bool], Awaitable[str]],
         stream_id: str,
         agent_name: str = _GUIDE_AGENT_NAME,
         stop_after_tools: Callable[[], bool] | None = None,
@@ -181,10 +181,11 @@ class EngineHost(Protocol):
     async def _dispatch_tool_calls(
         self,
         calls: list[tuple[str, str, dict[str, object]]],
-        tool_dispatch: Callable[[str, dict[str, object], str], Awaitable[str]],
+        tool_dispatch: Callable[[str, dict[str, object], str, bool], Awaitable[str]],
         tool_desc: dict[str, str],
         tool_logger: ToolCallLogger,
         agent_name: str,
+        recovered_ids: set[str] | None = None,
     ) -> list[dict[str, object]]: ...
 
     async def _finalize_tool_result(

@@ -626,7 +626,7 @@ A `kind=event` (no reply) telling the extension to delete a stored key, e.g. aft
 
 ### 6.5 `prompt.permission` — security-layer permission prompt
 
-Fired when the security layer's verdict on a tool call is `ask` (doc/SECURITY.md): the dispatcher blocks the gated call until the user decides. `tool_call_id` correlates the prompt with the gated call's feed entry; `risk` is the tool's `SecurityImpact` label; `reason` is the layer's one-sentence justification; `params` is the customer-visible parameter preview (input properties projected through the tool's `input_visibility` map — hidden properties never appear — values truncated at 400 chars).
+Fired when the security layer's verdict on a tool call is `ask` (doc/SECURITY.md): the dispatcher blocks the gated call until the user decides. `tool_call_id` correlates the prompt with the gated call's feed entry; `risk` is the tool's `SecurityImpact` label; `reason` is the layer's one-sentence justification; `params` is the customer-visible parameter preview (input properties projected through the tool's `input_visibility` map — hidden properties never appear — values truncated at 400 chars). `recovered` (default `false`) is `true` only when the prompt is a **forced** confirmation of a *salvaged malformed tool call* (a local model that emitted a tool call as plain text — doc/SECURITY.md §9); the client then renders an extra warning banner. A recovered prompt is forced regardless of the security verdict, but only outside Autonomous mode.
 
 ```json
 { "type": "prompt.permission",
@@ -636,7 +636,8 @@ Fired when the security layer's verdict on a tool call is `ask` (doc/SECURITY.md
   "risk": "High",
   "intent": "Install the test runner the plan requires",
   "reason": "The command targets paths outside the workspace: /etc/hosts.",
-  "params": [ { "name": "command", "value": "cat /etc/hosts" } ] }
+  "params": [ { "name": "command", "value": "cat /etc/hosts" } ],
+  "recovered": false }
 ```
 
 Response payload:

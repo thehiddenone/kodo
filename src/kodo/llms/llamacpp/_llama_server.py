@@ -304,6 +304,19 @@ class LlamaServer:
             str(cfg.context_size),
             "--n-gpu-layers",
             str(cfg.n_gpu_layers),
+            # Use each GGUF's embedded chat template (--jinja) so tool calling
+            # goes through llama.cpp's template-driven parser with lazy-grammar
+            # constraints, and let the reasoning channel be parsed per the
+            # model's own convention (--reasoning-format auto). Without --jinja
+            # the parser is best-effort recognition only, with nothing forcing a
+            # model back into a valid tool-call structure when its output format
+            # slips (the gpt-oss harmony "wrong channel" failure — see
+            # doc/LOCAL_INFERENCE.md). Applied to every local model: modern
+            # Qwen/Gemma/gpt-oss GGUFs all ship a valid embedded template, and
+            # LlamaPlugin's salvage path covers any residual slip regardless.
+            "--jinja",
+            "--reasoning-format",
+            "auto",
         ]
         for k, v in cfg.llama_args.items():
             cmd.append(k)

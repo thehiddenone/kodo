@@ -193,11 +193,19 @@ class ToolCallEvent(StreamEvent):
         tool_use_id: Unique ID for this tool call (for result correlation).
         tool_name: Name of the tool to invoke.
         tool_input: Parsed JSON input arguments.
+        recovered: ``True`` only when a plugin *salvaged* this call from a model
+            that emitted it as plain text instead of a structured tool call
+            (see :class:`kodo.llms.llamacpp.LlamaPlugin`). The engine forces a
+            user confirmation for a recovered call outside autonomous mode —
+            the tool name was inferred from the arguments' shape, so the user
+            gets a chance to reject a wrong guess. Always ``False`` for a
+            normally-structured call.
     """
 
     tool_use_id: str
     tool_name: str
     tool_input: dict[str, object]
+    recovered: bool = False
 
 
 @dataclass(frozen=True)

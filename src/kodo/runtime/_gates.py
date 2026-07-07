@@ -211,6 +211,7 @@ class GateOrchestrator:
         intent: str,
         reason: str,
         params: list[dict[str, str]],
+        recovered: bool = False,
     ) -> PermissionResponse:
         """Emit a ``prompt.permission`` ``kind=request`` and block until the
         user allows or denies the gated tool call.
@@ -229,6 +230,9 @@ class GateOrchestrator:
             intent: The agent's declared intent ("" when the tool has none).
             reason: The security layer's one-sentence reason for asking.
             params: Customer-visible ``{"name", "value"}`` parameter rows.
+            recovered: ``True`` when this prompt is for a salvaged malformed
+                tool call — carried on the wire so the client can render a
+                distinct "recovered" banner.
 
         Returns:
             PermissionResponse: The user's decision and optional feedback.
@@ -247,6 +251,7 @@ class GateOrchestrator:
             "intent": intent,
             "reason": reason,
             "params": params,
+            "recovered": recovered,
         }
         await self.__app_state.send(Envelope(kind="request", id=req_id, payload=payload))
         _log.info("Permission prompt fired: tool=%s risk=%s req_id=%s", tool_name, risk, req_id[:8])

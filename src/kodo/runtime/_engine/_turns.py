@@ -240,7 +240,7 @@ class TurnLoopMixin:
         system_prompt: str,
         messages: list[Message],
         tools: list[ToolSpec],
-        tool_dispatch: Callable[[str, dict[str, object], str], Awaitable[str]],
+        tool_dispatch: Callable[[str, dict[str, object], str, bool], Awaitable[str]],
         stream_id: str,
         agent_name: str = _GUIDE_AGENT_NAME,
         stop_after_tools: Callable[[], bool] | None = None,
@@ -452,8 +452,12 @@ class TurnLoopMixin:
                     self._main_messages = messages
 
             calls = [(tc.tool_use_id, tc.tool_name, tc.tool_input) for tc in tool_calls]
+            # A salvaged (recovered) tool call forces a user confirmation in the
+            # security gate outside autonomous mode — carry the flag through to
+            # dispatch keyed by tool_use_id (see ToolDispatcher.__security_gate).
+            recovered_ids = {tc.tool_use_id for tc in tool_calls if tc.recovered}
             tool_results = await self._dispatch_tool_calls(
-                calls, tool_dispatch, tool_desc, tool_logger, agent_name
+                calls, tool_dispatch, tool_desc, tool_logger, agent_name, recovered_ids
             )
             messages = messages + [Message(role="user", content=tool_results)]
 
@@ -522,19 +526,27 @@ class TurnLoopMixin:
     async def _dispatch_tool_calls(
         self: EngineHost,
         calls: list[tuple[str, str, dict[str, object]]],
-        tool_dispatch: Callable[[str, dict[str, object], str], Awaitable[str]],
+        tool_dispatch: Callable[[str, dict[str, object], str, bool], Awaitable[str]],
         tool_desc: dict[str, str],
         tool_logger: ToolCallLogger,
         agent_name: str,
+        recovered_ids: set[str] | None = None,
     ) -> list[dict[str, object]]:
         """Dispatch a batch of ``(tool_use_id, name, input)`` calls in order.
 
         Shared by the live turn loop and the crash-resume path (which replays
         the tool calls recorded in a persisted assistant message).
 
+        ``recovered_ids`` names the tool_use ids that were *salvaged* from a
+        malformed (plain-text) tool call; each is dispatched with
+        ``recovered=True`` so the security gate forces a confirmation outside
+        autonomous mode. The resume path never passes it (a persisted call is
+        replayed as an ordinary call).
+
         Returns:
             list[dict[str, object]]: ``tool_result`` content blocks, in order.
         """
+        recovered_ids = recovered_ids or set()
         tool_results: list[dict[str, object]] = []
         for tool_use_id, tool_name, tool_input in calls:
             # ask_user never gets the generic tool-call card: its handler fires
@@ -564,7 +576,9 @@ class TurnLoopMixin:
             # to write to, so the post-dispatch commit records the change as its
             # own checkpoint (see CheckpointCoordinator.prepare / .commit).
             ck_paths = await self._checkpoints.prepare(tool_name, tool_input)
-            result_text = await tool_dispatch(tool_name, tool_input, tool_use_id)
+            result_text = await tool_dispatch(
+                tool_name, tool_input, tool_use_id, tool_use_id in recovered_ids
+            )
             tool_logger.log_result(tool_name, tc_n, result_text)
             checkpoint = await self._checkpoints.commit(tool_name, tool_input, ck_paths)
             content = await self._finalize_tool_result(
