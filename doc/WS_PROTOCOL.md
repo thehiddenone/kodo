@@ -133,8 +133,9 @@ The server replies with the current world plus local-model status:
     "state": { ...state snapshot per §5.1... },
     "cloud_registry": {
       "anthropic": { "display_name": "Anthropic", "models": [
-        { "model_id": "claude-opus-4-8", "name": "Claude Opus 4.8",
-          "description": "...", "context_window": 1000000 }, "..." ] }
+        { "model_id": "claude-fable-5", "name": "Claude Fable 5",
+          "description": "...", "context_window": 1000000,
+          "recommendation": "For the most demanding work — ..." }, "..." ] }
     },
     "active_cloud_vendor": "anthropic",
     "local_registry": [
@@ -301,7 +302,7 @@ Emitted **after** a tool call is dispatched and its output normalized. Carries t
 
 Each row is one property the customer may see: `always` rows are shown in full, `visible` rows are cropped client-side (3 lines / 200 chars); `hidden` properties (and any property absent from the visibility map) are omitted entirely. The panel renders these rows as a clickable table beneath the `agent.tool_call_prep` one-liner; clicking opens `file`. On reconnect the same fields ride along on `session.history` `tool_call` entries (`rows`, `detailFile`, `schemaCompliance`).
 
-`checkpoint` is `null` unless the call was a `filesystem`/`edit_file`/`run_command` dispatch in the **problem-solving** workflow that produced a commit in that path's per-root shadow mirror (see §7.4c). When present, the panel renders an "↩ undo this change" link next to the `agent.tool_call_prep` line and a "⟲ Rollback to this state" control below the detail table; both are absent when `checkpoint` is `null` (e.g. every call in the Guided workflow, or a no-op in Problem Solver).
+`checkpoint` is `null` unless the call was a `filesystem`/`edit_file`/`create_file`/`create_directory`/`run_command` dispatch in the **problem-solving** workflow that produced a commit in that path's per-root shadow mirror (see §7.4c). When present, the panel renders an "↩ undo this change" link next to the `agent.tool_call_prep` line and a "⟲ Rollback to this state" control below the detail table; both are absent when `checkpoint` is `null` (e.g. every call in the Guided workflow, or a no-op in Problem Solver).
 
 ### 5.5c `tool.incompliant` — output did not match its schema
 
@@ -781,7 +782,7 @@ A `state` event with the updated `command_control` field follows.
 
 ### 7.4c `checkpoint.undo` / `checkpoint.redo` / `checkpoint.rollback` / `checkpoint.roll_forward` — per-root file checkpoints
 
-Acts on the per-root **shadow checkpoint mirror** that the engine commits to after every `filesystem`/`edit_file`/`run_command` dispatch, in **both** workflow modes (INTERNALS.md §7/§10b/§12.1 — there is no longer a Guided-only special case). All four carry the `{root, sha}` pair the client received on the originating call's `checkpoint` field (§5.5b), plus an optional `resolution` (`"stash"|"discard"`) supplied only on retry after a `*.needs_confirmation` reply (see below). This is **distinct** from the Guide's `rollback` tool: both now delegate to the same underlying `RootMirrorManager` primitives, but only the Guide's tool additionally resets the conversation history (STATE_AND_LIFECYCLE.md §8.3) — these four only restore files.
+Acts on the per-root **shadow checkpoint mirror** that the engine commits to after every `filesystem`/`edit_file`/`create_file`/`create_directory`/`run_command` dispatch, in **both** workflow modes (INTERNALS.md §7/§10b/§12.1 — there is no longer a Guided-only special case). All four carry the `{root, sha}` pair the client received on the originating call's `checkpoint` field (§5.5b), plus an optional `resolution` (`"stash"|"discard"`) supplied only on retry after a `*.needs_confirmation` reply (see below). This is **distinct** from the Guide's `rollback` tool: both now delegate to the same underlying `RootMirrorManager` primitives, but only the Guide's tool additionally resets the conversation history (STATE_AND_LIFECYCLE.md §8.3) — these four only restore files.
 
 ```json
 { "type": "checkpoint.undo", "root": "/abs/path/to/root", "sha": "<commit sha>" }
@@ -839,7 +840,7 @@ Response:
 { "type": "config.reload.ack" }
 ```
 
-The full `mode`/`active_cloud_vendor`/`models` schema is documented in [SETTINGS.md](SETTINGS.md) §2.2 and [LLM_REGISTRY.md](LLM_REGISTRY.md) §5. Cloud vendor/effort-tier selection (the Cloud AI Settings 2×2 panels) and local-model selection are both plain settings.json writes followed by `config.reload` — there is no dedicated WS message for either. **Adding a new cloud model** requires a code change to `kodo/llms/_cloud_registry.py` (it is 100% hardcoded); **adding a local model** is done live via the §7.6 `local_llm.add_*` commands.
+The full `mode`/`active_cloud_vendor`/`models` schema is documented in [SETTINGS.md](SETTINGS.md) §2.2 and [LLM_REGISTRY.md](LLM_REGISTRY.md) §5. Cloud vendor/effort-tier selection (the Cloud AI Settings webview's vertically-stacked effort panels) and local-model selection are both plain settings.json writes followed by `config.reload` — there is no dedicated WS message for either. **Adding a new cloud model** requires a code change to `kodo/llms/_cloud_registry.py` (it is 100% hardcoded); **adding a local model** is done live via the §7.6 `local_llm.add_*` commands.
 
 ### 7.6 Local-model management commands
 
@@ -854,8 +855,10 @@ llama-server override) are in [LLM_REGISTRY.md](LLM_REGISTRY.md).
 { "type": "local_llm.uninstall", "name": "qwen36-27b" } // free the downloaded GGUF, keep the entry
 { "type": "local_llm.remove", "name": "my-model" }      // remove a custom entry (uninstalls first if needed)
 { "type": "local_llm.add_huggingface", "name": "...", "description": "...",
-  "repo_id": "org/repo", "filename": "model.gguf" }
-{ "type": "local_llm.add_file", "name": "...", "description": "...", "path": "/abs/model.gguf" }
+  "repo_id": "org/repo", "filename": "model.gguf",
+  "llama_args": {"--cache-type-k": "q8_0"}, "context_window": 262144 }
+{ "type": "local_llm.add_file", "name": "...", "description": "...", "path": "/abs/model.gguf",
+  "llama_args": {"--cache-type-k": "q8_0"}, "context_window": 262144 }
 { "type": "local_llm.add_server_url", "name": "...", "description": "...", "url": "http://host:port" }
 { "type": "llama_server_override.set", "path": "/usr/local/bin/llama-server-cuda" }
 { "type": "llama_server_override.remove" }

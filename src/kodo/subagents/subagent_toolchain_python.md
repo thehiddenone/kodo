@@ -11,6 +11,8 @@ tools:
   - run_command
   - filesystem
   - edit_file
+  - create_file
+  - create_directory
   - find_files
   - find_text_in_files
   - get_root_paths

@@ -6,6 +6,8 @@ capability: medium
 tools:
   - filesystem
   - edit_file
+  - create_file
+  - create_directory
   - read_file
   - escalate_blocker
 ---
@@ -64,7 +66,7 @@ Codenames are stable across revisions: a surviving responsibility keeps its code
 
 1. **Initial reading.** Read the Narrative and both appendixes. Build a candidate list; for each, note its primary purpose and one main reason to change. Mark uncertain boundaries.
 2. **Escalation when blocked.** If the Narrative leaves a boundary so under-specified you cannot construct a defensible "Why it is single" argument either way, `escalate_blocker` once with `reason: "insufficient_narrative_for_decomposition"`, a `summary` naming the candidate boundary and what is missing, and `outstanding_findings` (one entry per blocked boundary: the candidate split, the info that would resolve it, and any pointing Appendix B item). Use only for genuine blockers — not stylistic or merely close calls.
-3. **Drafting and writing.** Compose per *Output Document Structure*. Write it to a path of your choosing under `specs/` (e.g. `specs/architecture.md`) with `filesystem` `create_file`. For each sub-narrative, **"Why it is single"** must argue against the most plausible alternative split — if you cannot, the responsibility probably isn't single; split it. Cross-check that upstream/downstream sections are consistent (if A depends on B, B's downstream lists A).
+3. **Drafting and writing.** Compose per *Output Document Structure*. Write it to a path of your choosing under `specs/` (e.g. `specs/architecture.md`) with `create_file`. For each sub-narrative, **"Why it is single"** must argue against the most plausible alternative split — if you cannot, the responsibility probably isn't single; split it. Cross-check that upstream/downstream sections are consistent (if A depends on B, B's downstream lists A).
 4. **Architect Critic loop.** Writing the file signals ready for review. Critic calls `document_feedback` on your file. On `accept: false` with `concerns`, for each: if it points at multi-responsibility bundling, split into the components Critic identifies and rewrite the affected sub-narratives; otherwise strengthen "Why it is single" to address the objection. Revise the same file in place via `edit_file`. The guide decides how many rounds; do not assume a fixed limit. `accept: true` ends the loop.
 5. **Escalation when Critic does not converge.** When the guide ends the loop with Critic still rejecting, `escalate_blocker` with `reason: "critic_iteration_cap"`, a `summary` of the dispute, and `blocking_paths` (your architecture file). Incorporate the user's resolution and revise the file via `edit_file`.
 6. **User feedback at the review gate.** Identify every implied change; check for contradictions against (a) the existing architecture, (b) the Narrative, (c) other parts of the feedback. If consistent, revise via `edit_file`, updating appendixes. If it contradicts the Narrative or itself irreconcilably, `escalate_blocker` with `reason: "feedback_contradiction"`, a `summary`, and `blocking_paths`. Do not silently incorporate contradicting feedback.

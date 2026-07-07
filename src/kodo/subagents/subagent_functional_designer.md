@@ -6,6 +6,8 @@ capability: medium
 tools:
   - filesystem
   - edit_file
+  - create_file
+  - create_directory
   - read_file
   - escalate_blocker
 ---
@@ -68,13 +70,13 @@ Within the chosen direction, order need not be strictly topological; batch same-
 
 ### Stage 4 — Write the Design Plan
 
-Write it to a path of your choosing under `specs/` (e.g. `specs/design_plan.md`) with `filesystem` `create_file`, the full plan in the content. Presented at the review gate; on user feedback, revise via `edit_file`. Once accepted, the plan is fixed; deviations require a fresh revision. The engine auto-accepts in autonomous mode; write the same content regardless of mode.
+Write it to a path of your choosing under `specs/` (e.g. `specs/design_plan.md`) with `create_file`, the full plan in the content. Presented at the review gate; on user feedback, revise via `edit_file`. Once accepted, the plan is fixed; deviations require a fresh revision. The engine auto-accepts in autonomous mode; write the same content regardless of mode.
 
 ### Stage 5 — Per-component design loop
 
 For each component, in plan order, the guide drives:
 
-1. Compose the Functional Design (structure below) and write it to a path of your choosing under `specs/` (e.g. `specs/design/<component>.md`) with `filesystem` `create_file`.
+1. Compose the Functional Design (structure below) and write it to a path of your choosing under `specs/` (e.g. `specs/design/<component>.md`) with `create_file`.
 2. The guide runs Critic; it calls `document_feedback` on your file.
 3. On `accept: false`, address each concern, revise via `edit_file`. The guide decides how many rounds; do not assume a fixed limit.
 4. When the guide ends the loop with Critic still rejecting, `escalate_blocker` with `reason: "critic_iteration_cap"`, a `summary` of the dispute, and `blocking_paths` (the design file).

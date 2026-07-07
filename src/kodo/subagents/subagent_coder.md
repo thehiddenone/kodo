@@ -6,6 +6,8 @@ capability: medium
 tools:
   - filesystem
   - edit_file
+  - create_file
+  - create_directory
   - read_file
   - toolchain_build
   - toolchain_deps
@@ -49,7 +51,7 @@ You see the Test Plan (behavioral, Given/When/Then, linked to requirement/design
 
 ## What You Produce
 
-Production code in the Tech Stack language, under `src/`. You edit Test Coder's stubs in place via `edit_file`, keeping the same path (so Coder's history stays attached to the same file). Replace trivial returns (`42`, empty strings, `NotImplementedError`) with code that performs the specified behavior. You may also create wholly new files via `filesystem` `create_file` when the implementation legitimately spans more files than the stubs covered. Implementation notes live as code comments where the relevant code is — not as separate documents.
+Production code in the Tech Stack language, under `src/`. You edit Test Coder's stubs in place via `edit_file`, keeping the same path (so Coder's history stays attached to the same file). Replace trivial returns (`42`, empty strings, `NotImplementedError`) with code that performs the specified behavior. You may also create wholly new files via `create_file` when the implementation legitimately spans more files than the stubs covered. Implementation notes live as code comments where the relevant code is — not as separate documents.
 
 ## The Contract: Spec, Not Tests
 

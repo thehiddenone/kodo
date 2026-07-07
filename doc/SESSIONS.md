@@ -280,7 +280,7 @@ on demand, never reconstructed at startup. Then:
        only "side effect" is asking the present user, so the question batch is
        simply re-fired (`prompt.question`) and the user answers the whole set
        again from scratch — partial answers are never persisted anywhere.
-     - **any other tool** (`filesystem`, `edit_file`, `run_command`, read-only
+     - **any other tool** (`filesystem`, `edit_file`, `create_file`, `create_directory`, `run_command`, read-only
        tools, …) is **not** re-executed — its side effects may already have
        landed and there is no per-tool dedup ledger — so it gets a synthesized
        `error`-envelope `tool_result` (`_interrupted_tool_result`) keyed to the
@@ -304,7 +304,7 @@ on demand, never reconstructed at startup. Then:
   simply idle and awaits the next prompt.
 
 Documents survive a crash for the same reason any other file write does: a
-`filesystem`/`edit_file` call only earns its `new_revision` jsonl entry once
+`filesystem`/`edit_file`/`create_file`/`create_directory` call only earns its `new_revision` jsonl entry once
 its checkpoint commit has actually landed (STATE_AND_LIFECYCLE.md §1.1), so a
 crash mid-write never leaves a half-recorded revision. There is no
 producing-subsession union step on resume — a rehydrated sub-agent simply

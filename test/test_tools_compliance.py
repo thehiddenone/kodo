@@ -172,9 +172,7 @@ def _assert_compliant(name: str, parsed: object) -> dict[str, object]:
 
 
 async def _write_file(dispatcher: ToolDispatcher, path: str, content: str = "body") -> None:
-    parsed = await _dispatch(
-        dispatcher, "filesystem", {"operation": "create_file", "path": path, "content": content}
-    )
+    parsed = await _dispatch(dispatcher, "create_file", {"path": path, "content": content})
     assert isinstance(parsed, dict) and parsed.get("status") == "created", parsed
 
 
@@ -236,13 +234,7 @@ async def _assert_fs(d: ToolDispatcher, payload: dict[str, object]) -> None:
 @pytest.mark.asyncio
 async def test_filesystem_file_ops_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path)
-    # create_file: success + already-exists error.
-    await _assert_fs(d, {"operation": "create_file", "path": "a.txt", "content": "x"})
-    err = await _dispatch(
-        d, "filesystem", {"operation": "create_file", "path": "a.txt", "content": "y"}
-    )
-    assert isinstance(err, dict) and "error" in err
-    _assert_compliant("filesystem", err)
+    await _write_file(d, "a.txt", "x")
     # copy_file / move_file: success + missing-source error.
     await _assert_fs(d, {"operation": "copy_file", "source": "a.txt", "destination": "b.txt"})
     await _assert_fs(d, {"operation": "copy_file", "source": "no.txt", "destination": "c.txt"})
@@ -258,7 +250,7 @@ async def test_filesystem_file_ops_compliance(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_filesystem_dir_ops_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path)
-    await _assert_fs(d, {"operation": "create_dir", "path": "src"})
+    (tmp_path / "src").mkdir()
     await _assert_fs(d, {"operation": "copy_dir", "source": "src", "destination": "dst"})
     # copy_dir onto an existing destination → error.
     await _assert_fs(d, {"operation": "copy_dir", "source": "src", "destination": "dst"})
@@ -268,9 +260,32 @@ async def test_filesystem_dir_ops_compliance(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_file_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path)
+    _assert_compliant(
+        "create_file", await _dispatch(d, "create_file", {"path": "a.txt", "content": "x"})
+    )
+    err = await _dispatch(d, "create_file", {"path": "a.txt", "content": "y"})
+    assert isinstance(err, dict) and "error" in err
+    _assert_compliant("create_file", err)
+
+
+@pytest.mark.asyncio
+async def test_create_directory_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path)
+    _assert_compliant(
+        "create_directory", await _dispatch(d, "create_directory", {"path": "src"})
+    )
+    # Succeeds again if the directory already exists.
+    _assert_compliant(
+        "create_directory", await _dispatch(d, "create_directory", {"path": "src"})
+    )
+
+
+@pytest.mark.asyncio
 async def test_edit_file_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path)
-    await _dispatch(d, "filesystem", {"operation": "create_file", "path": "a.txt", "content": "x"})
+    await _write_file(d, "a.txt", "x")
     _assert_compliant(
         "edit_file",
         await _dispatch(d, "edit_file", {"path": "a.txt", "old_string": "x", "new_string": "z"}),
@@ -888,6 +903,8 @@ def test_all_dispatchable_tools_are_covered() -> None:
     covered = {
         "filesystem",
         "edit_file",
+        "create_file",
+        "create_directory",
         "run_command",
         "read_file",
         "get_root_paths",

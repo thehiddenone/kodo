@@ -1,10 +1,13 @@
 """``filesystem`` tool — one handler for every file/directory operation.
 
-Dispatches on the ``operation`` field to create, delete, copy, or move a file
-or a directory. Every path is resolved against the project root and rejected if
-it would escape it. This handler replaces the former per-operation file tools
-(``create_file`` / ``delete_file`` / ``copy_file`` / ``move_file``) and adds
-their directory counterparts.
+Dispatches on the ``operation`` field to delete, copy, or move a file or a
+directory. Every path is resolved against the project root and rejected if it
+would escape it. This handler replaces the former per-operation file tools
+(``delete_file`` / ``copy_file`` / ``move_file``) and adds their directory
+counterparts. Creating a brand-new file lives in the separate ``create_file``
+tool (:class:`~kodo.tools._create_file.CreateFileTool`); creating a directory
+lives in the separate ``create_directory`` tool
+(:class:`~kodo.tools._create_directory.CreateDirectoryTool`).
 """
 
 from __future__ import annotations
@@ -43,22 +46,6 @@ class FilesystemTool(Tool):
     # -- per-operation handlers ------------------------------------------------
     # Each resolves its paths, performs the work, and returns the success
     # envelope. They raise OSError/ValueError on failure; handle() catches it.
-
-    def _create_file(self, tool_input: dict[str, object]) -> dict[str, object]:
-        path = str(tool_input.get("path", ""))
-        content = str(tool_input.get("content", ""))
-        target = self.context.resolver.resolve(path)
-        if target.exists():
-            raise FileExistsError(f"File already exists: {path!r}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        return {"status": "created", "operation": "create_file", "path": path}
-
-    def _create_dir(self, tool_input: dict[str, object]) -> dict[str, object]:
-        path = str(tool_input.get("path", ""))
-        target = self.context.resolver.resolve(path)
-        target.mkdir(parents=True, exist_ok=True)
-        return {"status": "created", "operation": "create_dir", "path": path}
 
     def _delete_file(self, tool_input: dict[str, object]) -> dict[str, object]:
         path = str(tool_input.get("path", ""))
@@ -144,8 +131,6 @@ class FilesystemTool(Tool):
         }
 
     _HANDLERS = {
-        "create_file": _create_file,
-        "create_dir": _create_dir,
         "delete_file": _delete_file,
         "delete_dir": _delete_dir,
         "copy_file": _copy_file,

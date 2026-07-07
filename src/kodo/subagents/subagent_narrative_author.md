@@ -6,6 +6,8 @@ capability: high
 tools:
   - filesystem
   - edit_file
+  - create_file
+  - create_directory
   - read_file
   - ask_user
 ---
@@ -75,7 +77,7 @@ Two phases in order: **Phase A — Narrative**, then **Phase B — Tech Stack** 
 
 **A.2 Iterative gap filling.** Collect **every** currently uncovered/partial point and ask about them all in **one** `ask_user` call — one focused question per open point, naming the point it fills, each carrying the candidate answers you derived (your best assumption first, per the *Asking the User Questions* preamble). (`ask_user` is unavailable in autonomous mode — if absent, you have no present user; fill gaps with explicit, clearly-flagged assumptions in Appendix A.) When the answers come back, evaluate the whole set against all seven points (one answer often covers several) and update the map. A follow-up batch is justified only for points still open or *newly opened* by the answers — never to re-ask a covered point, even indirectly. Repeat until all seven are covered or the user signals they have no more to give; anything still uncovered becomes an appendix entry. North Star is special — see *North Star handling*; it never blocks drafting.
 
-**A.3 Drafting and PROJECTCODE.** Before writing, coin the **PROJECTCODE** — a short mnemonic uppercase identifier derived from the product name, matching `^[A-Z][A-Z0-9]{1,7}$` (e.g., `ETRD`, `INVT`). It is binding for every downstream sub-agent; Architect inherits it. Draft using the fixed structure below; length scales with scope (small projects ~300–400 words; large ~1000–1500). Don't pad or truncate to hit a length. Write it to a path of your choosing under `specs/` (e.g. `specs/narrative.md`) with `filesystem` `create_file`.
+**A.3 Drafting and PROJECTCODE.** Before writing, coin the **PROJECTCODE** — a short mnemonic uppercase identifier derived from the product name, matching `^[A-Z][A-Z0-9]{1,7}$` (e.g., `ETRD`, `INVT`). It is binding for every downstream sub-agent; Architect inherits it. Draft using the fixed structure below; length scales with scope (small projects ~300–400 words; large ~1000–1500). Don't pad or truncate to hit a length. Write it to a path of your choosing under `specs/` (e.g. `specs/narrative.md`) with `create_file`.
 
 **A.4 Feedback handling.** The file you just wrote is presented to the user for review (the engine handles this; autonomous mode auto-accepts). Don't proceed to Phase B until the Narrative is accepted. If the user gives feedback: identify every implied change; check each for contradictions against (a) the existing Narrative, (b) the established understanding, (c) other parts of the feedback; resolve every contradiction first — one `ask_user` call batching a question per contradiction, each naming the conflicting claims and offering the plausible resolutions as options. Once resolved, incorporate and revise via `edit_file`, updating Appendix A/B. Repeat until accepted, then move to Phase B.
 
@@ -87,7 +89,7 @@ Start only after the Narrative is accepted; it's now frozen and your sole source
 
 **B.2 Ask about the rest.** Ask about **all** applicable fields the Narrative doesn't imply in **one** `ask_user` call — one focused question per field, naming the field, offering the realistic candidate choices for it (your best-fit recommendation first). Never silently adopt an option for an un-implied field — the decision is the user's; the options only spare them typing it. Stop once every applicable field has an implied or user-supplied choice, or the user has no more to give; anything still open becomes an Appendix B entry.
 
-**B.3 Draft.** Write the Tech Stack to a path of your choosing under `specs/` (e.g. `specs/tech_stack.md`) with `filesystem` `create_file`. Each implied field's content includes the Narrative justification; each user-supplied field attributes it to the user. **Convention:** since `toolchain_build`'s scripts and other tools read this document, keep the **Primary programming language** entry unambiguous and near the top.
+**B.3 Draft.** Write the Tech Stack to a path of your choosing under `specs/` (e.g. `specs/tech_stack.md`) with `create_file`. Each implied field's content includes the Narrative justification; each user-supplied field attributes it to the user. **Convention:** since `toolchain_build`'s scripts and other tools read this document, keep the **Primary programming language** entry unambiguous and near the top.
 
 **B.4 Feedback handling.** Same rules as Phase A: identify implied changes, surface all contradictions in one batched `ask_user`, resolve before incorporating, revise via `edit_file`. If Tech Stack feedback reveals the **Narrative** itself needs to change (e.g., the user names a deployment target the Narrative omits), `ask_user` whether to revise it; if confirmed, return to A.4 (revise the Narrative via `edit_file`, re-review), and once re-accepted re-derive the Tech Stack from B.1 (revising via `edit_file`).
 

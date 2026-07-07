@@ -7,6 +7,8 @@ capability: high
 tools:
   - filesystem
   - edit_file
+  - create_file
+  - create_directory
   - read_file
   - run_command
   - find_files
@@ -48,7 +50,7 @@ You have no spec handed to you, so establish the target behavior yourself before
 Read the relevant existing code and any `input_paths`. Learn the project's layout and conventions from disk; don't presume a structure exists — confirm it (`get_root_paths`, `find_files`, `read_file`).
 
 ### 2 — Write the code
-Implement the behavior. Use `filesystem` `create_file` for new files and `edit_file` (targeted string-match) to change part of a file — keep diffs minimal and scoped; resist sprawl. Add dependencies via `toolchain_deps`, **never** by hand-editing manifests. Keep implementation notes as comments at the code site.
+Implement the behavior. Use `create_file` for new files and `edit_file` (targeted string-match) to change part of a file — keep diffs minimal and scoped; resist sprawl. Add dependencies via `toolchain_deps`, **never** by hand-editing manifests. Keep implementation notes as comments at the code site.
 
 ### 3 — Write behavioral tests
 Unless `write_tests` is false, cover the new behavior with tests that follow these rules:

@@ -6,6 +6,8 @@ capability: medium
 tools:
   - filesystem
   - edit_file
+  - create_file
+  - create_directory
   - read_file
   - escalate_blocker
 ---
@@ -98,7 +100,7 @@ One document:
 3. **Design scenarios.** Walk the primary flows, the documented external failure/recovery behaviors, and the boundary conditions. Draft Given/When/Then scenarios grounded in the requirements and designs.
 4. **Map coverage.** Map every system-observable requirement to scenarios; classify the rest as out-of-scope with a note; add scenarios to close gaps.
 5. **Self-check.** Every scenario: one behavior (split compounds); Given/When/Then; observable at the system boundary (no internal mechanisms); grounded in requirements/designs; uses only declared seams. No load/security/opaque-box scenarios.
-6. **Write.** Write the plan to a path of your choosing under `specs/` (e.g. `specs/e2e_test_plan.md`) with `filesystem` `create_file`. This signals ready; the guide runs the Critic.
+6. **Write.** Write the plan to a path of your choosing under `specs/` (e.g. `specs/e2e_test_plan.md`) with `create_file`. This signals ready; the guide runs the Critic.
 7. **Critic loop.** For each `document_feedback` call with `accept: false`, address each concern and revise via `edit_file`. The guide decides how many rounds. When it ends the loop with the Critic still rejecting, `escalate_blocker` with `reason: "critic_iteration_cap"`, a `summary`, and `blocking_paths` (the plan file).
 8. **User feedback.** After the Critic accepts and the file reaches the review gate, identify every implied change; check it against the existing plan, the requirements, the designs, the Architect determination, and other parts of the feedback. If consistent, revise via `edit_file`. If it contradicts upstream documents or itself irreconcilably, `escalate_blocker` with `reason: "feedback_contradiction"`, a `summary`, and `blocking_paths`. Do not silently incorporate contradicting feedback.
 

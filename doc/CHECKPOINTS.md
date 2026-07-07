@@ -50,7 +50,7 @@ project *in place*.
   undoing the very first tool-call commit restores files to their real
   pre-Kōdo state, not to emptiness.
 - **One commit per tool call.** After every `filesystem`/`edit_file`/
-  `run_command` call that might have mutated files (`command_may_mutate`'s
+  `create_file`/`create_directory`/`run_command` call that might have mutated files (`command_may_mutate`'s
   conservative default-to-mutating heuristic), the engine calls
   `mirror.commit(label)`: `git add -A` + commit, or a no-op (returns the
   unchanged HEAD) if nothing actually changed.
@@ -250,8 +250,8 @@ Per-tool-call checkpoint data travels two ways:
    immediately after the commit.
 2. **History replay** (session resume / window reconnect): `checkpoint_sha`
    and `checkpoint_root` are persisted as declared (optional) output-schema
-   fields on the three mutating tools (`filesystem`, `edit_file`,
-   `run_command` — see their `output_schema`s) and injected into the
+   fields on the five mutating tools (`filesystem`, `edit_file`, `create_file`,
+   `create_directory`, `run_command` — see their `output_schema`s) and injected into the
    LLM-visible tool result at `_finalize_tool_result`. `history_entries()` /
    `HistoryProjector._message_to_entries()` reconstruct the same `{root, sha, parent, index,
    undone, current_index}` shape from those two fields plus a

@@ -19,7 +19,7 @@
 > [SESSIONS.md](SESSIONS.md); cross-session LLM scheduling in
 > [LLM_GATEWAY.md](LLM_GATEWAY.md).
 
-This document covers how Kodo represents, persists, and recovers state across cold starts, interruptions, and normal operation. It assumes the file-native model from [CLAUDE.md](../CLAUDE.md) — sub-agents read and write the project's **real files** directly via `filesystem`/`edit_file`/`read_file`; a per-file, append-only `.jsonl` evolution log (`kodo.guided_state`) tracks each document's revision/review history, with status always derived from the last line.
+This document covers how Kodo represents, persists, and recovers state across cold starts, interruptions, and normal operation. It assumes the file-native model from [CLAUDE.md](../CLAUDE.md) — sub-agents read and write the project's **real files** directly via `filesystem`/`edit_file`/`create_file`/`create_directory`/`read_file`; a per-file, append-only `.jsonl` evolution log (`kodo.guided_state`) tracks each document's revision/review history, with status always derived from the last line.
 
 > **Formerly two checkpoint mechanisms existed; now there is one.** Guided mode
 > used to run its own artifact-promotion mirror, separate from the generic
@@ -72,7 +72,7 @@ There is no artifact type → directory mapping anymore, and no toolchain-driven
 
 **The four jsonl entry types** (one append-only line each; full schemas in `kodo.guided_state._records`):
 
-1. **`new_revision`** — engine-written, immediately after a `filesystem`/`edit_file` call's checkpoint commit lands under a tracked root. Carries `commit_hash`, `author` (the agent name), `tool`, and `workflow: "guided"|"problem_solving"`. Fired in **both** workflow modes whenever the touched path is tracked under the *bound* project — a Problem-Solver edit of a tracked file is recorded too, so the Guide can reconcile state once Guided mode resumes. This is the only entry type Problem Solver ever produces.
+1. **`new_revision`** — engine-written, immediately after a `filesystem`/`edit_file`/`create_file`/`create_directory` call's checkpoint commit lands under a tracked root. Carries `commit_hash`, `author` (the agent name), `tool`, and `workflow: "guided"|"problem_solving"`. Fired in **both** workflow modes whenever the touched path is tracked under the *bound* project — a Problem-Solver edit of a tracked file is recorded too, so the Guide can reconcile state once Guided mode resumes. This is the only entry type Problem Solver ever produces.
 2. **`feedback`** — written by the `document_feedback` tool (critics only): `reviewer`, `accept: bool`, `concerns` (the same shape every critic already uses), `summary`.
 3. **`review_result`** — engine-written only, never via a dispatched tool: the user's `decision: "approve"|"reject"` from the interactive document-review gate, plus `comment`.
 4. **`accepted`** — engine-written only: the final marker. `commit_hash` is **copied from the immediately preceding `new_revision`** — acceptance never produces a new commit.
@@ -181,7 +181,7 @@ Because every tool now flushes its `tool_use` before dispatch, a dangling call o
 
 - **Sub-agent spawns** (`run_subagent`, `run_author_critic_iteration`) are re-dispatched through the replay ledger (§4.3). This is safe because the ledger returns a completed subsession's stored result rather than re-running it, and only the single active subsession is driven live.
 - **`ask_user` / `escalate_blocker`** are re-dispatched for real: their only "side effect" is asking the present user, so the question batch is re-fired and answered from scratch. Nothing the user had entered before the crash is stored anywhere, so there is nothing to restore — this is the designed behaviour, not a gap.
-- **Every other tool** (`filesystem`, `edit_file`, `run_command`, read-only tools, …) is **not** re-executed. Its side effects may already have landed before the interruption and there is no per-tool dedup ledger to reconcile against, so re-running could duplicate a shell command or a file write. Instead the engine synthesizes a stand-in `tool_result` — an `error` envelope keyed to the original `tool_use_id` (`_interrupted_tool_result`) — telling the model the call did not complete and was not retried, so the transcript stays well-formed and the model can decide whether to re-issue it. The failure envelope reads back as a failure via `tool_result_succeeded` and renders with a failure badge.
+- **Every other tool** (`filesystem`, `edit_file`, `create_file`, `create_directory`, `run_command`, read-only tools, …) is **not** re-executed. Its side effects may already have landed before the interruption and there is no per-tool dedup ledger to reconcile against, so re-running could duplicate a shell command or a file write. Instead the engine synthesizes a stand-in `tool_result` — an `error` envelope keyed to the original `tool_use_id` (`_interrupted_tool_result`) — telling the model the call did not complete and was not retried, so the transcript stays well-formed and the model can decide whether to re-issue it. The failure envelope reads back as a failure via `tool_result_succeeded` and renders with a failure badge.
 
 Resume fires whenever a dangling `tool_use` is present, independent of whether a project is bound (the project bind still happens first when one was persisted, since sub-agent-spawn replay and checkpointing need its layout).
 
@@ -288,7 +288,7 @@ A critic never decides what happens after `accept: true` — it has no further o
 
 ### 8.2 The unified checkpoint mirror
 
-There is one shadow-git mirror per root, shared by both workflow modes (`RootMirrorManager`/`ShadowMirror`). A `filesystem`/`edit_file` call's checkpoint commit, when its path is tracked, also drives a `new_revision` jsonl append in the same post-dispatch step — see §1.1. There is no separate "promotion mirror" anymore, and nothing analogous to the old `MirrorRepo`/sidecar-file refactor: the real project tree *is* the mirror's work tree (a true `GIT_DIR`/`GIT_WORK_TREE` split, not a copy).
+There is one shadow-git mirror per root, shared by both workflow modes (`RootMirrorManager`/`ShadowMirror`). A `filesystem`/`edit_file`/`create_file`/`create_directory` call's checkpoint commit, when its path is tracked, also drives a `new_revision` jsonl append in the same post-dispatch step — see §1.1. There is no separate "promotion mirror" anymore, and nothing analogous to the old `MirrorRepo`/sidecar-file refactor: the real project tree *is* the mirror's work tree (a true `GIT_DIR`/`GIT_WORK_TREE` split, not a copy).
 
 ### 8.3 Rollback
 

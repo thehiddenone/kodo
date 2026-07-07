@@ -37,60 +37,77 @@ class CloudLLMEntry:
         context_window: Maximum input-context size in tokens. Falls back to
             :data:`_DEFAULT_CONTEXT_WINDOW` when unset/non-positive (see
             :func:`kodo.llms.get_context_window`).
+        recommendation: One-line "when to pick this" blurb shown next to the
+            model in the Cloud AI Settings webview (e.g. ``"For the most
+            demanding work"``). Purely cosmetic — never parsed.
     """
 
     name: str
     model_id: str
     description: str
     context_window: int = 0
+    recommendation: str = ""
 
 
 # One tuple of hardcoded entries per vendor. Add a new vendor by adding a new
 # tuple here plus an entry in _CLOUD_REGISTRY/_CLOUD_VENDOR_DISPLAY/
 # _CLOUD_VENDOR_MODULE below — no other file needs to change to add models to
 # an existing vendor.
+#
+# Fable is listed first (ahead of the Opus/Sonnet/Haiku lines) so it's the
+# first option the Cloud AI Settings webview renders in every effort panel —
+# it's the flagship max-effort recommendation, not because of API vintage.
 _ANTHROPIC_MODELS: tuple[CloudLLMEntry, ...] = (
+    CloudLLMEntry(
+        name="Claude Fable 5",
+        model_id="claude-fable-5",
+        description="Anthropic Claude Fable 5",
+        context_window=1_000_000,
+        recommendation="For the most demanding work — deep reasoning, gnarly debugging, "
+        "big architectural calls.",
+    ),
     CloudLLMEntry(
         name="Claude Opus 4.8",
         model_id="claude-opus-4-8",
         description="Anthropic Claude Opus 4.8",
         context_window=1_000_000,
+        recommendation="Your best all-around heavyweight — thorough and careful, rarely wrong.",
     ),
     CloudLLMEntry(
         name="Claude Opus 4.7",
         model_id="claude-opus-4-7",
         description="Anthropic Claude Opus 4.7",
         context_window=1_000_000,
+        recommendation="A proven heavyweight from the previous Opus generation — "
+        "still excellent for complex work.",
     ),
     CloudLLMEntry(
         name="Claude Opus 4.6",
         model_id="claude-opus-4-6",
         description="Anthropic Claude Opus 4.6",
         context_window=1_000_000,
+        recommendation="An earlier Opus release — keep it around for reproducing older results.",
     ),
     CloudLLMEntry(
         name="Claude Sonnet 5",
         model_id="claude-sonnet-5",
         description="Anthropic Claude Sonnet 5",
         context_window=1_000_000,
+        recommendation="The daily driver — fast and sharp for most everyday coding tasks.",
     ),
     CloudLLMEntry(
         name="Claude Sonnet 4.6",
         model_id="claude-sonnet-4-6",
         description="Anthropic Claude Sonnet 4.6",
         context_window=1_000_000,
+        recommendation="A dependable middle-tier option from the previous Sonnet generation.",
     ),
     CloudLLMEntry(
         name="Claude Haiku 4.5",
         model_id="claude-haiku-4-5-20251001",
         description="Anthropic Claude Haiku 4.5",
         context_window=200_000,
-    ),
-    CloudLLMEntry(
-        name="Claude Fable 5",
-        model_id="claude-fable-5",
-        description="Anthropic Claude Fable 5",
-        context_window=1_000_000,
+        recommendation="Quick and cheap — ideal for simple, high-volume subagent tasks.",
     ),
 )
 

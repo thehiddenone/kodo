@@ -141,8 +141,8 @@ class TokenDelta(StreamEvent):
 class ToolCallArgDelta(StreamEvent):
     """An incremental fragment of a tool call's arguments as the model streams them.
 
-    Display-only. A tool call's arguments can be very large (e.g. an
-    ``edit_file`` whose ``content`` is an entire file), and the model spends
+    Display-only. A tool call's arguments can be very large (e.g. a
+    ``create_file`` whose ``content`` is an entire file), and the model spends
     most of a turn decoding them — during which no other event is produced, so
     the UI looks frozen for minutes. Emitting this fragment lets the client show
     a live "generating" indicator that proves the model is still working.

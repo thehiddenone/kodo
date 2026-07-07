@@ -14,6 +14,7 @@ import logging.handlers
 import shutil
 import sys
 from pathlib import Path
+from typing import cast
 
 from aiohttp import web
 
@@ -27,6 +28,7 @@ from kodo.llms import (
     get_cloud_vendor_display_name,
     get_llama_server_override_path,
     get_local_registry,
+    parse_llama_args,
     remove_local_entry,
     set_llama_server_override_path,
 )
@@ -283,6 +285,7 @@ def _cloud_registry_payload() -> dict[str, object]:
                     "name": m.name,
                     "description": m.description,
                     "context_window": m.context_window,
+                    "recommendation": m.recommendation,
                 }
                 for m in models
             ],
@@ -686,6 +689,13 @@ async def _reply_local_llm_error(req: Request, message: str) -> None:
     )
 
 
+def _parse_context_window(raw: object) -> int:
+    try:
+        return int(cast(int, raw) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 async def _handle_local_llm_add_huggingface(req: Request) -> None:
     payload = req.env.payload
     entry = LocalLLMEntry(
@@ -694,6 +704,8 @@ async def _handle_local_llm_add_huggingface(req: Request) -> None:
         description=str(payload.get("description", "")),
         repo_id=str(payload.get("repo_id", "")).strip(),
         filename=str(payload.get("filename", "")).strip(),
+        llama_args=parse_llama_args(payload.get("llama_args", {})),
+        context_window=_parse_context_window(payload.get("context_window", 0)),
     )
     if not entry.name or not entry.repo_id or not entry.filename:
         await _reply_local_llm_error(req, "name, repo_id, and filename are all required")
@@ -713,6 +725,8 @@ async def _handle_local_llm_add_file(req: Request) -> None:
         kind="custom_file",
         description=str(payload.get("description", "")),
         path=str(payload.get("path", "")).strip(),
+        llama_args=parse_llama_args(payload.get("llama_args", {})),
+        context_window=_parse_context_window(payload.get("context_window", 0)),
     )
     if not entry.name or not entry.path:
         await _reply_local_llm_error(req, "name and path are both required")

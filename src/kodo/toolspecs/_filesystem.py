@@ -1,11 +1,12 @@
 """``filesystem`` tool spec — one native tool for every file/directory operation.
 
-A single tool that performs eight filesystem operations — selected by the
+A single tool that performs six filesystem operations — selected by the
 mandatory ``operation`` field — instead of a separate tool per operation. It
-replaces the former ``create_file`` / ``delete_file`` / ``copy_file`` /
-``move_file`` tools and adds the directory counterparts. It deliberately does
-**not** subsume ``edit_file`` (the targeted, preferred way to change an existing
-file's contents), which remains its own tool.
+replaces the former ``delete_file`` / ``copy_file`` / ``move_file`` tools and
+adds the directory counterparts. It deliberately does **not** subsume
+``create_file`` (creating a brand-new file), ``create_directory`` (creating a
+directory), or ``edit_file`` (the targeted, preferred way to change an
+existing file's contents), which are their own tools.
 
 Dispatch lives in :mod:`kodo.tools` (``_filesystem.py``), which resolves every
 path against the project root and rejects anything that would escape it.
@@ -19,13 +20,10 @@ from ._spec import SecurityImpact, ToolSpec
 __all__ = ["FILESYSTEM"]
 
 
-# The eight operations, grouped by the arguments they consume:
-#   path + content : create_file
-#   path           : create_dir, delete_file, delete_dir
+# The six operations, grouped by the arguments they consume:
+#   path           : delete_file, delete_dir
 #   source + dest  : copy_file, move_file, copy_dir, move_dir
 _OPERATIONS = (
-    "create_file",
-    "create_dir",
     "delete_file",
     "delete_dir",
     "copy_file",
@@ -43,19 +41,13 @@ _PATH_DESC = (
 FILESYSTEM: ToolSpec = ToolSpec(
     name="filesystem",
     external_name="Filesystem",
-    user_description="Create, delete, copy, or move files and directories",
+    user_description="Delete, copy, or move files and directories",
     description=(
         "The single tool for filesystem operations on files AND directories: "
-        "creating, deleting, copying, moving, and renaming them. Pick the "
-        "operation with the required `operation` field; the other arguments you "
-        "must supply depend on it. Every path must resolve inside the project "
-        "root.\n\n"
+        "deleting, copying, moving, and renaming them. Pick the operation with "
+        "the required `operation` field; the other arguments you must supply "
+        "depend on it. Every path must resolve inside the project root.\n\n"
         "Operations and their arguments:\n"
-        "- `create_file` — needs `path` + `content`. Creates a new file with "
-        "that content. Fails if it already exists (use `edit_file` to change an "
-        "existing file's contents). Parent directories are created automatically.\n"
-        "- `create_dir` — needs `path`. Creates a directory, including any "
-        "missing parents (like `mkdir -p`). Succeeds if it already exists.\n"
         "- `delete_file` — needs `path`. Permanently deletes a file. Fails if it "
         "does not exist or is a directory.\n"
         "- `delete_dir` — needs `path`. Permanently deletes a directory AND all "
@@ -69,9 +61,10 @@ FILESYSTEM: ToolSpec = ToolSpec(
         "Fails if `source` does not exist.\n"
         "- `move_dir` — needs `source` + `destination`. Moves or renames a "
         "directory tree. Fails if `source` does not exist.\n\n"
-        "To change the contents of an existing file, use `edit_file` instead — "
-        "this tool only creates, removes, or relocates whole files and "
-        "directories."
+        "To create a directory, use `create_directory` instead; to create a "
+        "brand-new file, use `create_file` instead; to change the contents of "
+        "an existing file, use `edit_file` instead — this tool only "
+        "removes/relocates whole files and directories."
     ),
     input_schema={
         "type": "object",
@@ -82,21 +75,17 @@ FILESYSTEM: ToolSpec = ToolSpec(
                 "enum": list(_OPERATIONS),
                 "description": (
                     "Which filesystem operation to perform. Determines which of "
-                    "the other arguments are required: `path` (+`content` for "
-                    "`create_file`) for the create/delete operations, or "
-                    "`source`+`destination` for the copy/move operations."
+                    "the other arguments are required: `path` for the delete "
+                    "operations, or `source`+`destination` for the copy/move "
+                    "operations."
                 ),
             },
             "path": {
                 "type": "string",
                 "description": (
-                    "Target path for the create/delete operations (`create_file`, "
-                    "`create_dir`, `delete_file`, `delete_dir`). " + _PATH_DESC
+                    "Target path for the delete operations (`delete_file`, "
+                    "`delete_dir`). " + _PATH_DESC
                 ),
-            },
-            "content": {
-                "type": "string",
-                "description": "Full content to write. Required for `create_file` only.",
             },
             "source": {
                 "type": "string",
@@ -118,7 +107,7 @@ FILESYSTEM: ToolSpec = ToolSpec(
             "status": {
                 "type": "string",
                 "description": (
-                    "The completed operation's past tense on success — 'created', "
+                    "The completed operation's past tense on success — "
                     "'deleted', 'copied', or 'moved'."
                 ),
             },
@@ -128,7 +117,7 @@ FILESYSTEM: ToolSpec = ToolSpec(
             },
             "path": {
                 "type": "string",
-                "description": "The path acted on (create/delete operations).",
+                "description": "The path acted on (delete operations).",
             },
             "source": {
                 "type": "string",
@@ -160,7 +149,6 @@ FILESYSTEM: ToolSpec = ToolSpec(
         "intent": "always",
         "operation": "always",
         "path": "always",
-        "content": "visible",
         "source": "always",
         "destination": "always",
     },
@@ -172,14 +160,14 @@ FILESYSTEM: ToolSpec = ToolSpec(
         "destination": "always",
     },
     when_to_use=(
-        "Any time you need to create, delete, copy, move, or rename a file or a "
-        "directory on disk — this one tool covers all of those. Set `operation` "
-        "to the file or directory action you want (e.g. `create_file`, "
-        "`create_dir`, `delete_dir`, `move_file`).",
-        "Scaffolding non-artifact project files or directories a toolchain "
-        "expects on disk (config files, lockfiles, source/test folders).",
+        "Any time you need to delete, copy, move, or rename a file or a "
+        "directory on disk — this one tool covers all of those. Set "
+        "`operation` to the action you want (e.g. `delete_dir`, `copy_dir`, "
+        "`move_file`).",
         "Removing stale files or whole directories, or relocating/renaming them.",
-        "Use `edit_file` instead when you only need to change the CONTENTS of an "
-        "existing file — this tool does not edit file contents.",
+        "Use `create_directory` instead to create a directory, `create_file` "
+        "to create a brand-new file, or `edit_file` to change the CONTENTS of "
+        "an existing file — this tool does not create directories or edit "
+        "file contents.",
     ),
 )

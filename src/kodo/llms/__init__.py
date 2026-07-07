@@ -29,6 +29,7 @@ from ._local_registry import (
     clear_llama_server_override_path,
     get_llama_server_override_path,
     get_local_registry,
+    parse_llama_args,
     remove_local_entry,
     set_llama_server_override_path,
 )
@@ -65,6 +66,7 @@ __all__ = [
     "get_context_window",
     "get_llama_server_override_path",
     "get_local_registry",
+    "parse_llama_args",
     "remove_local_entry",
     "set_llama_server_override_path",
     "strip_kodo_callouts",

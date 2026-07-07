@@ -6,6 +6,8 @@ capability: medium
 tools:
   - filesystem
   - edit_file
+  - create_file
+  - create_directory
   - read_file
   - escalate_blocker
 ---
@@ -58,8 +60,8 @@ The plan you receive has already passed **Test Design Critic**, whose whole job 
 ## Workflow
 
 1. **Read inputs** — Test Plan, Functional Design (especially Interfaces), Tech Stack.
-2. **Write production stubs** — for every exposed interface, `filesystem` `create_file` a stub under `src/`. Each stub declares the signature exactly, returns a trivial value (or raises not-implemented only when no trivial value applies), and has no logic/branches/partial implementations.
-3. **Write test files** — for each logical grouping, `filesystem` `create_file` a test file under `test/`. Implement every planned test targeting units in that grouping. Each test uses framework idioms; has a name tracing to the plan test ID and human-readable; setup = Given, action = When, assertions = Then; uses test doubles for cross-component/external dependencies (built from their Functional Design interfaces). Add a comment/docstring referencing the plan test ID and linked requirement ID(s) so test → plan → requirement is readable in code.
+2. **Write production stubs** — for every exposed interface, `create_file` a stub under `src/`. Each stub declares the signature exactly, returns a trivial value (or raises not-implemented only when no trivial value applies), and has no logic/branches/partial implementations.
+3. **Write test files** — for each logical grouping, `create_file` a test file under `test/`. Implement every planned test targeting units in that grouping. Each test uses framework idioms; has a name tracing to the plan test ID and human-readable; setup = Given, action = When, assertions = Then; uses test doubles for cross-component/external dependencies (built from their Functional Design interfaces). Add a comment/docstring referencing the plan test ID and linked requirement ID(s) so test → plan → requirement is readable in code.
 4. **Verify the failing state** — mentally walk each test: does it parse with the stubs? would the framework run it (no import errors, no missing symbols)? would it fail (stubs don't satisfy the Then)? All three must hold. A test that accidentally passes against the stubs is a bug — fix it before submitting.
 5. **Code Critic review loop** — after writing the full stub+test set, the guide runs Code Critic, which calls `document_feedback` per reviewed file it has concerns about. For each `accept: false` (kinds on test files include `security`, `anti_pattern`, `dead_code`, `naming`, `test_quality`, `over_mocking`, `test_documentation`, `cleanup`), address it by revising the affected test file via `edit_file`. The guide decides how many rounds per file. When it ends the loop with Code Critic still rejecting, `escalate_blocker` with `reason: "reviewer_iteration_cap"`, a `summary`, and `blocking_paths` (the current test files). When Code Critic accepts every reviewed file, the engine handles presenting them to the user and recording acceptance — you do not fire that gate.
 6. **User feedback handling** — identify every implied change; check for contradictions against (a) the existing test/stub files, (b) the Test Plan, (c) the Functional Design, (d) the requirements, (e) other parts of the feedback. If consistent, revise the affected file(s) via `edit_file`. If the feedback would force a non-behavioral test, do not implement it — `escalate_blocker` (`reason: "non_behavioral_test_in_plan"`) so it routes to Test Designer. If it contradicts upstream documents or itself irreconcilably, `escalate_blocker` with `reason: "feedback_contradiction"`, a `summary`, and `blocking_paths`. Do not silently incorporate contradicting feedback.

@@ -11,6 +11,7 @@ tools:
   - read_file
   - run_command
   - edit_file
+  - create_file
 ---
 # Dependency Manager
 

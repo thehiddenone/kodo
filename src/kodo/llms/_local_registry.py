@@ -38,6 +38,7 @@ __all__ = [
     "clear_llama_server_override_path",
     "get_llama_server_override_path",
     "get_local_registry",
+    "parse_llama_args",
     "remove_local_entry",
     "set_llama_server_override_path",
 ]
@@ -64,10 +65,13 @@ class LocalLLMEntry:
         filename: GGUF filename inside the HF repository
             (``hardcoded_hf``/``custom_hf`` only).
         llama_args: Extra CLI flags passed verbatim to ``llama-server``
-            (``hardcoded_hf``/``custom_hf`` only).
+            (any kind that runs through llama-server: ``hardcoded_hf``/
+            ``custom_hf``/``custom_file`` — never ``custom_server_url``,
+            which isn't a process kodo launches).
         context_window: Maximum input-context size in tokens. Falls back to
             the default when unset/non-positive (see
-            :func:`kodo.llms.get_context_window`).
+            :func:`kodo.llms.get_context_window`). Same kind restriction as
+            ``llama_args``.
         path: Absolute path to the GGUF file on disk (``custom_file`` only).
         url: Base URL of the externally-managed server (``custom_server_url``
             only), e.g. ``'http://192.168.1.50:8042'``.
@@ -161,18 +165,23 @@ def _registry_file(kodo_dir: Path) -> Path:
     return kodo_dir.joinpath(*_REGISTRY_RELATIVE_PATH)
 
 
+def parse_llama_args(raw: object) -> dict[str, str]:
+    """Coerce a WS-payload/JSON value into the ``llama_args`` shape.
+
+    Anything that isn't a ``dict`` (missing field, wrong type from a
+    malformed request) is treated as "no extra args" rather than raising —
+    callers are parsing untrusted request payloads.
+    """
+    return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+
+
 def _entry_from_json(raw: dict[str, object]) -> LocalLLMEntry | None:
     name = str(raw.get("name", "")).strip()
     kind = str(raw.get("kind", "")).strip()
     if not name or kind not in _CUSTOM_KINDS:
         _log.warning("Skipping invalid local-llm-registry.json entry: %r", raw)
         return None
-    llama_args_raw = raw.get("llama_args", {})
-    llama_args = (
-        {str(k): str(v) for k, v in llama_args_raw.items()}
-        if isinstance(llama_args_raw, dict)
-        else {}
-    )
+    llama_args = parse_llama_args(raw.get("llama_args", {}))
     return LocalLLMEntry(
         name=name,
         kind=kind,

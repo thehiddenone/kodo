@@ -1,8 +1,9 @@
 """Per-document evolution tracking for Guided mode — append-only ``.jsonl`` logs.
 
 Replaces the old ``kodo.workspace`` artifact-staging system. Authors write
-real files directly with ``filesystem``/``edit_file``; the engine records a
-``new_revision`` entry (with the resulting mirror-commit sha) right after.
+real files directly with ``filesystem``/``edit_file``/``create_file``; the
+engine records a ``new_revision`` entry (with the resulting mirror-commit sha)
+right after.
 Critics record their verdict via the ``document_feedback`` tool, which writes
 a ``feedback`` entry. The engine alone writes ``review_result`` (the user's
 decision) and ``accepted`` (the final marker) — no dispatched tool ever

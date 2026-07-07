@@ -2,8 +2,8 @@
 
 A document's current status is always derived from the *last* line of its
 log (:func:`derive_status`) — never from any in-memory index. ``new_revision``
-is written by the engine after a ``filesystem``/``edit_file`` commit;
-``feedback`` is written by the ``document_feedback`` tool (critics only);
+is written by the engine after a ``filesystem``/``edit_file``/``create_file``
+commit; ``feedback`` is written by the ``document_feedback`` tool (critics only);
 ``review_result`` and ``accepted`` are written by the engine alone — no
 dispatched tool ever produces them.
 """

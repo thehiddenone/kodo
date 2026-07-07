@@ -173,10 +173,11 @@ the entire wiring step.
 > `DISPATCHABLE_TOOLS_BY_NAME`. There are no such placeholders today — every
 > spec in the catalog has a dispatch row, including `toolchain_build`/
 > `toolchain_deps`, which used to be spec-only. `filesystem` is one row:
-> a single `FilesystemTool` dispatches all eight file/directory operations
-> (create/delete/copy/move × file/dir) on its `operation` field; `edit_file`
-> stays a separate tool, as does the read-only `read_file` (whole file, line
-> ranges, or a regex `pattern` with context lines).
+> a single `FilesystemTool` dispatches its six directory/delete/copy/move
+> operations on its `operation` field; `create_file` (whole-file creation),
+> `create_directory` (directory creation), and `edit_file` (targeted
+> existing-file edit) are separate tools, as is the read-only `read_file`
+> (whole file, line ranges, or a regex `pattern` with context lines).
 
 ---
 
@@ -345,11 +346,11 @@ needs it.
 ## 8A. The `intent` parameter — mutating tools declare their purpose
 
 Every **first-degree mutator** — a tool whose own dispatch changes content on
-disk: `filesystem`, `edit_file`, `run_command`, `create_new_project`,
-`rollback` — declares a mandatory `intent` string as the **first** property of
-its `input_schema`: one sentence stating what this specific call changes and
-why. The property (and the generic "how to state your intent" guidance the
-model reads) is defined **once**, in
+disk: `filesystem`, `edit_file`, `create_file`, `create_directory`,
+`run_command`, `create_new_project`, `rollback` — declares a mandatory
+`intent` string as the **first** property of its `input_schema`: one sentence
+stating what this specific call changes and why. The property (and the generic "how to state
+your intent" guidance the model reads) is defined **once**, in
 [toolspecs/_intent.py](../src/kodo/toolspecs/_intent.py) (`INTENT_PROPERTY`),
 and embedded by each mutating spec, so the instructions can never drift
 between tools.
@@ -458,7 +459,7 @@ So the handler's returned **JSON string becomes the `content` of a
 reads it, reasons, and either calls more tools or ends its turn. After the loop,
 the engine reads `dispatcher.returned_output` (what a leaf returned via
 `return_result`) and used `dispatcher.stop_requested` to decide early exit. A
-mutating tool call (`filesystem`/`edit_file`) is additionally bracketed by
+mutating tool call (`filesystem`/`edit_file`/`create_file`/`create_directory`) is additionally bracketed by
 `CheckpointCoordinator.prepare`/`CheckpointCoordinator.commit` (§12.1 in INTERNALS.md) — outside
 this loop, around the `tool_dispatch` call — so every dispatch in this diagram
 that touches a file also earns a mirror commit.
@@ -481,8 +482,8 @@ author that writes a file:
    │                                        engine._run_subagent: builds a NEW
    │                                        ToolDispatcher for the leaf, runs its turn
    │                                                    │
-   │                          leaf LLM  tool_use: filesystem(create_file) ─► dispatch(…)
-   │                                                    └─► FilesystemTool(ctx).handle(…)
+   │                          leaf LLM  tool_use: create_file(path, content) ─► dispatch(…)
+   │                                                    └─► CreateFileTool(ctx).handle(…)
    │                                                          └─► writes the real file on disk
    │                                        (engine, outside the tool) commits the mirror,
    │                                        appends a new_revision jsonl entry (§7, INTERNALS.md)

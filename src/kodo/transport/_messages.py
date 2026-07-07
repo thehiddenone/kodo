@@ -216,8 +216,9 @@ MSG_LLAMA_STOP = "llama.stop"
 # server-owned ``~/.kodo/etc/local-llm-registry.json`` and reply with
 # ``local_llm.registry_state`` (the merged registry + override path) on the
 # same connection — there is no separate ack payload.
-#   local_llm.add_huggingface {name, description, repo_id, filename}
-#   local_llm.add_file        {name, description, path}
+#   local_llm.add_huggingface {name, description, repo_id, filename,
+#                              llama_args?, context_window?}
+#   local_llm.add_file        {name, description, path, llama_args?, context_window?}
 #   local_llm.add_server_url  {name, description, url}
 #   local_llm.uninstall       {name} — frees the downloaded GGUF, keeps the entry
 #   local_llm.remove          {name} — removes a custom entry (hardcoded ones

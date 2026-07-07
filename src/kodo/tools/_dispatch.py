@@ -18,6 +18,8 @@ from pathlib import Path
 
 from kodo.toolspecs import (
     ASK_USER,
+    CREATE_DIRECTORY,
+    CREATE_FILE,
     CREATE_NEW_PROJECT,
     DISABLE_AUTONOMOUS_MODE,
     DOCUMENT_FEEDBACK,
@@ -58,6 +60,8 @@ from ._context import (
     SessionLike,
     ToolContext,
 )
+from ._create_directory import CreateDirectoryTool
+from ._create_file import CreateFileTool
 from ._create_new_project import CreateNewProjectTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
 from ._document_feedback import DocumentFeedbackTool
@@ -102,6 +106,8 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (ASK_USER, AskUserTool),
     (FILESYSTEM, FilesystemTool),
     (EDIT_FILE, EditFileTool),
+    (CREATE_FILE, CreateFileTool),
+    (CREATE_DIRECTORY, CreateDirectoryTool),
     (RUN_COMMAND, RunCommandTool),
     (GET_ROOT_PATHS, GetRootPathsTool),
     (FIND_FILES, FindFilesTool),

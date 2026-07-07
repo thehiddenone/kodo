@@ -161,6 +161,7 @@ def test_dispatchable_catalog_includes_fileio_and_shell_tools() -> None:
     for name in (
         "filesystem",
         "edit_file",
+        "create_directory",
         "run_command",
     ):
         assert name in DISPATCHABLE_TOOLS_BY_NAME
@@ -311,12 +312,9 @@ async def test_escalate_blocker_sets_stop_flag(tmp_path: Path) -> None:
 async def test_create_file_writes_new_file(tmp_path: Path) -> None:
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
-        await dispatcher.dispatch(
-            "filesystem", {"operation": "create_file", "path": "out.txt", "content": "hello"}
-        )
+        await dispatcher.dispatch("create_file", {"path": "out.txt", "content": "hello"})
     )
     assert result["status"] == "created"
-    assert result["operation"] == "create_file"
     assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "hello"
 
 
@@ -325,12 +323,26 @@ async def test_create_file_fails_if_already_exists(tmp_path: Path) -> None:
     (tmp_path / "out.txt").write_text("existing", encoding="utf-8")
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
-        await dispatcher.dispatch(
-            "filesystem", {"operation": "create_file", "path": "out.txt", "content": "hello"}
-        )
+        await dispatcher.dispatch("create_file", {"path": "out.txt", "content": "hello"})
     )
     assert "error" in result
     assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "existing"
+
+
+@pytest.mark.asyncio
+async def test_create_directory_makes_parents(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(await dispatcher.dispatch("create_directory", {"path": "a/b/c"}))
+    assert result["status"] == "created"
+    assert (tmp_path / "a" / "b" / "c").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_create_directory_succeeds_if_already_exists(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(await dispatcher.dispatch("create_directory", {"path": "a"}))
+    assert result["status"] == "created"
 
 
 @pytest.mark.asyncio
@@ -454,16 +466,6 @@ async def test_move_file_renames_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_dir_makes_parents(tmp_path: Path) -> None:
-    dispatcher = _make_dispatcher(tmp_path)
-    result = json.loads(
-        await dispatcher.dispatch("filesystem", {"operation": "create_dir", "path": "a/b/c"})
-    )
-    assert result["status"] == "created"
-    assert (tmp_path / "a" / "b" / "c").is_dir()
-
-
-@pytest.mark.asyncio
 async def test_delete_dir_removes_tree(tmp_path: Path) -> None:
     (tmp_path / "d" / "sub").mkdir(parents=True)
     (tmp_path / "d" / "sub" / "f.txt").write_text("x", encoding="utf-8")
@@ -533,9 +535,7 @@ async def test_move_dir_relocates_tree(tmp_path: Path) -> None:
 async def test_fileio_rejects_path_outside_project_root(tmp_path: Path) -> None:
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
-        await dispatcher.dispatch(
-            "filesystem", {"operation": "create_file", "path": "../escape.txt", "content": "nope"}
-        )
+        await dispatcher.dispatch("create_file", {"path": "../escape.txt", "content": "nope"})
     )
     assert "error" in result
     assert not (tmp_path.parent / "escape.txt").exists()
@@ -636,7 +636,15 @@ async def test_dispatch_unknown_tool_returns_error(tmp_path: Path) -> None:
 # Every tool whose own dispatch mutates content on disk; second-degree
 # mutators (run_subagent, run_author_critic_iteration, toolchain_deps) and
 # toolchain_build (runs the project's own generated scripts) are exempt.
-_INTENT_TOOLS = ("filesystem", "edit_file", "run_command", "create_new_project", "rollback")
+_INTENT_TOOLS = (
+    "filesystem",
+    "edit_file",
+    "create_file",
+    "create_directory",
+    "run_command",
+    "create_new_project",
+    "rollback",
+)
 
 
 def test_mutating_specs_declare_intent_first_required_and_visible() -> None:
@@ -663,13 +671,12 @@ async def test_missing_or_blank_intent_is_rejected_before_dispatch(tmp_path: Pat
     for extra in ({}, {"intent": "   "}, {"intent": 7}):
         payload: dict[str, object] = {
             **extra,
-            "operation": "create_file",
             "path": "never.txt",
             "content": "hi",
         }
         # Call the real ToolDispatcher.dispatch, bypassing the test-only
         # intent injection, to exercise the generic enforcement.
-        result = json.loads(await ToolDispatcher.dispatch(dispatcher, "filesystem", payload))
+        result = json.loads(await ToolDispatcher.dispatch(dispatcher, "create_file", payload))
         assert "intent" in result["error"]
         # Rejected before the handler ran — nothing was written.
         assert not (tmp_path / "never.txt").exists()
@@ -681,10 +688,9 @@ async def test_present_intent_dispatches_normally(tmp_path: Path) -> None:
     result = json.loads(
         await ToolDispatcher.dispatch(
             dispatcher,
-            "filesystem",
+            "create_file",
             {
                 "intent": "create the fixture file this test asserts on",
-                "operation": "create_file",
                 "path": "made.txt",
                 "content": "hi",
             },

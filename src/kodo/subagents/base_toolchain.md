@@ -65,8 +65,8 @@ Script rules:
   checks for PowerShell). Never mask a failure as success.
 - Scripts are **idempotent** (safe to run twice) and run **from the project root**
   regardless of the caller's cwd (resolve paths relative to the script location).
-- Write them with the `filesystem` tool (`operation: "create_file"`); on POSIX,
-  `chmod +x` the `.sh` files via `run_command`.
+- Write them with the `create_file` tool; on POSIX, `chmod +x` the `.sh` files
+  via `run_command`.
 
 ## DEVELOPMENT.md
 

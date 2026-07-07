@@ -20,6 +20,8 @@ from ._compliance import (
     normalize_output,
     tool_result_succeeded,
 )
+from ._create_directory import CREATE_DIRECTORY
+from ._create_file import CREATE_FILE
 from ._create_new_project import CREATE_NEW_PROJECT
 from ._disable_autonomous_mode import DISABLE_AUTONOMOUS_MODE
 from ._document_feedback import DOCUMENT_FEEDBACK
@@ -61,6 +63,8 @@ from ._web_search import WEB_SEARCH
 __all__ = [
     "ALL_TOOLS",
     "ASK_USER",
+    "CREATE_DIRECTORY",
+    "CREATE_FILE",
     "CREATE_NEW_PROJECT",
     "DISABLE_AUTONOMOUS_MODE",
     "DOCUMENT_FEEDBACK",
@@ -109,6 +113,8 @@ __all__ = [
 # the `## Tools` section of each agent prompt.
 ALL_TOOLS: tuple[ToolSpec, ...] = (
     ASK_USER,
+    CREATE_DIRECTORY,
+    CREATE_FILE,
     CREATE_NEW_PROJECT,
     DISABLE_AUTONOMOUS_MODE,
     DOCUMENT_FEEDBACK,

@@ -29,6 +29,8 @@ from ._context import (
     SessionLike,
     ToolContext,
 )
+from ._create_directory import CreateDirectoryTool
+from ._create_file import CreateFileTool
 from ._create_new_project import CreateNewProjectTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
 from ._dispatch import DISPATCHABLE_TOOLS_BY_NAME, ToolDispatcher, tools_for_agent
@@ -69,6 +71,8 @@ __all__ = [
     "DISPATCHABLE_TOOLS_BY_NAME",
     "ApprovalLike",
     "AskUserTool",
+    "CreateDirectoryTool",
+    "CreateFileTool",
     "CreateNewProjectTool",
     "DisableAutonomousModeTool",
     "DocumentFeedbackTool",

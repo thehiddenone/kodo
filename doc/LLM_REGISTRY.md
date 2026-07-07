@@ -75,6 +75,7 @@ class CloudLLMEntry:
     model_id: str        # API model id — also the registry key
     description: str
     context_window: int = 0
+    recommendation: str = ""  # "when to pick this" blurb, Cloud AI Settings webview only
 ```
 
 `kodo/llms/_cloud_registry.py` holds one hardcoded tuple of entries per
@@ -86,15 +87,18 @@ shared by every model from that vendor (unlike the old per-model `module`
 field). `_CLOUD_VENDOR_DISPLAY` holds the human-readable name shown in the UI
 ("Anthropic").
 
-Today's Anthropic entries (`claude-opus-4-8`/`4-7`/`4-6`, `claude-sonnet-5`,
-`claude-sonnet-4-6`, `claude-haiku-4-5-20251001`, `claude-fable-5`) — seven
+Today's Anthropic entries (`claude-fable-5`, `claude-opus-4-8`/`4-7`/`4-6`,
+`claude-sonnet-5`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`) — seven
 models, defaulted one per effort tier (low→haiku, medium→sonnet-5,
 high→opus-4-8, max→fable-5) but all seven selectable in any of the four
-effort panels. Pricing (`kodo/llms/anthropic/_usage.py`) is keyed by
-version-agnostic family prefix (`claude-opus`, `claude-sonnet`,
-`claude-haiku`, `claude-fable`) so a new version of an existing family is
-priced correctly without a pricing-table change; Fable is priced at
-Opus-tier rates as the max-effort tier.
+effort panels. Fable is listed first in `_ANTHROPIC_MODELS` — deliberately
+out of API-vintage order — so the Cloud AI Settings webview renders it as the
+top/first option in every effort panel; each entry's `recommendation` string
+is the one-line "when to pick this" blurb shown next to it there. Pricing
+(`kodo/llms/anthropic/_usage.py`) is keyed by version-agnostic family prefix
+(`claude-opus`, `claude-sonnet`, `claude-haiku`, `claude-fable`) so a new
+version of an existing family is priced correctly without a pricing-table
+change; Fable is priced at Opus-tier rates as the max-effort tier.
 
 **Adding a cloud vendor or model is a code change** — add a tuple + registry
 entries in `_cloud_registry.py`, and if it's a new vendor, a plugin
@@ -113,8 +117,8 @@ class LocalLLMEntry:
     description: str = ""
     repo_id: str = ""       # hardcoded_hf / custom_hf
     filename: str = ""      # hardcoded_hf / custom_hf
-    llama_args: dict[str, str] = field(default_factory=dict)  # hardcoded_hf / custom_hf
-    context_window: int = 0
+    llama_args: dict[str, str] = field(default_factory=dict)  # any llama-server kind
+    context_window: int = 0                                    # any llama-server kind
     path: str = ""          # custom_file
     url: str = ""           # custom_server_url
 ```
@@ -135,8 +139,10 @@ merges the compiled-in tuple with the external collection persisted at
 ```json
 {
   "entries": [
-    { "name": "...", "kind": "custom_hf", "repo_id": "...", "filename": "...", "description": "..." },
-    { "name": "...", "kind": "custom_file", "path": "/abs/path/model.gguf", "description": "..." },
+    { "name": "...", "kind": "custom_hf", "repo_id": "...", "filename": "...", "description": "...",
+      "llama_args": {"--cache-type-k": "q8_0"}, "context_window": 262144 },
+    { "name": "...", "kind": "custom_file", "path": "/abs/path/model.gguf", "description": "...",
+      "llama_args": {}, "context_window": 262144 },
     { "name": "...", "kind": "custom_server_url", "url": "http://host:port", "description": "..." }
   ],
   "llama_server_override_path": null
@@ -147,7 +153,13 @@ This file is **owned entirely by the Python server** (read and written by
 `kodo/llms/_local_registry.py`); kodo-vsix never writes it directly, only
 through the `local_llm.*` WS commands (§7.6). `add_local_entry`/
 `remove_local_entry` reject duplicate names and reject removing a
-`hardcoded_hf` entry.
+`hardcoded_hf` entry. `llama_args`/`context_window` are optional on the
+`local_llm.add_huggingface`/`local_llm.add_file` commands (never offered for
+`add_server_url`, which isn't a llama-server process kodo launches) — the
+kodo-vsix "Add local LLM" modals collect `llama_args` as one space-separated
+`--flag value` line and parse it client-side into the wire dict shape;
+`context_window` defaults to `262144` in those modals but falls back
+server-side to `get_context_window`'s default when zero/absent.
 
 **`custom_file` installed-state is special**: per design, kodo does not copy
 or own the file, and its presence is checked **once, by the kodo-vsix

@@ -28,12 +28,14 @@ _log = logging.getLogger(__name__)
 
 # File-mutating tools that earn a shadow-mirror checkpoint after each call, in
 # both workflow modes.
-_MUTATING_TOOLS = frozenset({"filesystem", "edit_file", "run_command"})
+_MUTATING_TOOLS = frozenset(
+    {"filesystem", "edit_file", "create_file", "create_directory", "run_command"}
+)
 
-# Of those, the two whose commit also earns a `new_revision` entry in a
+# Of those, the tools whose commit also earns a `new_revision` entry in a
 # tracked document's .jsonl evolution log (run_command's targets are too
 # coarse-grained — a whole cwd, not a specific file — to attribute cleanly).
-_GUIDED_STATE_TOOLS = frozenset({"filesystem", "edit_file"})
+_GUIDED_STATE_TOOLS = frozenset({"filesystem", "edit_file", "create_file", "create_directory"})
 
 
 class CheckpointHost(Protocol):
@@ -54,8 +56,8 @@ class CheckpointCoordinator:
         self._host = host
         self._sink = sink
         # Per-root shadow-git checkpoint mirrors. Drives both workflow modes: a
-        # Guided-mode filesystem/edit_file/run_command call earns a checkpoint
-        # exactly like a Problem-Solver one (see _enabled).
+        # Guided-mode filesystem/edit_file/create_file/create_directory/run_command
+        # call earns a checkpoint exactly like a Problem-Solver one (see _enabled).
         self._mirrors = RootMirrorManager()
 
     @property
@@ -123,7 +125,7 @@ class CheckpointCoordinator:
             except (PermissionError, ValueError):
                 return None
 
-        if tool_name == "edit_file":
+        if tool_name in ("edit_file", "create_file", "create_directory"):
             path = _resolve("path")
             return [path] if path is not None else []
         if tool_name == "filesystem":
