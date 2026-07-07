@@ -129,6 +129,14 @@ class WorkerMixin:
             except Exception as exc:
                 _log.exception("Unhandled error in runtime worker: %s", exc)
                 await self._emitters.emit_error(str(exc), recoverable=True)
+                # Reset to an idle phase so the client unlocks its input and the
+                # user can retry. Without this the phase stays "running" (set when
+                # the turn began), leaving the webview's send box disabled and the
+                # session wedged even though the worker is ready for the next
+                # prompt. "awaiting_user" (not "stopped") avoids the client's
+                # user-interrupt callout — this was an error, not a Stop.
+                if self._session.phase != "done":
+                    self._session.phase = "awaiting_user"
                 self._session.agent = None
                 await self._emitters.emit_state()
             finally:

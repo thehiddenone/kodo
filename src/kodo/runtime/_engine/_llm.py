@@ -25,6 +25,7 @@ from kodo.llms import (
     TokenDelta,
     ToolCallEvent,
     TurnEnd,
+    default_cache_breakpoints,
     get_cloud_registry,
     get_cloud_vendor_module,
     get_local_registry,
@@ -60,9 +61,13 @@ class LLMPlumbingMixin:
         Pure settings lookup (no plugin construction, no key request), so it is
         safe to call synchronously from the context-limit/auto-compaction paths.
         In ``local`` mode every capability maps to the single selected local
-        model; otherwise the per-vendor, per-capability cloud model is used
-        (falling back to the vendor's ``medium`` entry, then the capability
-        name itself).
+        model; otherwise the per-vendor, per-capability cloud model is used,
+        falling back through the other capability tiers (``medium`` first,
+        since that's the safest default) and finally to the vendor's first
+        hardcoded registry model. A bare capability name (``"high"``, etc.)
+        is never returned as a model key — an incomplete or stale
+        ``models.cloud.<vendor>`` map (e.g. one predating a newly added
+        tier) would otherwise 404 against the provider.
 
         Args:
             capability: ``'max'``, ``'high'``, ``'medium'``, or ``'low'``.
@@ -84,7 +89,14 @@ class LLMPlumbingMixin:
         vendor_map = cloud_map.get(vendor, {}) if isinstance(cloud_map, dict) else {}
         if not isinstance(vendor_map, dict):
             vendor_map = {}
-        return str(vendor_map.get(capability, vendor_map.get("medium", capability)))
+        for key in (capability, "medium", "high", "max", "low"):
+            model_id = vendor_map.get(key)
+            if model_id:
+                return str(model_id)
+        registry_models = get_cloud_registry().get(vendor, ())
+        if registry_models:
+            return registry_models[0].model_id
+        return capability
 
     async def _resolve_plugin(
         self: EngineHost, capability: str, force_model_key: str | None = None
@@ -201,7 +213,7 @@ class LLMPlumbingMixin:
             system=agent.system_prompt,
             messages=messages,
             tools=tools_for_agent(agent.tools),
-            cache_breakpoints=[0],
+            cache_breakpoints=default_cache_breakpoints(messages),
         ):
             if isinstance(event, TokenDelta):
                 text_parts.append(event.text)
@@ -292,7 +304,7 @@ class LLMPlumbingMixin:
                 system=agent.system_prompt,
                 messages=messages,
                 tools=tools,
-                cache_breakpoints=[0],
+                cache_breakpoints=default_cache_breakpoints(messages),
             ):
                 if isinstance(event, TokenDelta):
                     text_parts.append(event.text)
@@ -433,7 +445,7 @@ class LLMPlumbingMixin:
                 system=system,
                 messages=[Message(role="user", content=user)],
                 tools=[],
-                cache_breakpoints=[0],
+                cache_breakpoints=default_cache_breakpoints([Message(role="user", content=user)]),
             ):
                 if isinstance(event, TokenDelta):
                     text_parts.append(event.text)

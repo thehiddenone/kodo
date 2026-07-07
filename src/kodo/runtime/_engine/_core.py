@@ -182,6 +182,7 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
             sink,
             self._session,
             context_stats=lambda: self._compactor.context_stats_payload(),
+            transient=transient,
         )
         self._compactor = ContextCompactor(
             self,

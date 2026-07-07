@@ -22,6 +22,7 @@ from ._interface import (
     ToolSpec,
     TurnEnd,
     Usage,
+    default_cache_breakpoints,
 )
 from ._local_registry import (
     LocalLLMEntry,
@@ -59,6 +60,7 @@ __all__ = [
     "TurnEnd",
     "add_local_entry",
     "clear_llama_server_override_path",
+    "default_cache_breakpoints",
     "get_cloud_entry",
     "get_cloud_registry",
     "get_cloud_vendor_display_name",

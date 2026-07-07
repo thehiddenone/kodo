@@ -6,7 +6,7 @@ build_system_blocks and build_message_params without touching any network.
 
 from __future__ import annotations
 
-from kodo.llms import Message
+from kodo.llms import Message, default_cache_breakpoints
 from kodo.llms.anthropic._cache import build_message_params, build_system_blocks
 
 # ---------------------------------------------------------------------------
@@ -231,3 +231,56 @@ def test_build_message_params_strips_callout_from_assistant_text_block() -> None
     messages = [Message(role="assistant", content=blocks)]
     result = build_message_params(messages, [])
     assert result[0]["content"][0]["text"] == "Indexing done.  bye"
+
+
+# ---------------------------------------------------------------------------
+# default_cache_breakpoints
+# ---------------------------------------------------------------------------
+
+
+def test_default_cache_breakpoints_empty_messages() -> None:
+    """
+    Given no messages,
+    when default_cache_breakpoints is called,
+    then no breakpoints are returned.
+    """
+    assert default_cache_breakpoints([]) == []
+
+
+def test_default_cache_breakpoints_single_user_message() -> None:
+    """
+    Given a single user message (the first turn of a conversation),
+    when default_cache_breakpoints is called,
+    then that message's index is marked.
+    """
+    messages = [Message(role="user", content="Hello")]
+    assert default_cache_breakpoints(messages) == [0]
+
+
+def test_default_cache_breakpoints_marks_last_two_user_messages() -> None:
+    """
+    Given a growing conversation with more than two user-role messages,
+    when default_cache_breakpoints is called,
+    then only the two most recent user-role indices are returned, in order.
+    """
+    messages = [
+        Message(role="user", content="turn 1"),
+        Message(role="assistant", content="reply 1"),
+        Message(role="user", content="tool_result 1"),  # e.g. a tool_result batch
+        Message(role="assistant", content="reply 2"),
+        Message(role="user", content="tool_result 2"),
+    ]
+    assert default_cache_breakpoints(messages) == [2, 4]
+
+
+def test_default_cache_breakpoints_ignores_assistant_only_tail() -> None:
+    """
+    Given a conversation ending on an assistant message,
+    when default_cache_breakpoints is called,
+    then only the preceding user-role indices are marked (never an assistant one).
+    """
+    messages = [
+        Message(role="user", content="turn 1"),
+        Message(role="assistant", content="reply 1"),
+    ]
+    assert default_cache_breakpoints(messages) == [0]

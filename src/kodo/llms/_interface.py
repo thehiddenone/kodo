@@ -25,6 +25,7 @@ __all__ = [
     "ToolCallArgDelta",
     "ToolCallEvent",
     "TurnEnd",
+    "default_cache_breakpoints",
 ]
 
 
@@ -56,6 +57,29 @@ class Message:
 
     role: str
     content: str | list[dict[str, object]]
+
+
+def default_cache_breakpoints(messages: list[Message]) -> list[int]:
+    """Return the message indices a caller should mark for prompt caching.
+
+    Marks the two most recent ``user``-role messages — in this codebase that
+    means both genuine user prompts *and* ``tool_result`` batches, since the
+    Anthropic Messages API packages both as ``role="user"``. This is
+    Anthropic's documented placement for caching a growing multi-turn/agentic
+    conversation: each call's newest user-role message extends the previous
+    call's cached prefix by exactly what's new (a cache write), while the
+    prior call's breakpoint is marked again too so a cache read still lands
+    even if the very latest write hasn't propagated yet. Providers that don't
+    support prompt caching (e.g. llama.cpp) simply ignore the indices.
+
+    Args:
+        messages: Conversation history in chronological order.
+
+    Returns:
+        list[int]: Zero, one, or two indices into ``messages``.
+    """
+    indices = [i for i, m in enumerate(messages) if m.role == "user"]
+    return indices[-2:]
 
 
 @dataclass(frozen=True)

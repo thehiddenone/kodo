@@ -273,13 +273,9 @@ async def test_create_file_compliance(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_create_directory_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path)
-    _assert_compliant(
-        "create_directory", await _dispatch(d, "create_directory", {"path": "src"})
-    )
+    _assert_compliant("create_directory", await _dispatch(d, "create_directory", {"path": "src"}))
     # Succeeds again if the directory already exists.
-    _assert_compliant(
-        "create_directory", await _dispatch(d, "create_directory", {"path": "src"})
-    )
+    _assert_compliant("create_directory", await _dispatch(d, "create_directory", {"path": "src"}))
 
 
 @pytest.mark.asyncio

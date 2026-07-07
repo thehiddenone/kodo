@@ -96,11 +96,16 @@ timestamp). `<subsession-id>` is a random hex ID minted per `run_subagent` call.
   under a `## Attached file: <name>` heading), so the reconstructed context
   matches submit time without the log ever holding the file bytes. See
   WS_PROTOCOL.md §7.1 / `kodo.runtime._attachments`.
-- **Marker lines** — `{"type": "subsession_start"|"subsession_end", ...}`.
-  These record, *in chronological position*, when a sub-agent took over and when
-  it handed control back. They carry `subsession_id`, `agent`, `display_name`,
-  and `parent_display_name`; `subsession_end` also carries the sub-agent's
-  structured `result` from `return_result` (e.g. an author's `primary_path`).
+- **Marker lines** — `{"type": "subsession_start"|"subsession_end"|"compaction"|"error", ...}`.
+  `subsession_start`/`subsession_end` record, *in chronological position*, when
+  a sub-agent took over and when it handed control back. They carry
+  `subsession_id`, `agent`, `display_name`, and `parent_display_name`;
+  `subsession_end` also carries the sub-agent's structured `result` from
+  `return_result` (e.g. an author's `primary_path`). `compaction` records a
+  context reset (`summary`, `reason`, `tokens_before`/`tokens_after`). `error`
+  records an `EngineEmitters.emit_error` runtime failure (`message`,
+  `recoverable`) so a reload replays the same error card instead of silently
+  losing it — see `HistoryProjector.history_entries`'s `error` branch.
 
 `TransientStore.read_messages()` returns only the message lines (for rebuilding
 LLM context); `read_session_lines()` returns everything (for resume and history

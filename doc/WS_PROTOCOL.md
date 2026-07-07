@@ -471,7 +471,7 @@ For errors not tied to a specific request. Errors tied to a request are returned
   "recoverable": true | false }
 ```
 
-`recoverable: false` indicates the engine has halted and Dev intervention is required. The client surfaces only non-recoverable errors as modal notifications.
+`recoverable: false` indicates the engine has halted and Dev intervention is required. The client surfaces **every** `error` event both as an inline error card in the session feed and as a notification — a modal `showErrorMessage` when `recoverable: false`, a `showWarningMessage` when `recoverable: true`. (A recoverable error was previously dropped by the session-scoped handler, so an aborted turn could fail completely silently; see the 2026-07-06 silent-LLM-error fix.) For a turn-aborting `runtime_error` the worker also emits a `state` event resetting `phase` to `awaiting_user`, which clears the client's "Awaiting response" indicator and re-enables the input.
 
 ### 5.11 `session.history` — rehydrate a resumed session
 

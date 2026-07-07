@@ -32,12 +32,40 @@ def _scalar_to_markdown(value: object) -> str:
     return text
 
 
+def _list_to_markdown(value: list[object], level: int, label: str | None) -> str:
+    """Render a list whose elements include at least one dict/list, or is empty.
+
+    Each element gets its own heading at `level` (the same depth its dict key,
+    if any, would have used — this is the one place headings don't nest one
+    level deeper than their container). The heading is ``{label}[{index}]``,
+    0-based; `label` is the dict key this list was found under, or `None` for
+    an unnamed list (top-level, or nested inside another list), which uses
+    ``item`` instead.
+    """
+    if not value:
+        return "_(empty list)_"
+    if all(not isinstance(item, (dict, list)) for item in value):
+        return "\n".join(f"- {_scalar_to_markdown(item)}" for item in value)
+    heading = "#" * min(level, 6)
+    effective_label = label if label is not None else "item"
+    parts = [
+        f"{heading} {effective_label}[{i}]\n\n{json_to_markdown(item, level + 1)}"
+        for i, item in enumerate(value)
+    ]
+    return "\n\n".join(parts)
+
+
 def json_to_markdown(value: object, level: int = 2) -> str:
     """Render an arbitrary JSON-shaped value as Markdown.
 
-    Dict keys become headings (clamped to ``######``); lists become enumerated
-    sub-sections (scalars as a bullet list); scalars render inline or as a
-    fenced block when multi-line/long.
+    Dict keys become headings (clamped to ``######``); a dict value that is a
+    list of dicts/lists skips the key heading and instead gives each element
+    its own ``key[index]`` heading at that same level (0-based); an all-scalar
+    or empty list still gets the key heading, rendered as a bullet list or
+    ``_(empty list)_`` beneath it. A list found outside any dict key (at the
+    top level, or nested inside another list) uses ``item[index]`` instead of
+    ``key[index]``. Scalars render inline or as a fenced block when
+    multi-line/long.
 
     Args:
         value: The value to render (dict, list, or scalar).
@@ -52,21 +80,15 @@ def json_to_markdown(value: object, level: int = 2) -> str:
             return "_(empty)_"
         parts: list[str] = []
         for key, val in value.items():
-            if isinstance(val, (dict, list)):
+            if isinstance(val, list) and any(isinstance(item, (dict, list)) for item in val):
+                parts.append(_list_to_markdown(val, level, key))
+            elif isinstance(val, (dict, list)):
                 parts.append(f"{heading} {key}\n\n{json_to_markdown(val, level + 1)}")
             else:
                 parts.append(f"{heading} {key}\n\n{_scalar_to_markdown(val)}")
         return "\n\n".join(parts)
     if isinstance(value, list):
-        if not value:
-            return "_(empty list)_"
-        # All-scalar lists render as a compact bullet list.
-        if all(not isinstance(item, (dict, list)) for item in value):
-            return "\n".join(f"- {_scalar_to_markdown(item)}" for item in value)
-        parts = []
-        for i, item in enumerate(value, start=1):
-            parts.append(f"{heading} [{i}]\n\n{json_to_markdown(item, level + 1)}")
-        return "\n\n".join(parts)
+        return _list_to_markdown(value, level, None)
     return _scalar_to_markdown(value)
 
 

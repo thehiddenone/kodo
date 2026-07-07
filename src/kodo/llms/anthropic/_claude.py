@@ -44,6 +44,26 @@ _DEFAULT_MAX_TOKENS = 8192
 # headroom in _DEFAULT_MAX_TOKENS for the visible response.
 _THINKING_BUDGET_TOKENS = 4096
 
+# Models on the newer "adaptive thinking" tier manage their own reasoning
+# budget and reject the classic thinking={"type": "enabled", "budget_tokens"}
+# shape with a 400. Earlier-generation models still require that shape —
+# they have no adaptive mode.
+_ADAPTIVE_THINKING_MODELS = frozenset(
+    {
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-sonnet-5",
+    }
+)
+
+
+def _thinking_param(model: str) -> dict[str, object]:
+    """Return the right ``thinking`` request shape for *model*."""
+    if model in _ADAPTIVE_THINKING_MODELS:
+        return {"type": "adaptive"}
+    return {"type": "enabled", "budget_tokens": _THINKING_BUDGET_TOKENS}
+
 
 class ClaudePlugin(LLMPlugin):
     """Anthropic Claude implementation of :class:`~kodo.llms._interface.LLMPlugin`.
@@ -182,7 +202,7 @@ class ClaudePlugin(LLMPlugin):
             max_tokens=_DEFAULT_MAX_TOKENS,
             system=system_blocks,  # type: ignore[arg-type]
             messages=msg_params,  # type: ignore[arg-type]
-            thinking={"type": "enabled", "budget_tokens": _THINKING_BUDGET_TOKENS},
+            thinking=_thinking_param(model),  # type: ignore[arg-type]
             **({"tools": tool_defs} if tool_defs else {}),  # type: ignore[arg-type]
         ) as stream:
             async for raw_event in stream:

@@ -142,6 +142,14 @@ class HistoryProjector:
                         "tokensAfter": ta if isinstance(ta, int) else 0,
                     }
                 )
+            elif kind == "error":
+                entries.append(
+                    {
+                        "type": "runtime_error",
+                        "message": str(line.get("message", "")),
+                        "recoverable": line.get("recoverable") is not False,
+                    }
+                )
         return entries
 
     @staticmethod

@@ -38,6 +38,7 @@ from kodo.llms import (
     ToolCallLogger,
     ToolSpec,
     TurnEnd,
+    default_cache_breakpoints,
 )
 from kodo.state import render_tool_call_markdown
 from kodo.tools import ToolDispatcher, tools_for_agent
@@ -324,7 +325,7 @@ class TurnLoopMixin:
                     system=system_prompt,
                     messages=messages,
                     tools=tools,
-                    cache_breakpoints=[0],
+                    cache_breakpoints=default_cache_breakpoints(messages),
                 ):
                     await self._emitters.handle_stream_event(event, stream_id)
                     if isinstance(event, TokenDelta):

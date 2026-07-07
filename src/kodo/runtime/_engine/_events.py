@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 from kodo.common import Envelope, MessageSink
 from kodo.llms import (
@@ -21,6 +22,7 @@ from kodo.llms import (
     ToolCallArgDelta,
     TurnEnd,
 )
+from kodo.state import TransientStore
 from kodo.transport import (
     EVT_AGENT_FINISHED,
     EVT_AGENT_STARTED,
@@ -50,6 +52,8 @@ class EngineEmitters:
         context_stats: Returns the current ``context.stats`` payload — owned
             by the compactor, late-bound via this callable so the two
             collaborators need no mutual reference.
+        transient: Append-only JSONL session store, used by :meth:`emit_error`
+            to persist a durable marker alongside the live event.
     """
 
     def __init__(
@@ -57,10 +61,12 @@ class EngineEmitters:
         sink: MessageSink,
         session: SessionState,
         context_stats: Callable[[], dict[str, object]],
+        transient: TransientStore,
     ) -> None:
         self._sink = sink
         self._session = session
         self._context_stats = context_stats
+        self._transient = transient
         self._cumulative_usd = 0.0
 
     @property
@@ -180,7 +186,21 @@ class EngineEmitters:
         )
 
     async def emit_error(self, message: str, *, recoverable: bool) -> None:
-        """Push a user-facing runtime error."""
+        """Push a user-facing runtime error, and persist it as a marker.
+
+        The marker (``type: "error"``) lets :class:`~._history.HistoryProjector`
+        replay the same error card on reload — previously this was a live-only
+        event, so an error surfaced right before the user reloaded the WebView
+        vanished for good even though it aborted the turn.
+        """
+        self._transient.append_marker(
+            {
+                "type": "error",
+                "message": message,
+                "recoverable": recoverable,
+                "ts": datetime.now(tz=UTC).isoformat(),
+            }
+        )
         await self._sink.send(
             Envelope.make_event(
                 EVT_ERROR,
