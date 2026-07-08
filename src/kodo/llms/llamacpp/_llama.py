@@ -701,8 +701,12 @@ class LlamaPlugin(LLMPlugin):
         # Salvage: the content channel looked like a JSON object and the model
         # made no structured tool call — it may have dumped a tool call into its
         # text channel (the name is lost; infer the tool from the argument shape).
+        # Only meaningful when there are tools to match against — a tool-less
+        # call (e.g. the security judge, which is instructed to answer with a
+        # bare JSON object) can never salvage-match, so treat its `{`-leading
+        # content as ordinary text instead of raising.
         salvaged_call: ToolCallEvent | None = None
-        if content_candidate is True and not tool_ids:
+        if content_candidate is True and not tool_ids and tools:
             stripped = content_buf.strip()
             parsed: object = None
             try:

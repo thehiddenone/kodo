@@ -248,9 +248,13 @@ class SecurityLayer:
         )
         try:
             raw = await self.__judge(system, user)
-        except Exception:
+        except Exception as exc:
             _log.exception("security judge call failed; asking the user")
-            return _ask("The security judge could not be reached.", "judge")
+            return _ask(
+                "Your review is necessary because the following error occurred "
+                f"while evaluating the tool call: {exc}",
+                "judge",
+            )
 
         verdict = parse_judge_verdict(raw)
         if verdict.allow:

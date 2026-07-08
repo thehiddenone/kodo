@@ -90,6 +90,21 @@ If the buffered content merely *began* with `{` but was not a valid tool-call
 object (ordinary prose, or a leading-`{` preamble before a real structured
 call), it is released as normal text.
 
+**Tool-less calls never attempt salvage.** The salvage/match step above only
+runs when the call actually carries tool schemas (`tools` non-empty). A
+tool-less structured-JSON completion — e.g. the security judge (§9 of
+[SECURITY.md](SECURITY.md)), whose system prompt demands
+`{"verdict": "allow"|"ask", "reason": "..."}` and nothing else — will always
+have its answer buffered (it starts with `{`), but with no tool schemas to
+match against, `_match_salvage_tools` would always find zero matches and
+*always* raise. That previously turned every such call into a spurious
+`MalformedToolCallError` regardless of what the model actually said (bug
+found 2026-07-07: the judge internally reasoned "allow" on a benign command
+but the verdict never reached `parse_judge_verdict` because of this). Fixed by
+gating the salvage/raise branch on `tools` being non-empty; a tool-less
+`{`-leading answer now falls straight through to the "release as normal text"
+step instead.
+
 ## 4. Stripping stray `<think>` tags from reasoning
 
 gpt-oss reasoning frequently carries literal `<think>…</think>` tags —
