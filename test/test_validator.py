@@ -23,6 +23,7 @@ from aiohttp.test_utils import TestServer
 from kodo.common import Envelope
 from kodo.server import Config, create_app
 from kodo.validator import (
+    LocalModelUnavailableError,
     ProtocolError,
     QuestionAnswer,
     ScriptedUser,
@@ -30,7 +31,9 @@ from kodo.validator import (
     Transcript,
     ValidatorClient,
     clone_kodo_home,
+    ensure_local_llms_installed,
 )
+from kodo.validator import _models as validator_models
 
 _RECV_TIMEOUT = 5.0
 
@@ -444,3 +447,138 @@ async def test_client_turn_end_streams_are_assembled(
         assert transcript.assistant_text() == "Hello world"
     finally:
         await client.close()
+
+
+# ---------------------------------------------------------------------------
+# ensure_local_llms_installed
+# ---------------------------------------------------------------------------
+
+
+class _FakeInstallClient:
+    """Records ``local_llm.install`` sends without touching a real socket."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send(
+        self, msg_type: str, payload: dict[str, object] | None = None, **fields: object
+    ) -> None:
+        assert msg_type == "local_llm.install"
+        self.sent.append(str(fields["name"]))
+
+
+def _registry_entry(name: str, *, installed: bool, kind: str = "hardcoded_hf") -> dict[str, object]:
+    return {"name": name, "kind": kind, "installed": installed}
+
+
+def _file_entry(status: str, *, role: str = "main", error: str = "") -> dict[str, object]:
+    return {
+        "filename": "model.gguf",
+        "role": role,
+        "repo_id": "org/repo",
+        "status": status,
+        "error": error,
+    }
+
+
+def _write_manager_state(models_dir: Path, records: dict[str, dict[str, object]]) -> None:
+    models_dir.mkdir(parents=True, exist_ok=True)
+    (models_dir / "manager-state.json").write_text(json.dumps(records), encoding="utf-8")
+
+
+async def test_ensure_llms_already_installed_skips_download(tmp_path: Path) -> None:
+    client = _FakeInstallClient()
+    registry = [
+        _registry_entry("model-a", installed=True),
+        _registry_entry("model-b", installed=True),
+    ]
+    await ensure_local_llms_installed(
+        cast(ValidatorClient, client), tmp_path, registry, ["model-a", "model-b"]
+    )
+    assert client.sent == []
+
+
+async def test_ensure_llms_unknown_name_raises(tmp_path: Path) -> None:
+    client = _FakeInstallClient()
+    with pytest.raises(LocalModelUnavailableError, match="Unknown local model"):
+        await ensure_local_llms_installed(cast(ValidatorClient, client), tmp_path, [], ["nope"])
+    assert client.sent == []
+
+
+async def test_ensure_llms_undownloadable_kind_raises(tmp_path: Path) -> None:
+    client = _FakeInstallClient()
+    registry = [_registry_entry("server-model", installed=False, kind="custom_server_url")]
+    with pytest.raises(LocalModelUnavailableError, match="cannot be auto-downloaded"):
+        await ensure_local_llms_installed(
+            cast(ValidatorClient, client), tmp_path, registry, ["server-model"]
+        )
+    assert client.sent == []
+
+
+async def test_ensure_llms_downloads_missing_and_polls_to_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(validator_models, "_POLL_SECONDS", 0.01)
+    client = _FakeInstallClient()
+    registry = [_registry_entry("model-a", installed=False)]
+    models_dir = tmp_path / "llama.cpp" / "models"
+
+    async def _finish_after_first_poll() -> None:
+        await asyncio.sleep(0.03)
+        _write_manager_state(models_dir, {"model-a": {"files": [_file_entry("completed")]}})
+
+    finisher = asyncio.create_task(_finish_after_first_poll())
+    try:
+        await ensure_local_llms_installed(
+            cast(ValidatorClient, client), tmp_path, registry, ["model-a"], poll_timeout=5.0
+        )
+    finally:
+        await finisher
+    assert client.sent == ["model-a"]
+
+
+async def test_ensure_llms_failed_download_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(validator_models, "_POLL_SECONDS", 0.01)
+    client = _FakeInstallClient()
+    registry = [_registry_entry("model-a", installed=False)]
+    models_dir = tmp_path / "llama.cpp" / "models"
+    _write_manager_state(
+        models_dir, {"model-a": {"files": [_file_entry("failed", error="401 unauthorized")]}}
+    )
+
+    with pytest.raises(LocalModelUnavailableError, match="401 unauthorized"):
+        await ensure_local_llms_installed(
+            cast(ValidatorClient, client), tmp_path, registry, ["model-a"], poll_timeout=5.0
+        )
+
+
+async def test_ensure_llms_timeout_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(validator_models, "_POLL_SECONDS", 0.01)
+    client = _FakeInstallClient()
+    registry = [_registry_entry("model-a", installed=False)]
+
+    with pytest.raises(LocalModelUnavailableError, match="Timed out"):
+        await ensure_local_llms_installed(
+            cast(ValidatorClient, client), tmp_path, registry, ["model-a"], poll_timeout=0.05
+        )
+
+
+async def test_ensure_llms_respects_custom_llm_models_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(validator_models, "_POLL_SECONDS", 0.01)
+    client = _FakeInstallClient()
+    registry = [_registry_entry("model-a", installed=False)]
+    custom_dir = tmp_path / "elsewhere"
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "settings.json").write_text(
+        json.dumps({"llm_models_dir": str(custom_dir)}), encoding="utf-8"
+    )
+    _write_manager_state(custom_dir, {"model-a": {"files": [_file_entry("completed")]}})
+
+    await ensure_local_llms_installed(
+        cast(ValidatorClient, client), tmp_path, registry, ["model-a"], poll_timeout=5.0
+    )
+    assert client.sent == ["model-a"]

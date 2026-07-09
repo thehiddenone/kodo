@@ -15,6 +15,7 @@ use starts at :class:`ValidationHarness` or :func:`run_scenario`.
 from ._client import ProtocolError, ValidatorClient
 from ._harness import Modes, TurnResult, ValidationHarness
 from ._home import DEFAULT_SKIP_ENTRIES, DEFAULT_SYMLINK_ENTRIES, clone_kodo_home
+from ._models import LocalModelUnavailableError, ensure_local_llms_installed
 from ._scenario import RootSpec, Scenario, ScenarioResult, run_scenario
 from ._server import ServerProcess, ServerStartError
 from ._transcript import Transcript, TranscriptEntry
@@ -24,6 +25,7 @@ from ._workspace import SimulatedWorkspace, WorkspaceRoot
 __all__ = [
     "DEFAULT_SKIP_ENTRIES",
     "DEFAULT_SYMLINK_ENTRIES",
+    "LocalModelUnavailableError",
     "Modes",
     "ProtocolError",
     "QuestionAnswer",
@@ -42,5 +44,6 @@ __all__ = [
     "ValidatorClient",
     "WorkspaceRoot",
     "clone_kodo_home",
+    "ensure_local_llms_installed",
     "run_scenario",
 ]

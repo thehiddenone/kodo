@@ -44,18 +44,29 @@ class Scenario:
     Attributes:
         name: Scenario identifier (used for the run directory name).
         prompts: Prompt sequence, submitted one turn at a time.
+        llm_under_test: Local registry name of the model this run exercises
+            — the harness pins it as the active model and downloads it first
+            if missing. Mandatory: there is no meaningful default.
+        validation_llm: Local registry name of the fixed, capable model
+            reserved for the (not yet built) Phase 2 evaluator — ensured
+            present/downloaded but not otherwise invoked in phase 1.
+            Mandatory: there is no meaningful default.
         roots: Simulated workspace folders (one = single-root VS Code window,
             several = multi-root).
         modes: Session toggles pinned before the first prompt.
         project_root: Root name to bind as the Guided-mode project
             (required by the ``guided`` workflow, ignored otherwise).
         user: Simulated-user policy; the harness default when None.
-        settings_overrides: Per-run ``etc/settings.json`` overrides.
+        settings_overrides: Per-run ``etc/settings.json`` overrides (the
+            ``llm_under_test`` pin is applied on top, see
+            :class:`~kodo.validator._harness.ValidationHarness`).
         turn_timeout: Per-prompt turn timeout in seconds.
     """
 
     name: str
     prompts: list[str]
+    llm_under_test: str = field(kw_only=True)
+    validation_llm: str = field(kw_only=True)
     roots: list[RootSpec] = field(default_factory=list)
     modes: Modes = field(default_factory=Modes)
     project_root: str | None = None
@@ -102,6 +113,8 @@ async def run_scenario(
     run_dir = out_dir / f"{scenario.name}-{time.strftime('%Y%m%d-%H%M%S')}"
     harness = ValidationHarness(
         run_dir,
+        llm_under_test=scenario.llm_under_test,
+        validation_llm=scenario.validation_llm,
         template_home=template_home,
         user=scenario.user,
         settings_overrides=scenario.settings_overrides,

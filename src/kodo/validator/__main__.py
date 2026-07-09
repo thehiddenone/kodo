@@ -132,6 +132,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     # Inline (ad-hoc) scenario flags:
     parser.add_argument("--name", default="adhoc", help="Inline scenario name.")
     parser.add_argument(
+        "--llm-under-test",
+        default=None,
+        metavar="NAME",
+        help="Local registry name of the LLM to exercise (ad-hoc runs; mandatory).",
+    )
+    parser.add_argument(
+        "--validation-llm",
+        default=None,
+        metavar="NAME",
+        help="Local registry name of the fixed validation/judge LLM (ad-hoc runs; mandatory).",
+    )
+    parser.add_argument(
         "--prompt",
         action="append",
         default=[],
@@ -196,6 +208,8 @@ def _resolve_scenarios(args: argparse.Namespace) -> list[Scenario]:
         return _load_scenario_file(Path(args.scenario))
     if not args.prompt:
         return []
+    if not args.llm_under_test or not args.validation_llm:
+        raise SystemExit("--llm-under-test and --validation-llm are required for ad-hoc runs.")
     roots = [_parse_root(spec) for spec in cast(list[str], args.root)]
     modes = Modes(
         autonomous=bool(args.autonomous),
@@ -207,6 +221,8 @@ def _resolve_scenarios(args: argparse.Namespace) -> list[Scenario]:
         Scenario(
             name=str(args.name),
             prompts=list(args.prompt),
+            llm_under_test=str(args.llm_under_test),
+            validation_llm=str(args.validation_llm),
             roots=roots,
             modes=modes,
             project_root=args.project_root,

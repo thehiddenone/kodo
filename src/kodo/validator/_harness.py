@@ -26,7 +26,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
-from typing import Literal
+from typing import Literal, cast
 
 from kodo.transport import (
     MSG_COMMAND_CONTROL_SET,
@@ -41,6 +41,7 @@ from kodo.transport import (
 
 from ._client import ValidatorClient
 from ._home import clone_kodo_home
+from ._models import ensure_local_llms_installed
 from ._server import ServerProcess
 from ._transcript import Transcript, TranscriptEntry
 from ._user import ScriptedUser, UserSimulator
@@ -96,13 +97,23 @@ class ValidationHarness:
 
     Args:
         run_dir: Directory owning every artifact of this run.
+        llm_under_test: Local registry name of the LLM this run actually
+            exercises. Pinned as the run's active model (``mode: "local"``,
+            ``models.local``) before the server starts, and downloaded first
+            if missing.
+        validation_llm: Local registry name of the fixed, capable model
+            reserved for the (not-yet-built) Phase 2 evaluator. Not invoked
+            by anything in phase 1 — only ensured present/downloaded, so it's
+            ready when the evaluator lands.
         template_home: Existing ``.kodo`` to clone (``bin/`` and
             ``llama.cpp/`` symlinked, per-run state skipped, rest copied).
             None starts from an empty home with server defaults.
         user: Interactive-request policy; a default :class:`ScriptedUser`
             (first option / approve / allow / env API keys) when omitted.
         settings_overrides: Keys deep-merged into the cloned
-            ``etc/settings.json`` before the server starts.
+            ``etc/settings.json`` before the server starts. The
+            ``llm_under_test`` pin (``mode``/``models.local``) is applied on
+            top of these, so it always wins on conflict.
         server_log_level: ``--log-level`` for the server subprocess.
     """
 
@@ -110,6 +121,8 @@ class ValidationHarness:
         self,
         run_dir: Path,
         *,
+        llm_under_test: str,
+        validation_llm: str,
         template_home: Path | None = None,
         user: UserSimulator | None = None,
         settings_overrides: dict[str, object] | None = None,
@@ -117,6 +130,8 @@ class ValidationHarness:
     ) -> None:
         self.__run_dir = run_dir.resolve()
         self.__run_dir.mkdir(parents=True, exist_ok=True)
+        self.__llm_under_test = llm_under_test
+        self.__validation_llm = validation_llm
         self.__template_home = template_home
         self.__settings_overrides = settings_overrides
         self.__server_log_level = server_log_level
@@ -131,6 +146,16 @@ class ValidationHarness:
     def run_dir(self) -> Path:
         """The run's artifact directory."""
         return self.__run_dir
+
+    @property
+    def llm_under_test(self) -> str:
+        """Local registry name of the model this run exercises."""
+        return self.__llm_under_test
+
+    @property
+    def validation_llm(self) -> str:
+        """Local registry name of the fixed model reserved for Phase 2."""
+        return self.__validation_llm
 
     @property
     def workspace(self) -> SimulatedWorkspace:
@@ -164,20 +189,69 @@ class ValidationHarness:
             session_id (str | None): Session to resume; a fresh one when None.
         """
         home_dir = self.__run_dir / "home"
-        clone_kodo_home(
+        kodo_dir = clone_kodo_home(
             home_dir,
             self.__template_home,
-            settings_overrides=self.__settings_overrides,
+            settings_overrides=self.__pin_llm_under_test(self.__settings_overrides),
         )
         self.__server = ServerProcess(home_dir, log_level=self.__server_log_level)
         await self.__server.start()
 
         self.__client = ValidatorClient(self.__server.ws_url, self.__transcript, self.__user)
         await self.__client.connect()
-        await self.__client.hello(session_id=session_id)
+        ack = await self.__client.hello(session_id=session_id)
+        self.__transcript.record(
+            "note",
+            "lifecycle",
+            {
+                "event": "llms",
+                "llm_under_test": self.__llm_under_test,
+                "validation_llm": self.__validation_llm,
+            },
+        )
+        await self.__ensure_llms_installed(kodo_dir, ack)
         if self.__workspace.roots:
             await self.sync_workspace()
         _log.info("Validation run ready: %s (session %s)", self.__run_dir, self.session_id)
+
+    def __pin_llm_under_test(self, overrides: dict[str, object] | None) -> dict[str, object]:
+        """Force ``mode``/``models.local`` onto *overrides* for the LLM under test.
+
+        Applied on top of any caller-supplied ``settings_overrides`` so the
+        run always actually exercises ``llm_under_test`` (its whole point),
+        regardless of what else a scenario pins.
+
+        Args:
+            overrides (dict[str, object] | None): Caller-supplied overrides.
+
+        Returns:
+            dict[str, object]: *overrides* with the model pin merged on top.
+        """
+        merged = dict(overrides or {})
+        models = dict(cast(dict[str, object], merged.get("models") or {}))
+        models["local"] = self.__llm_under_test
+        merged["mode"] = "local"
+        merged["models"] = models
+        return merged
+
+    async def __ensure_llms_installed(self, kodo_dir: Path, hello_ack: dict[str, object]) -> None:
+        """Make sure both named LLMs are installed, downloading if needed.
+
+        Args:
+            kodo_dir (Path): The run's isolated ``.kodo``.
+            hello_ack (dict[str, object]): The ``hello.ack`` payload (carries
+                ``local_registry``).
+        """
+        local_registry = hello_ack.get("local_registry")
+        registry = cast(
+            list[dict[str, object]], local_registry if isinstance(local_registry, list) else []
+        )
+        await ensure_local_llms_installed(
+            self.client,
+            kodo_dir,
+            registry,
+            (self.__llm_under_test, self.__validation_llm),
+        )
 
     @property
     def session_id(self) -> str | None:

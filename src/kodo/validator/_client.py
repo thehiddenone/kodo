@@ -212,6 +212,46 @@ class ValidatorClient:
             raise ProtocolError(f"{msg_type} failed: {response}")
         return response
 
+    async def send(
+        self,
+        msg_type: str,
+        payload: dict[str, object] | None = None,
+        *,
+        session_scoped: bool = False,
+        **fields: object,
+    ) -> None:
+        """Send one client→server frame that expects no correlated response.
+
+        Some server handlers (e.g. ``local_llm.install``/``.resume``/``.pause``,
+        WS_PROTOCOL.md §7.6) only ever push ``event`` frames back
+        (§5.12a ``local_llm.registry_state``) and never a ``response`` —
+        :meth:`request` would block until its timeout waiting for one that
+        never arrives. Use this instead for those message types.
+
+        Args:
+            msg_type (str): The ``payload.type`` (an ``MSG_*`` constant).
+            payload (dict[str, object] | None): Message fields as a mapping.
+            session_scoped (bool): Attach the bound ``session_id``; most
+                ``local_llm.*`` commands operate on the process-wide registry
+                and need no session.
+            **fields: Message-specific fields (merged over *payload*).
+
+        Raises:
+            ConnectionError: If the socket is not open (or session-scoped
+                with no session bound yet).
+        """
+        ws = self.__ws
+        if ws is None or ws.closed or self.__closed:
+            raise ConnectionError("WebSocket is not connected")
+        body: dict[str, object] = {"type": msg_type, **(payload or {}), **fields}
+        if session_scoped:
+            if self.__session_id is None:
+                raise ConnectionError("No session bound; call hello() first")
+            body["session_id"] = self.__session_id
+        env = Envelope(kind="request", payload=body)
+        self.__transcript.record("send", "request", body, correlation_id=env.id)
+        await ws.send_str(env.to_json())
+
     # ------------------------------------------------------------------
     # Turn tracking
     # ------------------------------------------------------------------

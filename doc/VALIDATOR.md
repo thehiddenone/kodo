@@ -4,7 +4,8 @@
 > end-to-end and records everything; the **evaluation/scoring layer (phase 2)
 > is not built yet** — `ScenarioResult.score` is always `None` today.
 > Reference: [WS_PROTOCOL.md](WS_PROTOCOL.md), [SESSIONS.md](SESSIONS.md),
-> [SECURITY.md](SECURITY.md), [SETTINGS.md](SETTINGS.md).
+> [SECURITY.md](SECURITY.md), [SETTINGS.md](SETTINGS.md),
+> [LLM_REGISTRY.md](LLM_REGISTRY.md), [LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md).
 
 ## 1. Purpose
 
@@ -28,6 +29,7 @@ src/kodo/validator/
   _server.py      ServerProcess       — python -m kodo.server subprocess
   _workspace.py   SimulatedWorkspace  — fake VS Code workspace on disk
   _client.py      ValidatorClient     — the pseudo-extension (WS protocol)
+  _models.py      ensure_local_llms_installed() — the two mandatory LLMs (§3a)
   _user.py        UserSimulator / ScriptedUser — answers interactive gates
   _transcript.py  Transcript          — every frame + interaction, JSONL
   _harness.py     ValidationHarness   — one run, end to end; Modes; TurnResult
@@ -67,6 +69,49 @@ The server is a machine-wide singleton rooted at `$HOME/.kodo`
 `etc/settings.json` before the server starts — e.g. pin `mode`/`models` for a
 particular validation matrix. Cloud API keys are *not* in the home (the real
 extension keeps them in VS Code SecretStorage); see §6.
+
+## 3a. The two mandatory LLM keys
+
+Every `Scenario`/`ValidationHarness` requires two **local registry names**
+(`kodo/doc/LLM_REGISTRY.md`), both mandatory — there is no default:
+
+- **`llm_under_test`** — the model this run actually exercises. `start()`
+  forces it onto the cloned `etc/settings.json` (`mode: "local"`,
+  `models.local: llm_under_test`) *on top of* any `settings_overrides`, so a
+  run always drives the model it claims to, regardless of what else a
+  scenario pins.
+- **`validation_llm`** — a fixed, capable model reserved for the phase-2
+  evaluator (§9). Phase 1 only guarantees it's installed; nothing calls it
+  yet.
+
+Both are always local (GGUF/llama.cpp) models — cloud models are API-based
+and have no "download" step, so they're out of scope for this mandatory pair.
+
+**Ensuring presence.** After `hello()` (which returns `local_registry`, the
+same list `doc/WS_PROTOCOL.md` §4.1 documents), `ValidationHarness.start()`
+calls `_models.ensure_local_llms_installed()` for both names:
+
+1. Unknown name (absent from `local_registry`), or present but not installed
+   and not a downloadable `kind` (only `hardcoded_hf`/`custom_hf` can be
+   auto-installed) → raises `LocalModelUnavailableError` immediately.
+2. Already `installed: true` → nothing to do.
+3. Otherwise → sends `local_llm.install {name}` (`doc/WS_PROTOCOL.md` §7.6) via a
+   new fire-and-forget `ValidatorClient.send()` (not `request()` — the server
+   never sends a correlated `response` for this message, only `event` frames,
+   so `request()` would just time out waiting for one), then polls
+   `manager-state.json` on disk once a second until every file finishes,
+   fails, or `poll_timeout` (default 1800s) elapses — the exact disk-polled
+   pattern `doc/LOCAL_MODEL_MANAGER.md` §11 documents for kodo-vsix, chosen so
+   this package never has to import engine-side `kodo.llms` code (§1's "never
+   import engine internals" rule). The models directory is resolved the same
+   way the server does (`llm_models_dir` setting, else `llama.cpp/models`)
+   without importing that resolution logic either — it's just JSON/path
+   logic.
+
+Because `llama.cpp/` is symlinked from the template (§3), a download during
+`ensure_local_llms_installed` writes through to the template's real
+`llama.cpp/models` — the same "accepted by design" sharing §3 already
+describes for any other in-run download.
 
 ## 4. Workspace simulation (`SimulatedWorkspace`)
 
@@ -127,7 +172,7 @@ for adversarial or persona-driven simulation.
 ## 7. Transcript
 
 `Transcript` records every frame in arrival order (`recv`/`send` +
-frame kind), plus `note` entries: `lifecycle` (connect/modes/shutdown),
+frame kind), plus `note` entries: `lifecycle` (connect/modes/llms/shutdown),
 `interaction` (§6), and `stream_assembled` (each token/thinking stream
 re-assembled on `stream_end`, so scorers don't reassemble chunks). In-memory
 list + append-only `transcript.jsonl`; read-side helpers (`assistant_text`,
@@ -140,14 +185,20 @@ list + append-only `transcript.jsonl`; read-side helpers (`assistant_text`,
 # ad-hoc run
 uv run kodo-validator \
   --template-home ~/.kodo \
+  --llm-under-test llamacpp-qwen36-27b-q4-k-xl \
+  --validation-llm llamacpp-qwen36-27b-q8 \
   --root app=/path/to/seed-project --root lib \
   --workflow problem_solving --command-control permissive \
   --prompt "Find and fix the failing test" \
   --out kodo-validator-runs
 
-# scenario file: defines SCENARIO or SCENARIOS (can carry ScriptedUser scripts)
+# scenario file: defines SCENARIO or SCENARIOS (Scenario carries
+# llm_under_test/validation_llm itself; can also carry ScriptedUser scripts)
 uv run kodo-validator --scenario suites/smoke.py
 ```
+
+`--llm-under-test`/`--validation-llm` are mandatory for ad-hoc runs (§3a); a
+scenario file sets them directly on its `Scenario` instead.
 
 `python -m kodo.validator` is equivalent. Exit code 0 iff every scenario
 completed with no `error`-phase turn. Each scenario gets a fresh home + server.
