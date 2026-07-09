@@ -71,7 +71,7 @@ class WorkspaceLayout:
     def etc_dir(self) -> Path:
         """``~/.kodo/etc/`` — small owned-config files (global settings, the
         local LLM registry and download index, cloud API key settings; see
-        :mod:`kodo.llms._local_registry`, :mod:`kodo.llms.llamacpp._downloader`
+        :mod:`kodo.llms._local_registry`, :mod:`kodo.llms.llamacpp._manager`
         and kodo-vsix's ``cloud-credentials.ts``)."""
         return self.__root / "etc"
 

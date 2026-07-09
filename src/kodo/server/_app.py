@@ -13,6 +13,7 @@ import logging
 import logging.handlers
 import shutil
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -24,6 +25,7 @@ from kodo.llms import (
     LocalLLMEntry,
     add_local_entry,
     clear_llama_server_override_path,
+    detect_vram_gb,
     get_cloud_registry,
     get_cloud_vendor_display_name,
     get_llama_server_override_path,
@@ -35,14 +37,13 @@ from kodo.llms import (
 from kodo.llms.llamacpp import (
     LlamaServer,
     LlamaServerConfig,
-    delete_model,
-    download_model,
     ensure_llama_running,
     find_installed,
     find_running_server,
-    get_model_path,
+    get_local_model_manager,
     install_llamacpp,
 )
+from kodo.llms.local import LocalModelError
 from kodo.project import ProjectLayoutError, WorkspaceLayout, kodo_user_dir
 from kodo.runtime import CheckpointState, MirrorDirtyError
 from kodo.subagents import AgentRegistry
@@ -50,7 +51,6 @@ from kodo.transport import (
     EVT_ERROR,
     EVT_LLAMA_STATE,
     EVT_LLAMACPP_INSTALL_PROGRESS,
-    EVT_LOCAL_LLM_INSTALL_PROGRESS,
     EVT_LOCAL_LLM_REGISTRY_STATE,
     MSG_CHECKPOINT_LIST,
     MSG_CHECKPOINT_REDO,
@@ -71,7 +71,9 @@ from kodo.transport import (
     MSG_LOCAL_LLM_ADD_HUGGINGFACE,
     MSG_LOCAL_LLM_ADD_SERVER_URL,
     MSG_LOCAL_LLM_INSTALL,
+    MSG_LOCAL_LLM_PAUSE,
     MSG_LOCAL_LLM_REMOVE,
+    MSG_LOCAL_LLM_RESUME,
     MSG_LOCAL_LLM_UNINSTALL,
     MSG_MODE_SET,
     MSG_PROJECT_CREATE,
@@ -243,17 +245,39 @@ async def _handle_ping(req: Request) -> None:
     await req.reply({"type": "pong"})
 
 
+def _local_entry_installed_path(entry: LocalLLMEntry, kodo_dir: Path) -> str | None:
+    """Absolute path to *entry*'s files on disk, once installed — else ``None``.
+
+    Backs both ``installed`` (non-``None`` means installed) and
+    ``installed_path`` (what "Show me local files" reveals) in the wire
+    payload below.
+    """
+    if entry.kind == "custom_server_url":
+        return None  # not a local file at all
+    if entry.kind == "custom_file":
+        return entry.path if Path(entry.path).is_file() else None
+    path = get_local_model_manager(kodo_dir).get_model_path(entry.name)
+    return str(path) if path is not None else None
+
+
 def _local_entry_installed(entry: LocalLLMEntry, kodo_dir: Path) -> bool:
     if entry.kind == "custom_server_url":
         return True
-    if entry.kind == "custom_file":
-        return Path(entry.path).is_file()
-    return get_model_path(entry.name, kodo_dir) is not None
+    return _local_entry_installed_path(entry, kodo_dir) is not None
 
 
 def _local_registry_payload() -> dict[str, object]:
-    """The ``{local_registry, llama_server_override_path}`` shape shared by
-    ``hello.ack`` and every ``local_llm.registry_state`` event."""
+    """The ``{local_registry, llama_server_override_path, detected_vram_gb}``
+    shape shared by ``hello.ack`` and every ``local_llm.registry_state``
+    event.
+
+    Download-in-progress state is deliberately **not** part of this payload —
+    kodo-vsix reads ``manager-state.json`` directly off disk instead of
+    waiting for a WS push (see doc/LOCAL_MODEL_MANAGER.md §11 and
+    doc/LLM_REGISTRY.md §4.4); this keeps every open window in eventually-
+    consistent agreement without the server needing to track or broadcast to
+    more than the single connection that issued each request.
+    """
     kodo_dir = kodo_user_dir()
     registry = get_local_registry(kodo_dir)
     local_payload = [
@@ -266,12 +290,22 @@ def _local_registry_payload() -> dict[str, object]:
             "path": e.path,
             "url": e.url,
             "installed": _local_entry_installed(e, kodo_dir),
+            "installed_path": _local_entry_installed_path(e, kodo_dir),
+            "base_llm": e.base_llm,
+            "quant_author": e.quant_author,
+            "quant_type": e.quant_type,
+            "size_hint": e.size_hint,
+            "gpu_tip": e.gpu_tip,
+            "mac_tip": e.mac_tip,
+            "min_memory": e.min_memory,
+            "memory": e.memory,
         }
         for e in registry.values()
     ]
     return {
         "local_registry": local_payload,
         "llama_server_override_path": get_llama_server_override_path(kodo_dir),
+        "detected_vram_gb": detect_vram_gb(),
     }
 
 
@@ -625,53 +659,66 @@ async def _handle_llamacpp_install(req: Request) -> None:
         )
 
 
+def _run_background_download(model_id: str, work: Callable[[], object]) -> None:
+    """Fire-and-forget a blocking download/resume call on a worker thread.
+
+    Progress is **not** streamed back over this (or any) connection — kodo-vsix
+    follows it by polling ``manager-state.json`` directly off disk instead
+    (see doc/LOCAL_MODEL_MANAGER.md §11), which is what lets the transfer
+    survive the requesting connection/window closing entirely. This just
+    needs to log the outcome; nothing awaits it.
+    """
+
+    async def run() -> None:
+        try:
+            await asyncio.to_thread(work)
+        except LocalModelError:
+            _log.exception("Background download failed for %r", model_id)
+
+    asyncio.create_task(run())
+
+
 async def _handle_local_llm_install(req: Request) -> None:
     name = str(req.env.payload.get("name", "")).strip()
     if not name:
         return
-    registry = get_local_registry(kodo_user_dir())
-    entry = registry.get(name)
+    kodo_dir = kodo_user_dir()
+    entry = get_local_registry(kodo_dir).get(name)
     if entry is None or entry.kind not in ("hardcoded_hf", "custom_hf"):
-        message = f"Unknown or non-downloadable model: {name!r}"
-        await req.connection.send(
-            Envelope.make_event(
-                EVT_LOCAL_LLM_INSTALL_PROGRESS, {"name": name, "percent": -1, "message": message}
-            )
-        )
+        await _reply_local_llm_error(req, f"Unknown or non-downloadable model: {name!r}")
         return
+    manager = get_local_model_manager(kodo_dir)
+    _run_background_download(
+        name, lambda: manager.download_model(entry.name, entry.repo_id, entry.filename)
+    )
+    await _send_registry_state(req)
 
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()
 
-    def progress_cb(pct: int, msg: str) -> None:
-        loop.call_soon_threadsafe(queue.put_nowait, (pct, msg))
+async def _handle_local_llm_resume(req: Request) -> None:
+    name = str(req.env.payload.get("name", "")).strip()
+    if not name:
+        return
+    manager = get_local_model_manager(kodo_user_dir())
+    if manager.get_record(name) is None:
+        await _reply_local_llm_error(req, f"No download record for {name!r} — nothing to resume")
+        return
+    _run_background_download(name, lambda: manager.resume_download(name))
+    await _send_registry_state(req)
 
-    async def run() -> None:
-        try:
-            await asyncio.to_thread(download_model, entry, kodo_user_dir(), progress_cb=progress_cb)
-        except Exception:  # noqa: BLE001
-            pass
-        finally:
-            loop.call_soon_threadsafe(queue.put_nowait, None)
 
-    asyncio.create_task(run())
-    while True:
-        item = await queue.get()
-        if item is None:
-            break
-        pct, msg = item
-        await req.connection.send(
-            Envelope.make_event(
-                EVT_LOCAL_LLM_INSTALL_PROGRESS, {"name": name, "percent": pct, "message": msg}
-            )
-        )
+async def _handle_local_llm_pause(req: Request) -> None:
+    name = str(req.env.payload.get("name", "")).strip()
+    if name:
+        get_local_model_manager(kodo_user_dir()).pause_download(name)
+        _log.info("Paused download %r", name)
     await _send_registry_state(req)
 
 
 async def _handle_local_llm_uninstall(req: Request) -> None:
     name = str(req.env.payload.get("name", "")).strip()
     if name:
-        await asyncio.to_thread(delete_model, name, kodo_user_dir())
+        await asyncio.to_thread(get_local_model_manager(kodo_user_dir()).uninstall, name)
+        _log.info("Uninstalled model %r", name)
     await _send_registry_state(req)
 
 
@@ -764,8 +811,13 @@ async def _handle_local_llm_remove(req: Request) -> None:
     try:
         entry = get_local_registry(kodo_dir).get(name)
         is_downloadable = entry is not None and entry.kind in ("hardcoded_hf", "custom_hf")
-        if is_downloadable and get_model_path(name, kodo_dir) is not None:
-            await asyncio.to_thread(delete_model, name, kodo_dir)
+        manager = get_local_model_manager(kodo_dir)
+        # get_record (not get_model_path) so a *partial* download record isn't
+        # orphaned in manager-state.json when its registry entry disappears —
+        # get_model_path is None for anything not yet fully installed.
+        if is_downloadable and manager.get_record(name) is not None:
+            await asyncio.to_thread(manager.uninstall, name)
+            _log.info("Uninstalled model %r", name)
         remove_local_entry(kodo_dir, name)
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
@@ -870,7 +922,11 @@ async def _start_background(app: web.Application) -> None:
     running = find_running_server(user_dir)
     if running is not None:
         llama_install = find_installed(user_dir)
-        model_path = get_model_path(running.model, user_dir) if running.model else None
+        model_path = (
+            get_local_model_manager(user_dir).get_model_path(running.model)
+            if running.model
+            else None
+        )
         if llama_install is not None and model_path is not None:
             cfg = LlamaServerConfig(
                 executable=llama_install.executable,
@@ -943,6 +999,8 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_CONFIG_RELOAD, _make_config_reload_handler(config))
     conn_registry.register_handler(MSG_LLAMACPP_INSTALL, _handle_llamacpp_install)
     conn_registry.register_handler(MSG_LOCAL_LLM_INSTALL, _handle_local_llm_install)
+    conn_registry.register_handler(MSG_LOCAL_LLM_RESUME, _handle_local_llm_resume)
+    conn_registry.register_handler(MSG_LOCAL_LLM_PAUSE, _handle_local_llm_pause)
     conn_registry.register_handler(MSG_LOCAL_LLM_UNINSTALL, _handle_local_llm_uninstall)
     conn_registry.register_handler(MSG_LOCAL_LLM_REMOVE, _handle_local_llm_remove)
     conn_registry.register_handler(MSG_LOCAL_LLM_ADD_HUGGINGFACE, _handle_local_llm_add_huggingface)

@@ -8,8 +8,14 @@ lifecycle utilities formerly in the top-level ``kodo.llm_utils`` package:
   ``~/.kodo/llama.cpp/b{N}/`` (:func:`install_llamacpp`, :func:`uninstall_llamacpp`,
   :func:`update_llamacpp`, :func:`check_llamacpp_update`, :func:`find_installed`,
   :func:`server_executable`).
-* **Downloader** — :mod:`huggingface_hub` wrapper fetching/removing a specific
-  GGUF (:func:`download_model`, :func:`delete_model`, :func:`get_model_path`).
+* **Local model manager access** — :func:`get_local_model_manager` resolves
+  the models directory (``llm_models_dir`` in ``settings.json``, falling back
+  to ``~/.kodo/llama.cpp/models``) and returns the process-wide
+  :class:`kodo.llms.local.LocalModelManager` for it, cached per directory so
+  every caller within one server process shares the same instance. See
+  ``kodo/doc/LOCAL_MODEL_MANAGER.md`` for the manager itself — download,
+  pause/resume, multi-file (split GGUF) downloads, mmproj companions, and
+  HF tokens.
 * **Server** — async ``llama-server`` process manager (:class:`LlamaServer`,
   :class:`LlamaServerConfig`, :class:`RunningServer`, :func:`find_running_server`,
   :func:`ensure_llama_running`).
@@ -19,7 +25,6 @@ cycle: they are only ever used by llama.cpp inference, so they belong under the
 ``llamacpp`` subpackage.
 """
 
-from ._downloader import delete_model, download_model, get_model_path
 from ._installer import (
     LlamaInstall,
     check_llamacpp_update,
@@ -36,7 +41,7 @@ from ._llama_server import (
     RunningServer,
     find_running_server,
 )
-from ._manager import ensure_llama_running
+from ._manager import ensure_llama_running, get_local_model_manager
 
 __all__ = [
     "LlamaInstall",
@@ -47,12 +52,10 @@ __all__ = [
     "RunningServer",
     "ThinkingStreamParser",
     "check_llamacpp_update",
-    "delete_model",
-    "download_model",
     "ensure_llama_running",
     "find_installed",
     "find_running_server",
-    "get_model_path",
+    "get_local_model_manager",
     "install_llamacpp",
     "server_executable",
     "uninstall_llamacpp",

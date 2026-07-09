@@ -82,7 +82,7 @@ Maximum number of concurrent in-flight requests per cloud vendor feed (`kodo/llm
 
 ### 2.5 `llm_models_dir`
 
-Overrides the directory where downloaded GGUF files are cached (default `~/.kodo/llama.cpp/models`). Read directly by `kodo/llms/llamacpp/_downloader.py`.
+Overrides the directory where downloaded GGUF files are cached (default `~/.kodo/llama.cpp/models`). Read directly by `kodo/llms/llamacpp/_manager.py`'s `get_local_model_manager`.
 
 ---
 

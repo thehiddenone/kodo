@@ -68,11 +68,15 @@ toolspec rather than imported, to keep `toolspecs` dependency-free.
 > scripts instead (§8). The new `kodo.guided_state` (§7) is their much smaller
 > replacement — a leaf package, imported only by `tools` and `runtime`.
 >
-> The local-inference utilities (installer, downloader, llama-server manager)
-> remain merged into `llms/llamacpp/` (`_installer.py`, `_downloader.py`,
-> `_llama_server.py`, `_manager.py`), re-exported from `kodo.llms.llamacpp` —
-> unrelated to this change, noted here only because it was the other half of
-> the historical "two packages were merged" note this section used to carry.
+> The local-inference utilities (installer, llama-server manager) remain
+> merged into `llms/llamacpp/` (`_installer.py`, `_llama_server.py`,
+> `_manager.py`), re-exported from `kodo.llms.llamacpp` — unrelated to this
+> change, noted here only because it was the other half of the historical
+> "two packages were merged" note this section used to carry. The old
+> `_downloader.py` (a `huggingface_hub.hf_hub_download` wrapper) has since
+> been deleted; downloads now go through `kodo.llms.local.LocalModelManager`
+> directly, reached via `_manager.py`'s `get_local_model_manager` (see
+> `kodo/doc/LOCAL_MODEL_MANAGER.md`).
 
 ### 2.2 Layered diagram
 
@@ -452,9 +456,8 @@ handlers) — via `kodo.llms.llamacpp`, never from the private modules.
 | Module | Defines | Links |
 |---|---|---|
 | [_installer.py](../src/kodo/llms/llamacpp/_installer.py) | `LlamaInstall`, `install/uninstall/update_llamacpp`, `check_llamacpp_update`, `find_installed`, `server_executable` | Platform-aware llama.cpp binary install into `~/.kodo/llama.cpp/bN/`. No `kodo` imports. |
-| [_downloader.py](../src/kodo/llms/llamacpp/_downloader.py) | `download_model`, `delete_model`, `get_model_path` | `huggingface_hub` GGUF fetch/evict + JSON index. Imports `LocalLLMEntry` from `llms._local_registry` (intra-`llms`, no longer a cross-package cycle). |
 | [_llama_server.py](../src/kodo/llms/llamacpp/_llama_server.py) | `LlamaServer`, `LlamaServerConfig`, `RunningServer`, `find_running_server` | PID-managed `llama-server` subprocess; class-level singleton via `get_active_llama_server()`; `adopt()` reclaims a survivor after restart. |
-| [_manager.py](../src/kodo/llms/llamacpp/_manager.py) | `ensure_llama_running` | Composes installer + downloader + server: ensures the right model server is up for a `LocalLLMEntry` (not valid for `custom_server_url` — see LLM_REGISTRY.md §4), honoring the llama-server binary override if set. |
+| [_manager.py](../src/kodo/llms/llamacpp/_manager.py) | `ensure_llama_running`, `get_local_model_manager` | Composes installer + `kodo.llms.local.LocalModelManager` + server: ensures the right model server is up for a `LocalLLMEntry` (not valid for `custom_server_url` — see LLM_REGISTRY.md §4), honoring the llama-server binary override if set. `get_local_model_manager` resolves the models directory and caches one `LocalModelManager` per directory for the process lifetime; also called directly from `server/_app.py`'s `local_llm.*` WS handlers (no more `_downloader.py` adapter — see LOCAL_MODEL_MANAGER.md §9). |
 
 **Links:** Consumed by `llms/llamacpp/_llama.py` (runtime) and `server/_app.py`
 (install/start/stop handlers). Self-contained otherwise.

@@ -34,14 +34,15 @@ from __future__ import annotations
 # Session role (default, no payload.role): binds a new session (empty
 # session_id) or resumes an existing one. Server side effects: binds the
 # connection, replies hello.ack (session_id, current_project, a full `state`
-# snapshot, llama/model status), then pushes EVT_STATE, EVT_SESSION_NAME,
-# session.history (if the resumed session has prior turns), and finally
-# replays any backlog buffered while this session was disconnected — strictly
-# after session.history, so a reconnect can't see a live frame before scrollback.
+# snapshot, llama/model status, detected_vram_gb), then pushes EVT_STATE,
+# EVT_SESSION_NAME, session.history (if the resumed session has prior turns),
+# and finally replays any backlog buffered while this session was
+# disconnected — strictly after session.history, so a reconnect can't see a
+# live frame before scrollback.
 # Control role (payload.role == "control", the sidebar's session-less
 # connection): no session is created; the ack carries only the llama/model
-# snapshot, and the client uses it to reconcile this window's remembered-open
-# sessions once it lands.
+# snapshot (incl. detected_vram_gb), and the client uses it to reconcile this
+# window's remembered-open sessions once it lands.
 MSG_HELLO = "hello"
 
 # Client → Server. The user's submitted prompt text (payload: {text}), with any
@@ -202,12 +203,22 @@ MSG_CONFIG_RELOAD = "config.reload"
 
 # Client → Server. Window-global local-model management, sent over the
 # session-less control connection (extension.ts sidebar), never a session
-# connection. Progress/results come back as the EVT_LLAMACPP_INSTALL_PROGRESS /
-# EVT_LOCAL_LLM_INSTALL_PROGRESS / EVT_LLAMA_STATE events below rather than as a
-# direct response — the handler streams events on the connection until done.
-# ``local_llm.install`` payload is ``{name}``; the rest carry no payload.
+# connection. ``llamacpp.install`` still streams EVT_LLAMACPP_INSTALL_PROGRESS
+# on the requesting connection until done (that install is a one-shot binary
+# fetch with no pause/resume). The ``local_llm.*`` download commands below are
+# fire-and-forget instead: the handler kicks off the transfer in the
+# background and replies immediately with ``local_llm.registry_state``.
+# Progress itself is **not** pushed over the wire at all — kodo-vsix polls
+# ``manager-state.json`` directly off disk (doc/LOCAL_MODEL_MANAGER.md §11),
+# which is what lets a download keep running (and stay watchable) across the
+# requesting connection/window closing entirely.
+#   local_llm.install {name} — start (or continue) a fresh download
+#   local_llm.resume  {name} — resume a paused/failed download by id alone
+#   local_llm.pause   {name} — signal an in-flight download to stop between chunks
 MSG_LLAMACPP_INSTALL = "llamacpp.install"
 MSG_LOCAL_LLM_INSTALL = "local_llm.install"
+MSG_LOCAL_LLM_RESUME = "local_llm.resume"
+MSG_LOCAL_LLM_PAUSE = "local_llm.pause"
 MSG_LLAMA_START = "llama.start"
 MSG_LLAMA_STOP = "llama.stop"
 
@@ -221,6 +232,7 @@ MSG_LLAMA_STOP = "llama.stop"
 #   local_llm.add_file        {name, description, path, llama_args?, context_window?}
 #   local_llm.add_server_url  {name, description, url}
 #   local_llm.uninstall       {name} — frees the downloaded GGUF, keeps the entry
+#                                       (also the "cancel a download" action)
 #   local_llm.remove          {name} — removes a custom entry (hardcoded ones
 #                                       are rejected); uninstalls first if needed
 MSG_LOCAL_LLM_ADD_HUGGINGFACE = "local_llm.add_huggingface"
@@ -427,17 +439,18 @@ EVT_USAGE_UPDATE = "usage.update"
 EVT_ERROR = "error"
 
 # Server → Client events. Drive the sidebar's llama.cpp/model controls only —
-# no workflow meaning. ``llamacpp.install.progress`` and
-# ``local_llm.install.progress`` stream ``{percent, message}`` (plus ``name``
-# for the model being installed) for their respective installs; ``percent ==
-# -1`` signals failure (``message`` carries why). ``llama.state`` reports
-# ``{running, model, port?}`` or ``{running: false, error}`` whenever the local
-# server starts, stops, or fails — including an auto-start triggered mid-prompt
-# by a local-model dispatch, which is why it can arrive on a *session*
-# connection instead of the control connection (see ``onLlamaState`` in
-# kodo-vsix), not only after explicit ``llama.start``/``llama.stop``.
+# no workflow meaning. ``llamacpp.install.progress`` streams ``{percent,
+# message}`` for the llama.cpp binary install; ``percent == -1`` signals
+# failure (``message`` carries why). There is no ``local_llm.*`` download
+# progress event any more — kodo-vsix polls ``manager-state.json`` off disk
+# instead (see the comment above ``MSG_LOCAL_LLM_INSTALL``).  ``llama.state``
+# reports ``{running, model, port?}`` or ``{running: false, error}`` whenever
+# the local server starts, stops, or fails — including an auto-start
+# triggered mid-prompt by a local-model dispatch, which is why it can arrive
+# on a *session* connection instead of the control connection (see
+# ``onLlamaState`` in kodo-vsix), not only after explicit
+# ``llama.start``/``llama.stop``.
 EVT_LLAMACPP_INSTALL_PROGRESS = "llamacpp.install.progress"
-EVT_LOCAL_LLM_INSTALL_PROGRESS = "local_llm.install.progress"
 EVT_LLAMA_STATE = "llama.state"
 
 # Server → Client event. Sent once after every ``local_llm.*``/

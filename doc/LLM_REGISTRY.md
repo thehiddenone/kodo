@@ -5,8 +5,12 @@
 > override, and named multi-key cloud credential management.
 
 Companion to [LLM_GATEWAY.md](LLM_GATEWAY.md) (request scheduling/feeds, once
-a plugin is resolved) and [WS_PROTOCOL.md](WS_PROTOCOL.md) (the wire shapes
-referenced throughout — §4.1, §5.12/§5.12a, §6.3/§6.4, §7.5/§7.6).
+a plugin is resolved), [WS_PROTOCOL.md](WS_PROTOCOL.md) (the wire shapes
+referenced throughout — §4.1, §5.12/§5.12a, §6.3/§6.4, §7.5/§7.6), and
+[LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md) (how a `hardcoded_hf`/
+`custom_hf` entry's GGUF actually gets downloaded/paused/resumed/removed on
+disk — this doc covers only *which* entries exist, not how their bytes are
+fetched).
 
 ---
 
@@ -121,13 +125,53 @@ class LocalLLMEntry:
     context_window: int = 0                                    # any llama-server kind
     path: str = ""          # custom_file
     url: str = ""           # custom_server_url
+    base_llm: str = ""      # hardcoded_hf only — e.g. "qwen36-27b"
+    quant_author: str = ""  # hardcoded_hf only — e.g. "Unsloth"
+    quant_type: str = ""    # hardcoded_hf only — e.g. "UD_Q4_K_XL"
+    size_hint: str = ""     # hardcoded_hf only — e.g. "28.6 GB"
+    gpu_tip: str = ""       # hardcoded_hf only — e.g. "~43GB VRAM at 128K
+                             # context — fits a single 48GB GPU (e.g. RTX
+                             # 6000 Ada/A6000, or RTX PRO 5000 Blackwell)."
+    mac_tip: str = ""       # hardcoded_hf only — e.g. "Needs ~43GB —
+                             # comfortable on a 64GB MacBook Pro (M4 Pro/Max
+                             # or M5 Pro/Max); a 48GB config is tight."
+    min_memory: int = 0     # hardcoded_hf only — absolute minimum VRAM (GB); 0 = unknown
+    memory: int = 0         # hardcoded_hf only — recommended VRAM (GB); 0 = unknown
 ```
+
+`base_llm`/`quant_author`/`quant_type`/`size_hint`/`gpu_tip`/`mac_tip`/
+`min_memory`/`memory` are metadata-only (never read by `ensure_llama_running`
+or the WS handlers) — they identify, respectively, the original unquantized
+model, who produced the quant, the quant spec, the GGUF file's on-disk size
+(as displayed on the model's HuggingFace file listing, hand-copied — not
+fetched at runtime), a hand-written discrete-GPU recommendation, a
+hand-written MacBook Pro (Apple Silicon unified-memory) recommendation, and
+two hand-picked VRAM thresholds (GB) used for the client-side hardware
+comparison below, for every compiled-in `hardcoded_hf` entry in
+`_HARDCODED_LOCAL_MODELS`. `gpu_tip` and `mac_tip` are both rough estimates
+off the same underlying VRAM figure — weight size (`size_hint`) plus an
+approximated KV-cache footprint at 128K context (scaled from each model
+family's known/assumed architecture: layer count, attention-head config, and
+the KV cache quantization each entry's `llama_args` requests). `gpu_tip`
+rounds that figure to a practical discrete-GPU VRAM tier (including
+current-gen RTX PRO Blackwell workstation cards: 4000/24GB, 4500/32GB,
+5000/48GB, 5000 72GB/72GB, 6000/96GB); `mac_tip` maps the same figure onto
+MacBook Pro unified-memory tiers (M4/M4 Pro/M4 Max and M5/M5 Pro/M5 Max
+configs) with extra headroom built in for macOS's own memory overhead.
+Neither is a precise sizing tool. `min_memory`/`memory` are the same
+underlying estimate expressed as two plain integers instead of prose — see
+§4.4 for how kodo-vsix compares them against `detected_vram_gb`. All eight
+fields are always `""`/`0` for `custom_hf`/`custom_file`/`custom_server_url`
+— none of the `local_llm.add_*` WS commands accept them, so a user-added
+entry can never populate them. Unlike `llama_args`/`context_window` (dataclass-
+only, never sent to kodo-vsix), all eight of these **are** included in
+`_local_registry_payload()`'s wire shape (§4.4).
 
 Four entry kinds:
 
 | kind | added via | installed-state rule | install/uninstall? |
 |---|---|---|---|
-| `hardcoded_hf` | compiled-in (`_HARDCODED_LOCAL_MODELS`) | present in `~/.kodo/etc/local-llm-index.json` | yes |
+| `hardcoded_hf` | compiled-in (`_HARDCODED_LOCAL_MODELS`) | installed per `LocalModelManager` state | yes |
 | `custom_hf` | "Add local LLM from huggingface.com" | same as `hardcoded_hf` | yes |
 | `custom_file` | "Add local LLM from file" | file exists at `entry.path` | no — see below |
 | `custom_server_url` | "Add a link to local llama-server" | always installed | no |
@@ -189,20 +233,53 @@ This is implemented in `LlamaPlugin.__ensure_running` (`kodo/llms/llamacpp/_llam
 and mirrored in `_app.py`'s `local_llm.start` handler for the explicit
 `llama.start` command path.
 
-### 4.1 Install / uninstall
+### 4.1 Install / pause / resume / uninstall
+
+All four are fire-and-forget: the handler kicks off (or signals) the transfer
+and replies immediately with `local_llm.registry_state` — there is no
+progress event on the wire. kodo-vsix follows progress by polling
+`manager-state.json` directly off disk instead; see
+[LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md) §11 for the full design and
+*why* (no connection-broadcast infra needed, survives the requesting window
+closing, works the same after a real server restart).
 
 - **Install** (`local_llm.install {name}`, `hardcoded_hf`/`custom_hf` only) —
-  unchanged download mechanics: `kodo.llms.llamacpp.download_model` calls
-  `huggingface_hub.hf_hub_download`, recording the resolved path in
-  `~/.kodo/etc/local-llm-index.json` keyed by entry name.
-- **Uninstall** (`local_llm.uninstall {name}`) — **new**:
-  `kodo.llms.llamacpp.delete_model` evicts the cached HF blob via
-  `huggingface_hub`'s cache-scan/delete-revision API (a plain file delete
-  would leave the bytes in HF's dedup cache) and drops the index entry. A
-  no-op if not installed.
+  `server/_app.py`'s `_handle_local_llm_install` fires
+  `kodo.llms.llamacpp.get_local_model_manager(kodo_dir).download_model(entry.name,
+  entry.repo_id, entry.filename)` on a worker thread, keyed by `entry.name`.
+  Full design, including *why* this no longer goes through
+  `huggingface_hub.hf_hub_download` for the byte transfer, in
+  [LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md).
+- **Resume** (`local_llm.resume {name}`) — fires `resume_download(name)` for
+  a model that already has a download record (paused, failed, or left
+  `DOWNLOADING` by a server restart — see the reconciliation note below).
+  Replies with a `local_llm_error` if there's no record to resume.
+- **Pause** (`local_llm.pause {name}`) — `LocalModelManager.pause_download`;
+  a no-op if nothing is currently transferring for that id.
+- **Uninstall** (`local_llm.uninstall {name}`) — `LocalModelManager.uninstall`
+  simply deletes the model's own subdirectory — downloads no longer go
+  through HF's shared dedup blob cache at all, so there's no cache-eviction
+  step any more. A no-op if not installed. Also the "cancel a download"
+  action — pauses first, then deletes the partial files.
 - **Remove** (`local_llm.remove {name}`) — deregisters a custom entry from
-  `local-llm-registry.json`; if it's currently installed, uninstalls first
-  to avoid an orphaned GGUF. Rejected for `hardcoded_hf` entries.
+  `local-llm-registry.json`; if it has *any* download record (finished or
+  partial — checked via `get_record`, not just "fully installed"), uninstalls
+  first to avoid an orphaned partial GGUF. Rejected for `hardcoded_hf`
+  entries.
+
+The manager also supports split-GGUF multi-file downloads, mmproj companion
+files, and per-call HF tokens — none of that is exercised from these WS
+commands yet (tracked as follow-up).
+
+A file left `DOWNLOADING` by a killed/crashed kodo-server is forced to
+`PAUSED` the next time `LocalModelManager` is constructed for that models
+directory (i.e. effectively "at the next kodo-server startup") — see
+LOCAL_MODEL_MANAGER.md §11. The Local Inference Settings webview surfaces
+this as a resumable download, same as one the user paused deliberately.
+
+`~/.kodo/etc/local-llm-index.json` (the old flat `{name: path}` index) is
+retired — superseded by `LocalModelManager`'s own `manager-state.json`,
+scoped under the models directory itself rather than `etc/`.
 
 ### 4.2 llama-server binary override
 
@@ -224,6 +301,61 @@ The Local Inference Settings webview (§6) surfaces this as a standalone
 control — a label showing the current override path or "No override" plus
 "Set llama.cpp override" / "Remove llama.cpp override" buttons — separate
 from the model card grid, since it isn't itself a model.
+
+### 4.3 Hardware detection (`detected_vram_gb`)
+
+`kodo/llms/_hardware.py`'s `detect_vram_gb()` is best-effort local GPU/
+unified-memory detection, computed fresh on every `hello.ack` **and** every
+`local_llm.registry_state` event (both go through `_local_registry_payload()`
+now) and sent as the top-level `detected_vram_gb` field — see WS_PROTOCOL.md
+§4.1 for the wire shape.
+
+Detection strategy, by platform:
+
+- **macOS**: total system RAM via `psutil.virtual_memory().total`, treated
+  as VRAM-equivalent — Apple Silicon shares one unified memory pool between
+  CPU and GPU, so there's no separate VRAM figure to query.
+- **Windows/Linux**: sum of VRAM across every NVIDIA GPU visible to the
+  driver, via `pynvml` (`nvmlDeviceGetMemoryInfo(handle).total` per device).
+  **AMD GPUs are not detected** — out of scope for now; an AMD-only machine
+  reports `null` even with a discrete GPU present.
+
+The raw byte total is normalized to the nearest tier in a fixed ascending
+list (4, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48, 64, 80, 96, 128, 192, 256 GB)
+— real hardware rarely reports an exact round number (e.g. a "24GB" card
+shows ~23.99 GiB), so nearest-tier snapping gives a clean, stable figure.
+Above the top tier (multi-GPU rigs) it rounds to the nearest 32 GB instead of
+clamping. Returns `None` (→ wire `null`) if nothing could be detected: no
+supported GPU, no driver, or the detection library isn't installed/importable
+— every failure mode is caught and swallowed, since this must never block
+the `hello` handshake.
+
+### 4.4 kodo-vsix wire shape and the download-progress polling design
+
+`_local_registry_payload()` (`server/_app.py`) sends every `LocalLLMEntry`
+field kodo-vsix needs — `name`, `kind`, `description`, `repo_id`, `filename`,
+`path`, `url`, `installed`, `installed_path`, `base_llm`, `quant_author`,
+`quant_type`, `size_hint`, `gpu_tip`, `mac_tip`, `min_memory`, `memory` — plus
+top-level `llama_server_override_path` and `detected_vram_gb`. `installed_path`
+is new: the absolute path to the installed file(s) (`LocalModelManager.
+get_model_path()` for `hardcoded_hf`/`custom_hf`, `entry.path` for
+`custom_file`, `null` for `custom_server_url` or anything not installed) —
+it's what "Show me local files" in the Local Inference Settings webview
+reveals via VS Code's `revealFileInOS` command, entirely client-side (no
+extra WS round trip).
+
+kodo-vsix compares `detected_vram_gb` against each entry's `min_memory`/
+`memory` (both GB, same units, both `0` meaning "unknown — don't warn"):
+below `min_memory` is a red "won't run" warning; below `memory` (and not
+already red) is a yellow "may not perform well at large contexts" warning.
+When `min_memory == memory` only the red case can ever fire — meeting the
+minimum already means meeting the recommendation too, so there is no
+separate yellow branch to special-case.
+
+**Download progress is not part of this payload** — see
+[LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md) §11. kodo-vsix polls
+`manager-state.json` directly off disk once a second instead, independent of
+the WS connection.
 
 ---
 

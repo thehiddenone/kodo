@@ -1,16 +1,70 @@
-"""On-demand llama-server lifecycle manager."""
+"""On-demand llama-server lifecycle manager, plus the shared LocalModelManager accessor."""
 
 from __future__ import annotations
 
+import json
+import threading
 from pathlib import Path
 
 from kodo.llms import LocalLLMEntry, get_llama_server_override_path
+from kodo.llms.local import LocalModelManager
 
-from ._downloader import get_model_path
 from ._installer import find_installed
 from ._llama_server import LlamaServer, LlamaServerConfig
 
-__all__ = ["ensure_llama_running"]
+__all__ = ["ensure_llama_running", "get_local_model_manager"]
+
+_manager_cache: dict[Path, LocalModelManager] = {}
+_manager_cache_lock = threading.Lock()
+
+
+def _models_dir(kodo_dir: Path) -> Path:
+    """Return the directory where GGUF model files are stored.
+
+    Reads ``llm_models_dir`` from ``kodo_dir/etc/settings.json``; falls back
+    to ``kodo_dir/llama.cpp/models``.
+
+    Args:
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
+
+    Returns:
+        Path: Directory for model files.
+    """
+    settings_file = kodo_dir / "etc" / "settings.json"
+    if settings_file.is_file():
+        try:
+            parsed = json.loads(settings_file.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict) and "llm_models_dir" in parsed:
+                return Path(str(parsed["llm_models_dir"]))
+        except Exception:
+            pass
+    return kodo_dir / "llama.cpp" / "models"
+
+
+def get_local_model_manager(kodo_dir: Path) -> LocalModelManager:
+    """Return the process-wide :class:`LocalModelManager` for *kodo_dir*'s model directory.
+
+    :class:`LocalModelManager` itself is a plain, freely-instantiable class
+    (not a singleton) — this cache exists purely so that a
+    :meth:`LocalModelManager.pause_download` call (a future WS handler) can
+    reach the same in-memory cancellation event as the
+    :meth:`LocalModelManager.download_model` call it's meant to interrupt,
+    which requires reusing the same instance across separate WS request
+    handlers within this one server process.
+
+    Args:
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
+
+    Returns:
+        LocalModelManager: The shared manager instance for this directory.
+    """
+    root = _models_dir(kodo_dir)
+    with _manager_cache_lock:
+        manager = _manager_cache.get(root)
+        if manager is None:
+            manager = LocalModelManager(root)
+            _manager_cache[root] = manager
+        return manager
 
 
 async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaServer:
@@ -62,7 +116,7 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
         if model_path is None or not model_path.is_file():
             raise RuntimeError(f"Model file not found: {entry.path!r}")
     else:
-        model_path = get_model_path(entry.name, kodo_dir)
+        model_path = get_local_model_manager(kodo_dir).get_model_path(entry.name)
         if model_path is None:
             raise RuntimeError(f"Model {entry.name!r} is not installed")
 

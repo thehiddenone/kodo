@@ -141,13 +141,18 @@ The server replies with the current world plus local-model status:
     "local_registry": [
       { "name": "llamacpp-qwen36-27b-q4-k-xl", "kind": "hardcoded_hf",
         "description": "...", "repo_id": "...", "filename": "...",
-        "path": "", "url": "", "installed": true }
+        "path": "", "url": "", "installed": true,
+        "installed_path": "/abs/path/model.gguf" | null,
+        "base_llm": "qwen36-27b", "quant_author": "Unsloth", "quant_type": "UD_Q4_K_XL",
+        "size_hint": "17.9 GB", "gpu_tip": "...", "mac_tip": "...",
+        "min_memory": 24, "memory": 32 }
     ],
     "llama_server_override_path": null,
     "llama_installed": true,
     "llama_version": "b1234" | null,
     "llama_running": false,
-    "llama_model": "qwen36-27b" | null
+    "llama_model": "qwen36-27b" | null,
+    "detected_vram_gb": 24 | null
   } }
 ```
 
@@ -162,6 +167,18 @@ server-side per §LLM_REGISTRY.md's installed-state rules — the client never
 needs to compute it itself except for `custom_file` entries, where the
 extension's own startup-time filesystem check is authoritative for the rest
 of the process lifetime (see doc/LLM_REGISTRY.md §4).
+
+`detected_vram_gb` is best-effort local hardware detection — total GPU VRAM
+(NVIDIA only, via `pynvml`) or, on macOS, total unified memory (via
+`psutil`), summed across all detected GPUs and snapped to the nearest
+canonical tier (see doc/LLM_REGISTRY.md §4.3). `null` if nothing could be
+detected — no supported GPU, missing driver, or detection failure — which is
+expected on plenty of machines. It is computed fresh on every `hello.ack`
+**and** every `local_llm.registry_state` event (§5.12a) — not cached — matching
+how `llama_installed`/`llama_running` are already computed live rather than
+cached. The Local Inference Settings webview compares it against each local
+entry's `min_memory`/`memory` to show a red/yellow hardware-fit warning (see
+doc/LLM_REGISTRY.md §4.4).
 
 Immediately after the ack the server **also pushes** a `state` event (§5.1) and, if the resumed session has history, a `session.history` event (§5.11). The redundant `state` keeps first-connect and reconnect on identical client logic.
 
@@ -493,10 +510,11 @@ These drive the sidebar's llama.cpp / model controls; they carry no workflow mea
 { "type": "llama.state", "running": true, "model": "qwen36-27b", "port": 8080 }
 { "type": "llama.state", "running": false, "model": null, "error": "..." }
 { "type": "llamacpp.install.progress", "percent": 42, "message": "..." }
-{ "type": "local_llm.install.progress", "name": "qwen36-27b", "percent": 100, "message": "..." }
 ```
 
 `percent: -1` signals failure (the `message` carries the reason). `llama.state` with `starting: true` ⟪planned⟫ may precede a running/error update; the client treats a missing `running` field as "still starting." Selecting a `custom_server_url` local entry (§7.6, doc/LLM_REGISTRY.md) reports `llama.state {running: false, model: null}` — that entry isn't a process kodo manages, so "running" here always describes kodo's *own* llama-server, which stays stopped until a kodo-managed local model is selected again.
+
+There is no `local_llm.install.progress` (or any other) download-progress event — `local_llm.install`/`local_llm.resume`/`local_llm.pause` (§7.6) are fire-and-forget, and kodo-vsix follows progress by polling `manager-state.json` directly off disk instead (doc/LOCAL_MODEL_MANAGER.md §11), independent of any WS connection.
 
 ### 5.12a `local_llm.registry_state` — local registry changed
 
@@ -504,11 +522,16 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
 
 ```json
 { "type": "local_llm.registry_state",
-  "local_registry": [ { "name": "...", "kind": "...", "installed": true, "...": "..." } ],
-  "llama_server_override_path": "/usr/local/bin/llama-server-cuda" | null }
+  "local_registry": [ { "name": "...", "kind": "...", "installed": true,
+                         "installed_path": "/abs/path/model.gguf" | null,
+                         "base_llm": "...", "quant_author": "...", "quant_type": "...",
+                         "size_hint": "...", "gpu_tip": "...", "mac_tip": "...",
+                         "min_memory": 32, "memory": 48, "...": "..." } ],
+  "llama_server_override_path": "/usr/local/bin/llama-server-cuda" | null,
+  "detected_vram_gb": 24 | null }
 ```
 
-Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it.
+Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. Does **not** carry download progress (see above) — that's read off disk, not this event.
 
 ### 5.13 ⟪removed⟫ — the former artifact events
 
@@ -846,14 +869,22 @@ The full `mode`/`active_cloud_vendor`/`models` schema is documented in [SETTINGS
 ### 7.6 Local-model management commands
 
 These drive the Local Inference Settings webview and the sidebar's llama.cpp
-controls; progress/results come back as the §5.12/§5.12a events, not as
-responses. Full semantics (entry kinds, installed-state rules, the
+controls. Full semantics (entry kinds, installed-state rules, the
 llama-server override) are in [LLM_REGISTRY.md](LLM_REGISTRY.md).
+`local_llm.install`/`.resume`/`.pause`/`.uninstall`/`.remove`/`add_*` and the
+`llama_server_override.*` pair all reply with §5.12a `local_llm.
+registry_state`; none of them stream progress over the wire — a download's
+live byte progress is read by polling `manager-state.json` off disk instead
+(doc/LOCAL_MODEL_MANAGER.md §11). `llamacpp.install` is the one exception,
+still streaming `llamacpp.install.progress` (§5.12) on the requesting
+connection, since that's a one-shot binary fetch with no pause/resume.
 
 ```json
 { "type": "llamacpp.install" }       // install the llama.cpp binary
-{ "type": "local_llm.install", "name": "qwen36-27b" }   // download a GGUF model
-{ "type": "local_llm.uninstall", "name": "qwen36-27b" } // free the downloaded GGUF, keep the entry
+{ "type": "local_llm.install", "name": "qwen36-27b" }   // start (or continue) a fresh download
+{ "type": "local_llm.resume", "name": "qwen36-27b" }    // resume a paused/failed download by id alone
+{ "type": "local_llm.pause", "name": "qwen36-27b" }     // signal an in-flight download to stop between chunks
+{ "type": "local_llm.uninstall", "name": "qwen36-27b" } // free the downloaded GGUF, keep the entry (also "cancel")
 { "type": "local_llm.remove", "name": "my-model" }      // remove a custom entry (uninstalls first if needed)
 { "type": "local_llm.add_huggingface", "name": "...", "description": "...",
   "repo_id": "org/repo", "filename": "model.gguf",

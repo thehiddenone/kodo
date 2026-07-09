@@ -16,6 +16,8 @@ dependencies = [
     "huggingface_hub>=1.18.0",
     "openai>=2.41.0",
     "playwright>=1.61.0",
+    "psutil>=7.0.0",
+    "pynvml>=12.0.0",
     "selectolax>=0.4.10"
 ]
 
