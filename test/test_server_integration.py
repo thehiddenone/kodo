@@ -570,6 +570,12 @@ async def test_local_llm_install_pushes_registry_state_after_failure_too(
     await ws.send_str(req.to_json())
 
     await _recv(ws)  # kickoff registry_state
+
+    error_evt = await _recv(ws)
+    assert error_evt.payload["type"] == "error"
+    assert error_evt.payload["code"] == "local_llm_error"
+    assert "network is on fire" in error_evt.payload["message"]
+
     completed = await _recv(ws)
     assert completed.payload["type"] == "local_llm.registry_state"
     assert _local_entry(completed.payload, "test-model")["installed"] is False

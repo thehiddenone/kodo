@@ -292,8 +292,37 @@ class LocalModelManager:
                 expected shard.
             DownloadError: A network, I/O, or size-mismatch failure.
         """
-        available = list_repo_files(repo_id, revision=revision, token=token)
-        shard_filenames = detect_shard_group(filename, available)
+
+        def seed(records: dict[str, ModelRecord]) -> None:
+            record = records.get(model_id)
+            if record is None or record.repo_id != repo_id or record.revision != revision:
+                record = ModelRecord(
+                    model_id=model_id,
+                    repo_id=repo_id,
+                    revision=revision,
+                    commit_hash=None,
+                    created_at=_now(),
+                    updated_at=_now(),
+                )
+            if not any(f.filename == filename for f in record.files):
+                record.files.append(
+                    ModelFile(filename=filename, role=FileRole.MAIN, repo_id=repo_id, revision=revision)
+                )
+            record.updated_at = _now()
+            records[model_id] = record
+
+        # Seeded *before* the HF round trip so a bad repo_id/revision/gated-
+        # without-token failure — which raises here, before any shard is even
+        # known — still lands a record in manager-state.json instead of
+        # vanishing silently (kodo-vsix's disk poll would otherwise have
+        # nothing to show for a download that failed this early).
+        self.__mutate_state(seed)
+        try:
+            available = list_repo_files(repo_id, revision=revision, token=token)
+            shard_filenames = detect_shard_group(filename, available)
+        except LocalModelError as exc:
+            self.__set_file_status(model_id, filename, status=FileStatus.FAILED, error=str(exc))
+            raise
 
         def mutate(records: dict[str, ModelRecord]) -> None:
             record = records.get(model_id)

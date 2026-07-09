@@ -168,6 +168,15 @@ def test_download_missing_repo_raises(
     with pytest.raises(ShardResolutionError):
         manager.download_model("m1", "org/does-not-exist", "model.gguf")
 
+    # The failure is still persisted — a bad repo_id raises before any shard
+    # is even known, but kodo-vsix's manager-state.json poll needs *something*
+    # to show instead of the download silently vanishing.
+    record = manager.get_record("m1")
+    assert record is not None
+    (file,) = record.files
+    assert file.status == FileStatus.FAILED
+    assert "org/does-not-exist" in file.error
+
 
 # ---------------------------------------------------------------------------
 # Pause / resume

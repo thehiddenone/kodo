@@ -676,15 +676,30 @@ def _run_background_download(
     event every other ``local_llm.*`` mutation already replies with — so the
     requesting window's sidebar and Local Inference Settings panel pick up
     the new ``installed``/``installed_path`` state without needing to
-    reconnect or reopen the panel. Best-effort: ``Connection.send`` silently
-    no-ops if the socket already closed (e.g. the window closed mid-download).
+    reconnect or reopen the panel. A ``LocalModelError`` also gets an ``error``
+    event of its own (same ``local_llm_error`` code as the synchronous
+    validation failures in this module) *before* that registry_state push, so
+    kodo-vsix surfaces it as a notification instead of the failure only ever
+    reaching the server log — see doc/LOCAL_MODEL_MANAGER.md §11. Best-effort:
+    ``Connection.send`` silently no-ops if the socket already closed (e.g. the
+    window closed mid-download).
     """
 
     async def run() -> None:
         try:
             await asyncio.to_thread(work)
-        except LocalModelError:
+        except LocalModelError as exc:
             _log.exception("Background download failed for %r", model_id)
+            await connection.send(
+                Envelope.make_event(
+                    EVT_ERROR,
+                    {
+                        "code": "local_llm_error",
+                        "message": f"Download of {model_id!r} failed: {exc}",
+                        "recoverable": True,
+                    },
+                )
+            )
         finally:
             await connection.send(
                 Envelope.make_event(EVT_LOCAL_LLM_REGISTRY_STATE, _local_registry_payload())

@@ -302,8 +302,46 @@ onto the wire out of order — see `test_local_llm_install_pushes_registry_
 state_again_on_completion` in `test/test_server_integration.py`. Still
 per-connection only, not a broadcast (see below) — a *different* window than
 the one that clicked install won't see the flip until it reconnects or
-reopens the panel; that gap is pre-existing (every `local_llm.*` mutation has
-always been per-connection-only) and out of scope here. Instead:
+reopens the panel. Worse, even the *originating* window can miss it: the
+completion push targets whatever `Connection` object was live when the
+request was handled, and `Connection.send` silently no-ops if that socket has
+since closed — which is a real risk for a multi-minute HuggingFace transfer,
+since any WS reconnect in between (sleep, idle timeout, network blip) leaves
+the push aimed at a dead connection forever, with nothing to fall back on. See
+below for how kodo-vsix's disk poller (§11 continued) now closes both gaps
+client-side, without any new broadcast infrastructure on this end. Instead:
+
+- If `work` raised a `LocalModelError`, `_run_background_download` also sends
+  an `error` event (`code: "local_llm_error"`, the same code every
+  synchronous `local_llm.*` validation failure already uses) *before* the
+  completion `registry_state` push. kodo-vsix's top-level WS event handler
+  (`extension.ts`) shows any `local_llm_error` via `vscode.window.
+  showErrorMessage`, which VS Code parks in the bottom-right corner until the
+  user dismisses it — this is what surfaces a background download failure
+  (e.g. a typo'd `repo_id` in the registry, or a HuggingFace 401) to the
+  user at all. Before this exception path existed, such a failure only ever
+  reached the server log; clicking "Download and Install" looked like
+  nothing had happened.
+- A failure inside `download_model` before any shard is even known (a bad
+  `repo_id`/`revision`, or a gated repo without a valid token — both raise
+  out of `list_repo_files`, before the shard-deduction `mutate()` call ever
+  runs) used to leave `manager-state.json` completely untouched, so
+  kodo-vsix's disk poll had nothing to reflect either. `download_model` now
+  seeds a placeholder `ModelFile` for the requested `model_id`/`filename`
+  *before* the HuggingFace round trip, and marks it `FileStatus.FAILED` with
+  the exception message if that round trip raises — the same
+  `FileStatus.FAILED`/`error` fields a mid-transfer failure already writes
+  (see `__run_transfer` below), so the panel's existing "Failed: `<message>`"
+  download row and Cancel button (→ `local_llm.uninstall`) handle this case
+  for free, no new UI needed.
+- The Local Inference Settings panel's install button disables itself and
+  relabels to "Starting download…" synchronously in its own click handler
+  (`local-inference-settings-panel.ts`), before `postMessage` — bridging the
+  gap between the click and the first state update (kickoff registry_state,
+  error event, or a disk-poll tick) actually reaching the webview. No new
+  tracked state: the next `'update'` message always rebuilds the button from
+  scratch, so a silent early failure just gets a normal clickable button
+  back rather than one stuck reading "Starting download…" forever.
 
 - `__run_transfer` (`_manager.py`) unconditionally persists the active file's
   `downloaded_bytes`/`size`/`status` to `manager-state.json` at most once a
@@ -327,6 +365,25 @@ always been per-connection-only) and out of scope here. Instead:
   any new broadcast infrastructure, and a download survives its originating
   window closing for free (the transfer thread was never tied to that
   connection to begin with).
+- **Completion detection, every window** (`extension.ts`): the same poller
+  that reports byte-level progress also closes the "does `installed` ever
+  flip" gap above, entirely client-side. `summarize()` (`local-model-
+  downloads.ts`) already stops reporting a model once every file is
+  `completed` — it just drops out of the returned map, treated as "not a
+  download in progress" any more. `activate()`'s poll callback now diffs the
+  previous tick's tracked names against the new ones; the moment a name it
+  was tracking disappears (finished installing, or removed/uninstalled), it
+  re-sends the `hello` control request. Since `hello` (role `control`) is a
+  cheap, side-effect-free snapshot request already handled server-side
+  (`_make_hello_handler`, §"hello" above) and its `hello.ack` handler already
+  refreshes `localRegistryState` — and with it both the sidebar and the
+  Local Inference Settings panel — this needed zero protocol changes. Because
+  every open window runs this poller independently against the same
+  `manager-state.json`, every window notices the completion on its own next
+  tick and re-syncs itself, regardless of which window's connection actually
+  issued the `local_llm.install`/`resume` request and regardless of whether
+  that connection survived long enough to receive the server's completion
+  push above.
 - **Restart reconciliation**: `LocalModelManager.__init__` forces any file
   still marked `DOWNLOADING` in the loaded state to `PAUSED` before anything
   else touches it — safe because a fresh instance's own `__cancel_events` is
