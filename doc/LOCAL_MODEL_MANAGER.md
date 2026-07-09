@@ -263,10 +263,10 @@ The two call sites:
   `_handle_local_llm_remove`, plus `_local_entry_installed`/
   `_local_entry_installed_path`) call `get_local_model_manager(kodo_dir)` and
   then `.download_model(...)`/`.resume_download(...)` (both fired via a
-  `_run_background_download` helper that just logs a `LocalModelError` rather
-  than reporting it anywhere — see §11 for why there's no progress/error
-  event any more), `.pause_download(...)`, `.uninstall(...)`,
-  `.get_model_path(...)` on the returned instance.
+  `_run_background_download` helper that logs a `LocalModelError` and, either
+  way, pushes one more `local_llm.registry_state` once the transfer settles —
+  see §11), `.pause_download(...)`, `.uninstall(...)`, `.get_model_path(...)`
+  on the returned instance.
 
 **pause/resume are now wired** (§11) — `local_llm.pause`/`local_llm.resume` WS
 messages reach `pause_download`/`resume_download` directly. **Still not wired
@@ -282,10 +282,28 @@ but not yet reachable from kodo-vsix.
 ## 11. kodo-vsix integration: disk-polled progress, not a WS push
 
 Every `local_llm.install`/`local_llm.resume`/`local_llm.pause` WS handler
-(`server/_app.py`) is fire-and-forget: it kicks off the transfer on a worker
-thread and replies immediately with `local_llm.registry_state` — there is no
+(`server/_app.py`) is fire-and-forget: it replies immediately with
+`local_llm.registry_state` (the "kickoff" push — model still `installed:
+false`, download not started yet) and *then* kicks off the transfer on a
+worker thread via `_run_background_download`. There is no byte-level
 progress event on the wire at all any more (the old `local_llm.install.
-progress` event is gone). Instead:
+progress` event is gone) — but `_run_background_download`'s `run()` coroutine
+does push **one more** `local_llm.registry_state` on the same connection once
+`work` (the `download_model`/`resume_download` call) finishes, success or
+failure (`try`/`finally`, so a `LocalModelError` doesn't skip it). This is
+what lets the requesting window's sidebar and Local Inference Settings panel
+pick up `installed`/`installed_path` flipping to the completed state without
+polling or reopening the panel — every other `local_llm.*` mutation already
+replies with fresh state on completion, this just extends that pattern to a
+completion that happens asynchronously after the reply. The kickoff reply is
+sent (not merely scheduled) *before* `_run_background_download` creates its
+task specifically so the two `registry_state` events can't race each other
+onto the wire out of order — see `test_local_llm_install_pushes_registry_
+state_again_on_completion` in `test/test_server_integration.py`. Still
+per-connection only, not a broadcast (see below) — a *different* window than
+the one that clicked install won't see the flip until it reconnects or
+reopens the panel; that gap is pre-existing (every `local_llm.*` mutation has
+always been per-connection-only) and out of scope here. Instead:
 
 - `__run_transfer` (`_manager.py`) unconditionally persists the active file's
   `downloaded_bytes`/`size`/`status` to `manager-state.json` at most once a

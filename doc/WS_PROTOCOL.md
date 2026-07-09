@@ -514,11 +514,11 @@ These drive the sidebar's llama.cpp / model controls; they carry no workflow mea
 
 `percent: -1` signals failure (the `message` carries the reason). `llama.state` with `starting: true` ⟪planned⟫ may precede a running/error update; the client treats a missing `running` field as "still starting." Selecting a `custom_server_url` local entry (§7.6, doc/LLM_REGISTRY.md) reports `llama.state {running: false, model: null}` — that entry isn't a process kodo manages, so "running" here always describes kodo's *own* llama-server, which stays stopped until a kodo-managed local model is selected again.
 
-There is no `local_llm.install.progress` (or any other) download-progress event — `local_llm.install`/`local_llm.resume`/`local_llm.pause` (§7.6) are fire-and-forget, and kodo-vsix follows progress by polling `manager-state.json` directly off disk instead (doc/LOCAL_MODEL_MANAGER.md §11), independent of any WS connection.
+There is no `local_llm.install.progress` (or any other) byte-level download-progress event — `local_llm.install`/`local_llm.resume`/`local_llm.pause` (§7.6) are fire-and-forget, and kodo-vsix follows progress by polling `manager-state.json` directly off disk instead (doc/LOCAL_MODEL_MANAGER.md §11), independent of any WS connection.
 
 ### 5.12a `local_llm.registry_state` — local registry changed
 
-Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6), on the connection that issued the request — same single-connection-reply shape as `llama.state` above, not a broadcast to other windows.
+Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6), on the connection that issued the request — same single-connection-reply shape as `llama.state` above, not a broadcast to other windows. `local_llm.install`/`local_llm.resume` send it **twice**: immediately (kickoff — `installed` still reflects the pre-download state) and again once the background transfer actually finishes, success or failure (doc/LOCAL_MODEL_MANAGER.md §11) — the second push is what flips `installed`/`installed_path` without the client needing to reconnect or poll for it.
 
 ```json
 { "type": "local_llm.registry_state",

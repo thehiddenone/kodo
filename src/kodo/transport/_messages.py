@@ -457,6 +457,11 @@ EVT_LLAMA_STATE = "llama.state"
 # ``llama_server_override.*`` mutation (add/install/uninstall/remove/
 # override), on the same connection that issued the request — mirrors
 # ``llama.state``'s single-connection-reply shape rather than a broadcast.
+# ``install``/``resume`` send it *twice*: an immediate kickoff reply, then one
+# more from ``_run_background_download`` once the transfer thread actually
+# finishes (success or failure) — see doc/LOCAL_MODEL_MANAGER.md §11. The
+# kickoff reply is sent before the background task is even created so the two
+# can't race each other onto the wire out of order.
 # Payload: ``{local_registry: [...], llama_server_override_path}`` — the full
 # merged registry (hardcoded + custom, each with ``installed``) so the webview
 # can just replace its whole card list rather than patching it.

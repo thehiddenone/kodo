@@ -235,13 +235,16 @@ and mirrored in `_app.py`'s `local_llm.start` handler for the explicit
 
 ### 4.1 Install / pause / resume / uninstall
 
-All four are fire-and-forget: the handler kicks off (or signals) the transfer
-and replies immediately with `local_llm.registry_state` — there is no
-progress event on the wire. kodo-vsix follows progress by polling
-`manager-state.json` directly off disk instead; see
+All four are fire-and-forget: the handler replies immediately with
+`local_llm.registry_state`, *then* kicks off (or signals) the transfer — there
+is no byte-level progress event on the wire. kodo-vsix follows progress by
+polling `manager-state.json` directly off disk instead; see
 [LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md) §11 for the full design and
 *why* (no connection-broadcast infra needed, survives the requesting window
-closing, works the same after a real server restart).
+closing, works the same after a real server restart). Install/resume push
+**one further** `local_llm.registry_state` on the same connection once the
+background transfer actually finishes (success or failure), so the
+`installed`/`installed_path` flip is reflected without a reconnect — see §11.
 
 - **Install** (`local_llm.install {name}`, `hardcoded_hf`/`custom_hf` only) —
   `server/_app.py`'s `_handle_local_llm_install` fires

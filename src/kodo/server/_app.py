@@ -85,6 +85,7 @@ from kodo.transport import (
     MSG_STOP,
     MSG_WORKFLOW_SET,
     MSG_WORKSPACE_FOLDERS,
+    Connection,
     Envelope,
 )
 
@@ -659,14 +660,24 @@ async def _handle_llamacpp_install(req: Request) -> None:
         )
 
 
-def _run_background_download(model_id: str, work: Callable[[], object]) -> None:
+def _run_background_download(
+    model_id: str, work: Callable[[], object], connection: Connection
+) -> None:
     """Fire-and-forget a blocking download/resume call on a worker thread.
 
-    Progress is **not** streamed back over this (or any) connection — kodo-vsix
-    follows it by polling ``manager-state.json`` directly off disk instead
-    (see doc/LOCAL_MODEL_MANAGER.md §11), which is what lets the transfer
-    survive the requesting connection/window closing entirely. This just
-    needs to log the outcome; nothing awaits it.
+    Byte-level progress is **not** streamed back over this (or any) connection
+    — kodo-vsix follows it by polling ``manager-state.json`` directly off disk
+    instead (see doc/LOCAL_MODEL_MANAGER.md §11), which is what lets the
+    transfer survive the requesting connection/window closing entirely.
+
+    The *outcome* is different: once ``work`` finishes (successfully, with a
+    ``LocalModelError``, or with any other exception), a fresh
+    ``local_llm.registry_state`` is pushed back on *connection* — the same
+    event every other ``local_llm.*`` mutation already replies with — so the
+    requesting window's sidebar and Local Inference Settings panel pick up
+    the new ``installed``/``installed_path`` state without needing to
+    reconnect or reopen the panel. Best-effort: ``Connection.send`` silently
+    no-ops if the socket already closed (e.g. the window closed mid-download).
     """
 
     async def run() -> None:
@@ -674,6 +685,10 @@ def _run_background_download(model_id: str, work: Callable[[], object]) -> None:
             await asyncio.to_thread(work)
         except LocalModelError:
             _log.exception("Background download failed for %r", model_id)
+        finally:
+            await connection.send(
+                Envelope.make_event(EVT_LOCAL_LLM_REGISTRY_STATE, _local_registry_payload())
+            )
 
     asyncio.create_task(run())
 
@@ -688,10 +703,18 @@ async def _handle_local_llm_install(req: Request) -> None:
         await _reply_local_llm_error(req, f"Unknown or non-downloadable model: {name!r}")
         return
     manager = get_local_model_manager(kodo_dir)
-    _run_background_download(
-        name, lambda: manager.download_model(entry.name, entry.repo_id, entry.filename)
-    )
+    # Kickoff state must be *sent* (not just scheduled) before the background
+    # task is created — otherwise the completion push racing the kickoff
+    # send on independent await chains could land the two registry_state
+    # events on the wire out of order (observed with a near-instant fake
+    # download in tests; a real multi-second HF transfer masks it, but
+    # nothing guarantees that).
     await _send_registry_state(req)
+    _run_background_download(
+        name,
+        lambda: manager.download_model(entry.name, entry.repo_id, entry.filename),
+        req.connection,
+    )
 
 
 async def _handle_local_llm_resume(req: Request) -> None:
@@ -702,8 +725,8 @@ async def _handle_local_llm_resume(req: Request) -> None:
     if manager.get_record(name) is None:
         await _reply_local_llm_error(req, f"No download record for {name!r} — nothing to resume")
         return
-    _run_background_download(name, lambda: manager.resume_download(name))
-    await _send_registry_state(req)
+    await _send_registry_state(req)  # see the ordering note in _handle_local_llm_install
+    _run_background_download(name, lambda: manager.resume_download(name), req.connection)
 
 
 async def _handle_local_llm_pause(req: Request) -> None:

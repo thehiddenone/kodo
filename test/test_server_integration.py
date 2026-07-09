@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import cast
 
 import aiohttp
 import pytest
@@ -482,3 +483,93 @@ async def test_checkpoint_undo_on_dirty_tree_needs_confirmation_then_stash(
     assert not (root / "a.txt").exists()
     # Stashed change reapplied afterwards.
     assert (root / "untracked.txt").read_text() == "surprise\n"
+
+
+# ---------------------------------------------------------------------------
+# local_llm.install — the fire-and-forget background download pushes a
+# second local_llm.registry_state once it actually finishes, not just the
+# immediate kickoff one (see _run_background_download in _app.py).
+# ---------------------------------------------------------------------------
+
+
+def _local_entry(payload: dict[str, object], name: str) -> dict[str, object]:
+    registry = cast("list[dict[str, object]]", payload["local_registry"])
+    return next(e for e in registry if e["name"] == name)
+
+
+async def test_local_llm_install_pushes_registry_state_again_on_completion(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kodo.llms.local import LocalModelManager
+
+    req = _make_request(
+        "local_llm.add_huggingface",
+        name="test-model",
+        description="",
+        repo_id="acme/test-model",
+        filename="model.gguf",
+    )
+    await ws.send_str(req.to_json())
+    added = await _recv(ws)
+    assert added.payload["type"] == "local_llm.registry_state"
+    assert _local_entry(added.payload, "test-model")["installed"] is False
+
+    # download_model would otherwise block on a real HF fetch; get_model_path
+    # is what _local_registry_payload consults for installed/installed_path,
+    # so faking both — gated on the same "has the fake download run yet" flag
+    # — reproduces the real installed=False-then-True transition without
+    # touching the real transfer machinery (covered separately by
+    # test_llms_local.py).
+    downloaded = {"done": False}
+    monkeypatch.setattr(
+        LocalModelManager,
+        "download_model",
+        lambda self, *a, **k: downloaded.__setitem__("done", True),
+    )
+    monkeypatch.setattr(
+        LocalModelManager,
+        "get_model_path",
+        lambda self, name: Path("/fake/model.gguf") if downloaded["done"] else None,
+    )
+
+    req = _make_request("local_llm.install", name="test-model")
+    await ws.send_str(req.to_json())
+
+    kickoff = await _recv(ws)
+    assert kickoff.payload["type"] == "local_llm.registry_state"
+    assert _local_entry(kickoff.payload, "test-model")["installed"] is False
+
+    completed = await _recv(ws)
+    assert completed.payload["type"] == "local_llm.registry_state"
+    completed_entry = _local_entry(completed.payload, "test-model")
+    assert completed_entry["installed"] is True
+    assert completed_entry["installed_path"] == "/fake/model.gguf"
+
+
+async def test_local_llm_install_pushes_registry_state_after_failure_too(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kodo.llms.local import LocalModelError, LocalModelManager
+
+    req = _make_request(
+        "local_llm.add_huggingface",
+        name="test-model",
+        description="",
+        repo_id="acme/test-model",
+        filename="model.gguf",
+    )
+    await ws.send_str(req.to_json())
+    await _recv(ws)  # kickoff-of-add registry_state, not under test here
+
+    def _boom(self: object, *a: object, **k: object) -> None:
+        raise LocalModelError("network is on fire")
+
+    monkeypatch.setattr(LocalModelManager, "download_model", _boom)
+
+    req = _make_request("local_llm.install", name="test-model")
+    await ws.send_str(req.to_json())
+
+    await _recv(ws)  # kickoff registry_state
+    completed = await _recv(ws)
+    assert completed.payload["type"] == "local_llm.registry_state"
+    assert _local_entry(completed.payload, "test-model")["installed"] is False
