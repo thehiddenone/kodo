@@ -24,6 +24,7 @@ dependencies = [
 [project.scripts]
 kodo = "kodo.__main__:main"
 kodo-server = "kodo.server.__main__:main"
+kodo-validator = "kodo.validator.__main__:main"
 
 
 [tool.hatch.build.targets.wheel]
