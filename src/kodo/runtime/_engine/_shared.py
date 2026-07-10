@@ -16,7 +16,6 @@ from kodo.toolspecs import ALL_TOOLS
 
 _GUIDE_AGENT_NAME = "guide"
 _PROBLEM_SOLVER_AGENT_NAME = "problem_solver"
-_SESSION_TITLER_AGENT_NAME = "session_titler"
 _COMPACTOR_AGENT_NAME = "compactor"
 # Dependency-management sub-agent behind the ``toolchain_deps`` tool. Spawned only
 # through the tool's dedicated ungated service (``_run_dependency_manager``), so
@@ -34,9 +33,7 @@ _WEB_SEARCH_AGENT_NAME = "web_search"
 # Sub-agents that the engine drives directly and that must never be reachable
 # through the ``run_subagent`` tool (the Guide/Problem Solver cannot
 # invoke them).
-_DIRECT_ONLY_AGENTS = frozenset(
-    {_SESSION_TITLER_AGENT_NAME, _COMPACTOR_AGENT_NAME, _WEB_SEARCH_AGENT_NAME}
-)
+_DIRECT_ONLY_AGENTS = frozenset({_COMPACTOR_AGENT_NAME, _WEB_SEARCH_AGENT_NAME})
 
 # Every tool spec keyed by name — used to normalize each tool's output against
 # its declared schema and to project the customer-visible detail rows.

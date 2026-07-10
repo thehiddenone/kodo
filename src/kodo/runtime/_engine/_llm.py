@@ -195,8 +195,8 @@ class LLMPlumbingMixin:
     ) -> tuple[dict[str, object] | None, str]:
         """One silent (un-streamed-to-feed) LLM turn for an engine-driven agent.
 
-        Grants the agent its tools (for ``compactor`` / ``session_titler`` that is
-        just ``return_result``) and captures the ``return_result`` payload, plus
+        Grants the agent its tools (for ``compactor`` that is just
+        ``return_result``) and captures the ``return_result`` payload, plus
         the concatenated text as a fallback for a model that ignores the tool.
         Returns ``(result_or_None, text)``. The call's USD cost is folded into the
         running total; no stream/thinking events reach the feed.
@@ -246,7 +246,7 @@ class LLMPlumbingMixin:
         """Drive a silent, multi-round tool-calling turn for an engine-driven agent.
 
         Unlike :meth:`_run_silent_return_turn` (one call, no dispatch — used by
-        ``session_titler``/``compactor``), this actually dispatches the agent's
+        ``compactor``), this actually dispatches the agent's
         tool calls and loops until it returns a result. Unlike
         :meth:`_drive_subsession` (a real subsession: feed events, markers, a
         genuine subsession slot), nothing here reaches the feed and no

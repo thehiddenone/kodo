@@ -477,8 +477,9 @@ EVT_LOCAL_LLM_REGISTRY_STATE = "local_llm.registry_state"
 EVT_AUTONOMOUS_CHANGED = "autonomous.changed"
 
 # Server → Client events. The session's display name, generated once from the
-# first prompt by the silent ``session_titler`` sub-agent and persisted to
-# ``meta.json``. ``session.naming`` brackets that silent call
+# first prompt by the local CPU summarizer in kodo.titling (fired in the
+# background by SessionTitler, never blocking the main turn) and persisted to
+# ``meta.json``. ``session.naming`` brackets that background call
 # (``active: true/false``) so the client can show a "Naming session …"
 # indicator instead of an unexplained pause; ``session.name`` carries the
 # result, and is replayed on every ``hello.ack`` with the current name

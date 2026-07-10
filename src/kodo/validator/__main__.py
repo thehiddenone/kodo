@@ -10,9 +10,9 @@ Two ways to describe what to run:
   ad-hoc run without writing a file.
 
 Every run gets an isolated kodo home cloned from ``--template-home``
-(``bin/`` and ``llama.cpp/`` symlinked, per-run state fresh, the rest
-copied), its own workspace directories, and a ``transcript.jsonl`` +
-``summary.json`` under ``--out``. Scoring is phase 2: results print with
+(``bin/``, ``llama.cpp/``, and ``titler/`` symlinked, per-run state fresh,
+the rest copied), its own workspace directories, and a ``transcript.jsonl``
++ ``summary.json`` under ``--out``. Scoring is phase 2: results print with
 ``score=None`` for now.
 """
 

@@ -65,7 +65,7 @@ def _snap_to_tier(raw_gb: float) -> int:
 
 
 def _detect_nvidia_vram_bytes() -> int | None:
-    """Sum VRAM across every NVIDIA GPU visible to the driver, via pynvml."""
+    """Sum VRAM across every NVIDIA GPU visible to the driver, via nvidia-ml-py."""
     try:
         import pynvml  # type: ignore[import-untyped]
     except ImportError:

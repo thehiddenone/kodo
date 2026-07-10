@@ -18,7 +18,9 @@ import pytest
 from aiohttp.test_utils import TestServer
 
 from kodo.common import Envelope
+from kodo.runtime._engine import _titling as _titling_module
 from kodo.server import Config, create_app
+from kodo.server import _app as _app_module
 
 _RECV_TIMEOUT = 5.0
 
@@ -32,6 +34,16 @@ _RECV_TIMEOUT = 5.0
 def _temp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    # _start_background best-effort-warms the titler model cache on startup
+    # (doc/INTERNALS.md §10c); stubbed here so server boot stays fully
+    # offline/deterministic like the rest of this file (see module docstring)
+    # instead of racing a real HuggingFace download every test.
+    monkeypatch.setattr(_app_module, "warm_up_titler_cache", lambda: None)
+    # SessionTitler fires kodo.titling.generate_title fire-and-forget on the
+    # first prompt of every session (runtime/_engine/_titling.py) — stubbed
+    # here too, otherwise any test that submits a real prompt triggers a real
+    # HuggingFace download/model load in the background, same as above.
+    monkeypatch.setattr(_titling_module, "generate_title", lambda text: None)
     return tmp_path
 
 

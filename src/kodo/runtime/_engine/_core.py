@@ -194,7 +194,6 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
         )
         self._titler = SessionTitler(
             self,
-            registry=registry,
             transient=transient,
             sink=sink,
             emitters=self._emitters,

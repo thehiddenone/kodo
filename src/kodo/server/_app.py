@@ -48,6 +48,7 @@ from kodo.llms.local import LocalModelError
 from kodo.project import ProjectLayoutError, WorkspaceLayout, kodo_user_dir
 from kodo.runtime import CheckpointState, MirrorDirtyError
 from kodo.subagents import AgentRegistry
+from kodo.titling import warm_up_titler_cache
 from kodo.transport import (
     EVT_ERROR,
     EVT_LLAMA_STATE,
@@ -953,11 +954,16 @@ async def _start_background(app: web.Application) -> None:
     user_dir = kodo_user_dir()
 
     # Ensure the bundled third-party utils (uv, ripgrep, fd) are present under
-    # ~/.kodo/bin.  Best-effort and idempotent: each is a no-op once installed
-    # (the VS Code extension already installs uv before launching us), so this
-    # only does real work on a first console-style launch.  Off the event loop
-    # so the first-run download does not block server readiness.
-    await asyncio.to_thread(ensure_all_utils, user_dir)
+    # ~/.kodo/bin, and the session-titler model is cached under
+    # ~/.kodo/titler (kodo.titling — doc/INTERNALS.md §10c). Both are
+    # best-effort and idempotent: a no-op once already present, so this only
+    # does real work on a first console-style launch. Off the event loop
+    # (asyncio.to_thread, run concurrently) so a first-run download of either
+    # does not block server readiness any longer than the slower of the two.
+    await asyncio.gather(
+        asyncio.to_thread(ensure_all_utils, user_dir),
+        asyncio.to_thread(warm_up_titler_cache),
+    )
 
     running = find_running_server(user_dir)
     if running is not None:

@@ -1,108 +1,148 @@
 """Session titling (engine-driven, invisible to the user).
 
-:class:`SessionTitler` names a session from its first prompt by driving the
-``session_titler`` sub-agent directly (never via the tool surface). The
-titler session is silent: no streaming, state, or agent events are emitted —
-only its USD cost is folded into the running session total through the
-engine's silent-turn plumbing, reached via the :class:`TitlerHost` protocol.
+:class:`SessionTitler` names a session from its first prompt using a small
+local CPU summarization model (:mod:`kodo.titling`), run in a background
+thread and fired-and-forgotten from the queue worker (:mod:`._worker`) so the
+main agent's turn never waits on it. This replaced the old ``session_titler``
+sub-agent — a full LLM turn that took 10-15s — because titling only needs a
+short extractive summary, not a chat model. The titler is still silent: no
+streaming or agent events are emitted for it, only the eventual
+``session.naming``/``session.name`` events and the session's ``meta.json``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 from typing import Protocol
 
 from kodo.common import Envelope, MessageSink
-from kodo.llms import LLMPlugin, LLMRouting, Message
 from kodo.state import TransientStore
-from kodo.subagents import AgentRegistry, SubAgent
+from kodo.titling import generate_title
 from kodo.transport import EVT_SESSION_NAME
 
 from ._events import EngineEmitters
-from ._shared import _SESSION_TITLER_AGENT_NAME
 
 _log = logging.getLogger(__name__)
 
 # Maximum length of a generated session title, in characters.
 _MAX_TITLE_LEN = 60
-# A usable title must name the subject in at least this many words. Weak titler
-# models sometimes collapse to a single bare token (e.g. the implementation
-# language, "python"); such answers are rejected and re-generated once.
+# A usable title must name the subject in at least this many words. The
+# summarizer occasionally collapses to a single bare token; such answers are
+# rejected outright rather than retried — generation is deterministic
+# (do_sample=False), so retrying with the same input would just repeat it.
+# The next user prompt gets its own attempt instead.
 _MIN_TITLE_WORDS = 2
 _MAX_TITLE_WORDS = 8
 
+# Short first prompts (greetings, bare commands like "fix this" or "add a
+# login page") aren't worth a trip through the LLM summarizer, which just
+# echoes them back anyway. At or below this word count, the title is instead
+# the prompt's own leading words — see _SHORT_TITLE_WORDS. Only prompts longer
+# than this go through the summarizer.
+_SHORT_PROMPT_MAX_WORDS = 10
+# How many leading words of a short prompt (see _SHORT_PROMPT_MAX_WORDS) to
+# use verbatim as its title.
+_SHORT_TITLE_WORDS = 5
+
+# Anything that isn't a letter or digit is treated as a word separator and
+# dropped — titles must be pure alphanumeric words with a single space
+# between them (no punctuation, quotes, or other special characters).
+_NON_ALNUM_RUN_RE = re.compile(r"[^0-9A-Za-z]+")
+
 
 class TitlerHost(Protocol):
-    """What the titler needs back from the engine (LLM plumbing + identity)."""
+    """What the titler needs back from the engine: session identity only."""
 
     _orch_session_id: str
 
-    def _agent_available(self, name: str) -> bool: ...
-
-    async def _resolve_plugin(
-        self, capability: str, force_model_key: str | None = None
-    ) -> tuple[LLMPlugin, str, LLMRouting]: ...
-
-    async def _run_silent_return_turn(
-        self,
-        routing: LLMRouting,
-        plugin: LLMPlugin,
-        model_id: str,
-        agent: SubAgent,
-        messages: list[Message],
-    ) -> tuple[dict[str, object] | None, str]: ...
-
 
 class SessionTitler:
-    """Names an unnamed session from its first prompt, silently."""
+    """Names an unnamed session from its first prompt, silently and async."""
 
     def __init__(
         self,
         host: TitlerHost,
         *,
-        registry: AgentRegistry,
         transient: TransientStore,
         sink: MessageSink,
         emitters: EngineEmitters,
     ) -> None:
         self._host = host
-        self._registry = registry
         self._transient = transient
         self._sink = sink
         self._emitters = emitters
+        self._naming_task: asyncio.Task[None] | None = None
 
-    async def maybe_generate_session_title(self, text: str) -> None:
-        """Name the session from its first prompt, if it is still unnamed.
+    def maybe_generate_session_title(self, text: str) -> None:
+        """Fire-and-forget: schedule title generation for *text*.
 
-        Runs the ``session_titler`` sub-agent directly (never via the tool
-        surface), persists the result to ``meta.json``, and pushes it to the
-        client so the editor tab can be renamed. The titler session is silent:
-        no streaming, state, or agent events are emitted — only its USD cost is
-        folded into the running session total. Any failure is swallowed so the
-        user's prompt is never blocked by titling.
+        A prompt of ``_SHORT_PROMPT_MAX_WORDS`` words or fewer is titled
+        directly from its own leading words (see ``_SHORT_TITLE_WORDS``) —
+        deterministic and instant, no LLM involved. A longer prompt goes
+        through the local summarizer in a worker thread instead; the queue
+        worker (``._worker``) never awaits either path, unlike the old
+        full-subagent titler. Safe to call once per queued prompt: it is a
+        no-op for blank/whitespace-only text, a no-op once the session is
+        already named, and a no-op while a previous call is still in flight
+        (guards against a second prompt racing the first title generation
+        before it lands).
         """
-        if not text.strip():
+        words = text.split()
+        if not words:
             return
         if self._transient.is_session_named:
             return
-        if not self._host._agent_available(_SESSION_TITLER_AGENT_NAME):
+        if self._naming_task is not None and not self._naming_task.done():
             return
+        if len(words) <= _SHORT_PROMPT_MAX_WORDS:
+            self._naming_task = asyncio.create_task(self._report_short_title(words))
+        else:
+            self._naming_task = asyncio.create_task(self._generate_and_report(text))
 
-        # Tell the client a (silent) naming call is in flight so it can show a
-        # "Naming session …" indicator — otherwise the titling round-trip looks
-        # like an unexplained stall before the main agent starts streaming.
+    async def _report_short_title(self, words: list[str]) -> None:
+        """Title a short prompt from its own leading words, skipping the LLM.
+
+        Deterministic and instant, so unlike :meth:`_generate_and_report` this
+        never toggles the ``session.naming`` indicator — there's no
+        noticeable wall-clock gap to signal. Every word band/acceptability
+        check in :meth:`_is_acceptable_title` exists to catch degenerate
+        *model* output; a prompt's own words need no such gate.
+        """
+        title = self._sanitize_title(" ".join(words[:_SHORT_TITLE_WORDS]))
+        if not title:
+            return
+        await self._apply_title(title)
+
+    async def _generate_and_report(self, text: str) -> None:
+        """Generate, sanitize, persist, and push a title for *text*.
+
+        Any failure (model not loadable, degenerate output, ...) leaves the
+        session unnamed so the next prompt gets its own attempt, rather than
+        propagating and disturbing the main turn.
+        """
         await self._emitters.emit_session_naming(True)
         try:
-            title = await self._generate_session_title(text)
+            raw = await asyncio.to_thread(generate_title, text)
         except Exception:
             _log.exception("Session title generation failed; leaving session unnamed")
             return
         finally:
             await self._emitters.emit_session_naming(False)
 
-        if not title:
+        title = self._sanitize_title(raw) if raw else None
+        if not title or not self._is_acceptable_title(title):
+            _log.info(
+                "Titler produced no acceptable title for session %s",
+                self._host._orch_session_id,
+            )
             return
 
+        await self._apply_title(title)
+
+    async def _apply_title(self, title: str) -> None:
+        """Persist *title* and push it over the wire as ``session.name``."""
         self._transient.set_session_name(title)
         await self._sink.send(
             Envelope.make_event(
@@ -112,74 +152,13 @@ class SessionTitler:
         )
         _log.info("Session %s named %r", self._host._orch_session_id, title)
 
-    async def _generate_session_title(self, text: str) -> str | None:
-        """Run a silent LLM call to produce a session title from *text*.
-
-        Does not forward any stream/thinking events to the client; only the
-        title text is collected. The call's USD cost is added to the running
-        cumulative total and pushed as a cost-only ``usage.update`` (no
-        ``last_call_tokens``, so it adds no entry to the session feed).
-
-        Weak titler models occasionally ignore the rules and emit a degenerate
-        answer (a single bare token such as the implementation language). The
-        sanitized result is validated against :meth:`_is_acceptable_title`; on
-        rejection we re-prompt once with a corrective nudge appended to the
-        conversation, then give up (returning ``None`` leaves the session
-        unnamed so the next prompt can try again).
-        """
-        agent = self._registry.get(_SESSION_TITLER_AGENT_NAME)
-        plugin, model_id, routing = await self._host._resolve_plugin(agent.capability)
-
-        messages: list[Message] = [Message(role="user", content=text)]
-        for _attempt in range(2):
-            raw = await self._run_titler_turn(routing, plugin, model_id, agent, messages)
-            title = self._sanitize_title(raw)
-            if self._is_acceptable_title(title):
-                return title
-            # Show the model its own rejected answer and ask for a real title.
-            messages.append(Message(role="assistant", content=raw))
-            messages.append(
-                Message(
-                    role="user",
-                    content=(
-                        "That is not a usable title. It must be 2 to 6 words in "
-                        "Title Case naming the subject of the request — not the "
-                        "programming language, not a single bare word. Output "
-                        "only the corrected title."
-                    ),
-                )
-            )
-
-        # Both attempts failed validation; better to leave it unnamed than to
-        # commit a degenerate title.
-        _log.info("Session titler produced no acceptable title after retry")
-        return None
-
-    async def _run_titler_turn(
-        self,
-        routing: LLMRouting,
-        plugin: LLMPlugin,
-        model_id: str,
-        agent: SubAgent,
-        messages: list[Message],
-    ) -> str:
-        """One silent titler LLM turn; returns the title (via return_result) or text."""
-        result, text = await self._host._run_silent_return_turn(
-            routing, plugin, model_id, agent, messages
-        )
-        if result is not None:
-            title = result.get("title")
-            if isinstance(title, str) and title.strip():
-                return title
-        return text
-
     @staticmethod
     def _is_acceptable_title(title: str | None) -> bool:
         """Reject degenerate titler output that slipped past sanitizing.
 
-        Enforces the word-count band the prompt asks for (a single bare token
-        such as ``python`` is the canonical failure). Title Case, length, and
-        formatting are already handled by :meth:`_sanitize_title`.
+        Enforces the word-count band a usable title should fall in (a single
+        bare token is the canonical failure). Casing, length, and formatting
+        are already handled by :meth:`_sanitize_title`.
         """
         if not title:
             return False
@@ -188,23 +167,32 @@ class SessionTitler:
 
     @staticmethod
     def _sanitize_title(raw: str) -> str | None:
-        """Reduce raw model output to a single clean title line.
+        """Reduce raw model output to a single clean, Title Case line.
 
-        Takes the first non-empty line, strips wrapping quotes and a leading
-        ``Title:`` label, collapses whitespace, and clamps the length. Returns
-        ``None`` if nothing usable remains.
+        Takes the first non-empty line, strips every non-alphanumeric
+        character (punctuation, quotes, symbols — each run collapses to a
+        single word separator, so no character other than a letter or digit
+        ever survives), clamps to the first ``_MAX_TITLE_WORDS`` words, Title
+        Cases each word (uppercasing only its first letter — this leaves
+        existing internal casing such as acronyms alone, unlike
+        ``str.title()``), and clamps the character length. The result is
+        always alphanumeric words separated by exactly one space.
+
+        The word clamp is load-bearing: the summarizer emits a full echo of the
+        prompt (often 10-15 words), and clamping by characters alone left a
+        title that :meth:`_is_acceptable_title` then rejected for exceeding the
+        word band — so good titles were silently dropped. Clamping to the word
+        budget *here* also trims the model's degenerate tail (e.g. a repeated
+        "... terminal UI UI") off the end of an otherwise good title.
         """
         line = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
         if not line:
             return None
-        if ":" in line:
-            head, _, tail = line.partition(":")
-            if head.strip().lower() in ("title", "session", "session title"):
-                line = tail.strip()
-        line = line.strip().strip("\"'`").strip()
-        line = " ".join(line.split())
-        if not line:
+        words = [w for w in _NON_ALNUM_RUN_RE.sub(" ", line).split() if w]
+        if not words:
             return None
+        words = words[:_MAX_TITLE_WORDS]
+        line = " ".join(w[:1].upper() + w[1:] for w in words)
         if len(line) > _MAX_TITLE_LEN:
             line = line[:_MAX_TITLE_LEN].rstrip()
         return line or None

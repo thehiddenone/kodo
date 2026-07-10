@@ -250,10 +250,14 @@ roster also renders every callee's schemas.
   `for_revision_artifact_ids` plumbing — `for_revision_path` is a single
   path, since the author/critic loop now always concerns exactly one file
   per iteration.
-- **Engine-driven agents.** `compactor` and `session_titler` also carry specs and
-  return through `return_result` (`{summary}` / `{title}`); the silent
-  `_run_silent_return_turn` grants them the tool and captures the payload, with
-  raw text as a fallback.
+- **Engine-driven agents.** `compactor` carries a spec and returns through
+  `return_result` (`{summary}`); the silent `_run_silent_return_turn` grants
+  it the tool and captures the payload, with raw text as a fallback. Session
+  titling used to work the same way (`session_titler`, a sub-agent LLM call
+  taking 10-15s) but is now `kodo.titling`, a small local CPU summarization
+  model run in a background thread — no sub-agent spec, no LLM turn at all.
+  See `SessionTitler` (`runtime/_engine/_titling.py`) and §5.9a/§5.9b of
+  `WS_PROTOCOL.md`.
 
 ## Resume
 

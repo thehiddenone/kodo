@@ -451,7 +451,14 @@ Emitted right after a submitted prompt's file attachments (§7.1) are validated,
 
 ### 5.9a `session.name` — session title
 
-The human-readable name of the session, produced by the engine-driven `session_titler` sub-agent from the first prompt (and persisted to `meta.json`). Replayed once after `hello.ack` with the current name (default `"Unnamed Session"`), then pushed again when a title is generated. The client renames the editor tab and the session header.
+The human-readable name of the session, derived from the first prompt and persisted to `meta.json`. `SessionTitler` (`runtime/_engine/_titling.py`) picks one of two paths by word count, both fire-and-forget from the queue worker (never awaited), so neither can delay the main agent's turn the way the old `session_titler` sub-agent (a full LLM call, 10-15s) used to:
+
+- **≤10 words** (`_SHORT_PROMPT_MAX_WORDS`): the title is the prompt's own first 5 words (`_SHORT_TITLE_WORDS`), Title Cased — deterministic, instant, no LLM call.
+- **>10 words**: the title is produced by `kodo.titling` (a small local CPU summarization model, `Falconsai/text_summarization` run via `transformers`).
+
+Both paths run through the same `_sanitize_title`, so every title — model-generated or taken verbatim from the prompt — ends up pure alphanumeric: any run of non-alphanumeric characters (punctuation, quotes, symbols) is collapsed to a single word separator and dropped, then each word is Title Cased with exactly one space between words. No comma, period, apostrophe, or symbol ever survives into a title.
+
+Replayed once after `hello.ack` with the current name (default `"Unnamed Session"`), then pushed again when a title is generated. The client renames the editor tab and the session header.
 
 ```json
 { "type": "session.name", "session_id": "...", "name": "Library Inventory API" }
@@ -459,7 +466,7 @@ The human-readable name of the session, produced by the engine-driven `session_t
 
 ### 5.9b `session.naming` — titler in flight
 
-Brackets the silent titling call (which streams nothing) so the client can show a "Naming session …" indicator instead of an unexplained pause. Emitted `true` before the call and `false` when it finishes (success or failure).
+Brackets the summarizer call for a prompt over `_SHORT_PROMPT_MAX_WORDS` (which streams nothing) so the client can show a "Naming session …" indicator instead of an unexplained pause. Emitted `true` before the call and `false` when it finishes (success or failure). Not emitted for the short-prompt path (`_report_short_title`), since it's synchronous and has no wall-clock gap to signal.
 
 ```json
 { "type": "session.naming", "active": true }

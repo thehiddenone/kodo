@@ -21,7 +21,9 @@ from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestServer
 
 from kodo.common import Envelope
+from kodo.runtime._engine import _titling as _titling_module
 from kodo.server import Config, create_app
+from kodo.server import _app as _app_module
 from kodo.validator import (
     LocalModelUnavailableError,
     ProtocolError,
@@ -44,6 +46,10 @@ def _temp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    # See test_server_integration.py's _temp_home: keep server boot fully
+    # offline instead of racing a real HuggingFace download every test.
+    monkeypatch.setattr(_app_module, "warm_up_titler_cache", lambda: None)
+    monkeypatch.setattr(_titling_module, "generate_title", lambda text: None)
     return home
 
 

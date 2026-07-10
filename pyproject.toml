@@ -17,9 +17,29 @@ dependencies = [
     "openai>=2.41.0",
     "playwright>=1.61.0",
     "psutil>=7.0.0",
-    "pynvml>=12.0.0",
-    "selectolax>=0.4.10"
+    "nvidia-ml-py>=12.0.0",
+    "selectolax>=0.4.10",
+    "torch>=2.5.0",
+    # transformers 5.x dropped the pipeline() task-name convenience wrappers
+    # (including "summarization") outright, and staying on the 4.x series
+    # conflicts with this project's huggingface_hub>=1.18.0 pin (needed by
+    # kodo.llms.local, doc/LOCAL_MODEL_MANAGER.md) — so kodo.titling calls
+    # AutoModelForSeq2SeqLM/AutoTokenizer directly instead of pipeline().
+    "transformers>=5.0.0"
 ]
+
+# The session titler (kodo.titling) runs its summarization model with
+# device="cpu" only — it must never contend with llama.cpp for GPU memory —
+# so torch is pinned to the CPU-only wheel index instead of the default
+# (CUDA-bundled) PyPI build, which is multi-GB larger for a capability this
+# project never uses.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [project.scripts]
 kodo = "kodo.__main__:main"

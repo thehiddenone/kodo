@@ -58,7 +58,9 @@ The server is a machine-wide singleton rooted at `$HOME/.kodo`
 - **symlinked**: `bin/`, `llama.cpp/` — llama.cpp builds and GGUF models;
   local inference works without copying tens of GB. (A download during a run
   writes through the symlink into the template's `llama.cpp/models` — accepted
-  by design.)
+  by design.) Also `titler/` — the session-titler's cached summarization
+  model (`kodo.titling`, doc/INTERNALS.md §10c), for the same reason: without
+  this, every run would redownload it on first titling call.
 - **skipped**: `sessions/`, `logs/`, the `kodo-server` discovery file —
   per-run state starts fresh, and a stale discovery PID can't confuse the
   spawned server.

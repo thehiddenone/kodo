@@ -7,8 +7,9 @@ directory, and this module populates that scratch home from a **template**
 kodo home:
 
 * heavy, immutable entries (``bin/``, ``llama.cpp/`` — binaries and GGUF
-  models) are **symlinked** so local inference works without copying
-  gigabytes;
+  models; ``titler/`` — the session-titler's cached summarization model,
+  ``kodo.titling``) are **symlinked** so local inference works without
+  copying gigabytes;
 * runtime state that must start fresh (``sessions/``, ``logs/``, the
   ``kodo-server`` discovery file) is **skipped**;
 * everything else (``etc/settings.json``, the local LLM registry, …) is
@@ -27,7 +28,7 @@ __all__ = ["DEFAULT_SKIP_ENTRIES", "DEFAULT_SYMLINK_ENTRIES", "clone_kodo_home"]
 _log = logging.getLogger(__name__)
 
 # Template entries shared with the scratch home by symlink (large + read-mostly).
-DEFAULT_SYMLINK_ENTRIES: tuple[str, ...] = ("bin", "llama.cpp")
+DEFAULT_SYMLINK_ENTRIES: tuple[str, ...] = ("bin", "llama.cpp", "titler")
 
 # Template entries never carried into the scratch home (per-run state).
 DEFAULT_SKIP_ENTRIES: tuple[str, ...] = ("sessions", "logs", "kodo-server")

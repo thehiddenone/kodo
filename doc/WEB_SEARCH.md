@@ -171,10 +171,11 @@ Two turn-loop shapes already existed in the engine before this: the full,
 feed-visible `_run_agent_turn`/`_drive_subsession` (a real subsession — but
 subsessions can't nest, and `web_search` is typically called *from* a
 sub-agent, the investigator), and the single-shot, no-dispatch
-`_run_silent_return_turn` (`session_titler`/`compactor`/the retired
-`web_summarizer` — no tool loop at all, just one call captured for its
-`return_result`). Neither fits an agent that needs a real multi-round tool
-loop without opening a subsession.
+`_run_silent_return_turn` (`compactor`/the retired `web_summarizer` — no tool
+loop at all, just one call captured for its `return_result`; session titling
+used to be a third example here but is now `kodo.titling`, a local
+summarization model with no LLM turn at all). Neither fits an agent that
+needs a real multi-round tool loop without opening a subsession.
 
 `_run_silent_tool_loop_turn` ([`runtime/_engine/_llm.py`](../src/kodo/runtime/_engine/_llm.py))
 is the new primitive: modeled on `_run_agent_turn`'s loop, stripped of every

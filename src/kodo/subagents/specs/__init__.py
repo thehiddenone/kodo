@@ -34,7 +34,6 @@ from ._narrative_author import NARRATIVE_AUTHOR
 from ._planner import PLANNER
 from ._requirements_author import REQUIREMENTS_AUTHOR
 from ._requirements_critic import REQUIREMENTS_CRITIC
-from ._session_titler import SESSION_TITLER
 from ._test_coder import TEST_CODER
 from ._test_design_critic import TEST_DESIGN_CRITIC
 from ._test_designer import TEST_DESIGNER
@@ -61,7 +60,6 @@ __all__ = [
     "PLANNER",
     "REQUIREMENTS_AUTHOR",
     "REQUIREMENTS_CRITIC",
-    "SESSION_TITLER",
     "TEST_CODER",
     "TEST_DESIGNER",
     "TEST_DESIGN_CRITIC",
@@ -97,6 +95,5 @@ ALL_SUBAGENTS: tuple[SubAgentSpec, ...] = (
     TOOLCHAIN_PYTHON,
     TOOLCHAIN_DEPSMGR,
     COMPACTOR,
-    SESSION_TITLER,
     WEB_SEARCH_AGENT,
 )

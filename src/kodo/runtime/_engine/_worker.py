@@ -79,10 +79,11 @@ class WorkerMixin:
             # end and the client can tell "in effect" from "queued".
             self._freeze_effective_modes()
             try:
-                # Name the session from its first prompt, before that prompt
-                # reaches the main agent. The titler session is invisible: it
-                # streams nothing to the client and only its cost is folded in.
-                await self._titler.maybe_generate_session_title(text)
+                # Name the session from its first prompt. Fire-and-forget: the
+                # titler runs the local summarizer in a background thread and
+                # reports the result whenever it lands (session.naming/
+                # session.name), so it never delays the main agent's turn.
+                self._titler.maybe_generate_session_title(text)
 
                 # The entry agent is chosen per prompt from the current
                 # workflow mode: Problem Solver for "problem_solving", the

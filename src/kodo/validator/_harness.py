@@ -14,7 +14,7 @@ lifecycle a validation needs:
 
 Everything lives under a single ``run_dir``::
 
-    <run_dir>/home/.kodo         isolated kodo home (bin/, llama.cpp/ symlinked)
+    <run_dir>/home/.kodo         isolated kodo home (bin/, llama.cpp/, titler/ symlinked)
     <run_dir>/workspace/<root>/  simulated VS Code workspace folders
     <run_dir>/transcript.jsonl   every frame + interaction, in order
     <run_dir>/home/server-console.log  the server subprocess's stdout/stderr
@@ -105,8 +105,8 @@ class ValidationHarness:
             reserved for the (not-yet-built) Phase 2 evaluator. Not invoked
             by anything in phase 1 — only ensured present/downloaded, so it's
             ready when the evaluator lands.
-        template_home: Existing ``.kodo`` to clone (``bin/`` and
-            ``llama.cpp/`` symlinked, per-run state skipped, rest copied).
+        template_home: Existing ``.kodo`` to clone (``bin/``, ``llama.cpp/``,
+            and ``titler/`` symlinked, per-run state skipped, rest copied).
             None starts from an empty home with server defaults.
         user: Interactive-request policy; a default :class:`ScriptedUser`
             (first option / approve / allow / env API keys) when omitted.

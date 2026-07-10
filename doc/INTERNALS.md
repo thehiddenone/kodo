@@ -50,8 +50,9 @@ source:
 | `tools` | `guided_state`, `project`, `toolspecs` |
 | `llms` | `common`, `transport`, `toolspecs` |
 | `subagents` | `toolspecs` |
-| `runtime` | `common`, `transport`, `toolspecs`, `tools`, `guided_state`, `project`, `state`, `subagents`, `llms`, `mirror`, `shellparser`, `binutils` |
-| `server` | `common`, `transport`, `project`, `state`, `subagents`, `llms`, `runtime`, `binutils` |
+| `titling` | `project` |
+| `runtime` | `common`, `transport`, `toolspecs`, `tools`, `guided_state`, `project`, `state`, `subagents`, `llms`, `titling`, `mirror`, `shellparser`, `binutils` |
+| `server` | `common`, `transport`, `project`, `state`, `subagents`, `llms`, `titling`, `runtime`, `binutils` |
 
 `toolspecs` is now a true leaf: the old `toolspecs → workspace` edge (importing
 `ArtifactType` for `list_artifacts`'s schema) is gone along with the artifact
@@ -108,11 +109,11 @@ imported); the annotation on each line names the packages pulled in.
  └───────────┘   └────┬─────┘                                 security: ▼ toolspecs · shellparser,
                       │ toolspecs · shellparser               imported ONLY by runtime)
                       ▼
- ┌───────────┐
- │ transport │                                           T1
- └─────┬─────┘
-       │ common
-       ▼
+ ┌───────────┐   ┌─────────┐
+ │ transport │   │ titling │                             T1
+ └─────┬─────┘   └────┬────┘
+       │ common        │ project
+       ▼                ▼
  ┌────────┬─────────┬──────────────┬───────┬────────┬─────────────┬──────────┬───────────┐
  │ common │ project │ guided_state │ state │ mirror │ shellparser │ binutils │ websearch │   T0  ← import nothing from kodo
  └────────┴─────────┴──────────────┴───────┴────────┴─────────────┴──────────┴───────────┘
@@ -138,7 +139,11 @@ only the principal lines are drawn above to keep the figure readable.)
   `curl_cffi`-backed fetch engine behind `query_search_engine`/`web_search`
   (doc/WEB_SEARCH.md) and the single-page fetch behind `read_webpage`
   (doc/READ_WEBPAGE.md), consumed only by `tools`.
-- **T1**: `transport` (wire framing over `common`).
+- **T1**: `transport` (wire framing over `common`) and `titling` (the local
+  CPU session-title summarizer over `project` — a `transformers`/`torch`
+  pipeline cached under `~/.kodo/titler`, run in a background thread by
+  `runtime`'s `SessionTitler` and warmed once at startup by `server`;
+  doc/SESSIONS.md and WS_PROTOCOL.md §5.9a).
 - **T2**: `toolspecs` (tool catalog) — now a true leaf, importing nothing from
   `kodo` (the old `toolspecs → workspace` edge for `ArtifactType` is gone) —
   and `security` (the per-call allow/ask judgement engine over the catalog +
@@ -536,6 +541,43 @@ about *when* to checkpoint — that judgment lives entirely in `runtime`.
 
 ---
 
+## 10c. `titling/` — local CPU session-title summarizer
+
+Names a session from its first prompt using a small local encoder-decoder
+model (`Falconsai/text_summarization`, a fine-tuned T5, run on CPU) instead
+of an LLM call. Replaced the old `session_titler` sub-agent, which ran as a
+full turn through `LLMGateway` and took 10-15s; the new path runs in a
+background thread and typically completes in well under a second once the
+model is warm. T1 leaf: imports only `project` (`kodo_user_dir`), nothing
+else from `kodo` — no dependency on `llms`/`subagents`/the gateway at all.
+
+Calls `AutoModelForSeq2SeqLM`/`AutoTokenizer` directly rather than
+`transformers.pipeline("summarization", ...)`: transformers 5.x dropped the
+pipeline task-name wrappers (including `"summarization"`) outright, and
+pinning transformers to the 4.x series (which still had it) conflicts with
+this project's `huggingface_hub>=1.18.0` pin (§10, doc/LOCAL_MODEL_MANAGER.md
+— an unrelated, already-shipped feature that pin cannot be relaxed for). See
+`pyproject.toml`'s `transformers` dependency comment.
+
+| Module | Defines | Role |
+|---|---|---|
+| [_summarizer.py](../src/kodo/titling/_summarizer.py) | `generate_title`, `warm_up_titler_cache`, `titler_home_dir` | `titler_home_dir()` is `~/.kodo/titler` (the HF `cache_dir`). A process-wide `(tokenizer, model)` singleton pair (module-level, guarded by a `threading.Lock`) is loaded lazily on first use via `AutoTokenizer.from_pretrained`/`AutoModelForSeq2SeqLM.from_pretrained(..., cache_dir=...)` and kept resident for the process lifetime, so only the *first* call pays model-load cost. `warm_up_titler_cache()` — called once from `server/_app.py`'s `_start_background` (mirrors the existing `ensure_all_utils` first-run pattern, off the event loop via `asyncio.to_thread`) — downloads+loads the model if `~/.kodo/titler` doesn't exist yet, so the first real session's titling call never pays a cold download inline. `generate_title(text) → str \| None` prepends the model's `"summarize: "` task prefix (this T5 checkpoint's `config.json` fine-tunes on it; **without it the model sometimes translates the prompt to German instead of summarizing**), tokenizes, calls `model.generate(max_new_tokens=24, no_repeat_ngram_size=3, do_sample=False)`, and decodes. Generation-knob rationale: `max_new_tokens` (a real ~8-word budget) replaced an old `max_length=7`/`16` that chopped titles mid-phrase before the subject ("The Game of …" with nothing after); there is deliberately **no** `min_length` (a floor forced the model to pad trivially short prompts with repetition, "fix this fix this"); greedy is deterministic and, for these short essentially *extractive* inputs, as good as beam search while faster (beams also *introduced* tail dupes like "terminal UI UI"). It is a blocking call (callers must run it via `asyncio.to_thread`) and never raises — any failure (model not loadable, empty output) returns `None` so the caller can leave the session unnamed. |
+| [__main__.py](../src/kodo/titling/__main__.py) | `main` | `python -m kodo.titling` — a dev/debug CLI for tuning the titler by hand against an arbitrary prompt, reusing the same cached model. `--compare` (shipping vs recommended knobs side by side), `--shipping`, per-knob overrides (`--num-beams`/`--max-new-tokens`/`--length-penalty`/…), `--no-prefix`, `--greedy`; prompt positionally or via `-`/stdin. Mirrors `SessionTitler`'s sanitizer so it prints the final title, not just the raw model output. Not imported anywhere at runtime. |
+
+Note on the **extractive ceiling**: `Falconsai/text_summarization` is a tiny news-summarizer; for a short instruction it echoes a prefix of the prompt rather than abstracting, so titles read like clipped instructions ("Implement A Game Of Tic Tac Toe Where"), never crafted labels. The knobs above make titling *reliable and coherent*, not clever — the model can't be tuned past that without swapping it for a larger/instruction-tuned one.
+
+Consumed by `runtime._engine._titling.SessionTitler`, which fires
+`generate_title` in a background thread (`asyncio.create_task` +
+`asyncio.to_thread`, fire-and-forget from the queue worker — §12) and
+reports the result over the existing `session.name`/`session.naming` wire
+events (WS_PROTOCOL.md §5.9a/§5.9b) — the protocol and `meta.json`
+persistence are unchanged from the old sub-agent-based titler; only how the
+title text is produced, and that generation no longer blocks the turn.
+
+**State:** Complete; see `test/test_titling.py`.
+
+---
+
 ## 11. `subagents/` — agent files & prompt rendering
 
 | Module | Defines | Links |
@@ -675,7 +717,7 @@ narrow per-collaborator host protocols living next to each collaborator):
 | [_resume.py](../src/kodo/runtime/_engine/_resume.py) | mixin | `ResumeMixin` — Stop folding (`_persist_interrupted_turn`) + cold-restart resume (`_resume_main_turn`, `_build_replay_ledger`). |
 | [_events.py](../src/kodo/runtime/_engine/_events.py) | collaborator | `EngineEmitters` — every client event emitter + cumulative cost. |
 | [_compaction.py](../src/kodo/runtime/_engine/_compaction.py) | collaborator | `ContextCompactor` (+ `CompactorHost`) — context gauge, in-place compaction, `render_transcript`/`estimate_tokens`. |
-| [_titling.py](../src/kodo/runtime/_engine/_titling.py) | collaborator | `SessionTitler` (+ `TitlerHost`) — silent session titling. |
+| [_titling.py](../src/kodo/runtime/_engine/_titling.py) | collaborator | `SessionTitler` (+ `TitlerHost`) — fire-and-forget session titling; runs `kodo.titling.generate_title` in a background thread and never blocks the worker. |
 | [_checkpointing.py](../src/kodo/runtime/_engine/_checkpointing.py) | collaborator | `CheckpointCoordinator` (+ `CheckpointHost`) — `_MUTATING_TOOLS`, prepare/commit around mutating dispatches, `record_guided_revision`, owns the `RootMirrorManager` (`.mirrors`). |
 | [_history.py](../src/kodo/runtime/_engine/_history.py) | collaborator | `HistoryProjector` — `session.jsonl` read-back: feed rebuild (`history_entries`) + context rehydration (`load_main_messages`). |
 | [_services.py](../src/kodo/runtime/_engine/_services.py) | adapter | `_EngineServices` — adapts engine callbacks to the `tools.EngineServices` protocol. |

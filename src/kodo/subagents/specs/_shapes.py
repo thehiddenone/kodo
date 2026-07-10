@@ -19,10 +19,12 @@ The shapes mirror the contracts the agent prompts already describe:
   verbatim as the ``concerns`` field of a ``feedback`` entry in a document's
   ``.jsonl`` evolution log (see ``kodo.guided_state``).
 
-Inline agents (``compactor``, ``session_titler``, ``toolchain_python``) read and
-write files directly with no structured pipeline contract; they declare their
-inline/path shapes directly in their own modules rather than through these
-builders.
+Inline agents (``compactor``, ``toolchain_python``) read and write files
+directly with no structured pipeline contract; they declare their inline/path
+shapes directly in their own modules rather than through these builders.
+(Session titling used to be a third inline agent here; it is now
+:mod:`kodo.titling`, a local summarization model with no sub-agent spec at
+all.)
 """
 
 from __future__ import annotations
