@@ -454,7 +454,7 @@ Emitted right after a submitted prompt's file attachments (§7.1) are validated,
 The human-readable name of the session, derived from the first prompt and persisted to `meta.json`. `SessionTitler` (`runtime/_engine/_titling.py`) picks one of two paths by word count, both fire-and-forget from the queue worker (never awaited), so neither can delay the main agent's turn the way the old `session_titler` sub-agent (a full LLM call, 10-15s) used to:
 
 - **≤10 words** (`_SHORT_PROMPT_MAX_WORDS`): the title is the prompt's own first 5 words (`_SHORT_TITLE_WORDS`), Title Cased — deterministic, instant, no LLM call.
-- **>10 words**: the title is produced by `kodo.titling` (a small local CPU summarization model, `Falconsai/text_summarization` run via `transformers`).
+- **>10 words**: the title is produced by `kodo.titling` (a small local CPU summarization model, `Falconsai/text_summarization` run via `transformers`). If that call raises or returns a degenerate/unacceptable title (outside the 2-8 word band), the titler falls back to the prompt's own first 5 words instead — the same shortcut the ≤10-word path uses — so a summarizer failure no longer leaves the session unnamed.
 
 Both paths run through the same `_sanitize_title`, so every title — model-generated or taken verbatim from the prompt — ends up pure alphanumeric: any run of non-alphanumeric characters (punctuation, quotes, symbols) is collapsed to a single word separator and dropped, then each word is Title Cased with exactly one space between words. No comma, period, apostrophe, or symbol ever survives into a title.
 

@@ -110,7 +110,7 @@ class SessionTitler:
         check in :meth:`_is_acceptable_title` exists to catch degenerate
         *model* output; a prompt's own words need no such gate.
         """
-        title = self._sanitize_title(" ".join(words[:_SHORT_TITLE_WORDS]))
+        title = self._leading_words_title(words)
         if not title:
             return
         await self._apply_title(title)
@@ -118,28 +118,38 @@ class SessionTitler:
     async def _generate_and_report(self, text: str) -> None:
         """Generate, sanitize, persist, and push a title for *text*.
 
-        Any failure (model not loadable, degenerate output, ...) leaves the
-        session unnamed so the next prompt gets its own attempt, rather than
-        propagating and disturbing the main turn.
+        If the summarizer errors out or produces a degenerate title, falls
+        back to *text*'s own leading words (the same shortcut
+        :meth:`_report_short_title` uses for short prompts) rather than
+        leaving the session unnamed. Only if that fallback also yields
+        nothing (e.g. blank text) does the session stay unnamed for the next
+        prompt to try again.
         """
         await self._emitters.emit_session_naming(True)
         try:
             raw = await asyncio.to_thread(generate_title, text)
         except Exception:
-            _log.exception("Session title generation failed; leaving session unnamed")
-            return
+            _log.exception("Session title generation failed; falling back to leading words")
+            raw = None
         finally:
             await self._emitters.emit_session_naming(False)
 
         title = self._sanitize_title(raw) if raw else None
         if not title or not self._is_acceptable_title(title):
             _log.info(
-                "Titler produced no acceptable title for session %s",
+                "Titler produced no acceptable title for session %s; falling back to leading words",
                 self._host._orch_session_id,
             )
-            return
+            title = self._leading_words_title(text.split())
+            if not title:
+                return
 
         await self._apply_title(title)
+
+    @classmethod
+    def _leading_words_title(cls, words: list[str]) -> str | None:
+        """Sanitize the first ``_SHORT_TITLE_WORDS`` of *words* into a title."""
+        return cls._sanitize_title(" ".join(words[:_SHORT_TITLE_WORDS]))
 
     async def _apply_title(self, title: str) -> None:
         """Persist *title* and push it over the wire as ``session.name``."""

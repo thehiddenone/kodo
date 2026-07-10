@@ -182,10 +182,11 @@ async def test_second_prompt_does_not_race_first_in_flight_call(
     assert call_count == 1
 
 
-async def test_degenerate_output_leaves_session_unnamed(
+async def test_degenerate_output_falls_back_to_leading_words(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A single bare word fails the 2-8 word acceptable-title band.
+    # A single bare word fails the 2-8 word acceptable-title band, so the
+    # titler falls back to the prompt's own leading words.
     monkeypatch.setattr(_titling, "generate_title", lambda text: "python")
 
     titler, sink, transient = _make_titler(tmp_path)
@@ -194,11 +195,11 @@ async def test_degenerate_output_leaves_session_unnamed(
     )
     await _drain(titler)
 
-    assert not transient.is_session_named
-    assert not any(env.payload.get("name") for env in sink.sent)
+    assert transient.is_session_named
+    assert any(env.payload.get("name") == "Some Rather Longer User Prompt" for env in sink.sent)
 
 
-async def test_generation_failure_leaves_session_unnamed(
+async def test_generation_failure_falls_back_to_leading_words(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def _boom(text: str) -> str:
@@ -212,8 +213,8 @@ async def test_generation_failure_leaves_session_unnamed(
     )
     await _drain(titler)
 
-    assert not transient.is_session_named
-    assert not any(env.payload.get("name") for env in sink.sent)
+    assert transient.is_session_named
+    assert any(env.payload.get("name") == "Some Rather Longer User Prompt" for env in sink.sent)
 
 
 @pytest.mark.parametrize(
