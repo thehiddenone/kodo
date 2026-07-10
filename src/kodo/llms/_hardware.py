@@ -1,21 +1,31 @@
-"""Best-effort GPU VRAM / Apple Silicon unified-memory autodetection.
+"""Best-effort GPU VRAM / system RAM / Apple Silicon unified-memory
+autodetection.
 
 Used only to inform local-model hardware recommendations surfaced to
-kodo-vsix over ``hello.ack`` (see :func:`kodo.llms.detect_vram_gb` and
-``doc/LLM_REGISTRY.md`` §4.3) — detection failures are never fatal and never
-propagate, since this must not block the WebSocket handshake.
+kodo-vsix over ``hello.ack`` (see :func:`kodo.llms.detect_vram_gb`,
+:func:`kodo.llms.detect_ram_gb`, and ``doc/LLM_REGISTRY.md`` §4.3) —
+detection failures are never fatal and never propagate, since this must not
+block the WebSocket handshake.
+
+``detect_vram_gb`` and ``detect_ram_gb`` are reported as two separate pools
+on Windows/Linux (llama.cpp can split a model's weights across a discrete
+GPU and system RAM via layer/MoE-expert offloading), but as a single pool on
+macOS: Apple Silicon shares one unified memory pool between CPU and GPU, so
+``detect_ram_gb`` returns ``None`` there rather than double-counting the
+same physical memory that ``detect_vram_gb`` already reports in full.
 
 AMD GPU detection is intentionally not implemented (out of scope for now):
-an AMD-only machine on Linux/Windows will report ``None`` even with a
-discrete GPU present.
+an AMD-only machine on Linux/Windows will report ``None`` for VRAM even with
+a discrete GPU present (RAM is still detected normally).
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sys
 
-__all__ = ["detect_vram_gb"]
+__all__ = ["detect_ram_gb", "detect_vram_gb"]
 
 _log = logging.getLogger(__name__)
 
@@ -77,10 +87,8 @@ def _detect_nvidia_vram_bytes() -> int | None:
         _log.debug("NVML VRAM query failed", exc_info=True)
         return None
     finally:
-        try:
+        with contextlib.suppress(Exception):
             pynvml.nvmlShutdown()
-        except Exception:  # noqa: BLE001 — shutdown failure is harmless here
-            pass
 
 
 def _detect_mac_unified_memory_bytes() -> int | None:
@@ -113,5 +121,30 @@ def detect_vram_gb() -> int | None:
     else:
         raw_bytes = _detect_nvidia_vram_bytes()
     if raw_bytes is None:
+        return None
+    return _snap_to_tier(raw_bytes / (1024**3))
+
+
+def detect_ram_gb() -> int | None:
+    """Best-effort total system RAM, normalized to the nearest tier in
+    :data:`_VRAM_TIERS_GB`, for combining with :func:`detect_vram_gb` into a
+    "total memory available for a GPU+CPU-offloaded model" figure.
+
+    Returns ``None`` on macOS — :func:`detect_vram_gb` already reports the
+    full unified-memory pool there, so a separate RAM figure would just
+    double-count the same physical memory. Also returns ``None`` if
+    ``psutil`` isn't importable or the query fails; both are expected on
+    plenty of machines and are not themselves errors.
+    """
+    if sys.platform == "darwin":
+        return None
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        raw_bytes = int(psutil.virtual_memory().total)
+    except Exception:  # noqa: BLE001 — best-effort detection, never crash the caller
+        _log.debug("psutil RAM query failed", exc_info=True)
         return None
     return _snap_to_tier(raw_bytes / (1024**3))

@@ -9,7 +9,7 @@ from ._cloud_registry import (
 )
 from ._context import get_context_window
 from ._gateway import EventSink, LLMGateway, LLMRouting
-from ._hardware import detect_vram_gb
+from ._hardware import detect_ram_gb, detect_vram_gb
 from ._interface import (
     LLMPlugin,
     Message,
@@ -62,6 +62,7 @@ __all__ = [
     "add_local_entry",
     "clear_llama_server_override_path",
     "default_cache_breakpoints",
+    "detect_ram_gb",
     "detect_vram_gb",
     "get_cloud_entry",
     "get_cloud_registry",

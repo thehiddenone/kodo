@@ -34,15 +34,15 @@ from __future__ import annotations
 # Session role (default, no payload.role): binds a new session (empty
 # session_id) or resumes an existing one. Server side effects: binds the
 # connection, replies hello.ack (session_id, current_project, a full `state`
-# snapshot, llama/model status, detected_vram_gb), then pushes EVT_STATE,
-# EVT_SESSION_NAME, session.history (if the resumed session has prior turns),
-# and finally replays any backlog buffered while this session was
-# disconnected — strictly after session.history, so a reconnect can't see a
-# live frame before scrollback.
+# snapshot, llama/model status, detected_vram_gb, detected_ram_gb), then
+# pushes EVT_STATE, EVT_SESSION_NAME, session.history (if the resumed
+# session has prior turns), and finally replays any backlog buffered while
+# this session was disconnected — strictly after session.history, so a
+# reconnect can't see a live frame before scrollback.
 # Control role (payload.role == "control", the sidebar's session-less
 # connection): no session is created; the ack carries only the llama/model
-# snapshot (incl. detected_vram_gb), and the client uses it to reconcile this
-# window's remembered-open sessions once it lands.
+# snapshot (incl. detected_vram_gb, detected_ram_gb), and the client uses it
+# to reconcile this window's remembered-open sessions once it lands.
 MSG_HELLO = "hello"
 
 # Client → Server. The user's submitted prompt text (payload: {text}), with any

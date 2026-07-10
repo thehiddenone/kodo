@@ -152,7 +152,8 @@ The server replies with the current world plus local-model status:
     "llama_version": "b1234" | null,
     "llama_running": false,
     "llama_model": "qwen36-27b" | null,
-    "detected_vram_gb": 24 | null
+    "detected_vram_gb": 24 | null,
+    "detected_ram_gb": 64 | null
   } }
 ```
 
@@ -168,17 +169,20 @@ needs to compute it itself except for `custom_file` entries, where the
 extension's own startup-time filesystem check is authoritative for the rest
 of the process lifetime (see doc/LLM_REGISTRY.md §4).
 
-`detected_vram_gb` is best-effort local hardware detection — total GPU VRAM
-(NVIDIA only, via `pynvml`) or, on macOS, total unified memory (via
-`psutil`), summed across all detected GPUs and snapped to the nearest
-canonical tier (see doc/LLM_REGISTRY.md §4.3). `null` if nothing could be
-detected — no supported GPU, missing driver, or detection failure — which is
-expected on plenty of machines. It is computed fresh on every `hello.ack`
-**and** every `local_llm.registry_state` event (§5.12a) — not cached — matching
-how `llama_installed`/`llama_running` are already computed live rather than
-cached. The Local Inference Settings webview compares it against each local
-entry's `min_memory`/`memory` to show a red/yellow hardware-fit warning (see
-doc/LLM_REGISTRY.md §4.4).
+`detected_vram_gb`/`detected_ram_gb` are best-effort local hardware
+detection — total GPU VRAM (NVIDIA only, via `pynvml`) and total system RAM
+(via `psutil`), each snapped to the nearest canonical tier (see
+doc/LLM_REGISTRY.md §4.3). On macOS, `detected_vram_gb` reports total
+unified memory and `detected_ram_gb` is always `null` (Apple Silicon has no
+separate VRAM pool to add without double-counting). Either is `null` if
+nothing could be detected — no supported GPU, missing driver, or detection
+failure — which is expected on plenty of machines. Both are computed fresh
+on every `hello.ack` **and** every `local_llm.registry_state` event (§5.12a)
+— not cached — matching how `llama_installed`/`llama_running` are already
+computed live rather than cached. The Local Inference Settings webview sums
+`detected_vram_gb` + `detected_ram_gb` and compares that total against each
+local entry's `min_memory`/`memory` to show a red/yellow hardware-fit
+warning (see doc/LLM_REGISTRY.md §4.4).
 
 Immediately after the ack the server **also pushes** a `state` event (§5.1) and, if the resumed session has history, a `session.history` event (§5.11). The redundant `state` keeps first-connect and reconnect on identical client logic.
 
@@ -528,7 +532,8 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                          "size_hint": "...", "gpu_tip": "...", "mac_tip": "...",
                          "min_memory": 32, "memory": 48, "...": "..." } ],
   "llama_server_override_path": "/usr/local/bin/llama-server-cuda" | null,
-  "detected_vram_gb": 24 | null }
+  "detected_vram_gb": 24 | null,
+  "detected_ram_gb": 64 | null }
 ```
 
 Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. Does **not** carry download progress (see above) — that's read off disk, not this event.

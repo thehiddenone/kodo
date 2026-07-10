@@ -306,7 +306,9 @@ class LocalModelManager:
                 )
             if not any(f.filename == filename for f in record.files):
                 record.files.append(
-                    ModelFile(filename=filename, role=FileRole.MAIN, repo_id=repo_id, revision=revision)
+                    ModelFile(
+                        filename=filename, role=FileRole.MAIN, repo_id=repo_id, revision=revision
+                    )
                 )
             record.updated_at = _now()
             records[model_id] = record

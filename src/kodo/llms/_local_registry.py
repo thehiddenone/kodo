@@ -87,26 +87,42 @@ class LocalLLMEntry:
             repo's file listing, e.g. ``'28.6 GB'``. ``hardcoded_hf`` only —
             always ``""`` for every other kind.
         gpu_tip: User-facing hardware recommendation string, e.g.
-            ``'~43GB VRAM at 128K context — fits a single 48GB GPU (e.g.
-            RTX 6000 Ada/A6000).'``. Estimated from ``size_hint`` plus the
-            model's approximate KV-cache footprint at 128K context.
+            ``'~43GB total at 128K context — no need to hunt for a giant
+            workstation card. llama.cpp splits dense models layer-by-layer
+            between GPU and CPU, so an 8GB GPU (e.g. RTX 4060) carries a
+            solid share of the layers at full speed, with ~48GB of ordinary
+            DDR5 system RAM covering the rest.'``. Estimated from
+            ``size_hint`` plus the model's approximate KV-cache footprint at
+            128K context, then framed as a modest discrete GPU (8-16GB VRAM,
+            what most people actually own) plus enough system RAM to make up
+            the difference — never as "buy a bigger GPU" — since llama.cpp's
+            per-layer (dense) and MoE-expert (sparse) offloading make the
+            split practical without a workstation-class card. Notes when a
+            model is sparse-MoE (offloads especially well, near-full-GPU
+            speed even with most weights in RAM) vs dense (still works, but
+            every offloaded layer costs proportionally more speed).
             ``hardcoded_hf`` only — always ``""`` for every other kind.
         mac_tip: User-facing Apple Silicon recommendation string, e.g.
             ``'Needs ~43GB — comfortable on a 64GB MacBook Pro (M4 Pro/Max
             or M5 Pro/Max); a 48GB config is tight.'``. Same VRAM estimate
             as ``gpu_tip``, mapped onto MacBook Pro unified-memory tiers
-            with headroom for macOS overhead. ``hardcoded_hf`` only —
+            with headroom for macOS overhead. Unlike ``gpu_tip``, this stays
+            framed as a single pool since Apple Silicon has no separate
+            VRAM/RAM split to offload across. ``hardcoded_hf`` only —
             always ``""`` for every other kind.
-        min_memory: Absolute minimum of required VRAM assuming 0 context.
-            If the host computer doesn't have at least that much memory,
-            user will be warned that this LLM may not load. If set to 0,
-            this value should be ignored. ``hardcoded_hf`` only — always
+        min_memory: Absolute minimum **combined** VRAM + system RAM assuming
+            0 context (i.e. roughly ``size_hint``) — not VRAM alone, since
+            llama.cpp can run a model split across both. If the host
+            computer's detected VRAM plus RAM together don't reach this,
+            the user is warned that this LLM will likely not run. If set to
+            0, this value should be ignored. ``hardcoded_hf`` only — always
             ``0`` for every other kind.
-        memory: Recommended amount of VRAM/unified memory. If host computer
-            has less than that, user will be warned that performance may
-            sharly degrade if contexts is larger than 128K. If set to 0,
-            this value should be ignored. ``hardcoded_hf`` only — always
-            ``0`` for every other kind.
+        memory: Recommended **combined** VRAM + system RAM for comfortable
+            operation up to 128K context — again VRAM+RAM together, not
+            VRAM alone. If the host's detected VRAM plus RAM together fall
+            short, the user is warned that performance may degrade sharply
+            at large contexts. If set to 0, this value should be ignored.
+            ``hardcoded_hf`` only — always ``0`` for every other kind.
     """
 
     name: str
@@ -138,12 +154,16 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="qwen36-27b-Q8_0.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
-        base_llm="qwen36-27b",
+        base_llm="Qwen36-27B",
         quant_author="AtomicChat",
         quant_type="Q8_0",
         size_hint="28.6 GB",
-        gpu_tip="~43GB VRAM at 128K context — fits a single 48GB GPU (e.g. RTX 6000 Ada/A6000, or RTX PRO 5000 Blackwell).",
-        mac_tip="Needs ~43GB — comfortable on a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max); a 48GB config is tight.",
+        gpu_tip="~43GB total at 128K context — no need to hunt for a giant workstation card. "
+        "llama.cpp splits dense models layer-by-layer between GPU and CPU, so an 8GB GPU "
+        "(e.g. RTX 4060) carries a solid share of the layers at full speed, with ~48GB of "
+        "ordinary DDR5 system RAM covering the rest.",
+        mac_tip="Needs ~43GB — comfortable on a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max); "
+        "a 48GB config is tight.",
         min_memory=32,
         memory=48,
     ),
@@ -155,12 +175,15 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="Qwen3.6-27B-UD-Q8_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
-        base_llm="qwen36-27b",
+        base_llm="Qwen36-27B",
         quant_author="Unsloth",
         quant_type="UD_Q8_K_XL",
         size_hint="35.8 GB",
-        gpu_tip="~50GB VRAM at 128K context — just over a 48GB card; fits a single 72GB GPU (e.g. RTX PRO 5000 Blackwell 72GB) or a 64-80GB GPU (e.g. A100/H100), or 2x32GB in tensor-parallel.",
-        mac_tip="Needs ~50GB — a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) is tight; a 128GB M4 Max or M5 Max gives more headroom.",
+        gpu_tip="~50GB total at 128K context — the biggest of the Qwen 3.6 27B builds, but "
+        "still no reason to chase a 64GB+ card. An 8GB GPU (e.g. RTX 3060 Ti) plus ~64GB of "
+        "everyday DDR5 system RAM covers it via llama.cpp's layer offloading.",
+        mac_tip="Needs ~50GB — a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) is tight; a 128GB "
+        "M4 Max or M5 Max gives more headroom.",
         min_memory=48,
         memory=64,
     ),
@@ -172,12 +195,15 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="Qwen3.6-27B-UD-Q6_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
-        base_llm="qwen36-27b",
+        base_llm="Qwen36-27B",
         quant_author="Unsloth",
         quant_type="UD_Q6_K_XL",
         size_hint="26.0 GB",
-        gpu_tip="~40GB VRAM at 128K context — fits a single 48GB GPU (e.g. RTX 6000 Ada/A6000, or RTX PRO 5000 Blackwell) comfortably.",
-        mac_tip="Needs ~40GB — fits a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably; a 48GB config is tight.",
+        gpu_tip="~40GB total at 128K context. An 8GB GPU (e.g. RTX 5060) plus ~48GB of DDR5 "
+        "system RAM covers the whole model — llama.cpp keeps as many layers on the GPU as fit "
+        "and runs the rest from RAM.",
+        mac_tip="Needs ~40GB — fits a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably; "
+        "a 48GB config is tight.",
         min_memory=32,
         memory=48,
     ),
@@ -189,11 +215,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="Qwen3.6-27B-UD-Q5_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
-        base_llm="qwen36-27b",
+        base_llm="Qwen36-27B",
         quant_author="Unsloth",
         quant_type="UD_Q5_K_XL",
         size_hint="20.4 GB",
-        gpu_tip="~35GB VRAM at 128K context — fits a single 48GB GPU (e.g. RTX 6000 Ada, or RTX PRO 5000 Blackwell) with room to spare.",
+        gpu_tip="~35GB total at 128K context. An 8GB GPU (e.g. RX 7600) plus a 32GB DDR5 kit is "
+        "enough, with llama.cpp's layer offloading filling in the gap.",
         mac_tip="Needs ~35GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
         min_memory=32,
         memory=48,
@@ -206,12 +233,15 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="Qwen3.6-27B-UD-Q4_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
-        base_llm="qwen36-27b",
+        base_llm="Qwen36-27B",
         quant_author="Unsloth",
         quant_type="UD_Q4_K_XL",
         size_hint="17.9 GB",
-        gpu_tip="~32GB VRAM at 128K context — fits a single 48GB GPU (e.g. RTX 6000 Ada, or RTX PRO 5000 Blackwell) comfortably, or a 32GB card (e.g. RTX PRO 4500 Blackwell) if you trim context a bit.",
-        mac_tip="Needs ~32GB — fits a 32GB MacBook Pro (M4 or M5) if you trim context a bit, or a 48GB config (M4 Pro/Max or M5 Pro/Max) comfortably.",
+        gpu_tip="~32GB total at 128K context. An 8GB GPU (e.g. RTX 4060) plus a 32GB DDR5 kit "
+        "covers it comfortably — well within reach of a typical gaming rig once llama.cpp "
+        "splits the layers.",
+        mac_tip="Needs ~32GB — fits a 32GB MacBook Pro (M4 or M5) if you trim context a bit, "
+        "or a 48GB config (M4 Pro/Max or M5 Pro/Max) comfortably.",
         min_memory=24,
         memory=32,
     ),
@@ -227,8 +257,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="UD_Q8_K_XL",
         size_hint="39.1 GB",
-        gpu_tip="~46GB VRAM at 128K context — fits a single 48GB GPU (e.g. RTX 6000 Ada/A6000, or RTX PRO 5000 Blackwell), close to its limit.",
-        mac_tip="Needs ~46GB — a 48GB MacBook Pro is close to its limit; a 64GB config (M4 Pro/Max or M5 Pro/Max) is safer.",
+        gpu_tip="~46GB total at 128K context, but it's a sparse MoE model — most of those "
+        "weights sit idle on any given token. An 8GB GPU (e.g. RTX 3060 Ti) keeps the always-on "
+        "attention/shared layers at full speed while llama.cpp offloads the inactive experts "
+        "to ~48GB of DDR5 system RAM, staying close to full-GPU speed.",
+        mac_tip="Needs ~46GB — a 48GB MacBook Pro is close to its limit; a 64GB config "
+        "(M4 Pro/Max or M5 Pro/Max) is safer.",
         min_memory=48,
         memory=64,
     ),
@@ -244,7 +278,9 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="UD_Q6_K_XL",
         size_hint="32.6 GB",
-        gpu_tip="~39GB VRAM at 128K context — fits a single 48GB GPU (e.g. RTX 6000 Ada/A6000, or RTX PRO 5000 Blackwell) comfortably.",
+        gpu_tip="~39GB total at 128K context. Same MoE-offload trick as the Q8_K_XL build: an 8GB "
+        "GPU (e.g. RTX 5060) handles the shared layers at full speed, and ~48GB of DDR5 system "
+        "RAM comfortably holds the offloaded experts.",
         mac_tip="Needs ~39GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
         min_memory=48,
         memory=48,
@@ -261,8 +297,10 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="UD_Q5_K_XL",
         size_hint="27.2 GB",
-        gpu_tip="~34GB VRAM at 128K context — fits a single 48GB GPU (e.g. RTX 6000 Ada, or RTX PRO 5000 Blackwell) with room to spare.",
-        mac_tip="Needs ~34GB — fits a 48GB MacBook Pro comfortably; a 36GB M4 Max or M5 Max is tight.",
+        gpu_tip="~34GB total at 128K context. An 8GB GPU (e.g. RX 7600) plus ~32GB of DDR5 system "
+        "RAM is enough — llama.cpp's MoE offloading keeps this close to full-GPU speed.",
+        mac_tip="Needs ~34GB — fits a 48GB MacBook Pro comfortably; a 36GB M4 Max or M5 Max is "
+        "tight.",
         min_memory=36,
         memory=48,
     ),
@@ -278,8 +316,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="UD_Q4_K_XL",
         size_hint="22.9 GB",
-        gpu_tip="~30GB VRAM at 128K context — fits a single 32GB GPU (e.g. RTX 5090, or RTX PRO 4500 Blackwell) or a 48GB card (e.g. RTX PRO 5000 Blackwell) with plenty of headroom.",
-        mac_tip="Needs ~30GB — tight on a 32GB MacBook Pro (M4 or M5); a 36GB M4 Max/M5 Max is the safe choice.",
+        gpu_tip="~30GB total at 128K context. An 8GB GPU (e.g. RTX 4060) plus a 32GB DDR5 kit "
+        "covers it — the sparse MoE architecture means llama.cpp's expert offloading barely "
+        "costs you any speed.",
+        mac_tip="Needs ~30GB — tight on a 32GB MacBook Pro (M4 or M5); a 36GB M4 Max/M5 Max is "
+        "the safe choice.",
         min_memory=32,
         memory=36,
     ),
@@ -295,8 +336,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="UD_Q4_K_XL",
         size_hint="49.6 GB",
-        gpu_tip="~54GB VRAM at 128K context — needs a single 64-80GB GPU (e.g. A100/H100, or RTX PRO 5000 Blackwell 72GB), or 2x32GB in tensor-parallel.",
-        mac_tip="Needs ~54GB — tight on a 64GB MacBook Pro; a 128GB M4 Max or M5 Max is the safe choice.",
+        gpu_tip="~54GB total at 128K context. It's an 80B model, but the MoE architecture still "
+        "plays nice with offloading: a 16GB GPU (e.g. RTX 4060 Ti 16GB) keeps the shared layers "
+        "fast while ~48GB of DDR5 system RAM absorbs the rest of the experts.",
+        mac_tip="Needs ~54GB — tight on a 64GB MacBook Pro; a 128GB M4 Max or M5 Max is the "
+        "safe choice.",
         min_memory=64,
         memory=64,
     ),
@@ -312,8 +356,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="UD_Q3_K_XL",
         size_hint="36.3 GB",
-        gpu_tip="~40GB VRAM at 128K context — fits a single 48GB GPU (e.g. RTX 6000 Ada/A6000, or RTX PRO 5000 Blackwell) comfortably.",
-        mac_tip="Needs ~40GB — fits a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably; a 48GB config is tight.",
+        gpu_tip="~40GB total at 128K context. An 8GB GPU (e.g. RTX 3060 Ti) plus ~48GB of DDR5 "
+        "system RAM is enough — llama.cpp's MoE expert offloading keeps this 80B model fast "
+        "without a workstation card.",
+        mac_tip="Needs ~40GB — fits a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably; "
+        "a 48GB config is tight.",
         min_memory=48,
         memory=64,
     ),
@@ -329,8 +376,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="MXFP4_MOE",
         size_hint="48.0 GB",
-        gpu_tip="~52GB VRAM at 128K context — needs a single 64-80GB GPU (e.g. A100/H100, or RTX PRO 5000 Blackwell 72GB), or 2x32GB in tensor-parallel.",
-        mac_tip="Needs ~52GB — tight on a 64GB MacBook Pro; a 128GB M4 Max or M5 Max gives more headroom.",
+        gpu_tip="~52GB total at 128K context. A 16GB GPU (e.g. RTX 5070 Ti) handles the always-on "
+        "layers, and ~48GB of DDR5 system RAM covers the offloaded MXFP4 experts — llama.cpp's "
+        "MoE offloading keeps speed close to a full-VRAM fit.",
+        mac_tip="Needs ~52GB — tight on a 64GB MacBook Pro; a 128GB M4 Max or M5 Max gives more "
+        "headroom.",
         min_memory=64,
         memory=64,
     ),
@@ -346,7 +396,8 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="UD_Q8_K_XL",
         size_hint="13.2 GB",
-        gpu_tip="~17GB VRAM at 128K context — fits a single 24GB GPU (e.g. RTX 4090, or RTX PRO 4000 Blackwell) comfortably.",
+        gpu_tip="~17GB total at 128K context. Any 8GB GPU (e.g. RTX 5060) plus a basic 16GB DDR5 "
+        "kit is plenty — this one barely needs the offloading trick at all.",
         mac_tip="Needs ~17GB — fits a 24GB MacBook Pro (M4, M4 Pro, M5, or M5 Pro) comfortably.",
         min_memory=24,
         memory=24,
@@ -363,8 +414,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="F16",
         size_hint="65.4 GB",
-        gpu_tip="~75GB VRAM at 128K context — right at the edge of a single 80GB GPU (e.g. A100/H100); a 96GB card (e.g. RTX PRO 6000 Blackwell) or 2x48GB tensor-parallel gives more headroom.",
-        mac_tip="Needs ~75GB — a 128GB MacBook Pro (M4 Max or M5 Max) is required, and it's right at the edge even there.",
+        gpu_tip="~75GB total at 128K context — this is a big one, but it's GPT-OSS's sparse MoE "
+        "architecture at its best. A 16GB GPU (e.g. RX 7800 XT) runs the shared layers at full "
+        "speed while llama.cpp offloads the experts to ~96GB of DDR5 system RAM — no datacenter "
+        "card required.",
+        mac_tip="Needs ~75GB — a 128GB MacBook Pro (M4 Max or M5 Max) is required, and it's right "
+        "at the edge even there.",
         min_memory=128,
         memory=128,
     ),
@@ -380,8 +435,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="F16",
         size_hint="13.8 GB",
-        gpu_tip="~20GB VRAM at 128K context — fits a single 24GB GPU (e.g. RTX 4090, or RTX PRO 4000 Blackwell) comfortably.",
-        mac_tip="Needs ~20GB — fits a 32GB MacBook Pro (M4 or M5) comfortably; a 24GB config is tight.",
+        gpu_tip="~20GB total at 128K context. An 8GB GPU (e.g. RX 7600) plus ~24GB of DDR5 system "
+        "RAM covers it comfortably — llama.cpp's MoE offloading keeps GPT-OSS-20B fast even on a "
+        "modest card.",
+        mac_tip="Needs ~20GB — fits a 32GB MacBook Pro (M4 or M5) comfortably; a 24GB config is"
+        "tight.",
         min_memory=24,
         memory=32,
     ),
@@ -397,7 +455,9 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="UD_Q8_K_XL",
         size_hint="13.2 GB",
-        gpu_tip="~16GB VRAM at 128K context — fits a single 24GB GPU (e.g. RTX 4090, or RTX PRO 4000 Blackwell) comfortably; a 16GB card is tight.",
+        gpu_tip="~16GB total at 128K context. An 8GB GPU (e.g. RTX 4060) plus a 16GB DDR5 kit is "
+        "all this needs — MoE offloading makes the 8GB card feel roomier than the raw total "
+        "suggests.",
         mac_tip="Needs ~16GB — fits a 24GB MacBook Pro comfortably; a 16GB M5 is tight.",
         min_memory=16,
         memory=24,
@@ -414,7 +474,8 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="Q8_0",
         size_hint="12.1 GB",
-        gpu_tip="~15GB VRAM at 128K context — fits a single 16GB GPU tightly, or a 24GB GPU (e.g. RTX 4090, or RTX PRO 4000 Blackwell) comfortably.",
+        gpu_tip="~15GB total at 128K context. An 8GB GPU (e.g. RTX 3060 Ti) plus a 16GB DDR5 kit "
+        "covers it easily, with llama.cpp offloading the inactive experts to RAM.",
         mac_tip="Needs ~15GB — fits a 24GB MacBook Pro comfortably; a 16GB M5 is tight.",
         min_memory=16,
         memory=24,
@@ -431,7 +492,9 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="UD_Q6_K_XL",
         size_hint="12.0 GB",
-        gpu_tip="~15GB VRAM at 128K context — fits a single 16GB GPU tightly, or a 24GB GPU (e.g. RTX 4090, or RTX PRO 4000 Blackwell) comfortably.",
+        gpu_tip="~15GB total at 128K context. An 8GB GPU (e.g. RTX 5060) plus a 16GB DDR5 kit is "
+        "enough — the sparse MoE architecture keeps offloaded performance close to "
+        "a full-VRAM fit.",
         mac_tip="Needs ~15GB — fits a 24GB MacBook Pro comfortably; a 16GB M5 is tight.",
         min_memory=16,
         memory=24,
@@ -448,7 +511,8 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="UD_Q4_K_XL",
         size_hint="11.9 GB",
-        gpu_tip="~15GB VRAM at 128K context — fits a single 16GB GPU tightly, or a 24GB GPU (e.g. RTX 4090, or RTX PRO 4000 Blackwell) comfortably.",
+        gpu_tip="~15GB total at 128K context. An 8GB GPU (e.g. RX 7600) plus a 16GB DDR5 kit "
+        "covers it comfortably via llama.cpp's MoE expert offloading.",
         mac_tip="Needs ~15GB — fits a 24GB MacBook Pro comfortably; a 16GB M5 is tight.",
         min_memory=16,
         memory=24,
@@ -465,8 +529,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="UD_Q4_K_XL",
         size_hint="17.0 GB",
-        gpu_tip="~20GB VRAM at 128K context — fits a single 24GB GPU (e.g. RTX 4090, or RTX PRO 4000 Blackwell) comfortably.",
-        mac_tip="Needs ~20GB — fits a 32GB MacBook Pro (M4 or M5) comfortably; a 24GB config is tight.",
+        gpu_tip="~20GB total at 128K context. An 8GB GPU (e.g. RTX 4060) plus ~24GB of DDR5 "
+        "system RAM is enough — Gemma 4's MoE design (the A4B in its filename) lets llama.cpp "
+        "offload inactive experts to RAM without much of a speed hit.",
+        mac_tip="Needs ~20GB — fits a 32GB MacBook Pro (M4 or M5) comfortably; a 24GB config "
+        "is tight.",
         min_memory=24,
         memory=32,
     ),
@@ -482,7 +549,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="DeepReinforce",
         quant_type="BF16",
         size_hint="69.4 GB",
-        gpu_tip="~103GB VRAM at 128K context — too large for a single GPU, even a 96GB RTX PRO 6000 Blackwell; use 2x80GB GPUs (e.g. 2x A100/H100), 2x RTX PRO 6000 Blackwell, or a single 141GB H200 in tensor-parallel.",
+        gpu_tip="~103GB total at 128K context — the BF16 build is the heaviest way to run "
+        "Ornith 1.0, and since it's dense (not MoE), every offloaded layer costs real speed. "
+        "A 16GB GPU (e.g. RTX 4080) plus a 128GB DDR5 kit will run it, but if raw speed matters "
+        "more than bit-perfect precision, the quantized builds below hit similar quality at "
+        "a fraction of the memory.",
         mac_tip="Needs ~103GB — tight on a 128GB M4 Max or M5 Max.",
         min_memory=128,
         memory=128,
@@ -499,8 +570,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="DeepReinforce",
         quant_type="Q8_0",
         size_hint="36.9 GB",
-        gpu_tip="~54GB VRAM at 128K context — needs a single 64-80GB GPU (e.g. A100/H100, or RTX PRO 5000 Blackwell 72GB), or 2x32GB in tensor-parallel.",
-        mac_tip="Needs ~54GB — tight on a 64GB MacBook Pro; a 128GB M4 Max or M5 Max is the safe choice.",
+        gpu_tip="~54GB total at 128K context. A 16GB GPU (e.g. RTX 4060 Ti 16GB) plus ~48GB of "
+        "DDR5 system RAM covers it via llama.cpp's layer offloading — no need for the BF16 "
+        "build's 128GB ask.",
+        mac_tip="Needs ~54GB — tight on a 64GB MacBook Pro; a 128GB M4 Max or M5 Max is the "
+        "safe choice.",
         min_memory=64,
         memory=128,
     ),
@@ -516,8 +590,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="DeepReinforce",
         quant_type="Q6_K",
         size_hint="28.5 GB",
-        gpu_tip="~45GB VRAM at 128K context — fits a single 48GB GPU (e.g. RTX 6000 Ada/A6000, or RTX PRO 5000 Blackwell), close to its limit.",
-        mac_tip="Needs ~45GB — a 48GB MacBook Pro is close to its limit; a 64GB config (M4 Pro/Max or M5 Pro/Max) is safer.",
+        gpu_tip="~45GB total at 128K context. An 8GB GPU (e.g. RTX 3060 Ti) plus ~48GB of DDR5 "
+        "system RAM handles it comfortably, with llama.cpp keeping as many layers on the GPU as "
+        "VRAM allows.",
+        mac_tip="Needs ~45GB — a 48GB MacBook Pro is close to its limit; a 64GB config "
+        "(M4 Pro/Max or M5 Pro/Max) is safer.",
         min_memory=48,
         memory=64,
     ),
@@ -533,7 +610,9 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="DeepReinforce",
         quant_type="Q5_K_M",
         size_hint="24.7 GB",
-        gpu_tip="~42GB VRAM at 128K context — fits a single 48GB GPU (e.g. RTX 6000 Ada/A6000, or RTX PRO 5000 Blackwell) comfortably.",
+        gpu_tip="~42GB total at 128K context. An 8GB GPU (e.g. RTX 5060) plus ~48GB of DDR5 "
+        "system RAM is enough — llama.cpp's layer offloading fills in the gap without needing "
+        "a big card.",
         mac_tip="Needs ~42GB — fits a 64GB MacBook Pro comfortably; a 48GB config is tight.",
         min_memory=48,
         memory=64,
@@ -550,7 +629,8 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="DeepReinforce",
         quant_type="Q4_K_M",
         size_hint="21.2 GB",
-        gpu_tip="~38GB VRAM at 128K context — fits a single 48GB GPU (e.g. RTX 6000 Ada/A6000, or RTX PRO 5000 Blackwell) comfortably.",
+        gpu_tip="~38GB total at 128K context. An 8GB GPU (e.g. RX 7600) plus ~48GB of DDR5 "
+        "system RAM covers the whole model via llama.cpp's layer offloading.",
         mac_tip="Needs ~38GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
         min_memory=48,
         memory=48,

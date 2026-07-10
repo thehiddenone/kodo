@@ -25,6 +25,7 @@ from kodo.llms import (
     LocalLLMEntry,
     add_local_entry,
     clear_llama_server_override_path,
+    detect_ram_gb,
     detect_vram_gb,
     get_cloud_registry,
     get_cloud_vendor_display_name,
@@ -268,9 +269,9 @@ def _local_entry_installed(entry: LocalLLMEntry, kodo_dir: Path) -> bool:
 
 
 def _local_registry_payload() -> dict[str, object]:
-    """The ``{local_registry, llama_server_override_path, detected_vram_gb}``
-    shape shared by ``hello.ack`` and every ``local_llm.registry_state``
-    event.
+    """The ``{local_registry, llama_server_override_path, detected_vram_gb,
+    detected_ram_gb}`` shape shared by ``hello.ack`` and every
+    ``local_llm.registry_state`` event.
 
     Download-in-progress state is deliberately **not** part of this payload —
     kodo-vsix reads ``manager-state.json`` directly off disk instead of
@@ -307,6 +308,7 @@ def _local_registry_payload() -> dict[str, object]:
         "local_registry": local_payload,
         "llama_server_override_path": get_llama_server_override_path(kodo_dir),
         "detected_vram_gb": detect_vram_gb(),
+        "detected_ram_gb": detect_ram_gb(),
     }
 
 

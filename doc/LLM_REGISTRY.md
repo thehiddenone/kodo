@@ -129,14 +129,19 @@ class LocalLLMEntry:
     quant_author: str = ""  # hardcoded_hf only — e.g. "Unsloth"
     quant_type: str = ""    # hardcoded_hf only — e.g. "UD_Q4_K_XL"
     size_hint: str = ""     # hardcoded_hf only — e.g. "28.6 GB"
-    gpu_tip: str = ""       # hardcoded_hf only — e.g. "~43GB VRAM at 128K
-                             # context — fits a single 48GB GPU (e.g. RTX
-                             # 6000 Ada/A6000, or RTX PRO 5000 Blackwell)."
+    gpu_tip: str = ""       # hardcoded_hf only — e.g. "~43GB total at 128K
+                             # context — no need to hunt for a giant
+                             # workstation card. llama.cpp splits dense
+                             # models layer-by-layer between GPU and CPU, so
+                             # an 8GB GPU (e.g. RTX 4060) carries a solid
+                             # share of the layers at full speed, with
+                             # ~48GB of ordinary DDR5 system RAM covering
+                             # the rest."
     mac_tip: str = ""       # hardcoded_hf only — e.g. "Needs ~43GB —
                              # comfortable on a 64GB MacBook Pro (M4 Pro/Max
                              # or M5 Pro/Max); a 48GB config is tight."
-    min_memory: int = 0     # hardcoded_hf only — absolute minimum VRAM (GB); 0 = unknown
-    memory: int = 0         # hardcoded_hf only — recommended VRAM (GB); 0 = unknown
+    min_memory: int = 0     # hardcoded_hf only — absolute minimum combined VRAM+RAM (GB); 0 = unknown
+    memory: int = 0         # hardcoded_hf only — recommended combined VRAM+RAM (GB); 0 = unknown
 ```
 
 `base_llm`/`quant_author`/`quant_type`/`size_hint`/`gpu_tip`/`mac_tip`/
@@ -144,23 +149,35 @@ class LocalLLMEntry:
 or the WS handlers) — they identify, respectively, the original unquantized
 model, who produced the quant, the quant spec, the GGUF file's on-disk size
 (as displayed on the model's HuggingFace file listing, hand-copied — not
-fetched at runtime), a hand-written discrete-GPU recommendation, a
-hand-written MacBook Pro (Apple Silicon unified-memory) recommendation, and
-two hand-picked VRAM thresholds (GB) used for the client-side hardware
-comparison below, for every compiled-in `hardcoded_hf` entry in
-`_HARDCODED_LOCAL_MODELS`. `gpu_tip` and `mac_tip` are both rough estimates
-off the same underlying VRAM figure — weight size (`size_hint`) plus an
-approximated KV-cache footprint at 128K context (scaled from each model
-family's known/assumed architecture: layer count, attention-head config, and
-the KV cache quantization each entry's `llama_args` requests). `gpu_tip`
-rounds that figure to a practical discrete-GPU VRAM tier (including
-current-gen RTX PRO Blackwell workstation cards: 4000/24GB, 4500/32GB,
-5000/48GB, 5000 72GB/72GB, 6000/96GB); `mac_tip` maps the same figure onto
-MacBook Pro unified-memory tiers (M4/M4 Pro/M4 Max and M5/M5 Pro/M5 Max
-configs) with extra headroom built in for macOS's own memory overhead.
-Neither is a precise sizing tool. `min_memory`/`memory` are the same
-underlying estimate expressed as two plain integers instead of prose — see
-§4.4 for how kodo-vsix compares them against `detected_vram_gb`. All eight
+fetched at runtime), a hand-written discrete-GPU-plus-system-RAM
+recommendation, a hand-written MacBook Pro (Apple Silicon unified-memory)
+recommendation, and two hand-picked combined-memory thresholds (GB) used for
+the client-side hardware comparison below, for every compiled-in
+`hardcoded_hf` entry in `_HARDCODED_LOCAL_MODELS`. `gpu_tip` and `mac_tip`
+are both rough estimates off the same underlying total-memory figure —
+weight size (`size_hint`) plus an approximated KV-cache footprint at 128K
+context (scaled from each model family's known/assumed architecture: layer
+count, attention-head config, and the KV cache quantization each entry's
+`llama_args` requests). `gpu_tip` deliberately does **not** round that figure
+to "a single GPU big enough to hold it all" — almost nobody owns a
+48GB+ workstation card. Instead it frames the figure as a modest 8-16GB
+consumer GPU (what most people actually own, e.g. RTX 4060/RTX 3060
+Ti/RX 7600 at 8GB, or RTX 4060 Ti 16GB/RTX 5070 Ti at 16GB) plus enough
+ordinary DDR5 system RAM to cover the remainder, since llama.cpp can split a
+model's weights across both: per-layer offloading (`-ngl`) for dense models,
+or MoE-expert offloading (keeping shared/attention tensors on the GPU and
+spilling inactive experts to RAM) for sparse models, which loses much less
+speed than the dense case since only a handful of experts actually run per
+token. `gpu_tip` calls out which offloading style applies. `mac_tip` maps
+the same total-memory figure onto MacBook Pro unified-memory tiers (M4/M4
+Pro/M4 Max and M5/M5 Pro/M5 Max configs) with extra headroom built in for
+macOS's own memory overhead — Apple Silicon has no separate VRAM/RAM split
+to offload across, so it stays framed as one pool. Neither `gpu_tip` nor
+`mac_tip` is a precise sizing tool. `min_memory`/`memory` are the same
+underlying total-memory estimate expressed as two plain integers instead of
+prose — combined VRAM + system RAM together, not VRAM alone — see §4.4 for
+how kodo-vsix compares them against `detected_vram_gb` + `detected_ram_gb`.
+All eight
 fields are always `""`/`0` for `custom_hf`/`custom_file`/`custom_server_url`
 — none of the `local_llm.add_*` WS commands accept them, so a user-added
 entry can never populate them. Unlike `llama_args`/`context_window` (dataclass-
@@ -305,33 +322,41 @@ control — a label showing the current override path or "No override" plus
 "Set llama.cpp override" / "Remove llama.cpp override" buttons — separate
 from the model card grid, since it isn't itself a model.
 
-### 4.3 Hardware detection (`detected_vram_gb`)
+### 4.3 Hardware detection (`detected_vram_gb`, `detected_ram_gb`)
 
-`kodo/llms/_hardware.py`'s `detect_vram_gb()` is best-effort local GPU/
-unified-memory detection, computed fresh on every `hello.ack` **and** every
-`local_llm.registry_state` event (both go through `_local_registry_payload()`
-now) and sent as the top-level `detected_vram_gb` field — see WS_PROTOCOL.md
-§4.1 for the wire shape.
+`kodo/llms/_hardware.py`'s `detect_vram_gb()` and `detect_ram_gb()` are
+best-effort local GPU VRAM / system RAM detection, computed fresh on every
+`hello.ack` **and** every `local_llm.registry_state` event (both go through
+`_local_registry_payload()` now) and sent as the top-level `detected_vram_gb`
+/ `detected_ram_gb` fields — see WS_PROTOCOL.md §4.1 for the wire shape.
+Together they express "total memory available for a GPU+CPU-offloaded
+model" — see §4.4 for how kodo-vsix sums them for the hardware-warning
+comparison.
 
 Detection strategy, by platform:
 
-- **macOS**: total system RAM via `psutil.virtual_memory().total`, treated
-  as VRAM-equivalent — Apple Silicon shares one unified memory pool between
-  CPU and GPU, so there's no separate VRAM figure to query.
-- **Windows/Linux**: sum of VRAM across every NVIDIA GPU visible to the
-  driver, via `pynvml` (`nvmlDeviceGetMemoryInfo(handle).total` per device).
-  **AMD GPUs are not detected** — out of scope for now; an AMD-only machine
-  reports `null` even with a discrete GPU present.
+- **macOS**: `detect_vram_gb()` reports total system RAM via
+  `psutil.virtual_memory().total`, treated as VRAM-equivalent — Apple
+  Silicon shares one unified memory pool between CPU and GPU, so there's no
+  separate VRAM figure to query. `detect_ram_gb()` always returns `None` on
+  macOS: a separate RAM figure would just double-count the same physical
+  memory `detect_vram_gb()` already reports in full.
+- **Windows/Linux**: `detect_vram_gb()` sums VRAM across every NVIDIA GPU
+  visible to the driver, via `pynvml` (`nvmlDeviceGetMemoryInfo(handle).total`
+  per device). **AMD GPUs are not detected** — out of scope for now; an
+  AMD-only machine reports `null` for VRAM even with a discrete GPU present.
+  `detect_ram_gb()` reports total system RAM via
+  `psutil.virtual_memory().total`, independent of any GPU detection.
 
-The raw byte total is normalized to the nearest tier in a fixed ascending
+Both raw byte totals are normalized to the nearest tier in a fixed ascending
 list (4, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48, 64, 80, 96, 128, 192, 256 GB)
 — real hardware rarely reports an exact round number (e.g. a "24GB" card
 shows ~23.99 GiB), so nearest-tier snapping gives a clean, stable figure.
-Above the top tier (multi-GPU rigs) it rounds to the nearest 32 GB instead of
-clamping. Returns `None` (→ wire `null`) if nothing could be detected: no
-supported GPU, no driver, or the detection library isn't installed/importable
-— every failure mode is caught and swallowed, since this must never block
-the `hello` handshake.
+Above the top tier (e.g. multi-GPU rigs, or a large-RAM workstation) each
+rounds to the nearest 32 GB instead of clamping. Either returns `None` (→
+wire `null`) if nothing could be detected: no supported GPU, no driver, or
+the detection library isn't installed/importable — every failure mode is
+caught and swallowed, since this must never block the `hello` handshake.
 
 ### 4.4 kodo-vsix wire shape and the download-progress polling design
 
@@ -339,21 +364,26 @@ the `hello` handshake.
 field kodo-vsix needs — `name`, `kind`, `description`, `repo_id`, `filename`,
 `path`, `url`, `installed`, `installed_path`, `base_llm`, `quant_author`,
 `quant_type`, `size_hint`, `gpu_tip`, `mac_tip`, `min_memory`, `memory` — plus
-top-level `llama_server_override_path` and `detected_vram_gb`. `installed_path`
-is new: the absolute path to the installed file(s) (`LocalModelManager.
-get_model_path()` for `hardcoded_hf`/`custom_hf`, `entry.path` for
-`custom_file`, `null` for `custom_server_url` or anything not installed) —
-it's what "Show me local files" in the Local Inference Settings webview
-reveals via VS Code's `revealFileInOS` command, entirely client-side (no
-extra WS round trip).
+top-level `llama_server_override_path`, `detected_vram_gb`, and
+`detected_ram_gb`. `installed_path` is new: the absolute path to the
+installed file(s) (`LocalModelManager.get_model_path()` for
+`hardcoded_hf`/`custom_hf`, `entry.path` for `custom_file`, `null` for
+`custom_server_url` or anything not installed) — it's what "Show me local
+files" in the Local Inference Settings webview reveals via VS Code's
+`revealFileInOS` command, entirely client-side (no extra WS round trip).
 
-kodo-vsix compares `detected_vram_gb` against each entry's `min_memory`/
-`memory` (both GB, same units, both `0` meaning "unknown — don't warn"):
-below `min_memory` is a red "won't run" warning; below `memory` (and not
-already red) is a yellow "may not perform well at large contexts" warning.
-When `min_memory == memory` only the red case can ever fire — meeting the
-minimum already means meeting the recommendation too, so there is no
-separate yellow branch to special-case.
+kodo-vsix sums `detected_vram_gb` + `detected_ram_gb` (nulls treated as `0`
+in the sum, but if *both* are `null` the comparison is skipped entirely —
+"unknown — don't warn") and compares that total against each entry's
+`min_memory`/`memory` (both GB, same combined-memory units, both `0` meaning
+"unknown — don't warn"): below `min_memory` is a red "won't run" warning;
+below `memory` (and not already red) is a yellow "may not perform well at
+large contexts" warning. When `min_memory == memory` only the red case can
+ever fire — meeting the minimum already means meeting the recommendation
+too, so there is no separate yellow branch to special-case. On macOS,
+`detected_ram_gb` is always `null` (see §4.3), so the sum degrades to
+`detected_vram_gb` alone — the single unified-memory figure Apple Silicon
+already reports in full.
 
 **Download progress is not part of this payload** — see
 [LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md) §11. kodo-vsix polls
