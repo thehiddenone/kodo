@@ -914,6 +914,84 @@ connection, since that's a one-shot binary fetch with no pause/resume.
 llama-server (if running) and reports `llama.state {running: false}` — it
 does not start a process for that entry (see §5.12).
 
+### 7.6a `llm.select` — synchronous local-model switch
+
+Built for `kodo.validator`'s LUT↔VLLM swaps (doc/VALIDATOR.md §9), usable by
+any client. Where the VSIX's model switch is a settings-file write +
+`config.reload` + `llama.start` with no readiness confirmation, `llm.select`
+does the whole switch server-side and **replies only once the outcome is
+known**:
+
+```json
+{ "type": "llm.select", "name": "qwen36-27b" }        // a *local registry* name
+```
+
+Server-side sequence: persist `mode: "local"` + `models.local = name` into
+`~/.kodo/etc/settings.json` (raw-file patch — untouched keys survive) →
+(re)start llama-server for the entry (`ensure_llama_running`: same-model
+no-op, different-model stop-then-start) → wait until it actually serves.
+Response, correlated:
+
+```json
+{ "type": "llm.select.done", "ok": true,  "model": "qwen36-27b" }
+{ "type": "llm.select.done", "ok": false, "model": "qwen36-27b", "error": "..." }
+```
+
+Notes:
+
+- **Not session-scoped.** The selection is machine-global, exactly like a
+  settings write; every live session's engine reads settings fresh per
+  dispatch and picks the model up on its next LLM call (no `config.reload`
+  needed).
+- A `custom_server_url` entry replies `ok: true` after stopping kodo's own
+  llama-server (nothing to start — same rule as `llama.start`).
+- `llama.state` events accompany the reply on the requesting connection
+  (same shapes as §5.12).
+- A failed start **still leaves the selection persisted** — identical residue
+  to a settings write followed by a failed `llama.start`; the caller decides
+  what to select next.
+- Model loads take minutes on large GGUFs: callers must use a generous
+  response timeout. The handler runs synchronously on the requesting
+  connection, which serializes that connection's other frames behind it — a
+  dedicated or idle connection (the validator's case) is the intended caller.
+
+### 7.6b `llm.complete` — session-less one-shot completion
+
+One tool-less LLM turn on the currently selected **local** model, with no
+session, no agents, no feed events, and no persistence. Built for the
+validator's grammar-constrained User-Proxy answers (doc/VALIDATOR.md §9);
+local-only by design (the validator's model pair is mandated local — cloud
+callers have their own APIs).
+
+```json
+{ "type": "llm.complete",
+  "prompt": "…",                       // required — the single user message
+  "system": "…",                       // optional system prompt
+  "json_schema": { "type": "object" }  // optional — grammar-enforce the output
+}
+```
+
+Response, correlated (the full concatenated text — nothing is streamed to the
+client, though `llm.waiting` may fire while queued):
+
+```json
+{ "type": "llm.complete.done", "ok": true, "model": "qwen36-27b",
+  "text": "…", "input_tokens": 123, "output_tokens": 45 }
+{ "type": "llm.complete.done", "ok": false, "model": "qwen36-27b", "error": "..." }
+```
+
+Notes:
+
+- The call is scheduled through the shared `LLMGateway` **local feed**
+  (max_slots = 1), so it serializes with every session's local dispatch
+  rather than racing llama-server.
+- `json_schema` rides llama-server's `response_format` schema→GBNF grammar
+  compilation: the content channel cannot emit syntactically invalid JSON.
+  (A reasoning model's thinking channel is unconstrained and is discarded —
+  only content text is returned.)
+- Errors (`no local model selected`, llama-server start failure, …) come
+  back as `ok: false`; the handler never streams partial output.
+
 ### 7.7 ⟪planned⟫ — security rules, credential push
 
 The following are specified for later milestones but **not handled** today:

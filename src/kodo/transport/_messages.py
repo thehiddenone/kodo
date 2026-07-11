@@ -222,6 +222,29 @@ MSG_LOCAL_LLM_PAUSE = "local_llm.pause"
 MSG_LLAMA_START = "llama.start"
 MSG_LLAMA_STOP = "llama.stop"
 
+# Client → Server. Synchronous local-model switch (WS_PROTOCOL.md §7.6a).
+# ``{name}`` is a *local registry* name. The server persists the selection
+# into ``~/.kodo/etc/settings.json`` (``mode: "local"`` + ``models.local``),
+# restarts llama-server for the new model, waits until it is actually
+# serving (or has failed to start), and only then replies
+# ``llm.select.done {ok, model, error?}``. Unlike the VSIX's settings-write +
+# ``config.reload`` + ``llama.start`` dance, the reply *confirms readiness* —
+# built for ``kodo.validator``'s LUT↔VLLM swaps (doc/VALIDATOR.md §9), where
+# the next frame must already hit the requested model. Model loads take
+# minutes; callers need a generous response timeout.
+MSG_LLM_SELECT = "llm.select"
+
+# Client → Server. Session-less one-shot completion (WS_PROTOCOL.md §7.6b):
+# ``{prompt, system?, json_schema?}`` runs a single tool-less turn on the
+# currently selected *local* model, scheduled through the shared LLMGateway
+# feed like any session dispatch, and replies ``llm.complete.done
+# {ok, model, text, error?}`` with the full concatenated response text (no
+# stream frames reach the client; ``llm.waiting`` may). ``json_schema``
+# constrains the output via llama-server's grammar enforcement — the
+# validator's UPP answers rely on it being parseable by construction. Not an
+# agent turn: no tools, no session, no feed events, no persistence.
+MSG_LLM_COMPLETE = "llm.complete"
+
 # Client → Server. Local Inference Settings webview actions (doc/LLM_REGISTRY.md),
 # sent over the control connection like the block above. All mutate the
 # server-owned ``~/.kodo/etc/local-llm-registry.json`` and reply with

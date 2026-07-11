@@ -192,6 +192,29 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         metavar="SECONDS",
         help="Per-prompt turn timeout (default: 900).",
     )
+    parser.add_argument(
+        "--upp-file",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="User Proxy Prompt file — the validation LLM answers the agent's "
+        "questions per these instructions (default: scripted answers).",
+    )
+    parser.add_argument(
+        "--rvp-file",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Result Validation Prompt file — a judge session scores the run "
+        "per these instructions into report.md (default: no scoring).",
+    )
+    parser.add_argument(
+        "--eval-timeout",
+        type=float,
+        default=900.0,
+        metavar="SECONDS",
+        help="Per-judge-turn timeout for --rvp-file evaluation (default: 900).",
+    )
     return parser.parse_args(argv)
 
 
@@ -227,8 +250,34 @@ def _resolve_scenarios(args: argparse.Namespace) -> list[Scenario]:
             modes=modes,
             project_root=args.project_root,
             turn_timeout=float(args.turn_timeout),
+            user_proxy_prompt=_read_prompt_file(args.upp_file),
+            result_validation_prompt=_read_prompt_file(args.rvp_file),
+            eval_timeout=float(args.eval_timeout),
         )
     ]
+
+
+def _read_prompt_file(path: Path | None) -> str | None:
+    """Read a UPP/RVP file, if one was given.
+
+    Args:
+        path (Path | None): The ``--upp-file``/``--rvp-file`` value.
+
+    Returns:
+        str | None: File content, or None when the flag was absent.
+
+    Raises:
+        SystemExit: If the file cannot be read or is empty.
+    """
+    if path is None:
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SystemExit(f"Cannot read prompt file {path}: {exc}") from exc
+    if not text.strip():
+        raise SystemExit(f"Prompt file is empty: {path}")
+    return text
 
 
 def _parse_root(spec: str) -> RootSpec:

@@ -1,9 +1,13 @@
 # Kodo — Automated Validation Harness (`kodo.validator`)
 
-> Status: **phase 1 — capabilities**. The harness runs real kodo sessions
-> end-to-end and records everything; the **evaluation/scoring layer (phase 2)
-> is not built yet** — `ScenarioResult.score` is always `None` today.
-> Reference: [WS_PROTOCOL.md](WS_PROTOCOL.md), [SESSIONS.md](SESSIONS.md),
+> Status: **phase 2 — evaluation mechanics**. The harness runs real kodo
+> sessions end-to-end, can answer the agent's questions with the **validation
+> LLM** (User Proxy Prompt), and can score the finished run with a judge
+> session (Result Validation Prompt) into `ScenarioResult.score` +
+> `report.md` — see §9. **Prompt content (phase 3) is not written yet**: the
+> UPP/RVP texts are caller-supplied; without them, phase-1 behaviour
+> (scripted answers, `score=None`) is unchanged.
+> Reference: [WS_PROTOCOL.md](WS_PROTOCOL.md) (§7.6a/§7.6b), [SESSIONS.md](SESSIONS.md),
 > [SECURITY.md](SECURITY.md), [SETTINGS.md](SETTINGS.md),
 > [LLM_REGISTRY.md](LLM_REGISTRY.md), [LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md).
 
@@ -31,9 +35,11 @@ src/kodo/validator/
   _client.py      ValidatorClient     — the pseudo-extension (WS protocol)
   _models.py      ensure_local_llms_installed() — the two mandatory LLMs (§3a)
   _user.py        UserSimulator / ScriptedUser — answers interactive gates
+  _vllm.py        VLLMUserProxy       — questions answered by the VLLM (§9.1)
+  _evaluate.py    run_evaluation()    — the RVP judge session (§9.2)
   _transcript.py  Transcript          — every frame + interaction, JSONL
   _harness.py     ValidationHarness   — one run, end to end; Modes; TurnResult
-  _scenario.py    Scenario / run_scenario / ScenarioResult (score=None)
+  _scenario.py    Scenario / run_scenario / ScenarioResult
   __main__.py     python -m kodo.validator / kodo-validator CLI
 ```
 
@@ -44,6 +50,8 @@ Every run owns one directory:
 <run_dir>/home/server-console.log   server subprocess stdout+stderr
 <run_dir>/workspace/<root>/…        simulated workspace folders
 <run_dir>/transcript.jsonl          every frame + interaction, in order
+<run_dir>/judge-transcript.jsonl    the RVP judge session's frames (§9.2)
+<run_dir>/report.md                 the judge's score + report (§9.2)
 <run_dir>/summary.json              per-turn digest (scenario runs)
 ```
 
@@ -82,9 +90,9 @@ Every `Scenario`/`ValidationHarness` requires two **local registry names**
   `models.local: llm_under_test`) *on top of* any `settings_overrides`, so a
   run always drives the model it claims to, regardless of what else a
   scenario pins.
-- **`validation_llm`** — a fixed, capable model reserved for the phase-2
-  evaluator (§9). Phase 1 only guarantees it's installed; nothing calls it
-  yet.
+- **`validation_llm`** — a fixed, capable model that answers the LUT's
+  questions (User Proxy, §9.1) and judges the finished run (§9.2). Installed
+  up-front either way, so runs that enable neither still leave it ready.
 
 Both are always local (GGUF/llama.cpp) models — cloud models are API-based
 and have no "download" step, so they're out of scope for this mandatory pair.
@@ -171,6 +179,11 @@ so phase 2 can score how the agent used the user:
 Any `UserSimulator` implementation can replace `ScriptedUser` (per scenario)
 for adversarial or persona-driven simulation.
 
+With a `user_proxy_prompt` configured, the harness wraps whatever simulator a
+scenario supplies in a `VLLMUserProxy` (§9.1): `prompt.question` batches are
+answered by the validation LLM, while approvals/permissions/API keys keep
+the wrapped simulator's behaviour (allow-all + logging by default).
+
 ## 7. Transcript
 
 `Transcript` records every frame in arrival order (`recv`/`send` +
@@ -192,6 +205,8 @@ uv run kodo-validator \
   --root app=/path/to/seed-project --root lib \
   --workflow problem_solving --command-control permissive \
   --prompt "Find and fix the failing test" \
+  --upp-file suites/prompts/upp.md \
+  --rvp-file suites/prompts/rvp.md \
   --out kodo-validator-runs
 
 # scenario file: defines SCENARIO or SCENARIOS (Scenario carries
@@ -201,14 +216,110 @@ uv run kodo-validator --scenario suites/smoke.py
 
 `--llm-under-test`/`--validation-llm` are mandatory for ad-hoc runs (§3a); a
 scenario file sets them directly on its `Scenario` instead.
+`--upp-file`/`--rvp-file` (optional, independent) enable the §9 machinery for
+ad-hoc runs; a scenario file sets `user_proxy_prompt`/`result_validation_prompt`
+directly.
 
 `python -m kodo.validator` is equivalent. Exit code 0 iff every scenario
 completed with no `error`-phase turn. Each scenario gets a fresh home + server.
 
-## 9. Phase 2 (planned)
+## 9. Phase 2 — the validation LLM in the loop
 
-The evaluator plugs into `ScenarioResult.score`: read `transcript.jsonl` /
-`summary.json` (plus the workspace tree the run left behind) and produce a
-0–100 score per scenario — LLM-judged and/or programmatic assertions. Nothing
-in phase 1 needs to change shape for that: scoring is a pure function of the
-run directory.
+Phase 2 puts the **validation LLM** (VLLM) on both sides of the run: it plays
+the *user* while the LLM-under-test (LUT) works (§9.1), and it plays the
+*judge* once the LUT is done (§9.2). Three prompts are involved — the **PUT**
+(prompt under test, the scenario's normal `prompts`), the **UPP** (User Proxy
+Prompt: how to answer the LUT's questions), and the **RVP** (Result
+Validation Prompt: how to rate the outcome). Writing the UPP/RVP content is
+**phase 3**; phase 2 is the mechanics that carry them.
+
+Both features are opt-in and independent: `Scenario.user_proxy_prompt`
+enables §9.1, `Scenario.result_validation_prompt` enables §9.2; with neither,
+phase-1 behaviour is bit-for-bit unchanged.
+
+The whole phase rides on two protocol commands added for it
+(WS_PROTOCOL.md §7.6a/§7.6b, first-class — any client may use them):
+
+- **`llm.select {name}`** — synchronous local-model switch: persists
+  `mode`/`models.local`, restarts llama-server, and replies only once the
+  model actually serves (or failed). This is what makes the LUT↔VLLM swap on
+  *one* llama-server safe and observable.
+- **`llm.complete {prompt, system?, json_schema?}`** — session-less one-shot
+  completion on the active local model, scheduled through the shared
+  LLMGateway feed; `json_schema` grammar-constrains the output so the reply
+  is parseable **by construction**.
+
+### 9.1 User Proxy: questions answered by the VLLM (`_vllm.py`)
+
+When the LUT calls `ask_user`, the engine's `fire_questions` awaits the
+client's answer **with no timeout** (`runtime/_gates.py`) — the dangling tool
+call is what makes the swap safe. `VLLMUserProxy.answer_questions` then runs:
+
+1. `llm.select(validation_llm)` — wait until the VLLM is serving;
+2. `llm.complete(system=UPP, prompt=PUT + question batch + wire contract,
+   json_schema=answers_json_schema(n))` — the schema pins exactly *n*
+   entries of `{selected: [str], free_text: str}`;
+3. `llm.select(llm_under_test)` — always, in a `finally`: the answer must
+   resume the turn on the LUT even when answering failed;
+4. reply to the dangling `prompt.question` with the parsed batch.
+
+Normalization: `selected` entries must quote option texts verbatim; anything
+else the VLLM "selected" is folded into `free_text` (it chose to say its own
+thing — that is signal, not garbage). Unparseable completions retry (default
+3 attempts) — then the run **aborts** (`VLLMProxyError`): a run whose answers
+silently fell back to scripted defaults would report a score that lies about
+how the LUT was steered. For the same reason a failed model switch aborts.
+
+Permission gates are *not* proxied: they are always allowed and fully logged
+(§6), per the validation contract. Document-review approvals keep the base
+simulator's scripted `agree` — a deliberate scope choice; revisit if Guided
+review quality needs judged feedback.
+
+Every exchange stays observable: the `llm.select`/`llm.complete` frames are
+in the transcript like all traffic, the final question→answer pair is an
+`interaction` note (§7), and switches add `lifecycle {event: llm_selected}`
+notes. Note the latency budget: each proxied batch costs two model loads +
+one completion, all inside the turn — size `Scenario.turn_timeout`
+accordingly.
+
+### 9.2 Result validation: the judge session (`_evaluate.py`)
+
+After the last turn (only if no turn ended in `error` — an infra failure must
+not masquerade as a low-scoring run), `run_scenario` calls
+`ValidationHarness.evaluate()`:
+
+1. `llm.select(validation_llm)` — and it stays selected; every scenario gets
+   a fresh home/server anyway;
+2. open a **second session** on the same server (own WS connection,
+   `window_id: kodo-validator-judge`, own `judge-transcript.jsonl`), push the
+   **same** `workspace.folders` payload, and pin friction-free modes
+   (autonomous, problem_solving, allow_all/permissive — its gates are
+   answered by a plain `ScriptedUser`);
+3. submit one judge turn: the RVP + a mechanical context block — workspace
+   root paths, the PUT(s), and the full interaction log (every question /
+   permission / approval + answer) — plus the JSON output contract. Because
+   the judge is a *real* kodo session it reads the generated code itself,
+   with real tools, by path — nothing is inlined;
+4. parse `{"score": 0–100, "report": …}` out of the judge's assistant text
+   (fenced / bare / embedded JSON all accepted). A session turn cannot be
+   grammar-constrained, so unparseable verdicts get a follow-up turn asking
+   for the JSON alone (default 3 attempts total), then `EvaluationError`.
+
+The verdict lands in three places: `ScenarioResult.score` (+ the full
+`EvaluationResult`), `<run_dir>/report.md` (human-readable score + report),
+and an `evaluation` note in the main transcript. `summary.json` records the
+score, attempt count, and judge session id.
+
+Trade-off, made explicitly: judging through a kodo session means the verdict
+is *mediated by kodo's own agent stack* (the judge's Problem-Solver run is
+part of the measurement chain). That is what buys tool access to the
+workspace ("path to generated code"), and the judge stack is held constant
+across scenarios, so comparisons between LUTs stay apples-to-apples.
+
+### 9.3 What phase 3 owns
+
+The UPP and RVP *texts* (persona, answering policy, scoring rubric), shipped
+as suite files next to scenario definitions — the mechanics deliberately
+treat both as opaque strings. The only text phase 2 injects around them is
+the wire contract (the JSON shapes) and the run context (roots, prompts,
+interaction log).

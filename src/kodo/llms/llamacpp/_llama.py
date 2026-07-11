@@ -431,6 +431,7 @@ class LlamaPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        json_schema: dict[str, object] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a llama-server response, starting the server if needed.
 
@@ -441,6 +442,14 @@ class LlamaPlugin(LLMPlugin):
             messages (list[Message]): Conversation history.
             tools (list[ToolSpec]): Tools the model may invoke.
             cache_breakpoints (list[int]): Ignored — llama-server has no equivalent.
+            json_schema (dict[str, object] | None): When set, llama-server
+                grammar-constrains the content channel to JSON matching this
+                schema (``response_format`` with an attached schema — the
+                output is parseable by construction). llama.cpp-only; the
+                ``llm.complete`` command uses it for the validator's
+                machine-read answers (doc/VALIDATOR.md §9). Mutually exclusive
+                with *tools* in practice: a grammar-pinned content channel
+                cannot also emit tool calls.
 
         Yields:
             StreamEvent: Token deltas, tool calls, then :class:`TurnEnd`.
@@ -456,6 +465,7 @@ class LlamaPlugin(LLMPlugin):
             system=system,
             messages=messages,
             tools=tools,
+            json_schema=json_schema,
         ):
             yield event
 
@@ -548,6 +558,7 @@ class LlamaPlugin(LLMPlugin):
         system: str,
         messages: list[Message],
         tools: list[ToolSpec],
+        json_schema: dict[str, object] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         cancel_event = asyncio.Event()
         self.__cancel_events[stream_id] = cancel_event
@@ -558,6 +569,7 @@ class LlamaPlugin(LLMPlugin):
                 system=system,
                 messages=messages,
                 tools=tools,
+                json_schema=json_schema,
             ):
                 yield event
         finally:
@@ -571,6 +583,7 @@ class LlamaPlugin(LLMPlugin):
         system: str,
         messages: list[Message],
         tools: list[ToolSpec],
+        json_schema: dict[str, object] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         assert self.__client is not None
         oai_messages = _build_oai_messages(system, messages)
@@ -622,11 +635,18 @@ class LlamaPlugin(LLMPlugin):
                     events.append(event)
             return events
 
+        # llama-server accepts an inline schema on response_format's
+        # "json_object" form and compiles it to a GBNF grammar server-side, so
+        # a json_schema-constrained response cannot be syntactically invalid.
+        response_format = (
+            {"type": "json_object", "schema": json_schema} if json_schema is not None else None
+        )
         response = await self.__client.chat.completions.create(  # type: ignore[call-overload]
             model=model,
             max_tokens=_DEFAULT_MAX_TOKENS,
             messages=oai_messages,
             tools=oai_tools if oai_tools else openai.NOT_GIVEN,
+            response_format=response_format if response_format is not None else openai.NOT_GIVEN,
             stream=True,
             stream_options={"include_usage": True},
         )

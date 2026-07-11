@@ -40,11 +40,23 @@ from kodo.transport import (
 )
 
 from ._client import ValidatorClient
+from ._evaluate import (
+    DEFAULT_EVAL_MAX_ATTEMPTS,
+    DEFAULT_EVAL_TURN_TIMEOUT,
+    EvaluationResult,
+    run_evaluation,
+)
 from ._home import clone_kodo_home
 from ._models import ensure_local_llms_installed
 from ._server import ServerProcess
 from ._transcript import Transcript, TranscriptEntry
 from ._user import ScriptedUser, UserSimulator
+from ._vllm import (
+    DEFAULT_COMPLETE_TIMEOUT,
+    DEFAULT_SWITCH_TIMEOUT,
+    VLLMProxyError,
+    VLLMUserProxy,
+)
 from ._workspace import SimulatedWorkspace
 
 __all__ = ["Modes", "TurnResult", "ValidationHarness"]
@@ -110,11 +122,24 @@ class ValidationHarness:
             None starts from an empty home with server defaults.
         user: Interactive-request policy; a default :class:`ScriptedUser`
             (first option / approve / allow / env API keys) when omitted.
+            When *user_proxy_prompt* is set this becomes the **base** policy
+            of a :class:`VLLMUserProxy` — questions go to the validation LLM,
+            everything else still lands here.
         settings_overrides: Keys deep-merged into the cloned
             ``etc/settings.json`` before the server starts. The
             ``llm_under_test`` pin (``mode``/``models.local``) is applied on
             top of these, so it always wins on conflict.
         server_log_level: ``--log-level`` for the server subprocess.
+        user_proxy_prompt: The UPP (doc/VALIDATOR.md §9). When set,
+            ``prompt.question`` batches are answered by *validation_llm* via
+            the synchronous ``llm.select``/``llm.complete`` swap instead of
+            the scripted defaults. Proxy failures abort the scenario.
+        result_validation_prompt: The RVP. When set, :meth:`evaluate` (called
+            by the scenario runner after the last turn) runs the judge
+            session and produces the run's score + report.
+        vllm_switch_timeout: WS response timeout for each ``llm.select``
+            (model loads take minutes).
+        vllm_complete_timeout: WS response timeout for each ``llm.complete``.
     """
 
     def __init__(
@@ -127,6 +152,10 @@ class ValidationHarness:
         user: UserSimulator | None = None,
         settings_overrides: dict[str, object] | None = None,
         server_log_level: str = "INFO",
+        user_proxy_prompt: str | None = None,
+        result_validation_prompt: str | None = None,
+        vllm_switch_timeout: float = DEFAULT_SWITCH_TIMEOUT,
+        vllm_complete_timeout: float = DEFAULT_COMPLETE_TIMEOUT,
     ) -> None:
         self.__run_dir = run_dir.resolve()
         self.__run_dir.mkdir(parents=True, exist_ok=True)
@@ -135,10 +164,24 @@ class ValidationHarness:
         self.__template_home = template_home
         self.__settings_overrides = settings_overrides
         self.__server_log_level = server_log_level
+        self.__result_validation_prompt = result_validation_prompt
+        self.__vllm_switch_timeout = vllm_switch_timeout
+        self.__submitted_prompts: list[str] = []
 
         self.__workspace = SimulatedWorkspace(self.__run_dir / "workspace")
         self.__transcript = Transcript(self.__run_dir / "transcript.jsonl")
-        self.__user: UserSimulator = user if user is not None else ScriptedUser()
+        base_user: UserSimulator = user if user is not None else ScriptedUser()
+        self.__proxy: VLLMUserProxy | None = None
+        if user_proxy_prompt is not None:
+            self.__proxy = VLLMUserProxy(
+                user_proxy_prompt=user_proxy_prompt,
+                llm_under_test=llm_under_test,
+                validation_llm=validation_llm,
+                base=base_user,
+                switch_timeout=vllm_switch_timeout,
+                complete_timeout=vllm_complete_timeout,
+            )
+        self.__user: UserSimulator = self.__proxy if self.__proxy is not None else base_user
         self.__server: ServerProcess | None = None
         self.__client: ValidatorClient | None = None
 
@@ -210,6 +253,8 @@ class ValidationHarness:
             },
         )
         await self.__ensure_llms_installed(kodo_dir, ack)
+        if self.__proxy is not None:
+            self.__proxy.bind(self.__client, self.__transcript)
         if self.__workspace.roots:
             await self.sync_workspace()
         _log.info("Validation run ready: %s (session %s)", self.__run_dir, self.session_id)
@@ -344,14 +389,22 @@ class ValidationHarness:
         Raises:
             TimeoutError: If the turn does not finish in time.
             ProtocolError: If the server rejects the prompt.
+            VLLMProxyError: If a VLLM-proxied question answer failed during
+                the turn (the turn is allowed to settle first, so the
+                transcript stays complete).
         """
         client = self.client
         start_seq = len(self.__transcript.entries)
+        if self.__proxy is not None:
+            self.__proxy.set_task_prompt(text)
+        self.__submitted_prompts.append(text)
         client.begin_turn()
         await client.request(MSG_PROMPT_SUBMIT, text=text)
         final_phase = await client.wait_turn_end(
             timeout=turn_timeout, settle_seconds=settle_seconds
         )
+        if self.__proxy is not None and self.__proxy.failure is not None:
+            raise VLLMProxyError(self.__proxy.failure)
         transcript = self.__transcript
         return TurnResult(
             prompt=text,
@@ -366,3 +419,49 @@ class ValidationHarness:
     async def stop_turn(self) -> None:
         """Issue the global STOP for the in-flight turn."""
         await self.client.request(MSG_STOP)
+
+    # ------------------------------------------------------------------
+    # Evaluation (phase 2)
+    # ------------------------------------------------------------------
+
+    async def evaluate(
+        self,
+        *,
+        turn_timeout: float = DEFAULT_EVAL_TURN_TIMEOUT,
+        max_attempts: int = DEFAULT_EVAL_MAX_ATTEMPTS,
+    ) -> EvaluationResult:
+        """Run the RVP judge over the finished run and return its verdict.
+
+        Switches llama-server to ``validation_llm`` (and leaves it there),
+        opens a second session on the same server with the same workspace,
+        and drives the judge turn(s); see :mod:`._evaluate` for the flow.
+
+        Args:
+            turn_timeout (float): Per-judge-turn timeout in seconds.
+            max_attempts (int): Judge turns before giving up on parseable JSON.
+
+        Returns:
+            EvaluationResult: Score, report, and provenance.
+
+        Raises:
+            RuntimeError: If no ``result_validation_prompt`` was configured
+                or the harness has not been started.
+            EvaluationError: If the judge fails or never yields a score.
+        """
+        if self.__result_validation_prompt is None:
+            raise RuntimeError("No result_validation_prompt configured for this harness")
+        if self.__server is None:
+            raise RuntimeError("Harness not started")
+        return await run_evaluation(
+            ws_url=self.__server.ws_url,
+            run_dir=self.__run_dir,
+            main_client=self.client,
+            transcript=self.__transcript,
+            workspace_payload=self.__workspace.folders_payload(),
+            result_validation_prompt=self.__result_validation_prompt,
+            validation_llm=self.__validation_llm,
+            prompts=list(self.__submitted_prompts),
+            turn_timeout=turn_timeout,
+            switch_timeout=self.__vllm_switch_timeout,
+            max_attempts=max_attempts,
+        )

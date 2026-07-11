@@ -21,6 +21,8 @@ from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestServer
 
 from kodo.common import Envelope
+from kodo.llms import get_local_registry
+from kodo.project import kodo_user_dir
 from kodo.runtime._engine import _titling as _titling_module
 from kodo.server import Config, create_app
 from kodo.server import _app as _app_module
@@ -32,9 +34,12 @@ from kodo.validator import (
     SimulatedWorkspace,
     Transcript,
     ValidatorClient,
+    VLLMProxyError,
+    VLLMUserProxy,
     clone_kodo_home,
     ensure_local_llms_installed,
 )
+from kodo.validator import _evaluate as validator_evaluate
 from kodo.validator import _models as validator_models
 
 _RECV_TIMEOUT = 5.0
@@ -588,3 +593,187 @@ async def test_ensure_llms_respects_custom_llm_models_dir(
         cast(ValidatorClient, client), tmp_path, registry, ["model-a"], poll_timeout=5.0
     )
     assert client.sent == ["model-a"]
+
+
+# ---------------------------------------------------------------------------
+# VLLMUserProxy (phase 2): questions answered via llm.select / llm.complete
+# ---------------------------------------------------------------------------
+
+
+class _FakeVLLMClient:
+    """Duck-typed ValidatorClient: records requests, plays canned completions."""
+
+    def __init__(self, completions: list[str]) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+        self._completions = list(completions)
+
+    async def request(
+        self,
+        msg_type: str,
+        payload: dict[str, object] | None = None,
+        *,
+        session_scoped: bool = True,
+        timeout: float = 30.0,
+        check: bool = True,
+        **fields: object,
+    ) -> dict[str, object]:
+        body: dict[str, object] = {**(payload or {}), **fields}
+        self.calls.append((msg_type, body))
+        if msg_type == "llm.select":
+            return {"type": "llm.select.done", "ok": True, "model": body.get("name")}
+        assert msg_type == "llm.complete"
+        return {"type": "llm.complete.done", "ok": True, "text": self._completions.pop(0)}
+
+
+_QUESTION_PAYLOAD: dict[str, object] = {
+    "type": "prompt.question",
+    "questions": [{"question": "DB?", "kind": "choice", "options": ["PostgreSQL", "SQLite"]}],
+}
+
+
+def _make_proxy(client: _FakeVLLMClient, **kwargs: object) -> VLLMUserProxy:
+    proxy = VLLMUserProxy(
+        user_proxy_prompt="UPP",
+        llm_under_test="lut-model",
+        validation_llm="judge-model",
+        **kwargs,  # type: ignore[arg-type]
+    )
+    proxy.bind(cast(ValidatorClient, client), Transcript())
+    proxy.set_task_prompt("Build a parser")
+    return proxy
+
+
+async def test_vllm_proxy_switches_completes_and_switches_back() -> None:
+    fake = _FakeVLLMClient([json.dumps({"answers": [{"selected": ["SQLite"], "free_text": ""}]})])
+    proxy = _make_proxy(fake)
+
+    reply = await proxy.answer_questions(_QUESTION_PAYLOAD)
+
+    assert reply["type"] == "prompt.question.response"
+    assert reply["answers"] == [{"selected": ["SQLite"], "free_text": None}]
+    assert [(t, b.get("name")) for t, b in fake.calls] == [
+        ("llm.select", "judge-model"),
+        ("llm.complete", None),
+        ("llm.select", "lut-model"),
+    ]
+    complete_body = fake.calls[1][1]
+    assert complete_body["system"] == "UPP"
+    prompt = cast(str, complete_body["prompt"])
+    assert "Build a parser" in prompt
+    assert "SQLite" in prompt
+    schema = cast(dict[str, object], complete_body["json_schema"])
+    answers_schema = cast(
+        dict[str, object], cast(dict[str, object], schema["properties"])["answers"]
+    )
+    assert answers_schema["minItems"] == 1
+    assert answers_schema["maxItems"] == 1
+    assert proxy.failure is None
+
+
+async def test_vllm_proxy_folds_stray_selection_into_free_text() -> None:
+    fake = _FakeVLLMClient([json.dumps({"answers": [{"selected": ["MongoDB"], "free_text": ""}]})])
+    proxy = _make_proxy(fake)
+    reply = await proxy.answer_questions(_QUESTION_PAYLOAD)
+    assert reply["answers"] == [{"selected": [], "free_text": "MongoDB"}]
+
+
+async def test_vllm_proxy_retries_then_fails_but_restores_lut() -> None:
+    fake = _FakeVLLMClient(["not json", "{}", json.dumps({"answers": []})])
+    proxy = _make_proxy(fake, max_attempts=3)
+
+    with pytest.raises(VLLMProxyError):
+        await proxy.answer_questions(_QUESTION_PAYLOAD)
+
+    assert proxy.failure is not None
+    completes = [c for c in fake.calls if c[0] == "llm.complete"]
+    assert len(completes) == 3
+    # The finally-block switch-back must have run despite the failure.
+    assert fake.calls[-1][0] == "llm.select"
+    assert fake.calls[-1][1]["name"] == "lut-model"
+
+
+async def test_vllm_proxy_delegates_other_gates_to_base() -> None:
+    base = ScriptedUser(permission_action="deny", permission_feedback="nope")
+    proxy = VLLMUserProxy(
+        user_proxy_prompt="UPP",
+        llm_under_test="lut-model",
+        validation_llm="judge-model",
+        base=base,
+    )
+    reply = await proxy.answer_permission({"type": "prompt.permission"})
+    assert reply["action"] == "deny"
+    assert (await proxy.answer_approval({"type": "prompt.approval"}))["action"] == "agree"
+
+
+# ---------------------------------------------------------------------------
+# Evaluation (phase 2): score extraction from judge text
+# ---------------------------------------------------------------------------
+
+
+def test_parse_score_accepts_plain_fenced_and_embedded_json() -> None:
+    assert validator_evaluate._parse_score('{"score": 87, "report": "ok"}') == (87.0, "ok")
+
+    fenced = 'Verdict below.\n```json\n{"score": 55.5, "report": "meh"}\n```\nDone.'
+    assert validator_evaluate._parse_score(fenced) == (55.5, "meh")
+
+    embedded = 'Thinking... {"score": 10, "report": "weak"} — that is my verdict.'
+    assert validator_evaluate._parse_score(embedded) == (10.0, "weak")
+
+
+def test_parse_score_rejects_malformed_verdicts() -> None:
+    for text in (
+        "no json here",
+        '{"score": true, "report": "x"}',
+        '{"score": 130, "report": "x"}',
+        '{"score": "high", "report": "x"}',
+        '{"report": "x"}',
+        "[1, 2, 3]",
+    ):
+        with pytest.raises(ValueError):
+            validator_evaluate._parse_score(text)
+
+
+# ---------------------------------------------------------------------------
+# llm.select / llm.complete against the real in-process server
+# ---------------------------------------------------------------------------
+
+
+async def test_llm_select_unknown_model_replies_error(client: ValidatorClient) -> None:
+    resp = await client.request(
+        "llm.select", name="no-such-model", session_scoped=False, check=False
+    )
+    assert resp["type"] == "llm.select.done"
+    assert resp["ok"] is False
+    assert "Unknown local model" in str(resp["error"])
+
+
+async def test_llm_select_persists_selection_even_when_start_fails(
+    client: ValidatorClient, _temp_home: Path
+) -> None:
+    # Any hardcoded registry entry: known to the registry, but llama.cpp is
+    # not installed in the temp home, so the start step fails — while the
+    # settings write must already have happened (documented semantics).
+    name = next(iter(get_local_registry(kodo_user_dir())))
+    resp = await client.request("llm.select", name=name, session_scoped=False, check=False)
+    assert resp["type"] == "llm.select.done"
+    assert resp["ok"] is False
+
+    settings = json.loads(
+        (_temp_home / ".kodo" / "etc" / "settings.json").read_text(encoding="utf-8")
+    )
+    assert settings["mode"] == "local"
+    assert settings["models"]["local"] == name
+
+
+async def test_llm_complete_requires_prompt(client: ValidatorClient) -> None:
+    resp = await client.request("llm.complete", session_scoped=False, check=False)
+    assert resp["type"] == "llm.complete.done"
+    assert resp["ok"] is False
+    assert "prompt is required" in str(resp["error"])
+
+
+async def test_llm_complete_fails_cleanly_without_llama(client: ValidatorClient) -> None:
+    resp = await client.request("llm.complete", prompt="hello", session_scoped=False, check=False)
+    assert resp["type"] == "llm.complete.done"
+    assert resp["ok"] is False
+    assert resp["error"]
