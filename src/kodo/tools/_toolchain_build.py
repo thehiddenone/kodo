@@ -78,7 +78,8 @@ class ToolchainBuildTool(Tool):
                         "success": False,
                         "log": (
                             f"No script found at scripts/{step}.{ext}. Ask the toolchain-setup "
-                            "agent (e.g. toolchain_python, toolchain_cpp) to generate it first."
+                            "agent (e.g. toolchain_python, toolchain_cpp, toolchain_rust) to "
+                            "generate it first."
                         ),
                     }
                 )

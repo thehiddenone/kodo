@@ -34,7 +34,8 @@ _REMEDIATION = (
     "No DEPENDENCIES.md exists at the project root, so dependency management is "
     "not set up yet — nothing was changed. To enable it:\n"
     "1. Run the toolchain-setup sub-agent for this project's language via "
-    "`run_subagent` (`toolchain_python` for Python, `toolchain_cpp` for C++). "
+    "`run_subagent` (`toolchain_python` for Python, `toolchain_cpp` for C++, "
+    "`toolchain_rust` for Rust). "
     'Pass `mode: "bootstrap"` for a fresh project or `mode: "convert"` for an '
     "existing one.\n"
     "2. It generates DEPENDENCIES.md (the dependency contract: the manager, the "

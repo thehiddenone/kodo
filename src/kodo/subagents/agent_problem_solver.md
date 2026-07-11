@@ -23,6 +23,7 @@ subagents:
   - developer
   - toolchain_python
   - toolchain_cpp
+  - toolchain_rust
 ---
 # Problem Solver
 
@@ -179,7 +180,7 @@ When none of these hold — a small change, a bare script, source the user runs 
 
 **Handling `toolchain_not_set_up` from a Developer task:**
 
-- **If a toolchain is called for** (tests requested, or the deliverable is an app/package) — this is *expected*. Spawn the toolchain-setup agent matching the project's language via `run_subagent` — `toolchain_python` for Python, `toolchain_cpp` for C++ (tell it fresh bootstrap vs. conversion); for any other language there is no toolchain agent yet, so say so instead of inventing one — then **re-run the same Developer task** so it can build and verify. **No fresh `ask_user`** — the test decision, or the nature of the deliverable, already authorized it.
+- **If a toolchain is called for** (tests requested, or the deliverable is an app/package) — this is *expected*. Spawn the toolchain-setup agent matching the project's language via `run_subagent` — `toolchain_python` for Python, `toolchain_cpp` for C++, `toolchain_rust` for Rust (tell it fresh bootstrap vs. conversion); for any other language there is no toolchain agent yet, so say so instead of inventing one — then **re-run the same Developer task** so it can build and verify. **No fresh `ask_user`** — the test decision, or the nature of the deliverable, already authorized it.
 - **If nothing calls for a toolchain** — don't stand one up on the Developer's behalf; verify with a lightweight `run_command` check instead. Only reconsider if the change genuinely can't be validated any other way — and then it's a *new* decision (interactive: `ask_user`, don't presume yes; autonomous: assume not wanted for a small ask/project and document).
 
 ## Tools
