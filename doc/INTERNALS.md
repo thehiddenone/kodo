@@ -316,7 +316,7 @@ to the run's context).
 
 | Module | Defines | Role |
 |---|---|---|
-| [_context.py](../src/kodo/tools/_context.py) | `ToolContext`, `RootPath`, `GateLike`, `SessionLike`, `EngineServices`, `QuestionLike`, `ApprovalLike` | The injected per-run context (collaborators + mutable `stop_requested`/`returned_output`) and the structural Protocols runtime satisfies. `EngineServices` is one protocol covering every engine-side operation a tool can trigger (sub-agent launch, **dependency-manager launch** (`run_dependency_manager`, the ungated `toolchain_depsmgr` spawn behind `toolchain_deps`), author/critic iteration, rollback, mode disable, project creation). `runtime.GateOrchestrator`/`SessionState` and the engine's `_EngineServices` adapter match them by shape. The mode a tool honours is read live from `SessionLike.effective_autonomous` (frozen per prompt), never snapshotted onto the context. Also carries `mode: str` (`"guided"`/`"problem_solving"`, frozen per prompt — gates `guided_dev_status` and tags `new_revision` jsonl entries) and `project_root: Path \| None` (the bound project's root, independent of mode, so a Problem-Solver edit to a tracked file is still recorded — see §7), plus `root_paths: tuple[RootPath, ...]` and `util_paths: dict[str, Path]` for the search tools. |
+| [_context.py](../src/kodo/tools/_context.py) | `ToolContext`, `RootPath`, `GateLike`, `SessionLike`, `EngineServices`, `QuestionLike`, `ApprovalLike` | The injected per-run context (collaborators + mutable `stop_requested`/`returned_output`) and the structural Protocols runtime satisfies. `EngineServices` is one protocol covering every engine-side operation a tool can trigger (sub-agent launch, **dependency-manager launch** (`run_dependency_manager`, the ungated `toolchain_depsmgr` spawn behind `toolchain_deps`), author/critic iteration, rollback, mode disable, project creation). `runtime.GateOrchestrator`/`SessionState` and the engine's `_EngineServices` adapter match them by shape. The mode a tool honours is read live from `SessionLike.effective_autonomous` (frozen per prompt), never snapshotted onto the context. Also carries `mode: str` (`"guided"`/`"problem_solving"`/`"judge"`, frozen per prompt — gates `guided_dev_status` and tags `new_revision` jsonl entries; every non-`"guided"` value is treated alike, so `"judge"` needs no extra branching here) and `project_root: Path \| None` (the bound project's root, independent of mode, so a Problem-Solver edit to a tracked file is still recorded — see §7), plus `root_paths: tuple[RootPath, ...]` and `util_paths: dict[str, Path]` for the search tools. |
 | [_tool.py](../src/kodo/tools/_tool.py) | `Tool` (ABC) | Binds one run's `ToolContext` (read-only `context` property) and declares the abstract `handle(self, tool_input) -> str`. |
 | `_<tool_name>.py` (one module per dispatchable tool) | one `Tool` subclass each | e.g. `ReadFileTool`, `DocumentFeedbackTool`, `GetRootPathsTool`; implements `handle` reading `self.context`. Mirrors the `toolspecs` one-file-per-tool convention. |
 | [_dispatch.py](../src/kodo/tools/_dispatch.py) | `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME` | The `_TOOL_CLASSES` table pairs each dispatchable `ToolSpec` with its `Tool` subclass; `dispatch` instantiates the class bound to the run's context and calls `handle`; exposes per-run `stop_requested`/`returned_output`. `tools_for_agent(frozenset[str])` resolves an agent's declared names to specs (skipping spec-only placeholders — none today). |
@@ -737,15 +737,17 @@ The package's public surface is unchanged by the split:
   `handle_prompt_submit(text, request_id)` enqueues a prompt;
   `handle_mode_set(autonomous)` sets the **Autonomous/Interactive** mode
   (`SessionState.autonomous`, user-facing) and persists it; `handle_workflow_set(mode)`
-  sets the **Guided/Problem-Solving** workflow (`SessionState.workflow_mode`,
-  normalised to `"guided"` | `"problem_solving"`); `stop()` cancels the worker.
-  Both setters emit `EVT_STATE` and never interrupt an in-flight prompt.
+  sets the workflow (`SessionState.workflow_mode`, normalised to `"guided"` |
+  `"problem_solving"` | `"judge"` — the last is validator-only, never sent by
+  kodo-vsix); `stop()` cancels the worker. Both setters emit `EVT_STATE` and
+  never interrupt an in-flight prompt.
 - `_run_worker()` — dequeues one task at a time. **First it freezes the
   per-prompt autonomous mode** (`effective_autonomous = autonomous`), then
   **routes by `workflow_mode`**: `"problem_solving"` →
   `_run_problem_solver_with_input` (if the `problem_solver` agent is present,
-  else `_handle_input_no_agent`); otherwise → `_run_guide_with_input`.
-  Exits the loop once `phase == "done"`.
+  else `_handle_input_no_agent`); `"judge"` → `_run_judge_with_input` likewise
+  gated on `judge` agent availability (validator-only — see §15); otherwise →
+  `_run_guide_with_input`. Exits the loop once `phase == "done"`.
 - `_resolve_plugin(capability)` → reads fresh settings → `get_llm_registry()` →
   builds `ClaudePlugin` (via `ApiKeyProvider.get_key`) or `LlamaPlugin`, wrapped
   in `LoggingLLMPlugin`.
@@ -754,8 +756,9 @@ The package's public surface is unchanged by the split:
   `EVT_AGENT_TOOL_CALL`, `EVT_USAGE_UPDATE` → logs via `ToolCallLogger` +
   `TransientStore.write_agent_record` → dispatches each tool via an injected
   `tool_dispatch` callback → loops until no tool calls (or `stop_after_tools`).
-- `_run_guide_with_input` / `_run_problem_solver_with_input` → thin wrappers;
-  both delegate to `_run_entry_agent(agent_name, text, attachments)`.
+- `_run_guide_with_input` / `_run_problem_solver_with_input` /
+  `_run_judge_with_input` → thin wrappers; all three delegate to
+  `_run_entry_agent(agent_name, text, attachments)`.
 - `_run_entry_agent(agent_name, ...)` → the shared entry-agent driver: loads
   the agent, resolves its plugin, stores + injects prompt attachments, appends
   the seed user message to the shared `_main_messages` (persisted immediately
@@ -860,7 +863,7 @@ guide-vs-leaf split.
 | [_guide.py](../src/kodo/runtime/_guide.py) | `GuideMarker` | Reads/writes `.kodo/guide.session`. Used by `locate_guide_session`. |
 | [_checkpoints.py](../src/kodo/runtime/_checkpoints.py) | `RootMirrorManager`, `CheckpointRef` (frozen), `command_may_mutate()` | The **single** shadow-git mirror coordinator, now driving both workflow modes (§12.1) — there is no longer a second, Guided-only mirror at the same path to collide with. Bridges the path-agnostic `mirror.ShadowMirror` to Kōdo's conventions: every root a session may touch gets its own independent mirror at `<root>/.kodo/checkpoints`, created **lazily** the first time a file-mutating tool writes under that root (scaffolding `<root>/.kodo/` + `kodo.md` via `ProjectLayout.scaffold_kodo_dir()`, §5, at that moment). `_root_for(path)` maps a path to its enclosing root by longest-prefix match. `_KODO_EXCLUDES` (node_modules/.venv/`__pycache__`/dist/build/egg-info/caches + always `.kodo/`+`.git/`) seed each mirror's `info/exclude` **on top of** the project's own `.gitignore` — this is *why* `.kodo/guided_dev_state/*.jsonl` (§7) is never committed by this same mirror. One `asyncio.Lock` serialises `prepare`/`commit_for_path`/`sweep_initialized`/`undo`/`rollback`. The free function `command_may_mutate(parsed: ParsedCommand) -> bool` is the caller-side mutation heuristic the parser (§10b) deliberately omits: `True` if any redirection is an output redirect (`> >> >\| &> &>> <>`), else `True` unless every executable's basename is on a small read-only allow-list (`ls cat grep find rg fd pwd wc diff …` — notably **not** `git`, since even read-only-looking git subcommands can touch `.git/` state) — **defaults to `True` (mutating) whenever uncertain**, so a missed checkpoint is never the failure mode; an unnecessary no-op commit is. |
 | [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse`, `PermissionResponse` | **Composes** `WebSocketDispatcher` + `TransientStore`. `fire_approval`/`fire_questions`/`fire_permission` send `kind=request`, register a future, and await. Only approvals persist a `pending_prompt` (for restart re-surface); a question batch or permission prompt is instead re-driven/stubbed on restart from its flushed `tool_use` (SESSIONS.md, SECURITY.md §7). `fire_questions(questions, tool_call_id)` carries the whole `ask_user` batch plus the calling tool_use id and returns normalized `{selected, free_text}` answers. `fire_permission(...)` carries one gated tool call's preview (tool/risk/intent/reason/params) and returns the user's allow/deny + optional feedback (`prompt.permission`, doc/SECURITY.md §6); malformed actions coerce to deny. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by `_finalize_document` (§12.1) for the interactive document-review gate. |
-| [_session.py](../src/kodo/runtime/_session.py) | `SessionState` | Mutable `phase`/`agent`/`component` plus the two mode fields: `autonomous` (user-facing Autonomous/Interactive, set by `handle_mode_set`, reported in `to_dict()`/`EVT_STATE`) and `effective_autonomous` (frozen per prompt by `_run_worker`; what tools/registry actually read), and `workflow_mode` (`"guided"`/`"problem_solving"`, in `to_dict()`). Shared by the engine; satisfies `tools.SessionLike` (`finalize_project` writes `phase`; tools read `effective_autonomous`). |
+| [_session.py](../src/kodo/runtime/_session.py) | `SessionState` | Mutable `phase`/`agent`/`component` plus the two mode fields: `autonomous` (user-facing Autonomous/Interactive, set by `handle_mode_set`, reported in `to_dict()`/`EVT_STATE`) and `effective_autonomous` (frozen per prompt by `_run_worker`; what tools/registry actually read), and `workflow_mode` (`"guided"`/`"problem_solving"`/`"judge"`, in `to_dict()`; the last is validator-only). Shared by the engine; satisfies `tools.SessionLike` (`finalize_project` writes `phase`; tools read `effective_autonomous`). |
 | [_session_log.py](../src/kodo/runtime/_session_log.py) | `SessionLog` | Append-only JSONL per session. |
 
 **State:** Engine, dispatch (now in `tools/`), gates, rollback are
@@ -946,6 +949,17 @@ callouts in its message text). Unlike the Guide it has no fixed pipeline, but it
 (subsessions, §12.1), keeping direct tools for deciding the next step or a
 trivial ask. No critics, no artifact index.
 
+**Prompt → work (judge):** when `workflow_mode == "judge"`, the worker routes
+to `_run_judge_with_input` instead. The `judge` agent (`agent_judge.md`) runs
+`_run_agent_turn` with a **read-only** dispatcher — `read_file`, `find_files`,
+`find_text_in_files`, and the terminal `submit_evaluation` tool; no editing,
+no `run_command`, no sub-agents, no `ask_user`. This mode is **validator-only**:
+`kodo.validator._evaluate.run_evaluation` is the sole caller, opening a second
+session over the already-finished LUT run and submitting one turn (the RVP +
+workspace/prompt/interaction-log context) for the judge to read and score;
+`submit_evaluation` ends the turn. kodo-vsix's workflow picker never offers or
+sends `"judge"`, so this flow is unreachable from the extension.
+
 **Mode toggles (both apply to the *next* prompt):** the VSIX sidebar has two
 toggles. *Autonomous/Interactive* → `toggle_autonomous` → `mode.set {autonomous}`
 → `handle_mode_set` sets `SessionState.autonomous` (and persists it); it does
@@ -1030,7 +1044,7 @@ source's.
 | `disable_autonomous_mode` | ✅ Implemented and dispatched (guide) |
 | `create_new_project` | ✅ Implemented and dispatched (guide + problem_solver); scaffolds a new project dir + checkpoint mirror and adds it to the workspace |
 | Native file-IO / `run_command` / `read_file` tools | ✅ Implemented; granted to authoring sub-agents and `problem_solver` |
-| Two workflows (`guided` Guide / `problem_solving` Problem Solver) | ✅ Implemented; selected by `workflow.set` → `SessionState.workflow_mode` |
+| Two user-facing workflows (`guided` Guide / `problem_solving` Problem Solver), plus the validator-only `judge` (Judge, read-only — never sent by kodo-vsix) | ✅ Implemented; selected by `workflow.set` → `SessionState.workflow_mode` |
 | `security` layer (allow/ask gate over every tool call, `prompt.permission`, PowerShell parser dialect) | ✅ Implemented (doc/SECURITY.md); `security/_rules`+`_store`+`_defaults` (persistent rules) still stubs |
 | `state/_memory` | ⛔ Stub |
 | `project/_manifest` | ◽ Parsed by `kodo.md`'s `## Toolchain` heading; purely informational now (no engine-side toolchain selection) |

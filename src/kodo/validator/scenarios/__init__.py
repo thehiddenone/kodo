@@ -1,10 +1,12 @@
 """Named validation scenarios and the selector resolver for ``hatch run validate``.
 
 **One scenario == one ``.py`` file** under this package that defines a
-module-level ``SCENARIO`` (a :class:`kodo.validator.Scenario`), with its PUT /
-UPP / RVP inlined as triple-quoted strings so each file is self-contained. A
-file may also define ``SCENARIOS`` (a list) if it carries several. Files can be
-nested in sub-directories to group them — e.g. by the model under test:
+module-level ``SCENARIO`` (a :class:`kodo.validator.Scenario`); a file may also
+define ``SCENARIOS`` (a list) if it carries several. The file is just the
+wiring — the task / UPP / RVP *text* is not inlined but pulled by name from the
+:mod:`kodo.validator.prompts` package (``PROMPTS.get("family/name")``), so the
+same prompts can back several LLMs-under-test. Files can be nested in
+sub-directories to group them — e.g. by the model under test:
 ``qwen35-9b/tictactoe_console.py``. Sub-directory names need not be valid Python
 identifiers (they are loaded by file path, not imported), so ``qwen35-9b`` is
 fine.

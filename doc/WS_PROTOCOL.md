@@ -208,8 +208,8 @@ Pushed on connect (also embedded in `hello.ack`), and whenever a field below cha
   "current_agent": { "name": "functional_designer", "component": "TRADE" } | null,
   "autonomous": false,
   "effective_autonomous": false,
-  "workflow_mode": "guided" | "problem_solving",
-  "effective_workflow_mode": "guided" | "problem_solving",
+  "workflow_mode": "guided" | "problem_solving" | "judge",
+  "effective_workflow_mode": "guided" | "problem_solving" | "judge",
   "edit_control": "review_all" | "allow_all" | "smart",
   "command_control": "defensive" | "permissive" | "smart" }
 ```
@@ -228,7 +228,7 @@ The four header toggles split into **two frozen** and **two never-frozen**:
 **Frozen toggles** (`autonomous`, `workflow_mode`) are reported as a **pair**: the user-facing *selected* value and its per-turn frozen *effective* twin (`effective_*`). The selected value flips the instant the user clicks; the effective value is the one the **in-flight prompt** actually runs under — the engine freezes both from their selected values when it dequeues a prompt (`_freeze_effective_modes`), so a toggle flipped mid-run takes effect only on the *next* prompt. The client renders each as "in effect" (selected == effective, or idle) or "queued for the next prompt" (a turn is running and they differ).
 
 - `autonomous` — Autonomous/Interactive mode. Toggled via `mode.set` (§7.5).
-- `workflow_mode` — `guided` (the Guide + full Kodo pipeline) or `problem_solving` (the standalone Problem Solver agent). Toggled via `workflow.set` (§7.6).
+- `workflow_mode` — `guided` (the Guide + full Kodo pipeline), `problem_solving` (the standalone Problem Solver agent), or `judge` (the standalone Judge agent — a read-only run that scores a finished session for `kodo.validator`; **validator-only**, kodo-vsix never sends it). Toggled via `workflow.set` (§7.6).
 
 **Never-frozen toggles** (`edit_control`, `command_control`) carry a **single** value and **no `effective_*` twin**. The *client* owns them: it keeps the user's selected posture and sends the **shown** value, which it forces to `allow_all`/`permissive` (and locks the toggle in the UI) while Autonomous mode is *in effect* — i.e. the frozen `effective_autonomous` during a turn, the live `autonomous` selection when idle — and restores the user's selection otherwise. The server simply mirrors whatever the client last sent, so its stored value is always exactly what the UI shows.
 
@@ -770,7 +770,9 @@ A `state` event with the updated `autonomous` field follows.
 
 ### 7.4 `workflow.set` — choose the top-level workflow
 
-Selects which workflow drives the next prompt: `guided` (Guide pipeline) or `problem_solving` (standalone Problem Solver). Unknown values fall back to `guided`. Like `mode.set`, it applies to the next prompt.
+Selects which workflow drives the next prompt: `guided` (Guide pipeline), `problem_solving` (standalone Problem Solver), or `judge` (standalone Judge — a read-only entry agent, `read_file`/`find_files`/`find_text_in_files`/`submit_evaluation` only, that scores a finished run). Unknown values fall back to `guided`. Like `mode.set`, it applies to the next prompt.
+
+`judge` is **validator-only**: `kodo.validator._evaluate` sends it when it opens the second, judge session over a finished run; kodo-vsix's workflow picker only ever offers `guided`/`problem_solving` and never sends `judge`. It exists so judging a validation run doesn't run through the Problem Solver's full read/write/execute/sub-agent tool set — Problem Solver's purpose is solving user problems, not judging validator runs, so it carries none of the scoring machinery.
 
 ```json
 { "type": "workflow.set", "mode": "problem_solving" }

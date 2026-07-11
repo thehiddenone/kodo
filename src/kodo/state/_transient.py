@@ -461,10 +461,11 @@ class TransientStore:
 
     @property
     def workflow_mode(self) -> str:
-        """Persisted workflow mode (``"guided"`` | ``"problem_solving"``).
+        """Persisted workflow mode (``"guided"`` | ``"problem_solving"`` | ``"judge"``).
 
-        Per-session so a window hosting several sessions can keep each in its
-        own mode across reloads/resume.
+        ``"judge"`` is validator-only (kodo.validator._evaluate) and never sent
+        by kodo-vsix. Per-session so a window hosting several sessions can keep
+        each in its own mode across reloads/resume.
         """
         return self.__workflow_mode
 
@@ -760,8 +761,9 @@ class TransientStore:
             self.__stage = str(data.get("stage", "IDLE"))
             self.__last_prompt = str(data.get("last_prompt", ""))
             self.__autonomous = bool(data.get("autonomous", False))
+            raw_workflow_mode = data.get("workflow_mode")
             self.__workflow_mode = (
-                "problem_solving" if data.get("workflow_mode") == "problem_solving" else "guided"
+                raw_workflow_mode if raw_workflow_mode in ("problem_solving", "judge") else "guided"
             )
             edit = data.get("edit_control")
             self.__edit_control = edit if edit in ("review_all", "allow_all", "smart") else "smart"

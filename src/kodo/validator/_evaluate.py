@@ -139,11 +139,15 @@ async def run_evaluation(
         await judge.connect()
         await judge.hello()
         await judge.request(MSG_WORKSPACE_FOLDERS, dict(workspace_payload))
-        # Autonomous problem-solving with friction minimized: the judge only
-        # reads, gates would just add noise (and SMART security judgements
-        # would burn extra VLLM calls) to the run being scored.
+        # The validator-only "judge" workflow (agent_judge.md): a read-only
+        # entry agent scoped to read_file/find_files/find_text_in_files/
+        # submit_evaluation, so it can't edit or run anything in the workspace
+        # being scored — a narrower tool surface than the problem_solver run
+        # this used to share. Autonomous + friction-minimized regardless, since
+        # gates would just add noise (and SMART security judgements would burn
+        # extra VLLM calls) to a run that only ever reads.
         await judge.request(MSG_MODE_SET, autonomous=True)
-        await judge.request(MSG_WORKFLOW_SET, mode="problem_solving")
+        await judge.request(MSG_WORKFLOW_SET, mode="judge")
         await judge.request(MSG_EDIT_CONTROL_SET, edit_control="allow_all")
         await judge.request(MSG_COMMAND_CONTROL_SET, command_control="permissive")
 

@@ -16,6 +16,13 @@ from kodo.toolspecs import ALL_TOOLS
 
 _GUIDE_AGENT_NAME = "guide"
 _PROBLEM_SOLVER_AGENT_NAME = "problem_solver"
+# Entry agent behind the ``"judge"`` workflow mode (agent_judge.md). Scores a
+# finished run for kodo.validator (kodo.validator._evaluate) — read-only tools
+# only, no editing/execution/ask_user. Reachable only by sending
+# ``workflow.set`` with ``mode: "judge"`` over the wire; kodo-vsix's workflow
+# picker only ever sends ``"guided"``/``"problem_solving"``, so this mode is
+# never exposed to or selectable from the extension.
+_JUDGE_AGENT_NAME = "judge"
 _COMPACTOR_AGENT_NAME = "compactor"
 # Dependency-management sub-agent behind the ``toolchain_deps`` tool. Spawned only
 # through the tool's dedicated ungated service (``_run_dependency_manager``), so

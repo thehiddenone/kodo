@@ -15,7 +15,7 @@ from kodo.llms.anthropic import UnrecoverableError
 from kodo.transport import EVT_API_KEY_REVOKE
 
 from ._proto import EngineHost
-from ._shared import _GUIDE_AGENT_NAME, _PROBLEM_SOLVER_AGENT_NAME
+from ._shared import _GUIDE_AGENT_NAME, _JUDGE_AGENT_NAME, _PROBLEM_SOLVER_AGENT_NAME
 
 _log = logging.getLogger(__name__)
 
@@ -87,12 +87,19 @@ class WorkerMixin:
 
                 # The entry agent is chosen per prompt from the current
                 # workflow mode: Problem Solver for "problem_solving", the
-                # Guide (full Kodo pipeline) for "guided".
+                # Guide (full Kodo pipeline) for "guided", and the validator-
+                # only Judge for "judge" (never selected by kodo-vsix, which
+                # only ever sends "guided"/"problem_solving").
                 if self._session.workflow_mode == "problem_solving":
                     if self._agent_available(_PROBLEM_SOLVER_AGENT_NAME):
                         await self._run_problem_solver_with_input(text, attachments)
                     else:
                         await self._handle_input_no_agent(_PROBLEM_SOLVER_AGENT_NAME, text)
+                elif self._session.workflow_mode == "judge":
+                    if self._agent_available(_JUDGE_AGENT_NAME):
+                        await self._run_judge_with_input(text, attachments)
+                    else:
+                        await self._handle_input_no_agent(_JUDGE_AGENT_NAME, text)
                 elif self._layout is None:
                     # Guided mode requires a bound project. The extension forces
                     # the picker before sending the first Guided prompt, so this

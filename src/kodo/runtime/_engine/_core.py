@@ -502,11 +502,14 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
         """Select the top-level workflow that drives user prompts.
 
         Args:
-            mode: ``"guided"`` (Guide + full Kodo pipeline) or
-                ``"problem_solving"`` (the standalone Problem Solver agent).
-                Unknown values fall back to ``"guided"``.
+            mode: ``"guided"`` (Guide + full Kodo pipeline), ``"problem_solving"``
+                (the standalone Problem Solver agent), or the validator-only
+                ``"judge"`` (the standalone Judge agent — scores a finished run
+                for ``kodo.validator``; never sent by kodo-vsix, whose workflow
+                picker only offers the first two). Unknown values fall back to
+                ``"guided"``.
         """
-        self._session.workflow_mode = mode if mode == "problem_solving" else "guided"
+        self._session.workflow_mode = mode if mode in ("problem_solving", "judge") else "guided"
         self._transient.update(workflow_mode=self._session.workflow_mode)
         await self._emitters.emit_state()
 

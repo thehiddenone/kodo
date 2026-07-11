@@ -55,7 +55,12 @@ from .._attachments import MAX_ATTACHMENTS, AttachmentError, inject_attachments,
 from .._checkpoints import CheckpointRef
 from ._checkpointing import _GUIDED_STATE_TOOLS
 from ._proto import EngineHost
-from ._shared import _GUIDE_AGENT_NAME, _PROBLEM_SOLVER_AGENT_NAME, _SPECS_BY_NAME
+from ._shared import (
+    _GUIDE_AGENT_NAME,
+    _JUDGE_AGENT_NAME,
+    _PROBLEM_SOLVER_AGENT_NAME,
+    _SPECS_BY_NAME,
+)
 from ._subagents import _DEFAULT_WEB_SEARCH_TIMEOUT_S
 
 _log = logging.getLogger(__name__)
@@ -89,6 +94,23 @@ class TurnLoopMixin:
         ``session.jsonl``.
         """
         await self._run_entry_agent(_PROBLEM_SOLVER_AGENT_NAME, text, attachments)
+
+    # ------------------------------------------------------------------
+    # Judge LLM loop (validator-only, never selected by kodo-vsix)
+    # ------------------------------------------------------------------
+
+    async def _run_judge_with_input(
+        self: EngineHost, text: str, attachments: list[str] | None = None
+    ) -> None:
+        """Drive the standalone Judge agent for one evaluation turn.
+
+        Entry point for the ``"judge"`` workflow mode (agent_judge.md), used
+        only by ``kodo.validator._evaluate`` to score a finished run — never
+        reachable from kodo-vsix, whose workflow picker only ever sends
+        ``"guided"``/``"problem_solving"``. Shares ``_run_entry_agent`` with
+        Guide/Problem Solver like the other entry agents.
+        """
+        await self._run_entry_agent(_JUDGE_AGENT_NAME, text, attachments)
 
     async def _run_entry_agent(
         self: EngineHost, agent_name: str, text: str, attachments: list[str] | None = None

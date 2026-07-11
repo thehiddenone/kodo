@@ -34,8 +34,10 @@ class SessionState:
             value even if the user toggles mid-run. Tools read this, never
             ``autonomous``.
         workflow_mode: Which top-level workflow drives prompts — ``"guided"``
-            (Guide + full Kodo pipeline) or ``"problem_solving"``
-            (the standalone Problem Solver agent).
+            (Guide + full Kodo pipeline), ``"problem_solving"`` (the standalone
+            Problem Solver agent), or the validator-only ``"judge"`` (the
+            standalone Judge agent that scores a finished run for
+            ``kodo.validator``; never sent by kodo-vsix).
         effective_workflow_mode: The workflow the *current* prompt runs under,
             frozen alongside ``effective_autonomous`` at dequeue. Lets the client
             tell "in effect" from "queued for the next prompt" while a turn runs.

@@ -37,7 +37,7 @@ from kodo.subagents import SubAgent
 from kodo.tools import ToolDispatcher, tools_for_agent
 
 from ._proto import EngineHost
-from ._shared import _GUIDE_AGENT_NAME, _PROBLEM_SOLVER_AGENT_NAME
+from ._shared import _GUIDE_AGENT_NAME, _JUDGE_AGENT_NAME, _PROBLEM_SOLVER_AGENT_NAME
 
 
 def _find_cloud_vendor_for_model_id(model_id: str) -> str | None:
@@ -176,6 +176,8 @@ class LLMPlumbingMixin:
         """The top-level entry agent for the current workflow mode."""
         if self._session.workflow_mode == "problem_solving":
             return _PROBLEM_SOLVER_AGENT_NAME
+        if self._session.workflow_mode == "judge":
+            return _JUDGE_AGENT_NAME
         return _GUIDE_AGENT_NAME
 
     def _entry_capability(self: EngineHost) -> str:

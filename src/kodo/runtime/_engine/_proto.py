@@ -140,6 +140,10 @@ class EngineHost(Protocol):
         self, text: str, attachments: list[str] | None = None
     ) -> None: ...
 
+    async def _run_judge_with_input(
+        self, text: str, attachments: list[str] | None = None
+    ) -> None: ...
+
     async def _run_entry_agent(
         self, agent_name: str, text: str, attachments: list[str] | None = None
     ) -> None: ...

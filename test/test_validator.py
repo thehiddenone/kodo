@@ -908,6 +908,46 @@ def test_resolve_selectors_shipped_scenarios() -> None:
     assert {"tictactoe-console", "tictactoe-upp"} <= names
 
 
+def test_shipped_scenarios_share_prompts_via_registry() -> None:
+    """Both tictactoe scenarios pull one shared UPP/RVP and differ only by task."""
+    from kodo.validator import scenarios as scn
+    from kodo.validator.prompts import PROMPTS
+
+    by_name = {s.name: s for _, s in scn.resolve_selectors(["all"])}
+    detailed = by_name["tictactoe-console"]
+    sparse = by_name["tictactoe-upp"]
+
+    # One UPP and one RVP, shared verbatim across both variants.
+    assert detailed.result_validation_prompt == sparse.result_validation_prompt
+    assert detailed.result_validation_prompt == PROMPTS.get("tictactoe/rvp")
+    assert detailed.user_proxy_prompt == sparse.user_proxy_prompt
+    assert detailed.user_proxy_prompt == PROMPTS.get("tictactoe/upp")
+    # The scenarios diverge only in the task prompt (detailed vs. sparse).
+    assert detailed.prompts == [PROMPTS.get("tictactoe/detailed_task")]
+    assert sparse.prompts == [PROMPTS.get("tictactoe/sparse_task")]
+    assert detailed.prompts != sparse.prompts
+
+
+def test_prompt_registry_resolution_and_guards() -> None:
+    from kodo.validator.prompts import PROMPTS, PromptNotFoundError
+
+    # Submodule name resolves; a trailing ``.md`` is tolerated and equivalent.
+    assert PROMPTS.get("tictactoe/rvp") == PROMPTS.get("tictactoe/rvp.md")
+    assert set(PROMPTS.names()) >= {
+        "tictactoe/detailed_task",
+        "tictactoe/sparse_task",
+        "tictactoe/upp",
+        "tictactoe/rvp",
+    }
+    # A missing prompt raises, and the message lists what is available.
+    with pytest.raises(PromptNotFoundError, match="Available:"):
+        PROMPTS.get("tictactoe/nope")
+    # Empty, traversal, and absolute names are rejected before touching disk.
+    for bad in ("", "..", "../secret", "/etc/passwd", "tictactoe/../../secret"):
+        with pytest.raises(PromptNotFoundError):
+            PROMPTS.get(bad)
+
+
 # ---------------------------------------------------------------------------
 # llm.select / llm.complete against the real in-process server
 # ---------------------------------------------------------------------------

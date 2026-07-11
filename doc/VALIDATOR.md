@@ -4,9 +4,10 @@
 > sessions end-to-end, can answer the agent's questions with the **validation
 > LLM** (User Proxy Prompt), and can score the finished run with a judge
 > session (Result Validation Prompt) into `ScenarioResult.score` +
-> `report.md` — see §9. **Prompt content (phase 3) is not written yet**: the
-> UPP/RVP texts are caller-supplied; without them, phase-1 behaviour
-> (scripted answers, `score=None`) is unchanged.
+> `report.md` — see §9. The curated suite now ships real task / UPP / RVP
+> content in the **`kodo.validator.prompts`** package (§8b); ad-hoc runs still
+> take caller-supplied `--upp-file`/`--rvp-file`, and with neither, phase-1
+> behaviour (scripted answers, `score=None`) is unchanged.
 > Reference: [WS_PROTOCOL.md](WS_PROTOCOL.md) (§7.6a/§7.6b), [SESSIONS.md](SESSIONS.md),
 > [SECURITY.md](SECURITY.md), [SETTINGS.md](SETTINGS.md),
 > [LLM_REGISTRY.md](LLM_REGISTRY.md), [LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md).
@@ -41,6 +42,8 @@ src/kodo/validator/
   _harness.py     ValidationHarness   — one run, end to end; Modes; TurnResult
   _scenario.py    Scenario / run_scenario / ScenarioResult
   __main__.py     python -m kodo.validator / kodo-validator CLI
+  prompts/        PromptRegistry / PROMPTS — reusable task/UPP/RVP .md (§8b)
+  scenarios/      the curated suite + selector resolver (§8a)
 ```
 
 Every run owns one directory:
@@ -237,10 +240,12 @@ hatch run validate --list                         # show available scenarios
 ```
 
 **One scenario == one `.py` file** that defines a module-level `SCENARIO`
-(a `Scenario`), with its PUT / UPP / RVP inlined as triple-quoted strings so the
-file is self-contained (no sidecar prompt files). A file may define `SCENARIOS`
-(a list) instead. Files are grouped in sub-directories — typically by the model
-under test — and a directory name need not be a valid Python identifier
+(a `Scenario`); a file may define `SCENARIOS` (a list) instead. The file is the
+*wiring* — modes, roots, timeouts, the LUT/VLLM pin — but its **prompt text is
+not inlined**: task / UPP / RVP text lives in the `kodo.validator.prompts`
+package (§8b) and the scenario pulls it by name, so the same prompts can back
+several LLMs-under-test. Files are grouped in sub-directories — typically by the
+model under test — and a directory name need not be a valid Python identifier
 (`qwen35-9b/`), because scenarios are loaded by **file path**, not imported.
 
 A command-line **selector** (`kodo.validator.scenarios.resolve_selectors`) is a
@@ -267,6 +272,37 @@ globally via the symlinked `~/.kodo/titler`) **without** HEAD-ing the Hub each
 run. That flag is a titler-only, per-call `local_files_only` — *not* a global
 offline switch — so GGUF downloads, which resolve metadata through
 `huggingface_hub`, are unaffected.
+
+## 8b. Reusable prompts (`kodo.validator.prompts`)
+
+Scenario prompt text is **not** inlined in the scenario `.py` files — it lives
+as `.md` files under `kodo/validator/prompts/`, and scenarios pull it by name
+through a package singleton:
+
+```python
+from kodo.validator.prompts import PROMPTS
+PROMPTS.get("tictactoe/detailed_task")   # → prompts/tictactoe/detailed_task.md
+```
+
+A name is a `/`-separated path under the package (with or without the `.md`
+suffix), so prompts group into sub-directories ("submodules") — one folder per
+scenario family. `PromptRegistry.get` resolves and caches the file, rejecting
+absolute names and `..` traversal before touching disk; `names()` lists
+everything shipped. The `.md` files ship in the wheel via the existing
+`include = ["src/kodo/**/*.md"]` rule.
+
+**Convention.** Group a family in its own sub-directory and suffix the files
+`_task` (the prompt under test), `_upp` (user-proxy prompt), and `_rvp`
+(result-validation prompt). **Share one `_upp` and one `_rvp`** across variants
+that differ only in their `_task`. The two shipped tictactoe scenarios do exactly
+this: `qwen35-9b.tictactoe_console` uses `tictactoe/detailed_task` (fully
+specified) and `qwen36-27b.tictactoe_upp` uses `tictactoe/sparse_task`
+(deliberately vague, forces `ask_user`), and **both** reuse `tictactoe/upp` and
+`tictactoe/rvp`. Wire a new LUT to an existing family by writing a scenario file
+that pins the model and reuses those prompts. Because the `_task` prompt states
+whether the assistant should ask before building, the *same* shared `_rvp` grades
+both — the judge reads the process expectation from the task, not the rubric
+(§9.2).
 
 ## 9. Phase 2 — the validation LLM in the loop
 
@@ -338,7 +374,7 @@ not masquerade as a low-scoring run), `run_scenario` calls
 2. open a **second session** on the same server (own WS connection,
    `window_id: kodo-validator-judge`, own `judge-transcript.jsonl`), push the
    **same** `workspace.folders` payload, and pin friction-free modes
-   (autonomous, problem_solving, allow_all/permissive — its gates are
+   (autonomous, **`judge`** workflow, allow_all/permissive — its gates are
    answered by a plain `ScriptedUser`);
 3. submit one judge turn: the RVP + a mechanical context block — workspace
    root paths, the PUT(s), and the full interaction log (every question /
@@ -350,13 +386,43 @@ not masquerade as a low-scoring run), `run_scenario` calls
    text is polluted with exploration narration + tool-argument fragments, so
    asking the judge to *print* a JSON verdict is unreliable. Instead the judge
    submits `{score, report}` through the `submit_evaluation` tool (a `NONE`-
-   impact tool the `problem_solver` agent declares, `kodo.toolspecs.
+   impact tool the `judge` agent declares, `kodo.toolspecs.
    SUBMIT_EVALUATION`), and `_verdict_from_tool_calls` reads the values off
    that call's `agent.tool_call_detail` rows — structured, no text parsing.
    `_parse_score` (fenced / bare / embedded JSON) stays as a **fallback** for
    a judge that answers in prose anyway; a turn that yields neither gets a
    follow-up turn asking for the verdict again (default 3 attempts), then
    `EvaluationError`.
+
+**The `judge` workflow** (`workflow.set` mode `"judge"`, `kodo.subagents.agent_judge.md`)
+is a **dedicated, validator-only entry agent** — read-only tools only
+(`read_file`, `find_files`, `find_text_in_files`, `submit_evaluation`), no
+editing, no command execution, no sub-agents, no `ask_user`. Earlier the judge
+turn ran as a `problem_solving` session, i.e. through the full `problem_solver`
+agent (read/write/execute/sub-agent-spawning tools, none of which judging
+needs) — a single-responsibility violation kept only for lack of a narrower
+entry point. `judge` is a third `workflow_mode` value alongside `guided` and
+`problem_solving` (WS_PROTOCOL.md §5.1/§7.4); it is wired **only** in the
+engine and the validator harness — kodo-vsix's workflow picker still offers
+just `guided`/`problem_solving` and never sends `judge`, so it stays entirely
+invisible to and unreachable from the extension.
+
+**Scope of the verdict.** The judge scores the **whole delivery**, not just
+code correctness: the built artifacts, any **written deliverables** the task
+called for (design docs, plans, specs, reports — a Guided run can be as much
+documentation as code), and the LUT's **conduct** — whether it followed the
+task's working instructions, most importantly whether it stopped to `ask_user`
+when told to. That last axis is read off the **interaction log** the harness
+appends (step 3 above): an empty log against a task that said "ask first" is a
+first-class process failure (a hefty deduction), while against a task that said
+"just build" it is correct. The judge derives *which* rule applies from the
+task prompt, not from a blanket policy — which is exactly why one shared `_rvp`
+can grade both the detailed and sparse tictactoe variants (§8b). The prompt's
+own scoring rules (start at 100, subtract per distinct defect, deduction sized
+to severity, across all three axes) are the **default**; a scenario's RVP may
+supply its own scoring guide instead, which takes precedence. The shipped
+`tictactoe/rvp` deliberately carries **no** scoring band of its own — it is a
+task rubric only, deferring the arithmetic to `agent_judge.md`.
 
 The verdict lands in three places: `ScenarioResult.score` (+ the full
 `EvaluationResult`), `<run_dir>/report.md` (human-readable score + report),
@@ -372,15 +438,16 @@ a whole session turn cannot be grammar-constrained; a terminal tool call is
 the equivalent structured-return channel for the agentic side.
 
 Trade-off, made explicitly: judging through a kodo session means the verdict
-is *mediated by kodo's own agent stack* (the judge's Problem-Solver run is
+is *mediated by kodo's own agent stack* (the judge's `judge`-workflow run is
 part of the measurement chain). That is what buys tool access to the
 workspace ("path to generated code"), and the judge stack is held constant
 across scenarios, so comparisons between LUTs stay apples-to-apples.
 
 ### 9.3 What phase 3 owns
 
-The UPP and RVP *texts* (persona, answering policy, scoring rubric), shipped
-as suite files next to scenario definitions — the mechanics deliberately
-treat both as opaque strings. The only text phase 2 injects around them is
-the wire contract (the JSON shapes) and the run context (roots, prompts,
-interaction log).
+The UPP and RVP *texts* (persona, answering policy, task rubric), shipped as
+`.md` files in the `kodo.validator.prompts` package (§8b) and pulled by name so
+one UPP/RVP can back several scenarios — the mechanics deliberately treat both
+as opaque strings. The only text phase 2 injects around them is the wire
+contract (the JSON shapes) and the run context (roots, prompts, interaction
+log).

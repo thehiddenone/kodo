@@ -16,7 +16,6 @@ tools:
   - run_subagent
   - ask_user
   - create_new_project
-  - submit_evaluation
 subagents:
   - investigator
   - planner
