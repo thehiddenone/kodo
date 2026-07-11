@@ -18,12 +18,51 @@ import sys
 import time
 from pathlib import Path
 
-__all__ = ["ServerProcess", "ServerStartError"]
+__all__ = ["ServerProcess", "ServerStartError", "build_child_env"]
 
 _log = logging.getLogger(__name__)
 
 _READY_POLL_SECONDS = 0.2
 _TERMINATE_GRACE_SECONDS = 10.0
+
+# Env var the session titler reads to load its summarization model from cache
+# only (no HuggingFace network calls). Kept as a bare string here rather than
+# imported from kodo.titling, to preserve this package's "no engine internals"
+# rule; the titler owns the canonical constant (kodo.titling._summarizer).
+_TITLER_LOCAL_FILES_ONLY_ENV = "KODO_TITLER_LOCAL_FILES_ONLY"
+
+
+def build_child_env(home_dir: Path) -> dict[str, str]:
+    """Build the environment for the kodo-server child rooted at *home_dir*.
+
+    The child's ``HOME``/``USERPROFILE`` are redirected to the throwaway run
+    home so the server roots itself at the isolated ``.kodo``. Two extra pins
+    keep HuggingFace usage from following that redirect into per-run isolation:
+
+    * ``HF_HOME`` is pinned to the **real, global** HuggingFace cache (captured
+      from the parent env before the HOME redirect), so every validation run
+      shares one cache instead of re-fetching metadata under its throwaway home.
+    * ``KODO_TITLER_LOCAL_FILES_ONLY`` tells the session titler to load its
+      already-cached summarization model (shared globally via the symlinked
+      ``~/.kodo/titler``) **without** contacting the Hub — so runs don't HEAD
+      HuggingFace for it every time. This is a titler-only, per-call
+      ``local_files_only`` flag, *not* a global offline switch: GGUF downloads,
+      which resolve metadata through ``huggingface_hub`` separately, still work.
+
+    Args:
+        home_dir (Path): The prepared run home to export as ``HOME``.
+
+    Returns:
+        dict[str, str]: The child process environment.
+    """
+    env = dict(os.environ)
+    real_home = os.environ.get("HOME") or os.path.expanduser("~")
+    env["HF_HOME"] = os.environ.get("HF_HOME") or str(Path(real_home) / ".cache" / "huggingface")
+    env[_TITLER_LOCAL_FILES_ONLY_ENV] = "1"
+    env["HOME"] = str(home_dir)
+    env["USERPROFILE"] = str(home_dir)
+    env["PYTHONUNBUFFERED"] = "1"
+    return env
 
 
 class ServerStartError(RuntimeError):
@@ -101,10 +140,7 @@ class ServerProcess:
         if self.__process is not None:
             raise ServerStartError("Server already started")
 
-        env = dict(os.environ)
-        env["HOME"] = str(self.__home_dir)
-        env["USERPROFILE"] = str(self.__home_dir)
-        env["PYTHONUNBUFFERED"] = "1"
+        env = build_child_env(self.__home_dir)
 
         console = open(self.__console_log, "ab")  # noqa: SIM115 - handed to the subprocess
         try:

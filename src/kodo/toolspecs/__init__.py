@@ -53,6 +53,7 @@ from ._spec import (
     SecurityImpact,
     ToolSpec,
 )
+from ._submit_evaluation import SUBMIT_EVALUATION
 from ._toolchain_build import TOOLCHAIN_BUILD
 from ._toolchain_deps import TOOLCHAIN_DEPS
 from ._update_web_search_state import UPDATE_WEB_SEARCH_STATE
@@ -90,6 +91,7 @@ __all__ = [
     "RUN_COMMAND",
     "RUN_SUBAGENT",
     "SCHEMA_COMPLIANCE_KEY",
+    "SUBMIT_EVALUATION",
     "TOOLCHAIN_BUILD",
     "TOOLCHAIN_DEPS",
     "UPDATE_WEB_SEARCH_STATE",
@@ -136,6 +138,7 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     RUN_AUTHOR_CRITIC_ITERATION,
     RUN_COMMAND,
     RUN_SUBAGENT,
+    SUBMIT_EVALUATION,
     TOOLCHAIN_BUILD,
     TOOLCHAIN_DEPS,
     UPDATE_WEB_SEARCH_STATE,

@@ -223,6 +223,51 @@ directly.
 `python -m kodo.validator` is equivalent. Exit code 0 iff every scenario
 completed with no `error`-phase turn. Each scenario gets a fresh home + server.
 
+## 8a. The scenario suite and `hatch run validate`
+
+For a curated suite (as opposed to ad-hoc `--scenario FILE` runs), scenarios
+live **in the package** under `kodo/validator/scenarios/` and run through a
+build recipe:
+
+```bash
+hatch run validate qwen35-9b.tictactoe_console   # one scenario
+hatch run validate qwen35-9b                      # every scenario under qwen35-9b/
+hatch run validate all                            # the whole suite
+hatch run validate --list                         # show available scenarios
+```
+
+**One scenario == one `.py` file** that defines a module-level `SCENARIO`
+(a `Scenario`), with its PUT / UPP / RVP inlined as triple-quoted strings so the
+file is self-contained (no sidecar prompt files). A file may define `SCENARIOS`
+(a list) instead. Files are grouped in sub-directories — typically by the model
+under test — and a directory name need not be a valid Python identifier
+(`qwen35-9b/`), because scenarios are loaded by **file path**, not imported.
+
+A command-line **selector** (`kodo.validator.scenarios.resolve_selectors`) is a
+dotted path under the package: `qwen35-9b.tictactoe_console` →
+`qwen35-9b/tictactoe_console.py`; a bare `qwen35-9b` → every scenario under that
+directory; `all` → the whole tree. Selectors are resolved and de-duplicated
+into the full batch **before anything runs**.
+
+**Pre-flight model note (no fail-fast).** Once the batch is known, the runner
+computes the union of every scenario's `llm_under_test` / `validation_llm` and
+disk-checks the template home (`~/.kodo`) with `missing_local_llms(kodo_dir,
+names)` (reads `manager-state.json`, no server). Any not-yet-installed model is
+**logged, not fatal** — the per-run harness (`ensure_local_llms_installed`)
+downloads it into the global `~/.kodo` (through the clone's `llama.cpp` symlink)
+before that scenario prompts. Artifacts land under `~/.kodo-validation/runs` by
+default (`--out` overrides). Entry point: `python -m kodo.validator.scenarios`.
+
+**HuggingFace cache across runs.** Every run's server child has `HOME`
+redirected to its throwaway home, which would otherwise push HuggingFace's
+default cache under that home. `ServerProcess` (`build_child_env`) instead pins
+`HF_HOME` to the **real, global** cache and sets `KODO_TITLER_LOCAL_FILES_ONLY=1`
+so the session titler loads its already-cached summarization model (shared
+globally via the symlinked `~/.kodo/titler`) **without** HEAD-ing the Hub each
+run. That flag is a titler-only, per-call `local_files_only` — *not* a global
+offline switch — so GGUF downloads, which resolve metadata through
+`huggingface_hub`, are unaffected.
+
 ## 9. Phase 2 — the validation LLM in the loop
 
 Phase 2 puts the **validation LLM** (VLLM) on both sides of the run: it plays
@@ -297,18 +342,34 @@ not masquerade as a low-scoring run), `run_scenario` calls
    answered by a plain `ScriptedUser`);
 3. submit one judge turn: the RVP + a mechanical context block — workspace
    root paths, the PUT(s), and the full interaction log (every question /
-   permission / approval + answer) — plus the JSON output contract. Because
+   permission / approval + answer) — plus the output contract. Because
    the judge is a *real* kodo session it reads the generated code itself,
    with real tools, by path — nothing is inlined;
-4. parse `{"score": 0–100, "report": …}` out of the judge's assistant text
-   (fenced / bare / embedded JSON all accepted). A session turn cannot be
-   grammar-constrained, so unparseable verdicts get a follow-up turn asking
-   for the JSON alone (default 3 attempts total), then `EvaluationError`.
+4. read the verdict off the judge's **`submit_evaluation` tool call**. A
+   session turn cannot be grammar-constrained and an agentic turn's assistant
+   text is polluted with exploration narration + tool-argument fragments, so
+   asking the judge to *print* a JSON verdict is unreliable. Instead the judge
+   submits `{score, report}` through the `submit_evaluation` tool (a `NONE`-
+   impact tool the `problem_solver` agent declares, `kodo.toolspecs.
+   SUBMIT_EVALUATION`), and `_verdict_from_tool_calls` reads the values off
+   that call's `agent.tool_call_detail` rows — structured, no text parsing.
+   `_parse_score` (fenced / bare / embedded JSON) stays as a **fallback** for
+   a judge that answers in prose anyway; a turn that yields neither gets a
+   follow-up turn asking for the verdict again (default 3 attempts), then
+   `EvaluationError`.
 
 The verdict lands in three places: `ScenarioResult.score` (+ the full
 `EvaluationResult`), `<run_dir>/report.md` (human-readable score + report),
-and an `evaluation` note in the main transcript. `summary.json` records the
-score, attempt count, and judge session id.
+and an `evaluation` note in the main transcript (with `source: tool` or
+`parsed_text`). `summary.json` records the score, attempt count, and judge
+session id.
+
+**Why a tool, not grammar (as the UPP uses):** the user proxy answers with a
+one-shot `llm.complete` that *can* be grammar-constrained (`answers_json_
+schema`), so its structured return is guaranteed by construction — no tool
+needed there. The judge must be a real session (to read code with tools), and
+a whole session turn cannot be grammar-constrained; a terminal tool call is
+the equivalent structured-return channel for the agentic side.
 
 Trade-off, made explicitly: judging through a kodo session means the verdict
 is *mediated by kodo's own agent stack* (the judge's Problem-Solver run is

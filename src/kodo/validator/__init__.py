@@ -24,7 +24,11 @@ from ._client import ProtocolError, ValidatorClient
 from ._evaluate import EvaluationError, EvaluationResult, run_evaluation
 from ._harness import Modes, TurnResult, ValidationHarness
 from ._home import DEFAULT_SKIP_ENTRIES, DEFAULT_SYMLINK_ENTRIES, clone_kodo_home
-from ._models import LocalModelUnavailableError, ensure_local_llms_installed
+from ._models import (
+    LocalModelUnavailableError,
+    ensure_local_llms_installed,
+    missing_local_llms,
+)
 from ._scenario import RootSpec, Scenario, ScenarioResult, run_scenario
 from ._server import ServerProcess, ServerStartError
 from ._transcript import Transcript, TranscriptEntry
@@ -60,6 +64,7 @@ __all__ = [
     "answers_json_schema",
     "clone_kodo_home",
     "ensure_local_llms_installed",
+    "missing_local_llms",
     "run_evaluation",
     "run_scenario",
 ]

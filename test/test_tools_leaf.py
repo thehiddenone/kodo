@@ -304,6 +304,53 @@ async def test_escalate_blocker_sets_stop_flag(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# submit_evaluation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_submit_evaluation_records_and_stops(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("submit_evaluation", {"score": 87, "report": "solid; minor gaps"})
+    )
+    assert result["status"] == "recorded"
+    assert result["score"] == 87.0
+    assert result["report"] == "solid; minor gaps"
+    assert dispatcher.stop_requested
+
+
+@pytest.mark.asyncio
+async def test_submit_evaluation_clamps_and_coerces_score(tmp_path: Path) -> None:
+    over = json.loads(
+        await _make_dispatcher(tmp_path).dispatch(
+            "submit_evaluation", {"score": 150, "report": "x"}
+        )
+    )
+    assert over["score"] == 100.0
+
+    under = json.loads(
+        await _make_dispatcher(tmp_path).dispatch("submit_evaluation", {"score": -5, "report": "x"})
+    )
+    assert under["score"] == 0.0
+
+    stringy = json.loads(
+        await _make_dispatcher(tmp_path).dispatch(
+            "submit_evaluation", {"score": "72", "report": "x"}
+        )
+    )
+    assert stringy["score"] == 72.0
+
+    junk = json.loads(
+        await _make_dispatcher(tmp_path).dispatch(
+            "submit_evaluation", {"score": "not-a-number", "report": ""}
+        )
+    )
+    assert junk["score"] == 0.0
+    assert junk["report"] == ""
+
+
+# ---------------------------------------------------------------------------
 # Native file I/O tools
 # ---------------------------------------------------------------------------
 

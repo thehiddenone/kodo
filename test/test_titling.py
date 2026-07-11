@@ -158,6 +158,34 @@ def test_generate_title_loads_model_on_cpu_with_cache_dir(
     assert model_calls[0]["cache_dir"] == str(titler_home_dir())
     assert model.moved_to == ["cpu"]
     assert model.eval_called is True
+    # Default: no offline flag — ordinary use may download/update the model.
+    assert tokenizer_calls[0]["local_files_only"] is False
+    assert model_calls[0]["local_files_only"] is False
+
+
+def test_generate_title_local_files_only_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv(_summarizer.LOCAL_FILES_ONLY_ENV, "1")
+    tokenizer_calls, model_calls = _install_stubs(monkeypatch, _StubTokenizer(), _StubModel())
+
+    generate_title("some prompt")
+
+    # When enabled (validation runs), the model loads from the shared global
+    # cache without contacting HuggingFace.
+    assert tokenizer_calls[0]["local_files_only"] is True
+    assert model_calls[0]["local_files_only"] is True
+
+
+def test_local_files_only_env_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    cases = [("1", True), ("true", True), ("Yes", True), ("0", False), ("false", False)]
+    for value, expected in cases:
+        monkeypatch.setenv(_summarizer.LOCAL_FILES_ONLY_ENV, value)
+        assert _summarizer._local_files_only() is expected
+    monkeypatch.delenv(_summarizer.LOCAL_FILES_ONLY_ENV, raising=False)
+    assert _summarizer._local_files_only() is False
 
 
 def test_generate_title_returns_none_on_failure(

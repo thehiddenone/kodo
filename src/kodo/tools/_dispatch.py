@@ -42,6 +42,7 @@ from kodo.toolspecs import (
     RUN_AUTHOR_CRITIC_ITERATION,
     RUN_COMMAND,
     RUN_SUBAGENT,
+    SUBMIT_EVALUATION,
     TOOLCHAIN_BUILD,
     TOOLCHAIN_DEPS,
     UPDATE_WEB_SEARCH_STATE,
@@ -84,6 +85,7 @@ from ._rollback import RollbackTool
 from ._run_author_critic_iteration import RunAuthorCriticIterationTool
 from ._run_command import RunCommandTool
 from ._run_subagent import RunSubagentTool
+from ._submit_evaluation import SubmitEvaluationTool
 from ._tool import Tool
 from ._toolchain_build import ToolchainBuildTool
 from ._toolchain_deps import ToolchainDepsTool
@@ -127,6 +129,7 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (UPDATE_WEB_SEARCH_STATE, UpdateWebSearchStateTool),
     (WAIT, WaitTool),
     (REMAINING_TIME, RemainingTimeTool),
+    (SUBMIT_EVALUATION, SubmitEvaluationTool),
 )
 
 _CLASSES_BY_NAME: dict[str, type[Tool]] = {spec.name: cls for spec, cls in _TOOL_CLASSES}

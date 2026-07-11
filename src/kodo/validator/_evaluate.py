@@ -9,10 +9,15 @@ receive *paths* to the generated code instead of inlined copies: the judge
 explores the workspace itself.
 
 The judge prompt is the RVP followed by a mechanical context block (workspace
-roots, the prompts under test, the full interaction log) and the JSON output
-contract. A session turn cannot be grammar-constrained, so the score JSON is
-extracted from the judge's assistant text with retries: each retry is a
-follow-up turn in the same judge session asking for the JSON object alone.
+roots, the prompts under test, the full interaction log) and the output
+contract. A session turn cannot be grammar-constrained and an agentic turn's
+assistant text is polluted with exploration narration, so the judge submits its
+verdict through the ``submit_evaluation`` **tool**: the harness reads
+``{score, report}`` off the tool-call detail event
+(:func:`_verdict_from_tool_calls`) instead of parsing free text. Parsing a JSON
+object out of the assistant text (:func:`_parse_score`) remains as a fallback
+for a judge that answers in prose, and each retry is a follow-up turn in the
+same judge session asking for the verdict again.
 
 Deliberately *not* here: prompt content (phase 3) and any fallback scoring —
 an evaluation that cannot produce a parseable score raises
@@ -156,22 +161,31 @@ async def run_evaluation(
             if final_phase == "error":
                 raise EvaluationError(f"Judge turn ended in error (attempt {attempt})")
             text = judge_transcript.assistant_text(start=start_seq)
-            try:
-                score, report = _parse_score(text)
-            except ValueError as exc:
-                last_error = str(exc)
-                transcript.record(
-                    "note",
-                    "lifecycle",
-                    {"event": "evaluation_retry", "attempt": attempt, "error": last_error},
-                )
-                _log.warning("Judge attempt %d unparseable: %s", attempt, last_error)
-                prompt = _RETRY_PROMPT
-                continue
+            # Prefer the structured verdict the judge submitted through the
+            # submit_evaluation tool (read off the tool-call detail event, so it
+            # survives an agentic turn's narration); fall back to parsing a JSON
+            # object out of the assistant text only when no tool call was made.
+            verdict = _verdict_from_tool_calls(judge_transcript.tool_calls(start=start_seq))
+            source = "tool"
+            if verdict is None:
+                source = "parsed_text"
+                try:
+                    verdict = _parse_score(text)
+                except ValueError as exc:
+                    last_error = str(exc)
+                    transcript.record(
+                        "note",
+                        "lifecycle",
+                        {"event": "evaluation_retry", "attempt": attempt, "error": last_error},
+                    )
+                    _log.warning("Judge attempt %d had no verdict: %s", attempt, last_error)
+                    prompt = _RETRY_PROMPT
+                    continue
+            score, report = verdict
             transcript.record(
                 "note",
                 "evaluation",
-                {"score": score, "report": report, "attempts": attempt},
+                {"score": score, "report": report, "attempts": attempt, "source": source},
             )
             return EvaluationResult(
                 score=score,
@@ -180,22 +194,88 @@ async def run_evaluation(
                 attempts=attempt,
                 judge_session_id=judge.session_id,
             )
-        raise EvaluationError(
-            f"Judge produced no parseable score in {max_attempts} attempts: {last_error}"
-        )
+        raise EvaluationError(f"Judge produced no verdict in {max_attempts} attempts: {last_error}")
     finally:
         await judge.close()
         judge_transcript.close()
 
 
-# The wire contract the parser needs; behavioural instruction belongs to the
-# RVP itself (phase 3).
+# Name of the tool the judge submits its verdict through (kodo.toolspecs
+# SUBMIT_EVALUATION). Read off the tool-call detail event rather than imported,
+# to keep this package free of engine-internal imports.
+_SUBMIT_EVALUATION_TOOL = "submit_evaluation"
+
+# The wire contract the judge follows; behavioural instruction belongs to the
+# RVP itself (phase 3). The verdict rides the submit_evaluation tool call; the
+# JSON-object form is only a fallback for a judge that will not call the tool.
 _CONTRACT = (
-    'Reply with a single JSON object: {"score": <number 0-100>, '
-    '"report": "<your full assessment>"} — nothing else after it.'
+    "When you have finished reviewing, submit your verdict by calling the "
+    "`submit_evaluation` tool exactly once, with `score` (a number 0-100) and "
+    "`report` (your full written assessment). Do not answer in prose. If for any "
+    "reason you cannot call the tool, reply instead with a single JSON object — "
+    '{"score": <number 0-100>, "report": "<your full assessment>"} — and nothing else.'
 )
 
-_RETRY_PROMPT = f"Your previous reply was not parseable. {_CONTRACT}"
+_RETRY_PROMPT = f"You did not submit a verdict. {_CONTRACT}"
+
+
+def _verdict_from_tool_calls(tool_calls: list[dict[str, object]]) -> tuple[float, str] | None:
+    """Extract ``(score, report)`` from a ``submit_evaluation`` tool call.
+
+    Reads the verdict off the tool-call detail rows (the customer-visible
+    input/output projection the engine emits for every non-``ask_user`` call),
+    so it survives an agentic turn's surrounding narration. The last
+    ``submit_evaluation`` call wins; within a call the output rows (the tool's
+    coerced echo) are appended after the input rows, so they take precedence.
+
+    Args:
+        tool_calls (list[dict[str, object]]): ``Transcript.tool_calls`` output
+            (prep merged with detail) for the judge turn.
+
+    Returns:
+        tuple[float, str] | None: The verdict, or None if the judge did not
+        submit one this turn.
+    """
+    for call in reversed(tool_calls):
+        if call.get("tool_name") != _SUBMIT_EVALUATION_TOOL:
+            continue
+        detail = call.get("detail")
+        rows = detail.get("rows") if isinstance(detail, dict) else None
+        if not isinstance(rows, list):
+            continue
+        score: float | None = None
+        report = ""
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name = row.get("name")
+            if name == "score":
+                coerced = _coerce_row_score(row.get("value"))
+                if coerced is not None:
+                    score = coerced
+            elif name == "report":
+                report = str(row.get("value") or "")
+        if score is not None:
+            return score, report
+    return None
+
+
+def _coerce_row_score(value: object) -> float | None:
+    """Parse a detail-row score value (a stringified number) into 0–100.
+
+    Args:
+        value (object): The row's ``value`` (``stringify_value`` output).
+
+    Returns:
+        float | None: The score if it parses to a number in 0–100, else None.
+    """
+    try:
+        score = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if score != score or not 0.0 <= score <= 100.0:  # NaN or out of range
+        return None
+    return score
 
 
 def _render_judge_prompt(

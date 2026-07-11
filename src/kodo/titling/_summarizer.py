@@ -19,6 +19,7 @@ not a reload.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import cast
@@ -35,6 +36,19 @@ __all__ = ["generate_title", "titler_home_dir", "warm_up_titler_cache"]
 _log = logging.getLogger(__name__)
 
 _MODEL_NAME = "Falconsai/text_summarization"
+
+# When set (to anything truthy), load the model from the local cache only and
+# never contact HuggingFace — used by validation runs, which share one global
+# ~/.kodo/titler cache across every run and must not HEAD the Hub each time
+# (see kodo.validator._server.build_child_env). Off by default so ordinary use
+# still downloads/updates the model on demand.
+LOCAL_FILES_ONLY_ENV = "KODO_TITLER_LOCAL_FILES_ONLY"
+
+
+def _local_files_only() -> bool:
+    """Whether to load the titler from cache only (no HuggingFace network)."""
+    return os.environ.get(LOCAL_FILES_ONLY_ENV, "").strip().lower() not in ("", "0", "false")
+
 
 # The task prefix this T5 checkpoint was fine-tuned with (its own config.json
 # -> task_specific_params.summarization.prefix). Without it the model picks the
@@ -66,9 +80,19 @@ def _get_model() -> tuple[PreTrainedTokenizerBase, PreTrainedModel]:
         if _tokenizer is None or _model is None:
             home = titler_home_dir()
             home.mkdir(parents=True, exist_ok=True)
-            _log.info("Loading titler model %s (cache=%s)", _MODEL_NAME, home)
-            tokenizer = AutoTokenizer.from_pretrained(_MODEL_NAME, cache_dir=str(home))
-            model = AutoModelForSeq2SeqLM.from_pretrained(_MODEL_NAME, cache_dir=str(home))
+            local_only = _local_files_only()
+            _log.info(
+                "Loading titler model %s (cache=%s, local_files_only=%s)",
+                _MODEL_NAME,
+                home,
+                local_only,
+            )
+            tokenizer = AutoTokenizer.from_pretrained(
+                _MODEL_NAME, cache_dir=str(home), local_files_only=local_only
+            )
+            model = AutoModelForSeq2SeqLM.from_pretrained(
+                _MODEL_NAME, cache_dir=str(home), local_files_only=local_only
+            )
             model.to("cpu")
             model.eval()
             _tokenizer = tokenizer

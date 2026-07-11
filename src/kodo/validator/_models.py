@@ -29,7 +29,7 @@ from kodo.transport import MSG_LOCAL_LLM_INSTALL
 
 from ._client import ValidatorClient
 
-__all__ = ["LocalModelUnavailableError", "ensure_local_llms_installed"]
+__all__ = ["LocalModelUnavailableError", "ensure_local_llms_installed", "missing_local_llms"]
 
 _log = logging.getLogger(__name__)
 
@@ -111,6 +111,35 @@ async def ensure_local_llms_installed(
             raise LocalModelUnavailableError(
                 f"Timed out waiting for local model(s) to install: {sorted(remaining)}"
             )
+
+
+def missing_local_llms(kodo_dir: Path, names: Sequence[str]) -> list[str]:
+    """Names among *names* not installed on disk under *kodo_dir* (no server).
+
+    A pure disk pre-flight — no running server, no WS, no download. It mirrors
+    :func:`_record_status`'s notion of "installed" (every main/shard file
+    ``completed`` in ``manager-state.json``), so it agrees with what the
+    per-run installer would report, and lets a batch runner fail fast before
+    spinning up any scenario rather than downloading multi-GB models
+    implicitly.
+
+    Args:
+        kodo_dir (Path): The ``.kodo`` home to check (e.g. the template home).
+        names (Sequence[str]): Local registry entry names to require installed.
+
+    Returns:
+        list[str]: The subset of *names* that are not installed, in input
+            order and de-duplicated.
+    """
+    state = _read_manager_state(_models_dir(kodo_dir))
+    missing: list[str] = []
+    for name in names:
+        if name in missing:
+            continue
+        record = state.get(name)
+        if not isinstance(record, dict) or _record_status(record) != "installed":
+            missing.append(name)
+    return missing
 
 
 def _models_dir(kodo_dir: Path) -> Path:

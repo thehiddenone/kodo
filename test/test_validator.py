@@ -733,6 +733,181 @@ def test_parse_score_rejects_malformed_verdicts() -> None:
             validator_evaluate._parse_score(text)
 
 
+def _tool_call(tool_name: str, rows: list[dict[str, object]] | None) -> dict[str, object]:
+    """A ``Transcript.tool_calls`` entry (prep payload + merged detail)."""
+    detail = {"tool_call_id": "tc1", "rows": rows} if rows is not None else None
+    return {"tool_name": tool_name, "tool_call_id": "tc1", "detail": detail}
+
+
+def _rows(score: object, report: object) -> list[dict[str, object]]:
+    """submit_evaluation detail rows: input pair then the tool's output echo."""
+    return [
+        {"name": "score", "value": str(score), "source": "input", "visibility": "always"},
+        {"name": "report", "value": str(report), "source": "input", "visibility": "visible"},
+        {"name": "status", "value": "recorded", "source": "output", "visibility": "always"},
+        {"name": "score", "value": str(score), "source": "output", "visibility": "always"},
+        {"name": "report", "value": str(report), "source": "output", "visibility": "visible"},
+    ]
+
+
+def test_verdict_from_tool_calls_reads_submit_evaluation() -> None:
+    calls = [
+        _tool_call("read_file", None),
+        _tool_call("submit_evaluation", _rows("82.5", "solid but thin validation")),
+    ]
+    assert validator_evaluate._verdict_from_tool_calls(calls) == (
+        82.5,
+        "solid but thin validation",
+    )
+
+
+def test_verdict_from_tool_calls_prefers_last_call() -> None:
+    calls = [
+        _tool_call("submit_evaluation", _rows("10", "first pass")),
+        _tool_call("submit_evaluation", _rows("90", "on reflection, good")),
+    ]
+    assert validator_evaluate._verdict_from_tool_calls(calls) == (90.0, "on reflection, good")
+
+
+def test_verdict_from_tool_calls_returns_none_without_tool() -> None:
+    assert validator_evaluate._verdict_from_tool_calls([_tool_call("find_files", None)]) is None
+    assert validator_evaluate._verdict_from_tool_calls([]) is None
+    # A submit_evaluation call whose score row never parses yields no verdict.
+    bad = [_tool_call("submit_evaluation", _rows("not-a-number", "r"))]
+    assert validator_evaluate._verdict_from_tool_calls(bad) is None
+
+
+def test_coerce_row_score_bounds() -> None:
+    assert validator_evaluate._coerce_row_score("0") == 0.0
+    assert validator_evaluate._coerce_row_score("100") == 100.0
+    assert validator_evaluate._coerce_row_score("50.5") == 50.5
+    for bad in ("101", "-1", "nan", "abc", None, ""):
+        assert validator_evaluate._coerce_row_score(bad) is None
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight model check (missing_local_llms) — disk-only, no server/download
+# ---------------------------------------------------------------------------
+
+
+def test_missing_local_llms_disk_check(tmp_path: Path) -> None:
+    models = tmp_path / "llama.cpp" / "models"
+    models.mkdir(parents=True)
+    state = {
+        "installed": {"files": [{"role": "main", "status": "completed"}]},
+        "sharded": {
+            "files": [
+                {"role": "shard", "status": "completed"},
+                {"role": "shard", "status": "completed"},
+            ]
+        },
+        "pending": {"files": [{"role": "main", "status": "downloading"}]},
+        "failed": {"files": [{"role": "main", "status": "failed"}]},
+    }
+    (models / "manager-state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    assert validator_models.missing_local_llms(tmp_path, ["installed", "sharded"]) == []
+    assert validator_models.missing_local_llms(
+        tmp_path, ["installed", "pending", "failed", "absent", "absent"]
+    ) == ["pending", "failed", "absent"]
+
+
+def test_missing_local_llms_no_state_file(tmp_path: Path) -> None:
+    # No manager-state.json at all → every name is missing.
+    assert validator_models.missing_local_llms(tmp_path, ["a", "b"]) == ["a", "b"]
+
+
+# ---------------------------------------------------------------------------
+# Server child environment (HOME redirect + global HF cache + titler offline)
+# ---------------------------------------------------------------------------
+
+
+def test_build_child_env_redirects_home_and_pins_hf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kodo.validator import _server as validator_server
+
+    real_home = tmp_path / "real-home"
+    run_home = tmp_path / "run-home"
+    monkeypatch.setenv("HOME", str(real_home))
+    monkeypatch.delenv("HF_HOME", raising=False)
+
+    env = validator_server.build_child_env(run_home)
+
+    # HOME/USERPROFILE point at the throwaway run home.
+    assert env["HOME"] == str(run_home)
+    assert env["USERPROFILE"] == str(run_home)
+    # HF cache is pinned to the *real* global location, not under the run home.
+    assert env["HF_HOME"] == str(real_home / ".cache" / "huggingface")
+    assert str(run_home) not in env["HF_HOME"]
+    # The titler loads from the shared cache without hitting the Hub.
+    assert env["KODO_TITLER_LOCAL_FILES_ONLY"] == "1"
+
+
+def test_build_child_env_respects_existing_hf_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kodo.validator import _server as validator_server
+
+    monkeypatch.setenv("HOME", str(tmp_path / "real-home"))
+    monkeypatch.setenv("HF_HOME", "/some/global/hf")
+
+    env = validator_server.build_child_env(tmp_path / "run-home")
+
+    assert env["HF_HOME"] == "/some/global/hf"
+
+
+# ---------------------------------------------------------------------------
+# Scenario selector resolver
+# ---------------------------------------------------------------------------
+
+_FAKE_SCENARIO = (
+    "from kodo.validator import Scenario\n"
+    "SCENARIO = Scenario(name={name!r}, prompts=['p'], "
+    "llm_under_test='lut-a', validation_llm='vllm-b')\n"
+)
+
+
+def _write_fake_scenarios(root: Path) -> None:
+    (root / "fam").mkdir(parents=True)
+    (root / "fam" / "a.py").write_text(_FAKE_SCENARIO.format(name="a"), encoding="utf-8")
+    (root / "fam" / "b.py").write_text(_FAKE_SCENARIO.format(name="b"), encoding="utf-8")
+    (root / "top.py").write_text(_FAKE_SCENARIO.format(name="top"), encoding="utf-8")
+    # Private/dunder files are not scenarios.
+    (root / "_helper.py").write_text("SCENARIO = None\n", encoding="utf-8")
+
+
+def test_resolve_selectors_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from kodo.validator import scenarios as scn
+
+    _write_fake_scenarios(tmp_path)
+    monkeypatch.setattr(scn, "_SCENARIOS_DIR", tmp_path)
+
+    assert set(scn.scenario_ids()) == {"fam.a", "fam.b", "top"}
+    # Submodule expands to all its files, sorted.
+    assert [i for i, _ in scn.resolve_selectors(["fam"])] == ["fam.a", "fam.b"]
+    # A single scenario by dotted id.
+    assert [i for i, _ in scn.resolve_selectors(["fam.a"])] == ["fam.a"]
+    # 'all' selects everything; dedup keeps a repeat from running twice.
+    assert len(scn.resolve_selectors(["all"])) == 3
+    assert [i for i, _ in scn.resolve_selectors(["fam", "fam.a"])] == ["fam.a", "fam.b"]
+    # Unknown selector fails loudly.
+    with pytest.raises(scn.ScenarioResolutionError):
+        scn.resolve_selectors(["nope"])
+
+
+def test_resolve_selectors_shipped_scenarios() -> None:
+    from kodo.validator import scenarios as scn
+
+    ids = scn.scenario_ids()
+    assert "qwen35-9b.tictactoe_console" in ids
+    assert "qwen36-27b.tictactoe_upp" in ids
+    resolved = scn.resolve_selectors(["all"])
+    assert {i for i, _ in resolved} == set(ids)
+    names = {s.name for _, s in resolved}
+    assert {"tictactoe-console", "tictactoe-upp"} <= names
+
+
 # ---------------------------------------------------------------------------
 # llm.select / llm.complete against the real in-process server
 # ---------------------------------------------------------------------------
