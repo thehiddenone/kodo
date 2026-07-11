@@ -66,10 +66,12 @@ guessing at a root or falling back to some other path.
 4. **Substitute and run.** Replace the reserved placeholders — `<pkg>` → `name`,
    `<version>` → `version` (drop the constraint when empty), `<extra>` → `extra`
    — in each command line, then run them **in order, with `working_dir` set to
-   `project_root_path`**, with `run_command`. Run only the commands the block
-   lists (plus, for a `build`-kind step the contract describes as a direct
-   manifest edit, make exactly that edit with `edit_file` under
-   `project_root_path`). Do not add flags or steps of your own.
+   `project_root_path`**, with `run_command`. When the block instead describes a
+   **direct manifest edit** (some managers have no CLI verb for the operation —
+   see the *Dependency Contract*'s `## Operations`), make exactly that edit with
+   `edit_file` under `project_root_path`, substituting the placeholders into the
+   before/after content it specifies. Do not add flags, commands, or edits of
+   your own beyond what the block lists.
 
 5. **Resolve conflicts if needed.** If an `Add`/`Update` command fails because the
    dependency graph will not resolve, follow `## Conflict Resolution`

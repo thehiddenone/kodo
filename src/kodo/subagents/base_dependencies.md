@@ -74,9 +74,19 @@ One `###` subsection **per kind in `## Kinds`**, heading = the exact kind name
 - **Update** — change `<pkg>` to `<version>` (or to latest when `<version>` is empty) for this kind.
 
 Each label is followed by a fenced command block — one shell command per line,
-run in order from the project root. Use the reserved placeholders; if an
-operation genuinely cannot be expressed for a kind, write a single line stating
-so instead of a command (the reader surfaces it as a failure, never guesses).
+run in order from the project root. Use the reserved placeholders.
+
+Some managers have no CLI verb for a given operation (e.g. `vcpkg`'s manifest
+mode ships `add` but no `remove` or version-pin command) and the operation is
+only reachable by editing the manifest directly. For that case, write **a
+direct manifest edit** instead of a command block: state the exact file, the
+JSON/TOML/etc. path or array within it, and the precise before/after content
+(substituting the reserved placeholders) — precise enough that an agent with
+only `edit_file` can perform it mechanically, the same way a command block is
+precise enough to run verbatim. Only fall back to this when the manager
+genuinely has no command; prefer a real command wherever one exists. If an
+operation cannot be expressed *either* way for a kind, write a single line
+stating so (the reader surfaces it as a failure, never guesses).
 
 ### `## Conflict Resolution`
 
