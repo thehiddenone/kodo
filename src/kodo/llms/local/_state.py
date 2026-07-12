@@ -32,12 +32,14 @@ def _file_to_json(file: ModelFile) -> dict[str, object]:
         "downloaded_bytes": file.downloaded_bytes,
         "status": file.status.value,
         "error": file.error,
+        "bytes_per_second": file.bytes_per_second,
     }
 
 
 def _file_from_json(raw: dict[str, object]) -> ModelFile:
     size = raw.get("size")
     etag = raw.get("etag")
+    bytes_per_second = raw.get("bytes_per_second")
     return ModelFile(
         filename=str(raw["filename"]),
         role=FileRole(str(raw["role"])),
@@ -48,6 +50,9 @@ def _file_from_json(raw: dict[str, object]) -> ModelFile:
         downloaded_bytes=int(cast(int, raw.get("downloaded_bytes", 0)) or 0),
         status=FileStatus(str(raw.get("status", "pending"))),
         error=str(raw.get("error", "")),
+        bytes_per_second=float(cast(float, bytes_per_second))
+        if bytes_per_second is not None
+        else None,
     )
 
 

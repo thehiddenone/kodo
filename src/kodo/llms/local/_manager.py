@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import shutil
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,6 +40,30 @@ _PART_SUFFIX = ".part"
 # multi-GB transfer isn't rewriting the state file on every 64 KiB chunk.
 _FLUSH_INTERVAL_SECONDS = 1.0
 
+# Trailing window (seconds) over which ModelFile.bytes_per_second is measured.
+_SPEED_WINDOW_SECONDS = 10.0
+
+
+def _windowed_bytes_per_second(
+    samples: deque[tuple[float, int]], now: float, now_bytes: int
+) -> float | None:
+    """Append ``(now, now_bytes)`` to *samples* and return the transfer rate.
+
+    *samples* is mutated in place: pruned down to whatever falls inside the
+    trailing ``_SPEED_WINDOW_SECONDS``, but never below one entry (the one
+    just appended), so a caller with a single very slow chunk still keeps a
+    running sample instead of losing it to the prune. Returns ``None`` until
+    a second sample exists (nothing to measure a rate between yet).
+    """
+    samples.append((now, now_bytes))
+    while len(samples) > 1 and now - samples[0][0] > _SPEED_WINDOW_SECONDS:
+        samples.popleft()
+    if len(samples) < 2:
+        return None
+    oldest_time, oldest_bytes = samples[0]
+    elapsed = now - oldest_time
+    return (now_bytes - oldest_bytes) / elapsed if elapsed > 0 else None
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -68,16 +94,24 @@ class LocalModelManager:
     exist. Construct one per ``root_dir`` and reuse it for the process
     lifetime: reusing the instance is what makes :meth:`pause_download`
     correlate with an in-flight :meth:`download_model` call, since the
-    pause signal is an in-memory ``threading.Event`` that does not survive
+    pause signal is an in-memory ``asyncio.Event`` that does not survive
     across separate instances (a fresh instance after a restart can still
     resume any incomplete download via :meth:`resume_download`, just not
     *pause* a download it never started).
+
+    Every method that transfers bytes (:meth:`download_model`,
+    :meth:`resume_download`, :meth:`download_mmproj`) is a coroutine —
+    genuinely non-blocking, since the byte transfer itself
+    (:mod:`kodo.llms.local._http`) runs several concurrent ``aiohttp``
+    requests rather than one blocking connection. There is no worker thread
+    anywhere in this class; a caller on the same event loop as an in-flight
+    transfer sees every other request serviced normally in between.
     """
 
     __root_dir: Path
     __state_path: Path
     __lock: threading.RLock
-    __cancel_events: dict[str, threading.Event]
+    __cancel_events: dict[str, asyncio.Event]
 
     def __init__(self, root_dir: Path) -> None:
         """Construct a manager rooted at *root_dir*.
@@ -249,7 +283,7 @@ class LocalModelManager:
     # Download / resume / pause / uninstall
     # ------------------------------------------------------------------
 
-    def download_model(
+    async def download_model(
         self,
         model_id: str,
         repo_id: str,
@@ -320,7 +354,9 @@ class LocalModelManager:
         # nothing to show for a download that failed this early).
         self.__mutate_state(seed)
         try:
-            available = list_repo_files(repo_id, revision=revision, token=token)
+            available = await asyncio.to_thread(
+                list_repo_files, repo_id, revision=revision, token=token
+            )
             shard_filenames = detect_shard_group(filename, available)
         except LocalModelError as exc:
             self.__set_file_status(model_id, filename, status=FileStatus.FAILED, error=str(exc))
@@ -360,10 +396,10 @@ class LocalModelManager:
             for f in self.__require_record(model_id).files
             if f.role in (FileRole.MAIN, FileRole.SHARD) and not f.is_complete
         ]
-        self.__run_transfer(model_id, targets, token=token, progress_cb=progress_cb)
+        await self.__run_transfer(model_id, targets, token=token, progress_cb=progress_cb)
         return self.__require_record(model_id)
 
-    def resume_download(
+    async def resume_download(
         self,
         model_id: str,
         *,
@@ -395,16 +431,18 @@ class LocalModelManager:
         """
         record = self.__require_record(model_id)
         pending = [f for f in record.files if not f.is_complete]
-        self.__run_transfer(model_id, pending, token=token, progress_cb=progress_cb)
+        await self.__run_transfer(model_id, pending, token=token, progress_cb=progress_cb)
         return self.__require_record(model_id)
 
     def pause_download(self, model_id: str) -> None:
         """Signal an in-flight download of *model_id* to stop.
 
         A no-op if nothing is currently downloading for *model_id* — safe to
-        call speculatively. The download stops between chunks (at most one
-        chunk's worth of extra data), leaving the ``.part`` file in place for
-        :meth:`resume_download` to continue later.
+        call speculatively. Every worker stream finishes its current chunk
+        (at most ``parallelism`` chunks' worth of extra data, since several
+        run concurrently) before the transfer stops, leaving the ``.part``
+        file and its chunk sidecar in place for :meth:`resume_download` to
+        continue later.
 
         Args:
             model_id (str): Caller-chosen model key.
@@ -414,7 +452,7 @@ class LocalModelManager:
         if event is not None:
             event.set()
 
-    def download_mmproj(
+    async def download_mmproj(
         self,
         model_id: str,
         repo_id: str,
@@ -479,7 +517,7 @@ class LocalModelManager:
         mmproj = self.__require_record(model_id).mmproj_file
         assert mmproj is not None  # just set by mutate() above
         if not mmproj.is_complete:
-            self.__run_transfer(model_id, [mmproj], token=token, progress_cb=progress_cb)
+            await self.__run_transfer(model_id, [mmproj], token=token, progress_cb=progress_cb)
         path = self.get_mmproj_path(model_id)
         if path is None:
             raise DownloadError(
@@ -510,7 +548,7 @@ class LocalModelManager:
     # Internal: the shared transfer loop
     # ------------------------------------------------------------------
 
-    def __run_transfer(
+    async def __run_transfer(
         self,
         model_id: str,
         targets: list[ModelFile],
@@ -521,7 +559,7 @@ class LocalModelManager:
         if not targets:
             return
 
-        cancel_event = threading.Event()
+        cancel_event = asyncio.Event()
         with self.__lock:
             self.__cancel_events[model_id] = cancel_event
         try:
@@ -537,11 +575,45 @@ class LocalModelManager:
                     return None
                 return sum(size for size in running_sizes.values() if size is not None)
 
-            for index, file in enumerate(targets, start=1):
-                self.__set_file_status(model_id, file.filename, status=FileStatus.DOWNLOADING)
+            # Resolve every target's size upfront, not just the one whose turn
+            # it is — otherwise a split GGUF's overall_total() (and
+            # kodo-vsix's progress bar, which polls manager-state.json for it)
+            # stays unknown/0% for the whole first shard, since later shards'
+            # sizes were previously only learned right before *their* turn in
+            # the loop below. Failures here are swallowed: the real resolve
+            # (and its error handling) still happens per-file when that
+            # file's turn actually comes up.
+            for file in targets:
+                if running_sizes[file.filename] is not None:
+                    continue
                 try:
-                    resolved = resolve_file(
-                        file.repo_id, file.filename, revision=file.revision, token=token
+                    presized = await asyncio.to_thread(
+                        resolve_file,
+                        file.repo_id,
+                        file.filename,
+                        revision=file.revision,
+                        token=token,
+                    )
+                except LocalModelError:
+                    continue
+                running_sizes[file.filename] = presized.size
+                self.__set_file_status(model_id, file.filename, size=presized.size)
+
+            for index, file in enumerate(targets, start=1):
+                # bytes_per_second=None here clears any stale rate left over from
+                # a previous attempt at this same file (e.g. a prior pause) —
+                # otherwise the panel would show a frozen speed for the moment
+                # between "resume clicked" and the first fresh sample below.
+                self.__set_file_status(
+                    model_id, file.filename, status=FileStatus.DOWNLOADING, bytes_per_second=None
+                )
+                try:
+                    resolved = await asyncio.to_thread(
+                        resolve_file,
+                        file.repo_id,
+                        file.filename,
+                        revision=file.revision,
+                        token=token,
                     )
                 except LocalModelError as exc:
                     self.__set_file_status(
@@ -554,15 +626,22 @@ class LocalModelManager:
                 final_path = self.__model_dir(model_id) / file.filename
 
                 last_flush = [0.0]
+                speed_samples: deque[tuple[float, int]] = deque()
 
                 def on_bytes(
                     n: int,
                     _filename: str = file.filename,
                     _index: int = index,
                     _last_flush: list[float] = last_flush,
+                    _speed_samples: deque[tuple[float, int]] = speed_samples,
                 ) -> None:
                     running_bytes[_filename] = n
                     now = time.monotonic()
+                    # Sampled on every call (cheap deque append/prune), not just at
+                    # the flush cadence below — otherwise the window would only ever
+                    # see one sample per second and the rate would be measured over
+                    # far fewer than the intended ~10s of actual transfer activity.
+                    bytes_per_second = _windowed_bytes_per_second(_speed_samples, now, n)
                     if now - _last_flush[0] >= _FLUSH_INTERVAL_SECONDS:
                         _last_flush[0] = now
                         # Unconditional, regardless of progress_cb — this is what lets
@@ -575,6 +654,7 @@ class LocalModelManager:
                             status=FileStatus.DOWNLOADING,
                             downloaded_bytes=n,
                             size=running_sizes[_filename],
+                            bytes_per_second=bytes_per_second,
                         )
                     if progress_cb is not None:
                         progress_cb(
@@ -592,7 +672,7 @@ class LocalModelManager:
                         )
 
                 try:
-                    downloaded = download_to_part_file(
+                    downloaded = await download_to_part_file(
                         resolved.url,
                         part_path,
                         headers=resolved.headers,
@@ -601,22 +681,23 @@ class LocalModelManager:
                         on_bytes=on_bytes,
                     )
                 except DownloadPausedError:
-                    partial = (
-                        part_path.stat().st_size
-                        if part_path.exists()
-                        else running_bytes[file.filename]
-                    )
+                    # Not part_path.stat().st_size: a chunked transfer
+                    # pre-truncates .part to its full expected size upfront (see
+                    # _http._download_parallel), so the file's size on disk no
+                    # longer reflects how much of it is actually written —
+                    # running_bytes, kept current by on_bytes, does.
                     self.__set_file_status(
                         model_id,
                         file.filename,
                         status=FileStatus.PAUSED,
-                        downloaded_bytes=partial,
+                        downloaded_bytes=running_bytes[file.filename],
                         size=resolved.size,
                         etag=resolved.etag,
+                        bytes_per_second=None,
                     )
                     return
                 except DownloadError as exc:
-                    partial = part_path.stat().st_size if part_path.exists() else 0
+                    partial = running_bytes[file.filename]
                     self.__set_file_status(
                         model_id,
                         file.filename,
@@ -625,6 +706,7 @@ class LocalModelManager:
                         downloaded_bytes=partial,
                         size=resolved.size,
                         etag=resolved.etag,
+                        bytes_per_second=None,
                     )
                     raise
 
@@ -638,6 +720,7 @@ class LocalModelManager:
                     size=resolved.size,
                     etag=resolved.etag,
                     error="",
+                    bytes_per_second=None,
                 )
         finally:
             with self.__lock:

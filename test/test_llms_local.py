@@ -13,12 +13,14 @@ from __future__ import annotations
 import http.server
 import re
 import threading
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 
 from kodo.llms.local import (
+    DownloadError,
     DownloadProgress,
     FileRole,
     FileStatus,
@@ -39,6 +41,14 @@ from kodo.llms.local._state import save_state
 class _RangeHandler(http.server.BaseHTTPRequestHandler):
     payloads: dict[str, bytes] = {}
     ignore_range: bool = False
+    # Artificial per-request delay and concurrent-request high-water mark —
+    # exist solely so a test can prove chunk requests really do overlap in
+    # wall-clock time, rather than a parallel-looking API that's secretly
+    # still fetching one chunk at a time.
+    request_delay: float = 0.0
+    concurrent = 0
+    max_concurrent = 0
+    _concurrency_lock = threading.Lock()
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         pass
@@ -50,11 +60,25 @@ class _RangeHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        with _RangeHandler._concurrency_lock:
+            _RangeHandler.concurrent += 1
+            _RangeHandler.max_concurrent = max(
+                _RangeHandler.max_concurrent, _RangeHandler.concurrent
+            )
+        if self.request_delay:
+            time.sleep(self.request_delay)
+        try:
+            self._respond(body)
+        finally:
+            with _RangeHandler._concurrency_lock:
+                _RangeHandler.concurrent -= 1
+
+    def _respond(self, body: bytes) -> None:
         start, end = 0, len(body) - 1
         status = 200
         range_header = None if self.ignore_range else self.headers.get("Range")
         if range_header:
-            match = re.match(r"bytes=(\d+)-", range_header)
+            match = re.match(r"bytes=(\d+)-(\d*)", range_header)
             if match:
                 start = int(match.group(1))
                 if start >= len(body):
@@ -62,6 +86,8 @@ class _RangeHandler(http.server.BaseHTTPRequestHandler):
                     self.send_header("Content-Range", f"bytes */{len(body)}")
                     self.end_headers()
                     return
+                if match.group(2):
+                    end = min(int(match.group(2)), len(body) - 1)
                 status = 206
 
         chunk = body[start : end + 1]
@@ -77,6 +103,9 @@ class _RangeHandler(http.server.BaseHTTPRequestHandler):
 def http_server() -> Iterator[str]:
     _RangeHandler.payloads = {}
     _RangeHandler.ignore_range = False
+    _RangeHandler.request_delay = 0.0
+    _RangeHandler.concurrent = 0
+    _RangeHandler.max_concurrent = 0
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RangeHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -140,13 +169,13 @@ def _patch_hf(
 # ---------------------------------------------------------------------------
 
 
-def test_download_single_file(
+async def test_download_single_file(
     manager: LocalModelManager, http_server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     payload = _payload(500)
     _patch_hf(monkeypatch, http_server, {"model.gguf": payload})
 
-    record = manager.download_model("m1", "org/repo", "model.gguf")
+    record = await manager.download_model("m1", "org/repo", "model.gguf")
 
     assert record.is_installed
     path = manager.get_model_path("m1")
@@ -154,11 +183,32 @@ def test_download_single_file(
     assert path.read_bytes() == payload
 
     # Idempotent: calling again doesn't error and reports the same install.
-    record2 = manager.download_model("m1", "org/repo", "model.gguf")
+    record2 = await manager.download_model("m1", "org/repo", "model.gguf")
     assert record2.is_installed
 
 
-def test_download_missing_repo_raises(
+async def test_download_uses_multiple_concurrent_connections(
+    manager: LocalModelManager, http_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The core ask behind this module: one file's transfer runs as several
+    concurrent range requests, not a single stream dressed up to look
+    parallel. Each request sleeps briefly server-side so overlapping ones are
+    observable regardless of how fast loopback I/O actually is."""
+    payload = _payload(4096)
+    _patch_hf(monkeypatch, http_server, {"model.gguf": payload})
+    monkeypatch.setattr("kodo.llms.local._http._CHUNK_SIZE", 64)
+    monkeypatch.setattr("kodo.llms.local._http._DEFAULT_PARALLELISM", 6)
+    _RangeHandler.request_delay = 0.02
+
+    await manager.download_model("m1", "org/repo", "model.gguf")
+
+    path = manager.get_model_path("m1")
+    assert path is not None
+    assert path.read_bytes() == payload
+    assert _RangeHandler.max_concurrent >= 4
+
+
+async def test_download_missing_repo_raises(
     manager: LocalModelManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def fake_list_repo_files(repo_id: str, **_kwargs: object) -> list[str]:
@@ -166,7 +216,7 @@ def test_download_missing_repo_raises(
 
     monkeypatch.setattr("kodo.llms.local._manager.list_repo_files", fake_list_repo_files)
     with pytest.raises(ShardResolutionError):
-        manager.download_model("m1", "org/does-not-exist", "model.gguf")
+        await manager.download_model("m1", "org/does-not-exist", "model.gguf")
 
     # The failure is still persisted — a bad repo_id raises before any shard
     # is even known, but kodo-vsix's manager-state.json poll needs *something*
@@ -183,18 +233,24 @@ def test_download_missing_repo_raises(
 # ---------------------------------------------------------------------------
 
 
-def test_pause_then_resume_produces_identical_bytes(
+async def test_pause_then_resume_produces_identical_bytes(
     manager: LocalModelManager, http_server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     payload = _payload(400)
     _patch_hf(monkeypatch, http_server, {"model.gguf": payload})
     monkeypatch.setattr("kodo.llms.local._http._CHUNK_SIZE", 16)
+    # Single stream here so the pause boundary below is deterministic — with
+    # several concurrent chunk workers over instant loopback I/O, "pause after
+    # >=100 bytes" would otherwise race the remaining ~300 bytes to
+    # completion. Real multi-stream behavior is covered by
+    # test_download_uses_multiple_concurrent_connections below.
+    monkeypatch.setattr("kodo.llms.local._http._DEFAULT_PARALLELISM", 1)
 
     def progress_cb(update: DownloadProgress) -> None:
         if update.bytes_downloaded >= 100:
             manager.pause_download("m1")
 
-    manager.download_model("m1", "org/repo", "model.gguf", progress_cb=progress_cb)
+    await manager.download_model("m1", "org/repo", "model.gguf", progress_cb=progress_cb)
 
     record = manager.get_record("m1")
     assert record is not None
@@ -204,7 +260,7 @@ def test_pause_then_resume_produces_identical_bytes(
     assert manager.get_model_path("m1") is None  # not installed while paused
     assert manager.list_resumable() == ["m1"]
 
-    manager.resume_download("m1")
+    await manager.resume_download("m1")
 
     path = manager.get_model_path("m1")
     assert path is not None
@@ -212,33 +268,38 @@ def test_pause_then_resume_produces_identical_bytes(
     assert manager.list_resumable() == []
 
 
-def test_resume_when_server_ignores_range_restarts_cleanly(
+async def test_resume_fails_clearly_when_server_stops_honoring_range(
     manager: LocalModelManager, http_server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A server that stops honoring ``Range`` mid-transfer can't be silently
+    recovered from the way the old single-stream downloader recovered (by
+    restarting the whole file from byte 0): a bare ``200`` response to one
+    worker's *bounded* chunk request would hand back the whole file's bytes
+    at the wrong offset for that chunk, and several other chunk workers may
+    already be in flight. This must raise a clear ``DownloadError`` instead
+    of silently writing the wrong bytes into the middle of the file."""
     payload = _payload(300)
     _patch_hf(monkeypatch, http_server, {"model.gguf": payload})
     monkeypatch.setattr("kodo.llms.local._http._CHUNK_SIZE", 16)
+    monkeypatch.setattr("kodo.llms.local._http._DEFAULT_PARALLELISM", 1)
 
     def progress_cb(update: DownloadProgress) -> None:
         if update.bytes_downloaded >= 80:
             manager.pause_download("m1")
 
-    manager.download_model("m1", "org/repo", "model.gguf", progress_cb=progress_cb)
+    await manager.download_model("m1", "org/repo", "model.gguf", progress_cb=progress_cb)
     record = manager.get_record("m1")
     assert record is not None
     assert record.files[0].status == FileStatus.PAUSED
 
     _RangeHandler.ignore_range = True  # server now always sends the full body from byte 0
-    manager.resume_download("m1")
-
-    path = manager.get_model_path("m1")
-    assert path is not None
-    assert path.read_bytes() == payload
+    with pytest.raises(DownloadError, match="Range"):
+        await manager.resume_download("m1")
 
 
-def test_resume_unknown_model_raises(manager: LocalModelManager) -> None:
+async def test_resume_unknown_model_raises(manager: LocalModelManager) -> None:
     with pytest.raises(ModelNotFoundError):
-        manager.resume_download("nope")
+        await manager.resume_download("nope")
 
 
 def test_pause_is_noop_when_nothing_downloading(manager: LocalModelManager) -> None:
@@ -250,7 +311,7 @@ def test_pause_is_noop_when_nothing_downloading(manager: LocalModelManager) -> N
 # ---------------------------------------------------------------------------
 
 
-def test_multi_file_shard_deduction_from_any_shard(
+async def test_multi_file_shard_deduction_from_any_shard(
     manager: LocalModelManager, http_server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     shard_names = [
@@ -262,7 +323,7 @@ def test_multi_file_shard_deduction_from_any_shard(
     _patch_hf(monkeypatch, http_server, payloads)
 
     # Ask for the *second* shard — every sibling must still be deduced and fetched.
-    record = manager.download_model("m1", "org/repo", "model-00002-of-00003.gguf")
+    record = await manager.download_model("m1", "org/repo", "model-00002-of-00003.gguf")
 
     assert record.is_installed
     assert [f.filename for f in record.main_files] == shard_names
@@ -273,7 +334,36 @@ def test_multi_file_shard_deduction_from_any_shard(
         assert (path.parent / name).read_bytes() == payloads[name]
 
 
-def test_missing_sibling_shard_raises(
+async def test_multi_shard_overall_total_known_from_first_progress_event(
+    manager: LocalModelManager, http_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for kodo-vsix's progress bar: it reads
+    ``overall_bytes_total`` off ``DownloadProgress``/manager-state.json, which
+    used to stay ``None`` until each shard's own turn in the transfer loop —
+    rendering an empty bar for the whole download of a large split GGUF.
+    Every shard's size must now be resolved before the first byte of shard 1
+    is even requested.
+    """
+    shard_names = [
+        "model-00001-of-00003.gguf",
+        "model-00002-of-00003.gguf",
+        "model-00003-of-00003.gguf",
+    ]
+    payloads = {name: _payload(50 + i) for i, name in enumerate(shard_names)}
+    _patch_hf(monkeypatch, http_server, payloads)
+
+    progress_events: list[DownloadProgress] = []
+    await manager.download_model(
+        "m1", "org/repo", shard_names[0], progress_cb=progress_events.append
+    )
+
+    assert progress_events
+    first = progress_events[0]
+    assert first.file_index == 1
+    assert first.overall_bytes_total == sum(len(p) for p in payloads.values())
+
+
+async def test_missing_sibling_shard_raises(
     manager: LocalModelManager, http_server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _patch_hf(
@@ -283,7 +373,7 @@ def test_missing_sibling_shard_raises(
         repo_files=["model-00001-of-00003.gguf", "model-00002-of-00003.gguf"],
     )
     with pytest.raises(ShardResolutionError):
-        manager.download_model("m1", "org/repo", "model-00001-of-00003.gguf")
+        await manager.download_model("m1", "org/repo", "model-00001-of-00003.gguf")
 
 
 # ---------------------------------------------------------------------------
@@ -291,12 +381,12 @@ def test_missing_sibling_shard_raises(
 # ---------------------------------------------------------------------------
 
 
-def test_mmproj_requires_existing_model(manager: LocalModelManager) -> None:
+async def test_mmproj_requires_existing_model(manager: LocalModelManager) -> None:
     with pytest.raises(ModelNotFoundError):
-        manager.download_mmproj("nope", "org/repo", "mmproj.gguf")
+        await manager.download_mmproj("nope", "org/repo", "mmproj.gguf")
 
 
-def test_mmproj_attaches_to_existing_model(
+async def test_mmproj_attaches_to_existing_model(
     manager: LocalModelManager, http_server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     model_payload = _payload(200)
@@ -308,8 +398,8 @@ def test_mmproj_attaches_to_existing_model(
         repo_files=["model.gguf"],
     )
 
-    manager.download_model("m1", "org/repo", "model.gguf")
-    mmproj_path = manager.download_mmproj("m1", "org/repo", "mmproj.gguf")
+    await manager.download_model("m1", "org/repo", "model.gguf")
+    mmproj_path = await manager.download_mmproj("m1", "org/repo", "mmproj.gguf")
 
     assert mmproj_path.read_bytes() == mmproj_payload
     assert manager.get_model_path("m1") is not None  # main model untouched
@@ -321,13 +411,13 @@ def test_mmproj_attaches_to_existing_model(
 # ---------------------------------------------------------------------------
 
 
-def test_uninstall_removes_files_and_state(
+async def test_uninstall_removes_files_and_state(
     manager: LocalModelManager, http_server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     payload = _payload(100)
     _patch_hf(monkeypatch, http_server, {"model.gguf": payload})
 
-    manager.download_model("m1", "org/repo", "model.gguf")
+    await manager.download_model("m1", "org/repo", "model.gguf")
     model_dir = manager.get_model_path("m1")
     assert model_dir is not None and model_dir.parent.is_dir()
 
@@ -382,7 +472,7 @@ def test_reconcile_is_noop_when_nothing_stale(tmp_path: Path) -> None:
     assert not (root / "manager-state.json").exists()
 
 
-def test_in_flight_download_periodically_persists_progress(
+async def test_in_flight_download_periodically_persists_progress(
     manager: LocalModelManager, http_server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``manager-state.json`` must reflect live progress mid-transfer, not just
@@ -400,7 +490,7 @@ def test_in_flight_download_periodically_persists_progress(
         assert on_disk is not None
         seen_on_disk.append(on_disk.files[0].downloaded_bytes)
 
-    manager.download_model("m1", "org/repo", "model.gguf", progress_cb=progress_cb)
+    await manager.download_model("m1", "org/repo", "model.gguf", progress_cb=progress_cb)
 
     # With the flush interval forced to 0, every chunk flushes — the on-disk
     # byte count should have moved during the transfer, not just jumped from
@@ -408,3 +498,30 @@ def test_in_flight_download_periodically_persists_progress(
     assert any(0 < n < len(payload) for n in seen_on_disk)
 
     manager.uninstall("m1")  # no-op the second time
+
+
+async def test_download_speed_reported_then_cleared_on_completion(
+    manager: LocalModelManager, http_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``bytes_per_second`` should turn non-``None`` once at least two chunk
+    samples have landed (see ``_windowed_bytes_per_second``), then clear back
+    to ``None`` once the file leaves ``DOWNLOADING`` — a completed/paused/
+    failed file must never show a frozen, stale rate."""
+    payload = _payload(200)
+    _patch_hf(monkeypatch, http_server, {"model.gguf": payload})
+    monkeypatch.setattr("kodo.llms.local._http._CHUNK_SIZE", 16)
+    monkeypatch.setattr("kodo.llms.local._manager._FLUSH_INTERVAL_SECONDS", 0.0)
+
+    seen_rates: list[float | None] = []
+
+    def progress_cb(update: DownloadProgress) -> None:
+        on_disk = manager.get_record("m1")
+        assert on_disk is not None
+        seen_rates.append(on_disk.files[0].bytes_per_second)
+
+    await manager.download_model("m1", "org/repo", "model.gguf", progress_cb=progress_cb)
+
+    assert any(rate is not None for rate in seen_rates)
+    record = manager.get_record("m1")
+    assert record is not None
+    assert record.files[0].bytes_per_second is None

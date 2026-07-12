@@ -15,7 +15,7 @@ import logging.handlers
 import shutil
 import sys
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import cast
 
@@ -740,9 +740,15 @@ async def _handle_llamacpp_install(req: Request) -> None:
 
 
 def _run_background_download(
-    model_id: str, work: Callable[[], object], connection: Connection
+    model_id: str, work: Callable[[], Coroutine[object, object, object]], connection: Connection
 ) -> None:
-    """Fire-and-forget a blocking download/resume call on a worker thread.
+    """Fire-and-forget an async download/resume call as a background task.
+
+    ``work`` is native ``asyncio`` (:mod:`kodo.llms.local` runs its transfers
+    as several concurrent ``aiohttp`` requests, not a blocking call), so this
+    just schedules it as a task — no worker thread involved, and every other
+    connection's requests are still serviced on the same event loop while it
+    runs.
 
     Byte-level progress is **not** streamed back over this (or any) connection
     — kodo-vsix follows it by polling ``manager-state.json`` directly off disk
@@ -766,7 +772,7 @@ def _run_background_download(
 
     async def run() -> None:
         try:
-            await asyncio.to_thread(work)
+            await work()
         except LocalModelError as exc:
             _log.exception("Background download failed for %r", model_id)
             await connection.send(

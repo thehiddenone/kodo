@@ -533,11 +533,11 @@ async def test_local_llm_install_pushes_registry_state_again_on_completion(
     # touching the real transfer machinery (covered separately by
     # test_llms_local.py).
     downloaded = {"done": False}
-    monkeypatch.setattr(
-        LocalModelManager,
-        "download_model",
-        lambda self, *a, **k: downloaded.__setitem__("done", True),
-    )
+
+    async def _fake_download(self: object, *a: object, **k: object) -> None:
+        downloaded["done"] = True
+
+    monkeypatch.setattr(LocalModelManager, "download_model", _fake_download)
     monkeypatch.setattr(
         LocalModelManager,
         "get_model_path",
@@ -573,7 +573,7 @@ async def test_local_llm_install_pushes_registry_state_after_failure_too(
     await ws.send_str(req.to_json())
     await _recv(ws)  # kickoff-of-add registry_state, not under test here
 
-    def _boom(self: object, *a: object, **k: object) -> None:
+    async def _boom(self: object, *a: object, **k: object) -> None:
         raise LocalModelError("network is on fire")
 
     monkeypatch.setattr(LocalModelManager, "download_model", _boom)

@@ -33,11 +33,30 @@ resolving a repo file to a URL/ETag/size, listing repo files, and following
 HF's own "don't send the auth header to a signed CDN redirect" rule (mirrored
 from `file_download.py`'s own metadata-resolution logic — see
 `kodo/llms/local/_hf.py`) — but does the actual streaming download itself,
-via a hand-rolled `urllib.request`-based downloader (`kodo/llms/local/_http.py`)
-that keeps its own `<file>.part` file across interruptions and resumes it with
-a standard `Range: bytes=<size>-` request. This is the same "manual
-`urllib` + progress callback" pattern `kodo.llms.llamacpp._installer` already
-uses for the llama.cpp binary itself — no new dependency.
+via a hand-rolled `aiohttp`-based downloader (`kodo/llms/local/_http.py`,
+`download_to_part_file`) that keeps its own `<file>.part` file across
+interruptions.
+
+**A single file downloads as several concurrent partial-GET streams, not
+one.** Once the file's size is known (the normal case — HF metadata almost
+always reports it), it's split into fixed-size 4 MiB ranges (plus one shorter
+final range for the remainder), and up to `_DEFAULT_PARALLELISM` (8) worker
+coroutines pull ranges off a shared in-memory work list and issue their own
+`Range: bytes=<start>-<end>` GET, writing straight into the right offset of a
+single pre-sized random-access `.part` file handle. This is a best-effort
+work-sharing pool: whichever worker finishes first just grabs the next
+not-yet-fetched range, so one slow chunk never blocks the others. Everything
+runs on one event-loop thread — popping the next range and writing a
+finished chunk's bytes never overlaps across workers (each chunk owns a
+disjoint byte range), so none of this needs a lock. See §4 for how resuming
+a download that was interrupted mid-chunk works, and §6 for what pausing
+actually stops. A file whose size *isn't* known upfront (rare) falls back to
+a single-stream sequential GET — chunking a range you can't compute the end
+of isn't possible.
+
+Every method that transfers bytes (`download_model`, `resume_download`,
+`download_mmproj`) is a genuine coroutine — no worker thread anywhere in this
+package (see §9).
 
 ---
 
@@ -49,7 +68,7 @@ kodo/llms/local/
   _types.py      FileRole, FileStatus, ModelFile, ModelRecord, DownloadProgress,
                  ProgressCallback, and every exception this package raises
   _hf.py         HF metadata only: resolve_file, list_repo_files, detect_shard_group
-  _http.py       download_to_part_file — the resumable/pausable byte transfer
+  _http.py       download_to_part_file — the resumable/pausable, parallel-chunked byte transfer
   _state.py      JSON (de)serialization of ModelRecord <-> manager-state.json
   _manager.py    LocalModelManager — the class that ties it all together
 ```
@@ -91,6 +110,7 @@ class ModelFile:
     size: int | None; etag: str | None
     downloaded_bytes: int   # informational only, see §5
     status: FileStatus; error: str
+    bytes_per_second: float | None  # trailing ~10s rate while DOWNLOADING, see §11a
 
 @dataclass
 class ModelRecord:
@@ -119,6 +139,7 @@ never gates "installed".
   <sanitized model_id>/
     model.gguf              # finished MAIN file
     model.gguf.part         # in-progress/paused (never present alongside the finished file)
+    model.gguf.part.chunks  # sidecar: which 4 MiB ranges of the .part file are done
     mmproj.gguf              # finished MMPROJ file, if attached
 ```
 
@@ -129,16 +150,30 @@ so two models can never collide on filename, and `uninstall` is a single
 `manager-state.json` is the single source of truth for *what* files belong to
 a model and their last-known status — a plain JSON object keyed by
 `model_id`, each value a serialized `ModelRecord` (see `_state.py`). It is
-**not** the source of truth for *where* a resumed download continues from —
-that's always the real size of the `.part` file on disk
-(`download_to_part_file` reads `part_path.stat().st_size` directly). This
-split matters: `ModelFile.downloaded_bytes` in the state file is only updated
-at status transitions (download start/pause/fail/complete), **not on every
-chunk** — writing the full state JSON on every 64 KiB chunk of a 40 GB model
-would be its own bottleneck. A `list_models()`/`get_record()` call made while
-a download is actively running may show a slightly stale byte count; use
-`progress_cb` (passed to `download_model`/`resume_download`/`download_mmproj`)
-for live progress instead.
+**not** the source of truth for *where* a resumed download continues from.
+For the single-stream fallback (file size unknown) that's still the real
+size of the `.part` file on disk, same as before. For the normal parallel
+path it can't be: `_http._download_parallel` pre-truncates `.part` to the
+*full* expected size before any chunk is written (so every worker can seek
+anywhere in it immediately), which means the file's size on disk is `total_size`
+from the very first instant of a transfer — no longer any indication of how
+much of it is real data. The `<file>.part.chunks` sidecar is the actual source
+of truth: a small JSON object (`{"chunk_size", "total_size", "completed": [...]}`)
+recording which chunk *indices* have actually landed, flushed at most once a
+second (mirroring `_FLUSH_INTERVAL_SECONDS` below) as chunks complete, and
+deleted once the transfer finishes. A `.part` file with **no** sidecar is
+either a fully-finished-and-cleaned-up transfer or a pre-upgrade file from the
+old single-stream downloader; both are handled by treating its on-disk size as
+a trustworthy contiguous prefix (see `_http._download_parallel`'s docstring).
+
+Either way, `ModelFile.downloaded_bytes` in `manager-state.json` is only
+updated at status transitions (download start/pause/fail/complete) plus a
+throttled live update while running (**not on every chunk** — writing the
+full state JSON on every 4 MiB chunk of a 40 GB model would be its own
+bottleneck). A `list_models()`/`get_record()` call made while a download is
+actively running may show a slightly stale byte count; use `progress_cb`
+(passed to `download_model`/`resume_download`/`download_mmproj`) for live
+progress instead.
 
 ---
 
@@ -165,20 +200,47 @@ auto-discovers the remaining shards from files alongside the one it's given.
 Two distinct, deliberately separate concepts:
 
 - **Pause** (`pause_download(model_id)`) — signals an **in-flight** transfer
-  to stop. Implemented as a `threading.Event` held in-memory, per
+  to stop. Implemented as an `asyncio.Event` held in-memory, per
   `LocalModelManager` instance, keyed by `model_id`. A no-op if nothing is
-  currently downloading for that id. The transfer loop checks the event
-  between chunks (`_http._CHUNK_SIZE`, 64 KiB) and raises
-  `DownloadPausedError` internally, which `_manager.py` catches and turns
-  into `FileStatus.PAUSED` — never an exception the caller sees. The `.part`
-  file is left exactly as it was.
+  currently downloading for that id. Every chunk worker checks the event
+  before starting its *next* range request — since up to `_DEFAULT_PARALLELISM`
+  (8) of them run concurrently, up to that many chunks' worth of data (up to
+  ~32 MiB, not one 64 KiB chunk as in the old single-stream design) can still
+  land after `pause_download` is called, as whichever workers are already
+  mid-request finish that one request before checking the event and
+  stopping. `DownloadPausedError` propagates internally, which `_manager.py`
+  catches and turns into `FileStatus.PAUSED` — never an exception the caller
+  sees. The `.part` file and its `.chunks` sidecar (§4) are left exactly as
+  they were, chunk-complete state intact.
 - **Resume** (`resume_download(model_id)`) — re-downloads every file that
   isn't `COMPLETED`, regardless of *why* it isn't: user-paused, a network
   failure (`FAILED`), or the process died mid-transfer (stuck
   `DOWNLOADING` — indistinguishable from a resumable state once read back
-  from disk after a restart, since the real resume point is the `.part`
-  file's byte size, not the state file's status string). One method covers
-  all three causes.
+  from disk after a restart). The real resume point is the `.chunks` sidecar
+  (which chunk indices are done), not the state file's status string nor the
+  `.part` file's byte size (see §4 for why the latter no longer works once a
+  transfer pre-sizes the file upfront). One method covers all three causes,
+  and only refetches whatever chunks the sidecar doesn't already have —
+  including a chunk that failed mid-network-error, so a `FAILED` transfer's
+  resume isn't a full restart either.
+
+**A server that stops honoring `Range` mid-transfer now fails loudly instead
+of silently restarting.** The old single-stream downloader could recover from
+a server that ignored a `Range` header (treating a `200` response as "sending
+the whole file from byte 0" and restarting the `.part` file) because there
+was only ever one request in flight. A parallel chunked transfer can't do
+that safely: a `200` response to one worker's *bounded* range request means
+the full file arrived at the wrong offset for that chunk, other chunk workers
+may already be mid-flight, and blindly absorbing that response as "the whole
+file, actually" risks each of up to 8 concurrent workers doing it
+independently, each retransmitting the entire file. `_http._download_parallel`
+instead raises `DownloadError` the moment any worker gets a bare `200` for a
+request that wasn't for the entire file in one chunk (i.e. more than one
+chunk exists) — see `test_resume_fails_clearly_when_server_stops_honoring_range`
+in `test/test_llms_local.py`. In practice this is a non-issue against HF's
+actual CDN, which reliably honors `Range` (the existing single-stream resume
+feature already depended on that); it only matters for a misbehaving proxy or
+mirror.
 
 Because the pause signal is in-memory, it only correlates with a download
 started by *the same* `LocalModelManager` instance — a fresh instance after a
@@ -268,6 +330,16 @@ The two call sites:
   see §11), `.pause_download(...)`, `.uninstall(...)`, `.get_model_path(...)`
   on the returned instance.
 
+`download_model`/`resume_download`/`download_mmproj` are `async def` —
+`_run_background_download` just `await`s the coroutine as an
+`asyncio.create_task`, no worker thread involved anywhere in the byte
+transfer (see §1). The two HF metadata calls each still makes
+(`resolve_file`, `list_repo_files` — real synchronous `huggingface_hub`
+network calls) are individually wrapped in `asyncio.to_thread` inside
+`__run_transfer`, so a slow HF Hub round trip doesn't stall the whole
+server's event loop (every other WS connection's requests) for its
+duration — only the byte transfer itself is native async.
+
 **pause/resume are now wired** (§11) — `local_llm.pause`/`local_llm.resume` WS
 messages reach `pause_download`/`resume_download` directly. **Still not wired
 up** (tracked as follow-up): no HF-token entry UI, no mmproj UI. `local-llm-
@@ -284,8 +356,9 @@ but not yet reachable from kodo-vsix.
 Every `local_llm.install`/`local_llm.resume`/`local_llm.pause` WS handler
 (`server/_app.py`) is fire-and-forget: it replies immediately with
 `local_llm.registry_state` (the "kickoff" push — model still `installed:
-false`, download not started yet) and *then* kicks off the transfer on a
-worker thread via `_run_background_download`. There is no byte-level
+false`, download not started yet) and *then* kicks off the transfer as a
+background `asyncio` task via `_run_background_download` — no worker thread,
+since the transfer itself is native async (§1, §9). There is no byte-level
 progress event on the wire at all any more (the old `local_llm.install.
 progress` event is gone) — but `_run_background_download`'s `run()` coroutine
 does push **one more** `local_llm.registry_state` on the same connection once
@@ -348,6 +421,25 @@ client-side, without any new broadcast infrastructure on this end. Instead:
   second (`_FLUSH_INTERVAL_SECONDS`), regardless of whether a `progress_cb`
   was passed — this is what makes the state file a live-enough source for a
   UI to poll, not just a checkpoint at start/pause/fail/complete.
+- **Every target's size is resolved before shard 1's first byte, not just its
+  own shard's.** `overall_total()`/`overall_bytes_total` (used by both
+  `DownloadProgress` and, via `manager-state.json`, kodo-vsix's
+  `local-model-downloads.ts summarize()`) is `None` unless *every* target
+  file's `size` is known. Previously, a split GGUF's later shards only had
+  `resolve_file` called on them once the loop reached their own turn, so for
+  the entire duration of shard 1 (and shard 2, etc.) `overall_bytes_total`
+  stayed `None` — kodo-vsix's progress bar reads that as "unknown total" and
+  renders a permanently empty (0%) bar, even though `bytes_downloaded` (and
+  the byte-count label) was climbing correctly. `__run_transfer` now runs a
+  size-only pre-pass over every target with `size is None` *before* the
+  per-file download loop, persisting each resolved size immediately. Failures
+  in the pre-pass are swallowed — the real `resolve_file` call (and its error
+  handling) still happens per-file when that file's turn actually comes up —
+  so this only ever improves how early a total becomes known, never turns a
+  transient metadata hiccup into a hard failure. This also self-heals a
+  paused/interrupted download from before this fix: `resume_download` routes
+  through the same `__run_transfer`, so any still-`None` shard size gets
+  resolved on the next resume.
 - `save_state` (`_state.py`) flushes and `fsync`s before the atomic
   tmp-file replace, so a reader racing the write sees either the fully old or
   fully new content, never a torn write.
@@ -393,18 +485,79 @@ client-side, without any new broadcast infrastructure on this end. Instead:
   to resume, rather than a progress bar stuck showing "downloading" forever.
   A no-op (doesn't even create `manager-state.json`) when nothing is stale.
 
+### 11a. Download speed: a 10s sliding window, computed server-side
+
+`ModelFile.bytes_per_second` (`_types.py`) carries a trailing-~10-second
+transfer-rate estimate, persisted to `manager-state.json` right alongside
+`downloaded_bytes` — kodo-vsix reads it off the same disk-polled snapshot it
+already uses for byte counts (§11 above), no new protocol surface. Computed
+server-side (not client-side in `local-model-downloads.ts`) so every open
+VS Code window agrees on one rate regardless of when it started polling, and
+so the value survives a window closing and reopening mid-download.
+
+- `__run_transfer`'s per-file `on_bytes` closure (`_manager.py`) keeps a
+  `deque[tuple[float, int]]` of `(time.monotonic(), cumulative_bytes)`
+  samples, one per chunk actually written to disk (i.e. on every call, not
+  throttled to `_FLUSH_INTERVAL_SECONDS` — throttling the *sampling* as well
+  as the *flush* would starve the window down to ~1 sample/sec and defeat
+  measuring a genuine 10s span). `_windowed_bytes_per_second` (module-level,
+  `_manager.py`) prunes samples older than `_SPEED_WINDOW_SECONDS` (10.0) off
+  the left, always keeping at least the just-appended sample, and returns
+  `(bytes_now - bytes_oldest_in_window) / (time_now - time_oldest_in_window)`
+  — `None` until a second sample exists.
+- The computed rate is only ever *persisted* at the existing
+  `_FLUSH_INTERVAL_SECONDS` cadence (piggybacking on the same
+  `__set_file_status` call `downloaded_bytes` already rides), so this adds no
+  new disk-write pressure.
+- `bytes_per_second` is explicitly reset to `None` on every transition out of
+  live `DOWNLOADING` — the start of a (re)transfer attempt, `PAUSED`,
+  `FAILED`, and `COMPLETED` — so a paused or finished download never shows a
+  frozen rate left over from the moment it stopped moving.
+- kodo-vsix (`local-model-downloads.ts` `summarize()`) sums each file's
+  `bytes_per_second` across a model's files (only one file downloads at a
+  time per `__run_transfer`'s per-file loop, so in practice at most one
+  non-`null` value contributes at once) into `LocalDownloadState.
+  bytes_per_second`, and the Local Inference Settings panel
+  (`local-inference-settings-panel.ts`) formats it with a small
+  auto-scaling `formatSpeed()` helper (B/s → KB/s → MB/s → GB/s, 1024-based)
+  next to the existing byte-count label, shown only while `status ===
+  'downloading'`.
+
 ---
 
 ## 10. Testing
 
 `test/test_llms_local.py` runs against a tiny in-process HTTP server
-(`http.server.ThreadingHTTPServer` + a handler with real `Range`/`206`
-support) instead of mocking `_http.py`'s transfer logic away — `resolve_file`
-and `list_repo_files` are monkeypatched to point at it, but the real
+(`http.server.ThreadingHTTPServer` + a handler with real bounded (`bytes=
+start-end`) and open-ended (`bytes=start-`) `Range`/`206` support) instead of
+mocking `_http.py`'s transfer logic away — `resolve_file` and
+`list_repo_files` are monkeypatched to point at it, but the real
 chunked-download-with-resume code path runs end-to-end, including a
-byte-for-byte comparison after a pause-then-resume cycle and after a
-"server ignores the Range header" restart. Pausing mid-download is
-deterministic (no timing/sleep races): the test's `progress_cb` calls
-`pause_download` directly once a byte threshold is crossed, which runs
-synchronously on the same thread as the transfer loop, so the very next
-chunk-boundary check sees it.
+byte-for-byte comparison after a pause-then-resume cycle, and
+`test_download_uses_multiple_concurrent_connections` proves the transfer
+really does run several range requests at once (the fake server tracks a
+concurrent-request high-water mark, with a small artificial per-request
+delay so overlap is observable regardless of how fast loopback I/O is).
+
+Every test that exercises a specific pause **byte boundary**
+(`test_pause_then_resume_produces_identical_bytes`, the Range-ignored-on-
+resume test below) monkeypatches `_http._DEFAULT_PARALLELISM` down to `1` —
+with several concurrent chunk workers over near-instant loopback I/O, "pause
+once >=N bytes are downloaded" would otherwise race the remaining chunks to
+completion before the pause takes effect. This has to be a monkeypatch of
+the module constant read *inside* `download_to_part_file`'s body at call
+time, not a keyword override of a function-signature default — a default
+argument value is bound once at function-definition time, so patching the
+constant wouldn't reach a signature that captured the old value at import.
+
+A server that stops honoring `Range` mid-transfer no longer "restarts
+cleanly" the way the old single-stream downloader could — see §6 for why —
+so `test_resume_fails_clearly_when_server_stops_honoring_range` (replacing
+the old `test_resume_when_server_ignores_range_restarts_cleanly`) asserts the
+new behavior: a clear `DownloadError` instead of silent corruption.
+
+Pausing mid-download is deterministic (no timing/sleep races): the test's
+`progress_cb` calls `pause_download` directly once a byte threshold is
+crossed, which runs synchronously on the same event-loop thread as the
+transfer, so the very next chunk-boundary check in that worker sees it (with
+parallelism forced to 1, there's only ever the one worker to check).

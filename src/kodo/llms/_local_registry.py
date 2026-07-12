@@ -440,7 +440,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         min_memory=32,
         memory=36,
     ),
-
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-q8-k-xl",
         kind="hardcoded_hf",
@@ -747,7 +746,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         min_memory=32,
         memory=48,
     ),
-
     LocalLLMEntry(
         name="unsloth-qwen35-9b-q8-k-xl",
         kind="hardcoded_hf",

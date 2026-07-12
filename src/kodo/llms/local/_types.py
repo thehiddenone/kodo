@@ -49,6 +49,11 @@ class ModelFile:
             real ``.part`` file size on disk, not this field.
         status: Current lifecycle state.
         error: Last error message, if ``status == FAILED``.
+        bytes_per_second: Transfer rate over a trailing ~10s window,
+            recomputed alongside every ``downloaded_bytes`` flush while
+            ``status == DOWNLOADING``. ``None`` whenever not actively
+            downloading (including right at start, before two samples have
+            landed) — never a stale rate left over from a previous attempt.
     """
 
     filename: str
@@ -60,6 +65,7 @@ class ModelFile:
     downloaded_bytes: int = 0
     status: FileStatus = FileStatus.PENDING
     error: str = ""
+    bytes_per_second: float | None = None
 
     @property
     def is_complete(self) -> bool:
