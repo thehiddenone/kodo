@@ -178,9 +178,11 @@ class LLMPlumbingMixin:
 
         Applies the session's ``thinking_level`` to every LLM call this
         session makes on its active *local* model — not just the main turn,
-        but every silent call too (compaction, the security judge,
-        ``web_search``'s tool loop) — since it is a session-wide setting, not
-        a per-call one (doc/SESSIONS.md). ``{}`` for a cloud call (no
+        but every silent call too (compaction, ``web_search``'s tool loop) —
+        since it is a session-wide setting, not a per-call one
+        (doc/SESSIONS.md). The security judge is the one exception: it pins
+        its own fixed ``"low"`` tier instead (see
+        :meth:`_judge_thinking_kwargs`). ``{}`` for a cloud call (no
         thinking-tier mechanism; ``ClaudePlugin.stream_query`` has no such
         parameter) or when the active local model has no thinking family
         (``_session.thinking_level`` is already ``""`` in that case).
@@ -188,6 +190,22 @@ class LLMPlumbingMixin:
         if routing.residence != "local" or not self._session.thinking_level:
             return {}
         return {"thinking_level": self._session.thinking_level}
+
+    def _judge_thinking_kwargs(self: EngineHost, routing: LLMRouting) -> dict[str, object]:
+        """``{"thinking_level": "low"}`` for the security judge's silent call.
+
+        The judge is a fast intent classification, not a reasoning task, so it
+        always requests the lowest thinking tier when the active local model
+        supports thinking — independent of ``_session.thinking_level``, which
+        is tuned for the user's main conversation, not this silent call.
+        ``"low"`` is a valid tier in both thinking families (Qwen's 6-tier
+        ``minimal``/``low``/... and GPT-OSS's 3-tier ``low``/``medium``/
+        ``high``). ``{}`` for a cloud call or a local model with no thinking
+        family (mirrors :meth:`_thinking_kwargs`).
+        """
+        if routing.residence != "local" or not local_thinking_tiers(self._current_base_llm()):
+            return {}
+        return {"thinking_level": "low"}
 
     def _thinking_level_for_model(self: EngineHost, base_llm: str, prefer: str | None) -> str:
         """*prefer* if it is a valid thinking-tier value for *base_llm*, else the family default.
@@ -532,8 +550,11 @@ class LLMPlumbingMixin:
         """One silent LLM call for the security layer's SMART-mode intent judge.
 
         Runs on the session's active model (entry-agent capability), with no
-        tools and no feed events — only the text verdict is collected. The
-        call's USD cost is folded into the running session total (cost-only
+        tools and no feed events — only the text verdict is collected. Pinned
+        to the ``"low"`` thinking tier (see :meth:`_judge_thinking_kwargs`)
+        rather than the session's own ``thinking_level``: it's a fast intent
+        classification, not a task worth deep reasoning about. The call's
+        USD cost is folded into the running session total (cost-only
         ``usage.update``, no feed entry). Exceptions propagate: the security
         layer treats any failure as an ``ask`` (fail closed).
 
@@ -557,7 +578,7 @@ class LLMPlumbingMixin:
                 messages=[Message(role="user", content=user)],
                 tools=[],
                 cache_breakpoints=default_cache_breakpoints([Message(role="user", content=user)]),
-                **self._thinking_kwargs(routing),
+                **self._judge_thinking_kwargs(routing),
             ):
                 if isinstance(event, TokenDelta):
                     text_parts.append(event.text)

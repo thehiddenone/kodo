@@ -128,6 +128,16 @@ benign development step**.
   plugin/gateway/routing path (`_resolve_plugin`), streams silently (no feed
   events), and folds the call's USD cost into the session total as a
   cost-only `usage.update`.
+- **Thinking tier**: if the active model is local and has a thinking family
+  (`kodo.llms.local_thinking_tiers`), the judge round always pins
+  `thinking_level="low"` (`LLMPlumbingMixin._judge_thinking_kwargs`) —
+  independent of the session's own `thinking_level`, since intent
+  classification doesn't need deep reasoning and the fixed low tier keeps
+  the judge round fast regardless of what the user picked for their main
+  conversation. `"low"` is a valid tier in both thinking families (Qwen's
+  6-tier `--reasoning-budget` and GPT-OSS's 3-tier `reasoning_effort`).
+  Cloud models and local models without a thinking family get no
+  `thinking_level` at all, same as any other call.
 - **Failure = ask.** A `None` judge, a raised exception, or an unparseable
   verdict each produce an `ask` with a matching reason.
 

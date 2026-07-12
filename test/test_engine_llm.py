@@ -441,6 +441,52 @@ async def test_security_judge_returns_text_and_brackets_judging_flag() -> None:
     assert engine._emitters.cost_only_calls == 1
 
 
+async def test_security_judge_uses_low_thinking_tier_on_local_thinking_model() -> None:
+    events = [TokenDelta(text="allow"), TurnEnd(usage=_usage(), stop_reason="end_turn")]
+    gateway = _FakeGateway([events])
+    engine = _make_engine(
+        gateway=gateway,
+        settings={"mode": "local", "models": {"local": "atomicchat-qwen36-27b-q8"}},
+    )
+    engine._registry = SimpleNamespace(get=lambda name: SimpleNamespace(capability="medium"))
+    engine._session.workflow_mode = "guided"
+    engine._session.thinking_level = "huge"
+
+    await engine._security_judge("system prompt", "user prompt")
+
+    assert gateway.calls[0]["thinking_level"] == "low"
+
+
+async def test_security_judge_no_thinking_level_on_local_model_without_thinking_family() -> None:
+    events = [TokenDelta(text="allow"), TurnEnd(usage=_usage(), stop_reason="end_turn")]
+    gateway = _FakeGateway([events])
+    engine = _make_engine(
+        gateway=gateway,
+        settings={"mode": "local", "models": {"local": "totally-unknown-model-id"}},
+    )
+    engine._registry = SimpleNamespace(get=lambda name: SimpleNamespace(capability="medium"))
+    engine._session.workflow_mode = "guided"
+
+    await engine._security_judge("system prompt", "user prompt")
+
+    assert "thinking_level" not in gateway.calls[0]
+
+
+async def test_security_judge_no_thinking_level_on_cloud_model() -> None:
+    events = [TokenDelta(text="allow"), TurnEnd(usage=_usage(), stop_reason="end_turn")]
+    gateway = _FakeGateway([events])
+    engine = _make_engine(
+        gateway=gateway,
+        settings={"mode": "cloud", "active_cloud_vendor": "anthropic"},
+    )
+    engine._registry = SimpleNamespace(get=lambda name: SimpleNamespace(capability="medium"))
+    engine._session.workflow_mode = "guided"
+
+    await engine._security_judge("system prompt", "user prompt")
+
+    assert "thinking_level" not in gateway.calls[0]
+
+
 async def test_security_judge_emits_judging_false_even_on_failure() -> None:
     engine = _make_engine(settings={"mode": "cloud", "active_cloud_vendor": "anthropic"})
     engine._registry = SimpleNamespace(get=lambda name: SimpleNamespace(capability="medium"))
