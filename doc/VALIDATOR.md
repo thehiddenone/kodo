@@ -321,14 +321,26 @@ phase-1 behaviour is bit-for-bit unchanged.
 The whole phase rides on two protocol commands added for it
 (WS_PROTOCOL.md §7.6a/§7.6b, first-class — any client may use them):
 
-- **`llm.select {name}`** — synchronous local-model switch: persists
-  `mode`/`models.local`, restarts llama-server, and replies only once the
-  model actually serves (or failed). This is what makes the LUT↔VLLM swap on
-  *one* llama-server safe and observable.
-- **`llm.complete {prompt, system?, json_schema?}`** — session-less one-shot
-  completion on the active local model, scheduled through the shared
-  LLMGateway feed; `json_schema` grammar-constrains the output so the reply
-  is parseable **by construction**.
+- **`llm.select {name, thinking_level?}`** — synchronous local-model switch:
+  persists `mode`/`models.local` (and, when given, `thinking_level` into
+  `models.local_thinking[base_llm]`), restarts llama-server, and replies only
+  once the model actually serves (or failed). This is what makes the
+  LUT↔VLLM swap on *one* llama-server safe and observable.
+- **`llm.complete {prompt, system?, json_schema?, thinking_level?}`** —
+  session-less one-shot completion on the active local model, scheduled
+  through the shared LLMGateway feed; `json_schema` grammar-constrains the
+  output so the reply is parseable **by construction**; `thinking_level`
+  overrides the model's configured thinking tier for that one call only,
+  without touching settings.json.
+
+`Scenario.user_proxy_thinking_level` / `Scenario.result_validation_thinking_level`
+are the corresponding scenario-file knobs (both optional, both valid tier
+slugs for `validation_llm`'s thinking family — doc/LLM_REGISTRY.md §4.5). The
+motivating case is `user_proxy_thinking_level="minimal"`: a reasoning
+`validation_llm` left at its default tier can spend most of an `ask_user`
+answer's latency thinking rather than answering — pinning it low keeps the
+answer fast without touching the LUT's own thinking tier (a *different*
+`base_llm` in the normal case).
 
 ### 9.1 User Proxy: questions answered by the VLLM (`_vllm.py`)
 
@@ -338,8 +350,10 @@ call is what makes the swap safe. `VLLMUserProxy.answer_questions` then runs:
 
 1. `llm.select(validation_llm)` — wait until the VLLM is serving;
 2. `llm.complete(system=UPP, prompt=PUT + question batch + wire contract,
-   json_schema=answers_json_schema(n))` — the schema pins exactly *n*
-   entries of `{selected: [str], free_text: str}`;
+   json_schema=answers_json_schema(n), thinking_level=user_proxy_thinking_level)`
+   — the schema pins exactly *n* entries of `{selected: [str], free_text:
+   str}`; `thinking_level` (when the scenario set one) rides this same call,
+   scoped to just this completion;
 3. `llm.select(llm_under_test)` — always, in a `finally`: the answer must
    resume the turn on the LUT even when answering failed;
 4. reply to the dangling `prompt.question` with the parsed batch.
@@ -369,8 +383,11 @@ After the last turn (only if no turn ended in `error` — an infra failure must
 not masquerade as a low-scoring run), `run_scenario` calls
 `ValidationHarness.evaluate()`:
 
-1. `llm.select(validation_llm)` — and it stays selected; every scenario gets
-   a fresh home/server anyway;
+1. `llm.select(validation_llm, thinking_level=result_validation_thinking_level)`
+   — and it stays selected; every scenario gets a fresh home/server anyway.
+   Unlike the UPP's per-call override, a `thinking_level` here is persisted
+   to `models.local_thinking` (the judge's turns are ordinary session
+   dispatch — there is no per-call hook to ride);
 2. open a **second session** on the same server (own WS connection,
    `window_id: kodo-validator-judge`, own `judge-transcript.jsonl`), push the
    **same** `workspace.folders` payload, and pin friction-free modes

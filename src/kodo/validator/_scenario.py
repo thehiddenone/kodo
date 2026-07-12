@@ -72,6 +72,16 @@ class Scenario:
         result_validation_prompt: The RVP — enables the judge session that
             scores the run after its last turn.
         eval_timeout: Per-judge-turn timeout in seconds.
+        user_proxy_thinking_level: When set, a valid tier slug for
+            ``validation_llm``'s thinking family (e.g. ``"minimal"``),
+            sent as ``llm.complete``'s ``thinking_level`` field on every UPP
+            answering call — keeps ``ask_user`` answers from burning time
+            thinking. Ignored unless ``user_proxy_prompt`` is also set.
+        result_validation_thinking_level: When set, a valid tier slug for
+            ``validation_llm``'s thinking family, sent as ``llm.select``'s
+            ``thinking_level`` field before the RVP judge session opens —
+            pins the judge's whole session to this tier. Ignored unless
+            ``result_validation_prompt`` is also set.
     """
 
     name: str
@@ -87,6 +97,8 @@ class Scenario:
     user_proxy_prompt: str | None = None
     result_validation_prompt: str | None = None
     eval_timeout: float = 900.0
+    user_proxy_thinking_level: str | None = None
+    result_validation_thinking_level: str | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +151,8 @@ async def run_scenario(
         settings_overrides=scenario.settings_overrides,
         user_proxy_prompt=scenario.user_proxy_prompt,
         result_validation_prompt=scenario.result_validation_prompt,
+        user_proxy_thinking_level=scenario.user_proxy_thinking_level,
+        result_validation_thinking_level=scenario.result_validation_thinking_level,
     )
     for root in scenario.roots:
         harness.workspace.add_root(root.name, seed_from=root.seed_from)

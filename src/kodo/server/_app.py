@@ -1013,8 +1013,41 @@ def _persist_local_model_selection(name: str) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def _persist_local_thinking_tier(base_llm: str, tier: str) -> None:
+    """Write ``models.local_thinking[base_llm] = tier`` into settings.json.
+
+    Same file and merge shape as :func:`_persist_local_model_selection` and
+    the VSIX sidebar's thinking-tier slider (``set_thinking_tier``) — every
+    engine dispatch re-reads settings from disk, so this takes effect on the
+    next LLM call with no further signal. Used by ``llm.select``'s optional
+    ``thinking_level`` field (doc/WS_PROTOCOL.md §7.6a), which the validator's
+    RVP judge session uses to pin its thinking tier for the run.
+    """
+    path = WorkspaceLayout().settings_json
+    data: dict[str, object] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except (json.JSONDecodeError, OSError) as exc:
+            _log.warning("Rewriting unreadable settings file %s: %s", path, exc)
+    models = data.get("models")
+    if not isinstance(models, dict):
+        models = {}
+    local_thinking = models.get("local_thinking")
+    if not isinstance(local_thinking, dict):
+        local_thinking = {}
+    local_thinking[base_llm] = tier
+    models["local_thinking"] = local_thinking
+    data["models"] = models
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
 async def _handle_llm_select(req: Request) -> None:
-    """``llm.select {name}`` — switch the active local model and confirm readiness.
+    """``llm.select {name, thinking_level?}`` — switch the active local model
+    and confirm readiness.
 
     Persists the selection, then (re)starts llama-server for it and waits
     until it actually serves — the correlated ``llm.select.done`` reply is
@@ -1022,6 +1055,14 @@ async def _handle_llm_select(req: Request) -> None:
     A failed start still leaves the selection persisted (matching what a
     settings-write + failed ``llama.start`` would leave behind); the caller
     decides whether to retry or select something else.
+
+    An optional ``thinking_level`` (a valid tier slug for *name*'s thinking
+    family) is persisted to ``models.local_thinking`` alongside the
+    selection — the same settings.json key the VSIX sidebar's thinking-tier
+    slider writes, just reached over the wire instead of a local file write.
+    Built for the validator's RVP judge session (doc/VALIDATOR.md §9), whose
+    turns run through the ordinary session dispatch and so cannot carry a
+    per-call override the way ``llm.complete`` can.
     """
 
     def _fail(error: str, *, model: str | None = None) -> dict[str, object]:
@@ -1036,6 +1077,25 @@ async def _handle_llm_select(req: Request) -> None:
     if entry is None:
         await req.reply(_fail(f"Unknown local model: {name!r}"))
         return
+
+    thinking_level_raw = req.env.payload.get("thinking_level")
+    if thinking_level_raw is not None:
+        thinking_level = str(thinking_level_raw).strip()
+        tiers = local_thinking_tiers(entry.base_llm)
+        if not tiers:
+            await req.reply(
+                _fail(f"{name!r} has no thinking-tier family; thinking_level is not applicable")
+            )
+            return
+        if thinking_level not in tiers:
+            await req.reply(
+                _fail(
+                    f"Invalid thinking_level {thinking_level!r} for {name!r}; "
+                    f"expected one of {list(tiers)}"
+                )
+            )
+            return
+        _persist_local_thinking_tier(entry.base_llm, thinking_level)
 
     _persist_local_model_selection(name)
 
@@ -1070,12 +1130,19 @@ async def _handle_llm_select(req: Request) -> None:
 
 
 def _make_llm_complete_handler(config: Config, gateway: LLMGateway) -> HandlerFn:
-    """``llm.complete {prompt, system?, json_schema?}`` — one-shot local completion.
+    """``llm.complete {prompt, system?, json_schema?, thinking_level?}`` — one-shot
+    local completion.
 
     A single tool-less turn on the currently selected local model, scheduled
     through the shared gateway feed (serializing with session dispatches).
     The full response text comes back in the correlated reply; no stream
     frames are emitted. ``json_schema`` grammar-constrains the output.
+
+    ``thinking_level`` (a valid tier slug for the active model's thinking
+    family) overrides ``models.local_thinking`` for this call only, without
+    touching settings.json — built for the validator's User-Proxy answers
+    (doc/VALIDATOR.md §9), which pin a low tier so ``ask_user`` answers don't
+    burn time thinking.
     """
 
     async def _handle_llm_complete(req: Request) -> None:
@@ -1097,9 +1164,33 @@ def _make_llm_complete_handler(config: Config, gateway: LLMGateway) -> HandlerFn
         models_map = settings.get("models", {})
         model = str(models_map.get("local", "") if isinstance(models_map, dict) else "")
         user_dir = kodo_user_dir()
-        if not model or model not in get_local_registry(user_dir):
+        entry = get_local_registry(user_dir).get(model) if model else None
+        if not model or entry is None:
             await req.reply(_fail("No local model selected — llm.complete is local-only"))
             return
+
+        thinking_level_raw = payload.get("thinking_level")
+        thinking_level: str | None = None
+        if thinking_level_raw is not None:
+            thinking_level = str(thinking_level_raw).strip()
+            tiers = local_thinking_tiers(entry.base_llm)
+            if not tiers:
+                await req.reply(
+                    _fail(
+                        f"{model!r} has no thinking-tier family; thinking_level is not applicable",
+                        model=model,
+                    )
+                )
+                return
+            if thinking_level not in tiers:
+                await req.reply(
+                    _fail(
+                        f"Invalid thinking_level {thinking_level!r} for {model!r}; "
+                        f"expected one of {list(tiers)}",
+                        model=model,
+                    )
+                )
+                return
 
         plugin = LlamaPlugin(sink=req.connection, kodo_dir=user_dir)
         text_parts: list[str] = []
@@ -1117,6 +1208,7 @@ def _make_llm_complete_handler(config: Config, gateway: LLMGateway) -> HandlerFn
                 tools=[],
                 cache_breakpoints=[],
                 json_schema=schema,
+                thinking_level=thinking_level,
             ):
                 if isinstance(event, TokenDelta):
                     text_parts.append(event.text)

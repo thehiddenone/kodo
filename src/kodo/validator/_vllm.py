@@ -108,6 +108,11 @@ class VLLMUserProxy:
         switch_timeout: WS response timeout for each ``llm.select``.
         complete_timeout: WS response timeout for each ``llm.complete``.
         max_attempts: Completion attempts per batch before giving up.
+        thinking_level: When set, rides ``llm.complete``'s ``thinking_level``
+            field (doc/WS_PROTOCOL.md §7.6b) on every answering call — a
+            valid tier slug for *validation_llm*'s thinking family (e.g.
+            ``"minimal"`` to keep ``ask_user`` answers from burning time
+            thinking). Scoped to just these calls; never touches settings.json.
     """
 
     def __init__(
@@ -120,6 +125,7 @@ class VLLMUserProxy:
         switch_timeout: float = DEFAULT_SWITCH_TIMEOUT,
         complete_timeout: float = DEFAULT_COMPLETE_TIMEOUT,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        thinking_level: str | None = None,
     ) -> None:
         self.__upp = user_proxy_prompt
         self.__llm_under_test = llm_under_test
@@ -128,6 +134,7 @@ class VLLMUserProxy:
         self.__switch_timeout = switch_timeout
         self.__complete_timeout = complete_timeout
         self.__max_attempts = max(1, max_attempts)
+        self.__thinking_level = thinking_level
 
         self.__client: ValidatorClient | None = None
         self.__transcript: Transcript | None = None
@@ -265,6 +272,7 @@ class VLLMUserProxy:
                 json_schema=schema,
                 session_scoped=False,
                 timeout=self.__complete_timeout,
+                thinking_level=self.__thinking_level,
             )
             text = str(response.get("text", ""))
             try:

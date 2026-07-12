@@ -94,6 +94,7 @@ async def run_evaluation(
     turn_timeout: float = DEFAULT_EVAL_TURN_TIMEOUT,
     switch_timeout: float = DEFAULT_SWITCH_TIMEOUT,
     max_attempts: int = DEFAULT_EVAL_MAX_ATTEMPTS,
+    thinking_level: str | None = None,
 ) -> EvaluationResult:
     """Switch to the VLLM and run the judge session over the finished run.
 
@@ -116,6 +117,12 @@ async def run_evaluation(
         turn_timeout (float): Per-judge-turn timeout in seconds.
         switch_timeout (float): ``llm.select`` response timeout.
         max_attempts (int): Judge turns before giving up on parseable JSON.
+        thinking_level (str | None): When set, rides ``llm.select``'s
+            ``thinking_level`` field (doc/WS_PROTOCOL.md §7.6a) so the judge's
+            whole session runs at this tier — a valid tier slug for
+            *validation_llm*'s thinking family. Unlike the UPP's per-call
+            override, this persists to settings.json (the judge's turns run
+            through ordinary session dispatch, which has no per-call hook).
 
     Returns:
         EvaluationResult: Score, report, and provenance.
@@ -128,7 +135,11 @@ async def run_evaluation(
         "note", "lifecycle", {"event": "llm_selected", "model": validation_llm, "purpose": "judge"}
     )
     await main_client.request(
-        MSG_LLM_SELECT, name=validation_llm, session_scoped=False, timeout=switch_timeout
+        MSG_LLM_SELECT,
+        name=validation_llm,
+        session_scoped=False,
+        timeout=switch_timeout,
+        thinking_level=thinking_level,
     )
 
     judge_transcript = Transcript(run_dir / "judge-transcript.jsonl")

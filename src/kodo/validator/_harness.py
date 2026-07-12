@@ -140,6 +140,16 @@ class ValidationHarness:
         vllm_switch_timeout: WS response timeout for each ``llm.select``
             (model loads take minutes).
         vllm_complete_timeout: WS response timeout for each ``llm.complete``.
+        user_proxy_thinking_level: When set, a valid tier slug for
+            *validation_llm*'s thinking family, sent as ``llm.complete``'s
+            ``thinking_level`` field on every UPP answering call — keeps
+            ``ask_user`` answers from burning time thinking (e.g.
+            ``"minimal"``). Ignored unless *user_proxy_prompt* is also set.
+        result_validation_thinking_level: When set, a valid tier slug for
+            *validation_llm*'s thinking family, sent as ``llm.select``'s
+            ``thinking_level`` field before the RVP judge session opens —
+            pins the judge's whole session to this tier. Ignored unless
+            *result_validation_prompt* is also set.
     """
 
     def __init__(
@@ -156,6 +166,8 @@ class ValidationHarness:
         result_validation_prompt: str | None = None,
         vllm_switch_timeout: float = DEFAULT_SWITCH_TIMEOUT,
         vllm_complete_timeout: float = DEFAULT_COMPLETE_TIMEOUT,
+        user_proxy_thinking_level: str | None = None,
+        result_validation_thinking_level: str | None = None,
     ) -> None:
         self.__run_dir = run_dir.resolve()
         self.__run_dir.mkdir(parents=True, exist_ok=True)
@@ -166,6 +178,7 @@ class ValidationHarness:
         self.__server_log_level = server_log_level
         self.__result_validation_prompt = result_validation_prompt
         self.__vllm_switch_timeout = vllm_switch_timeout
+        self.__result_validation_thinking_level = result_validation_thinking_level
         self.__submitted_prompts: list[str] = []
 
         self.__workspace = SimulatedWorkspace(self.__run_dir / "workspace")
@@ -180,6 +193,7 @@ class ValidationHarness:
                 base=base_user,
                 switch_timeout=vllm_switch_timeout,
                 complete_timeout=vllm_complete_timeout,
+                thinking_level=user_proxy_thinking_level,
             )
         self.__user: UserSimulator = self.__proxy if self.__proxy is not None else base_user
         self.__server: ServerProcess | None = None
@@ -464,4 +478,5 @@ class ValidationHarness:
             turn_timeout=turn_timeout,
             switch_timeout=self.__vllm_switch_timeout,
             max_attempts=max_attempts,
+            thinking_level=self.__result_validation_thinking_level,
         )

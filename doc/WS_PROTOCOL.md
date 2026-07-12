@@ -932,13 +932,18 @@ does the whole switch server-side and **replies only once the outcome is
 known**:
 
 ```json
-{ "type": "llm.select", "name": "qwen36-27b" }        // a *local registry* name
+{ "type": "llm.select", "name": "qwen36-27b",        // a *local registry* name
+  "thinking_level": "minimal" }                       // optional — see below
 ```
 
-Server-side sequence: persist `mode: "local"` + `models.local = name` into
-`~/.kodo/etc/settings.json` (raw-file patch — untouched keys survive) →
-(re)start llama-server for the entry (`ensure_llama_running`: same-model
-no-op, different-model stop-then-start) → wait until it actually serves.
+Server-side sequence: if `thinking_level` is present, validate it against
+`name`'s thinking-tier family (`local_thinking_tiers`) and persist
+`models.local_thinking[base_llm] = thinking_level` into
+`~/.kodo/etc/settings.json` first (same key, same raw-file-patch shape, the
+VSIX sidebar's thinking-tier slider writes) → persist `mode: "local"` +
+`models.local = name` (raw-file patch — untouched keys survive) → (re)start
+llama-server for the entry (`ensure_llama_running`: same-model no-op,
+different-model stop-then-start) → wait until it actually serves.
 Response, correlated:
 
 ```json
@@ -954,6 +959,11 @@ Notes:
   needed).
 - A `custom_server_url` entry replies `ok: true` after stopping kodo's own
   llama-server (nothing to start — same rule as `llama.start`).
+- `thinking_level` is rejected (`ok: false`, nothing persisted) if `name` has
+  no thinking-tier family or the value is not one of its tier slugs — see
+  doc/LLM_REGISTRY.md §4.5. Built for `kodo.validator`'s RVP judge session
+  (doc/VALIDATOR.md §9), whose turns run through ordinary session dispatch
+  and so have no per-call hook the way `llm.complete` does.
 - `llama.state` events accompany the reply on the requesting connection
   (same shapes as §5.12).
 - A failed start **still leaves the selection persisted** — identical residue
@@ -976,7 +986,8 @@ callers have their own APIs).
 { "type": "llm.complete",
   "prompt": "…",                       // required — the single user message
   "system": "…",                       // optional system prompt
-  "json_schema": { "type": "object" }  // optional — grammar-enforce the output
+  "json_schema": { "type": "object" }, // optional — grammar-enforce the output
+  "thinking_level": "minimal"          // optional — override for this call only
 }
 ```
 
@@ -1004,7 +1015,15 @@ Notes:
   `LlamaPlugin` by the selected model's `base_llm`, regardless of caller —
   this path is unaffected unless the currently selected local model happens
   to be a `qwen_reasoning_budget`/`gpt_oss_reasoning_effort` family member, in
-  which case its configured (or default) tier applies here too.
+  which case its configured (or default) tier applies here too, *unless*
+  `thinking_level` is given.
+- `thinking_level` (a valid tier slug for the selected model's thinking
+  family) wins over `models.local_thinking` for this call only — it is never
+  written to settings.json, so it cannot bleed into any other call. Rejected
+  (`ok: false`) if the selected model has no thinking family or the value is
+  not one of its tier slugs. Built for the validator's User-Proxy answers
+  (doc/VALIDATOR.md §9), which pin a low tier (e.g. `"minimal"`) so
+  `ask_user` answers don't burn time thinking.
 
 ### 7.7 ⟪planned⟫ — security rules, credential push
 

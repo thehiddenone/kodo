@@ -87,13 +87,19 @@ def _read_local_thinking_settings(kodo_dir: Path) -> dict[str, str]:
     return {}
 
 
-def _build_thinking_extra_body(base_llm: str, kodo_dir: Path) -> dict[str, object]:
+def _build_thinking_extra_body(
+    base_llm: str, kodo_dir: Path, *, override_tier: str | None = None
+) -> dict[str, object]:
     """Build the llama-server request fields for *base_llm*'s configured thinking tier.
 
     Args:
         base_llm (str): The active model's ``LocalLLMEntry.base_llm`` (``""``
             for non-hardcoded entries, which have no thinking family).
         kodo_dir (Path): The user-level ``~/.kodo`` directory.
+        override_tier (str | None): A per-request tier that wins over
+            ``models.local_thinking`` — the validator's ``llm.complete``
+            ``thinking_level`` field (doc/WS_PROTOCOL.md §7.6b) uses this to
+            pin the User-Proxy's answering calls without touching settings.json.
 
     Returns:
         dict[str, object]: Extra fields to merge into the OpenAI-compatible
@@ -105,8 +111,10 @@ def _build_thinking_extra_body(base_llm: str, kodo_dir: Path) -> dict[str, objec
     if family is None:
         return {}
 
-    tier = _read_local_thinking_settings(kodo_dir).get(base_llm) or local_thinking_default_tier(
-        base_llm
+    tier = (
+        override_tier
+        or _read_local_thinking_settings(kodo_dir).get(base_llm)
+        or local_thinking_default_tier(base_llm)
     )
 
     if family == "qwen_reasoning_budget":
@@ -503,6 +511,7 @@ class LlamaPlugin(LLMPlugin):
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
         json_schema: dict[str, object] | None = None,
+        thinking_level: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a llama-server response, starting the server if needed.
 
@@ -521,6 +530,14 @@ class LlamaPlugin(LLMPlugin):
                 machine-read answers (doc/VALIDATOR.md §9). Mutually exclusive
                 with *tools* in practice: a grammar-pinned content channel
                 cannot also emit tool calls.
+            thinking_level (str | None): When set, overrides
+                ``models.local_thinking`` for this call only (a valid tier
+                slug for *model*'s thinking family — see
+                :func:`kodo.llms.local_thinking_tiers`). llama.cpp-only; the
+                ``llm.complete`` command's ``thinking_level`` field
+                (doc/WS_PROTOCOL.md §7.6b) uses this so the validator's
+                User-Proxy can pin e.g. ``"minimal"`` for its ``ask_user``
+                answers without touching settings.json.
 
         Yields:
             StreamEvent: Token deltas, tool calls, then :class:`TurnEnd`.
@@ -537,6 +554,7 @@ class LlamaPlugin(LLMPlugin):
             messages=messages,
             tools=tools,
             json_schema=json_schema,
+            thinking_level=thinking_level,
         ):
             yield event
 
@@ -630,6 +648,7 @@ class LlamaPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         json_schema: dict[str, object] | None = None,
+        thinking_level: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         cancel_event = asyncio.Event()
         self.__cancel_events[stream_id] = cancel_event
@@ -641,6 +660,7 @@ class LlamaPlugin(LLMPlugin):
                 messages=messages,
                 tools=tools,
                 json_schema=json_schema,
+                thinking_level=thinking_level,
             ):
                 yield event
         finally:
@@ -655,6 +675,7 @@ class LlamaPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         json_schema: dict[str, object] | None = None,
+        thinking_level: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         assert self.__client is not None
         oai_messages = _build_oai_messages(system, messages)
@@ -713,7 +734,13 @@ class LlamaPlugin(LLMPlugin):
             {"type": "json_object", "schema": json_schema} if json_schema is not None else None
         )
         entry = get_local_registry(self.__kodo_dir).get(model)
-        extra_body = _build_thinking_extra_body(entry.base_llm, self.__kodo_dir) if entry else {}
+        extra_body = (
+            _build_thinking_extra_body(
+                entry.base_llm, self.__kodo_dir, override_tier=thinking_level
+            )
+            if entry
+            else {}
+        )
         response = await self.__client.chat.completions.create(  # type: ignore[call-overload]
             model=model,
             max_tokens=_DEFAULT_MAX_TOKENS,
