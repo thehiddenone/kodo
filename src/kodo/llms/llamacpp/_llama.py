@@ -22,6 +22,7 @@ import openai
 
 from kodo.common import Envelope, MessageSink
 from kodo.llms import (
+    QWEN_TIER_TOKEN_BUDGETS,
     LLMPlugin,
     Message,
     StreamEvent,
@@ -33,6 +34,8 @@ from kodo.llms import (
     TurnEnd,
     Usage,
     get_local_registry,
+    local_thinking_default_tier,
+    local_thinking_family,
     strip_kodo_callouts,
 )
 from kodo.transport import EVT_LLAMA_STATE
@@ -52,6 +55,74 @@ _API_KEY = "key_is_not_required_for_local_inference"
 # shows up as the stream stalling for a beat and then dumping many tokens at
 # once. Asking for ``identity`` keeps each chunk flushing as it is produced.
 _NO_COMPRESSION_HEADERS = {"Accept-Encoding": "identity"}
+
+
+def _read_local_thinking_settings(kodo_dir: Path) -> dict[str, str]:
+    """Read ``models.local_thinking`` (base_llm -> tier slug) straight off disk.
+
+    Reads ``kodo_dir/etc/settings.json`` directly rather than importing
+    ``kodo.server``'s ``Config`` — matches the existing pattern already used
+    for settings reads inside ``kodo.llms.llamacpp`` (see ``_manager.py``'s
+    ``_models_dir``), keeping this package free of a dependency on the server.
+
+    Args:
+        kodo_dir (Path): The user-level ``~/.kodo`` directory.
+
+    Returns:
+        dict[str, str]: ``base_llm`` -> tier slug for every configured entry;
+        empty if the file is missing, malformed, or has no such key.
+    """
+    settings_file = kodo_dir / "etc" / "settings.json"
+    if settings_file.is_file():
+        try:
+            parsed = json.loads(settings_file.read_text(encoding="utf-8"))
+            models = parsed.get("models") if isinstance(parsed, dict) else None
+            local_thinking = models.get("local_thinking") if isinstance(models, dict) else None
+            if isinstance(local_thinking, dict):
+                return {str(k): str(v) for k, v in local_thinking.items()}
+        except Exception:
+            _log.warning(
+                "Failed to read local_thinking settings from %s", settings_file, exc_info=True
+            )
+    return {}
+
+
+def _build_thinking_extra_body(base_llm: str, kodo_dir: Path) -> dict[str, object]:
+    """Build the llama-server request fields for *base_llm*'s configured thinking tier.
+
+    Args:
+        base_llm (str): The active model's ``LocalLLMEntry.base_llm`` (``""``
+            for non-hardcoded entries, which have no thinking family).
+        kodo_dir (Path): The user-level ``~/.kodo`` directory.
+
+    Returns:
+        dict[str, object]: Extra fields to merge into the OpenAI-compatible
+        request body via ``extra_body`` — ``{}`` if *base_llm* has no
+        thinking family (custom entries, or a hardcoded model outside both
+        families).
+    """
+    family = local_thinking_family(base_llm)
+    if family is None:
+        return {}
+
+    tier = _read_local_thinking_settings(kodo_dir).get(base_llm) or local_thinking_default_tier(
+        base_llm
+    )
+
+    if family == "qwen_reasoning_budget":
+        budget = (
+            -1 if tier == "unlimited" else QWEN_TIER_TOKEN_BUDGETS.get(base_llm, {}).get(tier, -1)
+        )
+        extra_body: dict[str, object] = {"thinking_budget_tokens": budget}
+        if base_llm == "Qwen35-9B":
+            # Qwen3.5-9B's chat template has thinking off by default, unlike
+            # the rest of the Qwen-tiering family — force it on so the
+            # configured budget actually has something to apply to.
+            extra_body["chat_template_kwargs"] = {"enable_thinking": True}
+        return extra_body
+
+    # gpt_oss_reasoning_effort — the tier slug IS the wire value.
+    return {"chat_template_kwargs": {"reasoning_effort": tier}}
 
 
 # ---------------------------------------------------------------------------
@@ -641,12 +712,15 @@ class LlamaPlugin(LLMPlugin):
         response_format = (
             {"type": "json_object", "schema": json_schema} if json_schema is not None else None
         )
+        entry = get_local_registry(self.__kodo_dir).get(model)
+        extra_body = _build_thinking_extra_body(entry.base_llm, self.__kodo_dir) if entry else {}
         response = await self.__client.chat.completions.create(  # type: ignore[call-overload]
             model=model,
             max_tokens=_DEFAULT_MAX_TOKENS,
             messages=oai_messages,
             tools=oai_tools if oai_tools else openai.NOT_GIVEN,
             response_format=response_format if response_format is not None else openai.NOT_GIVEN,
+            extra_body=extra_body if extra_body else openai.NOT_GIVEN,
             stream=True,
             stream_options={"include_usage": True},
         )

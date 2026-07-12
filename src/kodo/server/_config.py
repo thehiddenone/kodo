@@ -35,6 +35,10 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
     # doc/STATE_AND_LIFECYCLE.md §4.5.
     "models": {
         "local": "llamacpp-qwen36-27b-q4-k-xl",
+        # base_llm -> thinking-tier slug (e.g. "high", "unlimited"). Absent
+        # key = that family's default tier. See
+        # kodo.llms.local_thinking_default_tier / doc/LLM_REGISTRY.md.
+        "local_thinking": {},
         "cloud": {
             "anthropic": {
                 "low": "claude-haiku-4-5-20251001",

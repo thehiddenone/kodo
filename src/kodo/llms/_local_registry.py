@@ -33,11 +33,18 @@ from pathlib import Path
 from typing import cast
 
 __all__ = [
+    "GPT_OSS_REASONING_EFFORT_FAMILY",
+    "QWEN_REASONING_BUDGET_FAMILY",
+    "QWEN_TIER_TOKEN_BUDGETS",
+    "REASONING_BUDGET_MESSAGE",
     "LocalLLMEntry",
     "add_local_entry",
     "clear_llama_server_override_path",
     "get_llama_server_override_path",
     "get_local_registry",
+    "local_thinking_default_tier",
+    "local_thinking_family",
+    "local_thinking_tiers",
     "parse_llama_args",
     "remove_local_entry",
     "set_llama_server_override_path",
@@ -48,6 +55,115 @@ _log = logging.getLogger(__name__)
 _REGISTRY_RELATIVE_PATH = ("etc", "local-llm-registry.json")
 
 _CUSTOM_KINDS = frozenset({"custom_hf", "custom_file", "custom_server_url"})
+
+# ---------------------------------------------------------------------------
+# Thinking-tier families: base_llm -> which reasoning-tiering mechanism (if
+# any) that model's GGUF supports. See doc/LLM_REGISTRY.md and
+# doc/LOCAL_INFERENCE.md for the llama.cpp mechanism each one rides on.
+# ---------------------------------------------------------------------------
+
+#: base_llm values launched with an explicit ``--reasoning-budget -1`` CLI
+#: flag (see :func:`kodo.llms.llamacpp.ensure_llama_running`), which makes the
+#: per-request ``thinking_budget_tokens`` override effective. All support a
+#: shared 6-tier scale (Minimal..Unlimited); Qwen35-9B additionally needs
+#: ``chat_template_kwargs.enable_thinking=true`` per request since its chat
+#: template has thinking off by default (the other members think by default).
+QWEN_REASONING_BUDGET_FAMILY: frozenset[str] = frozenset(
+    {
+        "Qwen36-27B",
+        "Qwen36-35B-A3B",
+        "Qwen35-9B",
+        "Gemma4-26B-A4B",
+        "Gemma4-31B",
+        "Ornith10-35B",
+    }
+)
+
+#: base_llm values that take a per-request nested
+#: ``chat_template_kwargs.reasoning_effort`` ("low"|"medium"|"high"); no
+#: launch-time CLI flags needed — the model's own default is "medium".
+GPT_OSS_REASONING_EFFORT_FAMILY: frozenset[str] = frozenset({"GPT-OSS-120B", "GPT-OSS-20B"})
+
+_QWEN_TIERS: tuple[str, ...] = ("minimal", "low", "medium", "high", "huge", "unlimited")
+_GPT_OSS_TIERS: tuple[str, ...] = ("low", "medium", "high")
+
+#: Per-base_llm token budget for each finite Qwen-family tier ("unlimited" is
+#: always -1, not listed here). Best-effort starting point, not sourced from
+#: an official per-model spec — see doc/LLM_REGISTRY.md for the rationale
+#: behind each family's scale (e.g. Ornith10-35B's RL-trained thinking
+#: efficiency vs. Qwen35-9B's smaller/weaker-model verbosity). Expect these to
+#: be retuned after real usage.
+QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
+    "Qwen36-27B": {"minimal": 512, "low": 1536, "medium": 4096, "high": 8192, "huge": 16384},
+    "Qwen36-35B-A3B": {"minimal": 512, "low": 1536, "medium": 4096, "high": 8192, "huge": 16384},
+    "Qwen35-9B": {"minimal": 2048, "low": 4096, "medium": 8192, "high": 16384, "huge": 32768},
+    "Gemma4-26B-A4B": {"minimal": 1024, "low": 2048, "medium": 4096, "high": 8192, "huge": 16384},
+    "Gemma4-31B": {"minimal": 1024, "low": 2048, "medium": 4096, "high": 8192, "huge": 16384},
+    "Ornith10-35B": {"minimal": 256, "low": 768, "medium": 1536, "high": 3072, "huge": 6144},
+}
+
+_QWEN_DEFAULT_TIER = "unlimited"
+_GPT_OSS_DEFAULT_TIER = "medium"
+
+#: Injected before the end-of-thinking tag whenever a finite Qwen-family
+#: budget is exhausted (``--reasoning-budget-message``).
+REASONING_BUDGET_MESSAGE = (
+    "I've reached the limit of my thinking budget, so I'll stop reasoning here "
+    "and give the best answer I can based on what I've worked out so far."
+)
+
+
+def local_thinking_family(base_llm: str) -> str | None:
+    """Which reasoning-tiering mechanism *base_llm* uses, if any.
+
+    Args:
+        base_llm (str): The ``LocalLLMEntry.base_llm`` slug to look up.
+
+    Returns:
+        str | None: ``"qwen_reasoning_budget"``, ``"gpt_oss_reasoning_effort"``,
+        or ``None`` (includes every ``custom_*`` entry, whose ``base_llm`` is
+        always ``""``).
+    """
+    if base_llm in QWEN_REASONING_BUDGET_FAMILY:
+        return "qwen_reasoning_budget"
+    if base_llm in GPT_OSS_REASONING_EFFORT_FAMILY:
+        return "gpt_oss_reasoning_effort"
+    return None
+
+
+def local_thinking_tiers(base_llm: str) -> tuple[str, ...]:
+    """The ordered tier slugs *base_llm* supports, or ``()`` if none.
+
+    Args:
+        base_llm (str): The ``LocalLLMEntry.base_llm`` slug to look up.
+
+    Returns:
+        tuple[str, ...]: Ordered tier slugs, lowest intensity first.
+    """
+    family = local_thinking_family(base_llm)
+    if family == "qwen_reasoning_budget":
+        return _QWEN_TIERS
+    if family == "gpt_oss_reasoning_effort":
+        return _GPT_OSS_TIERS
+    return ()
+
+
+def local_thinking_default_tier(base_llm: str) -> str:
+    """The default tier slug for *base_llm*'s thinking family.
+
+    Args:
+        base_llm (str): The ``LocalLLMEntry.base_llm`` slug to look up.
+
+    Returns:
+        str: ``"unlimited"`` for the Qwen family, ``"medium"`` for GPT-OSS,
+        or ``""`` if *base_llm* has no thinking family.
+    """
+    family = local_thinking_family(base_llm)
+    if family == "gpt_oss_reasoning_effort":
+        return _GPT_OSS_DEFAULT_TIER
+    if family == "qwen_reasoning_budget":
+        return _QWEN_DEFAULT_TIER
+    return ""
 
 
 @dataclass(frozen=True)
@@ -149,7 +265,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="atomicchat-qwen36-27b-q8",
         kind="hardcoded_hf",
-        description="Qwen 3.6 27B Q8_0 by AtomicChat — local inference via llama-server",
+        description="Qwen 3.6 27B Q8_0 by AtomicChat",
         repo_id="AlexAtomic/qwen36-27b-GGUF",
         filename="qwen36-27b-Q8_0.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -170,7 +286,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-qwen36-27b-q8-k-xl",
         kind="hardcoded_hf",
-        description="Qwen 3.6 27B UD-Q8_K_XL by Unsloth — local inference via llama-server",
+        description="Qwen 3.6 27B UD-Q8_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
         filename="Qwen3.6-27B-UD-Q8_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -190,7 +306,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-qwen36-27b-q6-k-xl",
         kind="hardcoded_hf",
-        description="Qwen 3.6 27B UD-Q6_K_XL by Unsloth — local inference via llama-server",
+        description="Qwen 3.6 27B UD-Q6_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
         filename="Qwen3.6-27B-UD-Q6_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -210,7 +326,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-qwen36-27b-q5-k-xl",
         kind="hardcoded_hf",
-        description="Qwen 3.6 27B UD-Q5_K_XL by Unsloth — local inference via llama-server",
+        description="Qwen 3.6 27B UD-Q5_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
         filename="Qwen3.6-27B-UD-Q5_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -228,7 +344,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-qwen36-27b-q4-k-xl",
         kind="hardcoded_hf",
-        description="Qwen 3.6 27B UD-Q4_K_XL by Unsloth — local inference via llama-server",
+        description="Qwen 3.6 27B UD-Q4_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
         filename="Qwen3.6-27B-UD-Q4_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -248,7 +364,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-qwen36-35b-a3b-q8-k-xl",
         kind="hardcoded_hf",
-        description="Qwen 3.6 35B-A3B UD-Q8_K_XL by Unsloth — local inference via llama-server",
+        description="Qwen 3.6 35B-A3B UD-Q8_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
         filename="Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -269,7 +385,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-qwen36-35b-a3b-q6-k-xl",
         kind="hardcoded_hf",
-        description="Qwen 3.6 35B-A3B UD-Q6_K_XL by Unsloth — local inference via llama-server",
+        description="Qwen 3.6 35B-A3B UD-Q6_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
         filename="Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -288,7 +404,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-qwen36-35b-a3b-q5-k-xl",
         kind="hardcoded_hf",
-        description="Qwen 3.6 35B-A3B UD-Q5_K_XL by Unsloth — local inference via llama-server",
+        description="Qwen 3.6 35B-A3B UD-Q5_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
         filename="Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -307,7 +423,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-qwen36-35b-a3b-q4-k-xl",
         kind="hardcoded_hf",
-        description="Qwen 3.6 35B-A3B UD-Q4_K_XL by Unsloth — local inference via llama-server",
+        description="Qwen 3.6 35B-A3B UD-Q4_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
         filename="Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -327,7 +443,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-q4-k-xl",
         kind="hardcoded_hf",
-        description="Qwen 3 Coder 80B UD-Q4_K_XL by Unsloth — local inference via llama-server",
+        description="Qwen 3 Coder 80B UD-Q4_K_XL by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="Qwen3-Coder-Next-UD-Q4_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -347,7 +463,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-q3-k-xl",
         kind="hardcoded_hf",
-        description="Qwen 3 Coder 80B UD-Q3_K_XL by Unsloth — local inference via llama-server",
+        description="Qwen 3 Coder 80B UD-Q3_K_XL by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="Qwen3-Coder-Next-UD-Q3_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -367,7 +483,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-mxfp4-moe",
         kind="hardcoded_hf",
-        description="Qwen 3 Coder 80B MXFP4-MOE by Unsloth — local inference via llama-server",
+        description="Qwen 3 Coder 80B MXFP4-MOE by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="Qwen3-Coder-Next-MXFP4_MOE.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -387,7 +503,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-qwen35-9b-q8-k-xl",
         kind="hardcoded_hf",
-        description="Qwen 3.5 9B UD-Q8_K_XL by Unsloth — local inference via llama-server",
+        description="Qwen 3.5 9B UD-Q8_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
         filename="Qwen3.5-9B-UD-Q8_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -405,7 +521,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-gpt-oss-120b-f16",
         kind="hardcoded_hf",
-        description="GPT OSS 120B F16 by Unsloth — local inference via llama-server",
+        description="GPT OSS 120B F16 by Unsloth",
         repo_id="unsloth/gpt-oss-120b-GGUF",
         filename="gpt-oss-120b-F16.gguf",
         llama_args={"--cache-type-k": "f16", "--cache-type-v": "f16"},
@@ -426,7 +542,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-gpt-oss-20b-f16",
         kind="hardcoded_hf",
-        description="GPT OSS 20B F16 by Unsloth — local inference via llama-server",
+        description="GPT OSS 20B F16 by Unsloth",
         repo_id="unsloth/gpt-oss-20b-GGUF",
         filename="gpt-oss-20b-F16.gguf",
         llama_args={"--cache-type-k": "f16", "--cache-type-v": "f16"},
@@ -446,7 +562,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-gpt-oss-20b-q8-k-xl",
         kind="hardcoded_hf",
-        description="GPT OSS 20B UD-Q8_K_XL by Unsloth — local inference via llama-server",
+        description="GPT OSS 20B UD-Q8_K_XL by Unsloth",
         repo_id="unsloth/gpt-oss-20b-GGUF",
         filename="gpt-oss-20b-UD-Q8_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -465,7 +581,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-gpt-oss-20b-q8-0",
         kind="hardcoded_hf",
-        description="GPT OSS 20B Q8_0 by Unsloth — local inference via llama-server",
+        description="GPT OSS 20B Q8_0 by Unsloth",
         repo_id="unsloth/gpt-oss-20b-GGUF",
         filename="gpt-oss-20b-Q8_0.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -483,7 +599,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-gpt-oss-20b-q6-k-xl",
         kind="hardcoded_hf",
-        description="GPT OSS 20B UD-Q6_K_XL by Unsloth — local inference via llama-server",
+        description="GPT OSS 20B UD-Q6_K_XL by Unsloth",
         repo_id="unsloth/gpt-oss-20b-GGUF",
         filename="gpt-oss-20b-UD-Q6_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -502,7 +618,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="unsloth-gpt-oss-20b-q4-k-xl",
         kind="hardcoded_hf",
-        description="GPT OSS 20B UD-Q4_K_XL by Unsloth — local inference via llama-server",
+        description="GPT OSS 20B UD-Q4_K_XL by Unsloth",
         repo_id="unsloth/gpt-oss-20b-GGUF",
         filename="gpt-oss-20b-UD-Q4_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -518,14 +634,65 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         memory=24,
     ),
     LocalLLMEntry(
-        name="unsloth-gemma4-26b-q4-k-xl",
+        name="unsloth-gemma4-26b-ud-q8-k-xl",
         kind="hardcoded_hf",
-        description="Gemma 4 26B UD-Q4_K_XL by Unsloth — local inference via llama-server",
+        description="Gemma 4 26B A4B UD_Q8_K_XL by Unsloth",
+        repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
+        filename="gemma-4-26B-A4B-it-UD-Q8_K_XL.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-26B-A4B",
+        quant_author="Unsloth",
+        quant_type="UD_Q8_K_XL",
+        size_hint="27.6 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=32,
+        memory=48,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-26b-ud-q6-k-xl",
+        kind="hardcoded_hf",
+        description="Gemma 4 26B A4B UD_Q6_K_XL by Unsloth",
+        repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
+        filename="gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-26B-A4B",
+        quant_author="Unsloth",
+        quant_type="UD_Q6_K_XL",
+        size_hint="23.3 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=32,
+        memory=48,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-26b-ud-q5-k-xl",
+        kind="hardcoded_hf",
+        description="Gemma 4 26B A4B UD_Q5_K_XL by Unsloth",
+        repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
+        filename="gemma-4-26B-A4B-it-UD-Q5_K_XL.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-26B-A4B",
+        quant_author="Unsloth",
+        quant_type="UD_Q5_K_XL",
+        size_hint="21.2 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=24,
+        memory=32,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-26b-ud-q4-k-xl",
+        kind="hardcoded_hf",
+        description="Gemma 4 26B A4B UD_Q4_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
         filename="gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
-        context_window=131_072,
-        base_llm="Gemma4-26B",
+        context_window=262_144,
+        base_llm="Gemma4-26B-A4B",
         quant_author="Unsloth",
         quant_type="UD_Q4_K_XL",
         size_hint="17.0 GB",
@@ -538,9 +705,264 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         memory=32,
     ),
     LocalLLMEntry(
+        name="unsloth-gemma4-26b-qat-ud-q4-k-xl",
+        kind="hardcoded_hf",
+        description="Gemma 4 26B A4B QAT UD_Q4_K_XL by Unsloth",
+        repo_id="unsloth/gemma-4-26B-A4B-it-qat-GGUF",
+        filename="gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-26B-A4B",
+        quant_author="Unsloth",
+        quant_type="QAT_UD_Q4_K_XL",
+        size_hint="14.2 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=24,
+        memory=32,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-26b-ud-q3-k-xl",
+        kind="hardcoded_hf",
+        description="Gemma 4 26B A4B UD_Q3_K_XL by Unsloth",
+        repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
+        filename="gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-26B-A4B",
+        quant_author="Unsloth",
+        quant_type="UD_Q3_K_XL",
+        size_hint="12.9 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=16,
+        memory=24,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-26b-ud-q2-k-xl",
+        kind="hardcoded_hf",
+        description="Gemma 4 26B A4B UD_Q2_K_XL by Unsloth",
+        repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
+        filename="gemma-4-26B-A4B-it-UD-Q2_K_XL.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-26B-A4B",
+        quant_author="Unsloth",
+        quant_type="UD_Q2_K_XL",
+        size_hint="10.5 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=16,
+        memory=16,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-26b-ud-iq4-xs",
+        kind="hardcoded_hf",
+        description="Gemma 4 26B A4B UD_IQ4_XS by Unsloth",
+        repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
+        filename="gemma-4-26B-A4B-it-UD-IQ4_XS.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-26B-A4B",
+        quant_author="Unsloth",
+        quant_type="UD_IQ4_XS",
+        size_hint="13.6 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=16,
+        memory=24,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-26b-ud-iq3-xxs",
+        kind="hardcoded_hf",
+        description="Gemma 4 26B A4B UD_IQ3_XXS by Unsloth",
+        repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
+        filename="gemma-4-26B-A4B-it-UD-IQ3_XXS.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-26B-A4B",
+        quant_author="Unsloth",
+        quant_type="UD_IQ3_XXS",
+        size_hint="11.4 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=16,
+        memory=16,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-26b-ud-iq2-xxs",
+        kind="hardcoded_hf",
+        description="Gemma 4 26B A4B UD_IQ2_XXS by Unsloth",
+        repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
+        filename="gemma-4-26B-A4B-it-UD-IQ2_XXS.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-26B-A4B",
+        quant_author="Unsloth",
+        quant_type="UD_IQ2_XXS",
+        size_hint="9.9 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=16,
+        memory=16,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-31b-ud-q8-k-xl",
+        kind="hardcoded_hf",
+        description="Gemma 4 31B UD_Q8_K_XL by Unsloth",
+        repo_id="unsloth/gemma-4-31B-it-GGUF",
+        filename="gemma-4-31B-it-UD-Q8_K_XL.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-31B",
+        quant_author="Unsloth",
+        quant_type="UD_Q8_K_XL",
+        size_hint="35 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=48,
+        memory=48,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-31b-q8-0",
+        kind="hardcoded_hf",
+        description="Gemma 4 31B Q8_0 by Unsloth",
+        repo_id="unsloth/gemma-4-31B-it-GGUF",
+        filename="gemma-4-31B-it-Q8_0.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-31B",
+        quant_author="Unsloth",
+        quant_type="Q8_0",
+        size_hint="32.6 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=48,
+        memory=48,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-31b-ud-q6-k-xl",
+        kind="hardcoded_hf",
+        description="Gemma 4 31B UD_Q6_K_XL by Unsloth",
+        repo_id="unsloth/gemma-4-31B-it-GGUF",
+        filename="gemma-4-31B-it-UD-Q6_K_XL.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-31B",
+        quant_author="Unsloth",
+        quant_type="UD_Q6_K_XL",
+        size_hint="27.5 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=32,
+        memory=48,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-31b-ud-q5-k-xl",
+        kind="hardcoded_hf",
+        description="Gemma 4 31B UD_Q5_K_XL by Unsloth",
+        repo_id="unsloth/gemma-4-31B-it-GGUF",
+        filename="gemma-4-31B-it-UD-Q5_K_XL.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-31B",
+        quant_author="Unsloth",
+        quant_type="UD_Q5_K_XL",
+        size_hint="21.9 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=32,
+        memory=48,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-31b-ud-q4-k-xl",
+        kind="hardcoded_hf",
+        description="Gemma 4 31B UD_Q4_K_XL by Unsloth",
+        repo_id="unsloth/gemma-4-31B-it-GGUF",
+        filename="gemma-4-31B-it-UD-Q4_K_XL.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-31B",
+        quant_author="Unsloth",
+        quant_type="UD_Q4_K_XL",
+        size_hint="18.8 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=24,
+        memory=32,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-31b-ud-q3-k-xl",
+        kind="hardcoded_hf",
+        description="Gemma 4 31B UD_Q3_K_XL by Unsloth",
+        repo_id="unsloth/gemma-4-31B-it-GGUF",
+        filename="gemma-4-31B-it-UD-Q3_K_XL.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-31B",
+        quant_author="Unsloth",
+        quant_type="UD_Q3_K_XL",
+        size_hint="15.4 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=24,
+        memory=32,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-31b-ud-q2-k-xl",
+        kind="hardcoded_hf",
+        description="Gemma 4 31B UD_Q2_K_XL by Unsloth",
+        repo_id="unsloth/gemma-4-31B-it-GGUF",
+        filename="gemma-4-31B-it-UD-Q2_K_XL.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-31B",
+        quant_author="Unsloth",
+        quant_type="UD_Q2_K_XL",
+        size_hint="11.8 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=16,
+        memory=16,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-31b-ud-iq3-xxs",
+        kind="hardcoded_hf",
+        description="Gemma 4 31B UD_IQ3_XXs by Unsloth",
+        repo_id="unsloth/gemma-4-31B-it-GGUF",
+        filename="gemma-4-31B-it-UD-IQ3_XXS.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-31B",
+        quant_author="Unsloth",
+        quant_type="UD_IQ3_XXS",
+        size_hint="11.8 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=16,
+        memory=16,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gemma4-31b-ud-iq2-xxs",
+        kind="hardcoded_hf",
+        description="Gemma 4 31B UD_IQ2_XXS by Unsloth",
+        repo_id="unsloth/gemma-4-31B-it-GGUF",
+        filename="gemma-4-31B-it-UD-IQ2_XXS.gguf",
+        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
+        context_window=262_144,
+        base_llm="Gemma4-31B",
+        quant_author="Unsloth",
+        quant_type="UD_IQ2_XXS",
+        size_hint="8.5 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=16,
+        memory=16,
+    ),
+    LocalLLMEntry(
         name="deepreinforce-ornith10-35b-bf16",
         kind="hardcoded_hf",
-        description="Ornith 1.0 35B BF16 by DeepReinforce — local inference via llama-server",
+        description="Ornith 1.0 35B BF16 by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-bf16.gguf",
         llama_args={"--cache-type-k": "bf16", "--cache-type-v": "bf16"},
@@ -561,7 +983,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="deepreinforce-ornith10-35b-q8-0",
         kind="hardcoded_hf",
-        description="Ornith 1.0 35B Q8_0 by DeepReinforce — local inference via llama-server",
+        description="Ornith 1.0 35B Q8_0 by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q8_0.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -581,7 +1003,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="deepreinforce-ornith10-35b-q6-k",
         kind="hardcoded_hf",
-        description="Ornith 1.0 35B Q6_K by DeepReinforce — local inference via llama-server",
+        description="Ornith 1.0 35B Q6_K by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q6_K.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -601,7 +1023,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="deepreinforce-ornith10-35b-q5-k-m",
         kind="hardcoded_hf",
-        description="Ornith 1.0 35B Q5_K by DeepReinforce — local inference via llama-server",
+        description="Ornith 1.0 35B Q5_K by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q5_K_m.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
@@ -620,7 +1042,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
     LocalLLMEntry(
         name="deepreinforce-ornith10-35b-q4-k-m",
         kind="hardcoded_hf",
-        description="Ornith 1.0 35B Q4_K by DeepReinforce — local inference via llama-server",
+        description="Ornith 1.0 35B Q4_K by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q4_K_m.gguf",
         llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},

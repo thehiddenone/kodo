@@ -37,6 +37,9 @@ from kodo.llms import (
     get_cloud_vendor_display_name,
     get_llama_server_override_path,
     get_local_registry,
+    local_thinking_default_tier,
+    local_thinking_family,
+    local_thinking_tiers,
     parse_llama_args,
     remove_local_entry,
     set_llama_server_override_path,
@@ -278,10 +281,31 @@ def _local_entry_installed(entry: LocalLLMEntry, kodo_dir: Path) -> bool:
     return _local_entry_installed_path(entry, kodo_dir) is not None
 
 
+def _thinking_families_payload(registry: dict[str, LocalLLMEntry]) -> dict[str, object]:
+    """``base_llm -> {family, tiers, default}`` for every base model with a
+    thinking-tier mechanism (see ``kodo.llms.local_thinking_family``).
+
+    Server-computed rather than a second table hardcoded in kodo-vsix, since
+    family membership already lives in ``_local_registry.py`` as the single
+    source of truth (also needed there for the launch-time CLI flags) — a
+    duplicate client-side copy would risk drifting out of sync.
+    """
+    base_llms = {e.base_llm for e in registry.values() if e.base_llm}
+    return {
+        base_llm: {
+            "family": local_thinking_family(base_llm),
+            "tiers": list(local_thinking_tiers(base_llm)),
+            "default": local_thinking_default_tier(base_llm),
+        }
+        for base_llm in base_llms
+        if local_thinking_family(base_llm) is not None
+    }
+
+
 def _local_registry_payload() -> dict[str, object]:
     """The ``{local_registry, llama_server_override_path, detected_vram_gb,
-    detected_ram_gb}`` shape shared by ``hello.ack`` and every
-    ``local_llm.registry_state`` event.
+    detected_ram_gb, thinking_families}`` shape shared by ``hello.ack`` and
+    every ``local_llm.registry_state`` event.
 
     Download-in-progress state is deliberately **not** part of this payload —
     kodo-vsix reads ``manager-state.json`` directly off disk instead of
@@ -319,6 +343,7 @@ def _local_registry_payload() -> dict[str, object]:
         "llama_server_override_path": get_llama_server_override_path(kodo_dir),
         "detected_vram_gb": detect_vram_gb(),
         "detected_ram_gb": detect_ram_gb(),
+        "thinking_families": _thinking_families_payload(registry),
     }
 
 

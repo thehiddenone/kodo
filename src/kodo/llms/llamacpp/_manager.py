@@ -6,7 +6,12 @@ import json
 import threading
 from pathlib import Path
 
-from kodo.llms import LocalLLMEntry, get_llama_server_override_path
+from kodo.llms import (
+    REASONING_BUDGET_MESSAGE,
+    LocalLLMEntry,
+    get_llama_server_override_path,
+    local_thinking_family,
+)
 from kodo.llms.local import LocalModelManager
 
 from ._installer import find_installed
@@ -123,12 +128,20 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
     override = get_llama_server_override_path(kodo_dir)
     executable = Path(override) if override else install.executable
 
+    llama_args = dict(entry.llama_args)
+    if local_thinking_family(entry.base_llm) == "qwen_reasoning_budget":
+        # -1 is mandatory here (not just the default): it's what makes the
+        # per-request `thinking_budget_tokens` override in _llama.py take
+        # effect at all — any other explicit CLI value would lock it out.
+        llama_args.setdefault("--reasoning-budget", "-1")
+        llama_args.setdefault("--reasoning-budget-message", REASONING_BUDGET_MESSAGE)
+
     cfg = LlamaServerConfig(
         executable=executable,
         model_path=model_path,
         kodo_dir=kodo_dir,
         model_name=entry.name,
-        llama_args=entry.llama_args,
+        llama_args=llama_args,
     )
     server = LlamaServer(cfg)
     await server.start()

@@ -364,8 +364,8 @@ caught and swallowed, since this must never block the `hello` handshake.
 field kodo-vsix needs — `name`, `kind`, `description`, `repo_id`, `filename`,
 `path`, `url`, `installed`, `installed_path`, `base_llm`, `quant_author`,
 `quant_type`, `size_hint`, `gpu_tip`, `mac_tip`, `min_memory`, `memory` — plus
-top-level `llama_server_override_path`, `detected_vram_gb`, and
-`detected_ram_gb`. `installed_path` is new: the absolute path to the
+top-level `llama_server_override_path`, `detected_vram_gb`,
+`detected_ram_gb`, and `thinking_families` (§4.5). `installed_path` is new: the absolute path to the
 installed file(s) (`LocalModelManager.get_model_path()` for
 `hardcoded_hf`/`custom_hf`, `entry.path` for `custom_file`, `null` for
 `custom_server_url` or anything not installed) — it's what "Show me local
@@ -390,6 +390,57 @@ already reports in full.
 `manager-state.json` directly off disk once a second instead, independent of
 the WS connection.
 
+### 4.5 Thinking-tier families
+
+Some `base_llm` families support a controllable "thinking budget" — how much
+of the model's reasoning/`<think>` output llama-server is allowed to produce
+before it must answer. Two mechanisms exist, keyed off `base_llm` (never
+`entry.name`, so every quant of a base model shares one setting):
+
+- **`qwen_reasoning_budget`** (6 tiers: `minimal`, `low`, `medium`, `high`,
+  `huge`, `unlimited`) — `Qwen36-27B`, `Qwen36-35B-A3B`, `Qwen35-9B`,
+  `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith10-35B`, `Qwen3-Coder-Next-80B`
+  (`QWEN_REASONING_BUDGET_FAMILY` in `kodo/llms/_local_registry.py`).
+  `ensure_llama_running` (`kodo/llms/llamacpp/_manager.py`) launches these
+  with `--reasoning-budget -1 --reasoning-budget-message "<REASONING_BUDGET_MESSAGE>"`.
+  The CLI value must be exactly `-1` — llama.cpp only honors a per-request
+  override when the launch-time budget is unrestricted; any other explicit
+  CLI value locks the budget and per-request overrides are silently ignored.
+  Each chat request then sets the effective budget via a **top-level**
+  `thinking_budget_tokens` field (`-1` unrestricted / `0` immediate end /
+  `N>0` token budget — see `QWEN_TIER_TOKEN_BUDGETS` for the per-tier `N`).
+  Default tier is `unlimited`. `Qwen35-9B` additionally needs
+  `chat_template_kwargs: {"enable_thinking": true}` on every request, since
+  its chat template has thinking off by default (the other six family
+  members think by default).
+- **`gpt_oss_reasoning_effort`** (3 tiers: `low`, `medium`, `high`) —
+  `GPT-OSS-120B`, `GPT-OSS-20B` (`GPT_OSS_REASONING_EFFORT_FAMILY`). No
+  launch-time flags. Each request sets a **nested**
+  `chat_template_kwargs: {"reasoning_effort": "<tier>"}` — not a top-level
+  field. Default tier is `medium` (the model's own native default).
+
+`kodo.llms.local_thinking_family(base_llm)` /
+`local_thinking_tiers(base_llm)` / `local_thinking_default_tier(base_llm)`
+(all in `_local_registry.py`) are the single source of truth for both the
+launch-time flag injection and the per-request field construction — adding a
+model to a family is a one-line change to the relevant `frozenset`, never a
+per-quant `llama_args` edit.
+
+The **current selection** is a plain settings.json write (§5,
+`models.local_thinking`) plus `config.reload` from kodo-vsix, same pattern as
+`models.local`/`models.cloud`. The **available families/tiers**, being registry data the
+server already owns, are pushed to kodo-vsix via `_local_registry_payload()`'s
+`thinking_families` key — `base_llm -> {family, tiers, default}` — on every
+`hello.ack` and `local_llm.registry_state` event, so kodo-vsix never needs a
+second hardcoded copy of family membership. `LlamaPlugin.__raw_stream`
+(`kodo/llms/llamacpp/_llama.py`) resolves the active request's `base_llm` from
+the registry, reads `models.local_thinking` off `settings.json` directly (no
+`kodo.server` import — matches the existing settings-read pattern already
+used elsewhere in `kodo.llms.llamacpp`), and passes the resulting fields to
+`chat.completions.create` via `extra_body`. Entries with no thinking family
+(`base_llm == ""`, or a hardcoded model outside both families) get no
+`extra_body` at all — no behavior change.
+
 ---
 
 ## 5. Settings schema
@@ -402,6 +453,7 @@ the WS connection.
   "active_cloud_vendor": "anthropic",
   "models": {
     "local": "llamacpp-qwen36-27b-q4-k-xl",
+    "local_thinking": { "Qwen36-27B": "high", "GPT-OSS-20B": "low" },
     "cloud": {
       "anthropic": { "low": "claude-haiku-4-5-20251001", "medium": "claude-sonnet-5",
                       "high": "claude-opus-4-8", "max": "claude-fable-5" }
@@ -415,7 +467,9 @@ writes followed by `config.reload` (§7.5) — same pattern as the pre-existing
 `set_mode`/`set_active_model` sidebar wiring, no dedicated WS message. Same
 for each of the four effort-panel selections in Cloud AI Settings: the
 extension writes `models.cloud.<vendor>.<effort>` directly and sends
-`config.reload`. This file has no per-workspace layering (a single global
+`config.reload`. `models.local_thinking` (§4.5) follows the same pattern,
+keyed by `base_llm` rather than vendor — an absent key means that family's
+default tier applies. This file has no per-workspace layering (a single global
 file) and no migration path from the old 3-tier/flat schema — an
 incompatible or missing file simply falls back to
 `_DEFAULT_USER_SETTINGS`.

@@ -540,10 +540,17 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                          "min_memory": 32, "memory": 48, "...": "..." } ],
   "llama_server_override_path": "/usr/local/bin/llama-server-cuda" | null,
   "detected_vram_gb": 24 | null,
-  "detected_ram_gb": 64 | null }
+  "detected_ram_gb": 64 | null,
+  "thinking_families": {
+    "Qwen36-27B": { "family": "qwen_reasoning_budget",
+                     "tiers": ["minimal", "low", "medium", "high", "huge", "unlimited"],
+                     "default": "unlimited" },
+    "GPT-OSS-20B": { "family": "gpt_oss_reasoning_effort",
+                      "tiers": ["low", "medium", "high"], "default": "medium" }
+  } }
 ```
 
-Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. Does **not** carry download progress (see above) — that's read off disk, not this event.
+Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. Does **not** carry download progress (see above) — that's read off disk, not this event. `thinking_families` is keyed by `base_llm` (only entries that support a thinking-tier control appear) and is the single source the client uses to decide which control (if any) to render and what tiers/default to offer — see doc/LLM_REGISTRY.md §4.5. The *current* tier selection is not in this payload; it's read by kodo-vsix straight off `settings.json`'s `models.local_thinking` (§7.5), same as `models.local`.
 
 ### 5.13 ⟪removed⟫ — the former artifact events
 
@@ -993,6 +1000,11 @@ Notes:
   only content text is returned.)
 - Errors (`no local model selected`, llama-server start failure, …) come
   back as `ok: false`; the handler never streams partial output.
+- Thinking-tier resolution (doc/LLM_REGISTRY.md §4.5) happens inside
+  `LlamaPlugin` by the selected model's `base_llm`, regardless of caller —
+  this path is unaffected unless the currently selected local model happens
+  to be a `qwen_reasoning_budget`/`gpt_oss_reasoning_effort` family member, in
+  which case its configured (or default) tier applies here too.
 
 ### 7.7 ⟪planned⟫ — security rules, credential push
 

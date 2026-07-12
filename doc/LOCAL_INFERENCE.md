@@ -57,6 +57,31 @@ frequency of a wrong-channel slip but does not eliminate it — it constrains
 tool-call **syntax** once a call triggers; it does not force the model to
 choose the tool-call channel in the first place. So §3 is still required.
 
+### 2a. Reasoning-budget launch flag (`--reasoning-budget -1`)
+
+For every `base_llm` in `QWEN_REASONING_BUDGET_FAMILY` (Qwen3.x, Gemma 4, and
+Ornith-1.0 — see doc/LLM_REGISTRY.md §4.5), `ensure_llama_running`
+(`kodo/llms/llamacpp/_manager.py`) additionally launches with:
+
+```
+--reasoning-budget -1 --reasoning-budget-message "<REASONING_BUDGET_MESSAGE>"
+```
+
+`-1` here is not merely llama-server's default — it is **mandatory** for the
+thinking-mode feature to work at all. llama.cpp only honors a per-request
+`thinking_budget_tokens` override (sent by `LlamaPlugin.__raw_stream` via
+`_build_thinking_extra_body`, `_llama.py`) when the launch-time budget is
+exactly `-1` (unrestricted); any other explicit CLI value locks the budget
+server-side and silently ignores every per-request override. GPT-OSS models
+(`GPT_OSS_REASONING_EFFORT_FAMILY`) get no launch flags at all — their tiering
+is purely a per-request `chat_template_kwargs.reasoning_effort` field, with no
+CLI-side counterpart to configure.
+
+`--reasoning-budget-message` is llama.cpp's own mechanism for injecting text
+right before the forced end-of-thinking tag once a finite budget is
+exhausted — `REASONING_BUDGET_MESSAGE` (`_local_registry.py`) is worded to
+discourage the model from padding its reasoning out to fill the budget.
+
 ## 3. Salvaging a tool call emitted as plain text
 
 `LlamaPlugin.__raw_stream` (`_llama.py`) watches for the slip and recovers it.
