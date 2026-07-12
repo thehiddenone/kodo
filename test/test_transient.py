@@ -294,6 +294,38 @@ def test_resumed_session_restores_edit_and_command_control(kodo_dir: Path) -> No
     assert second.command_control == "defensive"
 
 
+def test_thinking_level_defaults_to_empty_string(store: TransientStore) -> None:
+    assert store.thinking_level == ""
+
+
+def test_thinking_level_update_is_persisted(store: TransientStore) -> None:
+    store.update(thinking_level="unlimited")
+    data = json.loads((store.session_dir / "transient.json").read_text(encoding="utf-8"))
+    assert data["thinking_level"] == "unlimited"
+    assert store.thinking_level == "unlimited"
+
+
+def test_thinking_level_update_to_empty_string_is_distinguished_from_unset(
+    store: TransientStore,
+) -> None:
+    # thinking_level="" is a legitimate value (no thinking family) — update()
+    # must not treat it as "leave unchanged" the way it would for a bare None.
+    store.update(thinking_level="medium")
+    store.update(thinking_level="")
+    assert store.thinking_level == ""
+
+
+def test_resumed_session_restores_thinking_level(kodo_dir: Path) -> None:
+    session_id = "1748792413"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    first.update(thinking_level="high")
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.thinking_level == "high"
+
+
 def test_update_with_no_kwargs_does_not_raise(store: TransientStore) -> None:
     store.update()
     assert store.stage == "IDLE"

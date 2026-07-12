@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from kodo.llms import (
+    LLMRouting,
     Message,
     ThinkingDelta,
     ThinkingSignature,
@@ -323,7 +324,10 @@ def test_persist_main_messages_appends_each_message() -> None:
 def _agent_turn_kwargs(**overrides: object) -> dict[str, object]:
     base: dict[str, object] = dict(
         llm=SimpleNamespace(name="fake"),
-        routing=SimpleNamespace(),
+        # Cloud residence: makes _thinking_kwargs() short-circuit to {} like
+        # the bare SimpleNamespace() this used to pass, which _thinking_kwargs
+        # now reads .residence off.
+        routing=LLMRouting(residence="cloud"),
         model="model-x",
         system_prompt="sys",
         messages=[Message(role="user", content="go")],

@@ -43,6 +43,15 @@ from __future__ import annotations
 # connection): no session is created; the ack carries only the llama/model
 # snapshot (incl. detected_vram_gb, detected_ram_gb), and the client uses it
 # to reconcile this window's remembered-open sessions once it lands.
+# Session role only, brand-new session only (payload.session_id absent):
+# an optional `thinking_level` (WS_PROTOCOL.md §4.1) seeds `state.
+# thinking_level` instead of the active local model's family default —
+# validated against the active model's thinking family and silently ignored
+# (falls back to the family default) if absent or invalid. kodo-vsix never
+# sends this; it exists for the validator's RVP judge session, whose hello
+# fires before there is a session to attach the tier its preceding
+# `llm.select` pinned to (doc/VALIDATOR.md §9). Ignored on a resumed session
+# (its own persisted thinking_level is restored instead).
 MSG_HELLO = "hello"
 
 # Client → Server. The user's submitted prompt text (payload: {text}), with any
@@ -154,6 +163,19 @@ MSG_EDIT_CONTROL_SET = "edit_control.set"
 # and an "ask" verdict fires SREQ_PROMPT_PERMISSION.
 MSG_COMMAND_CONTROL_SET = "command_control.set"
 
+# Client → Server. Set the session's thinking-tier level (doc/SESSIONS.md).
+# Payload: ``{thinking_level: str}`` — a tier slug valid for the session's
+# currently active *local* model's thinking family (the server's
+# `thinking_families` payload, doc/LLM_REGISTRY.md §4.5 — kodo-vsix computes
+# the next tier client-side and sends it), or ``""`` if the active model has
+# none. Unlike edit_control.set/command_control.set the value set is
+# model-dependent, so an invalid request is rejected outright (replies
+# `{type: "thinking_level.accepted", ok: false}`) rather than coerced to a
+# safe default — the client already knows the valid set, so rejection here is
+# a safety net, not the normal path. Replies `{type: "thinking_level.
+# accepted", ok: true}` and follows with an updated EVT_STATE on success.
+MSG_THINKING_LEVEL_SET = "thinking_level.set"
+
 # Client → Server. Push the VS Code workspace folder map (logical name →
 # physical path) plus the physical root. Sent on connect and on every
 # workspace-folders change; the server rebuilds its WorkspaceLayout
@@ -223,20 +245,18 @@ MSG_LLAMA_START = "llama.start"
 MSG_LLAMA_STOP = "llama.stop"
 
 # Client → Server. Synchronous local-model switch (WS_PROTOCOL.md §7.6a).
-# ``{name, thinking_level?}`` — ``name`` is a *local registry* name. The
-# server persists the selection into ``~/.kodo/etc/settings.json``
-# (``mode: "local"`` + ``models.local``), restarts llama-server for the new
-# model, waits until it is actually serving (or has failed to start), and
-# only then replies ``llm.select.done {ok, model, error?}``. Unlike the
-# VSIX's settings-write + ``config.reload`` + ``llama.start`` dance, the
-# reply *confirms readiness* — built for ``kodo.validator``'s LUT↔VLLM swaps
-# (doc/VALIDATOR.md §9), where the next frame must already hit the requested
-# model. Model loads take minutes; callers need a generous response timeout.
-# ``thinking_level`` (a valid tier slug for ``name``'s thinking family) is
-# persisted to ``models.local_thinking`` alongside the selection — the same
-# settings.json key the VSIX sidebar's thinking-tier slider writes, reached
-# here over the wire; used by the validator's RVP judge session, whose turns
-# cannot carry a per-call override the way ``llm.complete`` can.
+# ``{name}`` — ``name`` is a *local registry* name. The server persists the
+# selection into ``~/.kodo/etc/settings.json`` (``mode: "local"`` +
+# ``models.local``), restarts llama-server for the new model, waits until it
+# is actually serving (or has failed to start), and only then replies
+# ``llm.select.done {ok, model, error?}``. Unlike the VSIX's settings-write +
+# ``config.reload`` + ``llama.start`` dance, the reply *confirms readiness* —
+# built for ``kodo.validator``'s LUT↔VLLM swaps (doc/VALIDATOR.md §9), where
+# the next frame must already hit the requested model. Model loads take
+# minutes; callers need a generous response timeout. Carries no thinking-tier
+# field any more — thinking is session-scoped (doc/SESSIONS.md), so the
+# validator's RVP judge pins its tier via its own ``hello``'s
+# ``thinking_level`` field instead, once its session actually exists.
 MSG_LLM_SELECT = "llm.select"
 
 # Client → Server. Session-less one-shot completion (WS_PROTOCOL.md §7.6b):
@@ -248,10 +268,10 @@ MSG_LLM_SELECT = "llm.select"
 # ``json_schema`` constrains the output via llama-server's grammar
 # enforcement — the validator's UPP answers rely on it being parseable by
 # construction. ``thinking_level`` (a valid tier slug for the active model's
-# thinking family) overrides ``models.local_thinking`` for this call only,
-# without touching settings.json — the UPP uses it to pin a low tier so
-# ``ask_user`` answers don't burn time thinking. Not an agent turn: no
-# tools, no session, no feed events, no persistence.
+# thinking family) is a pure per-call override — the UPP uses it to pin a low
+# tier so ``ask_user`` answers don't burn time thinking. Not an agent turn:
+# no tools, no session, no feed events, no persistence (this call has no
+# session to be scoped to, so there is nothing for it to persist into).
 MSG_LLM_COMPLETE = "llm.complete"
 
 # Client → Server. Local Inference Settings webview actions (doc/LLM_REGISTRY.md),
@@ -346,17 +366,20 @@ SREQ_PROMPT_PERMISSION = "prompt.permission"
 # ---------------------------------------------------------------------------
 
 # Server → Client event. The complete session snapshot — phase, the two frozen
-# toggles (autonomous/workflow_mode) with their effective twins, the two
-# never-frozen toggles (edit_control/command_control), and current_agent — never
-# a delta. Pushed on every phase transition, mode-toggle change, and turn
-# freeze/unfreeze, and embedded again as ``state`` inside ``hello.ack`` so
-# first-connect and reconnect share one client code path. ``phase`` is the
-# client's authoritative "is a turn running" signal, and ``phase=="stopped"``
-# is the one unambiguous marker of an explicit user Stop. Note: the current
-# VSIX client does not read ``current_agent`` off this event — the live
-# "who has the floor" name comes from EVT_AGENT_STARTED/EVT_AGENT_FINISHED
-# instead (its own ``stage``/``agent`` reads here are vestigial and always
-# default).
+# toggles (autonomous/workflow_mode) with their effective twins, the three
+# never-frozen toggles (edit_control/command_control/thinking_level), and
+# current_agent — never a delta. Pushed on every phase transition, mode-toggle
+# change, and turn freeze/unfreeze, and embedded again as ``state`` inside
+# ``hello.ack`` so first-connect and reconnect share one client code path.
+# ``phase`` is the client's authoritative "is a turn running" signal, and
+# ``phase=="stopped"`` is the one unambiguous marker of an explicit user Stop.
+# ``thinking_level`` (doc/SESSIONS.md) is also pushed whenever the engine
+# re-derives it on its own — a brand-new session's seed, or a mid-session
+# model switch (``config.reload``) — not only in response to
+# ``thinking_level.set``. Note: the current VSIX client does not read
+# ``current_agent`` off this event — the live "who has the floor" name comes
+# from EVT_AGENT_STARTED/EVT_AGENT_FINISHED instead (its own ``stage``/
+# ``agent`` reads here are vestigial and always default).
 EVT_STATE = "state"
 
 # Server → Client events. Bracket one agent turn holding the floor — fired for

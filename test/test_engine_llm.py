@@ -17,6 +17,7 @@ import pytest
 
 from kodo.common import ApiKey
 from kodo.llms import (
+    LLMRouting,
     Message,
     ThinkingDelta,
     ThinkingSignature,
@@ -30,6 +31,11 @@ from kodo.runtime._engine import _llm
 from kodo.runtime._session import SessionState
 
 _FAR_FUTURE_DEADLINE = time.time() + 10_000
+# Cloud routing for call sites that don't exercise thinking_level: makes
+# LLMPlumbingMixin._thinking_kwargs() short-circuit to {} exactly like the
+# bare SimpleNamespace() these calls used to pass (which _thinking_kwargs now
+# reads .residence off).
+_ROUTING = LLMRouting(residence="cloud")
 
 
 class _FakeGateway:
@@ -365,7 +371,7 @@ async def test_run_silent_return_turn_captures_text_and_result() -> None:
     agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
 
     result, text = await engine._run_silent_return_turn(
-        SimpleNamespace(), SimpleNamespace(), "model-x", agent, [Message(role="user", content="hi")]
+        _ROUTING, SimpleNamespace(), "model-x", agent, [Message(role="user", content="hi")]
     )
 
     assert result == {"summary": "x"}
@@ -382,7 +388,7 @@ async def test_run_silent_return_turn_ignores_non_return_result_tool_calls() -> 
     agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
 
     result, text = await engine._run_silent_return_turn(
-        SimpleNamespace(), SimpleNamespace(), "model-x", agent, []
+        _ROUTING, SimpleNamespace(), "model-x", agent, []
     )
 
     assert result is None
@@ -399,7 +405,7 @@ async def test_run_silent_return_turn_ignores_non_dict_result_payload() -> None:
     agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
 
     result, _text = await engine._run_silent_return_turn(
-        SimpleNamespace(), SimpleNamespace(), "model-x", agent, []
+        _ROUTING, SimpleNamespace(), "model-x", agent, []
     )
     assert result is None
 
@@ -408,7 +414,7 @@ async def test_run_silent_return_turn_no_turn_end_skips_cost() -> None:
     engine = _make_engine(gateway=_FakeGateway([[TokenDelta(text="hi")]]))
     agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
 
-    await engine._run_silent_return_turn(SimpleNamespace(), SimpleNamespace(), "model-x", agent, [])
+    await engine._run_silent_return_turn(_ROUTING, SimpleNamespace(), "model-x", agent, [])
 
     assert engine._emitters.cost_only_calls == 0
     assert engine._emitters.cost_total == 0.0
@@ -487,7 +493,7 @@ async def test_silent_tool_loop_turn_stops_when_dispatcher_flags_stop() -> None:
     dispatcher = _FakeToolDispatcher(stop_after=1, returned_output={"themes": ["a"]})
 
     result = await engine._run_silent_tool_loop_turn(
-        SimpleNamespace(),
+        _ROUTING,
         SimpleNamespace(),
         "model-x",
         agent,
@@ -521,7 +527,7 @@ async def test_silent_tool_loop_turn_no_tool_calls_nudges_and_calls_on_round_tex
         narrated.append(text)
 
     result = await engine._run_silent_tool_loop_turn(
-        SimpleNamespace(),
+        _ROUTING,
         SimpleNamespace(),
         "model-x",
         agent,
@@ -542,7 +548,7 @@ async def test_silent_tool_loop_turn_breaks_on_deadline_when_no_tool_calls() -> 
     dispatcher = _FakeToolDispatcher(returned_output=None)
 
     result = await engine._run_silent_tool_loop_turn(
-        SimpleNamespace(),
+        _ROUTING,
         SimpleNamespace(),
         "model-x",
         agent,
@@ -576,7 +582,7 @@ async def test_silent_tool_loop_turn_exhausts_max_rounds() -> None:
     dispatcher = _FakeToolDispatcher(returned_output=None)
 
     result = await engine._run_silent_tool_loop_turn(
-        SimpleNamespace(),
+        _ROUTING,
         SimpleNamespace(),
         "model-x",
         agent,
@@ -605,7 +611,7 @@ async def test_silent_tool_loop_turn_final_forced_turn_dispatches_return_result_
     dispatcher = _FakeToolDispatcher(returned_output=None)
 
     result = await engine._run_silent_tool_loop_turn(
-        SimpleNamespace(), SimpleNamespace(), "model-x", agent, [], dispatcher, deadline=0.0
+        _ROUTING, SimpleNamespace(), "model-x", agent, [], dispatcher, deadline=0.0
     )
 
     # Only return_result was dispatched in the final round, not other_tool.
@@ -622,7 +628,7 @@ async def test_silent_tool_loop_turn_max_rounds_zero_returns_immediately_if_alre
     dispatcher.stop_requested = True
 
     result = await engine._run_silent_tool_loop_turn(
-        SimpleNamespace(),
+        _ROUTING,
         SimpleNamespace(),
         "model-x",
         agent,
@@ -649,7 +655,7 @@ async def test_silent_tool_loop_turn_breaks_on_deadline_after_tool_dispatch_with
     dispatcher = _FakeToolDispatcher(returned_output=None)  # never sets stop_requested
 
     result = await engine._run_silent_tool_loop_turn(
-        SimpleNamespace(), SimpleNamespace(), "model-x", agent, [], dispatcher, deadline=0.0
+        _ROUTING, SimpleNamespace(), "model-x", agent, [], dispatcher, deadline=0.0
     )
 
     assert result is None
@@ -675,7 +681,7 @@ async def test_silent_tool_loop_turn_round_with_text_and_tool_calls_appends_text
         narrated.append(text)
 
     result = await engine._run_silent_tool_loop_turn(
-        SimpleNamespace(),
+        _ROUTING,
         SimpleNamespace(),
         "model-x",
         agent,
@@ -711,7 +717,7 @@ async def test_silent_tool_loop_turn_carries_thinking_signature_into_assistant_b
     dispatcher = _FakeToolDispatcher(stop_after=1)
 
     result = await engine._run_silent_tool_loop_turn(
-        SimpleNamespace(),
+        _ROUTING,
         SimpleNamespace(),
         "model-x",
         agent,

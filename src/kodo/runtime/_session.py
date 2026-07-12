@@ -57,6 +57,20 @@ class SessionState:
             to ``"permissive"`` while Autonomous is in effect). **Enforced**:
             this is the security layer's posture, read live per tool call by
             the dispatcher (doc/SECURITY.md).
+        thinking_level: The session's reasoning-tier slug for the currently
+            active *local* model's thinking family (``kodo.llms.
+            local_thinking_family``/``local_thinking_tiers``) — ``""`` while
+            on a cloud model or a local model with no thinking family (e.g.
+            Qwen3-Coder-Next-80B, or a custom entry). Unlike
+            ``edit_control``/``command_control`` this is not a fixed enum: the
+            valid value set is model-dependent, so the engine validates every
+            change against the active model's family rather than mirroring
+            the client unconditionally (doc/SESSIONS.md). A brand-new session
+            seeds it from the active model's family default (the Qwen family
+            defaults to ``"unlimited"``, GPT-OSS to ``"medium"``), and a
+            mid-session model switch to a different thinking family
+            re-derives it the same way (``WorkflowEngine.
+            _sync_thinking_level_to_model``).
     """
 
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -69,6 +83,7 @@ class SessionState:
     effective_workflow_mode: str = "guided"
     edit_control: str = "smart"
     command_control: str = "smart"
+    thinking_level: str = ""
 
     def to_dict(self) -> dict[str, object]:
         """Serialise to a plain dict for wire-protocol events.
@@ -76,8 +91,8 @@ class SessionState:
         The two frozen toggles (``autonomous``/``workflow_mode``) emit both the
         user-facing *selected* value and the per-prompt frozen *effective* value
         so the client can render each as "in effect" or "queued for the next
-        prompt". ``edit_control``/``command_control`` are never frozen — only the
-        single mirrored value is emitted.
+        prompt". ``edit_control``/``command_control``/``thinking_level`` are
+        never frozen — only the single current value is emitted for each.
 
         Returns:
             dict[str, object]: JSON-serialisable state snapshot.
@@ -93,4 +108,5 @@ class SessionState:
             "effective_workflow_mode": self.effective_workflow_mode,
             "edit_control": self.edit_control,
             "command_control": self.command_control,
+            "thinking_level": self.thinking_level,
         }

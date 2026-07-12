@@ -117,12 +117,14 @@ async def run_evaluation(
         turn_timeout (float): Per-judge-turn timeout in seconds.
         switch_timeout (float): ``llm.select`` response timeout.
         max_attempts (int): Judge turns before giving up on parseable JSON.
-        thinking_level (str | None): When set, rides ``llm.select``'s
-            ``thinking_level`` field (doc/WS_PROTOCOL.md §7.6a) so the judge's
-            whole session runs at this tier — a valid tier slug for
+        thinking_level (str | None): When set, rides the judge session's own
+            ``hello``'s ``thinking_level`` field (WS_PROTOCOL.md §4.1) so
+            its whole session runs at this tier — a valid tier slug for
             *validation_llm*'s thinking family. Unlike the UPP's per-call
-            override, this persists to settings.json (the judge's turns run
-            through ordinary session dispatch, which has no per-call hook).
+            ``llm.complete`` override, this seeds the session's
+            server-tracked ``thinking_level`` (doc/SESSIONS.md) once, at
+            session creation — the judge's turns run through ordinary
+            session dispatch, which has no per-call hook.
 
     Returns:
         EvaluationResult: Score, report, and provenance.
@@ -139,7 +141,6 @@ async def run_evaluation(
         name=validation_llm,
         session_scoped=False,
         timeout=switch_timeout,
-        thinking_level=thinking_level,
     )
 
     judge_transcript = Transcript(run_dir / "judge-transcript.jsonl")
@@ -148,7 +149,7 @@ async def run_evaluation(
     )
     try:
         await judge.connect()
-        await judge.hello()
+        await judge.hello(thinking_level=thinking_level)
         await judge.request(MSG_WORKSPACE_FOLDERS, dict(workspace_payload))
         # The validator-only "judge" workflow (agent_judge.md): a read-only
         # entry agent scoped to read_file/find_files/find_text_in_files/

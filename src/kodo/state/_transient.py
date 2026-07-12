@@ -177,6 +177,7 @@ class TransientStore:
     __workflow_mode: str
     __edit_control: str
     __command_control: str
+    __thinking_level: str
     __pending_prompt: dict[str, object] | None
     __active_subsession: dict[str, object] | None
     __current_project: dict[str, str] | None
@@ -200,6 +201,7 @@ class TransientStore:
         self.__workflow_mode = "guided"
         self.__edit_control = "smart"
         self.__command_control = "smart"
+        self.__thinking_level = ""
         self.__pending_prompt = None
         self.__active_subsession = None
         self.__current_project = None
@@ -480,6 +482,19 @@ class TransientStore:
         return self.__command_control
 
     @property
+    def thinking_level(self) -> str:
+        """Persisted thinking-tier slug for the session's active local model.
+
+        ``""`` while on a cloud model, a local model with no thinking family,
+        or before the engine has ever set one. Unlike ``edit_control``/
+        ``command_control`` this is not validated against a fixed set on
+        load — the valid values depend on the active model, so the engine
+        re-validates it against the *current* model on resume (see
+        ``WorkflowEngine.start``/doc/SESSIONS.md).
+        """
+        return self.__thinking_level
+
+    @property
     def pending_prompt(self) -> dict[str, object] | None:
         """The outstanding ``prompt.approval`` request, if any.
 
@@ -542,6 +557,7 @@ class TransientStore:
         workflow_mode: str | None = None,
         edit_control: str | None = None,
         command_control: str | None = None,
+        thinking_level: str | None = None,
         pending_prompt: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
         active_subsession: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
         current_project: dict[str, str] | None = _UNSET,  # type: ignore[assignment]
@@ -555,6 +571,9 @@ class TransientStore:
             workflow_mode (str | None): New workflow mode if changed.
             edit_control (str | None): New Edit Control posture if changed.
             command_control (str | None): New Command Control posture if changed.
+            thinking_level (str | None): New thinking-tier slug if changed
+                (``""`` is a valid value — no thinking family — and is
+                distinguished from "unchanged" via ``None``).
             pending_prompt (dict[str, object] | None): Outstanding
                 ``prompt.approval`` request to persist, or ``None`` to clear
                 it. Left unchanged if omitted.
@@ -576,6 +595,8 @@ class TransientStore:
             self.__edit_control = edit_control
         if command_control is not None:
             self.__command_control = command_control
+        if thinking_level is not None:
+            self.__thinking_level = thinking_level
         if pending_prompt is not _UNSET:
             self.__pending_prompt = pending_prompt
         if active_subsession is not _UNSET:
@@ -771,6 +792,7 @@ class TransientStore:
             self.__command_control = (
                 command if command in ("defensive", "permissive", "smart") else "smart"
             )
+            self.__thinking_level = str(data.get("thinking_level", ""))
             pending = data.get("pending_prompt")
             self.__pending_prompt = pending if isinstance(pending, dict) else None
             active = data.get("active_subsession")
@@ -825,6 +847,7 @@ class TransientStore:
             "workflow_mode": self.__workflow_mode,
             "edit_control": self.__edit_control,
             "command_control": self.__command_control,
+            "thinking_level": self.__thinking_level,
             "pending_prompt": self.__pending_prompt,
             "active_subsession": self.__active_subsession,
             "current_project": self.__current_project,

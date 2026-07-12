@@ -399,8 +399,11 @@ before it must answer. Two mechanisms exist, keyed off `base_llm` (never
 
 - **`qwen_reasoning_budget`** (6 tiers: `minimal`, `low`, `medium`, `high`,
   `huge`, `unlimited`) — `Qwen36-27B`, `Qwen36-35B-A3B`, `Qwen35-9B`,
-  `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith10-35B`, `Qwen3-Coder-Next-80B`
-  (`QWEN_REASONING_BUDGET_FAMILY` in `kodo/llms/_local_registry.py`).
+  `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith10-35B`
+  (`QWEN_REASONING_BUDGET_FAMILY` in `kodo/llms/_local_registry.py`; notably
+  **not** `Qwen3-Coder-Next-80B`, which despite the name shares no thinking
+  mechanism with the rest of the Qwen lineup — it has no thinking family at
+  all, same as any `custom_*` registry entry).
   `ensure_llama_running` (`kodo/llms/llamacpp/_manager.py`) launches these
   with `--reasoning-budget -1 --reasoning-budget-message "<REASONING_BUDGET_MESSAGE>"`.
   The CLI value must be exactly `-1` — llama.cpp only honors a per-request
@@ -411,7 +414,7 @@ before it must answer. Two mechanisms exist, keyed off `base_llm` (never
   `N>0` token budget — see `QWEN_TIER_TOKEN_BUDGETS` for the per-tier `N`).
   Default tier is `unlimited`. `Qwen35-9B` additionally needs
   `chat_template_kwargs: {"enable_thinking": true}` on every request, since
-  its chat template has thinking off by default (the other six family
+  its chat template has thinking off by default (the other five family
   members think by default).
 - **`gpt_oss_reasoning_effort`** (3 tiers: `low`, `medium`, `high`) —
   `GPT-OSS-120B`, `GPT-OSS-20B` (`GPT_OSS_REASONING_EFFORT_FAMILY`). No
@@ -426,20 +429,27 @@ launch-time flag injection and the per-request field construction — adding a
 model to a family is a one-line change to the relevant `frozenset`, never a
 per-quant `llama_args` edit.
 
-The **current selection** is a plain settings.json write (§5,
-`models.local_thinking`) plus `config.reload` from kodo-vsix, same pattern as
-`models.local`/`models.cloud`. The **available families/tiers**, being registry data the
-server already owns, are pushed to kodo-vsix via `_local_registry_payload()`'s
-`thinking_families` key — `base_llm -> {family, tiers, default}` — on every
-`hello.ack` and `local_llm.registry_state` event, so kodo-vsix never needs a
-second hardcoded copy of family membership. `LlamaPlugin.__raw_stream`
-(`kodo/llms/llamacpp/_llama.py`) resolves the active request's `base_llm` from
-the registry, reads `models.local_thinking` off `settings.json` directly (no
-`kodo.server` import — matches the existing settings-read pattern already
-used elsewhere in `kodo.llms.llamacpp`), and passes the resulting fields to
-`chat.completions.create` via `extra_body`. Entries with no thinking family
-(`base_llm == ""`, or a hardcoded model outside both families) get no
-`extra_body` at all — no behavior change.
+The **current selection** is **not** a settings.json key — unlike
+`models.local`/`models.cloud`, thinking level is a **per-session** value
+(`SessionState.thinking_level`, doc/SESSIONS.md), tracked by the engine and
+set via `thinking_level.set` (WS_PROTOCOL.md §7.4e) or seeded automatically
+per session (new-session family default, or an explicit `hello` seed —
+WS_PROTOCOL.md §4.1). The **available families/tiers**, being registry data
+the server already owns, are pushed to kodo-vsix via
+`_local_registry_payload()`'s `thinking_families` key — `base_llm ->
+{family, tiers, default}` — on every `hello.ack` and
+`local_llm.registry_state` event, so kodo-vsix never needs a second
+hardcoded copy of family membership, and can compute the next tier to
+request when the user clicks the thinking-level control. `LlamaPlugin.
+__raw_stream` (`kodo/llms/llamacpp/_llama.py`) resolves the active request's
+`base_llm` from the registry and calls `_build_thinking_extra_body(base_llm,
+override_tier=thinking_level)`, where `thinking_level` is the caller-supplied
+tier for this call — the engine passes the session's `thinking_level` on
+every ordinary turn, and the validator's `llm.complete` command passes its
+own per-call override — falling back to the family default when absent or
+invalid for `base_llm`. Entries with no thinking family (`base_llm == ""`,
+or a hardcoded model outside both families) get no `extra_body` at all — no
+behavior change.
 
 ---
 
@@ -453,7 +463,6 @@ used elsewhere in `kodo.llms.llamacpp`), and passes the resulting fields to
   "active_cloud_vendor": "anthropic",
   "models": {
     "local": "llamacpp-qwen36-27b-q4-k-xl",
-    "local_thinking": { "Qwen36-27B": "high", "GPT-OSS-20B": "low" },
     "cloud": {
       "anthropic": { "low": "claude-haiku-4-5-20251001", "medium": "claude-sonnet-5",
                       "high": "claude-opus-4-8", "max": "claude-fable-5" }
@@ -467,11 +476,11 @@ writes followed by `config.reload` (§7.5) — same pattern as the pre-existing
 `set_mode`/`set_active_model` sidebar wiring, no dedicated WS message. Same
 for each of the four effort-panel selections in Cloud AI Settings: the
 extension writes `models.cloud.<vendor>.<effort>` directly and sends
-`config.reload`. `models.local_thinking` (§4.5) follows the same pattern,
-keyed by `base_llm` rather than vendor — an absent key means that family's
-default tier applies. This file has no per-workspace layering (a single global
-file) and no migration path from the old 3-tier/flat schema — an
-incompatible or missing file simply falls back to
+`config.reload`. Thinking level (§4.5) is **not** in this file — it is a
+per-session value tracked by the engine, not a global setting keyed by
+`base_llm` (doc/SESSIONS.md). This file has no per-workspace layering (a
+single global file) and no migration path from the old 3-tier/flat schema —
+an incompatible or missing file simply falls back to
 `_DEFAULT_USER_SETTINGS`.
 
 ---

@@ -321,11 +321,10 @@ phase-1 behaviour is bit-for-bit unchanged.
 The whole phase rides on two protocol commands added for it
 (WS_PROTOCOL.md §7.6a/§7.6b, first-class — any client may use them):
 
-- **`llm.select {name, thinking_level?}`** — synchronous local-model switch:
-  persists `mode`/`models.local` (and, when given, `thinking_level` into
-  `models.local_thinking[base_llm]`), restarts llama-server, and replies only
-  once the model actually serves (or failed). This is what makes the
-  LUT↔VLLM swap on *one* llama-server safe and observable.
+- **`llm.select {name}`** — synchronous local-model switch: persists
+  `mode`/`models.local`, restarts llama-server, and replies only once the
+  model actually serves (or failed). This is what makes the LUT↔VLLM swap on
+  *one* llama-server safe and observable.
 - **`llm.complete {prompt, system?, json_schema?, thinking_level?}`** —
   session-less one-shot completion on the active local model, scheduled
   through the shared LLMGateway feed; `json_schema` grammar-constrains the
@@ -383,16 +382,18 @@ After the last turn (only if no turn ended in `error` — an infra failure must
 not masquerade as a low-scoring run), `run_scenario` calls
 `ValidationHarness.evaluate()`:
 
-1. `llm.select(validation_llm, thinking_level=result_validation_thinking_level)`
-   — and it stays selected; every scenario gets a fresh home/server anyway.
-   Unlike the UPP's per-call override, a `thinking_level` here is persisted
-   to `models.local_thinking` (the judge's turns are ordinary session
-   dispatch — there is no per-call hook to ride);
+1. `llm.select(validation_llm)` — and it stays selected; every scenario gets
+   a fresh home/server anyway;
 2. open a **second session** on the same server (own WS connection,
-   `window_id: kodo-validator-judge`, own `judge-transcript.jsonl`), push the
-   **same** `workspace.folders` payload, and pin friction-free modes
-   (autonomous, **`judge`** workflow, allow_all/permissive — its gates are
-   answered by a plain `ScriptedUser`);
+   `window_id: kodo-validator-judge`, own `judge-transcript.jsonl`), whose
+   `hello` carries `thinking_level=result_validation_thinking_level` when the
+   scenario set one (WS_PROTOCOL.md §4.1) — seeding the judge session's
+   `state.thinking_level` (doc/SESSIONS.md) once, at creation; unlike the
+   UPP's per-call `llm.complete` override, the judge's turns are ordinary
+   session dispatch with no per-call hook to ride, so this is the only place
+   left to pin it. Then push the **same** `workspace.folders` payload, and
+   pin friction-free modes (autonomous, **`judge`** workflow,
+   allow_all/permissive — its gates are answered by a plain `ScriptedUser`);
 3. submit one judge turn: the RVP + a mechanical context block — workspace
    root paths, the PUT(s), and the full interaction log (every question /
    permission / approval + answer) — plus the output contract. Because

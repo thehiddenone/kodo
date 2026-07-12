@@ -61,6 +61,7 @@ class LoggingLLMPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         n = next(_counter)
         return self._logged_stream(
@@ -71,6 +72,7 @@ class LoggingLLMPlugin(LLMPlugin):
             messages=messages,
             tools=tools,
             cache_breakpoints=cache_breakpoints,
+            thinking_level=thinking_level,
         )
 
     async def _logged_stream(
@@ -83,6 +85,7 @@ class LoggingLLMPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         self._log_dir.mkdir(parents=True, exist_ok=True)
         prefix = f"{n:04d}"
@@ -101,6 +104,7 @@ class LoggingLLMPlugin(LLMPlugin):
                 for t in tools
             ],
             "cache_breakpoints": cache_breakpoints,
+            "thinking_level": thinking_level,
         }
         request_path = self._log_dir / f"{prefix}_request.json"
         try:
@@ -108,6 +112,14 @@ class LoggingLLMPlugin(LLMPlugin):
         except OSError as exc:
             _log.warning("Failed to write LLM request log %s: %s", request_path, exc)
 
+        # Only forwarded when set: the base LLMPlugin interface (and
+        # ClaudePlugin) has no such parameter at all, so passing it
+        # unconditionally would TypeError for a cloud call — thinking_level is
+        # non-None only when the caller already knows _inner is a LlamaPlugin
+        # (see LLMPlumbingMixin._thinking_kwargs, local-only).
+        extra: dict[str, object] = (
+            {} if thinking_level is None else {"thinking_level": thinking_level}
+        )
         events: list[dict[str, object]] = []
         try:
             async for event in self._inner.stream_query(
@@ -117,6 +129,7 @@ class LoggingLLMPlugin(LLMPlugin):
                 messages=messages,
                 tools=tools,
                 cache_breakpoints=cache_breakpoints,
+                **extra,
             ):
                 events.append(_event_to_dict(event))
                 yield event

@@ -29,6 +29,8 @@ from kodo.llms import (
     get_cloud_registry,
     get_cloud_vendor_module,
     get_local_registry,
+    local_thinking_default_tier,
+    local_thinking_tiers,
 )
 from kodo.llms.anthropic import ClaudePlugin
 from kodo.llms.llamacpp import LlamaPlugin
@@ -54,6 +56,10 @@ class LLMPlumbingMixin:
     # Declared so the `= None` writes below don't let mypy infer a bare-None
     # class attribute that conflicts with the EngineHost/_core declaration.
     _current_vendor: str | None
+    # Same reason: _sync_thinking_level_to_model/handle_thinking_level_set's
+    # `str` writes would otherwise make mypy infer a bare `str` here,
+    # conflicting with the `str | None` declared on EngineHost/_core.
+    _last_thinking_base_llm: str | None
 
     def _resolve_model_key(self: EngineHost, capability: str) -> str:
         """Resolve the registry model key for *capability* from current settings.
@@ -153,6 +159,106 @@ class LLMPlumbingMixin:
         routing = LLMRouting(residence="cloud", vendor=vendor)
         return LoggingLLMPlugin(plugin, self._llm_logs_dir()), model_key, routing
 
+    def _current_base_llm(self: EngineHost) -> str:
+        """``base_llm`` of the session's currently active *local* model.
+
+        Reads fresh settings each call (same as :meth:`_resolve_model_key`).
+        ``""`` whenever the session is on a cloud model, or a local registry
+        entry with no ``base_llm`` (``custom_hf``/``custom_file``/
+        ``custom_server_url``) — i.e. whenever there is no thinking-tier
+        mechanism to apply. Used to keep ``_session.thinking_level`` in sync
+        with whatever model is actually selected (doc/SESSIONS.md).
+        """
+        model_key = self._resolve_model_key(self._entry_capability())
+        entry = get_local_registry(kodo_user_dir()).get(model_key)
+        return entry.base_llm if entry is not None else ""
+
+    def _thinking_kwargs(self: EngineHost, routing: LLMRouting) -> dict[str, object]:
+        """``{"thinking_level": ...}`` to splice into a local ``stream_query`` call.
+
+        Applies the session's ``thinking_level`` to every LLM call this
+        session makes on its active *local* model — not just the main turn,
+        but every silent call too (compaction, the security judge,
+        ``web_search``'s tool loop) — since it is a session-wide setting, not
+        a per-call one (doc/SESSIONS.md). ``{}`` for a cloud call (no
+        thinking-tier mechanism; ``ClaudePlugin.stream_query`` has no such
+        parameter) or when the active local model has no thinking family
+        (``_session.thinking_level`` is already ``""`` in that case).
+        """
+        if routing.residence != "local" or not self._session.thinking_level:
+            return {}
+        return {"thinking_level": self._session.thinking_level}
+
+    def _thinking_level_for_model(self: EngineHost, base_llm: str, prefer: str | None) -> str:
+        """*prefer* if it is a valid thinking-tier value for *base_llm*, else the family default.
+
+        Shared reconciliation used whenever ``_session.thinking_level`` needs
+        a value for a (possibly new) *base_llm*: a brand-new session prefers
+        an explicit seed (``WorkflowEngine.start``'s ``thinking_level``
+        argument, used by the validator's RVP judge — WS_PROTOCOL.md §4.1),
+        a resumed session prefers its persisted value, and both fall back to
+        *base_llm*'s family default when *prefer* is ``None`` or no longer
+        valid for it (e.g. the active model changed underneath a resumed
+        session while it was closed).
+        """
+        tiers = local_thinking_tiers(base_llm)
+        if prefer is not None and (prefer in tiers if tiers else prefer == ""):
+            return prefer
+        return local_thinking_default_tier(base_llm)
+
+    async def _sync_thinking_level_to_model(self: EngineHost) -> None:
+        """Re-derive ``thinking_level`` when the active model's identity changed.
+
+        Fired alongside :meth:`ContextCompactor.handle_config_changed` for
+        every live session on ``config.reload`` (i.e. whenever *any* window
+        switches the shared local/cloud model selection — there is one
+        active model, not one per session). Detects a switch the same way
+        the compactor does, but reacts to thinking-family identity rather
+        than context window: since the tier set is model-dependent, a switch
+        to a different base model always resets to the new model's family
+        default (``""`` for a non-thinking/cloud model) rather than trying to
+        carry over a value that may not even be a valid tier for it.
+        """
+        base_llm = self._current_base_llm()
+        if base_llm == self._last_thinking_base_llm:
+            return
+        self._last_thinking_base_llm = base_llm
+        self._session.thinking_level = self._thinking_level_for_model(base_llm, prefer=None)
+        self._transient.update(thinking_level=self._session.thinking_level)
+        await self._emitters.emit_state()
+
+    async def handle_thinking_level_set(self: EngineHost, value: str) -> bool:
+        """Set the session's thinking-tier level, client-requested.
+
+        Unlike ``edit_control``/``command_control`` (a fixed 3-way enum the
+        engine always mirrors, coercing anything unrecognised to a safe
+        default) the valid value set here depends on the session's currently
+        active local model, so an invalid request is rejected outright rather
+        than silently coerced — the client already knows the valid tier set
+        (the server's ``thinking_families`` payload, doc/LLM_REGISTRY.md
+        §4.5) and only ever sends a value from it, so rejection here is a
+        safety net against a stale/racing client, not the normal path.
+
+        Args:
+            value: A tier slug valid for the active model's thinking family,
+                or ``""`` if it has none.
+
+        Returns:
+            bool: ``True`` if applied, ``False`` if rejected.
+        """
+        base_llm = self._current_base_llm()
+        tiers = local_thinking_tiers(base_llm)
+        if tiers:
+            if value not in tiers:
+                return False
+        elif value != "":
+            return False
+        self._session.thinking_level = value
+        self._last_thinking_base_llm = base_llm
+        self._transient.update(thinking_level=value)
+        await self._emitters.emit_state()
+        return True
+
     def _llm_logs_dir(self: EngineHost) -> Path:
         """Per-session LLM request/response log dir (sessions never share one).
 
@@ -216,6 +322,7 @@ class LLMPlumbingMixin:
             messages=messages,
             tools=tools_for_agent(agent.tools),
             cache_breakpoints=default_cache_breakpoints(messages),
+            **self._thinking_kwargs(routing),
         ):
             if isinstance(event, TokenDelta):
                 text_parts.append(event.text)
@@ -307,6 +414,7 @@ class LLMPlumbingMixin:
                 messages=messages,
                 tools=tools,
                 cache_breakpoints=default_cache_breakpoints(messages),
+                **self._thinking_kwargs(routing),
             ):
                 if isinstance(event, TokenDelta):
                     text_parts.append(event.text)
@@ -405,6 +513,7 @@ class LLMPlumbingMixin:
             messages=messages,
             tools=tools,
             cache_breakpoints=[0],
+            **self._thinking_kwargs(routing),
         ):
             if isinstance(event, ToolCallEvent):
                 final_calls.append(event)
@@ -448,6 +557,7 @@ class LLMPlumbingMixin:
                 messages=[Message(role="user", content=user)],
                 tools=[],
                 cache_breakpoints=default_cache_breakpoints([Message(role="user", content=user)]),
+                **self._thinking_kwargs(routing),
             ):
                 if isinstance(event, TokenDelta):
                     text_parts.append(event.text)

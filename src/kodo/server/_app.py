@@ -97,6 +97,7 @@ from kodo.transport import (
     MSG_SESSION_LIST,
     MSG_SESSION_RELEASE,
     MSG_STOP,
+    MSG_THINKING_LEVEL_SET,
     MSG_WORKFLOW_SET,
     MSG_WORKSPACE_FOLDERS,
     Connection,
@@ -203,6 +204,28 @@ def _make_hello_handler(config: Config) -> HandlerFn:
     return _handle_hello
 
 
+def _validate_initial_thinking_level(config: Config, raw: object) -> str | None:
+    """Validate an optional ``hello.thinking_level`` seed for a brand-new session.
+
+    ``None`` (field absent, or invalid for whatever local model is currently
+    configured) lets the new session fall back to its model's thinking-family
+    default, same as if the field were never sent — the validator's RVP judge
+    is the only caller (its preceding ``llm.select`` already switched the
+    active model to the one this value must be valid for, so a mismatch here
+    means a caller bug, and degrading silently keeps ``hello`` itself sturdy
+    rather than failing the whole handshake over an optional field).
+    """
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    settings = config.reload_settings()
+    models_map = settings.get("models")
+    model_key = str(models_map.get("local", "")) if isinstance(models_map, dict) else ""
+    entry = get_local_registry(kodo_user_dir()).get(model_key) if model_key else None
+    base_llm = entry.base_llm if entry is not None else ""
+    return value if value in local_thinking_tiers(base_llm) else None
+
+
 async def _handle_session_hello(
     req: Request, config: Config, payload: dict[str, object], window_id: str
 ) -> None:
@@ -221,7 +244,8 @@ async def _handle_session_hello(
             await req.reply({"type": "hello.ack", "error": "session_in_use"})
             return
     else:
-        session = await req.manager.create(window_id)
+        thinking_level = _validate_initial_thinking_level(config, payload.get("thinking_level"))
+        session = await req.manager.create(window_id, thinking_level=thinking_level)
 
     await req.manager.bind_connection(session, req.connection)
 
@@ -474,6 +498,24 @@ async def _handle_command_control(req: Request) -> None:
         str(req.env.payload.get("command_control", "smart"))
     )
     await req.reply({"type": "command_control.accepted"})
+
+
+async def _handle_thinking_level(req: Request) -> None:
+    """``thinking_level.set {thinking_level}`` (WS_PROTOCOL.md §7.x).
+
+    Unlike edit_control.set/command_control.set, the value can be rejected —
+    the valid set depends on the session's active local model — so the reply
+    carries ``ok`` for the client to act on (a stale/racing client is the only
+    expected failure mode; the client that computed the request already knows
+    the valid set).
+    """
+    session = await _require_session(req)
+    if session is None:
+        return
+    ok = await session.engine.handle_thinking_level_set(
+        str(req.env.payload.get("thinking_level", "")).strip()
+    )
+    await req.reply({"type": "thinking_level.accepted", "ok": ok})
 
 
 async def _handle_workspace_folders(req: Request) -> None:
@@ -1013,41 +1055,8 @@ def _persist_local_model_selection(name: str) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def _persist_local_thinking_tier(base_llm: str, tier: str) -> None:
-    """Write ``models.local_thinking[base_llm] = tier`` into settings.json.
-
-    Same file and merge shape as :func:`_persist_local_model_selection` and
-    the VSIX sidebar's thinking-tier slider (``set_thinking_tier``) — every
-    engine dispatch re-reads settings from disk, so this takes effect on the
-    next LLM call with no further signal. Used by ``llm.select``'s optional
-    ``thinking_level`` field (doc/WS_PROTOCOL.md §7.6a), which the validator's
-    RVP judge session uses to pin its thinking tier for the run.
-    """
-    path = WorkspaceLayout().settings_json
-    data: dict[str, object] = {}
-    if path.exists():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except (json.JSONDecodeError, OSError) as exc:
-            _log.warning("Rewriting unreadable settings file %s: %s", path, exc)
-    models = data.get("models")
-    if not isinstance(models, dict):
-        models = {}
-    local_thinking = models.get("local_thinking")
-    if not isinstance(local_thinking, dict):
-        local_thinking = {}
-    local_thinking[base_llm] = tier
-    models["local_thinking"] = local_thinking
-    data["models"] = models
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
 async def _handle_llm_select(req: Request) -> None:
-    """``llm.select {name, thinking_level?}`` — switch the active local model
-    and confirm readiness.
+    """``llm.select {name}`` — switch the active local model and confirm readiness.
 
     Persists the selection, then (re)starts llama-server for it and waits
     until it actually serves — the correlated ``llm.select.done`` reply is
@@ -1056,13 +1065,11 @@ async def _handle_llm_select(req: Request) -> None:
     settings-write + failed ``llama.start`` would leave behind); the caller
     decides whether to retry or select something else.
 
-    An optional ``thinking_level`` (a valid tier slug for *name*'s thinking
-    family) is persisted to ``models.local_thinking`` alongside the
-    selection — the same settings.json key the VSIX sidebar's thinking-tier
-    slider writes, just reached over the wire instead of a local file write.
-    Built for the validator's RVP judge session (doc/VALIDATOR.md §9), whose
-    turns run through the ordinary session dispatch and so cannot carry a
-    per-call override the way ``llm.complete`` can.
+    Carries no thinking-tier field: thinking is session-scoped (doc/
+    SESSIONS.md), so the validator's RVP judge — the one caller that used to
+    need this — pins its tier via its own ``hello``'s ``thinking_level``
+    field once its session actually exists, instead of persisting through
+    here first.
     """
 
     def _fail(error: str, *, model: str | None = None) -> dict[str, object]:
@@ -1077,25 +1084,6 @@ async def _handle_llm_select(req: Request) -> None:
     if entry is None:
         await req.reply(_fail(f"Unknown local model: {name!r}"))
         return
-
-    thinking_level_raw = req.env.payload.get("thinking_level")
-    if thinking_level_raw is not None:
-        thinking_level = str(thinking_level_raw).strip()
-        tiers = local_thinking_tiers(entry.base_llm)
-        if not tiers:
-            await req.reply(
-                _fail(f"{name!r} has no thinking-tier family; thinking_level is not applicable")
-            )
-            return
-        if thinking_level not in tiers:
-            await req.reply(
-                _fail(
-                    f"Invalid thinking_level {thinking_level!r} for {name!r}; "
-                    f"expected one of {list(tiers)}"
-                )
-            )
-            return
-        _persist_local_thinking_tier(entry.base_llm, thinking_level)
 
     _persist_local_model_selection(name)
 
@@ -1139,10 +1127,10 @@ def _make_llm_complete_handler(config: Config, gateway: LLMGateway) -> HandlerFn
     frames are emitted. ``json_schema`` grammar-constrains the output.
 
     ``thinking_level`` (a valid tier slug for the active model's thinking
-    family) overrides ``models.local_thinking`` for this call only, without
-    touching settings.json — built for the validator's User-Proxy answers
-    (doc/VALIDATOR.md §9), which pin a low tier so ``ask_user`` answers don't
-    burn time thinking.
+    family) is a pure per-call override — built for the validator's
+    User-Proxy answers (doc/VALIDATOR.md §9), which pin a low tier so
+    ``ask_user`` answers don't burn time thinking. This call has no session
+    to persist into, so there is nothing else for it to affect.
     """
 
     async def _handle_llm_complete(req: Request) -> None:
@@ -1319,6 +1307,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_WORKFLOW_SET, _handle_workflow)
     conn_registry.register_handler(MSG_EDIT_CONTROL_SET, _handle_edit_control)
     conn_registry.register_handler(MSG_COMMAND_CONTROL_SET, _handle_command_control)
+    conn_registry.register_handler(MSG_THINKING_LEVEL_SET, _handle_thinking_level)
     conn_registry.register_handler(MSG_WORKSPACE_FOLDERS, _handle_workspace_folders)
     conn_registry.register_handler(MSG_PROJECT_SET, _handle_project_set)
     conn_registry.register_handler(MSG_PROJECT_CREATE, _handle_project_create)

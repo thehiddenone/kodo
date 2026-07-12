@@ -60,6 +60,7 @@ class WorkerMixin:
             if task.get("kind") == "config_changed":
                 try:
                     await self._compactor.handle_config_changed()
+                    await self._sync_thinking_level_to_model()
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:

@@ -36,6 +36,7 @@ from kodo.llms import (
     get_local_registry,
     local_thinking_default_tier,
     local_thinking_family,
+    local_thinking_tiers,
     strip_kodo_callouts,
 )
 from kodo.transport import EVT_LLAMA_STATE
@@ -57,49 +58,22 @@ _API_KEY = "key_is_not_required_for_local_inference"
 _NO_COMPRESSION_HEADERS = {"Accept-Encoding": "identity"}
 
 
-def _read_local_thinking_settings(kodo_dir: Path) -> dict[str, str]:
-    """Read ``models.local_thinking`` (base_llm -> tier slug) straight off disk.
-
-    Reads ``kodo_dir/etc/settings.json`` directly rather than importing
-    ``kodo.server``'s ``Config`` — matches the existing pattern already used
-    for settings reads inside ``kodo.llms.llamacpp`` (see ``_manager.py``'s
-    ``_models_dir``), keeping this package free of a dependency on the server.
-
-    Args:
-        kodo_dir (Path): The user-level ``~/.kodo`` directory.
-
-    Returns:
-        dict[str, str]: ``base_llm`` -> tier slug for every configured entry;
-        empty if the file is missing, malformed, or has no such key.
-    """
-    settings_file = kodo_dir / "etc" / "settings.json"
-    if settings_file.is_file():
-        try:
-            parsed = json.loads(settings_file.read_text(encoding="utf-8"))
-            models = parsed.get("models") if isinstance(parsed, dict) else None
-            local_thinking = models.get("local_thinking") if isinstance(models, dict) else None
-            if isinstance(local_thinking, dict):
-                return {str(k): str(v) for k, v in local_thinking.items()}
-        except Exception:
-            _log.warning(
-                "Failed to read local_thinking settings from %s", settings_file, exc_info=True
-            )
-    return {}
-
-
 def _build_thinking_extra_body(
-    base_llm: str, kodo_dir: Path, *, override_tier: str | None = None
+    base_llm: str, *, override_tier: str | None = None
 ) -> dict[str, object]:
-    """Build the llama-server request fields for *base_llm*'s configured thinking tier.
+    """Build the llama-server request fields for *base_llm*'s thinking tier.
 
     Args:
         base_llm (str): The active model's ``LocalLLMEntry.base_llm`` (``""``
             for non-hardcoded entries, which have no thinking family).
-        kodo_dir (Path): The user-level ``~/.kodo`` directory.
-        override_tier (str | None): A per-request tier that wins over
-            ``models.local_thinking`` — the validator's ``llm.complete``
-            ``thinking_level`` field (doc/WS_PROTOCOL.md §7.6b) uses this to
-            pin the User-Proxy's answering calls without touching settings.json.
+        override_tier (str | None): A per-request tier — every caller passes
+            one explicitly: the engine's session-scoped ``thinking_level``
+            (doc/SESSIONS.md) for ordinary turns, or the validator's
+            ``llm.complete`` ``thinking_level`` field (doc/WS_PROTOCOL.md
+            §7.6b) for its session-less one-shot calls. Falls back to
+            *base_llm*'s family default when absent/invalid for it (e.g. no
+            override given at all, or a stale value left over from a model
+            switch).
 
     Returns:
         dict[str, object]: Extra fields to merge into the OpenAI-compatible
@@ -111,10 +85,11 @@ def _build_thinking_extra_body(
     if family is None:
         return {}
 
+    tiers = local_thinking_tiers(base_llm)
     tier = (
         override_tier
-        or _read_local_thinking_settings(kodo_dir).get(base_llm)
-        or local_thinking_default_tier(base_llm)
+        if override_tier is not None and override_tier in tiers
+        else local_thinking_default_tier(base_llm)
     )
 
     if family == "qwen_reasoning_budget":
@@ -530,14 +505,15 @@ class LlamaPlugin(LLMPlugin):
                 machine-read answers (doc/VALIDATOR.md §9). Mutually exclusive
                 with *tools* in practice: a grammar-pinned content channel
                 cannot also emit tool calls.
-            thinking_level (str | None): When set, overrides
-                ``models.local_thinking`` for this call only (a valid tier
-                slug for *model*'s thinking family — see
-                :func:`kodo.llms.local_thinking_tiers`). llama.cpp-only; the
-                ``llm.complete`` command's ``thinking_level`` field
-                (doc/WS_PROTOCOL.md §7.6b) uses this so the validator's
-                User-Proxy can pin e.g. ``"minimal"`` for its ``ask_user``
-                answers without touching settings.json.
+            thinking_level (str | None): A tier slug for *model*'s thinking
+                family (see :func:`kodo.llms.local_thinking_tiers`), or
+                ``None``/invalid to fall back to the family default.
+                llama.cpp-only. The engine passes the session's
+                ``thinking_level`` (doc/SESSIONS.md) on every ordinary turn;
+                the ``llm.complete`` command's ``thinking_level`` field
+                (doc/WS_PROTOCOL.md §7.6b) uses this as a pure per-call
+                override so the validator's User-Proxy can pin e.g.
+                ``"minimal"`` for its ``ask_user`` answers.
 
         Yields:
             StreamEvent: Token deltas, tool calls, then :class:`TurnEnd`.
@@ -735,9 +711,7 @@ class LlamaPlugin(LLMPlugin):
         )
         entry = get_local_registry(self.__kodo_dir).get(model)
         extra_body = (
-            _build_thinking_extra_body(
-                entry.base_llm, self.__kodo_dir, override_tier=thinking_level
-            )
+            _build_thinking_extra_body(entry.base_llm, override_tier=thinking_level)
             if entry
             else {}
         )

@@ -74,6 +74,7 @@ def _make_engine(
     gate: _FakeGate | None = None,
     registry: _FakeRegistry | None = None,
     physical_root: Path | None = None,
+    settings: dict[str, object] | None = None,
 ) -> tuple[WorkflowEngine, TransientStore, _FakeSink, _FakeGate]:
     kodo_dir = tmp_path / "home"
     workspace_layout = WorkspaceLayout(root=kodo_dir)
@@ -85,7 +86,7 @@ def _make_engine(
         sink=sink,
         gate=gate,
         key_provider=_FakeKeyProvider(),
-        get_settings=lambda: {},
+        get_settings=lambda: settings or {},
         transient=transient,
         workspace_layout=workspace_layout,
         registry=registry or _FakeRegistry(),
@@ -538,6 +539,168 @@ async def test_handle_command_control_set_normalizes(
 
     assert engine._session.command_control == expected
     assert transient.command_control == expected
+
+
+# ---------------------------------------------------------------------------
+# thinking_level: _current_base_llm / handle_thinking_level_set / start() seeding
+# ---------------------------------------------------------------------------
+
+# Real hardcoded registry entries (kodo.llms._local_registry) covering both
+# thinking families plus a non-thinking model, so _current_base_llm() resolves
+# a genuine base_llm without mocking the registry.
+_QWEN_MODEL = "unsloth-qwen36-27b-q4-k-xl"  # base_llm=Qwen36-27B, 6 tiers
+_GPT_OSS_MODEL = "unsloth-gpt-oss-20b-q4-k-xl"  # base_llm=GPT-OSS-20B, 3 tiers
+_NO_THINKING_MODEL = "unsloth-qwen3-coder-next-80b-q4-k-xl"  # base_llm has no family
+
+
+def test_current_base_llm_resolves_local_model(tmp_path: Path) -> None:
+    engine, _t, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "local", "models": {"local": _QWEN_MODEL}}
+    )
+    assert engine._current_base_llm() == "Qwen36-27B"
+
+
+def test_current_base_llm_empty_for_cloud_mode(tmp_path: Path) -> None:
+    engine, _t, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "cloud", "active_cloud_vendor": "anthropic"}
+    )
+    assert engine._current_base_llm() == ""
+
+
+def test_current_base_llm_empty_for_non_thinking_local_model(tmp_path: Path) -> None:
+    engine, _t, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "local", "models": {"local": _NO_THINKING_MODEL}}
+    )
+    assert engine._current_base_llm() == "Qwen3-Coder-Next-80B"
+
+
+async def test_start_fresh_session_seeds_thinking_level_from_family_default(
+    tmp_path: Path,
+) -> None:
+    engine, transient, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "local", "models": {"local": _GPT_OSS_MODEL}}
+    )
+    try:
+        await engine.start("session-1", resumed=False)
+        assert engine._session.thinking_level == "medium"
+        assert transient.thinking_level == "medium"
+    finally:
+        await _cancel_worker(engine)
+
+
+async def test_start_fresh_session_seeds_thinking_level_from_explicit_seed(
+    tmp_path: Path,
+) -> None:
+    engine, _transient, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "local", "models": {"local": _QWEN_MODEL}}
+    )
+    try:
+        await engine.start("session-1", resumed=False, thinking_level="minimal")
+        assert engine._session.thinking_level == "minimal"
+    finally:
+        await _cancel_worker(engine)
+
+
+async def test_start_fresh_session_thinking_level_empty_for_non_thinking_model(
+    tmp_path: Path,
+) -> None:
+    engine, _transient, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "local", "models": {"local": _NO_THINKING_MODEL}}
+    )
+    try:
+        await engine.start("session-1", resumed=False)
+        assert engine._session.thinking_level == ""
+    finally:
+        await _cancel_worker(engine)
+
+
+async def test_start_resumed_session_restores_valid_persisted_thinking_level(
+    tmp_path: Path,
+) -> None:
+    kodo_dir = tmp_path / "home"
+    seed_transient = TransientStore(kodo_dir)
+    seed_transient.attach_session("session-2", resumed=False)
+    seed_transient.update(thinking_level="huge")
+
+    engine, _transient, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "local", "models": {"local": _QWEN_MODEL}}
+    )
+    try:
+        await engine.start("session-2", resumed=True)
+        assert engine._session.thinking_level == "huge"
+    finally:
+        await _cancel_worker(engine)
+
+
+async def test_start_resumed_session_re_derives_thinking_level_if_model_changed(
+    tmp_path: Path,
+) -> None:
+    # Persisted tier "huge" is invalid for GPT-OSS's 3-tier scale — simulates
+    # the active model having changed to a different family while the session
+    # was closed. Resume must self-heal to the new family's default rather
+    # than carrying over a meaningless value.
+    kodo_dir = tmp_path / "home"
+    seed_transient = TransientStore(kodo_dir)
+    seed_transient.attach_session("session-3", resumed=False)
+    seed_transient.update(thinking_level="huge")
+
+    engine, _transient, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "local", "models": {"local": _GPT_OSS_MODEL}}
+    )
+    try:
+        await engine.start("session-3", resumed=True)
+        assert engine._session.thinking_level == "medium"
+    finally:
+        await _cancel_worker(engine)
+
+
+async def test_handle_thinking_level_set_accepts_valid_tier(tmp_path: Path) -> None:
+    engine, transient, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "local", "models": {"local": _QWEN_MODEL}}
+    )
+    transient.attach_session("s1", resumed=False)
+
+    ok = await engine.handle_thinking_level_set("high")
+
+    assert ok is True
+    assert engine._session.thinking_level == "high"
+    assert transient.thinking_level == "high"
+
+
+async def test_handle_thinking_level_set_rejects_invalid_tier(tmp_path: Path) -> None:
+    engine, transient, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "local", "models": {"local": _GPT_OSS_MODEL}}
+    )
+    transient.attach_session("s1", resumed=False)
+    engine._session.thinking_level = "medium"
+
+    # "unlimited" is a Qwen-family tier, not valid for GPT-OSS's 3-tier scale.
+    ok = await engine.handle_thinking_level_set("unlimited")
+
+    assert ok is False
+    assert engine._session.thinking_level == "medium"
+
+
+async def test_handle_thinking_level_set_rejects_nonempty_for_non_thinking_model(
+    tmp_path: Path,
+) -> None:
+    engine, _transient, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "local", "models": {"local": _NO_THINKING_MODEL}}
+    )
+    ok = await engine.handle_thinking_level_set("medium")
+    assert ok is False
+
+
+async def test_handle_thinking_level_set_accepts_empty_for_non_thinking_model(
+    tmp_path: Path,
+) -> None:
+    engine, transient, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "local", "models": {"local": _NO_THINKING_MODEL}}
+    )
+    transient.attach_session("s1", resumed=False)
+    ok = await engine.handle_thinking_level_set("")
+    assert ok is True
+    assert engine._session.thinking_level == ""
 
 
 def test_freeze_effective_modes_snapshots_both_toggles(tmp_path: Path) -> None:

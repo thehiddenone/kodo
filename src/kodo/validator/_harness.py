@@ -146,8 +146,8 @@ class ValidationHarness:
             ``ask_user`` answers from burning time thinking (e.g.
             ``"minimal"``). Ignored unless *user_proxy_prompt* is also set.
         result_validation_thinking_level: When set, a valid tier slug for
-            *validation_llm*'s thinking family, sent as ``llm.select``'s
-            ``thinking_level`` field before the RVP judge session opens —
+            *validation_llm*'s thinking family, sent as the RVP judge
+            session's own ``hello``'s ``thinking_level`` field as it opens —
             pins the judge's whole session to this tier. Ignored unless
             *result_validation_prompt* is also set.
     """

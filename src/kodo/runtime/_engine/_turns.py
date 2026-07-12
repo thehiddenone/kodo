@@ -348,6 +348,7 @@ class TurnLoopMixin:
                     messages=messages,
                     tools=tools,
                     cache_breakpoints=default_cache_breakpoints(messages),
+                    **self._thinking_kwargs(routing),
                 ):
                     await self._emitters.handle_stream_event(event, stream_id)
                     if isinstance(event, TokenDelta):

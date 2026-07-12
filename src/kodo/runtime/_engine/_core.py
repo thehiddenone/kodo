@@ -117,6 +117,7 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
     _main_messages: list[Message]
     _orch_session_id: str
     _current_vendor: str | None
+    _last_thinking_base_llm: str | None
     _replay_subsessions: list[dict[str, object]] | None
     _resume_subsession_pending: bool
 
@@ -169,6 +170,10 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
         self._main_messages = []
         self._orch_session_id = ""
         self._current_vendor = None
+        # Sentinel distinct from every real base_llm (including "") so the
+        # first _sync_thinking_level_to_model()/start() call always seeds
+        # thinking_level rather than treating "no change" as a no-op.
+        self._last_thinking_base_llm = None
         self._replay_subsessions = None
         self._resume_subsession_pending = False
         # The security layer judging every tool call (doc/SECURITY.md). The
@@ -263,7 +268,9 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
     # Session lifecycle
     # ------------------------------------------------------------------
 
-    async def start(self, session_id: str, resumed: bool) -> None:
+    async def start(
+        self, session_id: str, resumed: bool, thinking_level: str | None = None
+    ) -> None:
         """Attach the given session and start the worker.
 
         The session id + resumed flag are supplied by the ``SessionManager``
@@ -276,6 +283,14 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
         Args:
             session_id (str): Session identifier to attach.
             resumed (bool): ``True`` if an existing session dir was found.
+            thinking_level (str | None): For a brand-new session only, an
+                explicit seed for ``_session.thinking_level`` instead of the
+                active model's family default — a valid tier slug for the
+                active model's thinking family, pre-validated by the caller
+                (``hello``'s optional field, WS_PROTOCOL.md §4.1; built for
+                the validator's RVP judge session, whose ``hello`` fires
+                before there is anywhere else to attach the tier its
+                preceding ``llm.select`` pinned). Ignored when *resumed*.
         """
         self._orch_session_id = session_id
         self._clear_llm_request_logs()
@@ -292,6 +307,15 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
             self._session.workflow_mode = self._transient.workflow_mode
             self._session.edit_control = self._transient.edit_control
             self._session.command_control = self._transient.command_control
+            # Re-validate against the *current* model rather than trusting the
+            # persisted tier blindly — the shared local/cloud selection may
+            # have changed while this session was closed (doc/SESSIONS.md).
+            base_llm = self._current_base_llm()
+            self._last_thinking_base_llm = base_llm
+            self._session.thinking_level = self._thinking_level_for_model(
+                base_llm, prefer=self._transient.thinking_level
+            )
+            self._transient.update(thinking_level=self._session.thinking_level)
             persisted = self._transient.current_project
             if persisted is not None:
                 # Re-bind first so sub-agent-spawn replay and checkpointing have
@@ -311,6 +335,18 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
                     asyncio.create_task(
                         self._resume_pending_prompt(pending), name="kodo-resume-prompt"
                     )
+        else:
+            # Brand-new session: seed thinking_level from the caller's
+            # explicit *thinking_level* if given and valid, else the active
+            # model's family default — same reconciliation as the resumed
+            # path, just against ``thinking_level`` instead of a persisted
+            # value (doc/SESSIONS.md).
+            base_llm = self._current_base_llm()
+            self._last_thinking_base_llm = base_llm
+            self._session.thinking_level = self._thinking_level_for_model(
+                base_llm, prefer=thinking_level
+            )
+            self._transient.update(thinking_level=self._session.thinking_level)
 
         self._worker = asyncio.create_task(self._run_worker(), name="kodo-worker")
         _log.info(

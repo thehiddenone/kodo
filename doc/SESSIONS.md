@@ -259,6 +259,60 @@ roster also renders every callee's schemas.
   See `SessionTitler` (`runtime/_engine/_titling.py`) and §5.9a/§5.9b of
   `WS_PROTOCOL.md`.
 
+## Thinking level
+
+Each session tracks its own **`thinking_level`** (`SessionState.thinking_level`,
+`TransientStore.thinking_level`) — a reasoning-tier slug for whatever the
+session's currently active **local** model's thinking family supports
+(`kodo.llms.local_thinking_family`/`local_thinking_tiers`/
+`local_thinking_default_tier`, doc/LLM_REGISTRY.md §4.5): six tiers
+(`minimal`..`unlimited`) for the Qwen reasoning-budget family, three
+(`low`/`medium`/`high`) for the GPT-OSS reasoning-effort family, or `""` on a
+cloud model or a local model with no thinking family at all (e.g.
+Qwen3-Coder-Next-80B, or any `custom_*` registry entry). Every local LLM call
+the session's engine makes — the main turn, the security judge, compaction,
+`web_search`'s tool loop — carries this one value
+(`LLMPlumbingMixin._thinking_kwargs`), not a per-call override; it is a
+whole-session setting, the same way `command_control` is.
+
+Unlike `edit_control`/`command_control` (WS_PROTOCOL.md §5.1), which are
+fixed 3-way enums the client owns and the server just mirrors,
+`thinking_level`'s valid value set is **model-dependent**, so the engine is
+the source of truth and validates every change:
+
+- **A brand-new session** seeds `thinking_level` from the active model's
+  family default (`local_thinking_default_tier`) — Qwen-family sessions start
+  at `"unlimited"`, GPT-OSS-family at `"medium"`, non-thinking models at
+  `""`. A caller can override this seed via `hello`'s optional
+  `thinking_level` field (WS_PROTOCOL.md §4.1) instead — built for the
+  validator's RVP judge session, whose `hello` fires before there is
+  anywhere else to attach the tier its preceding `llm.select` pinned
+  (doc/VALIDATOR.md §9).
+- **A resumed session** restores its persisted value, but only if it is
+  still valid for the *currently* active model — the active local/cloud
+  model is a machine-global selection, not per-session, so it may have
+  changed while this session was closed. An invalid persisted value
+  self-heals to the current model's family default rather than being kept.
+- **A live model switch** (`config.reload`, broadcast to every open
+  session — WS_PROTOCOL.md §7.5) re-derives `thinking_level` the same way if
+  the active model's thinking-family identity actually changed
+  (`WorkflowEngine._sync_thinking_level_to_model`, called from the worker's
+  `config_changed` handling alongside `ContextCompactor.handle_config_changed`)
+  — a tier valid for one family (e.g. Qwen's `"huge"`) is not necessarily
+  valid for another (GPT-OSS has no `"huge"` tier), so the reset avoids
+  silently carrying over a meaningless value.
+- **A user request** (`thinking_level.set`, WS_PROTOCOL.md §7.4e) is
+  validated against the active model's tiers and rejected outright if
+  invalid (`WorkflowEngine.handle_thinking_level_set`) — unlike
+  `edit_control.set`/`command_control.set`'s coerce-to-a-safe-default
+  behavior, there is no single "safe" tier to fall back to across every
+  model family.
+
+`WorkflowEngine._current_base_llm()` is the shared resolver behind all of
+this: it resolves the entry agent's model key the same way `_resolve_plugin`
+does, then looks up its `base_llm` in the local registry — `""` for a cloud
+model or a local entry with none.
+
 ## Resume
 
 On every server start, `locate_guide_session` locates (or creates) the main

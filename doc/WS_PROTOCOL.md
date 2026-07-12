@@ -184,6 +184,8 @@ computed live rather than cached. The Local Inference Settings webview sums
 local entry's `min_memory`/`memory` to show a red/yellow hardware-fit
 warning (see doc/LLM_REGISTRY.md §4.4).
 
+A brand-new session (no `session_id` in the request) may also carry an optional `thinking_level` field — a tier slug valid for the currently-configured active local model's thinking family, seeding `state.thinking_level` (§5.1) instead of the family default. Silently ignored (falls back to the family default) if invalid, absent, or the request resumes an existing session. kodo-vsix never sends this; it exists for the validator's RVP judge session, whose `hello` fires before there is anywhere else to attach the tier its preceding `llm.select` (§7.6a) pinned (doc/VALIDATOR.md §9).
+
 Immediately after the ack the server **also pushes** a `state` event (§5.1) and, if the resumed session has history, a `session.history` event (§5.11). The redundant `state` keeps first-connect and reconnect on identical client logic.
 
 After `hello.ack` the client re-syncs the project's persisted session preferences to the server by sending `mode.set` (§7.5) and `workflow.set` (§7.6) with the values it read from `.kodo/settings.json`.
@@ -211,7 +213,8 @@ Pushed on connect (also embedded in `hello.ack`), and whenever a field below cha
   "workflow_mode": "guided" | "problem_solving" | "judge",
   "effective_workflow_mode": "guided" | "problem_solving" | "judge",
   "edit_control": "review_all" | "allow_all" | "smart",
-  "command_control": "defensive" | "permissive" | "smart" }
+  "command_control": "defensive" | "permissive" | "smart",
+  "thinking_level": "unlimited" | "medium" | "" | "..." }
 ```
 
 `phase` semantics:
@@ -223,17 +226,18 @@ Pushed on connect (also embedded in `hello.ack`), and whenever a field below cha
 - `done` — the project is finalized.
 - `error` — the engine hit an unrecoverable error.
 
-The four header toggles split into **two frozen** and **two never-frozen**:
+The header toggles split into **two frozen** and **three never-frozen**:
 
 **Frozen toggles** (`autonomous`, `workflow_mode`) are reported as a **pair**: the user-facing *selected* value and its per-turn frozen *effective* twin (`effective_*`). The selected value flips the instant the user clicks; the effective value is the one the **in-flight prompt** actually runs under — the engine freezes both from their selected values when it dequeues a prompt (`_freeze_effective_modes`), so a toggle flipped mid-run takes effect only on the *next* prompt. The client renders each as "in effect" (selected == effective, or idle) or "queued for the next prompt" (a turn is running and they differ).
 
 - `autonomous` — Autonomous/Interactive mode. Toggled via `mode.set` (§7.5).
 - `workflow_mode` — `guided` (the Guide + full Kodo pipeline), `problem_solving` (the standalone Problem Solver agent), or `judge` (the standalone Judge agent — a read-only run that scores a finished session for `kodo.validator`; **validator-only**, kodo-vsix never sends it). Toggled via `workflow.set` (§7.6).
 
-**Never-frozen toggles** (`edit_control`, `command_control`) carry a **single** value and **no `effective_*` twin**. The *client* owns them: it keeps the user's selected posture and sends the **shown** value, which it forces to `allow_all`/`permissive` (and locks the toggle in the UI) while Autonomous mode is *in effect* — i.e. the frozen `effective_autonomous` during a turn, the live `autonomous` selection when idle — and restores the user's selection otherwise. The server simply mirrors whatever the client last sent, so its stored value is always exactly what the UI shows.
+**Never-frozen toggles** (`edit_control`, `command_control`, `thinking_level`) carry a **single** value and **no `effective_*` twin** — a flip applies to the next LLM call, not the next prompt.
 
-- `edit_control` — how file edits are handled: `review_all` (pause for sign-off) / `allow_all` / `smart` (default). Set via `edit_control.set` (§7.4a). **State tracking only** — no edit gate is enforced yet.
-- `command_control` — how much risky commands are restricted: `defensive` / `permissive` / `smart` (default). Set via `command_control.set` (§7.4b). **Enforced**: this is the security layer's posture — the dispatcher reads it live per tool call and an `ask` verdict fires `prompt.permission` (§6.5). See doc/SECURITY.md.
+- `edit_control` — how file edits are handled: `review_all` (pause for sign-off) / `allow_all` / `smart` (default). Set via `edit_control.set` (§7.4a). **State tracking only** — no edit gate is enforced yet. **Client-owned**: the client keeps the user's selected posture and sends the **shown** value, which it forces to `allow_all` (and locks the toggle in the UI) while Autonomous mode is *in effect* — i.e. the frozen `effective_autonomous` during a turn, the live `autonomous` selection when idle — and restores the user's selection otherwise. The server simply mirrors whatever the client last sent, so its stored value is always exactly what the UI shows.
+- `command_control` — how much risky commands are restricted: `defensive` / `permissive` / `smart` (default). Set via `command_control.set` (§7.4b). **Enforced**: this is the security layer's posture — the dispatcher reads it live per tool call and an `ask` verdict fires `prompt.permission` (§6.5). See doc/SECURITY.md. **Client-owned**, same mirroring rule as `edit_control` (forced `permissive` under Autonomous).
+- `thinking_level` — the session's reasoning-tier slug for the currently active **local** model's thinking family (`kodo.llms.local_thinking_family`/`local_thinking_tiers`, doc/LLM_REGISTRY.md §4.5) — `""` on a cloud model or a local model with no thinking family. Set via `thinking_level.set` (§7.4e). **Server-owned**, unlike the two toggles above: the valid value set is model-dependent, so the engine validates every change against the active model rather than mirroring the client unconditionally, and re-derives it itself (no client request needed) whenever a brand-new session opens or the active model's thinking family changes mid-session (a `config.reload`-triggered model switch). doc/SESSIONS.md has the full session-lifecycle picture.
 
 > **Not yet on the snapshot:** `cumulative_usd`, `pending_prompts`, and
 > `last_checkpoint_sha` are **⟪planned⟫** additions; today cost arrives via
@@ -550,7 +554,7 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
   } }
 ```
 
-Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. Does **not** carry download progress (see above) — that's read off disk, not this event. `thinking_families` is keyed by `base_llm` (only entries that support a thinking-tier control appear) and is the single source the client uses to decide which control (if any) to render and what tiers/default to offer — see doc/LLM_REGISTRY.md §4.5. The *current* tier selection is not in this payload; it's read by kodo-vsix straight off `settings.json`'s `models.local_thinking` (§7.5), same as `models.local`.
+Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. Does **not** carry download progress (see above) — that's read off disk, not this event. `thinking_families` is keyed by `base_llm` (only entries that support a thinking-tier control appear) and is the single source the client uses to decide which control (if any) to render and what tiers/default to offer — see doc/LLM_REGISTRY.md §4.5. The *current* tier selection is **not** in this payload and is **not** read off settings.json any more — thinking is a per-session server-tracked value (`state.thinking_level`, §5.1, doc/SESSIONS.md), not a global one keyed by `base_llm`.
 
 ### 5.13 ⟪removed⟫ — the former artifact events
 
@@ -871,6 +875,23 @@ Response:
 { "type": "checkpoint.list.done", "root": "/abs/path/to/root", "current_index": 3, "entries": [ { "sha": "<commit sha>", "undone": false }, ... ] }
 ```
 
+### 7.4e `thinking_level.set` — set the session's thinking-tier level
+
+```json
+{ "type": "thinking_level.set", "thinking_level": "high" }
+```
+
+`thinking_level` must be a tier slug valid for the session's currently active **local** model's thinking family (the `thinking_families` payload, §5.12a / doc/LLM_REGISTRY.md §4.5 — the client computes the next tier itself and sends it, e.g. cycling a toggle button), or `""` if the active model has none. Unlike `edit_control.set`/`command_control.set`, an invalid value is **rejected outright** rather than coerced to a safe default — the server validates against the active model because the valid set is model-dependent, not a fixed enum.
+
+Response:
+
+```json
+{ "type": "thinking_level.accepted", "ok": true }
+{ "type": "thinking_level.accepted", "ok": false }
+```
+
+A `state` event with the updated `thinking_level` field follows on success; on `ok: false` nothing changed. See doc/SESSIONS.md for the full session-lifecycle picture (new-session defaulting, resume reconciliation, model-switch reset).
+
 ### 7.5 `config.reload` — apply settings.json changes
 
 Tells the server to re-read `~/.kodo/etc/settings.json`. The primary use is model switching: the VSIX edits `mode`, `active_cloud_vendor`, and/or the `models` map and sends this message; the engine resolves the new active plugin on its next dispatch (settings are read fresh per call).
@@ -932,18 +953,13 @@ does the whole switch server-side and **replies only once the outcome is
 known**:
 
 ```json
-{ "type": "llm.select", "name": "qwen36-27b",        // a *local registry* name
-  "thinking_level": "minimal" }                       // optional — see below
+{ "type": "llm.select", "name": "qwen36-27b" }        // a *local registry* name
 ```
 
-Server-side sequence: if `thinking_level` is present, validate it against
-`name`'s thinking-tier family (`local_thinking_tiers`) and persist
-`models.local_thinking[base_llm] = thinking_level` into
-`~/.kodo/etc/settings.json` first (same key, same raw-file-patch shape, the
-VSIX sidebar's thinking-tier slider writes) → persist `mode: "local"` +
-`models.local = name` (raw-file patch — untouched keys survive) → (re)start
-llama-server for the entry (`ensure_llama_running`: same-model no-op,
-different-model stop-then-start) → wait until it actually serves.
+Server-side sequence: persist `mode: "local"` + `models.local = name`
+(raw-file patch to `~/.kodo/etc/settings.json` — untouched keys survive) →
+(re)start llama-server for the entry (`ensure_llama_running`: same-model
+no-op, different-model stop-then-start) → wait until it actually serves.
 Response, correlated:
 
 ```json
@@ -959,11 +975,12 @@ Notes:
   needed).
 - A `custom_server_url` entry replies `ok: true` after stopping kodo's own
   llama-server (nothing to start — same rule as `llama.start`).
-- `thinking_level` is rejected (`ok: false`, nothing persisted) if `name` has
-  no thinking-tier family or the value is not one of its tier slugs — see
-  doc/LLM_REGISTRY.md §4.5. Built for `kodo.validator`'s RVP judge session
-  (doc/VALIDATOR.md §9), whose turns run through ordinary session dispatch
-  and so have no per-call hook the way `llm.complete` does.
+- Carries no thinking-tier field: thinking is session-scoped (doc/
+  SESSIONS.md), not a global setting keyed by `base_llm`, so there is
+  nothing here for it to persist into. `kodo.validator`'s RVP judge — the
+  one caller that used to need this — pins its tier via its own `hello`'s
+  `thinking_level` field (§4.1) once its session actually exists, instead of
+  routing it through here first (doc/VALIDATOR.md §9).
 - `llama.state` events accompany the reply on the requesting connection
   (same shapes as §5.12).
 - A failed start **still leaves the selection persisted** — identical residue
@@ -1013,17 +1030,16 @@ Notes:
   back as `ok: false`; the handler never streams partial output.
 - Thinking-tier resolution (doc/LLM_REGISTRY.md §4.5) happens inside
   `LlamaPlugin` by the selected model's `base_llm`, regardless of caller —
-  this path is unaffected unless the currently selected local model happens
-  to be a `qwen_reasoning_budget`/`gpt_oss_reasoning_effort` family member, in
-  which case its configured (or default) tier applies here too, *unless*
-  `thinking_level` is given.
+  this call has no session, so it always falls back to the model's family
+  default (a `qwen_reasoning_budget`/`gpt_oss_reasoning_effort` family
+  member thinks at its default tier) *unless* `thinking_level` is given.
 - `thinking_level` (a valid tier slug for the selected model's thinking
-  family) wins over `models.local_thinking` for this call only — it is never
-  written to settings.json, so it cannot bleed into any other call. Rejected
-  (`ok: false`) if the selected model has no thinking family or the value is
-  not one of its tier slugs. Built for the validator's User-Proxy answers
-  (doc/VALIDATOR.md §9), which pin a low tier (e.g. `"minimal"`) so
-  `ask_user` answers don't burn time thinking.
+  family) is a pure per-call override — nothing is persisted anywhere, so it
+  cannot bleed into any other call (this request has no session to persist
+  into in the first place). Rejected (`ok: false`) if the selected model has
+  no thinking family or the value is not one of its tier slugs. Built for
+  the validator's User-Proxy answers (doc/VALIDATOR.md §9), which pin a low
+  tier (e.g. `"minimal"`) so `ask_user` answers don't burn time thinking.
 
 ### 7.7 ⟪planned⟫ — security rules, credential push
 

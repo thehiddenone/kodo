@@ -113,11 +113,20 @@ class ValidatorClient:
         self.__recv_task = asyncio.create_task(self.__recv_loop(), name="validator-recv")
         self.__transcript.record("note", "lifecycle", {"event": "connected", "url": self.__url})
 
-    async def hello(self, *, session_id: str | None = None) -> dict[str, object]:
+    async def hello(
+        self, *, session_id: str | None = None, thinking_level: str | None = None
+    ) -> dict[str, object]:
         """Perform the ``hello`` handshake and bind (or resume) a session.
 
         Args:
             session_id (str | None): Session to resume; a new one when None.
+            thinking_level (str | None): For a brand-new session only, a
+                valid tier slug for the currently active local model's
+                thinking family to seed ``state.thinking_level`` with
+                instead of the family default (WS_PROTOCOL.md §4.1) — used
+                by the RVP judge session (doc/VALIDATOR.md §9) to pin its
+                tier once its session actually exists. Ignored server-side
+                when *session_id* resumes an existing session.
 
         Returns:
             dict[str, object]: The ``hello.ack`` payload.
@@ -132,6 +141,8 @@ class ValidatorClient:
         }
         if session_id is not None:
             payload["session_id"] = session_id
+        if thinking_level is not None:
+            payload["thinking_level"] = thinking_level
         ack = await self.request(MSG_HELLO, payload, session_scoped=False)
         self.__session_id = str(ack["session_id"])
         state = ack.get("state")

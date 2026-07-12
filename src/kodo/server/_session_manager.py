@@ -101,10 +101,19 @@ class SessionManager:
     # Open / create
     # ------------------------------------------------------------------
 
-    async def create(self, window_id: str) -> Session:
-        """Mint a brand-new session owned by *window_id*."""
+    async def create(self, window_id: str, *, thinking_level: str | None = None) -> Session:
+        """Mint a brand-new session owned by *window_id*.
+
+        Args:
+            window_id: Stable id of the requesting VS Code window.
+            thinking_level: Optional seed for the new session's
+                ``thinking_level`` (validated by the caller — see
+                ``_handle_session_hello``'s ``hello.thinking_level``,
+                doc/SESSIONS.md); ``None`` uses the active model's family
+                default.
+        """
         session_id = self.__mint_id()
-        session = await self.__build(session_id, resumed=False)
+        session = await self.__build(session_id, resumed=False, thinking_level=thinking_level)
         self.__owner_window[session_id] = window_id
         _log.info("Session created: %s (window=%s)", session_id, window_id[:8])
         return session
@@ -268,7 +277,9 @@ class SessionManager:
             suffix += 1
         return candidate
 
-    async def __build(self, session_id: str, *, resumed: bool) -> Session:
+    async def __build(
+        self, session_id: str, *, resumed: bool, thinking_level: str | None = None
+    ) -> Session:
         channel = SessionChannel(Outbox())
         transient = TransientStore(self.__layout.kodo_dir)
         gate = GateOrchestrator(channel, transient)
@@ -285,7 +296,7 @@ class SessionManager:
             gateway=self.__gateway,
             session_workspace=session_workspace,
         )
-        await engine.start(session_id, resumed)
+        await engine.start(session_id, resumed, thinking_level=thinking_level)
         session = Session(
             id=session_id,
             channel=channel,
