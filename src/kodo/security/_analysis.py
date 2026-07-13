@@ -25,6 +25,8 @@ from dataclasses import dataclass
 
 from kodo.shellparser import ParsedCommand, parse_command, parse_powershell_command
 
+from ._classify import SUB_MARK, NormalizedSegment, leaf_name, normalize_segments
+
 __all__ = ["CommandAnalysis", "analyze_command"]
 
 # Device sinks that read/write nowhere; never counted as outside targets.
@@ -33,14 +35,19 @@ _DEVICE_PATHS = frozenset(
 )
 
 # Substitution/expansion markers that defeat static resolution. One regex per
-# family so findings can quote the exact snippet.
-_SUBSTITUTION_RES: tuple[re.Pattern[str], ...] = (
+# family so findings can quote the exact snippet. The first two families are
+# *command* substitutions — they execute a nested command, which the rule
+# engine analyzes recursively — the rest are value expansions.
+_COMMAND_SUB_RES: tuple[re.Pattern[str], ...] = (
     re.compile(r"\$\([^)]*\)?"),  # $(command) / $( unterminated
     re.compile(r"`[^`]*`?"),  # `command`
+)
+_VALUE_SUB_RES: tuple[re.Pattern[str], ...] = (
     re.compile(r"\$\{[^}]*\}?"),  # ${VAR}
     re.compile(r"\$[A-Za-z_][A-Za-z0-9_:.]*"),  # $VAR / $env:VAR
     re.compile(r"%[A-Za-z_][A-Za-z0-9_]*%"),  # %VAR%
 )
+_SUBSTITUTION_RES: tuple[re.Pattern[str], ...] = _COMMAND_SUB_RES + _VALUE_SUB_RES
 
 # Executables that only read (no flag of theirs writes a file) — the fast-path
 # allow-list for SMART mode. Deliberately stricter than the checkpoint
@@ -106,7 +113,8 @@ _FD_MERGE_RE = re.compile(r"^&\d+$")
 # analyze_command): shlex would otherwise split `$(pwd)/y` into fragments and
 # a bare `/y` would masquerade as an absolute path. Any token carrying the
 # marker is statically unresolvable and skipped by the outside-path check.
-_SUB_MARK = "\x00sub\x00"
+# The marker itself lives in ._classify, which shares it with the rule engine.
+_SUB_MARK = SUB_MARK
 
 
 @dataclass(frozen=True)
@@ -118,13 +126,23 @@ class CommandAnalysis:
             *outside* every workspace root (normalized absolute form).
         unresolved: Substitution snippets (``$(...)``, ``$VAR``, ``%VAR%`` …)
             that make targets statically unresolvable.
+        command_subs: The subset of ``unresolved`` that *executes* a nested
+            command (``$(...)`` / backticks) — the rule engine recurses into
+            these; value expansions merely defeat path resolution.
         read_only: ``True`` when every executable in the pipeline is on the
             conservative read-only allow-list and no redirection writes a file.
+        segments: The normalized per-segment view (:mod:`._classify`) the rule
+            engine matches on.
+        operators: The separators joining the segments, verbatim from the
+            parse (``'|'``, ``'&&'``, …).
     """
 
     outside_paths: tuple[str, ...]
     unresolved: tuple[str, ...]
     read_only: bool
+    command_subs: tuple[str, ...] = ()
+    segments: tuple[NormalizedSegment, ...] = ()
+    operators: tuple[str, ...] = ()
 
 
 def analyze_command(
@@ -153,12 +171,15 @@ def analyze_command(
     # Collect substitution snippets, then mask them so the tokenizer keeps
     # each affected token in one (marked, skipped) piece.
     unresolved: list[str] = []
+    command_subs: list[str] = []
     masked = command
     for pattern in _SUBSTITUTION_RES:
         for match in pattern.finditer(masked):
             snippet = match.group()
             if snippet not in unresolved:
                 unresolved.append(snippet)
+                if pattern in _COMMAND_SUB_RES:
+                    command_subs.append(snippet)
         masked = pattern.sub(_SUB_MARK, masked)
 
     parsed: ParsedCommand = parse_powershell_command(masked) if win else parse_command(masked)
@@ -178,6 +199,9 @@ def analyze_command(
         outside_paths=tuple(outside),
         unresolved=tuple(unresolved),
         read_only=read_only,
+        command_subs=tuple(command_subs),
+        segments=normalize_segments(parsed, windows=win),
+        operators=parsed.operators,
     )
 
 
@@ -195,12 +219,8 @@ def _is_read_only(parsed: ParsedCommand) -> bool:
 
 
 def _leaf_name(executable: str) -> str:
-    """``/usr/bin/rm`` → ``rm``; ``C:\\Tools\\fd.EXE`` → ``fd``."""
-    name = executable.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    for suffix in (".exe", ".cmd", ".bat", ".ps1", ".com"):
-        if name.endswith(suffix):
-            return name[: -len(suffix)]
-    return name
+    """``/usr/bin/rm`` → ``rm`` (shared with :mod:`._classify`)."""
+    return leaf_name(executable)
 
 
 def _classify(

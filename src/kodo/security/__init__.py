@@ -2,41 +2,40 @@
 
 The implemented surface is :class:`SecurityLayer` (see :mod:`._layer` for the
 three postures) plus its building blocks: static ``run_command`` workspace
-analysis (:mod:`._analysis`) and the SMART-mode LLM intent judge's prompt and
-verdict parsing (:mod:`._judge`). The runtime injects the actual LLM callable
-(:data:`JudgeCallable`) and surfaces ``ask`` decisions as ``prompt.permission``
-requests; this package performs no I/O of its own.
+analysis (:mod:`._analysis` over the :mod:`._classify` normalized view) and
+the heuristic command rule engine (:mod:`._rules` evaluating the built-in
+:mod:`._defaults` table). Judgement is fully deterministic — no LLM is ever
+consulted; the runtime surfaces ``ask`` decisions as ``prompt.permission``
+requests, and this package performs no I/O of its own.
 
 Imports only :mod:`kodo.toolspecs` (the catalog) and :mod:`kodo.shellparser`
 (the structural parse) — consumed exclusively by ``runtime`` (see
-doc/SECURITY.md for the full design).
+doc/SECURITY.md for the full design, doc/SECURITY_RULES_PLAN.md for the rule
+engine's plan and rationale).
 
-``_rules`` / ``_store`` / ``_defaults`` remain stubs for a future iteration:
-persistent user-defined allow/deny rules ("always allow commands like this")
-layered ahead of the per-call judgement implemented here.
+``_store`` remains a stub for Phase 2: persistent user-defined "always allow
+commands like this" rules layered into the rule ladder implemented here.
 """
 
 from ._analysis import CommandAnalysis, analyze_command
-from ._judge import JudgeVerdict, build_judge_messages, parse_judge_verdict
 from ._layer import (
     MODE_DEFENSIVE,
     MODE_PERMISSIVE,
     MODE_SMART,
-    JudgeCallable,
     SecurityDecision,
     SecurityLayer,
 )
+from ._rules import CommandRule, RuleDecision, evaluate_command
 
 __all__ = [
     "MODE_DEFENSIVE",
     "MODE_PERMISSIVE",
     "MODE_SMART",
     "CommandAnalysis",
-    "JudgeCallable",
-    "JudgeVerdict",
+    "CommandRule",
+    "RuleDecision",
     "SecurityDecision",
     "SecurityLayer",
     "analyze_command",
-    "build_judge_messages",
-    "parse_judge_verdict",
+    "evaluate_command",
 ]

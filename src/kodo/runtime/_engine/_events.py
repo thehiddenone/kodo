@@ -30,7 +30,6 @@ from kodo.transport import (
     EVT_CONTEXT_COMPACTING,
     EVT_CONTEXT_STATS,
     EVT_ERROR,
-    EVT_SECURITY_JUDGING,
     EVT_SESSION_NAMING,
     EVT_STATE,
     EVT_USAGE_UPDATE,
@@ -131,13 +130,6 @@ class EngineEmitters:
         titling round-trip (which streams nothing) does not look like a stall.
         """
         await self._sink.send(Envelope.make_event(EVT_SESSION_NAMING, {"active": active}))
-
-    async def emit_security_judging(self, active: bool) -> None:
-        """Tell the client whether the security layer's silent intent-judge
-        LLM call is running — drives a transient "Evaluating…" indicator so
-        the (potentially long) judge round-trip does not look like a stall.
-        """
-        await self._sink.send(Envelope.make_event(EVT_SECURITY_JUDGING, {"active": active}))
 
     async def emit_web_search_note(self, tool_call_id: str, text: str) -> None:
         """Push one live narration note from the ``web_search`` agent's tool loop.

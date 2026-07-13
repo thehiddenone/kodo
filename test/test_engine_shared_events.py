@@ -342,13 +342,6 @@ async def test_emit_session_naming() -> None:
 
 
 @pytest.mark.asyncio
-async def test_emit_security_judging() -> None:
-    emitters, sink, _ = _make_emitters()
-    await emitters.emit_security_judging(False)
-    assert sink.sent[0].payload == {"type": "security.judging", "active": False}
-
-
-@pytest.mark.asyncio
 async def test_emit_web_search_note() -> None:
     emitters, sink, _ = _make_emitters()
     await emitters.emit_web_search_note("tc_1", "found something")

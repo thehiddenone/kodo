@@ -1,10 +1,9 @@
 """Tests for ``kodo.runtime._engine._llm.LLMPlumbingMixin``.
 
 Plugin/model resolution, the LLM request log dir, entry-agent capability
-lookup, and the three silent (never-streamed) call shapes: the
-return_result turn, the multi-round silent tool loop, and the security
-judge — driven against a fake ``LLMGateway``/key provider rather than the
-real Anthropic/llama.cpp plugins.
+lookup, and the two silent (never-streamed) call shapes: the return_result
+turn and the multi-round silent tool loop — driven against a fake
+``LLMGateway``/key provider rather than the real Anthropic/llama.cpp plugins.
 """
 
 from __future__ import annotations
@@ -54,16 +53,12 @@ class _FakeEmitters:
     def __init__(self) -> None:
         self.cost_total = 0.0
         self.cost_only_calls = 0
-        self.judging_events: list[bool] = []
 
     def add_cost(self, usd: float) -> None:
         self.cost_total += usd
 
     async def emit_cost_only(self) -> None:
         self.cost_only_calls += 1
-
-    async def emit_security_judging(self, active: bool) -> None:
-        self.judging_events.append(active)
 
 
 class _FakeKeyProvider:
@@ -418,89 +413,6 @@ async def test_run_silent_return_turn_no_turn_end_skips_cost() -> None:
 
     assert engine._emitters.cost_only_calls == 0
     assert engine._emitters.cost_total == 0.0
-
-
-# ---------------------------------------------------------------------------
-# _security_judge
-# ---------------------------------------------------------------------------
-
-
-async def test_security_judge_returns_text_and_brackets_judging_flag() -> None:
-    events = [TokenDelta(text="allow"), TurnEnd(usage=_usage(), stop_reason="end_turn")]
-    engine = _make_engine(
-        gateway=_FakeGateway([events]),
-        settings={"mode": "cloud", "active_cloud_vendor": "anthropic"},
-    )
-    engine._registry = SimpleNamespace(get=lambda name: SimpleNamespace(capability="medium"))
-    engine._session.workflow_mode = "guided"
-
-    verdict = await engine._security_judge("system prompt", "user prompt")
-
-    assert verdict == "allow"
-    assert engine._emitters.judging_events == [True, False]
-    assert engine._emitters.cost_only_calls == 1
-
-
-async def test_security_judge_uses_low_thinking_tier_on_local_thinking_model() -> None:
-    events = [TokenDelta(text="allow"), TurnEnd(usage=_usage(), stop_reason="end_turn")]
-    gateway = _FakeGateway([events])
-    engine = _make_engine(
-        gateway=gateway,
-        settings={"mode": "local", "models": {"local": "atomicchat-qwen36-27b-q8"}},
-    )
-    engine._registry = SimpleNamespace(get=lambda name: SimpleNamespace(capability="medium"))
-    engine._session.workflow_mode = "guided"
-    engine._session.thinking_level = "huge"
-
-    await engine._security_judge("system prompt", "user prompt")
-
-    assert gateway.calls[0]["thinking_level"] == "low"
-
-
-async def test_security_judge_no_thinking_level_on_local_model_without_thinking_family() -> None:
-    events = [TokenDelta(text="allow"), TurnEnd(usage=_usage(), stop_reason="end_turn")]
-    gateway = _FakeGateway([events])
-    engine = _make_engine(
-        gateway=gateway,
-        settings={"mode": "local", "models": {"local": "totally-unknown-model-id"}},
-    )
-    engine._registry = SimpleNamespace(get=lambda name: SimpleNamespace(capability="medium"))
-    engine._session.workflow_mode = "guided"
-
-    await engine._security_judge("system prompt", "user prompt")
-
-    assert "thinking_level" not in gateway.calls[0]
-
-
-async def test_security_judge_no_thinking_level_on_cloud_model() -> None:
-    events = [TokenDelta(text="allow"), TurnEnd(usage=_usage(), stop_reason="end_turn")]
-    gateway = _FakeGateway([events])
-    engine = _make_engine(
-        gateway=gateway,
-        settings={"mode": "cloud", "active_cloud_vendor": "anthropic"},
-    )
-    engine._registry = SimpleNamespace(get=lambda name: SimpleNamespace(capability="medium"))
-    engine._session.workflow_mode = "guided"
-
-    await engine._security_judge("system prompt", "user prompt")
-
-    assert "thinking_level" not in gateway.calls[0]
-
-
-async def test_security_judge_emits_judging_false_even_on_failure() -> None:
-    engine = _make_engine(settings={"mode": "cloud", "active_cloud_vendor": "anthropic"})
-    engine._registry = SimpleNamespace(get=lambda name: SimpleNamespace(capability="medium"))
-    engine._session.workflow_mode = "guided"
-
-    async def _boom(capability: str, force_model_key: str | None = None):
-        raise RuntimeError("plugin resolution failed")
-
-    engine._resolve_plugin = _boom
-
-    with pytest.raises(RuntimeError, match="plugin resolution failed"):
-        await engine._security_judge("system", "user")
-
-    assert engine._emitters.judging_events == [True, False]
 
 
 # ---------------------------------------------------------------------------

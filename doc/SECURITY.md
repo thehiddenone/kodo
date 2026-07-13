@@ -25,9 +25,11 @@ reaches its handler, the dispatcher consults the **security layer**
   carrying the user's optional feedback text verbatim.
 
 The layer never denies on its own. Every path that cannot be confidently
-allowed ends at the user — including every internal failure mode (judge
-model unreachable, unparseable verdict): the gate **fails closed to a
-prompt**, never open.
+allowed ends at the user: the gate **fails closed to a prompt**, never open.
+Judgement is **fully deterministic** — heuristic rules over the structural
+parse, never an LLM (see [SECURITY_RULES_PLAN.md](SECURITY_RULES_PLAN.md)
+for the plan that replaced the former LLM intent judge and its rationale) —
+so the same call always produces the same verdict, in microseconds.
 
 There is deliberately no bypass parameter: possession of the dispatcher means
 passing through the gate. Tests and legacy callers construct dispatchers
@@ -47,13 +49,14 @@ for `run_command`, static shell analysis.
 |---|---|
 | `permissive` | Threshold only: everything **below CRITICAL** is allowed. |
 | `defensive` | Threshold only: everything **at or above MODERATE** asks. |
-| `smart` | Below HIGH → allow (workspace-confined by construction). **HIGH → judged individually** (§3). CRITICAL → always ask. |
+| `smart` | Below HIGH → allow (workspace-confined by construction). **HIGH → judged individually by a per-tool static policy** (§3). CRITICAL → always ask. |
 
 Current impact assignments (see `toolspecs/_*.py`): HIGH = `run_command`,
 `filesystem`, `rollback`, `toolchain_deps`, `disable_autonomous_mode`;
 MODERATE = `edit_file`; no tool is SEVERE or CRITICAL today. So in practice:
 permissive allows everything, defensive asks on the six MODERATE+ tools, and
-smart judges the HIGH ones.
+smart judges the HIGH ones. A HIGH tool *without* a per-tool policy in §3
+asks unconditionally — adding a HIGH tool means adding its policy.
 
 Two overrides apply in every posture:
 
@@ -69,6 +72,25 @@ The separate **Edit Control** toggle (`edit_control`) remains state-tracking
 only — it is a review-workflow control, not part of the security layer.
 
 ## 3. SMART mode
+
+### 3.0 Per-tool policies for the non-command HIGH tools
+
+Three HIGH tools are settled by direct structural policies
+(`kodo/security/_layer.py`), no command parsing involved:
+
+- **`filesystem`** — every path is resolver-confined to the workspace at
+  dispatch and workspace changes are checkpointed, so `delete_file` /
+  `copy_*` / `move_*` **allow**; only **`delete_dir`** (recursive, the one
+  costly fat-finger) **asks**. An unrecognized/missing `operation` asks
+  (fail closed).
+- **`rollback`** — **allow**: workspace-confined by construction (checkpoint
+  mirror), and the Guide is contractually required to confirm via `ask_user`
+  first.
+- **`toolchain_deps`** — a plain registry `name` (+ ordinary `version`
+  constraint) **allows** (the dependency sub-agent's own commands are gated
+  individually anyway); a name/version shaped like a URL, VCS ref
+  (`git+…`), local path, or option injection (leading `-`) **asks** — the
+  supply-chain shapes worth a user's eyes.
 
 ### 3.1 `run_command`: static workspace analysis first
 
@@ -89,61 +111,70 @@ from `kodo.shellparser` (the POSIX parser, or the PowerShell/Windows parser on
 2. **`unresolved`** — substitution snippets (`$(...)`, backticks, `${VAR}`,
    `$VAR`/`$env:VAR`, `%VAR%`) that defeat static resolution. Substitutions
    are **masked before parsing** so `$(pwd)/y` stays one (skipped) token
-   instead of shlex splitting off a bogus absolute `/y`.
+   instead of shlex splitting off a bogus absolute `/y`. The *command*
+   substitutions (`$(...)`, backticks — they execute code) are additionally
+   surfaced as **`command_subs`** for the rule engine's recursion.
 3. **`read_only`** — every pipeline executable is on a conservative
    read-only allow-list *and* no redirection writes a file. The list is
    stricter than the checkpoint heuristic's (`find`, `sort`, `xargs`, `tee`
    are all excluded) because a wrong answer here skips a review, not just a
    no-op git sweep.
+4. **`segments`** — the normalized per-segment view
+   (`kodo.security._classify`): canonical executable (transparent wrappers
+   like `env`/`nohup`/`timeout`/`mise exec … --` peeled, `python -m mod`
+   re-classified as `mod`, PowerShell aliases resolved to their cmdlet),
+   subcommand, flags, nested `sh -c`-style command strings, inline-code
+   opacity (`python -c`, `-EncodedCommand`), and per-segment substitution /
+   pipe / write-redirection facts.
 
-The verdict ladder for `run_command` in smart mode:
+### 3.2 The heuristic rule engine
 
-1. Any `outside_paths` → **ask immediately** (reason lists the paths; no LLM
-   round). *A command that targets anything outside the workspace is always
+Every `run_command` call goes through `kodo.security._rules.
+evaluate_command()` — a deterministic verdict ladder, first hit wins
+(design + phased plan: [SECURITY_RULES_PLAN.md](SECURITY_RULES_PLAN.md)):
+
+1. **Workspace escape** — any `outside_paths` → **ask** (reason lists the
+   paths). *A command that targets anything outside the workspace is always
    raised to the user.*
-2. `read_only` and no `unresolved` → **allow immediately** (no LLM round).
-3. Everything else → the **intent judge** (§3.2), with any `unresolved`
-   snippets passed along as notes.
+2. **Command substitutions** — each `$(...)`/backtick snippet is recursively
+   evaluated as its own command (depth-capped at 3); a dangerous inner
+   command asks. `echo $(date)` allows; `echo $(rm -rf /)` asks.
+3. **Read-only fast path** — `read_only` → **allow**. Value expansions
+   (`$VAR`) are tolerated here: an unknown value fed to a pure reader
+   cannot mutate anything.
+4. **Per-segment rules** — every pipeline segment must individually clear:
+   - *structural red flags*: a bare shell as a pipe target (`curl … | sh`),
+     inline/encoded code (`python -c`, `-EncodedCommand`,
+     `Invoke-Expression`), `xargs` feeding stdin-supplied arguments to a
+     non-read-only child; nested shell strings (`sh -c "…"`, `cmd /c …`)
+     recurse through the whole ladder;
+   - the **ordered `CommandRule` table** (`kodo.security._defaults`, one
+     table per dialect, ask-rules and allow-rules interleaved, specific
+     before general). Ask-rules carry a danger **category** — `deployment`
+     (`git push`, `npm publish`, `kubectl`, cloud CLIs …), `destructive`
+     (`rm -r`, `git reset --hard`, `dd` …), `system` (`sudo`-adjacent
+     installs, services, `npm -g`, `pip --user` …), `network` (`curl`,
+     `ssh`, `nc` …), `privilege` (`sudo`, `RunAs`), `obfuscation` — and a
+     fixed one-sentence reason shown in the prompt. Allow-rules cover the
+     benign development set: **build/test/lint runners are unconditionally
+     allowed by decision** (`make`, `pytest`, `npm run`, `cargo build`,
+     `hatch run` …), plus safe VCS subcommands and in-workspace file
+     mutators (their visible path targets were already outside-checked, and
+     workspace changes are checkpointed). An allow-rule match is **voided by
+     an embedded substitution** — `mv $SRC $DST` asks.
+5. **Default: ask** — "`foo` is not in the known-safe command set", the same
+   deterministic sentence every time. The known friction here is inline
+   interpreter code (`python -c "…"`), which is opaque by design and always
+   asks; agents should prefer `python -m` or a script file, both of which
+   the table allows.
 
-### 3.2 The LLM intent judge
-
-Every HIGH-impact call not settled statically goes through one small,
-single-shot LLM round (`kodo.security._judge`): first-degree mutators carry a
-mandatory `intent` sentence (TOOLS.md §8A), and the judge's job is to check
-that **the parameters do what the intent says and the intent is a plausible,
-benign development step**.
-
-- **Prompt**: a fixed ~150-word system prompt plus one compact user message —
-  tool name, declared intent, parameters (per-value truncation at 400 chars,
-  whole block capped at 2 000), workspace roots, analysis notes. No
-  conversation history is included; the judge sees exactly one call.
-- **Output contract**: exactly one JSON object,
-  `{"verdict": "allow" | "ask", "reason": "<one sentence>"}`. The parser
-  scans for the first decodable JSON object (tolerating prose/fences);
-  anything that isn't a clean `allow` — including unreadable output — is an
-  `ask`.
-- **Model**: the session's active model. The engine injects
-  `WorkflowEngine._security_judge` as the layer's judge callable: it
-  resolves the entry-agent capability through the normal
-  plugin/gateway/routing path (`_resolve_plugin`), streams silently (no feed
-  events), and folds the call's USD cost into the session total as a
-  cost-only `usage.update`.
-- **Thinking tier**: if the active model is local and has a thinking family
-  (`kodo.llms.local_thinking_tiers`), the judge round always pins
-  `thinking_level="low"` (`LLMPlumbingMixin._judge_thinking_kwargs`) —
-  independent of the session's own `thinking_level`, since intent
-  classification doesn't need deep reasoning and the fixed low tier keeps
-  the judge round fast regardless of what the user picked for their main
-  conversation. `"low"` is a valid tier in both thinking families (Qwen's
-  6-tier `--reasoning-budget` and GPT-OSS's 3-tier `reasoning_effort`).
-  Cloud models and local models without a thinking family get no
-  `thinking_level` at all, same as any other call.
-- **Failure = ask.** A `None` judge, a raised exception, or an unparseable
-  verdict each produce an `ask` with a matching reason.
-
-HIGH tools without an `intent` field (`toolchain_deps`,
-second-degree by design — see `toolspecs/_intent.py`) are judged on their
-parameters alone; the prompt renders `(none declared)` for the intent.
+Each rule (and the default-ask) also carries the Phase 2 hooks:
+`rule_eligible` (may a persistent user rule override this ask?) and the
+generalized `(executable, subcommand)` `shape` a user rule would store —
+destructive / privilege / obfuscation findings are never eligible. The
+`intent` field remains mandatory on first-degree mutators (TOOLS.md §8A) as
+permission-panel and feed metadata, but it is **no longer a judgement
+input**.
 
 ## 4. Wiring
 
@@ -178,7 +209,7 @@ ToolDispatcher.dispatch(tool, input, tool_use_id)          kodo/tools/_dispatch.
   `SessionState` already carried it.
 - The **decision** (`SecurityDecision`) carries `action`, a one-sentence
   `reason`, and a `source` tag (`policy` / `threshold` / `workspace` /
-  `static` / `judge`) that is logged for every call.
+  `static` / `rules`) that is logged for every call.
 
 ## 5. The shell parsers
 
@@ -240,29 +271,21 @@ already in the feed and its result records the outcome (a denial is visible
 as the tool's error result). Reconnects re-deliver an unanswered request via
 the standard `Outbox` buffer-and-replay.
 
-**`security.judging`** (server → client, `kind=event`; WS_PROTOCOL.md §5.9b.1):
-brackets the SMART-mode intent judge's LLM round (§3.2) — `{"active": true}`
-right before `WorkflowEngine._security_judge` calls the model, `{"active":
-false}` in its `finally` once the verdict text (or an exception) comes back.
-Only that judge round is slow; the static fast paths (§3.1) and the
-threshold-only postures never touch the LLM, so they never fire this event.
-Forwarded statelessly (like `session.naming`, no reconnect replay — the call
-itself doesn't survive a restart) as `security_judging` to the webview, which
-shows an "Evaluating Kōdo's action…" indicator (`SecurityJudgingIndicator` in
-`indicators.tsx`) for the gap between the tool call appearing in the feed and
-either the call proceeding silently (`allow`) or the permission panel above
-appearing (`ask`).
+The former **`security.judging`** event (and its "Evaluating Kōdo's action…"
+`SecurityJudgingIndicator`) is **retired**: it existed to cover the LLM
+judge's multi-second silent round, and the rule engine has no such gap —
+verdicts are effectively instant. The constant is removed from the wire
+protocol (WS_PROTOCOL.md) and the VSIX no longer handles the message.
 
 **`agent.tool_call_prep` vs. `agent.tool_call_in_progress`** (WS_PROTOCOL.md
 §5.5/§5.5a): the tool call's card appears on `agent.tool_call_prep`, sent
 *before* `ToolDispatcher.__security_gate` runs — before it's known whether
-the call will be judged, asked, or waved straight through. For `run_command`
-this used to be a bug: the client stamped the card's `startedAt` (which drives
+the call will be asked or waved straight through. For `run_command` this
+used to be a bug: the client stamped the card's `startedAt` (which drives
 the "Waiting for tool output" timeout progress bar) at that same moment, so
-the bar's clock ran through the SMART judge round and/or the `prompt.permission`
-wait — both of which can outlast the command's own timeout, making an
-in-flight, healthy command look like it had already timed out while
-"Evaluating Kōdo's action…" was still showing.
+the bar's clock ran through the `prompt.permission` wait — which can outlast
+the command's own timeout, making an in-flight, healthy command look like it
+had already timed out.
 
 The fix: `ToolDispatcher.dispatch` now calls
 `EngineServices.notify_tool_call_in_progress(tool_use_id)` — which fires
@@ -272,11 +295,9 @@ handler runs, gated to `run_command` (the only tool the client animates a
 timeout for). The client no longer stamps `startedAt` on
 `agent.tool_call_prep`; it stays `null` (progress bar hidden) until
 `agent.tool_call_in_progress` arrives for that `tool_call_id`, which is when
-the bar actually starts. This holds for **every** posture: permissive/defensive
-`ask` verdicts skip the judge round entirely and go straight to
-`prompt.permission`, but they still funnel through the same
-post-`__security_gate` choke point in `dispatch()`, so the bar is deferred
-past that wait too — not just past SMART-mode judging.
+the bar actually starts. This holds for **every** posture: any `ask` verdict
+funnels through the same post-`__security_gate` choke point in `dispatch()`,
+so the bar is deferred past the permission wait.
 
 ## 7. Crash / resume semantics
 
@@ -291,12 +312,11 @@ is unsafe for calls that might have been mid-flight rather than mid-prompt.
 
 ## 8. Costs and short-circuits
 
-Smart mode adds at most **one** short LLM round per HIGH-impact call, on the
-session's model. The static fast paths exist to keep the common cases free:
-outside-workspace asks and read-only allows never touch the LLM. Threshold
-modes (permissive/defensive) never call the LLM at all. There is no verdict
-caching: identical repeated calls are re-judged (cheap, and context — the
-intent — should differ anyway).
+Judgement is pure in-process computation — parsing plus table matching, no
+LLM round, no I/O — so it is effectively free in both latency and money, in
+every posture. There is no verdict caching because there is nothing worth
+caching: identical repeated calls deterministically re-produce the identical
+verdict.
 
 ## 9. Recovered (malformed) tool calls
 
@@ -336,13 +356,16 @@ expected to simply retry.
 
 ## 10. Future work (deliberately out of scope)
 
-- **Persistent rules** — `kodo/security/_rules.py`, `_store.py`,
-  `_defaults.py` remain stubs for a "always allow commands like this"
-  rule engine layered *ahead* of the per-call judgement, fed by a
-  remember-this-decision affordance in the permission panel
-  (`security.add_rule` stays reserved in WS_PROTOCOL.md §7.7).
+- **Phase 2 user rules** — persistent "always allow `git push`"-style rules
+  (generalized `(executable, subcommand)` shapes only; complex commands and
+  commands with path arguments are never rule-eligible), created from the
+  permission panel and stored per-session / globally (`kodo/security/
+  _store.py` remains the stub; `security.add_rule` stays reserved in
+  WS_PROTOCOL.md §7.7). Full design: SECURITY_RULES_PLAN.md Phase 2.
+- **Phase 3** — ask-rate telemetry, rules-management UI, deeper
+  PowerShell/cmd tables, validator scenarios for the gate; and possibly an
+  AST-based safe-subset analysis for inline `python -c` code, today's main
+  deterministic-ask friction.
 - **Edit Control enforcement** — `edit_control` (`review_all`) pausing for
   sign-off on each edit is a review-workflow feature, not a security one,
   and is still state-tracking only.
-- **Verdict caching / batching**, if judge latency on filesystem-heavy runs
-  warrants it.

@@ -476,13 +476,9 @@ Brackets the summarizer call for a prompt over `_SHORT_PROMPT_MAX_WORDS` (which 
 { "type": "session.naming", "active": true }
 ```
 
-### 5.9b.1 `security.judging` — intent judge in flight
+### 5.9b.1 `security.judging` — RETIRED
 
-Brackets the security layer's silent SMART-mode intent-judge LLM call (SECURITY.md §3.2), which streams nothing and can take several seconds to tens of seconds. Emitted `true` before the call and `false` when it finishes (allow, ask, or failure — see `finally` in `WorkflowEngine._security_judge`). Lets the client show an "Evaluating…" indicator instead of an unexplained pause. Not persisted/replayed on reconnect (same as `session.naming`): if the server dies mid-judge the call itself is gone, so there is nothing to resume.
-
-```json
-{ "type": "security.judging", "active": true }
-```
+Formerly bracketed the security layer's silent SMART-mode intent-judge LLM call. The LLM judge was replaced by the deterministic heuristic rule engine (SECURITY.md §3.2, SECURITY_RULES_PLAN.md), whose verdicts are effectively instant — there is no gap to indicate. The event is no longer emitted and the constant is removed; clients must not rely on it.
 
 ### 5.9c `workspace.add_folder` — register a freshly-scaffolded project
 
@@ -1045,7 +1041,7 @@ Notes:
 
 The following are specified for later milestones but **not handled** today:
 
-- `security.add_rule` (FR-SEC-07) — persistent user-defined allow/deny rules ("always allow commands like this") layered ahead of the now-implemented per-call security judgement (doc/SECURITY.md §9).
+- `security.add_rule` (FR-SEC-07) — persistent user-defined allow rules: generalized `(executable, subcommand)` shapes ("always allow `git push`"), created via the permission panel and layered into the heuristic rule ladder (doc/SECURITY.md §10, SECURITY_RULES_PLAN.md Phase 2).
 - `credentials.set` — superseded by the `api_key.request`/response flow (§6.3):
   the server pulls keys on demand rather than the client pushing them.
 

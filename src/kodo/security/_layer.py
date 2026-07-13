@@ -5,20 +5,19 @@ the :mod:`kodo.shellparser` structural parse. It receives one tool call's name
 and input plus the session's security facts, and returns a
 :class:`SecurityDecision` — ``allow`` (dispatch proceeds) or ``ask`` (the
 caller must surface a permission prompt and obey the user's answer). The
-layer itself never performs I/O beyond the injected judge callable; wiring
-the decision to the actual gate/UI is the dispatcher's job.
+layer is fully deterministic and performs no I/O: judgement is heuristic
+rules over structure (doc/SECURITY_RULES_PLAN.md), never an LLM.
 
 Three postures, driven by the session's ``command_control`` setting:
 
 - ``permissive`` — threshold only: everything below CRITICAL passes.
 - ``defensive``  — threshold only: everything at or above MODERATE asks.
 - ``smart``      — the default. Calls below HIGH pass (their effects are
-  workspace-confined by construction). HIGH calls are judged individually:
-  ``run_command`` is first statically analyzed — any target provably outside
-  the workspace asks immediately, a provably read-only in-workspace command
-  passes immediately — and everything not settled statically goes to the LLM
-  intent judge (:mod:`._judge`), which matches the declared ``intent``
-  against the parameters and answers allow-or-ask. CRITICAL always asks.
+  workspace-confined by construction). HIGH calls are judged individually by
+  a per-tool static policy: ``run_command`` goes through the heuristic rule
+  engine (:mod:`._rules` over the :mod:`._defaults` table), ``filesystem`` /
+  ``rollback`` / ``toolchain_deps`` have direct structural policies, and a
+  HIGH tool without a policy asks (fail closed). CRITICAL always asks.
 
 While Autonomous mode is in effect the layer operates as ``permissive`` —
 the server-side twin of the client forcing the Command toggle to Permissive
@@ -32,19 +31,17 @@ from __future__ import annotations
 
 import logging
 import os.path
-from collections.abc import Awaitable, Callable
+import re
 from dataclasses import dataclass
 
-from kodo.toolspecs import ALL_TOOLS, INTENT_KEY, SecurityImpact, ToolSpec
+from kodo.toolspecs import ALL_TOOLS, SecurityImpact, ToolSpec
 
-from ._analysis import analyze_command
-from ._judge import build_judge_messages, parse_judge_verdict
+from ._rules import RuleDecision, evaluate_command
 
 __all__ = [
     "MODE_DEFENSIVE",
     "MODE_PERMISSIVE",
     "MODE_SMART",
-    "JudgeCallable",
     "SecurityDecision",
     "SecurityLayer",
 ]
@@ -55,14 +52,15 @@ MODE_PERMISSIVE = "permissive"
 MODE_DEFENSIVE = "defensive"
 MODE_SMART = "smart"
 
-# An async (system_prompt, user_message) -> raw model text callable. Injected
-# by the runtime; this package never imports an LLM client.
-JudgeCallable = Callable[[str, str], Awaitable[str]]
-
 _SPECS_BY_NAME: dict[str, ToolSpec] = {spec.name: spec for spec in ALL_TOOLS}
 
 # Always allowed: its only effect is handing control back to the user.
 _ALWAYS_ALLOWED = frozenset({"disable_autonomous_mode"})
+
+# A `toolchain_deps` dependency name/version that smells like anything other
+# than a plain registry package: URLs, VCS refs, local paths, or option
+# injection. Those are the supply-chain-risk shapes worth a user's eyes.
+_SUSPICIOUS_DEP_RE = re.compile(r"://|^git\+|^file:|[/\\]|^[.\-]|\s")
 
 
 @dataclass(frozen=True)
@@ -75,10 +73,10 @@ class SecurityDecision:
         reason: One human-readable sentence explaining the verdict — shown in
             the permission prompt when ``action == "ask"``.
         source: What produced the verdict: ``"policy"`` (always-allow /
-            unknown tool), ``"threshold"`` (permissive/defensive/smart
-            levels), ``"workspace"`` (static outside-workspace finding),
-            ``"static"`` (provably read-only fast path), or ``"judge"``
-            (LLM intent match, including its failure modes).
+            unknown tool / per-tool static policy), ``"threshold"``
+            (permissive/defensive/smart levels), ``"workspace"`` (static
+            outside-workspace finding), ``"static"`` (provably read-only
+            fast path), or ``"rules"`` (the heuristic rule engine).
     """
 
     action: str
@@ -97,17 +95,10 @@ def _ask(reason: str, source: str) -> SecurityDecision:
 class SecurityLayer:
     """Judges tool calls per the session's Command Control posture.
 
-    One instance serves a whole engine/session; it is stateless between calls
-    apart from the injected judge callable.
-
-    Args:
-        judge: Async ``(system, user) -> raw text`` LLM callable for SMART
-            mode's intent matching, or ``None`` — in which case every call
-            that would need the judge asks the user instead (fail closed).
+    One instance serves a whole engine/session; it is stateless and fully
+    synchronous in effect (the async surface is kept for the dispatcher's
+    calling convention and Phase 2 rule stores).
     """
-
-    def __init__(self, judge: JudgeCallable | None = None) -> None:
-        self.__judge = judge
 
     async def evaluate(
         self,
@@ -151,7 +142,7 @@ class SecurityLayer:
         if autonomous:
             mode = MODE_PERMISSIVE
 
-        decision = await self.__evaluate_mode(mode, spec, impact, tool_input, default_cwd, roots)
+        decision = self.__evaluate_mode(mode, spec, impact, tool_input, default_cwd, roots)
         _log.info(
             "security: %s %s (%s, mode=%s, source=%s): %s",
             decision.action.upper(),
@@ -163,7 +154,7 @@ class SecurityLayer:
         )
         return decision
 
-    async def __evaluate_mode(
+    def __evaluate_mode(
         self,
         mode: str,
         spec: ToolSpec,
@@ -195,71 +186,77 @@ class SecurityLayer:
                 "threshold",
             )
         if spec.name == "run_command":
-            return await self.__evaluate_run_command(spec, tool_input, default_cwd, roots)
-        return await self.__run_judge(spec, tool_input, roots, notes=())
+            return self.__evaluate_run_command(tool_input, default_cwd, roots)
+        if spec.name == "filesystem":
+            return self.__evaluate_filesystem(tool_input)
+        if spec.name == "rollback":
+            return _allow(
+                "Workspace-confined checkpoint rollback; the Guide confirms it "
+                "with the user via ask_user first.",
+                "policy",
+            )
+        if spec.name == "toolchain_deps":
+            return self.__evaluate_toolchain_deps(tool_input)
+        # A HIGH tool without a static policy: fail closed to the user.
+        return _ask(
+            f"{spec.external_name} is High-impact and has no static security policy.",
+            "policy",
+        )
 
-    async def __evaluate_run_command(
+    def __evaluate_run_command(
         self,
-        spec: ToolSpec,
         tool_input: dict[str, object],
         default_cwd: str,
         roots: tuple[str, ...],
     ) -> SecurityDecision:
-        """Static workspace analysis first; the intent judge for the rest."""
+        """The heuristic rule engine's verdict (doc/SECURITY_RULES_PLAN.md §1)."""
         command = str(tool_input.get("command", ""))
         cwd = self.__effective_cwd(tool_input, default_cwd)
-        analysis = analyze_command(command, cwd=cwd, roots=roots)
+        verdict: RuleDecision = evaluate_command(command, cwd=cwd, roots=roots)
+        if verdict.action == "allow":
+            return _allow(verdict.reason, verdict.source)
+        return _ask(verdict.reason, verdict.source)
 
-        if analysis.outside_paths:
-            listed = ", ".join(analysis.outside_paths[:5])
-            return _ask(f"The command targets paths outside the workspace: {listed}.", "workspace")
-        if analysis.read_only and not analysis.unresolved:
-            return _allow("Read-only command with all targets inside the workspace.", "static")
-
-        notes: tuple[str, ...] = ()
-        if analysis.unresolved:
-            listed = ", ".join(analysis.unresolved[:5])
-            notes = (
-                f"Contains substitutions whose targets could not be statically resolved: {listed}",
-            )
-        return await self.__run_judge(spec, tool_input, roots, notes=notes)
-
-    async def __run_judge(
-        self,
-        spec: ToolSpec,
-        tool_input: dict[str, object],
-        roots: tuple[str, ...],
-        *,
-        notes: tuple[str, ...],
-    ) -> SecurityDecision:
-        """One LLM intent-match round; every failure mode asks (fail closed)."""
-        if self.__judge is None:
-            return _ask("No security judge is available for this High-impact call.", "judge")
-
-        intent = str(tool_input.get(INTENT_KEY, ""))
-        params = {k: v for k, v in tool_input.items() if k != INTENT_KEY}
-        system, user = build_judge_messages(
-            tool_name=spec.name,
-            external_name=spec.external_name,
-            intent=intent,
-            params=params,
-            roots=roots,
-            notes=notes,
-        )
-        try:
-            raw = await self.__judge(system, user)
-        except Exception as exc:
-            _log.exception("security judge call failed; asking the user")
+    @staticmethod
+    def __evaluate_filesystem(tool_input: dict[str, object]) -> SecurityDecision:
+        """Every path is resolver-confined to the workspace at dispatch and
+        workspace changes are checkpointed — only the recursive directory
+        delete is costly enough to warrant a user's eyes."""
+        operation = str(tool_input.get("operation", ""))
+        if operation == "delete_dir":
+            path = str(tool_input.get("path", ""))
             return _ask(
-                "Your review is necessary because the following error occurred "
-                f"while evaluating the tool call: {exc}",
-                "judge",
+                f"Recursively deletes the directory '{path}' and everything in it.",
+                "policy",
             )
+        if operation in ("delete_file", "copy_file", "copy_dir", "move_file", "move_dir"):
+            return _allow(
+                f"Workspace-confined {operation.replace('_', ' ')}; checkpointed.",
+                "policy",
+            )
+        return _ask(f"Unrecognized filesystem operation '{operation}'.", "policy")
 
-        verdict = parse_judge_verdict(raw)
-        if verdict.allow:
-            return _allow(verdict.reason, "judge")
-        return _ask(verdict.reason, "judge")
+    @staticmethod
+    def __evaluate_toolchain_deps(tool_input: dict[str, object]) -> SecurityDecision:
+        """A plain registry name+constraint is ordinary dependency work; URL /
+        VCS / path / flag-shaped names are the supply-chain shapes that ask."""
+        name = str(tool_input.get("name", ""))
+        version = str(tool_input.get("version", "") or "")
+        if not name or _SUSPICIOUS_DEP_RE.search(name):
+            return _ask(
+                f"The dependency name '{name}' is not a plain registry package name.",
+                "policy",
+            )
+        if "://" in version or version.startswith("git+"):
+            return _ask(
+                f"The version constraint '{version}' points at an external source.",
+                "policy",
+            )
+        return _allow(
+            "Ordinary registry dependency change; the sub-agent's own commands "
+            "are gated individually.",
+            "policy",
+        )
 
     @staticmethod
     def __effective_cwd(tool_input: dict[str, object], default_cwd: str) -> str:

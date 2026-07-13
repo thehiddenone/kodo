@@ -176,10 +176,9 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
         self._last_thinking_base_llm = None
         self._replay_subsessions = None
         self._resume_subsession_pending = False
-        # The security layer judging every tool call (doc/SECURITY.md). The
-        # judge callable routes SMART-mode intent checks through this engine's
-        # LLM plumbing on the session's active model.
-        self._security = SecurityLayer(judge=self._security_judge)
+        # The security layer judging every tool call (doc/SECURITY.md) —
+        # deterministic heuristic rules, no LLM involved.
+        self._security = SecurityLayer()
         # Collaborators. The emitters' context gauge and the compactor's cost
         # folding cross-reference each other, so both sides are late-bound:
         # the emitters get a lambda that reads the compactor built right after.
