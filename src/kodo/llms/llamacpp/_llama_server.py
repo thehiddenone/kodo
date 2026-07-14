@@ -1,7 +1,12 @@
 """llama-server process manager.
 
 Starts ``llama-server`` as a detached subprocess and manages it by PID.
-No stdout/stderr is captured — llama-server logs to its own output.
+stdout/stderr are redirected to a per-launch startup-log file (truncated on
+every :meth:`LlamaServer.start` call) so that, if the process exits before
+the health check passes, its own diagnostic output can be folded into the
+raised error — llama-server's ``--log-file`` only starts recording once its
+logger initializes, so an early failure (e.g. an unrecognized CLI flag from
+a bad flavor) never reaches it otherwise.
 
 On kodo restart, call :func:`find_running_server` to detect a surviving
 process, then pass the result to :meth:`LlamaServer.adopt`.
@@ -34,6 +39,11 @@ _STOP_GRACE: float = 5.0
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _PROCESS_TERMINATE = 0x0001
 
+# stdout+stderr of the most recent launch attempt — truncated on every
+# start(), read back only if the process exits before becoming ready.
+_STARTUP_LOG_NAME = "llama-server-startup.log"
+_STARTUP_LOG_MAX_CHARS = 4000
+
 
 # ---------------------------------------------------------------------------
 # Runtime state file
@@ -55,6 +65,22 @@ def _write_runtime(kodo_dir: Path, pid: int, host: str, port: int, model: str) -
 
 def _remove_runtime(kodo_dir: Path) -> None:
     _runtime_path(kodo_dir).unlink(missing_ok=True)
+
+
+def _read_tail(path: Path, max_chars: int) -> str:
+    """Best-effort read of the last *max_chars* characters of *path*.
+
+    Returns ``""`` if the file doesn't exist or can't be read — e.g. the
+    process exited before its stdout/stderr redirection ever produced a
+    readable file.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    if len(text) > max_chars:
+        text = text[-max_chars:]
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -167,11 +193,17 @@ class LlamaServer:
 
     __config: LlamaServerConfig
     __llama_args: dict[str, str]
+    __flavor_id: str
     __pid: int | None
     __active_host: str
     __active_port: int
 
-    def __init__(self, config: LlamaServerConfig, llama_args: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        config: LlamaServerConfig,
+        llama_args: dict[str, str] | None = None,
+        flavor_id: str = "",
+    ) -> None:
         """Initialise without starting the subprocess.
 
         Args:
@@ -180,9 +212,16 @@ class LlamaServer:
                 flags, verbatim ``{flag: value}`` pairs; a bare/valueless
                 flag is represented with an empty string value. ``None``
                 (default) is treated as no flags at all.
+            flavor_id (str): The id of the flavor *llama_args* was resolved
+                from (see :func:`kodo.llms.get_effective_flavor_id`). Used
+                only to tailor the crash message raised by :meth:`start`: if
+                the process exits before becoming ready and this is neither
+                ``""`` nor ``"default"``, the message suggests switching to
+                the default flavor.
         """
         self.__config = config
         self.__llama_args = dict(llama_args) if llama_args else {}
+        self.__flavor_id = flavor_id
         self.__pid = None
         self.__active_host = config.host
         self.__active_port = config.port
@@ -234,9 +273,11 @@ class LlamaServer:
     async def start(self) -> None:
         """Launch llama-server and wait until it passes the health check.
 
-        The process is launched with stdout/stderr discarded; use llama-server's
-        own log flags if output is needed.  The PID is written to the runtime
-        state file for cross-restart detection.
+        stdout and stderr are redirected to a startup-log file under
+        ``kodo_dir/logs`` (truncated at the start of every call), read back
+        by :meth:`__wait_ready` if the process exits before becoming ready.
+        The PID is written to the runtime state file for cross-restart
+        detection.
 
         Raises:
             RuntimeError: If already running or the process exits prematurely.
@@ -252,11 +293,14 @@ class LlamaServer:
         cmd = self.__build_command()
         _log.debug("Starting llama-server: %s", " ".join(cmd))
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
+        startup_log_path = self.__startup_log_path()
+        startup_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(startup_log_path, "wb") as startup_log:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=startup_log,
+                stderr=asyncio.subprocess.STDOUT,
+            )
         self.__pid = proc.pid
 
         await self.__wait_ready()
@@ -329,9 +373,7 @@ class LlamaServer:
         async with aiohttp.ClientSession() as session:
             while elapsed < _HEALTH_TIMEOUT:
                 if not self.is_running:
-                    raise RuntimeError(
-                        f"llama-server (pid={self.__pid}) exited before becoming ready"
-                    )
+                    raise RuntimeError(self.__crashed_before_ready_message())
                 try:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=1.0)) as resp:
                         if resp.status == 200:
@@ -342,6 +384,29 @@ class LlamaServer:
                 elapsed += _HEALTH_POLL_INTERVAL
 
         raise TimeoutError(f"llama-server did not become ready within {_HEALTH_TIMEOUT:.0f} s")
+
+    def __startup_log_path(self) -> Path:
+        return self.__config.kodo_dir / "logs" / _STARTUP_LOG_NAME
+
+    def __crashed_before_ready_message(self) -> str:
+        """Build the ``RuntimeError`` message for an exit-before-ready crash.
+
+        Folds in the tail of the startup log (see :meth:`start`) so the user
+        sees *why* llama-server exited, plus — if a non-default flavor was
+        in play — a nudge to try the default flavor, since a bad custom
+        flavor (typically a malformed or unsupported CLI flag) is the most
+        likely cause.
+        """
+        parts = [f"llama-server (pid={self.__pid}) exited before becoming ready"]
+        output = _read_tail(self.__startup_log_path(), _STARTUP_LOG_MAX_CHARS)
+        if output:
+            parts.append(f"Output from llama-server:\n```\n{output}\n```")
+        if self.__flavor_id and self.__flavor_id != "default":
+            parts.append(
+                f"This model is set to launch with the {self.__flavor_id!r} flavor — "
+                "try switching it to the default flavor and starting again."
+            )
+        return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------

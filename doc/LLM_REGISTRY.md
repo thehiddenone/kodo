@@ -577,7 +577,21 @@ anything off `entry` directly — `ensure_llama_running` passes the resolved
 `llama_args` to `LlamaServer` as a constructor argument (not a
 `LlamaServerConfig` field, since it varies per launch while the rest of that
 config doesn't) and ignores the resolved `context_window` entirely (only
-`get_context_window` needs it).
+`get_context_window` needs it). It also resolves `get_effective_flavor_id`
+and passes that too (see below), purely for crash messaging.
+
+**Startup-crash diagnostics.** A bad custom flavor (typically a malformed or
+unsupported CLI flag in its `llama_args`) is the most likely way
+`LlamaServer.start` fails, so `start` redirects the child's stdout/stderr
+into a per-launch startup-log file (`~/.kodo/logs/llama-server-startup.log`,
+truncated on every call — separate from llama-server's own `--log-file`,
+which only starts recording once its logger initializes and so misses an
+early CLI-parse failure entirely). If the process exits before the health
+check passes, `LlamaServer.__wait_ready` folds the tail of that file (last
+4000 chars) into the raised `RuntimeError`, and — if `ensure_llama_running`
+passed a `flavor_id` that isn't `"default"` — appends a nudge to try the
+default flavor instead. Both are message-only: no new wire fields, and
+nothing changes for a process that starts successfully.
 
 **Two flavor sources**, merged by `get_flavors(kodo_dir, entry) ->
 tuple[LlamaFlavor, ...]` (predefined slots first, then any extra custom

@@ -9,6 +9,7 @@ from pathlib import Path
 from kodo.llms import (
     REASONING_BUDGET_MESSAGE,
     LocalLLMEntry,
+    get_effective_flavor_id,
     get_llama_server_override_path,
     local_thinking_family,
     resolve_effective_llama_config,
@@ -105,6 +106,12 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
     generation in :class:`LlamaServerConfig`/:class:`LlamaServer` is unchanged
     either way.
 
+    Also resolves *entry*'s effective flavor id (:func:`kodo.llms.get_effective_flavor_id`)
+    and passes it to :class:`LlamaServer` purely for crash messaging: if the
+    process exits before becoming ready and the flavor isn't ``"default"``,
+    :class:`LlamaServer` suggests trying the default flavor, since a bad
+    custom flavor is the most likely cause.
+
     Args:
         entry (LocalLLMEntry): The local registry entry to serve — either a
             ``hardcoded_hf``/``custom_hf`` entry (resolved via the download
@@ -149,6 +156,7 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
     # entry's resolved flavor (active, or its first/default one) supplies the
     # complete llama_args — see LlamaFlavor/resolve_effective_llama_config.
     llama_args, _ = resolve_effective_llama_config(kodo_dir, entry)
+    flavor_id = get_effective_flavor_id(kodo_dir, entry)
     if local_thinking_family(entry.base_llm) == "qwen_reasoning_budget":
         # -1 is mandatory here (not just the default): it's what makes the
         # per-request `thinking_budget_tokens` override in _llama.py take
@@ -162,6 +170,6 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
         kodo_dir=kodo_dir,
         model_name=entry.name,
     )
-    server = LlamaServer(cfg, llama_args)
+    server = LlamaServer(cfg, llama_args, flavor_id=flavor_id)
     await server.start()
     return server
