@@ -183,6 +183,20 @@ def _tokenize(command: str) -> list[tuple[str, str]]:
             i += 1
             continue
 
+        if ch in "(){}":
+            # Bare (unquoted) subshell/script-block grouping — `(cmd)`,
+            # `& { cmd }` — is inert for structure the same way POSIX
+            # `(...)`/`{...;}` is: it doesn't change what runs inside, so it
+            # is dropped rather than tokenized, letting whatever separators
+            # live inside do their normal job. Quoted occurrences never reach
+            # here — the quote branches above already consumed them whole.
+            # Full control-flow forms (`if (...) { ... }`, `foreach`, …)
+            # still fail closed to ask, unchanged — only the common
+            # simple-wrapper forms are flattened.
+            flush()
+            i += 1
+            continue
+
         word.append(ch)
         i += 1
 

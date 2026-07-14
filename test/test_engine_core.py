@@ -916,7 +916,13 @@ async def test_run_rollback_resets_session_state(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_finalize_document_unresolvable_path_is_noop(tmp_path: Path) -> None:
+async def test_finalize_document_unresolvable_path_is_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # tmp_path lives under the OS temp dir, so an escape via ".." would land
+    # inside the (intentionally allowed) system-temp carve-out — blank it out
+    # to isolate the "escapes the project root" guard this test targets.
+    monkeypatch.setattr("kodo.tools._paths.system_temp_roots", lambda: ())
     project_root = tmp_path / "proj"
     _make_project(project_root)
     engine, _t, _s, _g = _make_engine(tmp_path)

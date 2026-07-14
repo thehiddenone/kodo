@@ -71,9 +71,17 @@ def test_analysis_dotdot_within_roots_passes() -> None:
 
 
 def test_analysis_redirection_target_outside_flagged() -> None:
-    a = analyze_command("echo pwned > /tmp/x.sh", cwd="/ws/proj", roots=_ROOTS, windows=False)
-    assert a.outside_paths == ("/tmp/x.sh",)
+    a = analyze_command("echo pwned > /etc/x.sh", cwd="/ws/proj", roots=_ROOTS, windows=False)
+    assert a.outside_paths == ("/etc/x.sh",)
     assert a.read_only is False
+
+
+def test_analysis_redirection_target_under_system_temp_not_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("kodo.security._analysis.system_temp_roots", lambda: ("/tmp",))
+    a = analyze_command("echo pwned > /tmp/x.sh", cwd="/ws/proj", roots=_ROOTS, windows=False)
+    assert a.outside_paths == ()
 
 
 def test_analysis_dev_null_not_outside() -> None:

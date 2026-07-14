@@ -41,13 +41,13 @@ source:
 | `project` | *(nothing)* |
 | `guided_state` | *(nothing)* |
 | `state` | *(nothing)* |
-| `security` | `toolspecs`, `shellparser` |
+| `security` | `common`, `toolspecs`, `shellparser` |
 | `mirror` | *(nothing)* |
 | `shellparser` | *(nothing)* |
 | `binutils` | *(nothing)* |
 | `transport` | `common` |
 | `toolspecs` | *(nothing — pure data)* |
-| `tools` | `guided_state`, `project`, `toolspecs` |
+| `tools` | `common`, `guided_state`, `project`, `toolspecs` |
 | `llms` | `common`, `transport`, `toolspecs` |
 | `subagents` | `toolspecs` |
 | `titling` | `project` |
@@ -100,14 +100,14 @@ imported); the annotation on each line names the packages pulled in.
  ┌───────────┐   ┌────────┐   ┌───────────┐
  │ subagents │   │  llms  │   │   tools   │              T3   (llms ⊇ llamacpp utils;
  └─────┬─────┘   └───┬────┘   └─────┬─────┘                    tools imported only by runtime)
-       │ toolspecs   │ toolspecs    │ toolspecs · guided_state · project
+       │ toolspecs   │ toolspecs    │ toolspecs · guided_state · project · common
        │             │ transport    │
        │             │ common       │
        ▼             ▼              ▼
  ┌───────────┐   ┌──────────┐
  │ toolspecs │   │ security │                           T2   (toolspecs: pure data, imports nothing;
- └───────────┘   └────┬─────┘                                 security: ▼ toolspecs · shellparser,
-                      │ toolspecs · shellparser               imported ONLY by runtime)
+ └───────────┘   └────┬─────┘                                 security: ▼ common · toolspecs · shellparser,
+                      │ common · toolspecs · shellparser      imported ONLY by runtime)
                       ▼
  ┌───────────┐   ┌─────────┐
  │ transport │   │ titling │                             T1
@@ -148,16 +148,21 @@ only the principal lines are drawn above to keep the figure readable.)
   `kodo` (the old `toolspecs → workspace` edge for `ArtifactType` is gone) —
   and `security` (the per-call allow/ask judgement engine over the catalog +
   the shell parse, doc/SECURITY.md). `security` left T0 when it was
-  implemented; it is consumed only by `runtime` and never by `tools`.
+  implemented; it is consumed only by `runtime` and never by `tools`. `security`
+  also imports `common` (`system_temp_roots()` — the OS-temp-directory helper
+  shared with `tools`'s path resolvers, doc/SECURITY_RULES_PLAN.md's "OS temp
+  directory carve-out").
 - **T3**: `subagents` (prompt renderer over `toolspecs`), `llms` (LLM streaming;
   its `llamacpp` subpackage also holds the local-inference lifecycle utilities
   merged from the former `llm_utils`), and `tools` (the **dispatch
   implementation** of every tool in the catalog — one `Tool` subclass per tool).
   `tools` has a hard import ceiling of T0/T1/T2 (`guided_state` + `project` +
-  `toolspecs`); the collaborators it needs from higher tiers — the gate, the
-  session, the sub-agent launcher — are inverted via structural Protocols and
-  injected by `runtime`. It is imported only by `runtime`, never by `subagents`
-  or `llms`.
+  `toolspecs` + `common`, the last for the same `system_temp_roots()` helper
+  `security` uses — routed through `common` rather than a direct
+  `tools → security` import so the two stay decoupled); the collaborators it
+  needs from higher tiers — the gate, the session, the sub-agent launcher —
+  are inverted via structural Protocols and injected by `runtime`. It is
+  imported only by `runtime`, never by `subagents` or `llms`.
 - **T4 — `runtime`**: the engine; composes nearly every domain service and
   builds a per-run `tools.ToolDispatcher` for each agent (guide or leaf).
 - **T5 — `server`**: the composition root; builds the object graph and registers
@@ -165,12 +170,13 @@ only the principal lines are drawn above to keep the figure readable.)
 
 ---
 
-## 3. `common/` — wire envelope & protocols
+## 3. `common/` — wire envelope, protocols & shared platform facts
 
 | Module | Defines | Notes |
 |---|---|---|
 | [_envelope.py](../src/kodo/common/_envelope.py) | `Envelope` (frozen dataclass), `MessageKind` (Literal) | The atomic WS frame `{kind, id, correlation_id?, payload}`. Factory classmethods: `make_response`, `make_event`, `make_stream_chunk`, `make_thinking_chunk`, `make_stream_end`; plus `to_json`/`from_json`. |
 | [_protocols.py](../src/kodo/common/_protocols.py) | `ApiKey` (frozen dataclass), `MessageSink` (Protocol), `ApiKeyProvider` (Protocol) | `MessageSink.send(env)` and `ApiKeyProvider.get_key(vendor)` are the two seams that decouple the engine from the transport and the key broker. |
+| [_tempdir.py](../src/kodo/common/_tempdir.py) | `system_temp_roots() -> tuple[str, ...]` | Candidate OS temp-directory roots — `tempfile.gettempdir()` and, on POSIX, the literal `/tmp` — each included both as-is and `realpath`-resolved (covers macOS's `/tmp` → `/private/tmp` symlink without dropping the literal spelling a command might use directly). The single source of truth for "is this path system-temp scratch space" — consumed by both `security._analysis` (the `run_command` workspace-escape check, purely lexical, needs the literal spelling) and `tools._paths` (`ProjectPathResolver`/`resolve_within`, compares against `Path.resolve()`'s already-symlink-resolved form) — so the two independently-gated codepaths agree without importing each other (doc/SECURITY_RULES_PLAN.md). |
 
 **Links:** `_protocols.py` imports `Envelope` from `_envelope.py`. Nothing in
 `common` imports anything else in `kodo`. `MessageSink`/`ApiKeyProvider` are

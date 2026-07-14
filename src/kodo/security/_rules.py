@@ -4,7 +4,9 @@ Judges one ``run_command`` shell command deterministically, from structure
 alone (doc/SECURITY_RULES_PLAN.md). The verdict ladder, first hit wins:
 
 1. **Workspace escape** — any argument/redirection resolving outside every
-   workspace root asks (unchanged from the static analysis era).
+   workspace root *and* outside the OS temp directory asks (unchanged from
+   the static analysis era; the temp-directory carve-out is new — see
+   :mod:`kodo.common._tempdir`).
 2. **Command substitutions** — ``$(...)`` / backticks *execute* their content,
    so each one is recursively evaluated; a dangerous inner command asks.
 3. **Read-only fast path** — every executable on the conservative read-only
@@ -32,6 +34,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from ._analysis import _READONLY_EXECUTABLES, analyze_command
@@ -67,6 +70,71 @@ _READONLY_CMDLETS = frozenset(
         "more",
     }
 )
+
+
+@dataclass(frozen=True)
+class _DualModeCommand:
+    """A command that is benign when read-only and dangerous when mutating.
+
+    Neither ``_analysis._READONLY_EXECUTABLES`` (blanket, unconditional) nor
+    ``CommandRule.flags_any`` (can't express "a positional value follows" or
+    "an argument contains ``=``") can represent this — so these are matched
+    by executable name directly in :func:`_judge_segment`, the same way the
+    ``xargs`` structural check is, rather than through the rule table.
+    """
+
+    mutates: Callable[[NormalizedSegment], bool]
+    reason: str
+
+
+def _sysctl_mutates(segment: NormalizedSegment) -> bool:
+    """``-w``/``--write``/``-p``/``--load``/``--system``, or the Linux
+    flag-less assignment form (``sysctl vm.swappiness=10``)."""
+    if any(_flag_hit(f, segment.flags) for f in ("-w", "--write", "-p", "--load", "--system")):
+        return True
+    return any("=" in a for a in segment.args)
+
+
+def _ulimit_mutates(segment: NormalizedSegment) -> bool:
+    """A numeric or ``unlimited`` positional sets a limit; a bare query
+    (``ulimit``, ``ulimit -a``, ``ulimit -n``) only reads."""
+    return any(a.lower() == "unlimited" or a.lstrip("-").isdigit() for a in segment.args)
+
+
+def _date_mutates(segment: NormalizedSegment) -> bool:
+    """``-s``/``--set``, or a bare positional (BSD/macOS/cmd.exe direct-set
+    form, e.g. ``date 010112002026``). A ``+FORMAT`` string stays read-only."""
+    if any(_flag_hit(f, segment.flags) for f in ("-s", "--set")):
+        return True
+    return any(a and not a.startswith("+") for a in segment.args)
+
+
+def _hostname_mutates(segment: NormalizedSegment) -> bool:
+    """``-F``/``--file``, or any positional (``hostname NAME`` sets it; a
+    bare ``hostname`` reads)."""
+    if any(_flag_hit(f, segment.flags) for f in ("-f", "--file")):
+        return True
+    return bool(segment.args)
+
+
+# Dialect-agnostic by design: verified against the cmd.exe/PowerShell forms
+# too (`date /t` is a single-slash flag, filtered out before `args` is built,
+# so it reads; Windows `hostname` has no legitimate positional at all, so the
+# predicate is at worst an unnecessary — never unsafe — ask there).
+_DUAL_MODE: dict[str, _DualModeCommand] = {
+    "sysctl": _DualModeCommand(
+        _sysctl_mutates, "'sysctl -w'/assignment form changes a running kernel parameter."
+    ),
+    "ulimit": _DualModeCommand(
+        _ulimit_mutates, "'ulimit' with a value changes a resource limit for this shell."
+    ),
+    "date": _DualModeCommand(
+        _date_mutates, "'date' with a value or -s/--set changes the system clock."
+    ),
+    "hostname": _DualModeCommand(
+        _hostname_mutates, "'hostname' with a value changes the system hostname."
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -280,6 +348,19 @@ def _judge_segment(
             f"'{child or 'a command'}'.",
             "unknown",
         )
+
+    dual = _DUAL_MODE.get(exe)
+    if dual is not None:
+        if segment.has_substitution:
+            # Unlike a pure reader, an unresolvable value could be the
+            # mutating form — no leniency here.
+            return _ask(
+                f"'{display}' contains substitutions whose values cannot be statically resolved.",
+                "unknown",
+            )
+        if dual.mutates(segment):
+            return _ask(dual.reason, "system", shape=shape)
+        return ok
 
     # Read-only executables tolerate value expansions: an unknown value fed
     # to a pure reader cannot mutate anything (writing redirections still

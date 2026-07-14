@@ -99,26 +99,39 @@ from `kodo.shellparser` (the POSIX parser, or the PowerShell/Windows parser on
 `os.name == "nt"`; see §5) and produces three facts:
 
 1. **`outside_paths`** — argument or redirection-target tokens that resolve
-   to a path **outside every workspace root**. Only tokens that *can* escape
-   are resolved: absolute paths, `~`, Windows drive/UNC forms, and relatives
-   containing `..` (joined lexically against the call's working directory).
-   Plain relative tokens can't escape the resolver-confined cwd and are
-   skipped — which also keeps subcommand words (`install`, `build`) from
-   being misread as files. Executables are exempt (running `/usr/bin/python`
-   is normal; the program is not a *target*). Device sinks
-   (`/dev/null`, `NUL`, …) and fd-merges (`2>&1`) are exempt. `--flag=value`
-   values are checked.
+   to a path **outside every workspace root and outside the OS temp
+   directory**. Only tokens that *can* escape are resolved: absolute paths,
+   `~`, Windows drive/UNC forms, and relatives containing `..` (joined
+   lexically against the call's working directory). Plain relative tokens
+   can't escape the resolver-confined cwd and are skipped — which also keeps
+   subcommand words (`install`, `build`) from being misread as files.
+   Executables are exempt (running `/usr/bin/python` is normal; the program
+   is not a *target*). Device sinks (`/dev/null`, `NUL`, …) and fd-merges
+   (`2>&1`) are exempt. `--flag=value` values are checked. A path under
+   `kodo.common.system_temp_roots()` (`tempfile.gettempdir()`, plus the
+   literal `/tmp` on POSIX even when `gettempdir()` resolves elsewhere, e.g.
+   macOS's per-user `TMPDIR`) is never counted as outside — scratch files
+   there are expected agent territory, not a workspace escape. The same
+   helper gates `kodo.tools._paths.resolve_within` (the Guided-mode file-tool
+   resolver), so `create_file` / `edit_file` / `filesystem` / `read_file`
+   can address the temp directory too, not just `run_command` (§4).
 2. **`unresolved`** — substitution snippets (`$(...)`, backticks, `${VAR}`,
    `$VAR`/`$env:VAR`, `%VAR%`) that defeat static resolution. Substitutions
    are **masked before parsing** so `$(pwd)/y` stays one (skipped) token
    instead of shlex splitting off a bogus absolute `/y`. The *command*
    substitutions (`$(...)`, backticks — they execute code) are additionally
    surfaced as **`command_subs`** for the rule engine's recursion.
-3. **`read_only`** — every pipeline executable is on a conservative
-   read-only allow-list *and* no redirection writes a file. The list is
-   stricter than the checkpoint heuristic's (`find`, `sort`, `xargs`, `tee`
-   are all excluded) because a wrong answer here skips a review, not just a
-   no-op git sweep.
+3. **`read_only`** — every pipeline executable, **after wrapper-peeling**
+   (`env`/`nohup`/`timeout`/… — see point 4), is on a conservative read-only
+   allow-list *and* no redirection writes a file. The list is stricter than
+   the checkpoint heuristic's (`find`, `sort`, `xargs`, `tee` are all
+   excluded) because a wrong answer here skips a review, not just a no-op
+   git sweep. The fast path operates on the *normalized* segments, not the
+   raw parse — otherwise a wrapper like `env` (itself read-only) could hide
+   an unpeeled mutating command behind it (`env rm -rf x` must resolve to
+   `rm`, not short-circuit on `env`). `date` and `hostname` are deliberately
+   **not** on this list — both have a mutating form and are judged
+   per-segment instead (§3.2 step 4).
 4. **`segments`** — the normalized per-segment view
    (`kodo.security._classify`): canonical executable (transparent wrappers
    like `env`/`nohup`/`timeout`/`mise exec … --` peeled, `python -m mod`
@@ -134,8 +147,11 @@ evaluate_command()` — a deterministic verdict ladder, first hit wins
 (design + phased plan: [SECURITY_RULES_PLAN.md](SECURITY_RULES_PLAN.md)):
 
 1. **Workspace escape** — any `outside_paths` → **ask** (reason lists the
-   paths). *A command that targets anything outside the workspace is always
-   raised to the user.*
+   paths). *A command that targets anything outside the workspace and the OS
+   temp directory is always raised to the user.* A temp-dir target simply
+   skips this step — it still runs the rest of the ladder, so e.g. `rm -rf
+   /tmp/x` still asks (destructive, category rule) while `cat /tmp/x` or
+   `touch /tmp/x` allow.
 2. **Command substitutions** — each `$(...)`/backtick snippet is recursively
    evaluated as its own command (depth-capped at 3); a dangerous inner
    command asks. `echo $(date)` allows; `echo $(rm -rf /)` asks.
@@ -148,6 +164,19 @@ evaluate_command()` — a deterministic verdict ladder, first hit wins
      `Invoke-Expression`), `xargs` feeding stdin-supplied arguments to a
      non-read-only child; nested shell strings (`sh -c "…"`, `cmd /c …`)
      recurse through the whole ladder;
+   - **dual-mode commands** (`kodo.security._rules._DUAL_MODE`): a small set
+     of commands are benign when read-only and dangerous when mutating in a
+     way a blanket allow-list or a `flags_any` rule can't express (a
+     positional *value*, not a flag, decides) — `sysctl` (`-w`/assignment
+     form writes a live kernel parameter; `-a`/a bare key reads), `ulimit`
+     (a numeric/`unlimited` value sets a resource limit; a bare query
+     reads), `date` (`-s`/a bare positional sets the clock; a `+FORMAT`
+     string reads), `hostname` (a positional sets it; bare reads). Matched
+     by executable name the same way `xargs` is, before the generic
+     rule-table lookup; an unresolvable substitution asks rather than
+     getting the read-only leniency below, since it could be the mutating
+     form. `uname` was reviewed and has no mutating form on any platform, so
+     it stays on the plain read-only list.
    - the **ordered `CommandRule` table** (`kodo.security._defaults`, one
      table per dialect, ask-rules and allow-rules interleaved, specific
      before general). Ask-rules carry a danger **category** — `deployment`
@@ -196,15 +225,28 @@ ToolDispatcher.dispatch(tool, input, tool_use_id)          kodo/tools/_dispatch.
   └─ tool_cls(ctx).handle(input)
 ```
 
-- **Layering.** `kodo.security` imports only `kodo.toolspecs` (the catalog)
-  and `kodo.shellparser` (the parse) — it sits beside `toolspecs` in the
-  import graph and is consumed **only by `runtime`**. `kodo.tools` never
-  imports it: the dispatcher sees the layer through the `SecurityLike` /
+- **Layering.** `kodo.security` imports only `kodo.common` (the
+  OS-temp-directory helper, see below), `kodo.toolspecs` (the catalog), and
+  `kodo.shellparser` (the parse) — it sits beside `toolspecs` in the import
+  graph and is consumed **only by `runtime`**. `kodo.tools` never imports it:
+  the dispatcher sees the layer through the `SecurityLike` /
   `SecurityDecisionLike` structural protocols in `tools/_context.py`, exactly
   as `GateLike` decouples it from `runtime`. The engine constructs one
   `SecurityLayer` per `WorkflowEngine` and passes it into every dispatcher
   via `_make_dispatcher` — so the Guide, the Problem Solver, and **every
   sub-agent** flow through the same gate.
+- **The OS temp directory carve-out spans two independent gatekeepers**, not
+  just the security layer: `kodo.common.system_temp_roots()` (T0, no
+  intra-kodo dependencies) is consumed by both `kodo.security._analysis`
+  (the `run_command` workspace-escape check above) and
+  `kodo.tools._paths.resolve_within` (the `ProjectPathResolver` used in
+  Guided mode, which otherwise raises `PermissionError` — not even an
+  `ask` — for any file-tool path outside the locked project root, before the
+  security layer is ever consulted). Routing the shared fact through
+  `kodo.common` rather than a direct import keeps the `kodo.tools` /
+  `kodo.security` decoupling above intact. `LogicalPathResolver` (Problem
+  Solver mode) already took absolute paths as-is, so it needed no change —
+  the temp directory was already reachable there.
 - **`SessionLike`** gained `command_control` (read live per call);
   `SessionState` already carried it.
 - The **decision** (`SecurityDecision`) carries `action`, a one-sentence
@@ -218,7 +260,7 @@ heuristic and the security layer each apply their own classification over the
 same structural view):
 
 - `parse_command()` — the pre-existing POSIX/`shlex` tokenizer.
-- `parse_powershell_command()` — **new**: a hand-rolled PowerShell/Windows
+- `parse_powershell_command()` — a hand-rolled PowerShell/Windows
   tokenizer producing the same `ParsedCommand`/`Segment`/`Redirection`
   dataclasses. Understands `;` `|` `||` `&&` `&` separators (a lone `&` at
   segment start is the call operator and is dropped), single/double quoting
@@ -226,6 +268,27 @@ same structural view):
   stream-qualified redirections (`2>`, `*>>`, `3>&1`, …; merge targets like
   `&1` are kept verbatim for callers to recognise). It never raises and
   covers `cmd.exe` syntax by overlap.
+
+Both parsers also flatten **bare subshell/brace grouping** — POSIX `(...)`
+and `{ ...; }`, PowerShell `(...)` and `{...}` (including the `& { cmd }`
+call-operator + script-block form) — distinct from `$(...)` command
+substitution (which already executes and is recursively judged, §3.2 step
+2). Grouping doesn't change what runs inside, so it's simply dropped,
+letting the separators already present inside do their normal job:
+`(cmd1 && cmd2)` parses identically to `cmd1 && cmd2`. This is what lets a
+fully-benign subshell (`(cd dir && git status)`) auto-allow instead of
+always asking, and lets a dangerous one get its precise category/reason
+(`destructive`, `network`, …) instead of a generic "unknown command" for
+the bogus `"("`/`"{"` executable that used to result. Quoted literal parens
+(`grep "(error)" file.txt`) and non-grouping uses (`/tmp/{a,b}` brace
+expansion, `find`'s `{}` placeholder) are never touched — POSIX only
+strips a token when it is built *entirely* from operator characters (a
+quoted or word token always contains something else), and PowerShell only
+strips unquoted occurrences (its quote handling already consumes quoted
+content whole, before the grouping check runs). This is deliberately
+**bounded**: real control-flow forms (`if (...) { ... }`, `foreach`,
+`while`) are not parsed and still fail closed to ask, unchanged — only the
+common "just wrap a command" forms are flattened.
 
 The security layer picks the dialect by platform (`os.name`).
 

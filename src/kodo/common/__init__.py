@@ -2,6 +2,7 @@
 
 from ._envelope import Envelope, MessageKind
 from ._protocols import ApiKey, ApiKeyProvider, MessageSink, ResponseChannel
+from ._tempdir import system_temp_roots
 
 __all__ = [
     "Envelope",
@@ -10,4 +11,5 @@ __all__ = [
     "ApiKeyProvider",
     "MessageSink",
     "ResponseChannel",
+    "system_temp_roots",
 ]

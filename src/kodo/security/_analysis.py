@@ -13,6 +13,11 @@ not a *target*).  Relative tokens are only resolved when they contain ``..``;
 plain relatives cannot escape the (already workspace-confined) working
 directory and are skipped, which keeps subcommand words like ``install`` from
 being mistaken for files.
+
+A path under the OS temp directory (``kodo.common.system_temp_roots()``,
+e.g. ``/tmp`` on POSIX) is never counted as "outside" even when it sits
+outside every workspace root — scratch files there are expected agent
+territory, not a workspace escape.
 """
 
 from __future__ import annotations
@@ -23,9 +28,10 @@ import posixpath
 import re
 from dataclasses import dataclass
 
+from kodo.common import system_temp_roots
 from kodo.shellparser import ParsedCommand, parse_command, parse_powershell_command
 
-from ._classify import SUB_MARK, NormalizedSegment, leaf_name, normalize_segments
+from ._classify import SUB_MARK, NormalizedSegment, normalize_segments
 
 __all__ = ["CommandAnalysis", "analyze_command"]
 
@@ -53,7 +59,9 @@ _SUBSTITUTION_RES: tuple[re.Pattern[str], ...] = _COMMAND_SUB_RES + _VALUE_SUB_R
 # allow-list for SMART mode. Deliberately stricter than the checkpoint
 # heuristic's list: `find` (-delete/-exec), `sort` (-o), and anything else with
 # a write/exec flag is excluded, because a wrong answer here skips a review
-# instead of just skipping a no-op git sweep.
+# instead of just skipping a no-op git sweep. `date` and `hostname` are
+# deliberately absent — both have a mutating form (`date -s`, `hostname
+# <name>`) and are judged per-segment instead (`._rules._DUAL_MODE`).
 _READONLY_EXECUTABLES = frozenset(
     {
         "echo",
@@ -75,11 +83,9 @@ _READONLY_EXECUTABLES = frozenset(
         "where",
         "whoami",
         "id",
-        "date",
         "env",
         "printenv",
         "uname",
-        "hostname",
         "true",
         "false",
         "test",
@@ -123,7 +129,8 @@ class CommandAnalysis:
 
     Attributes:
         outside_paths: Argument/redirection tokens that resolve to a path
-            *outside* every workspace root (normalized absolute form).
+            *outside* every workspace root and outside the OS temp directory
+            (normalized absolute form).
         unresolved: Substitution snippets (``$(...)``, ``$VAR``, ``%VAR%`` …)
             that make targets statically unresolvable.
         command_subs: The subset of ``unresolved`` that *executes* a nested
@@ -163,8 +170,10 @@ def analyze_command(
             defaults to the current platform.
 
     Returns:
-        CommandAnalysis: The static findings. Purely lexical — no filesystem
-        access beyond ``~`` expansion.
+        CommandAnalysis: The static findings. Purely lexical over the
+        command's own tokens — no filesystem access beyond ``~`` expansion
+        and resolving the small, fixed set of OS-temp-directory candidates
+        (``kodo.common.system_temp_roots()``).
     """
     win = os.name == "nt" if windows is None else windows
 
@@ -194,33 +203,37 @@ def analyze_command(
                 continue
             _classify(target, cwd, roots, win, outside, force_path=True)
 
-    read_only = _is_read_only(parsed)
+    segments = normalize_segments(parsed, windows=win)
+    read_only = _is_read_only(segments)
     return CommandAnalysis(
         outside_paths=tuple(outside),
         unresolved=tuple(unresolved),
         read_only=read_only,
         command_subs=tuple(command_subs),
-        segments=normalize_segments(parsed, windows=win),
+        segments=segments,
         operators=parsed.operators,
     )
 
 
-def _is_read_only(parsed: ParsedCommand) -> bool:
-    """Every executable allow-listed and no file-writing redirection."""
-    for segment in parsed.segments:
-        for redir in segment.redirections:
-            op = redir.operator
-            if not op.startswith("<") and not _FD_MERGE_RE.match(redir.target):
-                return False
-    execs = parsed.executables
-    if not execs:
+def _is_read_only(segments: tuple[NormalizedSegment, ...]) -> bool:
+    """Every executable allow-listed and no file-writing redirection.
+
+    Operates on the *normalized* (wrapper-peeled) segments rather than the
+    raw parse, so a transparent wrapper can't hide a mutating command behind
+    a read-only-looking prefix — ``env rm -rf x`` must resolve to ``rm``, not
+    short-circuit on ``env`` itself.
+    """
+    if any(segment.writes_file for segment in segments):
         return False
-    return all(_leaf_name(exe) in _READONLY_EXECUTABLES for exe in execs)
-
-
-def _leaf_name(executable: str) -> str:
-    """``/usr/bin/rm`` → ``rm`` (shared with :mod:`._classify`)."""
-    return leaf_name(executable)
+    named = [segment for segment in segments if segment.executable]
+    if not named:
+        return False
+    return all(
+        segment.executable in _READONLY_EXECUTABLES
+        and segment.nested_command is None
+        and not segment.nested_opaque
+        for segment in named
+    )
 
 
 def _classify(
@@ -232,7 +245,8 @@ def _classify(
     *,
     force_path: bool = False,
 ) -> None:
-    """Append *token*'s resolved path to *outside* when it escapes every root.
+    """Append *token*'s resolved path to *outside* when it escapes every root
+    and the OS temp directory.
 
     Skips option flags (checking any ``=``-attached value), substitution-laden
     tokens (statically unresolvable — reported separately), plain relative
@@ -254,8 +268,13 @@ def _classify(
         return
     if resolved.replace("\\", "/").lower() in _DEVICE_PATHS:
         return
-    if not _within_any_root(resolved, roots, windows) and resolved not in outside:
-        outside.append(resolved)
+    if resolved in outside:
+        return
+    if _within_any_root(resolved, roots, windows):
+        return
+    if _within_any_root(resolved, system_temp_roots(), windows):
+        return
+    outside.append(resolved)
 
 
 def _resolve(token: str, cwd: str, windows: bool) -> str | None:

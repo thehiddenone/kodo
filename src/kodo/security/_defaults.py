@@ -502,9 +502,13 @@ _POSIX_RULES: tuple[CommandRule, ...] = _SHARED_RULES + (
     _allow(("tar", "zip", "unzip", "gzip", "gunzip", "xz", "zstd", "7z")),
     _allow(("base64", "md5sum", "shasum", "sha1sum", "sha256sum", "sha512sum")),
     # Shell builtins that only affect the (per-call, throwaway) shell.
-    _allow(("cd", "export", "set", "unset", "alias", "ulimit", "source", ".")),
-    # Process/system introspection (read-only in effect).
-    _allow(("ps", "top", "free", "uptime", "lsof", "netstat", "ss", "nproc", "sysctl")),
+    # `ulimit` is judged per-segment instead (`._rules._DUAL_MODE`) — a value
+    # argument sets a resource limit, which isn't unconditionally benign.
+    _allow(("cd", "export", "set", "unset", "alias", "source", ".")),
+    # Process/system introspection (read-only in effect). `sysctl` is judged
+    # per-segment instead (`._rules._DUAL_MODE`) — `-w`/assignment form
+    # writes a live kernel parameter.
+    _allow(("ps", "top", "free", "uptime", "lsof", "netstat", "ss", "nproc")),
 )
 
 # ---------------------------------------------------------------------------

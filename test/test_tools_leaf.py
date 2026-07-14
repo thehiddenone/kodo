@@ -579,13 +579,38 @@ async def test_move_dir_relocates_tree(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_fileio_rejects_path_outside_project_root(tmp_path: Path) -> None:
+async def test_fileio_rejects_path_outside_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # tmp_path itself lives under the OS temp dir, so a plain ".." escape
+    # would land inside the (intentionally allowed) system-temp carve-out —
+    # blank it out here to isolate the traversal guard from that carve-out.
+    monkeypatch.setattr("kodo.tools._paths.system_temp_roots", lambda: ())
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
         await dispatcher.dispatch("create_file", {"path": "../escape.txt", "content": "nope"})
     )
     assert "error" in result
     assert not (tmp_path.parent / "escape.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_fileio_allows_path_under_system_temp_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    scratch_dir = tmp_path / "scratch"
+    scratch_dir.mkdir()
+    monkeypatch.setattr("kodo.tools._paths.system_temp_roots", lambda: (str(scratch_dir),))
+    dispatcher = _make_dispatcher(project_root)
+    result = json.loads(
+        await dispatcher.dispatch(
+            "create_file", {"path": str(scratch_dir / "note.txt"), "content": "hi"}
+        )
+    )
+    assert result.get("status") == "created"
+    assert (scratch_dir / "note.txt").read_text(encoding="utf-8") == "hi"
 
 
 # ---------------------------------------------------------------------------
@@ -604,7 +629,12 @@ async def test_run_command_returns_exit_code_and_output(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_command_rejects_working_dir_outside_project_root(tmp_path: Path) -> None:
+async def test_run_command_rejects_working_dir_outside_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # See test_fileio_rejects_path_outside_project_root: tmp_path sits under
+    # the OS temp dir, so blank out the carve-out to isolate the guard.
+    monkeypatch.setattr("kodo.tools._paths.system_temp_roots", lambda: ())
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(
         await dispatcher.dispatch(
@@ -612,6 +642,26 @@ async def test_run_command_rejects_working_dir_outside_project_root(tmp_path: Pa
         )
     )
     assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_run_command_allows_working_dir_under_system_temp_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    scratch_dir = tmp_path / "scratch"
+    scratch_dir.mkdir()
+    monkeypatch.setattr("kodo.tools._paths.system_temp_roots", lambda: (str(scratch_dir),))
+    dispatcher = _make_dispatcher(project_root)
+    result = json.loads(
+        await dispatcher.dispatch(
+            "run_command",
+            {"command": "pwd", "working_dir": str(scratch_dir), "timeout": 10},
+        )
+    )
+    assert "error" not in result
+    assert result["exit_code"] == 0
 
 
 @pytest.mark.asyncio

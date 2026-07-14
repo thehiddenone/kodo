@@ -229,6 +229,68 @@ WS_PROTOCOL.md §6.5/§7.7 updated.
 
 ---
 
+## Phase 1 hardening (post-launch, 2026-07-14)
+
+Three gaps found and closed while extending the engine to recognize
+dual-mode commands, none captured by the original Phase 1 bullets above:
+
+1. **Wrapper/read-only-fast-path bypass (critical).** `_analysis._is_read_only`
+   checked the *raw* parsed executable, not the wrapper-peeled one — and
+   `env` was listed both as a transparent wrapper (peeled for the per-segment
+   rule table) and as unconditionally read-only for the fast path. Result:
+   `env <anything>` short-circuited straight to allow without ever looking at
+   the wrapped command (`env rm -rf <workspace file>` was silently allowed).
+   Fixed by having the fast path consume the same normalized/peeled segments
+   the per-segment rules already use.
+2. **Dual-mode commands.** `sysctl`, `ulimit`, `date`, `hostname` each have a
+   read form and a mutating form that a blanket allow-list or a
+   `flags_any`-only `CommandRule` can't distinguish (the mutating form is
+   often a *positional value*, not a flag: `sysctl vm.swappiness=10`,
+   `ulimit -n 4096`, `date 010112002026`, `hostname newname`). Added a small
+   `exe -> predicate` table (`_rules._DUAL_MODE`), matched the same way the
+   pre-existing `xargs` structural check is — before the generic rule table,
+   not through it. `uname` was reviewed and has no mutating form on any
+   platform, so it needed no change.
+3. **Bare subshell/brace grouping.** POSIX `(...)`/`{ ...; }` and PowerShell
+   `(...)`/`{...}` (distinct from `$(...)`, which already recursed) weren't
+   recognized by `kodo.shellparser` as structural — they parsed with a bogus
+   executable literally named `"("`/`"{"`. This failed *safe* (always asked)
+   but defeated the "auto-allow if every constituent is benign" goal for
+   grouped commands, and gave dangerous grouped commands a generic "unknown
+   command" reason instead of the real one. Fixed by having both parsers
+   flatten bare grouping punctuation — deliberately bounded to the common
+   "just wrap a command" forms, not full control-flow parsing (`if`/
+   `foreach`/`while` script blocks still fail closed to ask, unchanged).
+
+## OS temp directory carve-out (post-launch, 2026-07-14)
+
+The `outside_paths` workspace-escape check (§1.4, ladder step 1) asked for
+*any* path outside the workspace roots — including the OS temp directory
+(`/tmp` on POSIX, `%TEMP%` on Windows), even though scratch work there is
+ordinary, expected agent territory, not a workspace escape. Fixed by adding
+`kodo.common.system_temp_roots()` (new T0 module, no intra-kodo
+dependencies: `tempfile.gettempdir()` plus the literal `/tmp` on POSIX even
+when `gettempdir()` resolves elsewhere, e.g. macOS's per-user `TMPDIR` vs.
+`/tmp` → `/private/tmp`) and treating it as an implicit extra root in
+`kodo.security._analysis._classify`. The carve-out only lifts the
+*workspace-escape* ask — every other ladder step still applies to temp-dir
+targets exactly as it does to workspace ones, so `rm -rf /tmp/x` still asks
+(destructive category) while `cat /tmp/x` / `touch /tmp/x` allow.
+
+The same fact gates a **second, independent gatekeeper** that isn't part of
+`kodo.security` at all: `kodo.tools._paths.resolve_within` (the
+`ProjectPathResolver` used in Guided mode for `create_file` / `edit_file` /
+`filesystem` / `read_file`) previously raised `PermissionError` — not even an
+`ask` — for any path outside the locked project root, before the security
+layer was ever consulted. Without also loosening this resolver, file-tool
+calls under `/tmp` would still hard-fail in Guided mode even after the
+security layer stopped asking about them. `kodo.common` (T0) is the shared
+home for `system_temp_roots()` specifically so `kodo.tools` and
+`kodo.security` don't need to import each other to agree on it — preserving
+the existing `kodo.tools` → `kodo.security` decoupling (§4). Problem Solver
+mode's `LogicalPathResolver` already took absolute paths as-is, so it needed
+no change.
+
 ## Fixed decisions
 
 - **Pure heuristics** — the LLM judge is removed, not demoted to a fallback.
@@ -236,6 +298,9 @@ WS_PROTOCOL.md §6.5/§7.7 updated.
 - **Complex commands and commands with path arguments are never
   rule-eligible** (session or global).
 - **Destructive shapes are never rule-eligible**, even per-session.
+- **The OS temp directory is always reachable**, in every workflow mode and
+  regardless of `command_control` posture nuance within the rule engine —
+  the same way `/tmp` is ordinary scratch space on a real machine.
 - **Session rules survive crash-resume** (they live in `SessionState`).
 - The `intent` field stays mandatory as permission-panel/feed metadata but is
   no longer a judgement input.

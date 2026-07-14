@@ -9,6 +9,7 @@ raises — malformed input degrades to a best-effort single segment.
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass, field
 
@@ -19,6 +20,14 @@ _SEGMENT_SEPARATORS = frozenset({"|", "|&", "||", "&&", ";", "&"})
 # Redirection operators that stay *inside* a segment; the following token (if
 # any) is the redirection target (a filename, or a here-doc/here-string word).
 _REDIRECTION_OPS = frozenset({">", ">>", ">|", "<", "<<", "<<<", "<>", "&>", "&>>"})
+
+# Characters `shlex` (with `punctuation_chars=True`) treats as operator
+# punctuation — a token built entirely from these is a pure operator/grouping
+# cluster, never a word or quoted content (both always contain some other
+# character). Used to safely find `(`/`)` even when shlex has merged them
+# with an adjacent operator (`)|`, `&&(`, …) into one token.
+_OPERATOR_CHARS = frozenset("()|&;<>")
+_GROUPING_RE = re.compile(r"([()])")
 
 
 @dataclass(frozen=True)
@@ -94,7 +103,7 @@ def parse_command(command: str) -> ParsedCommand:
         falls back to a single best-effort segment.
     """
     raw = command
-    tokens = _tokenize(command)
+    tokens = _strip_grouping(_tokenize(command))
     if not tokens:
         return ParsedCommand(raw=raw)
 
@@ -129,6 +138,38 @@ def _make_segment(words: list[str], redirs: list[Redirection]) -> Segment:
     executable = words[0] if words else ""
     args = tuple(words[1:]) if len(words) > 1 else ()
     return Segment(executable=executable, args=args, redirections=tuple(redirs))
+
+
+def _strip_grouping(tokens: list[str]) -> list[str]:
+    """Drop bare `(`/`)` subshell and `{`/`}` brace-group punctuation.
+
+    Subshell/brace grouping only wraps a command sequence — it doesn't
+    change what runs inside, so for the purposes of this parser (and its
+    judgement-making callers) it is inert and can simply disappear, letting
+    whatever separators live inside (`;`, `&&`, `|`, …) do their normal job.
+    Two independent cases:
+
+    - `(`/`)`: `shlex` already splits these out as their own tokens, but
+      merges *runs* of pure operator characters together — `(cmd)|cat`
+      yields a `")|"`token, `a&&(b` yields `"&&("` — so a token is only
+      touched here when it is built *entirely* from operator characters
+      (never true of a word or quoted content, which always contain some
+      other character, e.g. a quoted literal `"(error)"` stays untouched).
+    - `{`/`}`: not `shlex` punctuation, so a bare brace only ever appears as
+      its own whitespace-delimited token (`{ cmd; }`) — never merged into
+      `/tmp/{a,b}` or `find`'s `{}` placeholder, both single tokens already.
+    """
+    out: list[str] = []
+    for tok in tokens:
+        if tok in ("{", "}"):
+            continue
+        if tok and set(tok) <= _OPERATOR_CHARS and ("(" in tok or ")" in tok):
+            out.extend(
+                piece for piece in _GROUPING_RE.split(tok) if piece and piece not in ("(", ")")
+            )
+            continue
+        out.append(tok)
+    return out
 
 
 def _tokenize(command: str) -> list[str]:

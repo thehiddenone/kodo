@@ -4,11 +4,14 @@ Two resolvers, picked per agent run by the engine from the active workflow mode
 (see the ``project-kodo`` memory, WorkspaceLayout two-root model):
 
 * :class:`ProjectPathResolver` — **Guided** mode.  Relative paths resolve under
-  the locked current project's root; the result must stay inside that root.
+  the locked current project's root; the result must stay inside that root —
+  except the OS temp directory (``kodo.common.system_temp_roots()``), which is
+  always reachable regardless of mode (see :func:`resolve_within`).
 * :class:`LogicalPathResolver` — **Problem Solver** mode.  Relative paths are
   *logical*: the first segment is a VS Code workspace-folder name that anchors
   the remainder to that folder's real physical path (which may live anywhere on
-  disk).  Absolute paths are taken as-is.
+  disk).  Absolute paths are taken as-is — already unrestricted, so the temp
+  directory was already reachable here.
 
 Both expose a :pyattr:`default_cwd` used by ``run_command`` when the agent does
 not pass an explicit working directory.
@@ -19,6 +22,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from kodo.common import system_temp_roots
+
 __all__ = [
     "LogicalPathResolver",
     "PathResolver",
@@ -28,12 +33,25 @@ __all__ = [
 ]
 
 
+def _within_system_temp(resolved: Path) -> bool:
+    """Whether *resolved* sits at or below one of ``system_temp_roots()``."""
+    for root in system_temp_roots():
+        if resolved == Path(root) or Path(root) in resolved.parents:
+            return True
+    return False
+
+
 def resolve_within(root: Path, path: str) -> Path:
     """Resolve *path* against *root*, rejecting anything outside it.
 
     Relative paths are resolved against *root*; absolute paths are taken
-    as-is.  Either way the result must live inside *root* or a
-    :class:`PermissionError` is raised (path-traversal guard).
+    as-is.  Either way the result must live inside *root*, or under the OS
+    temp directory (``kodo.common.system_temp_roots()`` — scratch files
+    there are expected agent territory, not a project escape), or a
+    :class:`PermissionError` is raised (path-traversal guard). Symlinks are
+    resolved by ``Path.resolve()`` before either check, so a symlinked temp
+    dir (macOS's ``/tmp`` -> ``/private/tmp``) matches regardless of which
+    spelling *path* uses.
 
     Args:
         root: The project root every tool path is confined to.
@@ -43,14 +61,18 @@ def resolve_within(root: Path, path: str) -> Path:
         Path: The resolved, in-bounds absolute path.
 
     Raises:
-        PermissionError: If the resolved path escapes *root*.
+        PermissionError: If the resolved path escapes both *root* and the
+            OS temp directory.
     """
     candidate = Path(path)
     resolved = (root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
     try:
         resolved.relative_to(root)
     except ValueError:
-        raise PermissionError(f"Path {path!r} is outside the project root {str(root)!r}") from None
+        if not _within_system_temp(resolved):
+            raise PermissionError(
+                f"Path {path!r} is outside the project root {str(root)!r}"
+            ) from None
     return resolved
 
 
