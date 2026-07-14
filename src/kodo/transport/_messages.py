@@ -293,6 +293,49 @@ MSG_LOCAL_LLM_ADD_SERVER_URL = "local_llm.add_server_url"
 MSG_LOCAL_LLM_UNINSTALL = "local_llm.uninstall"
 MSG_LOCAL_LLM_REMOVE = "local_llm.remove"
 
+# Client → Server. Flavor management (doc/LLM_REGISTRY.md §4.6) — a flavor is
+# a named, alternate llama-server launch config (CLI args) for one local
+# registry entry, e.g. a "1M context" or "VRAM-tight" variant of the same
+# GGUF. Predefined flavors ship on the hardcoded entry itself and are
+# strictly read-only; these four messages manage the *custom* (user-added)
+# ones and select which one (if any) is active. All four reply with
+# ``local_llm.registry_state`` like every other ``local_llm.*`` mutation.
+#   local_llm.add_flavor        {name, flavor_name, description?,
+#                                 llama_args_text?, min_ram?, min_vram?} —
+#                                 always creates a *new* flavor slot
+#                                 (auto-generated id from flavor_name);
+#                                 llama_args_text is the raw multi-line
+#                                 "--flag value" text box content, parsed
+#                                 server-side (parse_llama_args_text);
+#                                 min_ram/min_vram (GB) default to 0.
+#   local_llm.update_flavor     {name, flavor_id, flavor_name, description?,
+#                                 llama_args_text?, min_ram?, min_vram?} —
+#                                 overwrites an *existing custom* flavor's
+#                                 definition in place, keeping its id;
+#                                 rejected outright if flavor_id names a
+#                                 predefined flavor (read-only — copy it into
+#                                 a new flavor via add_flavor instead).
+#   local_llm.remove_flavor     {name, flavor_id} — predefined flavors are
+#                                 rejected; if flavor_id was active for
+#                                 ``name``, the active selection resets to
+#                                 Default ("").
+#   local_llm.set_active_flavor {name, flavor_id} — flavor_id "" selects
+#                                 Default (the entry's own launch config).
+#                                 Restarts llama-server immediately *only* if
+#                                 ``name`` is the currently selected local
+#                                 model (``models.local``) — changing an
+#                                 inactive entry's flavor just persists the
+#                                 choice for next time it's selected, since
+#                                 llama-server is one machine-wide singleton
+#                                 process shared by every open session/window
+#                                 (doc/LLM_REGISTRY.md §4.6), and restarting it
+#                                 unprompted would interrupt whichever window
+#                                 is mid-generation.
+MSG_LOCAL_LLM_ADD_FLAVOR = "local_llm.add_flavor"
+MSG_LOCAL_LLM_UPDATE_FLAVOR = "local_llm.update_flavor"
+MSG_LOCAL_LLM_REMOVE_FLAVOR = "local_llm.remove_flavor"
+MSG_LOCAL_LLM_SET_ACTIVE_FLAVOR = "local_llm.set_active_flavor"
+
 # Client → Server. Global llama-server binary override (doc/LLM_REGISTRY.md) —
 # not a model, a replacement for the executable kodo launches for every local
 # model (hardcoded and custom alike), e.g. a CUDA-enabled custom build on
@@ -519,7 +562,11 @@ EVT_LLAMA_STATE = "llama.state"
 # can't race each other onto the wire out of order.
 # Payload: ``{local_registry: [...], llama_server_override_path}`` — the full
 # merged registry (hardcoded + custom, each with ``installed``) so the webview
-# can just replace its whole card list rather than patching it.
+# can just replace its whole card list rather than patching it. Each entry in
+# ``local_registry`` also carries ``flavors: [...]`` (predefined + custom,
+# each ``{id, name, description, llama_args, predefined}``) and
+# ``active_flavor`` (a flavor id, or ``""`` for Default) — see
+# doc/LLM_REGISTRY.md §4.6.
 EVT_LOCAL_LLM_REGISTRY_STATE = "local_llm.registry_state"
 
 # Server → Client event. Pushed when the engine itself disables Autonomous mode

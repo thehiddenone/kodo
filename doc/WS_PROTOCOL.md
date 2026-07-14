@@ -145,7 +145,8 @@ The server replies with the current world plus local-model status:
         "installed_path": "/abs/path/model.gguf" | null,
         "base_llm": "qwen36-27b", "quant_author": "Unsloth", "quant_type": "UD_Q4_K_XL",
         "size_hint": "17.9 GB", "gpu_tip": "...", "mac_tip": "...",
-        "min_memory": 24, "memory": 32 }
+        "min_memory": 24, "memory": 32,
+        "flavors": [], "active_flavor": "" }
     ],
     "llama_server_override_path": null,
     "llama_installed": true,
@@ -537,7 +538,13 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                          "installed_path": "/abs/path/model.gguf" | null,
                          "base_llm": "...", "quant_author": "...", "quant_type": "...",
                          "size_hint": "...", "gpu_tip": "...", "mac_tip": "...",
-                         "min_memory": 32, "memory": 48, "...": "..." } ],
+                         "min_memory": 32, "memory": 48,
+                         "flavors": [ { "id": "1m-context", "name": "1M Context",
+                                        "description": "...",
+                                        "llama_args": {"--ctx-size": "1048576"},
+                                        "predefined": false } ],
+                         "active_flavor": "1m-context",
+                         "...": "..." } ],
   "llama_server_override_path": "/usr/local/bin/llama-server-cuda" | null,
   "detected_vram_gb": 24 | null,
   "detected_ram_gb": 64 | null,
@@ -551,6 +558,13 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
 ```
 
 Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. Does **not** carry download progress (see above) — that's read off disk, not this event. `thinking_families` is keyed by `base_llm` (only entries that support a thinking-tier control appear) and is the single source the client uses to decide which control (if any) to render and what tiers/default to offer — see doc/LLM_REGISTRY.md §4.5. The *current* tier selection is **not** in this payload and is **not** read off settings.json any more — thinking is a per-session server-tracked value (`state.thinking_level`, §5.1, doc/SESSIONS.md), not a global one keyed by `base_llm`.
+
+Each entry's `flavors` (predefined + custom, predefined first) and
+`active_flavor` (a flavor id, or `""` for Default) are, unlike thinking
+level, a **global** per-entry selection — not session-scoped — since a
+flavor changes actual llama-server launch args and there is only one
+machine-wide llama-server process to launch them on. See doc/LLM_REGISTRY.md
+§4.6 and §7.6 below.
 
 ### 5.13 ⟪removed⟫ — the former artifact events
 
@@ -909,13 +923,14 @@ The full `mode`/`active_cloud_vendor`/`models` schema is documented in [SETTINGS
 These drive the Local Inference Settings webview and the sidebar's llama.cpp
 controls. Full semantics (entry kinds, installed-state rules, the
 llama-server override) are in [LLM_REGISTRY.md](LLM_REGISTRY.md).
-`local_llm.install`/`.resume`/`.pause`/`.uninstall`/`.remove`/`add_*` and the
-`llama_server_override.*` pair all reply with §5.12a `local_llm.
-registry_state`; none of them stream progress over the wire — a download's
-live byte progress is read by polling `manager-state.json` off disk instead
-(doc/LOCAL_MODEL_MANAGER.md §11). `llamacpp.install` is the one exception,
-still streaming `llamacpp.install.progress` (§5.12) on the requesting
-connection, since that's a one-shot binary fetch with no pause/resume.
+`local_llm.install`/`.resume`/`.pause`/`.uninstall`/`.remove`/`add_*`, the
+three flavor commands below, and the `llama_server_override.*` pair all reply
+with §5.12a `local_llm.registry_state`; none of them stream progress over the
+wire — a download's live byte progress is read by polling
+`manager-state.json` off disk instead (doc/LOCAL_MODEL_MANAGER.md §11).
+`llamacpp.install` is the one exception, still streaming
+`llamacpp.install.progress` (§5.12) on the requesting connection, since
+that's a one-shot binary fetch with no pause/resume.
 
 ```json
 { "type": "llamacpp.install" }       // install the llama.cpp binary
@@ -935,6 +950,62 @@ connection, since that's a one-shot binary fetch with no pause/resume.
 { "type": "llama.start" }            // start (or restart) llama-server for the active model
 { "type": "llama.stop" }             // stop llama-server
 ```
+
+`add_huggingface`/`add_file`'s `llama_args`/`context_window` no longer set a
+field on the entry itself (`LocalLLMEntry` carries no `llama_args` at all) —
+flavors are the only source of launch args now (doc/LLM_REGISTRY.md §4.6), so
+these two seed that entry's first (custom) flavor, named/slugged `"default"`
+to match the built-in flavor a `hardcoded_hf` entry gets.
+
+**Flavors** (doc/LLM_REGISTRY.md §4.6) — a named, alternate llama-server
+launch config for one local registry entry, e.g. a "1M context" or
+"VRAM-tight" variant of the same GGUF. `name` below is the *local registry
+entry* name in all four, not the flavor's own name/id.
+
+```json
+{ "type": "local_llm.add_flavor", "name": "qwen36-27b", "flavor_name": "1M Context",
+  "description": "YaRN rope-scaling for a 1M-token context window.",
+  "llama_args_text": "--ctx-size 1048576\n--rope-scaling yarn\n--rope-scale 4",
+  "min_ram": 0, "min_vram": 24 }
+{ "type": "local_llm.update_flavor", "name": "qwen36-27b", "flavor_id": "1m-context",
+  "flavor_name": "1M Context (tuned)",
+  "description": "YaRN rope-scaling for a 1M-token context window.",
+  "llama_args_text": "--ctx-size 1048576\n--rope-scaling yarn\n--rope-scale 4.5",
+  "min_ram": 0, "min_vram": 24 }
+{ "type": "local_llm.remove_flavor", "name": "qwen36-27b", "flavor_id": "1m-context" }
+{ "type": "local_llm.set_active_flavor", "name": "qwen36-27b", "flavor_id": "1m-context" }
+```
+
+`add_flavor`/`update_flavor`'s `llama_args_text` is the **raw multi-line
+textbox content** from the "manage flavors" modal (one `--flag value` per
+line) — parsed server-side by `parse_llama_args_text`, unlike
+`add_huggingface`/`add_file` above, whose single-line `llama_args` is
+already a parsed dict by the time it reaches the wire (client-parsed).
+`min_ram`/`min_vram` (GB, doc/LLM_REGISTRY.md §4.6a) are optional and
+default to `0` ("no known requirement") when omitted — `update_flavor` does
+**not** carry the previous value forward for an omitted field, unlike
+`llama_args_text`'s implicit full-replace semantics; the modal always
+resends both fields' current contents. `add_flavor` always creates a
+**new** flavor (auto-generated id from `flavor_name`); `update_flavor`
+overwrites an **existing custom** flavor's definition in place, keeping
+`flavor_id` fixed. **Predefined flavors are strictly read-only**:
+`update_flavor` and `remove_flavor` both reject a predefined `flavor_id`
+outright (doc/LLM_REGISTRY.md §4.6) — there is no override mechanism;
+copy a predefined flavor's values into a new one via `add_flavor` instead
+of trying to edit it in place. `flavor_id` in `set_active_flavor` is `""` for
+unset/Default — resolved to the entry's first available flavor (see
+`resolve_effective_llama_config`, doc/LLM_REGISTRY.md §4.6), not a distinct
+args-free state, since every entry that reaches this command already has at
+least one real flavor.
+`set_active_flavor`/`remove_flavor`/`update_flavor` restart llama-server
+**only** when `name` is the currently selected local model (`models.local`)
+**and** llama-server is actually running it (for `update_flavor`, only when
+the edited `flavor_id` is the one actually in effect — see
+`get_effective_flavor_id`, doc/LLM_REGISTRY.md §4.6) — changing an inactive
+entry's flavor, or editing a flavor that isn't the effective one, just
+persists the change. A restart, when it happens, also emits a fresh
+`llama.state` (§5.12) on the same connection, same as
+`llama.start`/`llm.select`.
 
 `llama.start` on a `custom_server_url` active entry stops kodo's own
 llama-server (if running) and reports `llama.state {running: false}` — it

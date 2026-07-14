@@ -11,6 +11,7 @@ from kodo.llms import (
     LocalLLMEntry,
     get_llama_server_override_path,
     local_thinking_family,
+    resolve_effective_llama_config,
 )
 from kodo.llms.local import LocalModelManager
 
@@ -75,11 +76,28 @@ def get_local_model_manager(kodo_dir: Path) -> LocalModelManager:
 async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaServer:
     """Start llama-server for *entry* if not already running.
 
-    If a server is already running with the same model, return it immediately.
-    If a server is running with a different model, stop it first then start
-    fresh. Not valid for ``custom_server_url`` entries — those are not managed
-    by kodo at all; callers must special-case that kind before reaching here
-    (see :class:`kodo.llms.llamacpp.LlamaPlugin`).
+    If a server is already running with the same model, return it immediately
+    — this does **not** re-check whether *entry*'s active flavor changed since
+    that server was launched, since flavors don't change ``entry.name``.
+    Callers that just changed the currently-running entry's active flavor
+    (``local_llm.set_active_flavor``'s handler) must explicitly stop the
+    server themselves before calling this, or the flavor change silently
+    won't take effect until some other reason forces a restart. If a server
+    is running with a different model, stop it first then start fresh. Not
+    valid for ``custom_server_url`` entries — those are not managed by kodo
+    at all; callers must special-case that kind before reaching here (see
+    :class:`kodo.llms.llamacpp.LlamaPlugin`).
+
+    Resolves *entry*'s effective ``llama_args`` fresh on every call via
+    :func:`kodo.llms.resolve_effective_llama_config` (applies the active
+    flavor, or the entry's first/default one — flavors are the only source
+    of launch args now, see :class:`kodo.llms.LlamaFlavor`) — so a restart
+    triggered for any other reason (a plain model switch, a crash recovery,
+    etc.) always launches with whatever flavor is currently selected, not a
+    stale snapshot. The resolved numeric ``context_window`` is not used
+    here — only :func:`kodo.llms.get_context_window` (compaction budgeting)
+    reads it; the actual launched context size lives inside ``llama_args``
+    itself (e.g. a flavor's own ``--ctx-size``).
 
     If a llama-server binary override is configured (see
     :func:`kodo.llms.set_llama_server_override_path`), it is used as the
@@ -128,7 +146,9 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
     override = get_llama_server_override_path(kodo_dir)
     executable = Path(override) if override else install.executable
 
-    llama_args = dict(entry.llama_args)
+    # entry's resolved flavor (active, or its first/default one) supplies the
+    # complete llama_args — see LlamaFlavor/resolve_effective_llama_config.
+    llama_args, _ = resolve_effective_llama_config(kodo_dir, entry)
     if local_thinking_family(entry.base_llm) == "qwen_reasoning_budget":
         # -1 is mandatory here (not just the default): it's what makes the
         # per-request `thinking_budget_tokens` override in _llama.py take
@@ -141,8 +161,7 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
         model_path=model_path,
         kodo_dir=kodo_dir,
         model_name=entry.name,
-        llama_args=llama_args,
     )
-    server = LlamaServer(cfg)
+    server = LlamaServer(cfg, llama_args)
     await server.start()
     return server

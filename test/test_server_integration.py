@@ -591,3 +591,299 @@ async def test_local_llm_install_pushes_registry_state_after_failure_too(
     completed = await _recv(ws)
     assert completed.payload["type"] == "local_llm.registry_state"
     assert _local_entry(completed.payload, "test-model")["installed"] is False
+
+
+async def test_add_huggingface_seeds_a_default_flavor_from_its_llama_args(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """Flavors are the only source of launch args — see doc/LLM_REGISTRY.md
+    §4.6 — so a freshly-added custom_hf entry's own `llama_args` field (still
+    collected by the "Add local LLM" modal) must end up seeding its first
+    (custom) flavor rather than being dropped on the floor."""
+    req = _make_request(
+        "local_llm.add_huggingface",
+        name="test-model",
+        description="",
+        repo_id="acme/test-model",
+        filename="model.gguf",
+        llama_args={"--cache-type-k": "q8_0"},
+        context_window=32768,
+    )
+    await ws.send_str(req.to_json())
+    added = await _recv(ws)
+    entry = _local_entry(added.payload, "test-model")
+    assert entry["active_flavor"] == ""
+    flavors = cast("list[dict[str, object]]", entry["flavors"])
+    assert len(flavors) == 1
+    assert flavors[0]["id"] == "default"
+    assert flavors[0]["llama_args"] == {"--cache-type-k": "q8_0"}
+    assert flavors[0]["predefined"] is False
+
+
+# ---------------------------------------------------------------------------
+# Flavors (local_llm.add_flavor / .update_flavor / .remove_flavor /
+# .set_active_flavor) —
+# see doc/LLM_REGISTRY.md §4.6. Uses a real hardcoded entry name (no download
+# needed — flavors don't touch the download manager) so add_flavor's own
+# entry-existence check passes without first adding a custom entry. Every
+# hardcoded entry ships a built-in "default" flavor (predefined=True), so
+# `flavors` always has at least that one even before any custom flavor is
+# added — the tests below account for it rather than assuming an empty list.
+# ---------------------------------------------------------------------------
+
+_FLAVOR_TEST_ENTRY = "unsloth-qwen35-9b-q8-k-xl"
+
+
+def _flavor_ids(entry: dict[str, object]) -> list[str]:
+    return [cast("dict[str, object]", f)["id"] for f in cast("list[object]", entry["flavors"])]
+
+
+def _custom_flavor_ids(entry: dict[str, object]) -> list[str]:
+    return [
+        cast("dict[str, object]", f)["id"]
+        for f in cast("list[object]", entry["flavors"])
+        if not cast("dict[str, object]", f)["predefined"]
+    ]
+
+
+async def test_add_flavor_appears_in_registry_state(ws: aiohttp.ClientWebSocketResponse) -> None:
+    req = _make_request(
+        "local_llm.add_flavor",
+        name=_FLAVOR_TEST_ENTRY,
+        flavor_name="1M Context",
+        description="YaRN 1M",
+        llama_args_text="--ctx-size 1048576\n--rope-scaling yarn",
+    )
+    await ws.send_str(req.to_json())
+    resp = await _recv(ws)
+    assert resp.payload["type"] == "local_llm.registry_state"
+    entry = _local_entry(resp.payload, _FLAVOR_TEST_ENTRY)
+    assert entry["active_flavor"] == ""
+    flavors = cast("list[dict[str, object]]", entry["flavors"])
+    assert len(flavors) == 2
+    assert flavors[0]["id"] == "default"
+    assert flavors[0]["predefined"] is True
+    added_flavor = flavors[1]
+    assert added_flavor["id"] == "1m-context"
+    assert added_flavor["name"] == "1M Context"
+    assert added_flavor["llama_args"] == {"--ctx-size": "1048576", "--rope-scaling": "yarn"}
+    assert added_flavor["predefined"] is False
+    # min_ram/min_vram weren't in this request — a brand-new custom flavor
+    # defaults to the hardware-fit check being inactive (see LlamaFlavor's
+    # docstring, doc/LLM_REGISTRY.md §4.6a).
+    assert added_flavor["min_ram"] == 0
+    assert added_flavor["min_vram"] == 0
+
+
+async def test_add_flavor_can_set_min_ram_and_min_vram(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    req = _make_request(
+        "local_llm.add_flavor",
+        name=_FLAVOR_TEST_ENTRY,
+        flavor_name="Mac Flavor",
+        min_ram=64,
+        min_vram=0,
+    )
+    await ws.send_str(req.to_json())
+    resp = await _recv(ws)
+    entry = _local_entry(resp.payload, _FLAVOR_TEST_ENTRY)
+    added_flavor = next(
+        cast("dict[str, object]", f)
+        for f in cast("list[object]", entry["flavors"])
+        if cast("dict[str, object]", f)["id"] == "mac-flavor"
+    )
+    assert added_flavor["min_ram"] == 64
+    assert added_flavor["min_vram"] == 0
+
+
+async def test_update_flavor_on_a_custom_flavor_edits_it_in_place(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    req = _make_request(
+        "local_llm.add_flavor",
+        name=_FLAVOR_TEST_ENTRY,
+        flavor_name="Tight VRAM",
+        min_ram=16,
+        min_vram=8,
+    )
+    await ws.send_str(req.to_json())
+    added = await _recv(ws)
+    flavor_id = _custom_flavor_ids(_local_entry(added.payload, _FLAVOR_TEST_ENTRY))[0]
+
+    req = _make_request(
+        "local_llm.update_flavor",
+        name=_FLAVOR_TEST_ENTRY,
+        flavor_id=flavor_id,
+        flavor_name="Tight VRAM (v2)",
+        description="updated",
+        llama_args_text="--n-cpu-moe 20",
+        min_ram=24,
+        min_vram=12,
+    )
+    await ws.send_str(req.to_json())
+    resp = await _recv(ws)
+    entry = _local_entry(resp.payload, _FLAVOR_TEST_ENTRY)
+    flavors = cast("list[dict[str, object]]", entry["flavors"])
+    updated = next(f for f in flavors if f["id"] == flavor_id)
+    assert updated["name"] == "Tight VRAM (v2)"
+    assert updated["description"] == "updated"
+    assert updated["llama_args"] == {"--n-cpu-moe": "20"}
+    assert updated["predefined"] is False
+    assert updated["min_ram"] == 24
+    assert updated["min_vram"] == 12
+
+
+async def test_update_flavor_rejects_a_predefined_id(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    # Predefined flavors are strictly read-only — editing "default" (or any
+    # other predefined id) is rejected outright, no override created.
+    req = _make_request(
+        "local_llm.update_flavor",
+        name=_FLAVOR_TEST_ENTRY,
+        flavor_id="default",
+        flavor_name="Default (edited)",
+        llama_args_text="--cache-type-k q8_0\n--cache-type-v q8_0\n--ctx-size 0\n--jinja",
+    )
+    await ws.send_str(req.to_json())
+    err = await _recv(ws)
+    assert err.payload["type"] == "error"
+    assert err.payload["code"] == "local_llm_error"
+
+
+async def test_update_flavor_rejects_unknown_flavor_id(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    req = _make_request(
+        "local_llm.update_flavor",
+        name=_FLAVOR_TEST_ENTRY,
+        flavor_id="nonexistent",
+        flavor_name="Whatever",
+    )
+    await ws.send_str(req.to_json())
+    err = await _recv(ws)
+    assert err.payload["type"] == "error"
+    assert err.payload["code"] == "local_llm_error"
+
+
+async def test_add_flavor_rejects_custom_server_url_entry(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    req = _make_request(
+        "local_llm.add_server_url", name="remote", description="", url="http://host:8042"
+    )
+    await ws.send_str(req.to_json())
+    await _recv(ws)  # add's own registry_state, not under test here
+
+    req = _make_request("local_llm.add_flavor", name="remote", flavor_name="whatever")
+    await ws.send_str(req.to_json())
+    err = await _recv(ws)
+    assert err.payload["type"] == "error"
+    assert err.payload["code"] == "local_llm_error"
+
+
+async def test_add_flavor_dedupes_id_when_different_names_share_a_slug(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    resp = None
+    for flavor_name in ("Tight VRAM", "tight vram"):
+        req = _make_request(
+            "local_llm.add_flavor", name=_FLAVOR_TEST_ENTRY, flavor_name=flavor_name
+        )
+        await ws.send_str(req.to_json())
+        resp = await _recv(ws)
+    assert resp is not None
+    ids = sorted(_flavor_ids(_local_entry(resp.payload, _FLAVOR_TEST_ENTRY)))
+    assert ids == ["default", "tight-vram", "tight-vram-2"]
+
+
+async def test_add_flavor_rejects_duplicate_name(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    req = _make_request("local_llm.add_flavor", name=_FLAVOR_TEST_ENTRY, flavor_name="Tight VRAM")
+    await ws.send_str(req.to_json())
+    await _recv(ws)
+    req = _make_request("local_llm.add_flavor", name=_FLAVOR_TEST_ENTRY, flavor_name="Tight VRAM")
+    await ws.send_str(req.to_json())
+    err = await _recv(ws)
+    assert err.payload["type"] == "error"
+    assert err.payload["code"] == "local_llm_error"
+    assert "already exists" in str(err.payload["message"])
+
+
+async def test_set_active_flavor_then_remove_resets_to_default(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    req = _make_request("local_llm.add_flavor", name=_FLAVOR_TEST_ENTRY, flavor_name="Tight VRAM")
+    await ws.send_str(req.to_json())
+    added = await _recv(ws)
+    flavor_id = _custom_flavor_ids(_local_entry(added.payload, _FLAVOR_TEST_ENTRY))[0]
+
+    req = _make_request("local_llm.set_active_flavor", name=_FLAVOR_TEST_ENTRY, flavor_id=flavor_id)
+    await ws.send_str(req.to_json())
+    active = await _recv(ws)
+    assert active.payload["type"] == "local_llm.registry_state"
+    assert _local_entry(active.payload, _FLAVOR_TEST_ENTRY)["active_flavor"] == flavor_id
+
+    req = _make_request("local_llm.remove_flavor", name=_FLAVOR_TEST_ENTRY, flavor_id=flavor_id)
+    await ws.send_str(req.to_json())
+    removed = await _recv(ws)
+    entry = _local_entry(removed.payload, _FLAVOR_TEST_ENTRY)
+    # Removing the only custom flavor leaves just the built-in default.
+    flavors = cast("list[dict[str, object]]", entry["flavors"])
+    assert len(flavors) == 1
+    assert flavors[0]["id"] == "default"
+    assert flavors[0]["predefined"] is True
+    assert entry["active_flavor"] == ""
+
+
+async def test_set_active_flavor_rejects_unknown_flavor_id(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    req = _make_request(
+        "local_llm.set_active_flavor", name=_FLAVOR_TEST_ENTRY, flavor_id="nonexistent"
+    )
+    await ws.send_str(req.to_json())
+    err = await _recv(ws)
+    assert err.payload["type"] == "error"
+    assert err.payload["code"] == "local_llm_error"
+
+
+async def test_remove_flavor_rejects_unknown_flavor_id(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    req = _make_request("local_llm.remove_flavor", name=_FLAVOR_TEST_ENTRY, flavor_id="nonexistent")
+    await ws.send_str(req.to_json())
+    err = await _recv(ws)
+    assert err.payload["type"] == "error"
+    assert err.payload["code"] == "local_llm_error"
+
+
+async def test_set_active_flavor_for_currently_selected_model_does_not_crash_without_server(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """Exercises the restart-check path (_restart_llama_server_if_running) for
+    the entry that IS the currently selected local model — it must no-op
+    cleanly when nothing is actually running (llama.cpp isn't installed in
+    this sandboxed test environment), not raise. The actual subprocess
+    restart itself is out of scope here, same as llm.select's (untested
+    elsewhere in this file for the same reason)."""
+    # Persist models.local = _FLAVOR_TEST_ENTRY the same way llm.select does,
+    # without requiring a real llama-server process to actually start.
+    req = _make_request("llm.select", name=_FLAVOR_TEST_ENTRY)
+    await ws.send_str(req.to_json())
+    await _recv(ws)  # llama.state {running: false, error: "llama.cpp is not installed"}
+    select_done = await _recv_response(ws, req.id)
+    assert select_done.payload["ok"] is False
+
+    req = _make_request("local_llm.add_flavor", name=_FLAVOR_TEST_ENTRY, flavor_name="Tight VRAM")
+    await ws.send_str(req.to_json())
+    added = await _recv(ws)
+    flavor_id = _custom_flavor_ids(_local_entry(added.payload, _FLAVOR_TEST_ENTRY))[0]
+
+    req = _make_request("local_llm.set_active_flavor", name=_FLAVOR_TEST_ENTRY, flavor_id=flavor_id)
+    await ws.send_str(req.to_json())
+    resp = await _recv(ws)
+    assert resp.payload["type"] == "local_llm.registry_state"
+    assert _local_entry(resp.payload, _FLAVOR_TEST_ENTRY)["active_flavor"] == flavor_id

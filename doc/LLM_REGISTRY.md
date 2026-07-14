@@ -121,8 +121,8 @@ class LocalLLMEntry:
     description: str = ""
     repo_id: str = ""       # hardcoded_hf / custom_hf
     filename: str = ""      # hardcoded_hf / custom_hf
-    llama_args: dict[str, str] = field(default_factory=dict)  # any llama-server kind
-    context_window: int = 0                                    # any llama-server kind
+    context_window: int = 0  # any llama-server kind — the active flavor's own -c/--ctx-size overrides it, see §4.6
+    flavors: tuple[LlamaFlavor, ...] = field(default_factory=LlamaFlavor.default_flavours_field)  # predefined; hardcoded_hf only — see §4.6
     path: str = ""          # custom_file
     url: str = ""           # custom_server_url
     base_llm: str = ""      # hardcoded_hf only — e.g. "qwen36-27b"
@@ -158,7 +158,7 @@ are both rough estimates off the same underlying total-memory figure —
 weight size (`size_hint`) plus an approximated KV-cache footprint at 128K
 context (scaled from each model family's known/assumed architecture: layer
 count, attention-head config, and the KV cache quantization each entry's
-`llama_args` requests). `gpu_tip` deliberately does **not** round that figure
+default flavor requests — see §4.6). `gpu_tip` deliberately does **not** round that figure
 to "a single GPU big enough to hold it all" — almost nobody owns a
 48GB+ workstation card. Instead it frames the figure as a modest 8-16GB
 consumer GPU (what most people actually own, e.g. RTX 4060/RTX 3060
@@ -180,9 +180,15 @@ how kodo-vsix compares them against `detected_vram_gb` + `detected_ram_gb`.
 All eight
 fields are always `""`/`0` for `custom_hf`/`custom_file`/`custom_server_url`
 — none of the `local_llm.add_*` WS commands accept them, so a user-added
-entry can never populate them. Unlike `llama_args`/`context_window` (dataclass-
-only, never sent to kodo-vsix), all eight of these **are** included in
-`_local_registry_payload()`'s wire shape (§4.4).
+entry can never populate them. Unlike `context_window` (dataclass-only, never
+sent to kodo-vsix on the entry itself — its *effective, flavor-resolved*
+value is never sent over the wire at all, only used server-side for
+auto-compaction budgeting via `resolve_context_window`, §4.6), all eight of
+these **are** included in
+`_local_registry_payload()`'s wire shape (§4.4). `flavors` **is** sent to
+kodo-vsix too — predefined entries plus any custom ones merged in, see §4.6
+— since flavors are the only source of llama-server launch args now: there
+is no `llama_args` field on `LocalLLMEntry` at all any more.
 
 Four entry kinds:
 
@@ -201,26 +207,65 @@ merges the compiled-in tuple with the external collection persisted at
 {
   "entries": [
     { "name": "...", "kind": "custom_hf", "repo_id": "...", "filename": "...", "description": "...",
-      "llama_args": {"--cache-type-k": "q8_0"}, "context_window": 262144 },
+      "context_window": 262144 },
     { "name": "...", "kind": "custom_file", "path": "/abs/path/model.gguf", "description": "...",
-      "llama_args": {}, "context_window": 262144 },
+      "context_window": 262144 },
     { "name": "...", "kind": "custom_server_url", "url": "http://host:port", "description": "..." }
   ],
-  "llama_server_override_path": null
+  "llama_server_override_path": null,
+  "flavors": {
+    "my-custom-model": [
+      { "id": "default", "name": "default", "description": "Default flavor",
+        "llama_args": {"--cache-type-k": "q8_0"} }
+    ],
+    "unsloth-qwen36-27b-q4-k-xl": [
+      { "id": "1m-context", "name": "1M Context", "description": "...",
+        "llama_args": {"--ctx-size": "1048576", "--rope-scaling": "yarn", "--rope-scale": "4"} },
+      { "id": "default", "name": "Default (fp16 KV cache)", "description": "Override of the built-in default",
+        "llama_args": {"--cache-type-k": "fp16", "--cache-type-v": "fp16", "--ctx-size": "0", "--jinja": ""} }
+    ]
+  },
+  "active_flavors": {
+    "unsloth-qwen36-27b-q4-k-xl": "1m-context"
+  }
 }
 ```
+
+The second `unsloth-qwen36-27b-q4-k-xl` flavor above (`id: "default"`) is an
+**override** of that entry's built-in predefined `"default"` flavor — the
+user edited it via "Manage flavors" (§4.6), which stores the new definition
+here under the same id rather than mutating the hardcoded Python literal.
+
+Note that no `entries[]` object carries `llama_args` any more — flavors are
+the *only* source of it (§4.6); a `custom_hf`/`custom_file` entry's own
+initial args end up in `flavors["<name>"]` (its seeded `"default"` custom
+flavor, as shown for `my-custom-model` above) rather than on the entry
+itself. `flavors`/`active_flavors` are two more sibling top-level keys in
+this same file, unrelated to the `entries` list — see §4.6.
 
 This file is **owned entirely by the Python server** (read and written by
 `kodo/llms/_local_registry.py`); kodo-vsix never writes it directly, only
 through the `local_llm.*` WS commands (§7.6). `add_local_entry`/
 `remove_local_entry` reject duplicate names and reject removing a
-`hardcoded_hf` entry. `llama_args`/`context_window` are optional on the
-`local_llm.add_huggingface`/`local_llm.add_file` commands (never offered for
-`add_server_url`, which isn't a llama-server process kodo launches) — the
-kodo-vsix "Add local LLM" modals collect `llama_args` as one space-separated
-`--flag value` line and parse it client-side into the wire dict shape;
-`context_window` defaults to `262144` in those modals but falls back
-server-side to `get_context_window`'s default when zero/absent.
+`hardcoded_hf` entry; `add_local_entry` also forces `entry.flavors` to `()`
+regardless of what's passed in, so a stray predefined-looking literal can
+never shadow a same-id custom flavor added later (§4.6). `llama_args`/
+`context_window` are optional on the `local_llm.add_huggingface`/
+`local_llm.add_file` commands (never offered for `add_server_url`, which
+isn't a llama-server process kodo launches) — the kodo-vsix "Add local LLM"
+modals still collect `llama_args` as one space-separated `--flag value` line
+and parse it client-side into the wire dict shape, and `context_window`
+still defaults to `262144` in those modals, but neither sets a field on the
+entry any more: `_seed_default_flavor` (`kodo/server/_app.py`) uses them to
+create that entry's first (custom) flavor, named/slugged `"default"` to
+match the built-in flavor a `hardcoded_hf` entry gets, right after
+`add_local_entry` succeeds. `context_window` still falls back server-side to
+`get_context_window`'s default when zero/absent (that fallback lives in
+`resolve_effective_llama_config`/`get_context_window`, not the add handlers).
+(The "manage flavors" modal added in §4.6 uses a different, multi-line input
+for the same `llama_args` shape — one flag per line, parsed **server-side**
+instead — since a flavor typically carries more flags than a base entry's
+initial one does.)
 
 **`custom_file` installed-state is special**: per design, kodo does not copy
 or own the file, and its presence is checked **once, by the kodo-vsix
@@ -450,6 +495,316 @@ own per-call override — falling back to the family default when absent or
 invalid for `base_llm`. Entries with no thinking family (`base_llm == ""`,
 or a hardcoded model outside both families) get no `extra_body` at all — no
 behavior change.
+
+### 4.6 Flavors
+
+A **flavor** is a named launch configuration for one local registry entry —
+and, since `LocalLLMEntry` carries no launch args of its own, the **only**
+source of them. Every entry that runs through llama-server has at least one:
+a `hardcoded_hf` entry ships a built-in `"default"` flavor via
+`LlamaFlavor.default_flavours_field` (the dataclass field's default factory)
+unless it explicitly declares a different `flavors=` literal (e.g. the F16
+GGUFs use `make_default_kv_fp16` instead, for their KV cache type); a
+`custom_hf`/`custom_file` entry gets its `"default"` flavor **seeded** (as a
+regular *custom* flavor, not baked into Python source) from its own "Add
+local LLM" form the moment it's created (`_seed_default_flavor`,
+`kodo/server/_app.py`) — see §4 above. Beyond that one, flavors are the
+mechanism behind two more use cases: extended-context variants (e.g. a "1M
+Context" flavor using YaRN rope-scaling on a Qwen quant whose default
+`context_window` is 262144) and VRAM-fit variants (GPU-offload flags like
+`--n-cpu-moe`/`--override-tensor`/`--tensor-split` tuned for a specific card,
+for the large models that "don't fit on GPU VRAM" as-is). Unlike thinking
+level (§4.5, session-scoped, applied per-request), a flavor changes actual
+llama-server **launch** arguments, so it is a **global** concept — one active
+flavor per entry, shared by every open session/window, exactly like which
+local model is active in the first place (`models.local`). llama-server is a
+machine-wide singleton process (`kodo/server/_app.py` module docstring), so
+there is no way for two sessions to run the same entry with two different
+flavors at once.
+
+```python
+@dataclass(frozen=True)
+class LlamaFlavor:
+    id: str                                    # slug, unique per entry (predefined + custom)
+    name: str                                   # display name
+    description: str = ""
+    llama_args: dict[str, str] = field(default_factory=dict)  # the complete CLI flag set
+```
+
+`llama_args` is the **complete** set of CLI flags passed to `llama-server`
+while this flavor is active — not "extras" layered on top of some other
+default, since there is no other default any more. `LlamaServerConfig`
+(`kodo/llms/llamacpp/_llama_server.py`) only carries server-management fields
+(executable, model path, host, port, log paths); `LlamaServer.__build_command`
+appends whatever `llama_args` it was constructed with, verbatim, with nothing
+else merged in — including `--jinja`, which used to be unconditionally
+appended regardless of any flavor and now has to be part of a flavor's own
+`llama_args` like everything else (`make_default_kv_q8`/`make_default_kv_fp16`
+both include it).
+
+**Full replace, not merge**: switching the active flavor **fully replaces**
+the previously-active flavor's `llama_args` — two flavors' args are never
+merged together, so a flavor that wants another flavor's
+`--cache-type-k`/`--cache-type-v` (or anything else) must repeat them itself.
+
+There is no separate `context_window` field on `LlamaFlavor` any more —
+`resolve_context_window(entry, flavor) -> int` (`kodo/llms/_local_registry.py`)
+deduces the effective context size from *flavor*'s own launch args instead:
+its `--ctx-size` value (checked first) or `-c` value, if either parses to a
+positive integer; otherwise falls back to `entry.context_window`. This is
+why the built-in default flavor's `--ctx-size 0` (telling llama.cpp to read
+the GGUF's own trained context length) resolves to the entry's nominal
+`context_window` for budgeting purposes rather than `0`. `resolve_effective_llama_config(kodo_dir, entry)
+-> (llama_args, context_window)` (`kodo/llms/_local_registry.py`) is the
+single place both resolutions are combined:
+
+1. The flavor resolved by `get_effective_flavor_id(kodo_dir, entry)` — the
+   active flavor (`get_active_flavor`) if set and still present, otherwise
+   (unset, or a stale id whose definition was since removed — "Default" in
+   the UI) the first available flavor from `get_flavors` (predefined slots
+   first) — the entry's built-in `"default"` for `hardcoded_hf`, or the
+   oldest custom flavor for a `custom_*` entry (typically the one seeded
+   when it was added).
+2. If *entry* has no flavors at all (only reachable for a `custom_*` entry
+   whose sole flavor was since removed, or a `custom_server_url` entry,
+   which never actually launches this way), `({}, entry.context_window)`.
+3. Otherwise, `(flavor.llama_args, resolve_context_window(entry, flavor))`.
+
+`ensure_llama_running` (`kodo/llms/llamacpp/_manager.py`) and
+`get_context_window` (`kodo/llms/_context.py`, used by auto-compaction
+budgeting) both call `resolve_effective_llama_config` instead of reading
+anything off `entry` directly — `ensure_llama_running` passes the resolved
+`llama_args` to `LlamaServer` as a constructor argument (not a
+`LlamaServerConfig` field, since it varies per launch while the rest of that
+config doesn't) and ignores the resolved `context_window` entirely (only
+`get_context_window` needs it).
+
+**Two flavor sources**, merged by `get_flavors(kodo_dir, entry) ->
+tuple[LlamaFlavor, ...]` (predefined slots first, then any extra custom
+flavors):
+
+- **Predefined** — `LocalLLMEntry.flavors`, a tuple literal baked into
+  `_HARDCODED_LOCAL_MODELS` alongside the entry itself. `hardcoded_hf` only —
+  `add_local_entry` forces this to `()` for every `custom_*` kind regardless
+  of what's passed in, since a caller-supplied non-empty value would
+  otherwise silently shadow a same-id custom flavor added later. Every
+  hardcoded entry currently gets the single built-in `"default"` flavor (q8
+  or, for the two F16 GGUFs, fp16 KV cache); populating *real* predefined
+  variants (1M-context / VRAM-tight per model) beyond that one is tracked
+  separately from the mechanism built here.
+- **Custom** (user-added, via any local LLM entry — hardcoded or custom kind,
+  **except** `custom_server_url`, which isn't a process kodo launches) —
+  stored in two more sibling top-level keys of
+  `~/.kodo/etc/local-llm-registry.json` (see the JSON shape in §4), keyed by
+  *entry name*, not entry kind:
+  - `flavors: {entry_name: [flavor...]}` — custom flavor definitions. A
+    `custom_hf`/`custom_file` entry's first entry here is the one seeded at
+    creation time (§4); a `hardcoded_hf` entry only appears here once the
+    user adds one, or edits an existing one, via "Manage flavors".
+  - `active_flavors: {entry_name: flavor_id}` — the active flavor per entry;
+    an entry absent from this map (or the empty string) means "unset" —
+    resolved per the fallback rule above, not itself a distinct
+    `LlamaFlavor` object.
+
+  A custom flavor whose `id` matches a predefined one would be an
+  **override** — `get_flavors` uses its definition in place of the
+  predefined one, at the same list position, rather than dropping it. This
+  merge is kept purely for resilience against a same-id override written by
+  an older kodo version, before predefined flavors became read-only (below)
+  — nothing in the current public API can create a new one.
+
+  **Predefined flavors are strictly read-only.** `update_flavor` rejects
+  `flavor_id` outright if it names one of the entry's predefined flavors
+  (checked against `entry.flavors`, the hardcoded tuple — the same source
+  `remove_flavor` already checked); there is no override mechanism any
+  more. Anyone who wants a predefined flavor's config with different
+  values — a different `--n-gpu-layers`, a different `min_ram`/`min_vram`,
+  etc. — copies its `name`/`llama_args` into a brand-new custom flavor via
+  `add_flavor` and edits the copy; the predefined literal itself, and its
+  effective definition, can never be mutated in place.
+
+  `add_flavor(kodo_dir, entry_name, name, ...)` always creates a **new**
+  flavor slot — it auto-generates `id` by slugifying `name` and
+  de-duplicating against every flavor (predefined or custom) the entry
+  already has (`my-flavor`, `my-flavor-2`, ...), so it can never collide
+  with (and therefore never overrides) an existing id. Both `add_flavor` and
+  `update_flavor` also reject a *name* that exact-matches (case-sensitive,
+  after trimming) another flavor `get_flavors` already returns for that
+  entry — two flavors of the same entry can share a slugified `id` prefix
+  (different names, e.g. "Tight VRAM" vs "tight vram"), but never the exact
+  same display name; `update_flavor` excludes the flavor being edited itself
+  from that check, so resubmitting a flavor under its own unchanged name
+  isn't flagged as a clash with itself. `update_flavor(kodo_dir,
+  entry_name, flavor_id, name, ...)` is the counterpart that overwrites an
+  **existing custom** flavor's definition in place, keeping its `id` — the
+  id passed in is never re-derived from `name`.
+  `remove_flavor`/`update_flavor`/`set_active_flavor` reject predefined
+  flavors (even a legacy overridden one, for `remove_flavor` — removing the
+  override would silently revert it to the hardcoded definition, which
+  isn't "removing a flavor" from the user's perspective) and unknown
+  entries/ids respectively; removing the active flavor resets that entry's
+  selection to unset (falls back to the first available flavor, per the
+  rule above). `remove_local_entry` also cleans up a removed custom entry's
+  own flavor data (both maps), since nothing else ever would.
+
+**WS surface** (`local_llm.add_flavor` / `local_llm.update_flavor` /
+`local_llm.remove_flavor` / `local_llm.set_active_flavor`, §7.6) all reply
+with the same `local_llm.registry_state` event as every other `local_llm.*`
+mutation — each entry in that payload's `local_registry` now carries
+`flavors: [...]` (each `{id, name, description, llama_args, predefined,
+min_ram, min_vram}`, §4.6a) and `active_flavor` (a flavor id, or `""` for
+unset/Default), so kodo-vsix never needs a separate fetch. `predefined`
+reflects whether `id` is one of `entry.flavors`' ids — it's what drives the
+"Manage flavors" modal disabling both "Remove" and "Submit" for that
+flavor client-side, mirroring `remove_flavor`/`update_flavor`'s own
+server-side rejection.
+
+**Restart semantics**: changing the active flavor (`set_active_flavor`), or
+editing the flavor that is currently in effect (`update_flavor` — compared
+via `get_effective_flavor_id`, not just the raw active-flavor selection,
+since an *unset* active flavor still effectively runs the first available
+one), only restarts llama-server when *entry_name* is the currently selected
+local model (`models.local`) — changing an inactive entry's flavor just
+persists the choice for whenever it is next selected. Even then, the
+restart is forced explicitly: `ensure_llama_running` treats "already running
+this entry name" as "nothing to do" (it has no way to know a flavor
+changed, since flavors don't change `entry.name`), so the handlers
+(`kodo/server/_app.py`, `_restart_llama_server_if_running`) stop the running
+server themselves first, then call `ensure_llama_running` again to relaunch
+with the freshly-resolved args — mirroring `llm.select`'s restart (§7.6a)
+but without a model-name change to trigger it naturally.
+
+**kodo-vsix UI**: flavor *selection* lives only in the sidebar (installed
+entries only) — a `<select>` per local LLM card listing every flavor
+`get_flavors` returns for that entry, falling back to the first flavor's id
+when `active_flavor` is `""` (mirroring `resolve_effective_llama_config`'s
+own fallback) and sending `set_active_flavor` immediately on change (no
+separate Apply step). The Local Inference Settings panel's cards carry no
+flavor dropdown at all — only a "Manage flavors" button (first in the
+card's button row, before "Show me local files"/"Uninstall"/"Remove") that
+opens a list-detail modal, twice the width of the panel's other modals and
+split into two panes:
+
+- **Left pane** — every flavor `get_flavors` returns for that entry (predefined
+  first), each row selectable, inside a fixed-`height` (not `max-height`)
+  scrollable list (`.flavor-list`, 360px) so the "Add"/"Remove" buttons below
+  it stay pinned in place regardless of how many flavors exist, instead of
+  drifting down the modal as rows are added; "Add" (clears the right pane to
+  a blank form, deselecting) and "Remove" (deletes the selected flavor;
+  disabled when nothing is selected or the selection is predefined —
+  `predefined: true` in the payload, matching `remove_flavor`'s own
+  server-side rejection) buttons below the list.
+- **Right pane** — the selected flavor's parameters: name (with an inline
+  error and a disabled "Submit" if it exact-matches another flavor of the
+  same entry, mirroring the same-repo `nameTaken` check the "Add local LLM"
+  modals already use for top-level entry names, client-side only; the
+  server enforces the same rule independently, see above), description, a
+  **multi-line** raw-text `llama_args` box — one `--flag value` per line,
+  parsed server-side via `parse_llama_args_text`, unlike the single-line
+  client-parsed box the "Add local LLM" modals use, see §4 — and two number
+  inputs, "Minimum RAM (GB)" and "Minimum VRAM (GB)" (§4.6a's `min_ram`/
+  `min_vram`; no context-window field, since that's now deduced per
+  `resolve_context_window` instead of being its own input), plus "Submit"
+  and "Close" buttons. "Submit" sends `add_flavor` when nothing is selected
+  (the "Add" flow) or `update_flavor` with the selected flavor's id when
+  editing an existing *custom* one. **Predefined flavors are read-only in
+  this modal**: selecting one sets every field (`readonly`, so its text
+  remains selectable/copyable — the intended way to start a new flavor from
+  a predefined one's config is to copy its values into a fresh "Add") and
+  disables both "Submit" and "Remove"; the client-side disable exists purely
+  for UX (immediate, no round trip) — `update_flavor`/`remove_flavor` both
+  reject a predefined `flavor_id` server-side regardless (see above), so
+  there's no path to an inconsistent state even if the client and server's
+  notion of `predefined` were ever to disagree.
+
+### 4.6a Per-flavor hardware-fit gate (`min_ram`, `min_vram`)
+
+`LlamaFlavor` carries two more fields beyond `llama_args`:
+
+```python
+min_ram: int = 0   # GB — system RAM (Windows/Linux), or unified memory on Mac
+min_vram: int = 0  # GB — discrete GPU VRAM (Windows/Linux); always 0 on Mac
+```
+
+Unlike `LocalLLMEntry.min_memory`/`memory` (§4.4 — one **combined**
+VRAM+RAM figure, rendered as an inline yellow/red warning that never blocks
+anything), these are two **independent** thresholds, checked as separate
+pools, and gate an actual action: selecting a flavor whose requirement
+exceeds detected hardware pops a native "I understand the risk, proceed" /
+"Cancel" confirmation before kodo-vsix sends `set_active_flavor` — a flavor
+often pins the model fully onto one pool (e.g. `--n-gpu-layers -1`), so a
+combined figure would hide a genuine single-pool shortfall the way it does
+for the entry-level warning.
+
+Both default to `0`, meaning "no known requirement — check inactive, treat
+as runnable everywhere"; this is still the default for every *predefined*
+flavor today (no hardcoded flavor sets real numbers yet — populating them
+per model/flavor is tracked separately from the mechanism built here, same
+as real predefined flavor variants in §4.6). If **either** is non-zero the
+check is active.
+
+**Authoring convention** — since Apple Silicon has one unified memory pool
+(§4.3), a flavor expresses its target platform by *which* field is
+non-zero:
+
+- `min_vram = 0`, `min_ram > 0` — a Mac/unified-memory flavor; `min_ram` is
+  the unified-memory requirement.
+- `min_vram > 0`, `min_ram >= 0` — a Windows/Linux discrete-GPU flavor;
+  `min_vram` is the VRAM requirement, `min_ram` an optional additional
+  system-RAM requirement (e.g. for CPU-offloaded MoE experts).
+
+**Wire shape**: `_flavors_payload` (`kodo/server/_app.py`) adds `min_ram`/
+`min_vram` to each flavor object in `local_registry[].flavors[]` (alongside
+`id`/`name`/`description`/`llama_args`/`predefined`, §4.6's WS surface) —
+mirrored in kodo-vsix's `LlamaFlavorInfo` (`src/llm-registry-types.ts`).
+`_flavor_to_json`/`_flavor_from_json` round-trip both fields through
+`~/.kodo/etc/local-llm-registry.json` for a custom flavor.
+
+**Editable via the "Manage flavors" modal** (§4.6) — `add_flavor`/
+`update_flavor` both take `min_ram`/`min_vram` keyword params (WS payload
+fields `min_ram`/`min_vram`, parsed server-side by `_parse_non_negative_int`,
+defaulting to `0` when absent), matching two number inputs in the modal's
+right pane. Since predefined flavors are read-only (§4.6), only a *custom*
+flavor's thresholds can ever be set this way — a predefined flavor's
+`min_ram`/`min_vram` stay at whatever its hardcoded Python literal declares
+(`0` for every one today) unless/until real values are added there directly.
+Unlike the old (removed) carry-forward behavior, `update_flavor` does *not*
+preserve the previous values when the caller omits `min_ram`/`min_vram` —
+the modal always resends its own fields' current contents, so this only
+matters for a direct (non-UI) caller.
+
+**The check** — `hardwareFitWarningForFlavor(flavor, detectedVramGb,
+detectedRamGb, isMac)` (`src/llm-registry-types.ts`) returns `null` (no
+gate) or a message with real detected numbers for the confirmation dialog's
+body:
+
+1. Inactive (`min_ram <= 0 && min_vram <= 0`) → `null`.
+2. On Mac, `detected_ram_gb` is always `null` (§4.3 — `detected_vram_gb`
+   already reports the full unified pool there), so the "detected RAM"
+   figure used for comparison is `isMac ? detectedVramGb : detectedRamGb` —
+   otherwise a Mac flavor's `min_ram` could never be checked against
+   anything. `min_vram` always compares against `detectedVramGb` on both
+   platforms.
+3. If *both* detected figures are `null` (nothing could be detected at all)
+   → `null` — skip rather than gate on a guess. Otherwise a `null` figure is
+   treated as `0`.
+4. If detected < required on either pool → a message naming every non-zero
+   requirement/detected pair (not just the short one), so "VRAM and/or RAM"
+   is always answered with concrete numbers.
+
+**The gate** lives entirely in the extension host, not the webview:
+`_setActiveFlavor(name, flavorId)` (`src/extension.ts`) looks up the flavor
+from `localRegistryState`, runs the check, and — only if it returns a
+warning — awaits `vscode.window.showWarningMessage(warning, {modal: true},
+'I understand the risk, proceed')` before forwarding `set_active_flavor` to
+kodo over WS. This is a client-side UX gate only — kodo's
+`set_active_flavor` WS handler performs no hardware check of its own, so a
+proceed-anyway selection reaches the server exactly like any other. If the
+user cancels/dismisses, the request is never sent and `sidebarProvider`
+re-pushes its (unchanged) state, which resets the sidebar's flavor
+`<select>` back to the real active flavor on the next render (the sidebar
+is the only live flavor-selection surface, per §4.6's kodo-vsix UI note —
+"Manage flavors" is CRUD-only, not a selection action, so it isn't gated).
 
 ---
 

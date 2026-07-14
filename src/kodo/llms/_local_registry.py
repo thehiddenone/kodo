@@ -28,7 +28,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import cast
 
@@ -37,17 +38,28 @@ __all__ = [
     "QWEN_REASONING_BUDGET_FAMILY",
     "QWEN_TIER_TOKEN_BUDGETS",
     "REASONING_BUDGET_MESSAGE",
+    "LlamaFlavor",
     "LocalLLMEntry",
+    "add_flavor",
     "add_local_entry",
     "clear_llama_server_override_path",
+    "get_active_flavor",
+    "get_effective_flavor_id",
+    "get_flavors",
     "get_llama_server_override_path",
     "get_local_registry",
     "local_thinking_default_tier",
     "local_thinking_family",
     "local_thinking_tiers",
     "parse_llama_args",
+    "parse_llama_args_text",
+    "remove_flavor",
     "remove_local_entry",
+    "resolve_context_window",
+    "resolve_effective_llama_config",
+    "set_active_flavor",
     "set_llama_server_override_path",
+    "update_flavor",
 ]
 
 _log = logging.getLogger(__name__)
@@ -167,6 +179,114 @@ def local_thinking_default_tier(base_llm: str) -> str:
 
 
 @dataclass(frozen=True)
+class LlamaFlavor:
+    """A named, alternate launch configuration for a :class:`LocalLLMEntry`.
+
+    Flavors are the **only** source of llama-server CLI args — a
+    :class:`LocalLLMEntry` carries no ``llama_args`` of its own any more.
+    Every entry that runs through llama-server gets at least one flavor: a
+    ``hardcoded_hf`` entry ships a built-in ``"default"`` flavor (via
+    :meth:`default_flavours_field`, unless it explicitly declares its own
+    ``flavors=`` tuple — e.g. the F16 GGUFs use :meth:`make_default_kv_fp16`
+    instead); a ``custom_hf``/``custom_file`` entry gets a ``"default"``
+    flavor seeded from its "Add local LLM" form's ``llama_args`` field at
+    creation time (see ``_handle_local_llm_add_huggingface``/``_add_file`` in
+    ``kodo/server/_app.py``) — stored as a regular *custom* flavor, not a
+    predefined one, since it isn't baked into Python source.
+
+    A flavor lets one GGUF be launched with a completely different set of
+    llama-server CLI args than another — e.g. a "1M context" flavor (YaRN
+    rope-scaling flags plus a much larger ``context_window``) or a
+    "VRAM-tight" flavor (``--n-cpu-moe``/``--override-tensor`` tuned for a
+    smaller GPU). Switching the active flavor **fully replaces** the
+    previously-active flavor's ``llama_args``/``context_window`` — it does
+    not merge two flavors' args together (see
+    :func:`resolve_effective_llama_config`); a flavor that wants another
+    flavor's KV-cache-type flags (or anything else) must repeat them itself.
+
+    Attributes:
+        id: Stable slug, unique among the flavors available for one entry
+            (predefined + custom together). Auto-generated from ``name`` for
+            custom flavors (see :func:`add_flavor`); hardcoded ones set it
+            explicitly as a literal.
+        name: Human-readable display name shown in the flavor dropdown.
+        description: Optional human-readable explanation.
+        llama_args: CLI flags passed verbatim to ``llama-server`` while this
+            flavor is active — the complete set, not "extras" layered on top
+            of some other default (there is no other default; see
+            :class:`kodo.llms.llamacpp.LlamaServerConfig`, which carries only
+            server-management fields like host/port/log paths). A
+            bare/valueless flag is represented with an empty string value.
+            There is no separate ``context_window`` field on a flavor any
+            more — the effective context size is *deduced* from this dict's
+            own ``-c``/``--ctx-size`` value (falling back to the entry's own
+            ``context_window`` if absent/``0``), see
+            :func:`resolve_context_window`.
+        min_ram: Minimum system RAM (GB) this flavor needs to run, or the
+            minimum *unified memory* on Apple Silicon — kodo-vsix reads
+            ``detected_vram_gb`` for the unified-memory figure there (see
+            ``kodo/llms/_hardware.py``), so a Mac-oriented flavor should set
+            ``min_ram`` and leave ``min_vram`` at ``0``. ``0`` means
+            "unknown/no requirement — don't check". Editable via
+            :func:`add_flavor`/:func:`update_flavor` for a *custom* flavor;
+            a predefined flavor's value is fixed at its hardcoded literal,
+            since :func:`update_flavor` rejects predefined ``flavor_id``\\s
+            outright (see its docstring) — the only way to get a different
+            threshold on a predefined flavor's config is to copy it into a
+            new custom flavor.
+        min_vram: Minimum discrete GPU VRAM (GB) this flavor needs, for a
+            Windows/Linux GPU setup (``0`` on Apple Silicon — see
+            ``min_ram``). ``0`` means "unknown/no requirement — don't
+            check". If both ``min_ram`` and ``min_vram`` are ``0`` the
+            hardware-fit check is inactive and the flavor is treated as
+            runnable everywhere. Editable the same way as ``min_ram``.
+    """
+
+    id: str
+    name: str
+    description: str = ""
+    llama_args: dict[str, str] = field(default_factory=dict)
+    min_ram: int = 0
+    min_vram: int = 0
+
+    @staticmethod
+    def make_default_kv_q8() -> LlamaFlavor:
+        return LlamaFlavor(
+            id="default",
+            name="default",
+            description="Default flavor",
+            llama_args={
+                "--cache-type-k": "q8_0",
+                "--cache-type-v": "q8_0",
+                "--ctx-size": "0",
+                "--n-gpu-layers": "-1",
+                "--reasoning-format": "auto",
+                "--jinja": "",
+            },
+        )
+
+    @staticmethod
+    def make_default_kv_fp16() -> LlamaFlavor:
+        return LlamaFlavor(
+            id="default",
+            name="default",
+            description="Default flavor",
+            llama_args={
+                "--cache-type-k": "fp16",
+                "--cache-type-v": "fp16",
+                "--ctx-size": "0",
+                "--n-gpu-layers": "-1",
+                "--reasoning-format": "auto",
+                "--jinja": "",
+            },
+        )
+
+    @staticmethod
+    def default_flavours_field() -> tuple[LlamaFlavor, ...]:
+        return (LlamaFlavor.make_default_kv_q8(),)
+
+
+@dataclass(frozen=True)
 class LocalLLMEntry:
     """A single local (llama.cpp) model, hardcoded or user-added.
 
@@ -180,14 +300,29 @@ class LocalLLMEntry:
         repo_id: HuggingFace repository ID (``hardcoded_hf``/``custom_hf`` only).
         filename: GGUF filename inside the HF repository
             (``hardcoded_hf``/``custom_hf`` only).
-        llama_args: Extra CLI flags passed verbatim to ``llama-server``
-            (any kind that runs through llama-server: ``hardcoded_hf``/
-            ``custom_hf``/``custom_file`` — never ``custom_server_url``,
-            which isn't a process kodo launches).
         context_window: Maximum input-context size in tokens. Falls back to
             the default when unset/non-positive (see
-            :func:`kodo.llms.get_context_window`). Same kind restriction as
-            ``llama_args``.
+            :func:`kodo.llms.get_context_window`); the active flavor's own
+            ``-c``/``--ctx-size`` launch arg (if positive) takes precedence
+            over this one, see :func:`resolve_context_window`.
+        flavors: Predefined alternate launch configurations shipped with this
+            entry (see :class:`LlamaFlavor`) — ``hardcoded_hf`` only.
+            Entries without an explicit ``flavors=`` literal get exactly one,
+            via this dataclass field's default factory
+            (:meth:`LlamaFlavor.default_flavours_field`); the few that need a
+            different built-in default (e.g. the F16 GGUFs' KV cache) set
+            ``flavors=`` explicitly instead. Always ``()`` for every
+            ``custom_*`` kind — :func:`add_local_entry` forces this
+            regardless of what's passed in (a caller-supplied non-empty value
+            would otherwise silently shadow a same-id custom flavor added
+            later), and ``_entry_from_json`` passes ``flavors=()`` explicitly
+            too, since loading from disk doesn't go through
+            ``add_local_entry``. A custom entry's launch args live entirely
+            in the *custom* flavor store instead (see
+            :func:`get_flavors`/:func:`add_flavor`) — a ``custom_hf``/
+            ``custom_file`` entry gets its first custom flavor seeded from
+            its "Add local LLM" form at creation time; ``custom_server_url``
+            never gets one at all (not a process kodo launches).
         path: Absolute path to the GGUF file on disk (``custom_file`` only).
         url: Base URL of the externally-managed server (``custom_server_url``
             only), e.g. ``'http://192.168.1.50:8042'``.
@@ -246,8 +381,8 @@ class LocalLLMEntry:
     description: str = ""
     repo_id: str = ""
     filename: str = ""
-    llama_args: dict[str, str] = field(default_factory=dict)
     context_window: int = 0
+    flavors: tuple[LlamaFlavor, ...] = field(default_factory=LlamaFlavor.default_flavours_field)
     path: str = ""
     url: str = ""
     base_llm: str = ""
@@ -268,7 +403,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3.6 27B Q8_0 by AtomicChat",
         repo_id="AlexAtomic/qwen36-27b-GGUF",
         filename="qwen36-27b-Q8_0.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen36-27B",
         quant_author="AtomicChat",
@@ -289,7 +423,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3.6 27B UD-Q8_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
         filename="Qwen3.6-27B-UD-Q8_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen36-27B",
         quant_author="Unsloth",
@@ -309,7 +442,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3.6 27B UD-Q6_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
         filename="Qwen3.6-27B-UD-Q6_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen36-27B",
         quant_author="Unsloth",
@@ -329,7 +461,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3.6 27B UD-Q5_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
         filename="Qwen3.6-27B-UD-Q5_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen36-27B",
         quant_author="Unsloth",
@@ -347,7 +478,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3.6 27B UD-Q4_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
         filename="Qwen3.6-27B-UD-Q4_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen36-27B",
         quant_author="Unsloth",
@@ -367,7 +497,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3.6 35B-A3B UD-Q8_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
         filename="Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen36-35B-A3B",
         quant_author="Unsloth",
@@ -388,7 +517,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3.6 35B-A3B UD-Q6_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
         filename="Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen36-35B-A3B",
         quant_author="Unsloth",
@@ -407,7 +535,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3.6 35B-A3B UD-Q5_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
         filename="Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen36-35B-A3B",
         quant_author="Unsloth",
@@ -426,7 +553,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3.6 35B-A3B UD-Q4_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
         filename="Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen36-35B-A3B",
         quant_author="Unsloth",
@@ -446,7 +572,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-Q8_K_XL by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="UD-Q8_K_XL/Qwen3-Coder-Next-UD-Q8_K_XL-00001-of-00003.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -465,7 +590,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-Q8_0 by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="Q8_0/Qwen3-Coder-Next-UD-Q8_0-00001-of-00003.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -483,7 +607,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-Q6_K_XL by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="UD-Q6_K_XL/Qwen3-Coder-Next-UD-Q6_K_XL-00001-of-00003.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -501,7 +624,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-Q6_K by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="UD-Q6_K/Qwen3-Coder-Next-UD-Q6_K-00001-of-00003.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -519,7 +641,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-Q5_K_XL by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="UD-Q5_K_XL/Qwen3-Coder-Next-UD-Q5_K_XL-00001-of-00003.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -538,7 +659,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-Q5_K_S by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="UD-Q5_K_S/Qwen3-Coder-Next-UD-Q5_K_S-00001-of-00003.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -557,7 +677,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-Q4_K_XL by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="Qwen3-Coder-Next-UD-Q4_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -577,7 +696,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B MXFP4-MOE by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="Qwen3-Coder-Next-MXFP4_MOE.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -597,7 +715,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-IQ4_NL by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="Qwen3-Coder-Next-UD-IQ4_NL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -617,7 +734,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-IQ4_XS by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="Qwen3-Coder-Next-UD-IQ4_XS.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -637,7 +753,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-Q3_K_XL by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="Qwen3-Coder-Next-UD-Q3_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -657,7 +772,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-IQ3_S by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="Qwen3-Coder-Next-UD-IQ3_S.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -676,7 +790,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-IQ3_XXS by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="Qwen3-Coder-Next-UD-IQ3_XXS.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -695,7 +808,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-Q2_K_XL by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="Qwen3-Coder-Next-UD-Q2_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -715,7 +827,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-IQ2_M by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="Qwen3-Coder-Next-UD-IQ2_M.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -733,7 +844,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3 Coder 80B UD-IQ2_XXS by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
         filename="Qwen3-Coder-Next-UD-IQ2_XXS.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
         quant_author="Unsloth",
@@ -752,7 +862,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Qwen 3.5 9B UD-Q8_K_XL by Unsloth",
         repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
         filename="Qwen3.5-9B-UD-Q8_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Qwen35-9B",
         quant_author="Unsloth",
@@ -770,7 +879,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="GPT OSS 120B F16 by Unsloth",
         repo_id="unsloth/gpt-oss-120b-GGUF",
         filename="gpt-oss-120b-F16.gguf",
-        llama_args={"--cache-type-k": "f16", "--cache-type-v": "f16"},
+        flavors=(LlamaFlavor.make_default_kv_fp16(),),
         context_window=131_072,
         base_llm="GPT-OSS-120B",
         quant_author="Unsloth",
@@ -791,7 +900,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="GPT OSS 20B F16 by Unsloth",
         repo_id="unsloth/gpt-oss-20b-GGUF",
         filename="gpt-oss-20b-F16.gguf",
-        llama_args={"--cache-type-k": "f16", "--cache-type-v": "f16"},
+        flavors=(LlamaFlavor.make_default_kv_fp16(),),
         context_window=131_072,
         base_llm="GPT-OSS-20B",
         quant_author="Unsloth",
@@ -811,7 +920,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="GPT OSS 20B UD-Q8_K_XL by Unsloth",
         repo_id="unsloth/gpt-oss-20b-GGUF",
         filename="gpt-oss-20b-UD-Q8_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=131_072,
         base_llm="GPT-OSS-20B",
         quant_author="Unsloth",
@@ -830,7 +938,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="GPT OSS 20B Q8_0 by Unsloth",
         repo_id="unsloth/gpt-oss-20b-GGUF",
         filename="gpt-oss-20b-Q8_0.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=131_072,
         base_llm="GPT-OSS-20B",
         quant_author="Unsloth",
@@ -848,7 +955,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="GPT OSS 20B UD-Q6_K_XL by Unsloth",
         repo_id="unsloth/gpt-oss-20b-GGUF",
         filename="gpt-oss-20b-UD-Q6_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=131_072,
         base_llm="GPT-OSS-20B",
         quant_author="Unsloth",
@@ -867,7 +973,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="GPT OSS 20B UD-Q4_K_XL by Unsloth",
         repo_id="unsloth/gpt-oss-20b-GGUF",
         filename="gpt-oss-20b-UD-Q4_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=131_072,
         base_llm="GPT-OSS-20B",
         quant_author="Unsloth",
@@ -885,7 +990,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 26B A4B UD-Q8_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
         filename="gemma-4-26B-A4B-it-UD-Q8_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
         quant_author="Unsloth",
@@ -905,7 +1009,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 26B A4B UD-Q6_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
         filename="gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
         quant_author="Unsloth",
@@ -925,7 +1028,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 26B A4B UD-Q5_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
         filename="gemma-4-26B-A4B-it-UD-Q5_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
         quant_author="Unsloth",
@@ -944,7 +1046,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 26B A4B UD-Q4_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
         filename="gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
         quant_author="Unsloth",
@@ -964,7 +1065,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 26B A4B QAT UD-Q4_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-qat-GGUF",
         filename="gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
         quant_author="Unsloth",
@@ -982,7 +1082,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 26B A4B UD-Q3_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
         filename="gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
         quant_author="Unsloth",
@@ -1000,7 +1099,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 26B A4B UD-Q2_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
         filename="gemma-4-26B-A4B-it-UD-Q2_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
         quant_author="Unsloth",
@@ -1018,7 +1116,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 26B A4B UD-IQ4_XS by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
         filename="gemma-4-26B-A4B-it-UD-IQ4_XS.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
         quant_author="Unsloth",
@@ -1036,7 +1133,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 26B A4B UD-IQ3_XXS by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
         filename="gemma-4-26B-A4B-it-UD-IQ3_XXS.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
         quant_author="Unsloth",
@@ -1054,7 +1150,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 26B A4B UD-IQ2_XXS by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
         filename="gemma-4-26B-A4B-it-UD-IQ2_XXS.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
         quant_author="Unsloth",
@@ -1072,7 +1167,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 31B UD-Q8_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-31B-it-GGUF",
         filename="gemma-4-31B-it-UD-Q8_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-31B",
         quant_author="Unsloth",
@@ -1091,7 +1185,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 31B Q8_0 by Unsloth",
         repo_id="unsloth/gemma-4-31B-it-GGUF",
         filename="gemma-4-31B-it-Q8_0.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-31B",
         quant_author="Unsloth",
@@ -1109,7 +1202,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 31B UD-Q6_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-31B-it-GGUF",
         filename="gemma-4-31B-it-UD-Q6_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-31B",
         quant_author="Unsloth",
@@ -1129,7 +1221,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 31B UD-Q5_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-31B-it-GGUF",
         filename="gemma-4-31B-it-UD-Q5_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-31B",
         quant_author="Unsloth",
@@ -1148,7 +1239,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 31B UD-Q4_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-31B-it-GGUF",
         filename="gemma-4-31B-it-UD-Q4_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-31B",
         quant_author="Unsloth",
@@ -1166,7 +1256,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 31B UD-Q3_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-31B-it-GGUF",
         filename="gemma-4-31B-it-UD-Q3_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-31B",
         quant_author="Unsloth",
@@ -1185,7 +1274,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 31B UD-Q2_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-31B-it-GGUF",
         filename="gemma-4-31B-it-UD-Q2_K_XL.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-31B",
         quant_author="Unsloth",
@@ -1203,7 +1291,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 31B UD-IQ3_XXs by Unsloth",
         repo_id="unsloth/gemma-4-31B-it-GGUF",
         filename="gemma-4-31B-it-UD-IQ3_XXS.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-31B",
         quant_author="Unsloth",
@@ -1221,7 +1308,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Gemma 4 31B UD-IQ2_XXS by Unsloth",
         repo_id="unsloth/gemma-4-31B-it-GGUF",
         filename="gemma-4-31B-it-UD-IQ2_XXS.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Gemma4-31B",
         quant_author="Unsloth",
@@ -1239,7 +1325,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Ornith 1.0 35B BF16 by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-bf16.gguf",
-        llama_args={"--cache-type-k": "bf16", "--cache-type-v": "bf16"},
         context_window=262_144,
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",
@@ -1260,7 +1345,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Ornith 1.0 35B Q8_0 by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q8_0.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",
@@ -1280,7 +1364,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Ornith 1.0 35B Q6_K by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q6_K.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",
@@ -1300,7 +1383,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Ornith 1.0 35B Q5_K by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q5_K_m.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",
@@ -1319,7 +1401,6 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         description="Ornith 1.0 35B Q4_K by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q4_K_m.gguf",
-        llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         context_window=262_144,
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",
@@ -1353,21 +1434,51 @@ def parse_llama_args(raw: object) -> dict[str, str]:
     return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
 
 
+def parse_llama_args_text(raw: object) -> dict[str, str]:
+    """Parse the "manage flavors" modal's raw multi-line text box into ``llama_args``.
+
+    One flag per line, e.g. ``--ctx-size 1048576``. Each non-blank line is
+    split on the first run of whitespace into ``(flag, value)``; a line with
+    no value (a bare flag) gets an empty-string value, which
+    :class:`~kodo.llms.llamacpp.LlamaServerConfig`'s command builder then
+    emits without a following empty argument. Lines that don't start with
+    ``-`` are silently skipped rather than rejected outright — this is a
+    convenience parser for pasted llama.cpp command lines, not a strict
+    format; the kodo-vsix modal does its own live validation before sending.
+
+    Args:
+        raw: The WS payload value, expected to be a ``str`` (anything else —
+            missing field, wrong type — is treated as empty text).
+
+    Returns:
+        dict[str, str]: The parsed ``{flag: value}`` mapping.
+    """
+    if not isinstance(raw, str):
+        return {}
+    args: dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("-"):
+            continue
+        parts = line.split(None, 1)
+        args[parts[0]] = parts[1].strip() if len(parts) > 1 else ""
+    return args
+
+
 def _entry_from_json(raw: dict[str, object]) -> LocalLLMEntry | None:
     name = str(raw.get("name", "")).strip()
     kind = str(raw.get("kind", "")).strip()
     if not name or kind not in _CUSTOM_KINDS:
         _log.warning("Skipping invalid local-llm-registry.json entry: %r", raw)
         return None
-    llama_args = parse_llama_args(raw.get("llama_args", {}))
     return LocalLLMEntry(
         name=name,
         kind=kind,
         description=str(raw.get("description", "")),
         repo_id=str(raw.get("repo_id", "")),
         filename=str(raw.get("filename", "")),
-        llama_args=llama_args,
         context_window=int(cast(int, raw.get("context_window", 0)) or 0),
+        flavors=(),
         path=str(raw.get("path", "")),
         url=str(raw.get("url", "")),
     )
@@ -1380,24 +1491,40 @@ def _entry_to_json(entry: LocalLLMEntry) -> dict[str, object]:
         "description": entry.description,
         "repo_id": entry.repo_id,
         "filename": entry.filename,
-        "llama_args": entry.llama_args,
         "context_window": entry.context_window,
         "path": entry.path,
         "url": entry.url,
     }
 
 
-def _load_external(kodo_dir: Path) -> tuple[list[LocalLLMEntry], str | None]:
+def _load_raw(kodo_dir: Path) -> dict[str, object]:
+    """The whole ``local-llm-registry.json`` as a plain dict, ``{}`` if absent/unreadable.
+
+    Shared low-level accessor for every top-level key in the file (``entries``,
+    ``llama_server_override_path``, ``flavors``, ``active_flavors``) — callers
+    that only care about one key still go through this so a round trip never
+    clobbers keys it doesn't know about (see :func:`_save_external`,
+    :func:`add_flavor`, etc., all of which load-modify-save the same dict).
+    """
     path = _registry_file(kodo_dir)
     if not path.is_file():
-        return [], None
+        return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         _log.warning("Could not load %s: %s", path, exc)
-        return [], None
-    if not isinstance(data, dict):
-        return [], None
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_raw(kodo_dir: Path, data: dict[str, object]) -> None:
+    path = _registry_file(kodo_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _load_external(kodo_dir: Path) -> tuple[list[LocalLLMEntry], str | None]:
+    data = _load_raw(kodo_dir)
     raw_entries = data.get("entries", [])
     entries: list[LocalLLMEntry] = []
     if isinstance(raw_entries, list):
@@ -1412,13 +1539,471 @@ def _load_external(kodo_dir: Path) -> tuple[list[LocalLLMEntry], str | None]:
 
 
 def _save_external(kodo_dir: Path, entries: list[LocalLLMEntry], override_path: str | None) -> None:
-    path = _registry_file(kodo_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = {
-        "entries": [_entry_to_json(e) for e in entries],
-        "llama_server_override_path": override_path,
+    data = _load_raw(kodo_dir)
+    data["entries"] = [_entry_to_json(e) for e in entries]
+    data["llama_server_override_path"] = override_path
+    _save_raw(kodo_dir, data)
+
+
+# ---------------------------------------------------------------------------
+# Flavors: custom (user-added) definitions + active-flavor selection.
+#
+# Stored as two sibling top-level keys in the same local-llm-registry.json,
+# both keyed by *entry name* (any kind except custom_server_url — a flavor is
+# meaningless for a server kodo doesn't launch): ``flavors: {entry_name:
+# [flavor...]}`` for custom flavor definitions, ``active_flavors: {entry_name:
+# flavor_id}`` for which one (if any) is currently selected. Predefined
+# flavors live in code instead, on the hardcoded entry's own ``flavors``
+# tuple — see LlamaFlavor and get_flavors().
+# ---------------------------------------------------------------------------
+
+
+def _flavor_from_json(raw: dict[str, object]) -> LlamaFlavor | None:
+    flavor_id = str(raw.get("id", "")).strip()
+    name = str(raw.get("name", "")).strip()
+    if not flavor_id or not name:
+        return None
+    return LlamaFlavor(
+        id=flavor_id,
+        name=name,
+        description=str(raw.get("description", "")),
+        llama_args=parse_llama_args(raw.get("llama_args", {})),
+        min_ram=int(cast(int, raw.get("min_ram", 0)) or 0),
+        min_vram=int(cast(int, raw.get("min_vram", 0)) or 0),
+    )
+
+
+def _flavor_to_json(flavor: LlamaFlavor) -> dict[str, object]:
+    return {
+        "id": flavor.id,
+        "name": flavor.name,
+        "description": flavor.description,
+        "llama_args": flavor.llama_args,
+        "min_ram": flavor.min_ram,
+        "min_vram": flavor.min_vram,
     }
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _all_custom_flavors(data: dict[str, object]) -> dict[str, list[LlamaFlavor]]:
+    raw = data.get("flavors")
+    result: dict[str, list[LlamaFlavor]] = {}
+    if not isinstance(raw, dict):
+        return result
+    for entry_name, raw_list in raw.items():
+        if not isinstance(raw_list, list):
+            continue
+        flavors = [
+            f
+            for f in (_flavor_from_json(item) for item in raw_list if isinstance(item, dict))
+            if f is not None
+        ]
+        if flavors:
+            result[str(entry_name)] = flavors
+    return result
+
+
+def _write_custom_flavors(
+    data: dict[str, object], all_flavors: dict[str, list[LlamaFlavor]]
+) -> None:
+    data["flavors"] = {
+        entry_name: [_flavor_to_json(f) for f in flavors]
+        for entry_name, flavors in all_flavors.items()
+    }
+
+
+def _all_active_flavors(data: dict[str, object]) -> dict[str, str]:
+    raw = data.get("active_flavors")
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if isinstance(v, str) and v}
+
+
+def _slugify_flavor_id(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    return slug or "flavor"
+
+
+def get_flavors(kodo_dir: Path, entry: LocalLLMEntry) -> tuple[LlamaFlavor, ...]:
+    """Predefined + custom flavors available for *entry*, predefined slots first.
+
+    A custom flavor whose ``id`` matches a predefined one is an **override**
+    — its definition would be used in place of the predefined one (same list
+    position), rather than being dropped. Nothing in the public API can
+    create one any more: :func:`add_flavor` always auto-generates an id that
+    can't collide with a predefined one, and :func:`update_flavor` rejects a
+    predefined ``flavor_id`` outright (predefined flavors are strictly
+    read-only). This merge is kept purely for resilience against a
+    same-id override written to ``~/.kodo/etc/local-llm-registry.json`` by
+    an older kodo version, before that restriction existed — new ones can't
+    be created going forward. Custom flavors that don't collide with any
+    predefined id are appended after, in the order they were added.
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        entry: The entry to look up flavors for.
+
+    Returns:
+        tuple[LlamaFlavor, ...]: Ordered, predefined slots first (each
+        possibly override-replaced), then any additional custom flavors.
+    """
+    custom = _all_custom_flavors(_load_raw(kodo_dir)).get(entry.name, [])
+    custom_by_id = {f.id: f for f in custom}
+    predefined_ids = {f.id for f in entry.flavors}
+    merged = tuple(custom_by_id.get(f.id, f) for f in entry.flavors)
+    extra = tuple(f for f in custom if f.id not in predefined_ids)
+    return merged + extra
+
+
+def add_flavor(
+    kodo_dir: Path,
+    entry_name: str,
+    name: str,
+    *,
+    description: str = "",
+    llama_args: dict[str, str] | None = None,
+    min_ram: int = 0,
+    min_vram: int = 0,
+) -> LlamaFlavor:
+    """Add a brand-new custom flavor to *entry_name*, auto-assigning its ``id`` from *name*.
+
+    Always creates a new flavor slot, never an override of an existing one —
+    the "Add" side of the "manage flavors" modal. Use :func:`update_flavor`
+    to change an *existing custom* flavor's definition in place (predefined
+    flavors are read-only, see that function's docstring).
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        entry_name: The registry entry (hardcoded or custom) to attach this
+            flavor to.
+        name: Display name; also the source for the auto-generated ``id``
+            (slugified, de-duplicated against every flavor — predefined or
+            custom — *entry_name* already has, e.g. ``my-flavor``,
+            ``my-flavor-2``).
+        description: Optional human-readable explanation.
+        llama_args: CLI flags, same shape as ``LlamaFlavor.llama_args``.
+        min_ram: See ``LlamaFlavor.min_ram``. Defaults to ``0`` (unknown/no
+            requirement — the hardware-fit check stays inactive).
+        min_vram: See ``LlamaFlavor.min_vram``. Same default as *min_ram*.
+
+    Returns:
+        LlamaFlavor: The created flavor, with its assigned ``id``.
+
+    Raises:
+        ValueError: If *entry_name* is unknown, is a ``custom_server_url``
+            (flavors are meaningless for a server kodo doesn't launch),
+            *name* is blank, or a flavor named *name* already exists for
+            *entry_name*.
+    """
+    entry = get_local_registry(kodo_dir).get(entry_name)
+    if entry is None:
+        raise ValueError(f"Unknown local model: {entry_name!r}")
+    if entry.kind == "custom_server_url":
+        raise ValueError("custom_server_url entries do not support flavors")
+    name = name.strip()
+    if not name:
+        raise ValueError("Flavor name is required")
+
+    existing_flavors = get_flavors(kodo_dir, entry)
+    if any(f.name == name for f in existing_flavors):
+        raise ValueError(f"A flavor named {name!r} already exists for {entry_name!r}")
+
+    existing_ids = {f.id for f in existing_flavors}
+    base_id = _slugify_flavor_id(name)
+    flavor_id = base_id
+    suffix = 2
+    while flavor_id in existing_ids:
+        flavor_id = f"{base_id}-{suffix}"
+        suffix += 1
+
+    flavor = LlamaFlavor(
+        id=flavor_id,
+        name=name,
+        description=description,
+        llama_args=dict(llama_args or {}),
+        min_ram=min_ram,
+        min_vram=min_vram,
+    )
+    data = _load_raw(kodo_dir)
+    all_flavors = _all_custom_flavors(data)
+    all_flavors.setdefault(entry_name, []).append(flavor)
+    _write_custom_flavors(data, all_flavors)
+    _save_raw(kodo_dir, data)
+    return flavor
+
+
+def update_flavor(
+    kodo_dir: Path,
+    entry_name: str,
+    flavor_id: str,
+    name: str,
+    *,
+    description: str = "",
+    llama_args: dict[str, str] | None = None,
+    min_ram: int = 0,
+    min_vram: int = 0,
+) -> LlamaFlavor:
+    """Overwrite an existing *custom* flavor's definition in place, keeping its ``id``.
+
+    Predefined flavors are strictly read-only: this rejects *flavor_id*
+    outright if it names one of *entry_name*'s predefined flavors (checked
+    against ``entry.flavors``, the hardcoded tuple — same check
+    :func:`remove_flavor` uses), even if a stale custom override from before
+    this restriction existed happens to sit under that id. Anyone who wants
+    a predefined flavor's config with different values should use
+    :func:`add_flavor` to create a new custom flavor (copying the
+    predefined one's ``llama_args`` as a starting point) rather than
+    mutating the original.
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        entry_name: The entry the flavor belongs to.
+        flavor_id: The existing *custom* flavor's id (from
+            :func:`get_flavors`) — unlike :func:`add_flavor`, this is never
+            re-derived from *name*.
+        name: New display name.
+        description: New description.
+        llama_args: New CLI flags, same shape as ``LlamaFlavor.llama_args``.
+        min_ram: See ``LlamaFlavor.min_ram``. Defaults to ``0``, same as
+            :func:`add_flavor` — unlike the pre-read-only behavior, this no
+            longer carries the original flavor's value forward automatically;
+            the caller must resend it to keep it unchanged.
+        min_vram: See ``LlamaFlavor.min_vram``. Same default as *min_ram*.
+
+    Returns:
+        LlamaFlavor: The updated flavor.
+
+    Raises:
+        ValueError: If *entry_name* is unknown, is a ``custom_server_url``,
+            *flavor_id* names a predefined flavor, *name* is blank,
+            *flavor_id* isn't one of *entry_name*'s current flavors, or
+            another flavor of *entry_name* already has *name*.
+    """
+    entry = get_local_registry(kodo_dir).get(entry_name)
+    if entry is None:
+        raise ValueError(f"Unknown local model: {entry_name!r}")
+    if entry.kind == "custom_server_url":
+        raise ValueError("custom_server_url entries do not support flavors")
+    if any(f.id == flavor_id for f in entry.flavors):
+        raise ValueError(f"{flavor_id!r} is a predefined flavor and cannot be edited")
+    name = name.strip()
+    if not name:
+        raise ValueError("Flavor name is required")
+
+    existing_flavors = get_flavors(kodo_dir, entry)
+    original = next((f for f in existing_flavors if f.id == flavor_id), None)
+    if original is None:
+        raise ValueError(f"Unknown flavor {flavor_id!r} for {entry_name!r}")
+    if any(f.name == name and f.id != flavor_id for f in existing_flavors):
+        raise ValueError(f"A flavor named {name!r} already exists for {entry_name!r}")
+
+    flavor = LlamaFlavor(
+        id=flavor_id,
+        name=name,
+        description=description,
+        llama_args=dict(llama_args or {}),
+        min_ram=min_ram,
+        min_vram=min_vram,
+    )
+    data = _load_raw(kodo_dir)
+    all_flavors = _all_custom_flavors(data)
+    existing = all_flavors.get(entry_name, [])
+    replaced = False
+    new_list: list[LlamaFlavor] = []
+    for f in existing:
+        if f.id == flavor_id:
+            new_list.append(flavor)
+            replaced = True
+        else:
+            new_list.append(f)
+    if not replaced:
+        new_list.append(flavor)
+    all_flavors[entry_name] = new_list
+    _write_custom_flavors(data, all_flavors)
+    _save_raw(kodo_dir, data)
+    return flavor
+
+
+def remove_flavor(kodo_dir: Path, entry_name: str, flavor_id: str) -> None:
+    """Remove a custom flavor. Predefined flavors cannot be removed.
+
+    A predefined flavor is rejected even if it currently has a custom
+    *override* (see :func:`update_flavor`) — removing the override would
+    silently revert it to the hardcoded definition, which is not "removing a
+    flavor" from the user's perspective (the "Remove" button stays disabled
+    for these ids in the UI for the same reason).
+
+    If *flavor_id* was the active flavor for *entry_name*, the active
+    selection resets to "" (Default — the entry's own launch config); the
+    caller is responsible for restarting llama-server if *entry_name* is the
+    currently running model (mirrors :func:`set_active_flavor`).
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        entry_name: The entry the flavor belongs to.
+        flavor_id: The flavor to remove.
+
+    Raises:
+        ValueError: If *flavor_id* is not a custom flavor of *entry_name*
+            (includes the case where it's predefined, overridden or not).
+    """
+    entry = get_local_registry(kodo_dir).get(entry_name)
+    if entry is not None and any(f.id == flavor_id for f in entry.flavors):
+        raise ValueError(f"{flavor_id!r} is a predefined flavor and cannot be removed")
+
+    data = _load_raw(kodo_dir)
+    all_flavors = _all_custom_flavors(data)
+    current = all_flavors.get(entry_name, [])
+    remaining = [f for f in current if f.id != flavor_id]
+    if len(remaining) == len(current):
+        raise ValueError(f"No custom flavor {flavor_id!r} for {entry_name!r}")
+    if remaining:
+        all_flavors[entry_name] = remaining
+    else:
+        all_flavors.pop(entry_name, None)
+    _write_custom_flavors(data, all_flavors)
+
+    active = _all_active_flavors(data)
+    if active.get(entry_name) == flavor_id:
+        active.pop(entry_name, None)
+        data["active_flavors"] = active
+    _save_raw(kodo_dir, data)
+
+
+def get_active_flavor(kodo_dir: Path, entry_name: str) -> str:
+    """The active flavor id for *entry_name*, or ``""`` for Default (the entry's own config)."""
+    return _all_active_flavors(_load_raw(kodo_dir)).get(entry_name, "")
+
+
+def set_active_flavor(kodo_dir: Path, entry_name: str, flavor_id: str) -> None:
+    """Set (or clear) the active flavor for *entry_name*.
+
+    Purely a persistence op — it does not touch a running llama-server.
+    Callers that just changed the *currently active local model*'s flavor
+    are responsible for restarting it (see ``local_llm.set_active_flavor``'s
+    handler in ``kodo/server/_app.py``, doc/WS_PROTOCOL.md §7.6).
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        entry_name: The entry to set the active flavor for.
+        flavor_id: A flavor id from :func:`get_flavors`, or ``""`` for
+            Default.
+
+    Raises:
+        ValueError: If *entry_name* is unknown, or *flavor_id* is non-empty
+            and not one of *entry_name*'s flavors.
+    """
+    entry = get_local_registry(kodo_dir).get(entry_name)
+    if entry is None:
+        raise ValueError(f"Unknown local model: {entry_name!r}")
+    if flavor_id and not any(f.id == flavor_id for f in get_flavors(kodo_dir, entry)):
+        raise ValueError(f"Unknown flavor {flavor_id!r} for {entry_name!r}")
+
+    data = _load_raw(kodo_dir)
+    active = _all_active_flavors(data)
+    if flavor_id:
+        active[entry_name] = flavor_id
+    else:
+        active.pop(entry_name, None)
+    data["active_flavors"] = active
+    _save_raw(kodo_dir, data)
+
+
+def resolve_context_window(entry: LocalLLMEntry, flavor: LlamaFlavor | None) -> int:
+    """The effective context window (tokens) for *entry* launched with *flavor*.
+
+    Deduced from *flavor*'s own ``-c``/``--ctx-size`` launch arg when it
+    parses to a positive integer (``--ctx-size`` is checked first, since
+    that's the flag every built-in flavor sets — see
+    :meth:`LlamaFlavor.make_default_kv_q8`); otherwise (absent, ``0``, or
+    unparseable — e.g. ``--ctx-size 0``'s "read the GGUF's own trained
+    context length" sentinel) falls back to *entry*'s own
+    ``context_window``. There is no separate ``context_window`` field on
+    :class:`LlamaFlavor` any more — this function is the single place that
+    turns launch args into a token-budgeting number (see
+    :func:`kodo.llms.get_context_window`, which uses it via
+    :func:`resolve_effective_llama_config`).
+
+    Args:
+        entry: The registry entry supplying the fallback value.
+        flavor: The flavor about to be launched, or ``None`` (falls straight
+            back to *entry*'s own ``context_window``).
+
+    Returns:
+        int: The effective context window in tokens.
+    """
+    if flavor is not None:
+        raw = flavor.llama_args.get("--ctx-size", flavor.llama_args.get("-c"))
+        if raw is not None:
+            try:
+                value = int(str(raw).strip())
+            except ValueError:
+                value = 0
+            if value > 0:
+                return value
+    return entry.context_window
+
+
+def get_effective_flavor_id(kodo_dir: Path, entry: LocalLLMEntry) -> str:
+    """The flavor id that would actually be launched for *entry* right now.
+
+    - The active flavor (:func:`get_active_flavor`), if set and still
+      present among :func:`get_flavors`.
+    - Otherwise (unset, or a stale id whose definition was removed since it
+      was selected — "Default" in the UI) the first available flavor's id.
+    - ``""`` if *entry* has no flavors at all.
+
+    Callers that need to decide whether editing/removing a specific flavor
+    id would change what's currently launched (e.g. whether to restart
+    llama-server) compare against this, not the raw
+    :func:`get_active_flavor` value — an *unset* active flavor still
+    resolves to a real one (the first available), so a change to that one
+    is effectively an active-flavor change too.
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        entry: The entry to resolve.
+
+    Returns:
+        str: A flavor id from :func:`get_flavors`, or ``""``.
+    """
+    flavors = get_flavors(kodo_dir, entry)
+    flavor_id = get_active_flavor(kodo_dir, entry.name)
+    if flavor_id and any(f.id == flavor_id for f in flavors):
+        return flavor_id
+    return flavors[0].id if flavors else ""
+
+
+def resolve_effective_llama_config(
+    kodo_dir: Path, entry: LocalLLMEntry
+) -> tuple[dict[str, str], int]:
+    """The ``(llama_args, context_window)`` actually launched for *entry*.
+
+    Flavors are the only source of ``llama_args`` — *entry* itself carries
+    none — so this always resolves to some flavor's args, selected via
+    :func:`get_effective_flavor_id`. If *entry* has no flavors at all (only
+    possible for a flavor-less ``custom_*`` entry whose sole flavor was
+    since removed, or a ``custom_server_url`` entry, which is never actually
+    launched this way), returns ``({}, entry.context_window)`` — no CLI args
+    beyond the server-management ones in
+    :class:`kodo.llms.llamacpp.LlamaServerConfig`.
+
+    ``context_window`` is resolved via :func:`resolve_context_window` from
+    the chosen flavor's own launch args, falling back to ``entry``'s.
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        entry: The entry about to be launched.
+
+    Returns:
+        tuple[dict[str, str], int]: ``(llama_args, context_window)`` to use
+        for this launch.
+    """
+    flavors = get_flavors(kodo_dir, entry)
+    flavor_id = get_effective_flavor_id(kodo_dir, entry)
+    flavor = next((f for f in flavors if f.id == flavor_id), None) if flavor_id else None
+    if flavor is None:
+        return {}, entry.context_window
+    return dict(flavor.llama_args), resolve_context_window(entry, flavor)
 
 
 # ---------------------------------------------------------------------------
@@ -1448,6 +2033,16 @@ def get_local_registry(kodo_dir: Path) -> dict[str, LocalLLMEntry]:
 def add_local_entry(kodo_dir: Path, entry: LocalLLMEntry) -> None:
     """Add a custom entry to the external collection.
 
+    Forces ``entry.flavors`` to ``()`` regardless of what the caller passed
+    in — a custom entry's dataclass field default would otherwise silently
+    attach the built-in ``"default"`` :class:`LlamaFlavor` (meant for
+    ``hardcoded_hf`` entries that don't override it), which would then shadow
+    (and permanently hide) any *custom* flavor later added under the same
+    ``"default"`` id — see :func:`get_flavors`'s predefined-wins collision
+    rule. This is the single enforcement point for that invariant; every
+    ``local_llm.add_*`` handler in ``kodo/server/_app.py`` relies on it
+    rather than repeating ``flavors=()`` itself.
+
     Args:
         kodo_dir: User-level ``~/.kodo`` directory.
         entry: The entry to add; ``entry.kind`` must be one of the custom kinds.
@@ -1460,6 +2055,8 @@ def add_local_entry(kodo_dir: Path, entry: LocalLLMEntry) -> None:
         raise ValueError(f"Cannot add a local LLM entry of kind {entry.kind!r}")
     if entry.name in get_local_registry(kodo_dir):
         raise ValueError(f"A local LLM named {entry.name!r} already exists")
+    if entry.flavors:
+        entry = replace(entry, flavors=())
     external, override = _load_external(kodo_dir)
     external.append(entry)
     _save_external(kodo_dir, external, override)
@@ -1471,7 +2068,10 @@ def remove_local_entry(kodo_dir: Path, name: str) -> None:
     Does not touch any downloaded GGUF file on disk — callers that want to
     free disk space should uninstall first via
     :func:`kodo.llms.llamacpp.get_local_model_manager`'s ``uninstall`` method
-    before removing.
+    before removing. Also drops any custom flavors and active-flavor
+    selection stored for *name* — they would otherwise be permanently
+    orphaned (nothing else ever cleans them up, and a future custom entry
+    added under the same name would silently inherit them).
 
     Args:
         kodo_dir: User-level ``~/.kodo`` directory.
@@ -1487,6 +2087,19 @@ def remove_local_entry(kodo_dir: Path, name: str) -> None:
     if len(remaining) == len(external):
         raise ValueError(f"No custom local LLM named {name!r}")
     _save_external(kodo_dir, remaining, override)
+
+    data = _load_raw(kodo_dir)
+    all_flavors = _all_custom_flavors(data)
+    active = _all_active_flavors(data)
+    changed = False
+    if all_flavors.pop(name, None) is not None:
+        _write_custom_flavors(data, all_flavors)
+        changed = True
+    if active.pop(name, None) is not None:
+        data["active_flavors"] = active
+        changed = True
+    if changed:
+        _save_raw(kodo_dir, data)
 
 
 def get_llama_server_override_path(kodo_dir: Path) -> str | None:

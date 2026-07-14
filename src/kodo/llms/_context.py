@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ._cloud_registry import get_cloud_registry
-from ._local_registry import get_local_registry
+from ._local_registry import get_local_registry, resolve_effective_llama_config
 
 __all__ = ["get_context_window"]
 
@@ -25,8 +25,12 @@ def get_context_window(model_key: str, kodo_dir: Path) -> int:
     """Return the maximum context window (in tokens) for *model_key*.
 
     Checks the cloud registry (by ``model_id``) first, then the local
-    registry (by name); falls back to :data:`_DEFAULT_CONTEXT_WINDOW` for an
-    unknown key or one whose ``context_window`` is unset/non-positive.
+    registry (by name) — for a local entry, its *active flavor*'s
+    ``context_window`` takes precedence over the entry's own (see
+    :func:`kodo.llms.resolve_effective_llama_config`), since that is the
+    context size actually launched. Falls back to
+    :data:`_DEFAULT_CONTEXT_WINDOW` for an unknown key or one whose
+    ``context_window`` is unset/non-positive.
 
     Args:
         model_key: A cloud ``model_id`` or local registry name.
@@ -42,7 +46,9 @@ def get_context_window(model_key: str, kodo_dir: Path) -> int:
                 return entry.context_window if entry.context_window > 0 else _DEFAULT_CONTEXT_WINDOW
 
     local_entry = get_local_registry(kodo_dir).get(model_key)
-    if local_entry is not None and local_entry.context_window > 0:
-        return local_entry.context_window
+    if local_entry is not None:
+        _, context_window = resolve_effective_llama_config(kodo_dir, local_entry)
+        if context_window > 0:
+            return context_window
 
     return _DEFAULT_CONTEXT_WINDOW

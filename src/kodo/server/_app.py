@@ -29,20 +29,28 @@ from kodo.llms import (
     Message,
     TokenDelta,
     TurnEnd,
+    add_flavor,
     add_local_entry,
     clear_llama_server_override_path,
     detect_ram_gb,
     detect_vram_gb,
+    get_active_flavor,
     get_cloud_registry,
     get_cloud_vendor_display_name,
+    get_effective_flavor_id,
+    get_flavors,
     get_llama_server_override_path,
     get_local_registry,
     local_thinking_default_tier,
     local_thinking_family,
     local_thinking_tiers,
     parse_llama_args,
+    parse_llama_args_text,
+    remove_flavor,
     remove_local_entry,
+    set_active_flavor,
     set_llama_server_override_path,
+    update_flavor,
 )
 from kodo.llms.llamacpp import (
     LlamaPlugin,
@@ -82,13 +90,17 @@ from kodo.transport import (
     MSG_LLM_COMPLETE,
     MSG_LLM_SELECT,
     MSG_LOCAL_LLM_ADD_FILE,
+    MSG_LOCAL_LLM_ADD_FLAVOR,
     MSG_LOCAL_LLM_ADD_HUGGINGFACE,
     MSG_LOCAL_LLM_ADD_SERVER_URL,
     MSG_LOCAL_LLM_INSTALL,
     MSG_LOCAL_LLM_PAUSE,
     MSG_LOCAL_LLM_REMOVE,
+    MSG_LOCAL_LLM_REMOVE_FLAVOR,
     MSG_LOCAL_LLM_RESUME,
+    MSG_LOCAL_LLM_SET_ACTIVE_FLAVOR,
     MSG_LOCAL_LLM_UNINSTALL,
+    MSG_LOCAL_LLM_UPDATE_FLAVOR,
     MSG_MODE_SET,
     MSG_PROJECT_CREATE,
     MSG_PROJECT_SET,
@@ -326,6 +338,22 @@ def _thinking_families_payload(registry: dict[str, LocalLLMEntry]) -> dict[str, 
     }
 
 
+def _flavors_payload(entry: LocalLLMEntry, kodo_dir: Path) -> list[dict[str, object]]:
+    predefined_ids = {f.id for f in entry.flavors}
+    return [
+        {
+            "id": f.id,
+            "name": f.name,
+            "description": f.description,
+            "llama_args": f.llama_args,
+            "predefined": f.id in predefined_ids,
+            "min_ram": f.min_ram,
+            "min_vram": f.min_vram,
+        }
+        for f in get_flavors(kodo_dir, entry)
+    ]
+
+
 def _local_registry_payload() -> dict[str, object]:
     """The ``{local_registry, llama_server_override_path, detected_vram_gb,
     detected_ram_gb, thinking_families}`` shape shared by ``hello.ack`` and
@@ -359,6 +387,8 @@ def _local_registry_payload() -> dict[str, object]:
             "mac_tip": e.mac_tip,
             "min_memory": e.min_memory,
             "memory": e.memory,
+            "flavors": _flavors_payload(e, kodo_dir),
+            "active_flavor": get_active_flavor(kodo_dir, e.name),
         }
         for e in registry.values()
     ]
@@ -859,11 +889,35 @@ async def _reply_local_llm_error(req: Request, message: str) -> None:
     )
 
 
-def _parse_context_window(raw: object) -> int:
+def _parse_non_negative_int(raw: object) -> int:
+    """Best-effort int parse for a numeric webview field — used for
+    ``context_window`` (add_huggingface/add_file) and ``min_ram``/``min_vram``
+    (add_flavor/update_flavor). Anything unparseable, missing, or falsy
+    collapses to ``0`` ("unset"/"unknown" in all four fields' semantics)."""
     try:
         return int(cast(int, raw) or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _seed_default_flavor(kodo_dir: Path, entry: LocalLLMEntry, payload: dict[str, object]) -> None:
+    """Seed *entry*'s first (custom) flavor from an "Add local LLM" modal's own fields.
+
+    Flavors are the only source of launch args now (see :class:`LlamaFlavor`)
+    — a freshly-added ``custom_hf``/``custom_file`` entry has none of its own
+    (``entry.flavors == ()``), so without this it would launch with no CLI
+    args at all until the user visited "Manage flavors". Named/slugged
+    ``"default"`` to match the built-in flavor every ``hardcoded_hf`` entry
+    gets, but stored as a regular *custom* flavor (not baked into Python
+    source, and freely editable/removable like any other).
+    """
+    add_flavor(
+        kodo_dir,
+        entry.name,
+        "default",
+        description="Default flavor",
+        llama_args=parse_llama_args(payload.get("llama_args", {})),
+    )
 
 
 async def _handle_local_llm_add_huggingface(req: Request) -> None:
@@ -874,17 +928,18 @@ async def _handle_local_llm_add_huggingface(req: Request) -> None:
         description=str(payload.get("description", "")),
         repo_id=str(payload.get("repo_id", "")).strip(),
         filename=str(payload.get("filename", "")).strip(),
-        llama_args=parse_llama_args(payload.get("llama_args", {})),
-        context_window=_parse_context_window(payload.get("context_window", 0)),
+        context_window=_parse_non_negative_int(payload.get("context_window", 0)),
     )
     if not entry.name or not entry.repo_id or not entry.filename:
         await _reply_local_llm_error(req, "name, repo_id, and filename are all required")
         return
+    kodo_dir = kodo_user_dir()
     try:
-        add_local_entry(kodo_user_dir(), entry)
+        add_local_entry(kodo_dir, entry)
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
         return
+    _seed_default_flavor(kodo_dir, entry, payload)
     await _send_registry_state(req)
 
 
@@ -895,17 +950,18 @@ async def _handle_local_llm_add_file(req: Request) -> None:
         kind="custom_file",
         description=str(payload.get("description", "")),
         path=str(payload.get("path", "")).strip(),
-        llama_args=parse_llama_args(payload.get("llama_args", {})),
-        context_window=_parse_context_window(payload.get("context_window", 0)),
+        context_window=_parse_non_negative_int(payload.get("context_window", 0)),
     )
     if not entry.name or not entry.path:
         await _reply_local_llm_error(req, "name and path are both required")
         return
+    kodo_dir = kodo_user_dir()
     try:
-        add_local_entry(kodo_user_dir(), entry)
+        add_local_entry(kodo_dir, entry)
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
         return
+    _seed_default_flavor(kodo_dir, entry, payload)
     await _send_registry_state(req)
 
 
@@ -945,6 +1001,135 @@ async def _handle_local_llm_remove(req: Request) -> None:
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
         return
+    await _send_registry_state(req)
+
+
+def _current_local_model_name() -> str:
+    """The ``models.local`` entry name from settings.json, or ``""`` if unset/unreadable."""
+    path = WorkspaceLayout().settings_json
+    if not path.exists():
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ""
+    models = data.get("models") if isinstance(data, dict) else None
+    return str(models.get("local", "")) if isinstance(models, dict) else ""
+
+
+async def _restart_llama_server_if_running(req: Request, entry_name: str) -> None:
+    """Force a fresh llama-server launch for *entry_name* to pick up a just-changed flavor.
+
+    Only meaningful when llama-server is *actually currently running*
+    *entry_name* — a flavor change for a selected-but-not-started model has
+    nothing to restart. Stops it unconditionally first even though
+    :func:`kodo.llms.llamacpp.ensure_llama_running` would normally treat a
+    same-name request as "already running, nothing to do" — flavor changes
+    don't change ``entry.name``, so that shortcut would otherwise mask the
+    new args entirely (see its docstring).
+    """
+    kodo_dir = kodo_user_dir()
+    entry = get_local_registry(kodo_dir).get(entry_name)
+    if entry is None or entry.kind == "custom_server_url":
+        return
+    server = LlamaServer.get_active_llama_server()
+    if server is None or not server.is_running or server.model_name != entry_name:
+        return
+    await server.stop()
+    try:
+        server = await ensure_llama_running(entry, kodo_dir)
+    except Exception as exc:  # noqa: BLE001 — startup failure surfaces as llama.state, not a crash
+        await req.connection.send(
+            Envelope.make_event(
+                EVT_LLAMA_STATE, {"running": False, "model": None, "error": str(exc)}
+            )
+        )
+        return
+    await req.connection.send(
+        Envelope.make_event(
+            EVT_LLAMA_STATE, {"running": True, "model": server.model_name, "port": server.port}
+        )
+    )
+
+
+async def _handle_local_llm_add_flavor(req: Request) -> None:
+    payload = req.env.payload
+    entry_name = str(payload.get("name", "")).strip()
+    flavor_name = str(payload.get("flavor_name", "")).strip()
+    try:
+        flavor = add_flavor(
+            kodo_user_dir(),
+            entry_name,
+            flavor_name,
+            description=str(payload.get("description", "")),
+            llama_args=parse_llama_args_text(payload.get("llama_args_text", "")),
+            min_ram=_parse_non_negative_int(payload.get("min_ram", 0)),
+            min_vram=_parse_non_negative_int(payload.get("min_vram", 0)),
+        )
+    except ValueError as exc:
+        await _reply_local_llm_error(req, str(exc))
+        return
+    _log.info("Added flavor %r (%r) to %r", flavor.name, flavor.id, entry_name)
+    await _send_registry_state(req)
+
+
+async def _handle_local_llm_update_flavor(req: Request) -> None:
+    payload = req.env.payload
+    entry_name = str(payload.get("name", "")).strip()
+    flavor_id = str(payload.get("flavor_id", "")).strip()
+    flavor_name = str(payload.get("flavor_name", "")).strip()
+    kodo_dir = kodo_user_dir()
+    entry = get_local_registry(kodo_dir).get(entry_name)
+    was_effective_active = (
+        entry is not None and get_effective_flavor_id(kodo_dir, entry) == flavor_id
+    )
+    try:
+        flavor = update_flavor(
+            kodo_dir,
+            entry_name,
+            flavor_id,
+            flavor_name,
+            description=str(payload.get("description", "")),
+            llama_args=parse_llama_args_text(payload.get("llama_args_text", "")),
+            min_ram=_parse_non_negative_int(payload.get("min_ram", 0)),
+            min_vram=_parse_non_negative_int(payload.get("min_vram", 0)),
+        )
+    except ValueError as exc:
+        await _reply_local_llm_error(req, str(exc))
+        return
+    _log.info("Updated flavor %r (%r) on %r", flavor.name, flavor.id, entry_name)
+    if was_effective_active and entry_name == _current_local_model_name():
+        await _restart_llama_server_if_running(req, entry_name)
+    await _send_registry_state(req)
+
+
+async def _handle_local_llm_remove_flavor(req: Request) -> None:
+    entry_name = str(req.env.payload.get("name", "")).strip()
+    flavor_id = str(req.env.payload.get("flavor_id", "")).strip()
+    kodo_dir = kodo_user_dir()
+    was_active = get_active_flavor(kodo_dir, entry_name) == flavor_id
+    try:
+        remove_flavor(kodo_dir, entry_name, flavor_id)
+    except ValueError as exc:
+        await _reply_local_llm_error(req, str(exc))
+        return
+    if was_active and entry_name == _current_local_model_name():
+        await _restart_llama_server_if_running(req, entry_name)
+    await _send_registry_state(req)
+
+
+async def _handle_local_llm_set_active_flavor(req: Request) -> None:
+    entry_name = str(req.env.payload.get("name", "")).strip()
+    flavor_id = str(req.env.payload.get("flavor_id", "")).strip()
+    kodo_dir = kodo_user_dir()
+    changed = get_active_flavor(kodo_dir, entry_name) != flavor_id
+    try:
+        set_active_flavor(kodo_dir, entry_name, flavor_id)
+    except ValueError as exc:
+        await _reply_local_llm_error(req, str(exc))
+        return
+    if changed and entry_name == _current_local_model_name():
+        await _restart_llama_server_if_running(req, entry_name)
     await _send_registry_state(req)
 
 
@@ -1334,6 +1519,12 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_LOCAL_LLM_ADD_HUGGINGFACE, _handle_local_llm_add_huggingface)
     conn_registry.register_handler(MSG_LOCAL_LLM_ADD_FILE, _handle_local_llm_add_file)
     conn_registry.register_handler(MSG_LOCAL_LLM_ADD_SERVER_URL, _handle_local_llm_add_server_url)
+    conn_registry.register_handler(MSG_LOCAL_LLM_ADD_FLAVOR, _handle_local_llm_add_flavor)
+    conn_registry.register_handler(MSG_LOCAL_LLM_UPDATE_FLAVOR, _handle_local_llm_update_flavor)
+    conn_registry.register_handler(MSG_LOCAL_LLM_REMOVE_FLAVOR, _handle_local_llm_remove_flavor)
+    conn_registry.register_handler(
+        MSG_LOCAL_LLM_SET_ACTIVE_FLAVOR, _handle_local_llm_set_active_flavor
+    )
     conn_registry.register_handler(MSG_LLAMA_SERVER_OVERRIDE_SET, _handle_llama_server_override_set)
     conn_registry.register_handler(
         MSG_LLAMA_SERVER_OVERRIDE_REMOVE, _handle_llama_server_override_remove

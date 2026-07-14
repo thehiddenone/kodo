@@ -18,7 +18,7 @@ import os
 import signal
 import sys
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -116,19 +116,23 @@ class RunningServer:
 
 @dataclass(frozen=True)
 class LlamaServerConfig:
-    """Configuration for a :class:`LlamaServer` instance.
+    """Server-management configuration for a :class:`LlamaServer` instance.
+
+    Deliberately holds nothing about the model's own llama.cpp launch
+    behavior (context size, GPU offload, sampling/template flags, ...) — that
+    is entirely the resolved flavor's job now (see :class:`LlamaFlavor` in
+    :mod:`kodo.llms._local_registry`), passed to :class:`LlamaServer`
+    separately as a plain ``dict[str, str]`` rather than stored on this
+    dataclass, since it varies per launch while this config's fields don't.
 
     Attributes:
         executable: Path to the ``llama-server`` binary.
         model_path: Path to the ``.gguf`` model file.
         kodo_dir: User-level ``~/.kodo`` directory; used to write/remove the
-            runtime state file that enables cross-restart detection.
+            runtime state file that enables cross-restart detection, and to
+            place the server's own log file.
         host: Bind address.  Defaults to ``'127.0.0.1'``.
         port: TCP port.  Defaults to `8042``.
-        context_size: Model context window in tokens.  Defaults to ``262144``.
-        n_gpu_layers: Layers to offload to GPU; ``-1`` means all layers.
-        llama_args: Extra CLI flags passed verbatim to ``llama-server``.
-        extra_args: Additional CLI arguments appended after all other flags.
     """
 
     executable: Path
@@ -137,10 +141,6 @@ class LlamaServerConfig:
     model_name: str = ""
     host: str = "127.0.0.1"
     port: int = 8042
-    context_size: int = 262144
-    n_gpu_layers: int = -1
-    llama_args: dict[str, str] = field(default_factory=dict)
-    extra_args: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -156,23 +156,33 @@ class LlamaServer:
     result to take ownership of a surviving process.
 
     Args:
-        config (LlamaServerConfig): Server configuration.
+        config (LlamaServerConfig): Server-management configuration.
+        llama_args (dict[str, str]): The resolved flavor's CLI flags (see
+            ``kodo.llms.resolve_effective_llama_config``) — the model's own
+            launch behavior, kept separate from *config* since it varies with
+            the active flavor while *config* doesn't.
     """
 
     __active_llama_server: LlamaServer | None = None
 
     __config: LlamaServerConfig
+    __llama_args: dict[str, str]
     __pid: int | None
     __active_host: str
     __active_port: int
 
-    def __init__(self, config: LlamaServerConfig) -> None:
+    def __init__(self, config: LlamaServerConfig, llama_args: dict[str, str] | None = None) -> None:
         """Initialise without starting the subprocess.
 
         Args:
-            config (LlamaServerConfig): Server configuration.
+            config (LlamaServerConfig): Server-management configuration.
+            llama_args (dict[str, str] | None): The resolved flavor's CLI
+                flags, verbatim ``{flag: value}`` pairs; a bare/valueless
+                flag is represented with an empty string value. ``None``
+                (default) is treated as no flags at all.
         """
         self.__config = config
+        self.__llama_args = dict(llama_args) if llama_args else {}
         self.__pid = None
         self.__active_host = config.host
         self.__active_port = config.port
@@ -300,28 +310,16 @@ class LlamaServer:
             cfg.host,
             "--port",
             str(cfg.port),
-            "--ctx-size",
-            str(cfg.context_size),
-            "--n-gpu-layers",
-            str(cfg.n_gpu_layers),
-            # Use each GGUF's embedded chat template (--jinja) so tool calling
-            # goes through llama.cpp's template-driven parser with lazy-grammar
-            # constraints, and let the reasoning channel be parsed per the
-            # model's own convention (--reasoning-format auto). Without --jinja
-            # the parser is best-effort recognition only, with nothing forcing a
-            # model back into a valid tool-call structure when its output format
-            # slips (the gpt-oss harmony "wrong channel" failure — see
-            # doc/LOCAL_INFERENCE.md). Applied to every local model: modern
-            # Qwen/Gemma/gpt-oss GGUFs all ship a valid embedded template, and
-            # LlamaPlugin's salvage path covers any residual slip regardless.
-            "--jinja",
-            "--reasoning-format",
-            "auto",
         ]
-        for k, v in cfg.llama_args.items():
+        # Everything model-specific (context size, GPU offload, KV cache
+        # type, --jinja, ...) comes entirely from the resolved flavor — see
+        # LlamaFlavor/resolve_effective_llama_config in _local_registry.py.
+        # No defaults are merged in here, so there is no risk of a flavor's
+        # own flag appearing twice on the command line.
+        for k, v in self.__llama_args.items():
             cmd.append(k)
-            cmd.append(v)
-        cmd.extend(cfg.extra_args)
+            if v:
+                cmd.append(v)
         return cmd
 
     async def __wait_ready(self) -> None:
