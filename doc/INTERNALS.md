@@ -641,7 +641,11 @@ the amendment record.
 The **security preamble** carries the confidentiality / injection-resistance /
 role-fixing / tool-discipline / output-hygiene rules. The **performance
 preamble** carries execution-quality rules: Communication Style, Reasoning Is
-Silent, **Edit Discipline** (targeted, minimal edits; prefer a targeted
+Silent, **Thinking Is Only for Thinking** (no tool-call syntax of any format
+inside thinking blocks — nothing there is parsed or executed; never fabricate a
+phantom call's result; end thinking and invoke the tool for real — added after
+Qwen36-27B was observed emitting XML-tag pseudo-calls inside its reasoning),
+**Edit Discipline** (targeted, minimal edits; prefer a targeted
 `edit_file` over regenerating a whole file; no drive-by changes), Read Before You
 Write, Match Existing Conventions, Verify Don't Assume, and Stay In Scope.
 

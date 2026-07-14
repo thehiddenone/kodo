@@ -1,8 +1,9 @@
 """SubAgentSpec for ``investigator`` — a standalone read-only investigator.
 
-The Investigator answers questions about a problem by exploring the existing
-code (read-only) and/or searching the web. Two operating modes, selected per
-call by ``mode``:
+The Investigator answers questions about a problem from its own settled
+knowledge (answered directly, labeled, no searching), by exploring the
+existing code (read-only), and/or by searching the web. Two operating modes,
+selected per call by ``mode``:
 
 - ``"qa"`` — answer a specific list of ``questions``; the result is a matching
   list of ``answers``.
@@ -25,8 +26,9 @@ __all__ = ["INVESTIGATOR"]
 INVESTIGATOR: SubAgentSpec = SubAgentSpec(
     name="investigator",
     description=(
-        "Read-only investigator: explores existing code and/or searches the web to answer "
-        "specific questions (qa mode) or produce a full investigative report (report mode)."
+        "Read-only investigator: answers from settled knowledge, explores existing code, "
+        "and/or searches the web to answer specific questions (qa mode) or produce a full "
+        "investigative report (report mode)."
     ),
     input_schema={
         "type": "object",
@@ -83,8 +85,9 @@ INVESTIGATOR: SubAgentSpec = SubAgentSpec(
                         "answer": {
                             "type": "string",
                             "description": (
-                                "The answer, grounded in what was found. State plainly when "
-                                "the evidence was inconclusive."
+                                "The answer, opening with its basis — general knowledge "
+                                "(with a version/time anchor), code, web, or a combination. "
+                                "State plainly when the evidence was inconclusive."
                             ),
                         },
                     },
@@ -100,7 +103,8 @@ INVESTIGATOR: SubAgentSpec = SubAgentSpec(
                 "items": {"type": "string"},
                 "description": (
                     "What the findings rest on: file paths (with line refs where useful) and "
-                    "any web URLs consulted."
+                    "any web URLs consulted. Empty is fine when settled knowledge answered "
+                    "everything."
                 ),
             },
             "summary": {

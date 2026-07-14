@@ -30,7 +30,7 @@ Each task has:
 
 - **`title`** — a short label for the step.
 - **`subagent`** — which sub-agent the Problem Solver runs for this step. You know the Problem Solver's sub-agents:
-  - **`investigator`** — read-only research (explore existing code and/or search the web) to answer questions or produce a report. Use an investigator step when a later step needs understanding that isn't in hand yet.
+  - **`investigator`** — read-only research (explore existing code and/or search the web) to answer questions or produce a report. Use an investigator step when a later step needs understanding that isn't in hand yet — and only for questions that require *absorbing material* (several files read, external docs studied), never for what a competent engineer answers from general knowledge; the Problem Solver answers those itself, without a step.
   - **`developer`** — writes production code and behavioral tests from instructions. Use a developer step for each independent piece of building work.
 - **`instructions`** — what this step must achieve and **how to build the chosen sub-agent's input**. Be concrete:
   - For an **investigator** step: describe how the Problem Solver should derive the investigator's `questions` (or report topic) and which `roots` to point it at — including facts produced by earlier steps.
