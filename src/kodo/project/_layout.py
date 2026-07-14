@@ -30,6 +30,24 @@ def kodo_user_dir() -> Path:
     return Path.home() / ".kodo"
 
 
+def session_temp_dir(session_id: str) -> Path:
+    """``~/.kodo/sessions/<session_id>/tmp`` — one session's private scratch space.
+
+    Lives outside every project root and workspace folder, so it is never
+    reachable through the ordinary project-confined/logical path resolvers.
+    The native file tools (`create_file`, `create_directory`, `edit_file`,
+    `filesystem`, `find_files`, `find_text_in_files`) resolve here instead of
+    the project root when called with `temporary: true` (see
+    `kodo.tools.Tool.resolve_path`, doc/SECURITY.md). Changes made there never
+    enter a project's checkpoint mirror — `kodo.runtime._checkpoints`'s
+    `mutation_paths` is only ever asked to resolve *those same relative
+    paths* against the project resolver, and the coordinator skips the call
+    outright when `temporary` is set — and the security layer always allows
+    them, regardless of Command Control posture.
+    """
+    return kodo_user_dir() / "sessions" / session_id / "tmp"
+
+
 class ProjectLayoutError(Exception):
     """Raised when the project directory does not conform to the expected layout."""
 

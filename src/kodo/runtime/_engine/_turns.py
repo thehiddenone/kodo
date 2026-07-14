@@ -778,7 +778,7 @@ class TurnLoopMixin:
         """
         spec = self._registry.spec_for(agent_name)
         return ToolDispatcher(
-            resolver=self._make_resolver(),
+            resolver=self._make_resolver(session_id),
             gate=self._gate,
             security=self._security,
             session=self._session,

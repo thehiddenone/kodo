@@ -6,6 +6,9 @@ zero matches (not found) and more-than-one match (ambiguous) both fail loudly
 without writing anything, so the model cannot silently edit the wrong place.
 Creating, deleting, copying, or moving whole files/directories lives in the
 separate ``filesystem`` tool (:class:`~kodo.tools._filesystem.FilesystemTool`).
+
+``temporary: true`` resolves ``path`` under the session's private scratch
+directory instead (see :meth:`~kodo.tools.Tool.resolve_path`).
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ class EditFileTool(Tool):
         path = str(tool_input.get("path", ""))
         old_string = str(tool_input.get("old_string", ""))
         new_string = str(tool_input.get("new_string", ""))
+        temporary = bool(tool_input.get("temporary", False))
 
         if old_string == "":
             return json.dumps(
@@ -39,7 +43,7 @@ class EditFileTool(Tool):
             )
 
         try:
-            target = ctx.resolver.resolve(path)
+            target = self.resolve_path(path, temporary=temporary)
             if not target.exists():
                 raise FileNotFoundError(f"File not found: {path!r}")
             old_content = target.read_text(encoding="utf-8")

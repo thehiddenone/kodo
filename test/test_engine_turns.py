@@ -963,7 +963,7 @@ async def test_finalize_tool_result_noncompliant_output_emits_incompliant_event(
 def test_make_dispatcher_builds_real_tool_dispatcher() -> None:
     engine = object.__new__(WorkflowEngine)
     engine._registry = SimpleNamespace(spec_for=lambda name: None)
-    engine._make_resolver = lambda: SimpleNamespace(
+    engine._make_resolver = lambda session_id: SimpleNamespace(
         resolve=lambda p: Path(p), default_cwd=Path(".")
     )
     engine._gate = SimpleNamespace()
@@ -986,7 +986,7 @@ def test_make_dispatcher_resolves_project_root_from_current_project() -> None:
     engine._registry = SimpleNamespace(
         spec_for=lambda name: SimpleNamespace(output_schema={"type": "object"})
     )
-    engine._make_resolver = lambda: SimpleNamespace(
+    engine._make_resolver = lambda session_id: SimpleNamespace(
         resolve=lambda p: Path(p), default_cwd=Path(".")
     )
     engine._gate = SimpleNamespace()

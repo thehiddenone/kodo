@@ -4,6 +4,9 @@ Resolves the agent-supplied ``root`` through the active path resolver (so the
 search is confined to the agent's allowed roots), then runs ``fd`` under that
 root and returns matching paths relative to it. Searches one root; a
 multi-project workspace is covered by one call per ``get_root_paths`` entry.
+
+``temporary: true`` resolves ``root`` under the session's private scratch
+directory instead (see :meth:`~kodo.tools.Tool.resolve_path`).
 """
 
 from __future__ import annotations
@@ -35,7 +38,9 @@ class FindFilesTool(Tool):
             return json.dumps({"error": "The 'fd' search util is not available."})
 
         try:
-            root = ctx.resolver.resolve(str(root_raw))
+            root = self.resolve_path(
+                str(root_raw), temporary=bool(tool_input.get("temporary", False))
+            )
         except PermissionError as exc:
             return json.dumps({"error": str(exc)})
         if not root.is_dir():

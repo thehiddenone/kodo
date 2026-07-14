@@ -10,8 +10,12 @@ mirroring the ``kodo.toolspecs`` one-file-per-tool convention.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
+
+from kodo.project import session_temp_dir
 
 from ._context import ToolContext
+from ._paths import resolve_within
 
 __all__ = ["Tool"]
 
@@ -33,6 +37,24 @@ class Tool(ABC):
     def context(self) -> ToolContext:
         """The per-run tool context (collaborators + mutable run state)."""
         return self.__context
+
+    def resolve_path(self, path: str, *, temporary: bool = False) -> Path:
+        """Resolve *path* through the run's active resolver, or the session's
+        private scratch directory when *temporary*.
+
+        ``temporary=True`` confines *path* under
+        ``~/.kodo/sessions/<session_id>/tmp`` (:func:`kodo.project.session_temp_dir`)
+        instead of the project root/workspace folders — relative paths land
+        inside it, absolute paths must already resolve inside it (or the OS
+        temp directory), or a :class:`PermissionError` is raised, exactly like
+        :attr:`ToolContext.resolver`'s own containment guard. Callers pass the
+        raw ``temporary`` tool-input value straight through; the coordinator
+        that would otherwise checkpoint the mutation, and the security layer's
+        gate, both special-case this same flag (see doc/SECURITY.md).
+        """
+        if temporary:
+            return resolve_within(session_temp_dir(self.context.session_id), path)
+        return self.context.resolver.resolve(path)
 
     @abstractmethod
     async def handle(self, tool_input: dict[str, object]) -> str:

@@ -614,6 +614,140 @@ async def test_fileio_allows_path_under_system_temp_dir(
 
 
 # ---------------------------------------------------------------------------
+# `temporary`: session-scoped scratch directory
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_file_temporary_resolves_under_session_scratch_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    scratch_root = tmp_path / "scratch"
+    monkeypatch.setattr("kodo.tools._tool.session_temp_dir", lambda session_id: scratch_root)
+    dispatcher = _make_dispatcher(project_root)
+
+    result = json.loads(
+        await dispatcher.dispatch(
+            "create_file", {"path": "note.txt", "content": "hi", "temporary": True}
+        )
+    )
+
+    assert result["status"] == "created"
+    assert (scratch_root / "note.txt").read_text(encoding="utf-8") == "hi"
+    assert not (project_root / "note.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_create_file_without_temporary_still_resolves_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch_root = tmp_path / "scratch"
+    monkeypatch.setattr("kodo.tools._tool.session_temp_dir", lambda session_id: scratch_root)
+    dispatcher = _make_dispatcher(tmp_path)
+
+    result = json.loads(
+        await dispatcher.dispatch("create_file", {"path": "note.txt", "content": "hi"})
+    )
+
+    assert result["status"] == "created"
+    assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "hi"
+    assert not scratch_root.exists()
+
+
+@pytest.mark.asyncio
+async def test_create_directory_temporary_resolves_under_session_scratch_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    scratch_root = tmp_path / "scratch"
+    monkeypatch.setattr("kodo.tools._tool.session_temp_dir", lambda session_id: scratch_root)
+    dispatcher = _make_dispatcher(project_root)
+
+    result = json.loads(
+        await dispatcher.dispatch("create_directory", {"path": "sub", "temporary": True})
+    )
+
+    assert result["status"] == "created"
+    assert (scratch_root / "sub").is_dir()
+    assert not (project_root / "sub").exists()
+
+
+@pytest.mark.asyncio
+async def test_edit_file_temporary_resolves_under_session_scratch_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    scratch_root = tmp_path / "scratch"
+    scratch_root.mkdir()
+    (scratch_root / "out.txt").write_text("alpha beta gamma", encoding="utf-8")
+    monkeypatch.setattr("kodo.tools._tool.session_temp_dir", lambda session_id: scratch_root)
+    dispatcher = _make_dispatcher(project_root)
+
+    result = json.loads(
+        await dispatcher.dispatch(
+            "edit_file",
+            {
+                "path": "out.txt",
+                "old_string": "beta",
+                "new_string": "BETA",
+                "temporary": True,
+            },
+        )
+    )
+
+    assert result["status"] == "edited"
+    assert (scratch_root / "out.txt").read_text(encoding="utf-8") == "alpha BETA gamma"
+
+
+@pytest.mark.asyncio
+async def test_filesystem_delete_dir_temporary_resolves_under_session_scratch_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    scratch_root = tmp_path / "scratch"
+    (scratch_root / "d").mkdir(parents=True)
+    monkeypatch.setattr("kodo.tools._tool.session_temp_dir", lambda session_id: scratch_root)
+    dispatcher = _make_dispatcher(project_root)
+
+    result = json.loads(
+        await dispatcher.dispatch(
+            "filesystem", {"operation": "delete_dir", "path": "d", "temporary": True}
+        )
+    )
+
+    assert result["status"] == "deleted"
+    assert not (scratch_root / "d").exists()
+
+
+@pytest.mark.asyncio
+async def test_temporary_still_rejects_escape_outside_scratch_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same isolation as test_fileio_rejects_path_outside_project_root: blank
+    # out the OS-temp carve-out so it can't mask the containment guard, since
+    # tmp_path (and thus scratch_root) already lives under the OS temp dir.
+    monkeypatch.setattr("kodo.tools._paths.system_temp_roots", lambda: ())
+    scratch_root = tmp_path / "scratch"
+    monkeypatch.setattr("kodo.tools._tool.session_temp_dir", lambda session_id: scratch_root)
+    dispatcher = _make_dispatcher(tmp_path / "project")
+
+    result = json.loads(
+        await dispatcher.dispatch(
+            "create_file",
+            {"path": "../escape.txt", "content": "nope", "temporary": True},
+        )
+    )
+
+    assert "error" in result
+    assert not (tmp_path / "escape.txt").exists()
+
+
+# ---------------------------------------------------------------------------
 # Native shell tool
 # ---------------------------------------------------------------------------
 

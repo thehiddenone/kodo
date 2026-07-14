@@ -652,7 +652,9 @@ inside thinking blocks — nothing there is parsed or executed; never fabricate 
 phantom call's result; end thinking and invoke the tool for real — added after
 Qwen36-27B was observed emitting XML-tag pseudo-calls inside its reasoning),
 **Edit Discipline** (targeted, minimal edits; prefer a targeted
-`edit_file` over regenerating a whole file; no drive-by changes), Read Before You
+`edit_file` over regenerating a whole file; no drive-by changes), **Scratch /
+Temporary Work** (pass `temporary: true` on the file tools for throwaway work
+that should not land in the project — see doc/SECURITY.md), Read Before You
 Write, Match Existing Conventions, Verify Don't Assume, and Stay In Scope.
 
 | Agent | Tools declared | Role |

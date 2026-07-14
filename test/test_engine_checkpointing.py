@@ -38,8 +38,9 @@ class _FakeHost:
         self._root = root
         self._session = SessionState(session_id="s1")
         self._current_project = current_project
+        self._orch_session_id = "s1"
 
-    def _make_resolver(self):
+    def _make_resolver(self, session_id: str) -> _FakeResolver:
         return _FakeResolver(self._root)
 
     def _root_paths(self) -> tuple[RootPath, ...]:
@@ -175,6 +176,19 @@ async def test_prepare_non_mutating_tool_returns_empty(tmp_path: Path) -> None:
 async def test_prepare_mutating_tool_with_no_resolvable_path_returns_empty(tmp_path: Path) -> None:
     coordinator, _host, _sink = _make_coordinator(tmp_path)
     assert await coordinator.prepare("edit_file", {}) == []
+
+
+async def test_prepare_skips_temporary_call(tmp_path: Path) -> None:
+    # A `temporary: true` call is scoped to the session's scratch directory,
+    # never the project — it must never earn a mirror checkpoint.
+    coordinator, _host, _sink = _make_coordinator(tmp_path)
+    assert await coordinator.prepare("edit_file", {"path": "a.txt", "temporary": True}) == []
+    assert (
+        await coordinator.prepare(
+            "filesystem", {"operation": "delete_dir", "path": "a", "temporary": True}
+        )
+        == []
+    )
 
 
 async def test_prepare_and_commit_round_trip(tmp_path: Path) -> None:

@@ -263,6 +263,39 @@ async def test_smart_filesystem_policy() -> None:
 
 
 @pytest.mark.asyncio
+async def test_temporary_flag_always_allows_regardless_of_posture() -> None:
+    layer = SecurityLayer()
+    # filesystem's delete_dir normally always asks in smart mode (see
+    # test_smart_filesystem_policy) — `temporary` bypasses that outright.
+    for mode in ("permissive", "defensive", "smart"):
+        d = await _eval(
+            layer,
+            "filesystem",
+            {"intent": "x", "operation": "delete_dir", "path": "scratch", "temporary": True},
+            mode,
+        )
+        assert d.action == "allow", mode
+
+    # edit_file is MODERATE and normally asks in defensive mode (see
+    # test_defensive_asks_moderate_and_above).
+    d = await _eval(layer, "edit_file", {"intent": "x", "temporary": True}, "defensive")
+    assert d.action == "allow"
+
+
+@pytest.mark.asyncio
+async def test_temporary_flag_ignored_by_tools_that_do_not_declare_it() -> None:
+    layer = SecurityLayer()
+    # run_command has no `temporary` concept; a stray flag must not bypass it.
+    d = await _eval(
+        layer,
+        "run_command",
+        {"command": "rm -rf /", "intent": "x", "temporary": True, "timeout": 5},
+        "smart",
+    )
+    assert d.action == "ask"
+
+
+@pytest.mark.asyncio
 async def test_smart_rollback_allows() -> None:
     layer = SecurityLayer()
     d = await _eval(layer, "rollback", {"intent": "x", "target_sha": "abc123"}, "smart")

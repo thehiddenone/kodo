@@ -29,7 +29,8 @@ CREATE_DIRECTORY: ToolSpec = ToolSpec(
         "To delete, copy, or move whole files or directories, use the "
         "`filesystem` tool instead; to create a brand-new file, use "
         "`create_file`.\n"
-        "The path must resolve inside the project root."
+        "The path must resolve inside the project root, unless `temporary` "
+        "is true (see below)."
     ),
     input_schema={
         "type": "object",
@@ -40,7 +41,20 @@ CREATE_DIRECTORY: ToolSpec = ToolSpec(
                 "description": (
                     "Path to the directory, relative to the project root (or an absolute "
                     "path inside it). Paths that resolve outside the project root are "
-                    "rejected."
+                    "rejected — unless `temporary` is true, in which case this resolves "
+                    "under the session's scratch directory instead."
+                ),
+            },
+            "temporary": {
+                "type": "boolean",
+                "description": (
+                    "When true, `path` resolves under this session's private scratch "
+                    "directory instead of the project root — relative paths land inside "
+                    "it, absolute paths must already be inside it. Use this for "
+                    "throwaway work you don't want in the project itself. Changes made "
+                    "there are never captured by the project's checkpoint/rollback "
+                    "mirror, and this call is always allowed without a permission "
+                    "prompt, regardless of Command Control posture. Default false."
                 ),
             },
         },
@@ -69,7 +83,7 @@ CREATE_DIRECTORY: ToolSpec = ToolSpec(
         "required": ["status", "path"],
     },
     security_impact=SecurityImpact.LOW,
-    input_visibility={"intent": "always", "path": "always"},
+    input_visibility={"intent": "always", "path": "always", "temporary": "visible"},
     output_visibility={"status": "always", "path": "always"},
     when_to_use=(
         "Creating a directory, including any missing parents — e.g. scaffolding "
@@ -77,5 +91,8 @@ CREATE_DIRECTORY: ToolSpec = ToolSpec(
         "even if the directory already exists. To delete, copy, or move whole "
         "files or directories, use the `filesystem` tool; to create a "
         "brand-new file, use `create_file`.",
+        "Pass `temporary: true` to create it in the session's private scratch "
+        "directory instead of the project — for throwaway work you don't want "
+        "checkpointed, reviewed, or left in the project tree.",
     ),
 )

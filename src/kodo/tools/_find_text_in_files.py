@@ -5,6 +5,9 @@ search is confined to the agent's allowed roots), then runs ``rg --json`` under
 that root and returns one entry per matching line, with paths relative to the
 root. Searches one root; a multi-project workspace is covered by one call per
 ``get_root_paths`` entry.
+
+``temporary: true`` resolves ``root`` under the session's private scratch
+directory instead (see :meth:`~kodo.tools.Tool.resolve_path`).
 """
 
 from __future__ import annotations
@@ -39,7 +42,9 @@ class FindTextInFilesTool(Tool):
             return json.dumps({"error": "The 'ripgrep' search util is not available."})
 
         try:
-            root = ctx.resolver.resolve(str(root_raw))
+            root = self.resolve_path(
+                str(root_raw), temporary=bool(tool_input.get("temporary", False))
+            )
         except PermissionError as exc:
             return json.dumps({"error": str(exc)})
         if not root.is_dir():

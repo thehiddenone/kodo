@@ -259,6 +259,67 @@ both back to the engine after the run.
 
 ---
 
+## 5a. The `temporary` argument: session-scoped scratch files
+
+Six file tools — `create_file`, `create_directory`, `edit_file`,
+`filesystem`, `find_files`, `find_text_in_files` — accept an optional
+`temporary: true` input alongside their usual `path`/`root`/`source`/
+`destination` arguments. Every one of them resolves its path(s) through the
+shared `Tool.resolve_path(path, *, temporary=...)` helper
+([tools/_tool.py](../src/kodo/tools/_tool.py)) instead of calling
+`self.context.resolver.resolve(...)` directly:
+
+```python
+def resolve_path(self, path: str, *, temporary: bool = False) -> Path:
+    if temporary:
+        return resolve_within(session_temp_dir(self.context.session_id), path)
+    return self.context.resolver.resolve(path)
+```
+
+`session_temp_dir(session_id)` ([project/_layout.py](../src/kodo/project/_layout.py))
+is `~/.kodo/sessions/<session_id>/tmp` — one scratch directory per session,
+outside every project root and workspace folder. `resolve_within` (the same
+helper Guided mode uses to confine paths to the project root) confines
+relative paths inside it and rejects absolute paths that would escape it,
+exactly like the ordinary resolver — a `temporary` call gets no *less*
+containment, just a different root.
+
+This is a **tool-level** mechanism, not a `ToolContext`/resolver change: the
+active `PathResolver` (Guided or Problem Solver) is untouched, and a call
+without `temporary` behaves exactly as before. Two other layers special-case
+the same flag:
+
+- **Security** ([SECURITY.md](SECURITY.md) §3.0a) — a `temporary: true` call
+  on one of the six tools is always allowed, in every Command Control
+  posture, before the usual impact/threshold judgement runs.
+- **Checkpointing** — `CheckpointCoordinator.prepare` (§10 below) skips its
+  mirror snapshot/commit outright for a `temporary` call, so nothing written
+  there ever earns a checkpoint, an undo/rollback entry, or a Guided
+  `new_revision` attribution.
+
+Agents are told when to reach for this in `preamble_performance.md`'s
+"Scratch / Temporary Work" section: throwaway notes, intermediate files, and
+working copies that should never land in the project.
+
+**Discovering the directory itself.** `get_root_paths` also takes an optional
+`temporary: true` input ([toolspecs/_get_root_paths.py](../src/kodo/toolspecs/_get_root_paths.py),
+[tools/_get_root_paths.py](../src/kodo/tools/_get_root_paths.py)). Instead of
+the usual per-project root list it returns one `{"name": "scratch", "path":
+...}` entry for `session_temp_dir(self.context.session_id)` (created eagerly
+via `mkdir(parents=True, exist_ok=True)` so the path is guaranteed to exist).
+This is how an agent gets the scratch directory's *absolute path* — e.g. to
+pass as `run_command`'s `working_dir`, which the Guided-mode resolver also
+special-cases: `ProjectPathResolver` accepts an `extra_roots` tuple
+(`kodo/tools/_paths.py`), and the engine's `_make_resolver(session_id)`
+(`kodo/runtime/_engine/_core.py`) passes `session_temp_dir(session_id)` as
+that run's one extra root — the *same* `session_id` its `ToolContext` (and
+thus its own `temporary: true` file-tool calls) uses, so a leaf sub-agent's
+`run_command` reaches its own subsession scratch directory, not the
+orchestrator's. Problem Solver's logical resolver already allows any absolute
+path, so it needed no equivalent change.
+
+---
+
 ## 6. How tools reach the LLM, and how a call comes back
 
 Tools are passed to the model **as a separate API parameter**, never embedded in
@@ -462,7 +523,9 @@ the engine reads `dispatcher.returned_output` (what a leaf returned via
 mutating tool call (`filesystem`/`edit_file`/`create_file`/`create_directory`) is additionally bracketed by
 `CheckpointCoordinator.prepare`/`CheckpointCoordinator.commit` (§12.1 in INTERNALS.md) — outside
 this loop, around the `tool_dispatch` call — so every dispatch in this diagram
-that touches a file also earns a mirror commit.
+that touches a file also earns a mirror commit. The one exception: a call
+made with `temporary: true` (§5a) is skipped by `prepare` outright and never
+earns one, since it never touches the project at all.
 
 ---
 
@@ -557,10 +620,11 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [toolspecs/_<tool>.py](../src/kodo/toolspecs/) | One `ToolSpec` constant per tool (pure data). |
 | [toolspecs/__init__.py](../src/kodo/toolspecs/__init__.py) | Re-exports specs + `ALL_TOOLS` (for prompt rendering). |
 | [tools/_context.py](../src/kodo/tools/_context.py) | `ToolContext` + the injected Protocols (`GateLike`, `SessionLike`, `EngineServices`, `ApprovalLike`). |
-| [tools/_tool.py](../src/kodo/tools/_tool.py) | The `Tool` ABC: binds a `ToolContext` (read-only `context` property) and declares abstract `handle`. |
+| [tools/_tool.py](../src/kodo/tools/_tool.py) | The `Tool` ABC: binds a `ToolContext` (read-only `context` property), declares abstract `handle`, and provides `resolve_path` (§5a — the ordinary resolver, or the session scratch directory when `temporary`). |
 | [tools/_&lt;tool&gt;.py](../src/kodo/tools/) | One `Tool` subclass per tool, with `handle(self, tool_input) -> str`. |
 | [tools/_dispatch.py](../src/kodo/tools/_dispatch.py) | `_TOOL_CLASSES` table, `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME`. |
 | [tools/_paths.py](../src/kodo/tools/_paths.py) | `resolve_within` path guard (file-I/O + shell). |
+| [project/_layout.py](../src/kodo/project/_layout.py) | `session_temp_dir(session_id)` — `~/.kodo/sessions/<id>/tmp`, the `temporary` scratch root (§5a). |
 | [subagents/_registry.py](../src/kodo/subagents/_registry.py) | Renders each agent's `## Tools` prompt section from spec metadata; autonomous filtering. |
 | [llms/anthropic/_claude.py](../src/kodo/llms/anthropic/_claude.py) | Converts `ToolSpec` → API `tools` param; parses `tool_use` → `ToolCallEvent`. |
 | [llms/_interface.py](../src/kodo/llms/_interface.py) | `Message`, `ToolCallEvent`, `TurnEnd`, the `stream_query` contract. |

@@ -851,7 +851,7 @@ def test_make_resolver_guided_mode_with_layout_uses_project_resolver(tmp_path: P
 
     engine._layout = ProjectLayout(project_root)
 
-    resolver = engine._make_resolver()
+    resolver = engine._make_resolver("sess-1")
     from kodo.tools import ProjectPathResolver
 
     assert isinstance(resolver, ProjectPathResolver)
@@ -862,7 +862,7 @@ def test_make_resolver_falls_back_to_logical_without_layout(tmp_path: Path) -> N
     engine._session.workflow_mode = "guided"
     engine._layout = None
 
-    resolver = engine._make_resolver()
+    resolver = engine._make_resolver("sess-1")
     from kodo.tools import LogicalPathResolver
 
     assert isinstance(resolver, LogicalPathResolver)
@@ -872,7 +872,7 @@ def test_make_resolver_problem_solving_uses_logical_resolver(tmp_path: Path) -> 
     engine, _t, _s, _g = _make_engine(tmp_path)
     engine._session.workflow_mode = "problem_solving"
 
-    resolver = engine._make_resolver()
+    resolver = engine._make_resolver("sess-1")
     from kodo.tools import LogicalPathResolver
 
     assert isinstance(resolver, LogicalPathResolver)

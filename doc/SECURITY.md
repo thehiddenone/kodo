@@ -92,6 +92,51 @@ Three HIGH tools are settled by direct structural policies
   (`git+…`), local path, or option injection (leading `-`) **asks** — the
   supply-chain shapes worth a user's eyes.
 
+### 3.0a `temporary`: the session's private scratch directory
+
+Six file tools — `create_file`, `create_directory`, `edit_file`,
+`filesystem`, `find_files`, `find_text_in_files` — accept an optional
+`temporary: true` input. When set, `kodo.tools.Tool.resolve_path` resolves
+every path the call touches under `~/.kodo/sessions/<session_id>/tmp`
+(`kodo.project.session_temp_dir`) instead of the project root/workspace
+folders — confined there the same way `resolve_within` confines Guided-mode
+paths to the project root (relative paths land inside it, absolute paths
+must already be inside it, or a `PermissionError` — not even an `ask` —
+comes back).
+
+This bypasses the posture/impact judgement above entirely: `SecurityLayer.
+evaluate` allows the call outright, in every posture, before the
+threshold/per-tool logic runs (`_TEMP_ALLOWED_TOOLS` in `_layer.py`) —
+including `filesystem`'s `delete_dir`, which otherwise always asks. The
+exemption is symmetric on the checkpoint side:
+`kodo.runtime._engine._checkpointing.CheckpointCoordinator.prepare` skips its
+mirror snapshot/commit outright for a `temporary` call, so nothing there ever
+earns a checkpoint, an undo/rollback entry, or a Guided `new_revision`
+attribution — the scratch directory sits outside every project's git mirror
+by construction. See doc/TOOLS.md and `preamble_performance.md`'s "Scratch /
+Temporary Work" section for the agent-facing contract.
+
+`get_root_paths` surfaces this same directory's path (via `temporary: true`)
+without itself being a mutating call, so it is simply `NONE`-impact and
+always allowed like any other read.
+
+**`run_command`'s `working_dir` is a separate, narrower exemption.** It has
+no `temporary` field of its own — `_TEMP_ALLOWED_TOOLS` doesn't cover it — but
+in Guided mode `ProjectPathResolver` (`kodo.tools._paths`) now accepts an
+absolute `working_dir` under the *dispatching run's own* scratch directory as
+an `extra_roots` entry, alongside the project root, so the call reaches its
+handler instead of failing at dispatch with a `PermissionError` (Problem
+Solver's logical resolver already allowed any absolute path). This only
+widens where the resolver lets the command *run*; `command_may_mutate`/
+`analyze_command`'s static `outside_paths` check (§3.1) still treats the
+scratch directory as outside the workspace like any other non-root,
+non-OS-temp path — a command whose *arguments* (not just its `working_dir`)
+explicitly name an absolute path under the scratch directory still asks in
+`smart` posture, and mutating writes there still never earn a checkpoint
+(`RootMirrorManager` only tracks the known project/workspace roots, so a
+scratch-directory path resolves to no root and `prepare`/`commit_for_path`
+are no-ops).
+
 ### 3.1 `run_command`: static workspace analysis first
 
 `kodo.security._analysis.analyze_command()` runs over the structural parse

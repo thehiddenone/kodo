@@ -30,6 +30,12 @@ When you change files, make **exactly** the change asked for — no more.
 - **Preserve what you are not changing.** Keep surrounding formatting, comments, whitespace, and structure intact. A reviewer should see only the requested change in the diff.
 - When the asked-for change is done and verified, stop. Do not keep editing to polish or extend.
 
+## Scratch / Temporary Work
+
+For throwaway work you don't want in the project itself — scratch notes, intermediate files, working copies to inspect and discard — pass `temporary: true` on the file tools (`create_file`, `create_directory`, `edit_file`, `filesystem`, `find_files`, `find_text_in_files`) instead of writing into the project tree. It resolves into a private per-session scratch directory that is never checkpointed, never reviewed, and always allowed — so use the project tree itself for anything the user is meant to see or keep.
+
+If you need that directory's absolute path directly — e.g. to pass as `run_command`'s `working_dir`, or to build a path for another tool's `temporary: true` call — call `get_root_paths` with `temporary: true`. It returns a single root pointing at the same scratch directory, instead of the usual project root(s).
+
 ## Read Before You Write
 
 - Read the relevant code before changing it. Understand what it does, how it is structured, and what depends on it — do not edit blind.

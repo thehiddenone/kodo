@@ -6,6 +6,11 @@ undo/redo/rollback/roll-forward operations behind the client's checkpoint
 buttons, the ``checkpoint.state`` broadcasts, and the Guided-state
 ``new_revision`` attribution. Path resolution and the mode-aware root set
 stay engine-owned and are reached through :class:`CheckpointHost`.
+
+A call carrying ``temporary: true`` (the session-scoped scratch directory —
+:func:`kodo.project.session_temp_dir`, doc/SECURITY.md) is skipped by
+:meth:`CheckpointCoordinator.prepare` outright: it never earns a mirror
+commit, an undo/rollback entry, or a ``new_revision`` jsonl attribution.
 """
 
 from __future__ import annotations
@@ -43,8 +48,9 @@ class CheckpointHost(Protocol):
 
     _session: SessionState
     _current_project: dict[str, str] | None
+    _orch_session_id: str
 
-    def _make_resolver(self) -> PathResolver: ...
+    def _make_resolver(self, session_id: str) -> PathResolver: ...
 
     def _root_paths(self) -> tuple[RootPath, ...]: ...
 
@@ -84,9 +90,12 @@ class CheckpointCoordinator:
         Called *before* dispatch so each root's mirror baseline reflects the tree
         as it was before this call. Returns the affected paths (primary first) to
         hand to :meth:`commit`, or an empty list when nothing should be
-        checkpointed (wrong mode, non-mutating tool, or a read-only command).
+        checkpointed (wrong mode, non-mutating tool, a read-only command, or a
+        call scoped to the session's private ``temporary`` scratch directory —
+        see :func:`kodo.project.session_temp_dir` — which never enters a
+        project's mirror).
         """
-        if not self._enabled() or tool_name not in _MUTATING_TOOLS:
+        if not self._enabled() or tool_name not in _MUTATING_TOOLS or tool_input.get("temporary"):
             return []
         paths = self.mutation_paths(tool_name, tool_input)
         if paths:
@@ -113,8 +122,17 @@ class CheckpointCoordinator:
         return ref
 
     def mutation_paths(self, tool_name: str, tool_input: dict[str, object]) -> list[Path]:
-        """Resolve the filesystem paths a mutating tool will touch (primary first)."""
-        resolver = self._host._make_resolver()
+        """Resolve the filesystem paths a mutating tool will touch (primary first).
+
+        Always built against the orchestrator's own resolver/scratch dir, not
+        whichever sub-agent subsession is actually dispatching — checkpointing
+        already tracks mirrors per *project* root, not per subsession, and a
+        ``run_command`` whose ``working_dir`` lands under any session's scratch
+        directory (orchestrator's or a subsession's own) resolves outside every
+        known root either way, so :meth:`RootMirrorManager.prepare`/
+        :meth:`~.RootMirrorManager.commit_for_path` treat it as a no-op.
+        """
+        resolver = self._host._make_resolver(self._host._orch_session_id)
 
         def _resolve(key: str) -> Path | None:
             value = tool_input.get(key)

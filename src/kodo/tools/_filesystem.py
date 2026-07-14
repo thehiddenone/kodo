@@ -8,6 +8,10 @@ counterparts. Creating a brand-new file lives in the separate ``create_file``
 tool (:class:`~kodo.tools._create_file.CreateFileTool`); creating a directory
 lives in the separate ``create_directory`` tool
 (:class:`~kodo.tools._create_directory.CreateDirectoryTool`).
+
+``temporary: true`` resolves ``path``/``source``/``destination`` under the
+session's private scratch directory instead (see
+:meth:`~kodo.tools.Tool.resolve_path`).
 """
 
 from __future__ import annotations
@@ -49,7 +53,7 @@ class FilesystemTool(Tool):
 
     def _delete_file(self, tool_input: dict[str, object]) -> dict[str, object]:
         path = str(tool_input.get("path", ""))
-        target = self.context.resolver.resolve(path)
+        target = self.resolve_path(path, temporary=bool(tool_input.get("temporary", False)))
         if not target.exists():
             raise FileNotFoundError(f"File not found: {path!r}")
         if target.is_dir():
@@ -59,7 +63,7 @@ class FilesystemTool(Tool):
 
     def _delete_dir(self, tool_input: dict[str, object]) -> dict[str, object]:
         path = str(tool_input.get("path", ""))
-        target = self.context.resolver.resolve(path)
+        target = self.resolve_path(path, temporary=bool(tool_input.get("temporary", False)))
         if not target.exists():
             raise FileNotFoundError(f"Directory not found: {path!r}")
         if not target.is_dir():
@@ -112,9 +116,10 @@ class FilesystemTool(Tool):
     def _resolve_pair(self, tool_input: dict[str, object]) -> tuple[Path, Path, str, str]:
         source = str(tool_input.get("source", ""))
         destination = str(tool_input.get("destination", ""))
+        temporary = bool(tool_input.get("temporary", False))
         return (
-            self.context.resolver.resolve(source),
-            self.context.resolver.resolve(destination),
+            self.resolve_path(source, temporary=temporary),
+            self.resolve_path(destination, temporary=temporary),
             source,
             destination,
         )

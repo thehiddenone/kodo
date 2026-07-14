@@ -5,6 +5,9 @@ path resolver (so the search stays inside the agent's allowed roots), then runs
 the pinned ripgrep (``rg``) binary from ``~/.kodo/bin/`` under that root with
 ``--json`` output. ripgrep searches one directory tree, so a multi-project
 workspace is covered by calling this once per root from ``get_root_paths``.
+
+``temporary: true`` resolves ``root`` under the session's private scratch
+directory instead (see :meth:`~kodo.tools.Tool.resolve_path`).
 """
 
 from __future__ import annotations
@@ -21,11 +24,13 @@ FIND_TEXT_IN_FILES: ToolSpec = ToolSpec(
     description=(
         "Search the CONTENTS of files for text under a single root directory, "
         "using ripgrep (`rg`). `root` MUST be one of the paths returned by "
-        "`get_root_paths` (or a subdirectory of one); the search never escapes "
-        "it. `query` is a regular expression (smart-case) unless `fixed_strings` "
-        "is true, in which case it is matched literally. This searches ONE root — "
-        "to cover a multi-project workspace, call it once per root. Hidden files "
-        "and anything ignored by .gitignore are skipped unless you opt in. Each "
+        "`get_root_paths` (or a subdirectory of one) — unless `temporary` is "
+        "true, in which case `root` resolves under the session's scratch "
+        "directory instead; the search never escapes it. `query` is a regular "
+        "expression (smart-case) unless `fixed_strings` is true, in which case "
+        "it is matched literally. This searches ONE root — to cover a "
+        "multi-project workspace, call it once per root. Hidden files and "
+        "anything ignored by .gitignore are skipped unless you opt in. Each "
         "match reports the file (relative to `root`), 1-based line number, and "
         "the line text; results are capped (see `truncated`)."
     ),
@@ -43,7 +48,9 @@ FIND_TEXT_IN_FILES: ToolSpec = ToolSpec(
                 "type": "string",
                 "description": (
                     "Absolute path to search under — a root from `get_root_paths` "
-                    "(or a subdirectory of one)."
+                    "(or a subdirectory of one). When `temporary` is true, this instead "
+                    "resolves relative to the session's scratch directory (pass `.` to "
+                    "search the whole thing)."
                 ),
             },
             "glob": {
@@ -76,6 +83,16 @@ FIND_TEXT_IN_FILES: ToolSpec = ToolSpec(
                 "type": "integer",
                 "description": "Cap on the number of matches (default 1000).",
                 "exclusiveMinimum": 0,
+            },
+            "temporary": {
+                "type": "boolean",
+                "description": (
+                    "When true, `root` resolves under this session's private scratch "
+                    "directory instead of requiring one of `get_root_paths`'s roots. "
+                    "Use this to search throwaway work you don't want in the project "
+                    "itself; this call is always allowed regardless of Command Control "
+                    "posture. Default false."
+                ),
             },
         },
         "required": ["query", "root"],
@@ -124,6 +141,7 @@ FIND_TEXT_IN_FILES: ToolSpec = ToolSpec(
         "hidden": "visible",
         "no_ignore": "visible",
         "max_results": "visible",
+        "temporary": "visible",
     },
     output_visibility={
         "root": "visible",
@@ -135,5 +153,7 @@ FIND_TEXT_IN_FILES: ToolSpec = ToolSpec(
         "Finding where a symbol, string, or pattern appears across a project's "
         "files within one root — e.g. tracing a function's call sites or locating "
         "a config key before editing.",
+        "Pass `temporary: true` to search the session's private scratch "
+        "directory instead of a project root.",
     ),
 )

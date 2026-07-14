@@ -33,7 +33,8 @@ CREATE_FILE: ToolSpec = ToolSpec(
         "mode.\n"
         "To delete, copy, or move whole files or directories, use the "
         "`filesystem` tool instead.\n"
-        "The path must resolve inside the project root."
+        "The path must resolve inside the project root, unless `temporary` "
+        "is true (see below)."
     ),
     input_schema={
         "type": "object",
@@ -43,12 +44,28 @@ CREATE_FILE: ToolSpec = ToolSpec(
                 "type": "string",
                 "description": (
                     "Path to the file, relative to the project root (or an absolute path "
-                    "inside it). Paths that resolve outside the project root are rejected."
+                    "inside it). Paths that resolve outside the project root are rejected "
+                    "— unless `temporary` is true, in which case this resolves under the "
+                    "session's scratch directory instead."
                 ),
             },
             "content": {
                 "type": "string",
                 "description": "The full content to write to the new file.",
+            },
+            "temporary": {
+                "type": "boolean",
+                "description": (
+                    "When true, `path` resolves under this session's private scratch "
+                    "directory instead of the project root — relative paths land inside "
+                    "it, absolute paths must already be inside it. Use this for "
+                    "throwaway work you don't want in the project itself: scratch notes, "
+                    "intermediate working files, drafts you'll inspect and discard. "
+                    "Changes made there are never captured by the project's "
+                    "checkpoint/rollback mirror, and this call is always allowed without "
+                    "a permission prompt, regardless of Command Control posture. Default "
+                    "false."
+                ),
             },
         },
         "required": ["intent", "path", "content"],
@@ -80,6 +97,7 @@ CREATE_FILE: ToolSpec = ToolSpec(
         "intent": "always",
         "path": "always",
         "content": "visible",
+        "temporary": "visible",
     },
     output_visibility={"status": "always", "path": "always"},
     when_to_use=(
@@ -88,5 +106,8 @@ CREATE_FILE: ToolSpec = ToolSpec(
         "the model cannot silently clobber existing content. To change an "
         "existing file's contents, use `edit_file`; to delete, copy, or move "
         "whole files or directories, use the `filesystem` tool.",
+        "Pass `temporary: true` to write into the session's private scratch "
+        "directory instead of the project — for throwaway files you don't "
+        "want checkpointed, reviewed, or left in the project tree.",
     ),
 )

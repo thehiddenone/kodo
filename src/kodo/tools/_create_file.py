@@ -5,6 +5,9 @@ one is already there, the call fails loudly and nothing is written, so the
 model cannot silently clobber existing content. Changing an existing file's
 contents lives in the separate ``edit_file`` tool
 (:class:`~kodo.tools._edit_file.EditFileTool`).
+
+``temporary: true`` resolves ``path`` under the session's private scratch
+directory instead (see :meth:`~kodo.tools.Tool.resolve_path`).
 """
 
 from __future__ import annotations
@@ -26,9 +29,10 @@ class CreateFileTool(Tool):
         ctx = self.context
         path = str(tool_input.get("path", ""))
         content = str(tool_input.get("content", ""))
+        temporary = bool(tool_input.get("temporary", False))
 
         try:
-            target = ctx.resolver.resolve(path)
+            target = self.resolve_path(path, temporary=temporary)
             if target.exists():
                 raise FileExistsError(
                     f"File already exists: {path!r}. Use edit_file to change an "

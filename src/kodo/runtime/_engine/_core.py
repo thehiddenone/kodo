@@ -49,6 +49,7 @@ from kodo.project import (
     SessionWorkspace,
     WorkspaceLayout,
     kodo_user_dir,
+    session_temp_dir,
 )
 from kodo.security import SecurityLayer
 from kodo.state import TransientStore
@@ -706,7 +707,7 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
                 paths[name] = install.path
         return paths
 
-    def _make_resolver(self) -> PathResolver:
+    def _make_resolver(self, session_id: str) -> PathResolver:
         """Pick the path resolver for the active workflow mode.
 
         Guided confines file/shell tools to the locked current project's root;
@@ -714,9 +715,22 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
         can address every project in the workspace.  In the degenerate case of a
         Guided run with no project bound (the extension should prevent this), it
         falls back to the logical resolver rather than crashing.
+
+        Guided mode's resolver also admits *session_id*'s private scratch
+        directory as an extra root — the same one ``get_root_paths`` reports
+        with ``temporary: true`` to the agent running under that session —
+        so it can pass it to ``run_command`` as a working directory.
+        ``session_id`` is the id of the run this resolver serves: the
+        orchestrator's for the guide, a subsession id for a leaf sub-agent —
+        matching whichever id that run's ``ToolContext.session_id`` (and thus
+        its own ``get_root_paths``/``temporary: true`` file-tool calls) uses.
+        Problem Solver's logical resolver already allows any absolute path,
+        so it needs no equivalent.
         """
         if self._session.workflow_mode == "guided" and self._layout is not None:
-            return ProjectPathResolver(self._layout.root)
+            return ProjectPathResolver(
+                self._layout.root, extra_roots=(session_temp_dir(session_id),)
+            )
         return LogicalPathResolver(
             self._session_workspace.folders, self._session_workspace.physical_root
         )

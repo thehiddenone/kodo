@@ -40,7 +40,8 @@ EDIT_FILE: ToolSpec = ToolSpec(
         "as `new_string` and its whole current content as `old_string`.\n"
         "- Fails if the file does not exist — use the `filesystem` tool "
         '(`operation: "create_file"`) to create one.\n'
-        "The path must resolve inside the project root."
+        "The path must resolve inside the project root, unless `temporary` "
+        "is true (see below)."
     ),
     input_schema={
         "type": "object",
@@ -50,7 +51,9 @@ EDIT_FILE: ToolSpec = ToolSpec(
                 "type": "string",
                 "description": (
                     "Path to the file, relative to the project root (or an absolute path "
-                    "inside it). Paths that resolve outside the project root are rejected."
+                    "inside it). Paths that resolve outside the project root are rejected "
+                    "— unless `temporary` is true, in which case this resolves under the "
+                    "session's scratch directory instead."
                 ),
             },
             "old_string": {
@@ -66,6 +69,18 @@ EDIT_FILE: ToolSpec = ToolSpec(
                 "description": (
                     "The text to substitute in place of `old_string`. Use an empty "
                     "string to delete the matched text."
+                ),
+            },
+            "temporary": {
+                "type": "boolean",
+                "description": (
+                    "When true, `path` resolves under this session's private scratch "
+                    "directory instead of the project root — relative paths land inside "
+                    "it, absolute paths must already be inside it. Use this for "
+                    "throwaway work you don't want in the project itself. Changes made "
+                    "there are never captured by the project's checkpoint/rollback "
+                    "mirror, and this call is always allowed without a permission "
+                    "prompt, regardless of Command Control posture. Default false."
                 ),
             },
         },
@@ -99,6 +114,7 @@ EDIT_FILE: ToolSpec = ToolSpec(
         "path": "always",
         "old_string": "visible",
         "new_string": "visible",
+        "temporary": "visible",
     },
     output_visibility={"status": "always", "path": "always"},
     when_to_use=(
@@ -106,5 +122,8 @@ EDIT_FILE: ToolSpec = ToolSpec(
         "way to edit. Replaces just the snippet you target and preserves "
         "everything else, keeping the diff minimal. To create, delete, copy, or "
         "move whole files or directories, use the `filesystem` tool.",
+        "Pass `temporary: true` to edit a file in the session's private scratch "
+        "directory instead of the project — for throwaway work you don't want "
+        "checkpointed, reviewed, or left in the project tree.",
     ),
 )

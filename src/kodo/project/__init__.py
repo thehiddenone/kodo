@@ -6,6 +6,7 @@ from ._layout import (
     SessionWorkspace,
     WorkspaceLayout,
     kodo_user_dir,
+    session_temp_dir,
 )
 from ._manifest import Manifest, ManifestError, parse_manifest
 
@@ -15,6 +16,7 @@ __all__ = [
     "SessionWorkspace",
     "WorkspaceLayout",
     "kodo_user_dir",
+    "session_temp_dir",
     "Manifest",
     "ManifestError",
     "parse_manifest",

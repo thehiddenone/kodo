@@ -34,7 +34,9 @@ _OPERATIONS = (
 
 _PATH_DESC = (
     "Path relative to the project root (or an absolute path inside it). Paths "
-    "that resolve outside the project root are rejected."
+    "that resolve outside the project root are rejected — unless `temporary` "
+    "is true, in which case every path resolves under the session's scratch "
+    "directory instead."
 )
 
 
@@ -64,7 +66,10 @@ FILESYSTEM: ToolSpec = ToolSpec(
         "To create a directory, use `create_directory` instead; to create a "
         "brand-new file, use `create_file` instead; to change the contents of "
         "an existing file, use `edit_file` instead — this tool only "
-        "removes/relocates whole files and directories."
+        "removes/relocates whole files and directories.\n\n"
+        "Set `temporary: true` to operate entirely within the session's "
+        "private scratch directory instead of the project (see `temporary` "
+        "below)."
     ),
     input_schema={
         "type": "object",
@@ -97,6 +102,20 @@ FILESYSTEM: ToolSpec = ToolSpec(
             "destination": {
                 "type": "string",
                 "description": ("Destination path for the copy/move operations. " + _PATH_DESC),
+            },
+            "temporary": {
+                "type": "boolean",
+                "description": (
+                    "When true, every path this call touches (`path`, `source`, "
+                    "`destination`) resolves under this session's private scratch "
+                    "directory instead of the project root — relative paths land "
+                    "inside it, absolute paths must already be inside it. Use this for "
+                    "throwaway work you don't want in the project itself. Changes made "
+                    "there are never captured by the project's checkpoint/rollback "
+                    "mirror, and this call is always allowed without a permission "
+                    "prompt (including `delete_dir`), regardless of Command Control "
+                    "posture. Default false."
+                ),
             },
         },
         "required": ["intent", "operation"],
@@ -151,6 +170,7 @@ FILESYSTEM: ToolSpec = ToolSpec(
         "path": "always",
         "source": "always",
         "destination": "always",
+        "temporary": "visible",
     },
     output_visibility={
         "status": "always",
@@ -169,5 +189,9 @@ FILESYSTEM: ToolSpec = ToolSpec(
         "to create a brand-new file, or `edit_file` to change the CONTENTS of "
         "an existing file — this tool does not create directories or edit "
         "file contents.",
+        "Pass `temporary: true` to operate in the session's private scratch "
+        "directory instead of the project — for throwaway work you don't want "
+        "checkpointed, reviewed, or left in the project tree; this also lifts "
+        "the `delete_dir` permission prompt, since nothing there is tracked.",
     ),
 )

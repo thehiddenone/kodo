@@ -25,6 +25,12 @@ the server-side twin of the client forcing the Command toggle to Permissive
 
 ``disable_autonomous_mode`` is always allowed regardless of posture: its only
 effect is returning control to the user — gating it would be self-defeating.
+
+Likewise, any of the six native file tools called with ``temporary: true`` is
+always allowed regardless of posture: the call is confined to the session's
+private scratch directory (outside every project root, never mirrored into
+the checkpoint/rollback system) rather than the workspace, so there is
+nothing for the user to review.
 """
 
 from __future__ import annotations
@@ -56,6 +62,23 @@ _SPECS_BY_NAME: dict[str, ToolSpec] = {spec.name: spec for spec in ALL_TOOLS}
 
 # Always allowed: its only effect is handing control back to the user.
 _ALWAYS_ALLOWED = frozenset({"disable_autonomous_mode"})
+
+# File tools whose `temporary: true` input confines the call to the session's
+# private scratch directory (~/.kodo/sessions/<id>/tmp, kodo.project.session_temp_dir)
+# instead of the project — never mirrored into the checkpoint/rollback system
+# (kodo.runtime._engine._checkpointing skips it outright) and, to match, always
+# allowed here regardless of Command Control posture. kodo.tools.Tool.resolve_path
+# enforces the actual containment; this layer only reads the flag.
+_TEMP_ALLOWED_TOOLS = frozenset(
+    {
+        "create_file",
+        "create_directory",
+        "edit_file",
+        "filesystem",
+        "find_files",
+        "find_text_in_files",
+    }
+)
 
 # A `toolchain_deps` dependency name/version that smells like anything other
 # than a plain registry package: URLs, VCS refs, local paths, or option
@@ -132,6 +155,11 @@ class SecurityLayer:
             return _allow("Unknown tool; dispatcher will reject it.", "policy")
         if tool_name in _ALWAYS_ALLOWED:
             return _allow("Returns control to the user; never gated.", "policy")
+        if tool_name in _TEMP_ALLOWED_TOOLS and bool(tool_input.get("temporary")):
+            return _allow(
+                "Session-scoped temporary location; never mirrored, always allowed.",
+                "policy",
+            )
 
         impact = spec.security_impact
         mode = (

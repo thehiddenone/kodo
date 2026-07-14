@@ -5,6 +5,9 @@ path resolver (so the search stays inside the agent's allowed roots), then runs
 the pinned ``fd`` binary from ``~/.kodo/bin/`` under that root. ``fd`` searches
 one directory tree, so a multi-project workspace is covered by calling this once
 per root returned by ``get_root_paths``.
+
+``temporary: true`` resolves ``root`` under the session's private scratch
+directory instead (see :meth:`~kodo.tools.Tool.resolve_path`).
 """
 
 from __future__ import annotations
@@ -21,13 +24,15 @@ FIND_FILES: ToolSpec = ToolSpec(
     description=(
         "Find files and directories by name under a single root directory, using "
         "the `fd` tool. `root` MUST be one of the paths returned by "
-        "`get_root_paths` (or a subdirectory of one); the search never escapes "
-        "it. `pattern` is matched against each entry's name as a regular "
-        "expression (smart-case), or as a literal glob when `glob` is true; omit "
-        "it to list everything. This searches ONE root — to cover a multi-project "
-        "workspace, call it once per root. Hidden files and anything ignored by "
-        ".gitignore are skipped unless you opt in. Results are paths relative to "
-        "`root` and are capped (see `truncated`)."
+        "`get_root_paths` (or a subdirectory of one) — unless `temporary` is "
+        "true, in which case `root` resolves under the session's scratch "
+        "directory instead; the search never escapes it. `pattern` is matched "
+        "against each entry's name as a regular expression (smart-case), or as a "
+        "literal glob when `glob` is true; omit it to list everything. This "
+        "searches ONE root — to cover a multi-project workspace, call it once "
+        "per root. Hidden files and anything ignored by .gitignore are skipped "
+        "unless you opt in. Results are paths relative to `root` and are capped "
+        "(see `truncated`)."
     ),
     input_schema={
         "type": "object",
@@ -36,7 +41,9 @@ FIND_FILES: ToolSpec = ToolSpec(
                 "type": "string",
                 "description": (
                     "Absolute path to search under — a root from `get_root_paths` "
-                    "(or a subdirectory of one)."
+                    "(or a subdirectory of one). When `temporary` is true, this instead "
+                    "resolves relative to the session's scratch directory (pass `.` to "
+                    "search the whole thing)."
                 ),
             },
             "pattern": {
@@ -72,6 +79,16 @@ FIND_FILES: ToolSpec = ToolSpec(
                 "description": "Cap on the number of results (default 1000).",
                 "exclusiveMinimum": 0,
             },
+            "temporary": {
+                "type": "boolean",
+                "description": (
+                    "When true, `root` resolves under this session's private scratch "
+                    "directory instead of requiring one of `get_root_paths`'s roots. "
+                    "Use this to search throwaway work you don't want in the project "
+                    "itself; this call is always allowed regardless of Command Control "
+                    "posture. Default false."
+                ),
+            },
         },
         "required": ["root"],
     },
@@ -102,6 +119,7 @@ FIND_FILES: ToolSpec = ToolSpec(
         "hidden": "visible",
         "no_ignore": "visible",
         "max_results": "visible",
+        "temporary": "visible",
     },
     output_visibility={
         "root": "visible",
@@ -112,5 +130,7 @@ FIND_FILES: ToolSpec = ToolSpec(
     when_to_use=(
         "Locating files or directories by name within one project root — e.g. "
         "finding where a module, config, or test lives before reading it.",
+        "Pass `temporary: true` to search the session's private scratch "
+        "directory instead of a project root.",
     ),
 )

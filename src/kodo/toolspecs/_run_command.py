@@ -1,8 +1,10 @@
 """``run_command`` tool spec — native shell tool.
 
 Dispatch lives in :mod:`kodo.tools` (one handler module per tool),
-which resolves ``working_dir`` against the project root and rejects anything
-that would escape it, then runs the command via
+which resolves ``working_dir`` against the project root (or, in Guided mode,
+the session's private scratch directory — see ``kodo.tools.ProjectPathResolver``'s
+``extra_roots``, sourced from ``kodo.project.session_temp_dir``) and rejects
+anything else that would escape the project root, then runs the command via
 :func:`asyncio.create_subprocess_shell`. Neither this spec nor the dispatcher
 impose any other restriction on the command itself — that is the security
 layer's job.
@@ -25,7 +27,9 @@ RUN_COMMAND: ToolSpec = ToolSpec(
         "stderr. Runs via the system shell with stdin closed (commands that "
         "read interactive input get immediate EOF — they never block). "
         "working_dir defaults to the project root and, if given, must resolve "
-        "inside it. You MUST supply a timeout (seconds): the command is killed "
+        "inside it — or be the absolute path of your private scratch directory "
+        "(from `get_root_paths` with `temporary: true`), which is also always "
+        "accepted. You MUST supply a timeout (seconds): the command is killed "
         "if it has not finished by then, and the result reports a null exit "
         "code with a 'timed out' note on stderr. Choose a value that comfortably "
         "covers the expected runtime — e.g. ~10s for a quick CLI check, ~120s "
@@ -55,8 +59,10 @@ RUN_COMMAND: ToolSpec = ToolSpec(
                 "type": "string",
                 "description": (
                     "Directory to run the command in, relative to the project "
-                    "root (or an absolute path inside it). Defaults to the "
-                    "project root."
+                    "root (or an absolute path inside it) — or the absolute path "
+                    "of your private scratch directory (from `get_root_paths` "
+                    "with `temporary: true`), which is always accepted too. "
+                    "Defaults to the project root."
                 ),
             },
         },
