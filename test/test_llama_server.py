@@ -11,8 +11,10 @@ small fake "llama-server" executable rather than mocking any private method.
 
 from __future__ import annotations
 
+import socket
 import stat
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -26,12 +28,29 @@ def _make_fake_executable(tmp_path: Path, script: str) -> Path:
     return path
 
 
+def _free_port() -> int:
+    """An OS-assigned free TCP port.
+
+    ``LlamaServerConfig``'s default port (8042) is llama-server's
+    machine-wide well-known port — a real instance may already be listening
+    there on the developer's machine. The health check in ``__wait_ready``
+    would then hit that real server and get a live 200, masking whatever the
+    fake executable under test actually did. Binding to port 0 and reading
+    back the assigned port keeps these tests isolated from any such
+    already-running server.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return cast(int, s.getsockname()[1])
+
+
 def _config(tmp_path: Path, executable: Path) -> LlamaServerConfig:
     return LlamaServerConfig(
         executable=executable,
         model_path=tmp_path / "model.gguf",
         kodo_dir=tmp_path / "kodo",
         model_name="fake-model",
+        port=_free_port(),
     )
 
 

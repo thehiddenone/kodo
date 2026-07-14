@@ -285,6 +285,25 @@ def test_add_flavor_can_set_min_ram_and_min_vram(tmp_path: Path) -> None:
     assert flavor.min_vram == 0
 
 
+def test_add_flavor_strips_reserved_reasoning_cap_args(tmp_path: Path) -> None:
+    # No flavor may ever carry --reasoning-budget/--reasoning-budget-message
+    # — kodo manages both automatically per session (see
+    # ensure_llama_running, _manager.py). A user typing either into the
+    # "Manage flavors" raw llama_args box must have it silently dropped, not
+    # persisted, so it can never later lock out a session's thinking_level.
+    flavor = add_flavor(
+        tmp_path,
+        "fake-model",
+        "Sneaky",
+        llama_args={
+            "--reasoning-budget": "4096",
+            "--reasoning-budget-message": "nope",
+            "--n-gpu-layers": "10",
+        },
+    )
+    assert flavor.llama_args == {"--n-gpu-layers": "10"}
+
+
 # ---------------------------------------------------------------------------
 # update_flavor — in-place edit (custom) or override (predefined), same id
 # ---------------------------------------------------------------------------
@@ -382,6 +401,18 @@ def test_update_flavor_can_set_min_ram_and_min_vram(tmp_path: Path) -> None:
     )
     assert updated.min_ram == 24
     assert updated.min_vram == 12
+
+
+def test_update_flavor_strips_reserved_reasoning_cap_args(tmp_path: Path) -> None:
+    custom = add_flavor(tmp_path, "fake-model", "Custom")
+    updated = update_flavor(
+        tmp_path,
+        "fake-model",
+        custom.id,
+        "Custom",
+        llama_args={"--reasoning-budget": "0", "--ctx-size": "65536"},
+    )
+    assert updated.llama_args == {"--ctx-size": "65536"}
 
 
 def test_update_flavor_resets_min_ram_and_min_vram_to_zero_if_not_resent(tmp_path: Path) -> None:

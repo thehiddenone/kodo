@@ -158,11 +158,16 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
     llama_args, _ = resolve_effective_llama_config(kodo_dir, entry)
     flavor_id = get_effective_flavor_id(kodo_dir, entry)
     if local_thinking_family(entry.base_llm) == "qwen_reasoning_budget":
-        # -1 is mandatory here (not just the default): it's what makes the
-        # per-request `thinking_budget_tokens` override in _llama.py take
-        # effect at all — any other explicit CLI value would lock it out.
-        llama_args.setdefault("--reasoning-budget", "-1")
-        llama_args.setdefault("--reasoning-budget-message", REASONING_BUDGET_MESSAGE)
+        # Forced (plain assignment), not defaulted: -1 is mandatory here, not
+        # just the default — it's what makes the per-request
+        # `thinking_budget_tokens` override in _llama.py take effect at all,
+        # and any other explicit CLI value would lock it out. A flavor must
+        # never be able to override or lock this out — add_flavor/
+        # update_flavor already strip RESERVED_REASONING_CAP_ARGS before a
+        # flavor is even saved; this is the second, load-bearing line of
+        # defense for anything saved before that existed.
+        llama_args["--reasoning-budget"] = "-1"
+        llama_args["--reasoning-budget-message"] = REASONING_BUDGET_MESSAGE
 
     cfg = LlamaServerConfig(
         executable=executable,

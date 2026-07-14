@@ -38,6 +38,7 @@ __all__ = [
     "QWEN_REASONING_BUDGET_FAMILY",
     "QWEN_TIER_TOKEN_BUDGETS",
     "REASONING_BUDGET_MESSAGE",
+    "RESERVED_REASONING_CAP_ARGS",
     "LlamaFlavor",
     "LocalLLMEntry",
     "add_flavor",
@@ -99,19 +100,67 @@ GPT_OSS_REASONING_EFFORT_FAMILY: frozenset[str] = frozenset({"GPT-OSS-120B", "GP
 _QWEN_TIERS: tuple[str, ...] = ("minimal", "low", "medium", "high", "huge", "unlimited")
 _GPT_OSS_TIERS: tuple[str, ...] = ("low", "medium", "high")
 
-#: Per-base_llm token budget for each finite Qwen-family tier ("unlimited" is
-#: always -1, not listed here). Best-effort starting point, not sourced from
-#: an official per-model spec — see doc/LLM_REGISTRY.md for the rationale
-#: behind each family's scale (e.g. Ornith10-35B's RL-trained thinking
-#: efficiency vs. Qwen35-9B's smaller/weaker-model verbosity). Expect these to
-#: be retuned after real usage.
+#: Per-base_llm token budget for each Qwen-family tier, including
+#: "unlimited" — despite the name this is now a real finite cap (1.5x the
+#: "huge" tier), not the ``-1``/no-limit sentinel it used to be. A true
+#: uncapped budget left ``max_tokens`` sizing (see ``_llama.py``) with no
+#: number to size against, and every "huge"/"unlimited" turn could exhaust the
+#: *entire* per-request ``max_tokens`` on reasoning alone with zero room left
+#: for ``--reasoning-budget-message`` to actually print (see doc/
+#: LOCAL_INFERENCE.md §2a). Best-effort starting point, not sourced from an
+#: official per-model spec — see doc/LLM_REGISTRY.md for the rationale behind
+#: each family's scale (e.g. Ornith10-35B's RL-trained thinking efficiency vs.
+#: Qwen35-9B's smaller/weaker-model verbosity). Expect these to be retuned
+#: after real usage.
 QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
-    "Qwen36-27B": {"minimal": 512, "low": 1536, "medium": 4096, "high": 8192, "huge": 16384},
-    "Qwen36-35B-A3B": {"minimal": 512, "low": 1536, "medium": 4096, "high": 8192, "huge": 16384},
-    "Qwen35-9B": {"minimal": 2048, "low": 4096, "medium": 8192, "high": 16384, "huge": 32768},
-    "Gemma4-26B-A4B": {"minimal": 1024, "low": 2048, "medium": 4096, "high": 8192, "huge": 16384},
-    "Gemma4-31B": {"minimal": 1024, "low": 2048, "medium": 4096, "high": 8192, "huge": 16384},
-    "Ornith10-35B": {"minimal": 256, "low": 768, "medium": 1536, "high": 3072, "huge": 6144},
+    "Qwen36-27B": {
+        "minimal": 512,
+        "low": 1536,
+        "medium": 4096,
+        "high": 8192,
+        "huge": 16384,
+        "unlimited": 24576,
+    },
+    "Qwen36-35B-A3B": {
+        "minimal": 512,
+        "low": 1536,
+        "medium": 4096,
+        "high": 8192,
+        "huge": 16384,
+        "unlimited": 24576,
+    },
+    "Qwen35-9B": {
+        "minimal": 2048,
+        "low": 4096,
+        "medium": 8192,
+        "high": 16384,
+        "huge": 32768,
+        "unlimited": 49152,
+    },
+    "Gemma4-26B-A4B": {
+        "minimal": 1024,
+        "low": 2048,
+        "medium": 4096,
+        "high": 8192,
+        "huge": 16384,
+        "unlimited": 24576,
+    },
+    "Gemma4-31B": {
+        "minimal": 1024,
+        "low": 2048,
+        "medium": 4096,
+        "high": 8192,
+        "huge": 16384,
+        "unlimited": 24576,
+    },
+    "Ornith10-35B": {
+        "minimal": 256,
+        "low": 768,
+        "medium": 1536,
+        "high": 3072,
+        "huge": 6144,
+        "unlimited": 9216,
+    },
 }
 
 _QWEN_DEFAULT_TIER = "unlimited"
@@ -123,6 +172,38 @@ REASONING_BUDGET_MESSAGE = (
     "I've reached the limit of my thinking budget, so I'll stop reasoning here "
     "and give the best answer I can based on what I've worked out so far."
 )
+
+#: CLI flags kodo manages automatically per session for the Qwen
+#: reasoning-budget family (``ensure_llama_running``,
+#: ``kodo/llms/llamacpp/_manager.py``) — no flavor, predefined or custom, may
+#: set these itself. Any occurrence in flavor-supplied ``llama_args`` is
+#: silently dropped before the flavor is even persisted (see
+#: :func:`add_flavor`/:func:`update_flavor` below), and the correct values are
+#: force-assigned again at launch time regardless, in case a flavor saved
+#: before this existed still carries them.
+RESERVED_REASONING_CAP_ARGS: tuple[str, ...] = (
+    "--reasoning-budget",
+    "--reasoning-budget-message",
+)
+
+
+def _strip_reasoning_cap_args(llama_args: dict[str, str]) -> dict[str, str]:
+    """Drop any :data:`RESERVED_REASONING_CAP_ARGS` key from *llama_args*.
+
+    Used by :func:`add_flavor`/:func:`update_flavor` so a flavor's own CLI
+    args can never carry (and therefore never later silently defeat) the
+    per-session reasoning-budget mechanism — see
+    :data:`RESERVED_REASONING_CAP_ARGS`.
+    """
+    stripped = {k: v for k, v in llama_args.items() if k not in RESERVED_REASONING_CAP_ARGS}
+    if len(stripped) != len(llama_args):
+        dropped = sorted(set(llama_args) - set(stripped))
+        _log.warning(
+            "Dropped reserved reasoning-cap arg(s) %s from flavor llama_args — these are "
+            "managed automatically per session, not by flavors",
+            dropped,
+        )
+    return stripped
 
 
 def local_thinking_family(base_llm: str) -> str | None:
@@ -1680,7 +1761,9 @@ def add_flavor(
             custom — *entry_name* already has, e.g. ``my-flavor``,
             ``my-flavor-2``).
         description: Optional human-readable explanation.
-        llama_args: CLI flags, same shape as ``LlamaFlavor.llama_args``.
+        llama_args: CLI flags, same shape as ``LlamaFlavor.llama_args``. Any
+            :data:`RESERVED_REASONING_CAP_ARGS` key is silently dropped —
+            those are managed automatically per session, not by flavors.
         min_ram: See ``LlamaFlavor.min_ram``. Defaults to ``0`` (unknown/no
             requirement — the hardware-fit check stays inactive).
         min_vram: See ``LlamaFlavor.min_vram``. Same default as *min_ram*.
@@ -1719,7 +1802,7 @@ def add_flavor(
         id=flavor_id,
         name=name,
         description=description,
-        llama_args=dict(llama_args or {}),
+        llama_args=_strip_reasoning_cap_args(dict(llama_args or {})),
         min_ram=min_ram,
         min_vram=min_vram,
     )
@@ -1763,6 +1846,8 @@ def update_flavor(
         name: New display name.
         description: New description.
         llama_args: New CLI flags, same shape as ``LlamaFlavor.llama_args``.
+            Any :data:`RESERVED_REASONING_CAP_ARGS` key is silently dropped —
+            those are managed automatically per session, not by flavors.
         min_ram: See ``LlamaFlavor.min_ram``. Defaults to ``0``, same as
             :func:`add_flavor` — unlike the pre-read-only behavior, this no
             longer carries the original flavor's value forward automatically;
@@ -1800,7 +1885,7 @@ def update_flavor(
         id=flavor_id,
         name=name,
         description=description,
-        llama_args=dict(llama_args or {}),
+        llama_args=_strip_reasoning_cap_args(dict(llama_args or {})),
         min_ram=min_ram,
         min_vram=min_vram,
     )

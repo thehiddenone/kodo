@@ -48,6 +48,17 @@ __all__ = ["LlamaPlugin", "MalformedToolCallError"]
 
 _log = logging.getLogger(__name__)
 _DEFAULT_MAX_TOKENS = 8192
+
+#: Extra per-request `max_tokens` room reserved *beyond* a Qwen-family tier's
+#: full thinking budget — for the forced end-of-thinking tag,
+#: ``REASONING_BUDGET_MESSAGE``, and real answer content. Without this, a
+#: tier whose budget equals (or exceeds) `_DEFAULT_MAX_TOKENS` — e.g.
+#: Qwen36-27B's "high" tier is 8192, the same as the old flat cap — could
+#: exhaust the *entire* request on reasoning alone, so llama-server never has
+#: room left to print the exhaustion message or resume with content, and the
+#: stream just truncates (`finish_reason: "length"`) mid-thought. See doc/
+#: LOCAL_INFERENCE.md §2a.
+_QWEN_MAX_TOKENS_HEADROOM = 8192
 _API_KEY = "key_is_not_required_for_local_inference"
 
 # Force an uncompressed response body. llama-server talks to us over loopback,
@@ -60,7 +71,7 @@ _NO_COMPRESSION_HEADERS = {"Accept-Encoding": "identity"}
 
 def _build_thinking_extra_body(
     base_llm: str, *, override_tier: str | None = None
-) -> dict[str, object]:
+) -> tuple[dict[str, object], int]:
     """Build the llama-server request fields for *base_llm*'s thinking tier.
 
     Args:
@@ -76,14 +87,20 @@ def _build_thinking_extra_body(
             switch).
 
     Returns:
-        dict[str, object]: Extra fields to merge into the OpenAI-compatible
-        request body via ``extra_body`` — ``{}`` if *base_llm* has no
-        thinking family (custom entries, or a hardcoded model outside both
-        families).
+        tuple[dict[str, object], int]: ``(extra_body, max_tokens)`` —
+        *extra_body* is merged into the OpenAI-compatible request body via
+        ``extra_body`` (``{}`` if *base_llm* has no thinking family); *
+        max_tokens* is the per-request token cap to send alongside it. For
+        the Qwen reasoning-budget family this is the resolved tier's budget
+        plus ``_QWEN_MAX_TOKENS_HEADROOM``, so the model always has room left
+        over for the forced end-of-thinking tag, ``REASONING_BUDGET_MESSAGE``,
+        and real answer content even at the tier's full budget (see doc/
+        LOCAL_INFERENCE.md §2a). Families with no numeric budget (GPT-OSS) or
+        no thinking family at all get the flat ``_DEFAULT_MAX_TOKENS``.
     """
     family = local_thinking_family(base_llm)
     if family is None:
-        return {}
+        return {}, _DEFAULT_MAX_TOKENS
 
     tiers = local_thinking_tiers(base_llm)
     tier = (
@@ -93,19 +110,19 @@ def _build_thinking_extra_body(
     )
 
     if family == "qwen_reasoning_budget":
-        budget = (
-            -1 if tier == "unlimited" else QWEN_TIER_TOKEN_BUDGETS.get(base_llm, {}).get(tier, -1)
-        )
+        budget = QWEN_TIER_TOKEN_BUDGETS.get(base_llm, {}).get(tier, -1)
         extra_body: dict[str, object] = {"thinking_budget_tokens": budget}
         if base_llm == "Qwen35-9B":
             # Qwen3.5-9B's chat template has thinking off by default, unlike
             # the rest of the Qwen-tiering family — force it on so the
             # configured budget actually has something to apply to.
             extra_body["chat_template_kwargs"] = {"enable_thinking": True}
-        return extra_body
+        max_tokens = budget + _QWEN_MAX_TOKENS_HEADROOM if budget >= 0 else _DEFAULT_MAX_TOKENS
+        return extra_body, max_tokens
 
-    # gpt_oss_reasoning_effort — the tier slug IS the wire value.
-    return {"chat_template_kwargs": {"reasoning_effort": tier}}
+    # gpt_oss_reasoning_effort — the tier slug IS the wire value, and there's
+    # no numeric budget to size max_tokens against.
+    return {"chat_template_kwargs": {"reasoning_effort": tier}}, _DEFAULT_MAX_TOKENS
 
 
 # ---------------------------------------------------------------------------
@@ -710,14 +727,14 @@ class LlamaPlugin(LLMPlugin):
             {"type": "json_object", "schema": json_schema} if json_schema is not None else None
         )
         entry = get_local_registry(self.__kodo_dir).get(model)
-        extra_body = (
+        extra_body, max_tokens = (
             _build_thinking_extra_body(entry.base_llm, override_tier=thinking_level)
             if entry
-            else {}
+            else ({}, _DEFAULT_MAX_TOKENS)
         )
         response = await self.__client.chat.completions.create(  # type: ignore[call-overload]
             model=model,
-            max_tokens=_DEFAULT_MAX_TOKENS,
+            max_tokens=max_tokens,
             messages=oai_messages,
             tools=oai_tools if oai_tools else openai.NOT_GIVEN,
             response_format=response_format if response_format is not None else openai.NOT_GIVEN,

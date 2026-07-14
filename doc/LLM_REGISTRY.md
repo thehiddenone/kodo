@@ -454,13 +454,28 @@ before it must answer. Two mechanisms exist, keyed off `base_llm` (never
   The CLI value must be exactly `-1` — llama.cpp only honors a per-request
   override when the launch-time budget is unrestricted; any other explicit
   CLI value locks the budget and per-request overrides are silently ignored.
+  Both flags are **force-assigned**, never merely defaulted: no flavor may
+  set either one itself (`RESERVED_REASONING_CAP_ARGS`, §4.6) — `add_flavor`/
+  `update_flavor` silently strip them from user-supplied `llama_args` before
+  a flavor is ever persisted, and `ensure_llama_running` re-asserts the
+  correct values at launch regardless, as a second line of defense.
   Each chat request then sets the effective budget via a **top-level**
-  `thinking_budget_tokens` field (`-1` unrestricted / `0` immediate end /
-  `N>0` token budget — see `QWEN_TIER_TOKEN_BUDGETS` for the per-tier `N`).
-  Default tier is `unlimited`. `Qwen35-9B` additionally needs
+  `thinking_budget_tokens` field (`0` immediate end / `N>0` token budget —
+  see `QWEN_TIER_TOKEN_BUDGETS` for the per-tier `N`, including `unlimited`,
+  which despite the name is a real finite cap now — 1.5x the `huge` tier, not
+  the `-1`/no-limit sentinel it used to be). Default tier is `unlimited`.
+  `Qwen35-9B` additionally needs
   `chat_template_kwargs: {"enable_thinking": true}` on every request, since
   its chat template has thinking off by default (the other five family
-  members think by default).
+  members think by default). Per-request `max_tokens` is no longer a flat
+  constant either: `_build_thinking_extra_body` (`_llama.py`) sizes it as the
+  resolved tier's budget plus a fixed 8192-token headroom
+  (`_QWEN_MAX_TOKENS_HEADROOM`), so the model always has room left, even at
+  the tier's full budget, for llama.cpp to print
+  `--reasoning-budget-message` and still answer — a truly unbounded
+  `unlimited` tier (or any tier whose budget reached the old flat cap, as
+  `high` already did) left no such room, and the exhaustion message could
+  never print at all. See doc/LOCAL_INFERENCE.md §2a for the full mechanism.
 - **`gpt_oss_reasoning_effort`** (3 tiers: `low`, `medium`, `high`) —
   `GPT-OSS-120B`, `GPT-OSS-20B` (`GPT_OSS_REASONING_EFFORT_FAMILY`). No
   launch-time flags. Each request sets a **nested**
@@ -546,6 +561,19 @@ both include it).
 the previously-active flavor's `llama_args` — two flavors' args are never
 merged together, so a flavor that wants another flavor's
 `--cache-type-k`/`--cache-type-v` (or anything else) must repeat them itself.
+
+**Two exceptions to "the complete set":** `RESERVED_REASONING_CAP_ARGS`
+(`_local_registry.py`) — `--reasoning-budget` and `--reasoning-budget-message`
+— are the one pair of flags no flavor may ever set, regardless of family.
+`add_flavor`/`update_flavor` silently strip either key from user-supplied
+`llama_args` before a flavor is persisted (logging a warning when they
+actually drop something), and `ensure_llama_running` force-assigns the
+correct values again at launch time regardless — belt-and-suspenders against
+a flavor saved before this restriction existed. These two are the per-session
+reasoning-budget mechanism's launch-time half (§4.5); letting a flavor set
+them would silently lock out every session's `thinking_level`, or (worse)
+suppress the exhaustion message that tells the model — and the user — that
+its thinking got cut off. See doc/LOCAL_INFERENCE.md §2a.
 
 There is no separate `context_window` field on `LlamaFlavor` any more —
 `resolve_context_window(entry, flavor) -> int` (`kodo/llms/_local_registry.py`)
