@@ -265,6 +265,9 @@ def test_multi_segment_requires_every_segment_safe() -> None:
         "del out.txt",
         "Set-Content -Path notes.txt -Value hi",
         "xcopy src dest /s",
+        "cd sub",
+        "Set-Location sub",
+        'cd "sub\\dir" && npm run build',
     ],
 )
 def test_windows_benign_commands_allow(command: str) -> None:
