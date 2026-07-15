@@ -83,9 +83,20 @@ def test_inject_no_items_returns_clean_text() -> None:
     assert inject_attachments("hello", []) == "hello"
 
 
-def test_inject_prepends_files_with_headings_prompt_last() -> None:
-    out = inject_attachments("my prompt", [("a.py", "print(1)"), ("b.md", "# hi")])
-    assert out == ("## Attached file: a.py\nprint(1)\n\n## Attached file: b.md\n# hi\n\nmy prompt")
+def test_inject_appends_tags_after_prompt() -> None:
+    out = inject_attachments("my prompt", [("id-a", "a.py"), ("id-b", "b.md")])
+    assert out == (
+        'my prompt\n\n<ATTACHMENT ID="id-a" filename="a.py"/>\n'
+        '<ATTACHMENT ID="id-b" filename="b.md"/>'
+    )
+
+
+def test_inject_escapes_filename_xml_specials() -> None:
+    out = inject_attachments("hi", [("id-a", 'weird "name" & <tag>.txt')])
+    assert out == (
+        'hi\n\n<ATTACHMENT ID="id-a" filename="weird &quot;name&quot; '
+        '&amp; &lt;tag&gt;.txt"/>'
+    )
 
 
 # ---------------------------------------------------------------------------

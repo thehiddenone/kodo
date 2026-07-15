@@ -735,13 +735,22 @@ An empty prompt is rejected with an `error` event (`code: "empty_prompt"`).
 <the user's actual prompt>
 ```
 
-The server (a localhost singleton co-located with the files) parses + strips this line (`kodo.runtime._attachments.parse_attachment_marker`), then for each path:
+The server (a localhost singleton co-located with the files) parses + strips this line (`kodo.runtime._attachments.parse_attachment_marker`) — a transport-layer detail the LLM never sees — then for each path:
 
 1. **reads + validates** the file — UTF-8 with no NUL byte; each ≤ 128 KB; combined ≤ 128 KB; at most 9 (the authoritative gate; the original may have changed since the user staged it). A rejected file is **skipped** and its reason surfaced as a recoverable `error` event; the rest of the prompt proceeds.
-2. **copies** it into the session at `sessions/<id>/attachments/<token>__<basename>` (an immutable snapshot).
-3. **injects** its content into the LLM context only — each file under a `## Attached file: <basename>` heading, the user's prompt last.
+2. **copies** it into the session at `sessions/<id>/attachments/<attachment_id>__<basename>` (an immutable snapshot; `attachment_id` is a freshly minted UUID4).
+3. **manifests** it into the LLM context — the user's own prompt text comes first, followed by one self-closing tag per attachment:
 
-Crucially, **file content is never written to `session.jsonl`.** The persisted user message stores the *clean* prompt plus opaque links (`attachments: [{name, stored}]`, `stored` relative to the session dir). On resume the links are re-expanded from the stored copies (`HistoryProjector.load_main_messages`), so the reconstructed LLM context is byte-identical — without the content ever bloating the log or re-appearing as if the user typed it. This fixes the prior client-side scheme where injected content was persisted and replayed verbatim on reload.
+```text
+<the user's actual prompt>
+
+<ATTACHMENT ID="3fa85f64-5717-4562-b3fc-2c963f66afa6" filename="a.py"/>
+<ATTACHMENT ID="c1a5e0b2-9e3d-4f1a-8b2c-7d6e5f4a3b21" filename="b.md"/>
+```
+
+File content is **never inlined** into the prompt. The `problem_solver` and `guide` agents hold the `read_attachment` tool, which takes a tag's `attachment_id` and returns that file's `{filename, content}`; the tool's own description tells the model to look for these tags. This (attachments manifested *after* the prompt, plus an explicit fetch step) replaced an earlier scheme that inlined full content *before* the prompt under `## Attached file: <name>` headings — models routinely failed to notice or act on attachments injected that way.
+
+Crucially, **file content is never written to `session.jsonl`.** The persisted user message stores the *clean* prompt plus opaque links (`attachments: [{id, name, stored}]`, `stored` relative to the session dir). On resume the links are re-expanded into the same `<ATTACHMENT>` tags (`HistoryProjector.load_main_messages`) — no file re-read needed, since the tags don't carry content — so the reconstructed LLM context is byte-identical. A link persisted before `id` existed gets a freshly minted one on resume so it still renders a tag, though `read_attachment` will report it unavailable (its on-disk copy predates the ID-keyed filename).
 
 After persisting, the server emits `user.attachments` (§5) carrying the stored copies' absolute paths so the live webview retargets the just-sent bubble's clickable chips at the durable copies (clicking posts `open_file`). On reload, `session.history` user-message entries carry the same `attachments: [{name, path}]` links. The chip opens the session's **stored copy**, so the session stays intact even if the original file is moved or deleted.
 

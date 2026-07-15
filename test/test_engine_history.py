@@ -7,6 +7,7 @@ helpers, against a small in-memory fake of ``TransientStore``.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from kodo.runtime._checkpoints import CheckpointEntry, CheckpointState
@@ -60,16 +61,12 @@ class _FakeTransient:
         self.toolcalls_dir = tmp_path / "toolcalls"
         self.session_dir = tmp_path / "session"
         self._subsessions: dict[str, list[dict[str, object]]] = {}
-        self._attachments: dict[str, str] = {}
 
     def read_session_lines(self) -> list[dict[str, object]]:
         return self._lines
 
     def read_subsession_messages(self, subsession_id: str) -> list[dict[str, object]]:
         return self._subsessions.get(subsession_id, [])
-
-    def read_attachment(self, stored_rel: str) -> str | None:
-        return self._attachments.get(stored_rel)
 
 
 def _make_projector(tmp_path: Path, *, states: dict[str, CheckpointState] | None = None):
@@ -598,17 +595,16 @@ def test_load_main_messages_skips_line_missing_content_key() -> None:
 
 def test_load_main_messages_expands_attachments_in_string_content() -> None:
     projector, transient, _c = _make_projector(Path("."))
-    transient._attachments["a.txt"] = "attachment body"
     transient._lines = [
         {
             "role": "user",
             "content": "please review",
-            "attachments": [{"name": "a.txt", "stored": "a.txt"}],
+            "attachments": [{"id": "abc-123", "name": "a.txt", "stored": "a.txt"}],
         }
     ]
     messages = projector.load_main_messages()
     assert "please review" in messages[0].content
-    assert "attachment body" in messages[0].content
+    assert '<ATTACHMENT ID="abc-123" filename="a.txt"/>' in messages[0].content
 
 
 # ---------------------------------------------------------------------------
@@ -622,13 +618,23 @@ def test_expand_persisted_attachments_returns_text_unchanged_without_attachments
     assert projector._expand_persisted_attachments("clean text", []) == "clean text"
 
 
-def test_expand_persisted_attachments_placeholder_when_missing() -> None:
+def test_expand_persisted_attachments_renders_tag_from_link() -> None:
+    projector, transient, _c = _make_projector(Path("."))
+    text = projector._expand_persisted_attachments(
+        "clean text", [{"id": "id-1", "name": "notes.txt", "stored": "attachments/id-1__notes.txt"}]
+    )
+    assert text == 'clean text\n\n<ATTACHMENT ID="id-1" filename="notes.txt"/>'
+
+
+def test_expand_persisted_attachments_synthesizes_id_for_legacy_link() -> None:
+    # Pre-ID sessions persisted only {"name", "stored"} — the tag must still
+    # render (with a freshly minted id) rather than dropping the attachment.
     projector, transient, _c = _make_projector(Path("."))
     text = projector._expand_persisted_attachments(
         "clean text", [{"name": "gone.txt", "stored": "gone.txt"}]
     )
-    assert "gone.txt" in text
-    assert "(attachment unavailable)" in text
+    assert 'filename="gone.txt"' in text
+    assert re.search(r'ATTACHMENT ID="[0-9a-f-]{36}"', text)
 
 
 def test_expand_persisted_attachments_skips_non_dict_entries() -> None:

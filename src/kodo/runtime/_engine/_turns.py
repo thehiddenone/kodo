@@ -124,10 +124,12 @@ class TurnLoopMixin:
         through :meth:`_run_agent_turn` (the spawning-tool prefix is flushed
         before any sub-agent dispatch so an interrupted sub-agent can resume).
 
-        Prompt attachments are resolved here: each source file is read, copied
-        into the session, and *injected* into the in-memory user message (so the
-        LLM sees the content), while ``session.jsonl`` persists only the clean
-        prompt plus links to the stored copies — see :meth:`_store_attachments`.
+        Prompt attachments are resolved here: each source file is read and
+        copied into the session, then *manifested* as an ``<ATTACHMENT>`` tag
+        appended after the user's prompt in the in-memory user message (the LLM
+        fetches content on demand via the ``read_attachment`` tool), while
+        ``session.jsonl`` persists only the clean prompt plus links to the
+        stored copies — see :meth:`_store_attachments`.
         """
         agent = self._registry.get(agent_name, self._session.effective_autonomous)
         plugin, model_id, routing = await self._resolve_plugin(agent.capability)
@@ -140,13 +142,15 @@ class TurnLoopMixin:
             await self._emitters.emit_error(message, recoverable=True)
 
         if text or stored:
-            llm_text = inject_attachments(text, [(s["name"], s["content"]) for s in stored])
+            llm_text = inject_attachments(text, [(s["id"], s["name"]) for s in stored])
             self._main_messages = self._main_messages + [Message(role="user", content=llm_text)]
             self._transient.append_message(
                 "user",
                 text,
                 entry_agent=agent_name,
-                attachments=[{"name": s["name"], "stored": s["stored"]} for s in stored],
+                attachments=[
+                    {"id": s["id"], "name": s["name"], "stored": s["stored"]} for s in stored
+                ],
             )
             # Always echo the authoritative stored set when the user staged
             # anything — even an empty set (every file failed validation) — so
@@ -213,9 +217,9 @@ class TurnLoopMixin:
 
         Returns:
             tuple: ``(stored, errors)`` where each ``stored`` item is
-            ``{"name", "stored", "content"}`` (``stored`` is the session-relative
-            link, ``content`` is kept only for in-memory injection) and
-            ``errors`` is a list of human-readable rejection messages.
+            ``{"id", "name", "stored"}`` (``id`` is the freshly minted
+            attachment ID, ``stored`` the session-relative link) and ``errors``
+            is a list of human-readable rejection messages.
         """
         stored: list[dict[str, str]] = []
         errors: list[str] = []
@@ -231,12 +235,13 @@ class TurnLoopMixin:
             except AttachmentError as exc:
                 errors.append(str(exc))
                 continue
-            rel = self._transient.store_attachment(loaded.name, loaded.content)
-            if rel is None:
+            result = self._transient.store_attachment(loaded.name, loaded.content)
+            if result is None:
                 errors.append(f'Attached file "{loaded.name}" could not be saved and was skipped.')
                 continue
+            attachment_id, rel = result
             running_total += loaded.size
-            stored.append({"name": loaded.name, "stored": rel, "content": loaded.content})
+            stored.append({"id": attachment_id, "name": loaded.name, "stored": rel})
         return stored, errors
 
     def _persist_main_messages(

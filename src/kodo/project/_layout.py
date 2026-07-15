@@ -30,6 +30,18 @@ def kodo_user_dir() -> Path:
     return Path.home() / ".kodo"
 
 
+def session_attachments_dir(session_id: str) -> Path:
+    """``~/.kodo/sessions/<session_id>/attachments`` — one session's stored prompt attachments.
+
+    Mirrors the layout `kodo.state.TransientStore` builds internally (session
+    root `kodo_dir/sessions/<id>`) but is exposed here as a T0 helper so
+    `kodo.tools`'s `read_attachment` tool can resolve an attachment by ID
+    straight from `ToolContext.session_id`, without importing `kodo.state`
+    (same precedent as `session_temp_dir` for `Tool.resolve_path`).
+    """
+    return kodo_user_dir() / "sessions" / session_id / "attachments"
+
+
 def session_temp_dir(session_id: str) -> Path:
     """``~/.kodo/sessions/<session_id>/tmp`` — one session's private scratch space.
 

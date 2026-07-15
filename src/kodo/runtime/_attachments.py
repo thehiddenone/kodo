@@ -1,8 +1,9 @@
-"""Prompt file-attachments: control-tag parsing, validation, and injection.
+"""Prompt file-attachments: control-tag parsing, validation, and manifesting.
 
 Attachments ride the ordinary ``prompt.submit`` ``text`` field as a single
 machine-generated control-tag line that the VS Code extension prepends ahead of
-the user's prompt::
+the user's prompt (a transport-layer detail the LLM never sees — it is parsed
+and stripped before the prompt is assembled)::
 
     <!--KODO_ATTACHMENTS:["/abs/path/a.py","/abs/path/b.md"]-->
     <the user's actual prompt>
@@ -12,12 +13,19 @@ The server (and only the server) is responsible for the attachment lifecycle:
 1. :func:`parse_attachment_marker` splits the control line off the prompt,
    yielding the clean prompt text plus the list of absolute source paths.
 2. :func:`load_attachment` reads + validates one source file (text-only, size
-   capped) so its content can be (a) copied into the session's own storage and
-   (b) injected into the LLM prompt.
-3. :func:`inject_attachments` rebuilds the *expanded* prompt the LLM sees —
-   each file under a ``## Attached file: <name>`` heading, the user's prompt
-   last. This exact format is reused on resume (re-reading the session's stored
-   copies) so the reconstructed LLM context is byte-identical to submit time.
+   capped) so its content can be copied into the session's own storage
+   (see :meth:`~kodo.state.TransientStore.store_attachment`).
+3. :func:`inject_attachments` rebuilds the *expanded* prompt the LLM sees: the
+   user's own prompt text first, followed by one self-closing
+   ``<ATTACHMENT ID="..." filename="..."/>`` tag per attachment. The LLM never
+   sees file content inline — it fetches it on demand via the
+   ``read_attachment`` tool (``kodo.tools``), passing the tag's ID. Putting the
+   user's words first (not buried under a wall of injected content) and
+   requiring an explicit tool call per file is what makes attachments reliably
+   noticed, unlike the earlier content-inlined-before-the-prompt scheme this
+   replaces. This exact layout is reused on resume (from the persisted
+   ``id``/``name`` links, no re-read of file content needed) so the
+   reconstructed LLM context matches submit time.
 
 What is **never** done here: writing file content into ``session.jsonl``. The
 engine persists only the clean prompt plus opaque links to the stored copies
@@ -160,17 +168,19 @@ def load_attachment(path: str, *, running_total: int) -> LoadedAttachment:
 
 
 def inject_attachments(clean_text: str, items: list[tuple[str, str]]) -> str:
-    """Build the expanded prompt the LLM sees from attachment ``(name, content)``.
+    """Build the expanded prompt the LLM sees: the user's text, then a manifest.
 
-    Each file is rendered under a ``## Attached file: <name>`` heading, the
-    user's prompt last, blocks joined by blank lines. This is the single source
-    of truth for the injection layout so submit-time and resume-time
-    reconstructions match exactly.
+    Each attachment becomes one self-closing
+    ``<ATTACHMENT ID="..." filename="..."/>`` tag, appended *after* the user's
+    prompt — content is never inlined here; the LLM fetches it on demand via
+    the ``read_attachment`` tool. This is the single source of truth for the
+    manifest layout so submit-time and resume-time reconstructions match
+    exactly.
 
     Args:
         clean_text: The user's prompt with the control line already stripped.
-        items: ``(display_name, text_content)`` for each stored attachment, in
-            attachment order.
+        items: ``(attachment_id, display_name)`` for each stored attachment,
+            in attachment order.
 
     Returns:
         str: The expanded prompt, or ``clean_text`` unchanged when there are no
@@ -178,6 +188,15 @@ def inject_attachments(clean_text: str, items: list[tuple[str, str]]) -> str:
     """
     if not items:
         return clean_text
-    parts = [f"## Attached file: {name}\n{content}" for name, content in items]
-    parts.append(clean_text)
-    return "\n\n".join(parts)
+    tags = "\n".join(
+        f'<ATTACHMENT ID="{attachment_id}" filename="{_escape_attr(name)}"/>'
+        for attachment_id, name in items
+    )
+    return f"{clean_text}\n\n{tags}"
+
+
+def _escape_attr(value: str) -> str:
+    """Escape a string for safe use inside a double-quoted XML attribute."""
+    return (
+        value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    )

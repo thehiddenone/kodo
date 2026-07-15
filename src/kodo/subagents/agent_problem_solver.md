@@ -5,6 +5,7 @@ capability: high
 tools:
   - filesystem
   - read_file
+  - read_attachment
   - edit_file
   - create_file
   - create_directory

@@ -72,9 +72,10 @@ seamlessly across the change.
     agents/
         <agent>.jsonl  — per-call usage stats (cost/tokens), unrelated to context
     attachments/
-        <token>__<basename>   — immutable copies of files the user attached to a
-                                prompt (one per accepted file). session.jsonl
-                                holds only a link, never the content; see below
+        <attachment_id>__<basename>   — immutable copies of files the user attached
+                                to a prompt (one per accepted file), named after
+                                their own UUID4 id. session.jsonl holds only a
+                                link, never the content; see below
 ```
 
 `<main-session-id>` is the guide session ID minted at bootstrap (a POSIX
@@ -89,12 +90,14 @@ timestamp). `<subsession-id>` is a random hex ID minted per `run_subagent` call.
   because the two entry agents share context, every message replays into the one
   `_main_messages` list regardless of tag.
   A user message that carried file attachments also gets `"attachments":
-  [{"name", "stored"}]` — opaque links to the copies under `attachments/`
-  (`stored` is the session-relative path). The persisted `content` is the user's
-  **clean** prompt; the attachment *content* is never written here. On resume
-  the links are re-expanded from the stored copies into the LLM message (each
-  under a `## Attached file: <name>` heading), so the reconstructed context
-  matches submit time without the log ever holding the file bytes. See
+  [{"id", "name", "stored"}]` — opaque links to the copies under `attachments/`
+  (`id` is the attachment's UUID4, `stored` is the session-relative path). The
+  persisted `content` is the user's **clean** prompt; the attachment *content*
+  is never written here. On resume the links are re-expanded into the LLM
+  message as the same `<ATTACHMENT ID="..." filename="..."/>` tags appended
+  after the prompt at submit time (content is fetched on demand via the
+  `read_attachment` tool, not re-read from the links), so the reconstructed
+  context matches submit time without the log ever holding the file bytes. See
   WS_PROTOCOL.md §7.1 / `kodo.runtime._attachments`.
 - **Marker lines** — `{"type": "subsession_start"|"subsession_end"|"compaction"|"error", ...}`.
   `subsession_start`/`subsession_end` record, *in chronological position*, when

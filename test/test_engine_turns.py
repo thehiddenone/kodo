@@ -99,7 +99,7 @@ class _FakeTransient:
         self.stored: dict[str, str] = {}
         self.tool_calls_written: list[tuple[str, str]] = []
         self.diffs_written: list[dict[str, object]] = []
-        self._store_result: str | None = "attachments/a1.txt"
+        self._store_result: tuple[str, str] | None = ("attach-1", "attachments/a1.txt")
 
     def append_message(self, role, content, entry_agent=None, attachments=None, kind=None) -> None:
         self.appended.append((role, content, entry_agent, attachments))
@@ -107,7 +107,7 @@ class _FakeTransient:
     async def write_agent_record(self, agent_name: str, record: dict[str, object]) -> None:
         self.agent_records.append((agent_name, record))
 
-    def store_attachment(self, display_name: str, content: str) -> str | None:
+    def store_attachment(self, display_name: str, content: str) -> tuple[str, str] | None:
         return self._store_result
 
     def attachment_abs_path(self, stored_rel: str) -> str:
@@ -259,7 +259,7 @@ async def test_store_attachments_success(tmp_path: Path) -> None:
     assert errors == []
     assert len(stored) == 1
     assert stored[0]["name"] == "notes.txt"
-    assert stored[0]["content"] == "hello world"
+    assert stored[0]["id"] == "attach-1"
     assert stored[0]["stored"] == "attachments/a1.txt"
 
 

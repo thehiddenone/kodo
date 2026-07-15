@@ -37,6 +37,7 @@ from ._guided_dev_status import GUIDED_DEV_STATUS
 from ._init_project import INIT_PROJECT
 from ._intent import INTENT_KEY, INTENT_PROPERTY, requires_intent
 from ._query_search_engine import QUERY_SEARCH_ENGINE
+from ._read_attachment import READ_ATTACHMENT
 from ._read_file import READ_FILE
 from ._read_webpage import READ_WEBPAGE
 from ._remaining_time import REMAINING_TIME
@@ -84,6 +85,7 @@ __all__ = [
     "INTENT_PROPERTY",
     "OUTPUT_VISIBILITY_DEFAULT",
     "QUERY_SEARCH_ENGINE",
+    "READ_ATTACHMENT",
     "READ_FILE",
     "READ_WEBPAGE",
     "REMAINING_TIME",
@@ -133,6 +135,7 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     GUIDED_DEV_STATUS,
     INIT_PROJECT,
     QUERY_SEARCH_ENGINE,
+    READ_ATTACHMENT,
     READ_FILE,
     READ_WEBPAGE,
     REMAINING_TIME,

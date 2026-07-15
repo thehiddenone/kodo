@@ -53,6 +53,7 @@ from ._paths import (
     resolve_within,
 )
 from ._query_search_engine import QuerySearchEngineTool
+from ._read_attachment import ReadAttachmentTool
 from ._read_file import ReadFileTool
 from ._read_webpage import ReadWebpageTool
 from ._remaining_time import RemainingTimeTool
@@ -94,6 +95,7 @@ __all__ = [
     "PermissionLike",
     "ProjectPathResolver",
     "QuerySearchEngineTool",
+    "ReadAttachmentTool",
     "ReadFileTool",
     "ReadWebpageTool",
     "RemainingTimeTool",

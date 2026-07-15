@@ -4,6 +4,7 @@ display_name: Kōdo
 capability: high
 tools:
   - guided_dev_status
+  - read_attachment
   - get_root_paths
   - find_files
   - find_text_in_files

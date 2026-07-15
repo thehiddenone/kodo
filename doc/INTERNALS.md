@@ -776,7 +776,9 @@ The package's public surface is unchanged by the split:
   `_run_judge_with_input` → thin wrappers; all three delegate to
   `_run_entry_agent(agent_name, text, attachments)`.
 - `_run_entry_agent(agent_name, ...)` → the shared entry-agent driver: loads
-  the agent, resolves its plugin, stores + injects prompt attachments, appends
+  the agent, resolves its plugin, stores prompt attachments and appends an
+  `<ATTACHMENT>` tag manifest after the prompt (`read_attachment` tool fetches
+  content on demand), appends
   the seed user message to the shared `_main_messages` (persisted immediately
   to `session.jsonl`), then builds a per-run `ToolDispatcher` and runs
   `_run_agent_turn` with `tool_dispatch = dispatcher.dispatch`,

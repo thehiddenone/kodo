@@ -35,6 +35,7 @@ from kodo.toolspecs import (
     INIT_PROJECT,
     INTENT_KEY,
     QUERY_SEARCH_ENGINE,
+    READ_ATTACHMENT,
     READ_FILE,
     READ_WEBPAGE,
     REMAINING_TIME,
@@ -79,6 +80,7 @@ from ._guided_dev_status import GuidedDevStatusTool
 from ._init_project import InitProjectTool
 from ._paths import PathResolver
 from ._query_search_engine import QuerySearchEngineTool
+from ._read_attachment import ReadAttachmentTool
 from ._read_file import ReadFileTool
 from ._read_webpage import ReadWebpageTool
 from ._remaining_time import RemainingTimeTool
@@ -103,6 +105,7 @@ _log = logging.getLogger(__name__)
 # Adding a tool means adding one (spec, Tool-subclass) row here.
 _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (READ_FILE, ReadFileTool),
+    (READ_ATTACHMENT, ReadAttachmentTool),
     (READ_WEBPAGE, ReadWebpageTool),
     (QUERY_SEARCH_ENGINE, QuerySearchEngineTool),
     (DOCUMENT_FEEDBACK, DocumentFeedbackTool),

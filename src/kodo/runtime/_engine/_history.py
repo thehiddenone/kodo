@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from pathlib import Path
 
 from kodo.llms import Message
@@ -447,13 +448,18 @@ class HistoryProjector:
         return messages
 
     def _expand_persisted_attachments(self, clean_text: str, attachments: object) -> str:
-        """Re-inject a persisted user message's attachments from their copies.
+        """Rebuild a persisted user message's attachment manifest.
 
-        ``session.jsonl`` stores only the clean prompt plus attachment links; on
-        resume the LLM context must match what was sent originally, so each
-        stored copy is read back and re-injected with the same layout used at
-        submit time (:func:`inject_attachments`). A copy that has gone missing is
-        replaced by a short placeholder rather than failing the whole resume.
+        ``session.jsonl`` stores only the clean prompt plus attachment links
+        (``id``, ``name``, ``stored``); on resume the LLM context must match
+        what was sent originally, so each link is turned back into its
+        ``<ATTACHMENT>`` tag with the same layout used at submit time
+        (:func:`inject_attachments`) — content is fetched on demand via the
+        ``read_attachment`` tool, never re-read here. A link from before
+        attachment IDs existed (no ``id`` key) gets a freshly minted one so the
+        tag still renders; its underlying file predates the ID-keyed naming
+        scheme, so ``read_attachment`` will report it unavailable if the model
+        asks for it.
         """
         if not isinstance(attachments, list) or not attachments:
             return clean_text
@@ -462,7 +468,6 @@ class HistoryProjector:
             if not isinstance(att, dict):
                 continue
             name = str(att.get("name", "attachment"))
-            stored = str(att.get("stored", ""))
-            content = self._transient.read_attachment(stored) if stored else None
-            items.append((name, content if content is not None else "(attachment unavailable)"))
+            attachment_id = str(att.get("id") or uuid.uuid4())
+            items.append((attachment_id, name))
         return inject_attachments(clean_text, items)

@@ -270,28 +270,33 @@ class TransientStore:
         assert self.__paths is not None, "attach_session() not yet called"
         return self.__paths.attachments
 
-    def store_attachment(self, display_name: str, content: str) -> str | None:
-        """Copy one attachment's text into the session, returning its link path.
+    def store_attachment(self, display_name: str, content: str) -> tuple[str, str] | None:
+        """Copy one attachment's text into the session, returning its ID and link path.
 
         The copy is immutable and self-contained: ``session.jsonl`` stores only
-        the returned relative path (plus the display name), never the content,
-        so the message is reconstructable even after the original file is gone.
-        The stored filename is prefixed with a random token so two attachments
-        with the same basename never collide.
+        the ID, the display name, and the returned relative path — never the
+        content — so the message is reconstructable even after the original
+        file is gone. The stored filename is prefixed with the attachment's own
+        ID so two attachments with the same basename never collide, and so
+        ``kodo.tools``'s ``read_attachment`` tool can find the copy by ID alone
+        (via ``kodo.project.session_attachments_dir``) without depending on
+        this store.
 
         Args:
             display_name (str): The original file's basename (display only).
             content (str): The validated UTF-8 text to store.
 
         Returns:
-            str | None: The stored copy's path relative to the session dir
-            (e.g. ``attachments/<token>__name.py``), or ``None`` if no session
-            is attached or the write fails.
+            tuple[str, str] | None: ``(attachment_id, stored_rel)`` — a freshly
+            minted UUID4 and the copy's path relative to the session dir (e.g.
+            ``attachments/<attachment_id>__name.py``) — or ``None`` if no
+            session is attached or the write fails.
         """
         if self.__paths is None:
             return None
         safe = Path(display_name).name or "attachment"
-        rel = f"attachments/{uuid.uuid4().hex[:12]}__{safe}"
+        attachment_id = str(uuid.uuid4())
+        rel = f"attachments/{attachment_id}__{safe}"
         try:
             self.__paths.attachments.mkdir(parents=True, exist_ok=True)
             (self.__paths.root / rel).write_text(content, encoding="utf-8")
@@ -299,29 +304,7 @@ class TransientStore:
             _log.exception("Failed to store attachment %r", display_name)
             return None
         self.__touch_last_modified()
-        return rel
-
-    def read_attachment(self, stored_rel: str) -> str | None:
-        """Read back a stored attachment's text by its session-relative link path.
-
-        Used on resume to re-expand a persisted user message into the exact LLM
-        context seen at submit time. Returns ``None`` if the copy is missing or
-        unreadable (the caller degrades gracefully rather than failing resume).
-
-        Args:
-            stored_rel (str): The relative path returned by
-                :meth:`store_attachment` (must stay within ``attachments/``).
-        """
-        if self.__paths is None:
-            return None
-        # Guard against path traversal from a tampered/legacy log line.
-        rel = Path(stored_rel)
-        if rel.is_absolute() or ".." in rel.parts or rel.parts[:1] != ("attachments",):
-            return None
-        try:
-            return (self.__paths.root / rel).read_text(encoding="utf-8")
-        except OSError:
-            return None
+        return attachment_id, rel
 
     def attachment_abs_path(self, stored_rel: str) -> str:
         """Absolute path of a stored attachment (for the WebView chip to open)."""

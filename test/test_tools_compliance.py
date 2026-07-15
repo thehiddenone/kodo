@@ -342,6 +342,38 @@ async def test_read_file_compliance(tmp_path: Path) -> None:
     assert ok["matches"][0]["line"] == "needle here"
 
 
+@pytest.mark.asyncio
+async def test_read_attachment_compliance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Redirect the session attachments dir away from the real ~/.kodo home,
+    # same reasoning as monkeypatching kodo_user_dir for the web_search state
+    # tools above.
+    attachments_dir = tmp_path / "attachments"
+    monkeypatch.setattr(
+        "kodo.tools._read_attachment.session_attachments_dir", lambda session_id: attachments_dir
+    )
+    attachments_dir.mkdir()
+    attachment_id = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+    (attachments_dir / f"{attachment_id}__notes.txt").write_text("hello attachment")
+
+    d = _make_dispatcher(tmp_path)
+    ok = _assert_compliant(
+        "read_attachment", await _dispatch(d, "read_attachment", {"attachment_id": attachment_id})
+    )
+    assert ok["filename"] == "notes.txt"
+    assert ok["content"] == "hello attachment"
+
+    _assert_compliant(
+        "read_attachment",
+        await _dispatch(d, "read_attachment", {"attachment_id": "not-a-uuid"}),
+    )
+    _assert_compliant(
+        "read_attachment",
+        await _dispatch(
+            d, "read_attachment", {"attachment_id": "00000000-0000-0000-0000-000000000000"}
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Workspace search tools (get_root_paths / find_files / find_text_in_files)
 # ---------------------------------------------------------------------------
@@ -933,6 +965,7 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "create_directory",
         "run_command",
         "read_file",
+        "read_attachment",
         "get_root_paths",
         "find_files",
         "find_text_in_files",
