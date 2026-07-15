@@ -319,6 +319,27 @@ class EngineServices(Protocol):
         """
         ...
 
+    async def init_project(self, path: str) -> dict[str, object]:
+        """Augment an existing directory with Kodo's project layout and git mirror.
+
+        Unlike :meth:`create_project`, ``path`` must already exist. The
+        engine judges the directory empty when it holds no entries besides
+        dotfiles/dot-directories (``.git/``, ``.gitignore``, ...); only then
+        are ``specs/``, ``src/``, ``test/`` created. Either way ``.kodo/``
+        (with ``kodo.md``) and the checkpoint git mirror — with its mandatory
+        baseline commit — are always created, and the directory is added to
+        the open VS Code workspace unless it is already one of the session's
+        registered folders.
+
+        Returns ``{"path": ..., "name": <workspace label>, "scaffolded":
+        <bool>}``.
+
+        Raises:
+            ProjectLayoutError: ``path`` does not exist, or its ``.kodo/``
+                already exists.
+        """
+        ...
+
     async def notify_tool_call_in_progress(self, tool_call_id: str) -> None:
         """Tell the client this call has cleared the security gate and its
         tool handler is about to run.

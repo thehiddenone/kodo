@@ -34,6 +34,7 @@ from ._find_text_in_files import FIND_TEXT_IN_FILES
 from ._get_root_paths import GET_ROOT_PATHS
 from ._get_web_search_state import GET_WEB_SEARCH_STATE
 from ._guided_dev_status import GUIDED_DEV_STATUS
+from ._init_project import INIT_PROJECT
 from ._intent import INTENT_KEY, INTENT_PROPERTY, requires_intent
 from ._query_search_engine import QUERY_SEARCH_ENGINE
 from ._read_file import READ_FILE
@@ -78,6 +79,7 @@ __all__ = [
     "GET_ROOT_PATHS",
     "GET_WEB_SEARCH_STATE",
     "GUIDED_DEV_STATUS",
+    "INIT_PROJECT",
     "INTENT_KEY",
     "INTENT_PROPERTY",
     "OUTPUT_VISIBILITY_DEFAULT",
@@ -129,6 +131,7 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     FIND_TEXT_IN_FILES,
     GET_WEB_SEARCH_STATE,
     GUIDED_DEV_STATUS,
+    INIT_PROJECT,
     QUERY_SEARCH_ENGINE,
     READ_FILE,
     READ_WEBPAGE,

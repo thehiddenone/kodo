@@ -229,19 +229,30 @@ Protocols**, also defined in `_context.py`:
   `web_search` is typically called from a sub-agent; doc/WEB_SEARCH.md),
   `run_author_critic_iteration(caller, ...,
   path, input_paths, instructions,
-  for_revision)`, `rollback(...)`, `disable_autonomous_mode(...)`, and
-  `create_project(name)`. Runtime injects a single `_EngineServices` adapter
-  (built inline in `runtime/_engine/`) wrapping the engine's private `_run_*` /
-  `_disable_autonomous` / `_create_project` methods. There is deliberately
-  **no** `complete_artifact`-style method: the accept/review flow
-  (`_finalize_document`) is purely engine-internal, triggered from a
-  post-dispatch hook after a `document_feedback` call — never through a tool
-  or a protocol indirection. `create_project` is what backs the
-  `create_new_project` tool: the engine slugifies the requested name, makes a
-  fresh directory under the session workspace root (auto-suffixing on
-  collision), scaffolds its `.kodo/`+mirror via `RootMirrorManager.prepare`,
-  and pushes `EVT_WORKSPACE_ADD_FOLDER` so the extension adds it to the open
-  VS Code workspace.
+  for_revision)`, `rollback(...)`, `disable_autonomous_mode(...)`,
+  `create_project(name)`, and `init_project(path)`. Runtime injects a single
+  `_EngineServices` adapter (built inline in `runtime/_engine/`) wrapping the
+  engine's private `_run_*` / `_disable_autonomous` / `_create_project` /
+  `_init_project` methods. There is deliberately **no** `complete_artifact`-
+  style method: the accept/review flow (`_finalize_document`) is purely
+  engine-internal, triggered from a post-dispatch hook after a
+  `document_feedback` call — never through a tool or a protocol indirection.
+  `create_project` is what backs the `create_new_project` tool: the engine
+  slugifies the requested name, makes a fresh directory under the session
+  workspace root (auto-suffixing on collision), scaffolds its `.kodo/`+mirror
+  via `RootMirrorManager.prepare`, and pushes `EVT_WORKSPACE_ADD_FOLDER` so
+  the extension adds it to the open VS Code workspace. `init_project` backs
+  the `init_project` tool, the "augment an existing directory" counterpart:
+  *path* must already exist (`ProjectLayout.init_existing` raises
+  `ProjectLayoutError` otherwise, or if `.kodo/` is already there); the
+  directory is judged empty when it holds no entries besides
+  dotfiles/dot-directories (`.git/`, `.gitignore`, ...), in which case — and
+  only then — `specs/`/`src/`/`test/` are laid out, exactly like
+  `create_project`; a non-empty directory keeps its content untouched. Either
+  way `.kodo/`+mirror are scaffolded via the same `RootMirrorManager.prepare`
+  (with its mandatory baseline commit), and `EVT_WORKSPACE_ADD_FOLDER` is only
+  pushed when *path* isn't already one of the session's registered workspace
+  folders.
 
 This is the dependency inversion that lets the tool layer sit *below* the engine
 while still calling back into it. `runtime` constructs the concrete objects and
@@ -408,8 +419,8 @@ needs it.
 
 Every **first-degree mutator** — a tool whose own dispatch changes content on
 disk: `filesystem`, `edit_file`, `create_file`, `create_directory`,
-`run_command`, `create_new_project`, `rollback` — declares a mandatory
-`intent` string as the **first** property of its `input_schema`: one sentence
+`run_command`, `create_new_project`, `init_project`, `rollback` — declares a
+mandatory `intent` string as the **first** property of its `input_schema`: one sentence
 stating what this specific call changes and why. The property (and the generic "how to state
 your intent" guidance the model reads) is defined **once**, in
 [toolspecs/_intent.py](../src/kodo/toolspecs/_intent.py) (`INTENT_PROPERTY`),

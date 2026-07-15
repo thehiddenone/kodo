@@ -44,6 +44,7 @@ from ._find_text_in_files import FindTextInFilesTool
 from ._get_root_paths import GetRootPathsTool
 from ._get_web_search_state import GetWebSearchStateTool
 from ._guided_dev_status import GuidedDevStatusTool
+from ._init_project import InitProjectTool
 from ._paths import (
     LogicalPathResolver,
     PathResolver,
@@ -87,6 +88,7 @@ __all__ = [
     "GetRootPathsTool",
     "GetWebSearchStateTool",
     "GuidedDevStatusTool",
+    "InitProjectTool",
     "LogicalPathResolver",
     "PathResolver",
     "PermissionLike",

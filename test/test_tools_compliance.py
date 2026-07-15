@@ -103,6 +103,9 @@ class _FakeServices:
     ) -> dict[str, object]:
         return {"path": path or "/tmp/new-project", "name": name}
 
+    async def init_project(self, path: str) -> dict[str, object]:
+        return {"path": path, "name": Path(path).name, "scaffolded": True}
+
     async def notify_tool_call_in_progress(self, tool_call_id: str) -> None:
         return None
 
@@ -719,6 +722,21 @@ async def test_create_new_project_compliance(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_init_project_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path, agent_name="guide")
+    target = tmp_path / "existing-project"
+    _assert_compliant(
+        "init_project",
+        await _dispatch(d, "init_project", {"path": str(target)}),
+    )
+    # Blank path is rejected with the universal error envelope.
+    _assert_compliant(
+        "init_project",
+        await _dispatch(d, "init_project", {"path": "   "}),
+    )
+
+
 class _WebSearchAgentFailsServices(_FakeServices):
     """``run_web_search_agent`` blows up, as if the agent turn itself failed."""
 
@@ -932,6 +950,7 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "finalize_project",
         "disable_autonomous_mode",
         "create_new_project",
+        "init_project",
         "web_search",
         "read_webpage",
         "query_search_engine",

@@ -874,6 +874,7 @@ _INTENT_TOOLS = (
     "create_directory",
     "run_command",
     "create_new_project",
+    "init_project",
     "rollback",
 )
 

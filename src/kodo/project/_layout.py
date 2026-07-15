@@ -276,6 +276,49 @@ class ProjectLayout:
         if not self.kodo_md.exists() or force:
             self.kodo_md.write_text(_KODO_MD_TEMPLATE, encoding="utf-8")
 
+    def init_existing(self) -> bool:
+        """Augment an already-existing directory with the Kodo project layout.
+
+        Unlike :meth:`init`, ``root`` is expected to already exist and may
+        hold unrelated content: ``specs/``, ``src/`` and ``test/`` are only
+        created when the directory is otherwise empty — no entries, or only
+        entries whose name starts with a dot (e.g. ``.git/``,
+        ``.gitignore``) — so pre-existing content is never touched.
+        ``.kodo/`` and ``kodo.md`` are always created; the caller (via
+        ``RootMirrorManager.prepare``) follows up with the checkpoint git
+        mirror and its mandatory baseline commit.
+
+        Returns:
+            bool: ``True`` if the directory was judged empty and the
+                standard ``specs/``/``src/``/``test/`` layout was created;
+                ``False`` if it already had content and only ``.kodo/`` was
+                added.
+
+        Raises:
+            ProjectLayoutError: ``root`` does not exist (or is not a
+                directory), or ``.kodo/`` already exists under it.
+        """
+        if not self.root.is_dir():
+            raise ProjectLayoutError(
+                f"{self.root} does not exist or is not a directory — init_project "
+                "augments an existing project directory, it does not create one."
+            )
+        if self.kodo_dir.exists():
+            raise ProjectLayoutError(
+                f"{self.kodo_dir} already exists — {self.root} is already a Kodo project."
+            )
+
+        is_empty = all(entry.name.startswith(".") for entry in self.root.iterdir())
+        if is_empty:
+            self.specs_dir.mkdir(exist_ok=True)
+            self.src_dir.mkdir(exist_ok=True)
+            self.test_dir.mkdir(exist_ok=True)
+
+        self.kodo_dir.mkdir(exist_ok=True)
+        self.kodo_md.write_text(_KODO_MD_TEMPLATE, encoding="utf-8")
+
+        return is_empty
+
     def scaffold_kodo_dir(self) -> None:
         """Create ``.kodo/`` and a minimal ``kodo.md`` marker if absent.
 

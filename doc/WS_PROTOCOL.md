@@ -483,7 +483,7 @@ Formerly bracketed the security layer's silent SMART-mode intent-judge LLM call.
 
 ### 5.9c `workspace.add_folder` — register a freshly-scaffolded project
 
-Emitted when an agent calls the `create_new_project` tool and the server has scaffolded the new project on disk (its directory, `.kodo/`/`kodo.md` marker, and an initial checkpoint mirror). Asks the extension to add the directory to the open workspace via `vscode.workspace.updateWorkspaceFolders` (no-op if already present). The extension's resulting `onDidChangeWorkspaceFolders` re-pushes `workspace.folders` (§7), reconciling the server's logical-root map. `path` is absolute; `name` is the workspace-folder label.
+Emitted when an agent calls the `create_new_project` tool and the server has scaffolded the new project on disk (its directory, `.kodo/`/`kodo.md` marker, and an initial checkpoint mirror), or when an agent calls `init_project` to augment an *existing* directory the same way (`init_project` skips this push if the directory is already one of the session's registered workspace folders). Asks the extension to add the directory to the open workspace via `vscode.workspace.updateWorkspaceFolders` (no-op if already present). The extension's resulting `onDidChangeWorkspaceFolders` re-pushes `workspace.folders` (§7), reconciling the server's logical-root map. `path` is absolute; `name` is the workspace-folder label.
 
 ```json
 { "type": "workspace.add_folder", "path": "/Users/me/projects/my-todo-app", "name": "My Todo App" }

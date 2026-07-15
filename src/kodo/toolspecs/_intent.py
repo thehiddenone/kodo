@@ -2,8 +2,8 @@
 
 Every **first-degree mutator** — a tool whose own dispatch changes content on
 disk (``filesystem``, ``edit_file``, ``create_file``, ``create_directory``,
-``run_command``, ``create_new_project``, ``rollback``) — declares a mandatory
-``intent`` string
+``run_command``, ``create_new_project``, ``init_project``, ``rollback``) —
+declares a mandatory ``intent`` string
 as the FIRST property of its ``input_schema``. Tools that only mutate
 *through other agents* (``run_subagent``, ``run_author_critic_iteration``,
 ``toolchain_deps``) are exempt: the sub-agent's own first-degree calls carry

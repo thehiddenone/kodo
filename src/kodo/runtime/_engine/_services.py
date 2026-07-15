@@ -28,6 +28,7 @@ class _EngineServices:
         rollback: Callable[[str], Awaitable[None]],
         disable_autonomous: Callable[[], Awaitable[None]],
         create_project: Callable[[str, str | None, bool], Awaitable[dict[str, object]]],
+        init_project: Callable[[str], Awaitable[dict[str, object]]],
         notify_tool_call_in_progress: Callable[[str], Awaitable[None]],
     ) -> None:
         self.__run_subagent = run_subagent
@@ -37,6 +38,7 @@ class _EngineServices:
         self.__rollback = rollback
         self.__disable_autonomous = disable_autonomous
         self.__create_project = create_project
+        self.__init_project = init_project
         self.__notify_tool_call_in_progress = notify_tool_call_in_progress
 
     async def run_subagent(
@@ -83,6 +85,10 @@ class _EngineServices:
     ) -> dict[str, object]:
         """Delegate to the engine's ``_create_project``."""
         return await self.__create_project(name, path, force)
+
+    async def init_project(self, path: str) -> dict[str, object]:
+        """Delegate to the engine's ``_init_project``."""
+        return await self.__init_project(path)
 
     async def notify_tool_call_in_progress(self, tool_call_id: str) -> None:
         """Delegate to the emitters' ``notify_tool_call_in_progress``."""

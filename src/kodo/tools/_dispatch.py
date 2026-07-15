@@ -32,6 +32,7 @@ from kodo.toolspecs import (
     GET_ROOT_PATHS,
     GET_WEB_SEARCH_STATE,
     GUIDED_DEV_STATUS,
+    INIT_PROJECT,
     INTENT_KEY,
     QUERY_SEARCH_ENGINE,
     READ_FILE,
@@ -75,6 +76,7 @@ from ._find_text_in_files import FindTextInFilesTool
 from ._get_root_paths import GetRootPathsTool
 from ._get_web_search_state import GetWebSearchStateTool
 from ._guided_dev_status import GuidedDevStatusTool
+from ._init_project import InitProjectTool
 from ._paths import PathResolver
 from ._query_search_engine import QuerySearchEngineTool
 from ._read_file import ReadFileTool
@@ -122,6 +124,7 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (FINALIZE_PROJECT, FinalizeProjectTool),
     (DISABLE_AUTONOMOUS_MODE, DisableAutonomousModeTool),
     (CREATE_NEW_PROJECT, CreateNewProjectTool),
+    (INIT_PROJECT, InitProjectTool),
     (TOOLCHAIN_BUILD, ToolchainBuildTool),
     (TOOLCHAIN_DEPS, ToolchainDepsTool),
     (WEB_SEARCH, WebSearchTool),

@@ -213,6 +213,7 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
             rollback=self._run_rollback,
             disable_autonomous=self._disable_autonomous,
             create_project=self._create_project,
+            init_project=self._init_project,
             notify_tool_call_in_progress=self._emitters.notify_tool_call_in_progress,
         )
 
@@ -919,3 +920,58 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
         project_dir = _unique_child_dir(parent, slug)
         project_dir.mkdir(parents=True)
         return project_dir
+
+    async def _init_project(self, path: str) -> dict[str, object]:
+        """Augment an existing directory with Kodo's project layout and git mirror.
+
+        Backs the ``init_project`` tool. Unlike :meth:`_create_project`, *path*
+        must already exist: :meth:`ProjectLayout.init_existing` judges it empty
+        when it holds no entries besides dotfiles/dot-directories (``.git/``,
+        ``.gitignore``, ...), and only then lays out ``specs/``, ``src/`` and
+        ``test/`` — a non-empty directory keeps its existing content untouched.
+        Either way ``.kodo/``/``kodo.md`` and the checkpoint git mirror (with
+        its mandatory baseline commit, via ``RootMirrorManager.prepare``) are
+        always created. Unlike :meth:`_create_project`, the workspace-folder
+        registration and ``EVT_WORKSPACE_ADD_FOLDER`` push are skipped when
+        *path* is already one of the session's registered folders — the
+        directory may already be open.
+
+        Args:
+            path: Absolute path of the existing directory to augment.
+
+        Returns:
+            ``{"path": <absolute project dir>, "name": <workspace label>,
+            "scaffolded": <bool, whether specs/src/test were created>}``.
+
+        Raises:
+            ProjectLayoutError: *path* does not exist, or its ``.kodo/``
+                already exists.
+        """
+        project_dir = Path(path)
+        scaffolded = await asyncio.to_thread(ProjectLayout(project_dir).init_existing)
+        resolved_dir = project_dir.resolve()
+
+        folders = self._session_workspace.folders
+        already_present = any(existing == resolved_dir for existing in folders.values())
+        label = project_dir.name
+        if not already_present:
+            folders[label] = project_dir
+            self._session_workspace.set_folders(folders)
+
+        self._checkpoints.sync_roots()
+        await self._checkpoints.mirrors.prepare(project_dir)
+
+        if not already_present:
+            await self._sink.send(
+                Envelope.make_event(
+                    EVT_WORKSPACE_ADD_FOLDER, {"path": str(project_dir), "name": label}
+                )
+            )
+        _log.info(
+            "init_project: augmented %s (scaffolded=%s, already_present=%s, label=%r)",
+            project_dir,
+            scaffolded,
+            already_present,
+            label,
+        )
+        return {"path": str(project_dir), "name": label, "scaffolded": scaffolded}

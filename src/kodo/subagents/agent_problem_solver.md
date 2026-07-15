@@ -17,6 +17,7 @@ tools:
   - run_subagent
   - ask_user
   - create_new_project
+  - init_project
 subagents:
   - investigator
   - planner

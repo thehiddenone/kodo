@@ -96,6 +96,7 @@ def _make_services(rec: _Recorder) -> _EngineServices:
         rollback=rec.make("rollback"),
         disable_autonomous=rec.make("disable_autonomous"),
         create_project=rec.make("create_project", {"root": "/tmp/proj"}),
+        init_project=rec.make("init_project", {"root": "/tmp/existing"}),
         notify_tool_call_in_progress=rec.make("notify_tool_call_in_progress"),
     )
 
@@ -180,6 +181,17 @@ async def test_engine_services_create_project_forwards_args_and_defaults() -> No
 
     assert result == {"root": "/tmp/proj"}
     assert rec.calls == [("create_project", ("", None, False))]
+
+
+@pytest.mark.asyncio
+async def test_engine_services_init_project_forwards_path() -> None:
+    rec = _Recorder()
+    services = _make_services(rec)
+
+    result = await services.init_project("/tmp/existing-project")
+
+    assert result == {"root": "/tmp/existing"}
+    assert rec.calls == [("init_project", ("/tmp/existing-project",))]
 
 
 @pytest.mark.asyncio

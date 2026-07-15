@@ -1091,3 +1091,94 @@ def test_reserve_project_dir_creates_and_returns_unique_path(tmp_path: Path) -> 
     result = WorkflowEngine._reserve_project_dir(tmp_path, "widget")
     assert result == tmp_path / "widget-2"
     assert result.exists()
+
+
+# ---------------------------------------------------------------------------
+# _init_project
+# ---------------------------------------------------------------------------
+
+
+async def test_init_project_scaffolds_empty_directory(tmp_path: Path) -> None:
+    engine, _t, sink, _g = _make_engine(tmp_path)
+    target = tmp_path / "existing-empty"
+    target.mkdir()
+
+    result = await engine._init_project(str(target))
+
+    assert result == {"path": str(target), "name": "existing-empty", "scaffolded": True}
+    assert (target / "specs").is_dir()
+    assert (target / "src").is_dir()
+    assert (target / "test").is_dir()
+    assert (target / ".kodo" / "kodo.md").exists()
+    # The checkpoint mirror was git-initialised with its baseline commit.
+    assert (target / ".kodo" / "checkpoints" / ".git").exists()
+    assert "existing-empty" in engine._session_workspace.folders
+    add_folder_events = [e for e in sink.sent if e.payload.get("type") == "workspace.add_folder"]
+    assert len(add_folder_events) == 1
+
+
+async def test_init_project_treats_dotfiles_only_as_empty(tmp_path: Path) -> None:
+    engine, _t, _s, _g = _make_engine(tmp_path)
+    target = tmp_path / "existing-dotfiles-only"
+    target.mkdir()
+    (target / ".git").mkdir()
+    (target / ".gitignore").write_text("node_modules/\n")
+
+    result = await engine._init_project(str(target))
+
+    assert result["scaffolded"] is True
+    assert (target / "specs").is_dir()
+    assert (target / "src").is_dir()
+    assert (target / "test").is_dir()
+
+
+async def test_init_project_preserves_existing_content(tmp_path: Path) -> None:
+    engine, _t, _s, _g = _make_engine(tmp_path)
+    target = tmp_path / "existing-with-content"
+    target.mkdir()
+    (target / "README.md").write_text("hello\n")
+
+    result = await engine._init_project(str(target))
+
+    assert result["scaffolded"] is False
+    assert not (target / "specs").exists()
+    assert not (target / "src").exists()
+    assert not (target / "test").exists()
+    assert (target / "README.md").read_text() == "hello\n"
+    assert (target / ".kodo" / "kodo.md").exists()
+
+
+async def test_init_project_requires_existing_directory(tmp_path: Path) -> None:
+    from kodo.project import ProjectLayoutError
+
+    engine, _t, _s, _g = _make_engine(tmp_path)
+    missing = tmp_path / "does-not-exist"
+
+    with pytest.raises(ProjectLayoutError, match="does not exist"):
+        await engine._init_project(str(missing))
+
+
+async def test_init_project_fails_when_kodo_dir_already_exists(tmp_path: Path) -> None:
+    from kodo.project import ProjectLayoutError
+
+    engine, _t, _s, _g = _make_engine(tmp_path)
+    target = tmp_path / "already-a-project"
+    (target / ".kodo").mkdir(parents=True)
+
+    with pytest.raises(ProjectLayoutError, match="already exists"):
+        await engine._init_project(str(target))
+
+
+async def test_init_project_skips_workspace_add_when_already_present(tmp_path: Path) -> None:
+    engine, _t, sink, _g = _make_engine(tmp_path)
+    target = tmp_path / "already-open"
+    target.mkdir()
+    engine._session_workspace.set_folders({"already-open": target})
+
+    result = await engine._init_project(str(target))
+
+    assert result["name"] == "already-open"
+    add_folder_events = [e for e in sink.sent if e.payload.get("type") == "workspace.add_folder"]
+    assert len(add_folder_events) == 0
+    # No duplicate entry was created under a different label.
+    assert list(engine._session_workspace.folders) == ["already-open"]
