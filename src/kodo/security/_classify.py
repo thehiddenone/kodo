@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from kodo.shellparser import ParsedCommand, Segment
+from kodo.shellparser import ParsedCommand, Redirection, Segment
 
 __all__ = ["NormalizedSegment", "SUB_MARK", "leaf_name", "normalize_segments"]
 
@@ -132,6 +132,13 @@ class NormalizedSegment:
             (``python -c``, ``-EncodedCommand``) that cannot be analyzed.
         piped_input: The segment's stdin is the previous segment's pipe.
         writes_file: A redirection writes to a file (not a stream merge).
+        has_redirections: The segment carries any redirection at all
+            (read, write, or here-doc/here-string) — a coarser signal than
+            ``writes_file``, used only to keep a redirecting command like
+            ``cat > out.txt`` out of the Phase 2 "always allow" offer
+            (doc/SECURITY_RULES_PLAN.md §2.2: a rule-eligible ask is only
+            *offered* for a single bare segment, never one with paths or
+            redirections baked into its shape).
     """
 
     executable: str
@@ -143,6 +150,7 @@ class NormalizedSegment:
     nested_opaque: bool = False
     piped_input: bool = False
     writes_file: bool = False
+    has_redirections: bool = False
 
 
 def leaf_name(executable: str) -> str:
@@ -180,6 +188,7 @@ def _normalize(segment: Segment, *, windows: bool, piped_input: bool) -> Normali
     )
     if any(SUB_MARK in r.target for r in segment.redirections):
         has_sub = True
+    has_redirections = bool(segment.redirections)
 
     tokens = _peel_prefixes(tokens, windows=windows)
     if not tokens:
@@ -188,6 +197,7 @@ def _normalize(segment: Segment, *, windows: bool, piped_input: bool) -> Normali
             has_substitution=has_sub,
             piped_input=piped_input,
             writes_file=writes,
+            has_redirections=has_redirections,
         )
 
     exe = leaf_name(tokens[0])
@@ -207,6 +217,8 @@ def _normalize(segment: Segment, *, windows: bool, piped_input: bool) -> Normali
     subcommand = positionals[0].lower() if positionals and SUB_MARK not in positionals[0] else ""
 
     nested, opaque = _nested_command(exe, rest, windows)
+    if nested is None and not opaque:
+        nested, opaque = _heredoc_nested_command(exe, positionals, segment.redirections)
 
     return NormalizedSegment(
         executable=exe,
@@ -218,6 +230,7 @@ def _normalize(segment: Segment, *, windows: bool, piped_input: bool) -> Normali
         nested_opaque=opaque,
         piped_input=piped_input,
         writes_file=writes,
+        has_redirections=has_redirections,
     )
 
 
@@ -255,6 +268,35 @@ def _is_flag(token: str, windows: bool) -> bool:
         return True
     # Windows `/s`-style switches: a short, single-slash token.
     return windows and token.startswith("/") and token.count("/") == 1 and len(token) <= 4
+
+
+def _heredoc_nested_command(
+    exe: str, positionals: tuple[str, ...], redirections: tuple[Redirection, ...]
+) -> tuple[str | None, bool]:
+    """A bare shell/interpreter fed a here-document reads it as its program —
+    same trust boundary as ``-c``/``-e`` (:func:`_nested_command`), just
+    supplied over stdin instead of a flag.
+
+    Only applies when there's no other positional (``bash script.sh <<EOF``
+    feeds the heredoc to *script.sh*'s stdin as data, not to bash-as-code —
+    the same "runs a workspace script" trust the flagless form already gets).
+    A `-` placeholder positional (`python - <<EOF`, meaning "read the program
+    from stdin") is caught too: `_is_flag` already treats a bare `-` as a
+    flag, so it never reaches `positionals`.
+    """
+    if positionals:
+        return None, False
+    body = next(
+        (r.heredoc_body for r in redirections if r.operator == "<<" and r.heredoc_body is not None),
+        None,
+    )
+    if body is None:
+        return None, False
+    if exe in _SH_FAMILY:
+        return body, False
+    if exe in _INLINE_CODE_FLAGS:
+        return None, True
+    return None, False
 
 
 def _nested_command(exe: str, rest: list[str], windows: bool) -> tuple[str | None, bool]:

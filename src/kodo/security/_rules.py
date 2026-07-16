@@ -37,7 +37,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ._analysis import _READONLY_EXECUTABLES, analyze_command
+from ._analysis import _READONLY_EXECUTABLES, CommandAnalysis, analyze_command
 from ._classify import SHELL_EXECUTABLES, NormalizedSegment
 
 __all__ = ["CommandRule", "RuleDecision", "evaluate_command"]
@@ -180,7 +180,28 @@ class RuleDecision:
             fast path), or ``"rules"`` (the rule ladder).
         shape: The generalized ``(executable, subcommand)`` of the deciding
             segment — the Phase 2 user-rule shape — or ``None``.
-        rule_eligible: Whether Phase 2 may offer "always allow" for this ask.
+        rule_eligible: Whether an existing user rule matching ``shape`` may
+            silently turn this ask into an allow, and whether a *new* one may
+            be offered (subject to the additional whole-command shape checks
+            in :func:`_rule_offer` — category eligibility is necessary but
+            not sufficient for the offer itself; see ``rule_offer`` below).
+        rule_offer: The ``(executable, subcommand)`` shape the permission
+            prompt should offer to permanently allow, or ``None`` when this
+            ask isn't offer-eligible (doc/SECURITY_RULES_PLAN.md §2.2) — set
+            only on an ``"ask"`` that survived the known-rules check (an ask
+            already silenced by an existing rule becomes an ``"allow"`` and
+            never reaches this field).
+        known_command: Whether this ask matched an explicit, named
+            ``CommandRule`` in the built-in table (``git push``, ``apt
+            install``, …) rather than falling through to the generic
+            "not in the known-safe command set" default. Feeds
+            :func:`_rule_offer`'s path-argument check (§2.2 rule 3): a known
+            command's danger is already bounded by its category, so its
+            offer ignores path-like *arguments* entirely (the shape never
+            stores them anyway); an unknown command's offer is only exempted
+            for a path-like *subcommand* itself, since that's the one case
+            where the literal shape still pins the rule to this exact
+            invocation.
     """
 
     action: str
@@ -189,6 +210,8 @@ class RuleDecision:
     source: str
     shape: tuple[str, str] | None = None
     rule_eligible: bool = False
+    rule_offer: tuple[str, str] | None = None
+    known_command: bool = False
 
 
 def _ask(
@@ -197,6 +220,7 @@ def _ask(
     source: str = "rules",
     shape: tuple[str, str] | None = None,
     eligible: bool = False,
+    known: bool = False,
 ) -> RuleDecision:
     return RuleDecision(
         action="ask",
@@ -205,6 +229,7 @@ def _ask(
         source=source,
         shape=shape,
         rule_eligible=eligible,
+        known_command=known,
     )
 
 
@@ -215,6 +240,7 @@ def evaluate_command(
     roots: tuple[str, ...],
     windows: bool | None = None,
     rules: tuple[CommandRule, ...] | None = None,
+    known_rules: frozenset[tuple[str, str]] = frozenset(),
     _depth: int = 0,
 ) -> RuleDecision:
     """Judge *command* against the workspace and the rule table.
@@ -227,10 +253,17 @@ def evaluate_command(
             (``False``); defaults to the current platform.
         rules: Rule table override; defaults to the built-in table for the
             dialect (:mod:`._defaults`).
+        known_rules: The caller's already-granted Phase 2 user rules —
+            session-scoped and global, merged — as ``(executable,
+            subcommand)`` shapes. Consulted for every ask this evaluation
+            would otherwise produce whose ``rule_eligible`` is ``True``
+            (doc/SECURITY_RULES_PLAN.md §2.4); threaded into every recursive
+            call (command substitutions, nested shells) so a rule silences a
+            wrapped occurrence exactly like a bare one.
 
     Returns:
         RuleDecision: allow or ask, with reason, category, and the Phase 2
-        shape/eligibility facts.
+        shape/eligibility/offer facts.
     """
     win = os.name == "nt" if windows is None else windows
     if rules is None:
@@ -257,7 +290,13 @@ def evaluate_command(
         if not inner:
             return _ask(f"Unparseable command substitution: {snippet}", "obfuscation")
         verdict = evaluate_command(
-            inner, cwd=cwd, roots=roots, windows=win, rules=rules, _depth=_depth + 1
+            inner,
+            cwd=cwd,
+            roots=roots,
+            windows=win,
+            rules=rules,
+            known_rules=known_rules,
+            _depth=_depth + 1,
         )
         if verdict.action != "allow":
             return _ask(
@@ -277,8 +316,38 @@ def evaluate_command(
         if not segment.executable:
             continue
         verdict = _judge_segment(
-            segment, rules=rules, cwd=cwd, roots=roots, windows=win, depth=_depth
+            segment,
+            rules=rules,
+            cwd=cwd,
+            roots=roots,
+            windows=win,
+            depth=_depth,
+            known_rules=known_rules,
         )
+        shape = verdict.shape
+        if verdict.action == "ask" and verdict.rule_eligible and shape is not None:
+            if shape in known_rules:
+                exe, sub = shape
+                display = f"{exe} {sub}".strip()
+                verdict = RuleDecision(
+                    action="allow",
+                    reason=f"User rule: always allow '{display}'.",
+                    category="benign-dev",
+                    source="rules",
+                )
+            else:
+                offer = _rule_offer(analysis, segment, shape, known=verdict.known_command)
+                if offer is not None:
+                    verdict = RuleDecision(
+                        action=verdict.action,
+                        reason=verdict.reason,
+                        category=verdict.category,
+                        source=verdict.source,
+                        shape=verdict.shape,
+                        rule_eligible=verdict.rule_eligible,
+                        rule_offer=offer,
+                        known_command=verdict.known_command,
+                    )
         if verdict.action != "allow":
             return verdict
 
@@ -298,6 +367,7 @@ def _judge_segment(
     roots: tuple[str, ...],
     windows: bool,
     depth: int,
+    known_rules: frozenset[tuple[str, str]] = frozenset(),
 ) -> RuleDecision:
     """One pipeline segment through red flags, the rule table, the default."""
     exe = segment.executable
@@ -319,6 +389,7 @@ def _judge_segment(
                 roots=roots,
                 windows=windows,
                 rules=rules,
+                known_rules=known_rules,
                 _depth=depth + 1,
             )
             if verdict.action != "allow":
@@ -380,7 +451,9 @@ def _judge_segment(
                     "unknown",
                 )
             return ok
-        return _ask(rule.reason, rule.category, shape=shape, eligible=rule.rule_eligible)
+        return _ask(
+            rule.reason, rule.category, shape=shape, eligible=rule.rule_eligible, known=True
+        )
 
     return _ask(
         f"'{display}' is not in the known-safe command set.",
@@ -413,6 +486,67 @@ def _flag_hit(wanted: str, flags: tuple[str, ...]) -> bool:
         ):
             return True
     return False
+
+
+_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _is_path_like(token: str) -> bool:
+    """A token that looks like it names a filesystem location.
+
+    doc/SECURITY_RULES_PLAN.md §2.2 rule 3: a rule-eligible ask is only
+    *offered* when none of its positional arguments are path-shaped — ``git
+    push`` generalizes safely, ``pytest ../other/`` does not.
+    """
+    return bool(
+        token and ("/" in token or "\\" in token or token == ".." or token.startswith("~"))
+    ) or bool(_DRIVE_RE.match(token))
+
+
+def _rule_offer(
+    analysis: CommandAnalysis,
+    segment: NormalizedSegment,
+    shape: tuple[str, str],
+    *,
+    known: bool,
+) -> tuple[str, str] | None:
+    """The Phase 2 "always allow" offer for *shape*, or ``None`` when this
+    ask's whole-command shape disqualifies it (doc/SECURITY_RULES_PLAN.md
+    §2.2). Category/rule eligibility (``RuleDecision.rule_eligible``) is
+    checked by the caller before this runs — that gate is necessary but not
+    sufficient: a single eligible segment wrapped in a pipeline, redirection,
+    or substitution is still never offered.
+
+    The path-argument check (§2.2 rule 3) is tiered by *known* (mirrors
+    ``RuleDecision.known_command``):
+
+    - A **known** command (matched an explicit, named ``CommandRule`` — e.g.
+      ``apt install``) has its shape stored as ``(executable, subcommand)``
+      regardless of what follows; granting the rule already ignores every
+      argument after the subcommand, so a path-like one changes nothing —
+      the rule generalizes over paths precisely as it generalizes over any
+      other trailing argument (``git push`` generalizes over the remote).
+    - An **unknown** command (the generic "not in the known-safe command
+      set" default — e.g. a bespoke project CLI) has no such bounded
+      category, so a path-like argument *after* the subcommand still
+      disqualifies the offer: the stored shape can't capture it, and a
+      future call with a different path would silently match the same
+      rule. A path-like *subcommand itself* (``1brc ./data.txt``) is fine —
+      the shape already pins the rule to that exact literal text, so a
+      different file produces a different, non-matching shape and still
+      asks.
+    """
+    if analysis.operators or analysis.unresolved:
+        return None  # Complex command (pipe/&&/;) or a substitution.
+    if segment.has_redirections or segment.has_substitution:
+        return None
+    if segment.nested_command is not None or segment.nested_opaque:
+        return None
+    if known:
+        return shape
+    if any(_is_path_like(arg) for arg in segment.args[1:]):
+        return None
+    return shape
 
 
 def _strip_command_sub(snippet: str) -> str:

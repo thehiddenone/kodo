@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from kodo.toolspecs import ALL_TOOLS, SecurityImpact, ToolSpec
 
 from ._rules import RuleDecision, evaluate_command
+from ._store import global_rules
 
 __all__ = [
     "MODE_DEFENSIVE",
@@ -100,19 +101,24 @@ class SecurityDecision:
             (permissive/defensive/smart levels), ``"workspace"`` (static
             outside-workspace finding), ``"static"`` (provably read-only
             fast path), or ``"rules"`` (the heuristic rule engine).
+        rule_offer: For a ``run_command`` ask only, the ``(executable,
+            subcommand)`` shape the permission prompt should offer to
+            permanently allow (session or global), or ``None`` when this ask
+            isn't offer-eligible (doc/SECURITY_RULES_PLAN.md §2.2).
     """
 
     action: str
     reason: str
     source: str
+    rule_offer: tuple[str, str] | None = None
 
 
 def _allow(reason: str, source: str) -> SecurityDecision:
     return SecurityDecision(action="allow", reason=reason, source=source)
 
 
-def _ask(reason: str, source: str) -> SecurityDecision:
-    return SecurityDecision(action="ask", reason=reason, source=source)
+def _ask(reason: str, source: str, rule_offer: tuple[str, str] | None = None) -> SecurityDecision:
+    return SecurityDecision(action="ask", reason=reason, source=source, rule_offer=rule_offer)
 
 
 class SecurityLayer:
@@ -132,6 +138,7 @@ class SecurityLayer:
         autonomous: bool,
         default_cwd: str,
         roots: tuple[str, ...],
+        session_rules: frozenset[tuple[str, str]] = frozenset(),
     ) -> SecurityDecision:
         """Judge one tool call.
 
@@ -145,6 +152,10 @@ class SecurityLayer:
             default_cwd: The run's default working directory (absolute,
                 workspace-confined) — the base for ``run_command`` analysis.
             roots: Absolute workspace root paths.
+            session_rules: This session's Phase 2 "always allow" rules
+                (``(executable, subcommand)`` shapes) — merged with the
+                process-wide global store for ``run_command``'s rule engine.
+                Ignored by every other tool.
 
         Returns:
             SecurityDecision: allow or ask, with reason.
@@ -170,7 +181,9 @@ class SecurityLayer:
         if autonomous:
             mode = MODE_PERMISSIVE
 
-        decision = self.__evaluate_mode(mode, spec, impact, tool_input, default_cwd, roots)
+        decision = self.__evaluate_mode(
+            mode, spec, impact, tool_input, default_cwd, roots, session_rules
+        )
         _log.info(
             "security: %s %s (%s, mode=%s, source=%s): %s",
             decision.action.upper(),
@@ -190,6 +203,7 @@ class SecurityLayer:
         tool_input: dict[str, object],
         default_cwd: str,
         roots: tuple[str, ...],
+        session_rules: frozenset[tuple[str, str]],
     ) -> SecurityDecision:
         if mode == MODE_PERMISSIVE:
             if impact >= SecurityImpact.CRITICAL:
@@ -214,7 +228,7 @@ class SecurityLayer:
                 "threshold",
             )
         if spec.name == "run_command":
-            return self.__evaluate_run_command(tool_input, default_cwd, roots)
+            return self.__evaluate_run_command(tool_input, default_cwd, roots, session_rules)
         if spec.name == "filesystem":
             return self.__evaluate_filesystem(tool_input)
         if spec.name == "rollback":
@@ -236,14 +250,20 @@ class SecurityLayer:
         tool_input: dict[str, object],
         default_cwd: str,
         roots: tuple[str, ...],
+        session_rules: frozenset[tuple[str, str]],
     ) -> SecurityDecision:
-        """The heuristic rule engine's verdict (doc/SECURITY_RULES_PLAN.md §1)."""
+        """The heuristic rule engine's verdict (doc/SECURITY_RULES_PLAN.md §1),
+        including any Phase 2 "always allow" rule the user already granted
+        (session-scoped, merged with the process-wide global store)."""
         command = str(tool_input.get("command", ""))
         cwd = self.__effective_cwd(tool_input, default_cwd)
-        verdict: RuleDecision = evaluate_command(command, cwd=cwd, roots=roots)
+        known_rules = session_rules | global_rules()
+        verdict: RuleDecision = evaluate_command(
+            command, cwd=cwd, roots=roots, known_rules=known_rules
+        )
         if verdict.action == "allow":
             return _allow(verdict.reason, verdict.source)
-        return _ask(verdict.reason, verdict.source)
+        return _ask(verdict.reason, verdict.source, rule_offer=verdict.rule_offer)
 
     @staticmethod
     def __evaluate_filesystem(tool_input: dict[str, object]) -> SecurityDecision:

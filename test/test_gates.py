@@ -14,7 +14,7 @@ import pytest
 
 from kodo.common import Envelope
 from kodo.runtime import ApprovalResponse, GateOrchestrator
-from kodo.transport import SREQ_PROMPT_APPROVAL, SREQ_PROMPT_QUESTION
+from kodo.transport import SREQ_PROMPT_APPROVAL, SREQ_PROMPT_PERMISSION, SREQ_PROMPT_QUESTION
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -287,3 +287,164 @@ async def test_fire_alias_behaves_like_fire_approval() -> None:
     assert response.action == "agree"
     env = _get_sent_envelopes(state)[0]
     assert env.payload["type"] == SREQ_PROMPT_APPROVAL
+
+
+# ---------------------------------------------------------------------------
+# fire_permission emits kind=request and persists pending_security_alert
+# ---------------------------------------------------------------------------
+
+
+def _fire_permission_kwargs(**overrides: object) -> dict[str, object]:
+    kwargs: dict[str, object] = {
+        "tool_call_id": "tu_1",
+        "tool_name": "run_command",
+        "external_name": "Run Command",
+        "risk": "High",
+        "intent": "Build the project",
+        "reason": "'make' is not in the known-safe command set.",
+        "params": [{"name": "command", "value": "make"}],
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+@pytest.mark.asyncio
+async def test_fire_permission_sends_kind_request_with_payload() -> None:
+    state = _make_app_state()
+    gate = GateOrchestrator(state, _make_transient())
+
+    async def _run():
+        task = asyncio.create_task(gate.fire_permission(**_fire_permission_kwargs()))
+        await asyncio.sleep(0)
+        req_id = next(iter(state._captured))
+        state._captured[req_id].set_result({"action": "allow"})
+        return await task
+
+    response = await _run()
+
+    env = _get_sent_envelopes(state)[0]
+    assert env.kind == "request"
+    assert env.payload["type"] == SREQ_PROMPT_PERMISSION
+    assert env.payload["tool_call_id"] == "tu_1"
+    assert env.payload["tool_name"] == "run_command"
+    assert env.payload["risk"] == "High"
+    assert env.payload["recovered"] is False
+    assert env.payload["rule_offer"] is None
+    assert response.action == "allow"
+
+
+@pytest.mark.asyncio
+async def test_fire_permission_carries_rule_offer() -> None:
+    state = _make_app_state()
+    gate = GateOrchestrator(state, _make_transient())
+
+    async def _run():
+        task = asyncio.create_task(
+            gate.fire_permission(**_fire_permission_kwargs(rule_offer=("git", "push")))
+        )
+        await asyncio.sleep(0)
+        req_id = next(iter(state._captured))
+        state._captured[req_id].set_result({"action": "allow", "remember": "session"})
+        return await task
+
+    response = await _run()
+
+    env = _get_sent_envelopes(state)[0]
+    assert env.payload["rule_offer"] == {"executable": "git", "subcommand": "push"}
+    assert response.remember == "session"
+
+
+@pytest.mark.asyncio
+async def test_fire_permission_deny_defaults_and_normalizes_action() -> None:
+    state = _make_app_state()
+    gate = GateOrchestrator(state, _make_transient())
+
+    async def _run():
+        task = asyncio.create_task(gate.fire_permission(**_fire_permission_kwargs()))
+        await asyncio.sleep(0)
+        req_id = next(iter(state._captured))
+        state._captured[req_id].set_result({"action": "not-a-real-action"})
+        return await task
+
+    response = await _run()
+    assert response.action == "deny"
+
+
+@pytest.mark.asyncio
+async def test_fire_permission_invalid_remember_normalizes_to_none() -> None:
+    state = _make_app_state()
+    gate = GateOrchestrator(state, _make_transient())
+
+    async def _run():
+        task = asyncio.create_task(
+            gate.fire_permission(**_fire_permission_kwargs(rule_offer=("git", "push")))
+        )
+        await asyncio.sleep(0)
+        req_id = next(iter(state._captured))
+        state._captured[req_id].set_result({"action": "allow", "remember": "forever"})
+        return await task
+
+    response = await _run()
+    assert response.remember is None
+
+
+@pytest.mark.asyncio
+async def test_fire_permission_persists_pending_security_alert_before_await() -> None:
+    """The marker must be set before the request is even sent, so a crash
+    that happens between send and await still leaves it durable."""
+    state = _make_app_state()
+    transient = _make_transient()
+    gate = GateOrchestrator(state, transient)
+
+    task = asyncio.create_task(gate.fire_permission(**_fire_permission_kwargs()))
+    await asyncio.sleep(0)
+
+    transient.update.assert_any_call(pending_security_alert="tu_1")
+
+    req_id = next(iter(state._captured))
+    state._captured[req_id].set_result({"action": "allow"})
+    await task
+
+
+@pytest.mark.asyncio
+async def test_fire_permission_clears_pending_security_alert_on_resolve() -> None:
+    state = _make_app_state()
+    transient = _make_transient()
+    gate = GateOrchestrator(state, transient)
+
+    task = asyncio.create_task(gate.fire_permission(**_fire_permission_kwargs()))
+    await asyncio.sleep(0)
+    req_id = next(iter(state._captured))
+    state._captured[req_id].set_result({"action": "deny"})
+    await task
+
+    transient.update.assert_any_call(pending_security_alert=None)
+    # The clearing call must be the last update() call — order matters,
+    # since resume reads this field expecting it to reflect the final state.
+    assert transient.update.call_args_list[-1].kwargs == {"pending_security_alert": None}
+
+
+@pytest.mark.asyncio
+async def test_fire_permission_leaves_pending_security_alert_on_cancellation() -> None:
+    """A cancelled wait (server restart, or a live disconnect that no longer
+    reaches this far — see kodo.transport._connection) must NOT clear the
+    marker: that is exactly the signal cold-restart resume needs to know
+    this call never reached dispatch."""
+    state = _make_app_state()
+    transient = _make_transient()
+    gate = GateOrchestrator(state, transient)
+
+    task = asyncio.create_task(gate.fire_permission(**_fire_permission_kwargs()))
+    await asyncio.sleep(0)
+    transient.update.assert_any_call(pending_security_alert="tu_1")
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    calls_clearing_alert = [
+        call
+        for call in transient.update.call_args_list
+        if call.kwargs == {"pending_security_alert": None}
+    ]
+    assert calls_clearing_alert == []

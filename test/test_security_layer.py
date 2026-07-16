@@ -1,13 +1,28 @@
-"""Tests for the security layer (``kodo.security``) and its dispatch gate."""
+"""Tests for the security layer (``kodo.security``) and its dispatch gate.
+
+``SecurityLayer.evaluate`` merges the global (user-wide) rule store into
+every ``run_command`` judgement (``kodo.security._store.global_rules``), so
+every test redirects ``HOME`` to a temp dir — the same isolation
+test_security_store.py uses — to avoid ever touching the real user's
+``~/.kodo/etc/security_rules.json``.
+"""
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from kodo.security import SecurityDecision, SecurityLayer, analyze_command
 from kodo.shellparser import parse_powershell_command
+
+
+@pytest.fixture(autouse=True)
+def _temp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return tmp_path
+
 
 # ----------------------------------------------------------------------
 # PowerShell / Windows tokenizer
@@ -241,6 +256,49 @@ async def test_smart_rules_allow_known_safe_and_ask_unknown() -> None:
 
 
 @pytest.mark.asyncio
+async def test_smart_run_command_ask_carries_rule_offer() -> None:
+    layer = SecurityLayer()
+    d = await _eval(
+        layer,
+        "run_command",
+        {"command": "git push origin main", "intent": "publish", "timeout": 30},
+        "smart",
+    )
+    assert d.action == "ask"
+    assert d.rule_offer == ("git", "push")
+
+
+@pytest.mark.asyncio
+async def test_smart_run_command_session_rule_silences_matching_ask() -> None:
+    layer = SecurityLayer()
+    d = await layer.evaluate(
+        tool_name="run_command",
+        tool_input={"command": "git push origin main", "intent": "publish", "timeout": 30},
+        command_control="smart",
+        autonomous=False,
+        default_cwd="/ws/proj",
+        roots=("/ws/proj",),
+        session_rules=frozenset({("git", "push")}),
+    )
+    assert d.action == "allow"
+
+
+@pytest.mark.asyncio
+async def test_smart_run_command_global_rule_silences_matching_ask() -> None:
+    from kodo.security import add_global_rule
+
+    add_global_rule("npm", "publish")
+    layer = SecurityLayer()
+    d = await _eval(
+        layer,
+        "run_command",
+        {"command": "npm publish", "intent": "publish", "timeout": 30},
+        "smart",
+    )
+    assert d.action == "allow"
+
+
+@pytest.mark.asyncio
 async def test_smart_filesystem_policy() -> None:
     layer = SecurityLayer()
     ask = await _eval(
@@ -375,6 +433,7 @@ class _FakeGate:
         class _Resp:
             action = self.action
             feedback = self.feedback
+            remember = None
 
         return _Resp()
 
@@ -389,6 +448,7 @@ class _FakeSession:
     phase = "running"
     effective_autonomous = False
     command_control = "defensive"
+    security_rules: frozenset[tuple[str, str]] = frozenset()
 
 
 @pytest.mark.asyncio

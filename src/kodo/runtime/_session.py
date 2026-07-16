@@ -71,6 +71,13 @@ class SessionState:
             mid-session model switch to a different thinking family
             re-derives it the same way (``WorkflowEngine.
             _sync_thinking_level_to_model``).
+        security_rules: This session's Phase 2 "always allow" grants
+            (doc/SECURITY_RULES_PLAN.md §2) — ``(executable, subcommand)``
+            shapes the security layer's rule engine may silently allow
+            instead of asking. Never frozen (read live per ``run_command``
+            call, like ``command_control``); mirrors
+            ``TransientStore.security_rules`` for crash-resume, the same
+            relationship ``command_control`` has to its transient twin.
     """
 
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -84,6 +91,7 @@ class SessionState:
     edit_control: str = "smart"
     command_control: str = "smart"
     thinking_level: str = ""
+    security_rules: frozenset[tuple[str, str]] = field(default_factory=frozenset)
 
     def to_dict(self) -> dict[str, object]:
         """Serialise to a plain dict for wire-protocol events.

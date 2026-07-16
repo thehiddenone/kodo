@@ -611,7 +611,7 @@ Response payload — one entry per question, in order:
 
 `selected` echoes the chosen option texts verbatim (empty when the user answered only in free text); `free_text` is `null` when unused. The server normalizes malformed entries to empty answers rather than failing the tool call.
 
-**Crash behaviour:** nothing the user has entered is persisted before *Confirm and Send*. If the server restarts mid-question, resume re-dispatches the dangling `ask_user` call and the whole batch is re-asked from scratch (`SESSIONS.md`); no `pending_prompt` record is kept for questions (unlike approvals, §6.2).
+**Crash behaviour:** nothing the user has entered is persisted before *Confirm and Send*. If the server process restarts mid-question, resume re-dispatches the dangling `ask_user` call and the whole batch is re-asked from scratch (`SESSIONS.md`); no `pending_prompt` record is kept for questions (unlike approvals, §6.2). A live disconnect/reconnect that never restarts the process (a window reload) is a different, lighter case — see §8: the request is neither lost nor re-driven from scratch, it is simply re-sent verbatim once the window reconnects.
 
 ### 6.2 `prompt.approval` — document review gate
 
@@ -684,6 +684,8 @@ A `kind=event` (no reply) telling the extension to delete a stored key, e.g. aft
 
 Fired when the security layer's verdict on a tool call is `ask` (doc/SECURITY.md): the dispatcher blocks the gated call until the user decides. `tool_call_id` correlates the prompt with the gated call's feed entry; `risk` is the tool's `SecurityImpact` label; `reason` is the layer's one-sentence justification; `params` is the customer-visible parameter preview (input properties projected through the tool's `input_visibility` map — hidden properties never appear — values truncated at 400 chars). `recovered` (default `false`) is `true` only when the prompt is a **forced** confirmation of a *salvaged malformed tool call* (a local model that emitted a tool call as plain text — doc/SECURITY.md §9); the client then renders an extra warning banner. A recovered prompt is forced regardless of the security verdict, but only outside Autonomous mode.
 
+`rule_offer` (default `null`) is set only for a `run_command` ask the heuristic rule engine judged generalizable to a permanent "always allow" rule (doc/SECURITY_RULES_PLAN.md §2.2) — `{executable, subcommand}` (`subcommand` `""` when the executable alone is the shape). When present, the client shows two checkboxes offering to remember it for this session or for every session on this machine; `null` means an ordinary Allow/Deny-only prompt.
+
 ```json
 { "type": "prompt.permission",
   "tool_call_id": "toolu_01",
@@ -691,20 +693,23 @@ Fired when the security layer's verdict on a tool call is `ask` (doc/SECURITY.md
   "external_name": "Run Command",
   "risk": "High",
   "intent": "Install the test runner the plan requires",
-  "reason": "The command targets paths outside the workspace: /etc/hosts.",
-  "params": [ { "name": "command", "value": "cat /etc/hosts" } ],
-  "recovered": false }
+  "reason": "'git push' publishes commits to a remote.",
+  "params": [ { "name": "command", "value": "git push origin main" } ],
+  "recovered": false,
+  "rule_offer": { "executable": "git", "subcommand": "push" } }
 ```
 
 Response payload:
 
 ```json
-{ "type": "prompt.permission.response", "action": "allow", "feedback": null }
+{ "type": "prompt.permission.response", "action": "allow", "feedback": null, "remember": "session" }
 ```
 
 `action` is `allow` or `deny` (anything else is treated as `deny`); `feedback` is optional free text — on a denial it is returned to the agent verbatim inside the tool's error result. On **allow** the call dispatches normally; on **deny** the tool is *not executed* and the agent receives `{"error": "The user DENIED permission …"}`.
 
-The panel is transient client-side (no session entry): the gated tool call's own card records the outcome. No `pending_prompt` is persisted — a server crash mid-prompt resolves through the engine's dangling-tool-use resume path (the un-executed call gets an interrupted stand-in).
+`remember` is `"session"`, `"global"`, or `null` (default) — the scope to grant `rule_offer` at, straight from the two checkboxes. It is only acted on when the response is `allow` **and** the originating decision actually carried a `rule_offer`: the server never trusts a client-declared shape, only the one it already offered, so a stale or manipulated response can at most grant exactly the shape the security layer already decided was safe to generalize. `"session"` persists in this session's transient state (survives crash-resume, dropped when the session ends); `"global"` persists user-wide at `~/.kodo/etc/security_rules.json` and applies to every session on this machine from the very next matching call, no restart required. A granted rule silences the *same* `(executable, subcommand)` ask automatically from then on — no further `prompt.permission` for it, at that scope, ever (until the user deletes it — no delete UI exists yet, Phase 3).
+
+The panel is transient client-side (no session entry): the gated tool call's own card records the outcome. No `pending_prompt` is persisted — a server *process* crash mid-prompt resolves through the engine's dangling-tool-use resume path. Unlike the general case, though, this specific call is provably known to have never dispatched (`TransientStore.pending_security_alert`, doc/SECURITY.md §7a), so instead of the generic interrupted stand-in, resume re-judges it fresh and — if still `ask` — re-fires this exact prompt (new `id`, same `tool_call_id`) rather than giving up. A live disconnect/reconnect that never restarts the *process* doesn't even reach that path — see §8.
 
 ---
 
@@ -1117,11 +1122,21 @@ Notes:
   the validator's User-Proxy answers (doc/VALIDATOR.md §9), which pin a low
   tier (e.g. `"minimal"`) so `ask_user` answers don't burn time thinking.
 
-### 7.7 ⟪planned⟫ — security rules, credential push
+### 7.7 ⟪planned⟫ — standalone rules management, credential push
 
-The following are specified for later milestones but **not handled** today:
+Persistent user-defined allow rules (FR-SEC-07) — generalized `(executable,
+subcommand)` shapes layered into the heuristic rule ladder — are
+**implemented**, but only as the *implicit* effect of `remember` on
+`prompt.permission.response` (§6.5): allowing a gated call with a checkbox
+checked installs the rule; there is no separate request for it. The
+following remain reserved for a **future standalone rules management panel**
+(doc/SECURITY.md §10, SECURITY_RULES_PLAN.md Phase 3) — listing/revoking a
+session's or the machine's granted rules outside the flow of answering a
+live prompt:
 
-- `security.add_rule` (FR-SEC-07) — persistent user-defined allow rules: generalized `(executable, subcommand)` shapes ("always allow `git push`"), created via the permission panel and layered into the heuristic rule ladder (doc/SECURITY.md §10, SECURITY_RULES_PLAN.md Phase 2).
+- `security.add_rule` — reserved; not sent by kodo-vsix today (superseded by
+  `prompt.permission.response.remember` for the only flow that exists).
+- `security.rules.list` / `security.rules.delete` — not handled today.
 - `credentials.set` — superseded by the `api_key.request`/response flow (§6.3):
   the server pulls keys on demand rather than the client pushing them.
 
@@ -1136,13 +1151,15 @@ code should not use them.
 
 ## 8. Reconnect semantics
 
-The server's outbox (`src/kodo/transport/_outbox.py`) buffers events while the client is disconnected. On reconnect:
+The server's outbox (`src/kodo/transport/_outbox.py`) buffers events while the client is disconnected. On reconnect (`_handle_session_hello`, `SessionManager.replay_backlog`):
 
-1. The server replays every buffered envelope in arrival order over the new WebSocket, **before** processing new client frames.
-2. After replay it pushes a fresh `state` event so the client can reconcile if anything was dropped at the outbox cap (best-effort per FR-WS-04; overflow drops the oldest frames and logs an error).
-3. The client then sends `hello`; the response re-embeds the same `state` snapshot so first-connect and reconnect share one code path.
+1. The server sends `hello.ack`, then a fresh `state` event, `session.name`, and — if any — `session.history`, so the client rebuilds its feed before anything else arrives.
+2. It then replays every envelope buffered in the outbox while offline, in arrival order.
+3. It also re-sends every still-unanswered server-initiated request (§6) — regardless of whether it was ever buffered — with its **original `id`**, so the client re-renders the panel and the eventual answer still resolves the same waiting future.
 
-Pending server-initiated prompts (§6) survive disconnect: the original request frame sits in the outbox and is replayed. Because reply correlation is by `correlation_id`, a duplicated render is idempotent.
+Steps 2 and 3 serve different cases and are both necessary. The outbox only ever holds frames that were sent *while the socket was already down* (a mid-turn event queued during the gap). A `prompt.*`/`api_key.request` frame, by contrast, is normally delivered live, *before* any disconnect — nothing buffers it — so without step 3 a reconnecting client (especially a fresh webview with no in-memory record of the prompt, e.g. after the extension host itself restarted) would never see it again, even though the server is still correctly waiting for an answer. This is what makes a pending permission/approval/question/API-key prompt genuinely survive a disconnect: the future backing it lives on the session-scoped `SessionChannel` (`kodo/transport/_connection.py`), not the socket-scoped `Connection`, so an ordinary disconnect never cancels it in the first place (doc/SECURITY.md §7b) — reconnect (step 3) just re-shows what was never actually lost. Because reply correlation is by `correlation_id`, a duplicated render (e.g. the client also had a stale in-memory copy) is idempotent.
+
+Only genuine session teardown — explicit deletion, or the whole server process shutting down — actually cancels one of these waits, never a mere disconnect.
 
 ---
 
@@ -1162,9 +1179,9 @@ The following are deliberately **not** on the wire. Future contributors should n
 
 These are anticipated and structured so adding them is purely additive — no existing message changes shape.
 
-- **Richer `state` snapshot** (§5.1): `cumulative_usd`, `pending_prompts`, `last_checkpoint_sha`.
+- **Richer `state` snapshot** (§5.1): `cumulative_usd`, `last_checkpoint_sha`. (A `pending_prompts` field was previously anticipated here to let a reconnecting client discover an outstanding prompt; §8's request-replay mechanism solves that need directly — the client just receives the original `prompt.*`/`api_key.request` frame again — so it is no longer planned.)
 - **Checkpoint-browsing UI.** `checkpoint.list` (§7.4d) is already implemented server-side and returns the full per-root checkpoint list today; only a client-side UI that calls it is planned — the undo/redo/rollback/roll-forward commands (§7.4c) are already implemented and in use, in both workflow modes.
-- **Security rules** (§7.7): `security.add_rule`. (`prompt.permission`, §6.5, is implemented.)
+- **Standalone rules management UI** (§7.7): `security.add_rule`/`security.rules.list`/`security.rules.delete`. (Granting a rule via `prompt.permission.response.remember`, §6.5, is implemented; there is no way to list or revoke one yet.)
 - **Verbose review mode.** New event type(s) gated by a settings flag, carrying a document's real path and richer status detail (e.g. its full `.jsonl` history). The `review.*` events stay as the low-fi default.
 - **Streamed tool output.** A streamed form of `agent.tool_call_prep` for long-running shell commands; the single-event form remains valid for short calls.
 
@@ -1189,5 +1206,6 @@ These are anticipated and structured so adding them is purely additive — no ex
 | 7.4 | two-workflow selection (guided / problem-solving) |
 | 8 | FR-WS-04 |
 | 6.5, 7.4b | FR-SEC-05 (security layer permission prompt — doc/SECURITY.md) |
+| 6.5 | FR-SEC-07 (persistent user-defined allow rules, `rule_offer`/`remember` — implemented; only a standalone list/revoke UI is planned, §7.7) |
 | 7.4c, 7.4d, 5.5d | FR-MIR-03/04 (checkpoint undo/redo/rollback/roll-forward + listing — implemented; only the client browsing UI is planned) |
-| 5.13, 7.7, 9.1 | ⟪planned⟫ — FR-WKS-10/11, FR-SEC-07, FR-COS-03 |
+| 5.13, 7.7, 9.1 | ⟪planned⟫ — FR-WKS-10/11, FR-COS-03 |

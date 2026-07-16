@@ -22,11 +22,16 @@ class KeyBroker:
     """Requests API keys from one session's VSIX window over the WebSocket.
 
     Sends a ``kind=request`` frame with ``type=api_key.request`` and blocks
-    until the client responds with a ``kind=response``.  If the WebSocket
-    disconnects while waiting, the pending future is cancelled by the session's
-    channel and this method raises :class:`asyncio.CancelledError`, which the
-    caller surfaces as a key-request failure.  Keys are per session — each
-    session asks its own window.
+    until the client responds with a ``kind=response``. The pending future is
+    session-scoped (:class:`~kodo.transport.SessionChannel`), so an ordinary
+    WebSocket disconnect — e.g. a window reload — does *not* cancel it: the
+    request is simply re-sent once the window reconnects
+    (:meth:`~kodo.transport.SessionChannel.replay_pending_requests`), and this
+    call keeps waiting. Only the session's own worker task being cancelled
+    (genuine teardown — session delete, server shutdown) raises
+    :class:`asyncio.CancelledError` here, which is still caught below and
+    surfaced as a key-request failure rather than propagated. Keys are per
+    session — each session asks its own window.
 
     Args:
         channel: The session's response channel.
@@ -45,10 +50,11 @@ class KeyBroker:
     async def get_key(self, vendor: str) -> ApiKey:
         """Request the API key for *vendor* from the VSIX client.
 
-        Blocks indefinitely until the client responds or the connection drops.
-        If the user cancels the key-entry dialog, the client sends a response
-        with ``error`` set and this method returns an :class:`ApiKey` with
-        ``error`` populated.
+        Blocks indefinitely until the client responds — a mere connection
+        drop does not give up; only genuine session teardown does (see the
+        class docstring). If the user cancels the key-entry dialog, the
+        client sends a response with ``error`` set and this method returns an
+        :class:`ApiKey` with ``error`` populated.
 
         Args:
             vendor (str): Vendor identifier (e.g. ``'anthropic'``).

@@ -64,7 +64,8 @@ seamlessly across the change.
     meta.json          — session name, creation time (created_at), and
                          last_modified (bumped on every persisted write below)
     transient.json     — mutable runtime state: stage, last prompt, autonomous,
-                         pending_prompt, and active_subsession (the resume hook)
+                         pending_prompt, pending_security_alert (SECURITY.md §7a),
+                         and active_subsession (the resume hook)
     session.jsonl      — the MAIN session log (see below)
     subsessions/
         <subsession-id>.jsonl   — one per sub-agent run; the sub-agent's full,
@@ -318,11 +319,22 @@ model or a local entry with none.
 
 ## Resume
 
-On every server start, `locate_guide_session` locates (or creates) the main
-session and the engine reloads `_main_messages` from `session.jsonl`. There
-is no project-wide index to rebuild — a project's documents are real files
-with their own `.jsonl` evolution logs (STATE_AND_LIFECYCLE.md §1.1/§3), read
-on demand, never reconstructed at startup. Then:
+Everything in this section is about a genuine server **process** restart
+(crash, or an explicit relaunch) — not a live client disconnect/reconnect
+(a VS Code window reload) with the process still running. The two are
+different events with different recovery paths: a live reconnect never
+reaches any of the machinery below at all, because the session stays
+resident in memory (`SessionManager` only rebuilds a session that *isn't*
+already loaded) — see WS_PROTOCOL.md §8 and doc/SECURITY.md §7b for how that
+case is handled instead (a still-outstanding server-initiated prompt is
+never lost to begin with, so there is nothing to resume).
+
+On every server *process* start, `locate_guide_session` locates (or creates)
+the main session and the engine reloads `_main_messages` from
+`session.jsonl`. There is no project-wide index to rebuild — a project's
+documents are real files with their own `.jsonl` evolution logs
+(STATE_AND_LIFECYCLE.md §1.1/§3), read on demand, never reconstructed at
+startup. Then:
 
 - **If the last main message is a dangling assistant `tool_use`**
   (`_has_dangling_tool_use()`), a tool was interrupted mid-dispatch. Because
@@ -346,14 +358,25 @@ on demand, never reconstructed at startup. Then:
        only "side effect" is asking the present user, so the question batch is
        simply re-fired (`prompt.question`) and the user answers the whole set
        again from scratch — partial answers are never persisted anywhere.
+     - **the one call `TransientStore.pending_security_alert` names**, if any
+       (at most one — dispatch is strictly sequential) is also re-dispatched
+       for real: that field is proof the call was still blocked inside
+       `fire_permission`'s wait — never handed to the tool — when the
+       interruption happened, so re-dispatching it is safe. Judgement runs
+       fresh (picking up e.g. an "always allow" rule granted since) and, if
+       still `ask`, the exact same `prompt.permission` is re-fired to the
+       user (doc/SECURITY.md §7a) — the "dangling security alert" this
+       marker's name refers to.
      - **any other tool** (`filesystem`, `edit_file`, `create_file`, `create_directory`, `run_command`, read-only
        tools, …) is **not** re-executed — its side effects may already have
        landed and there is no per-tool dedup ledger — so it gets a synthesized
        `error`-envelope `tool_result` (`_interrupted_tool_result`) keyed to the
        original `tool_use_id`, telling the model the call didn't complete and was
-       not retried. A call that died *waiting on a security permission prompt*
-       (doc/SECURITY.md §7) lands here too: the tool never ran, the agent sees
-       the interruption and may retry, re-triggering the same judgement.
+       not retried. A call that died waiting on a security permission prompt
+       lands here too *if* `pending_security_alert` doesn't name it (it must
+       have died elsewhere, not at the gate) — same treatment as before: the
+       agent sees the interruption and may retry, re-triggering the same
+       judgement.
   3. Append the resulting `tool_result`s to `_main_messages`, persist them, and
      continue the **interrupted entry agent's** turn live (the next LLM call).
      The entry agent is recovered from the `entry_agent` tag on the dangling

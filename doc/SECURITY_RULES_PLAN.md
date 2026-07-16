@@ -139,6 +139,10 @@ memory.
 
 ## Phase 2 — "Always allow" user rules (kodo + kodo-vsix)
 
+**Status: implemented (2026-07-15).** doc/SECURITY.md §3.2a/§4/§6 describe
+the shipped behavior; §2.4a below records where the implementation departed
+from this section's original sketch and why.
+
 **Goal:** the permission prompt can create a persistent rule — but only a
 *generalized, path-free* one, and only when the command's shape makes
 generalization safe.
@@ -158,11 +162,21 @@ The layer attaches a `rule_offer` to the ask decision only when **all** hold:
 1. Single segment — no pipes, `&&`, `;`, redirections. (*Complex commands
    are never rule-eligible.*)
 2. No substitutions, no nested shells.
-3. **No path-like arguments** — no token with `/` or `\`, no `..`, `~`,
-   absolute or drive-letter forms. (*Commands with paths are never
-   rule-eligible* — `pytest` is eligible, `pytest ../other/` is not;
-   err-safe, and build/test runners rarely prompt anyway thanks to the
-   default table.)
+3. **Path-like arguments, tiered by whether the command is *known* or
+   *unknown*** (§2.4a.7): a **known** command — one that matched an
+   explicit, named `CommandRule` in the built-in table (`git push`, `apt
+   install`, `npx`, …) — ignores path-like arguments entirely, since its
+   offer already generalizes over everything past the subcommand and its
+   danger is bounded by its category. An **unknown** command — the generic
+   default-ask, e.g. a bespoke project CLI the engine has never seen — still
+   excludes a path-like argument *after* the subcommand (`pytest
+   ../other/` is not offered: the stored shape can't capture that path, and
+   a different one would silently match the same rule), but *does* offer
+   when the path-like token is the subcommand itself (`1brc
+   ./measurements.txt` is offered as `("1brc", "./measurements.txt")` — the
+   literal shape pins the rule to that exact file; a different file asks
+   again). Err-safe either way, and build/test runners rarely prompt at all
+   thanks to the default table.
 4. The matched rule (or default-ask) is `rule_eligible`: **deployment,
    system, network, and unknown are eligible; destructive, privilege,
    obfuscation, Tier 0 structural, and outside-workspace asks never are.**
@@ -209,6 +223,88 @@ not the concrete command — as the thing being granted:
 Store round-trip + resume tests; eligibility-matrix tests (each exclusion
 rule); protocol tests; SECURITY.md gains a "user rules" section;
 WS_PROTOCOL.md §6.5/§7.7 updated.
+
+### 2.4a Implementation notes (post-launch, 2026-07-15)
+
+Where the shipped code departs from §2.4's sketch, and why:
+
+1. **No `security.add_rule` wire command.** §2.4 says the reserved command
+   "becomes the internal effect of `remember`" — in the shipped design that
+   effect is entirely server-side (`ToolDispatcher.__security_gate` →
+   `EngineServices.add_security_rule` → `WorkflowEngine.add_security_rule`),
+   never a *second* client→server request. `remember` on
+   `prompt.permission.response` is the only wire surface Phase 2 needed;
+   `security.add_rule` stays reserved for a possible future **standalone**
+   rules UI (Phase 3) that grants a rule outside the flow of answering a
+   live prompt, per §2.4's own parenthetical.
+2. **No `created_at` on a rule.** Both stores hold plain `(executable,
+   subcommand)` — the timestamp in §2.4's sketch was dropped: nothing reads
+   it (there is no rules-listing UI yet), and adding it now purely for a
+   hypothetical Phase 3 screen would be exactly the kind of premature
+   abstraction this project avoids elsewhere. Cheap to add — a
+   non-breaking schema change — when Phase 3 actually needs to show it.
+3. **`kodo/security/_store.py` holds only the global store.** Session rules
+   turned out to need no code in `kodo.security` at all: they're ordinary
+   session state (`kodo.runtime.SessionState.security_rules`, persisted via
+   `kodo.state.TransientStore.add_security_rule` — the same
+   session/transient pairing `command_control` already uses, "survives
+   crash-resume" for free) that the *caller* passes into
+   `SecurityLayer.evaluate(session_rules=…)`. This keeps `kodo.security`
+   from ever importing `kodo.runtime`/`kodo.state` (T2 must not reach up
+   into T3+) — `_store.py` is purely the global (user-wide) side.
+4. **"Global" means genuinely user-wide, not per-project.** §2.4's "beside
+   the server's existing settings storage" is read literally:
+   `~/.kodo/etc/security_rules.json`, next to `settings.json`
+   (`kodo.project.WorkspaceLayout` — "one instance per machine, shared by
+   every VS Code window's session"). This is *not* the same thing as the
+   pre-existing, unused `ProjectLayout.security_json` stub
+   (`<root>/.kodo/security.json`, docstringed "project-scoped security
+   rules") — that stub predates this phase's actual design and was never
+   wired up; it's a candidate for deletion in a future cleanup pass if a
+   genuinely project-scoped (third) tier never gets built, but Phase 2 did
+   not touch or remove it.
+5. **Global store reads straight from disk, no cache.** `global_rules()` is
+   checked at most once per HIGH-impact `run_command` judgement — cheap
+   enough that a module-level cache wasn't worth the cross-session/test
+   invalidation complexity it would add. Every concurrently open session in
+   the process sees a newly granted global rule on its very next call, with
+   nothing to invalidate.
+6. **The offer computation's "no redirections" gate (§2.2 rule 1) turned out
+   to matter more than expected in practice**: it means a very common
+   friction case — `cat > file.ext << 'EOF' … EOF` writing a new file — is
+   *never* offer-eligible (a redirection), even though the ask itself is
+   `rule_eligible` (`category=unknown`). This is exactly the plan's own
+   "Fixed decisions" intent ("complex commands and commands with path
+   arguments are never rule-eligible"), just worth calling out because it's
+   also exactly the case the heredoc-parsing bugfix (doc/SECURITY.md §5)
+   was prompted by — the two fixes are complementary, not the same fix:
+   heredoc extraction stops the ask from lying about *why* (no more
+   fabricated "subcommand" from the C++/whatever snippet inside), Phase 2
+   lets the user stop being asked *at all* for the shapes that are safe to
+   generalize (`git push`, `npm publish`, `docker run`, …) — but a
+   file-writing `cat`/`tee`/… still asks every time, once, on purpose.
+7. **The blanket path-argument exclusion (§2.2 rule 3, original form) was
+   too strict for single-argument bespoke CLIs (2026-07-15 fix).** A user
+   ran a project-local tool, `1brc ./measurements.txt`, and got no offer at
+   all — reported as "the permission prompt has no checkboxes." Root cause:
+   the ask's *only* positional argument is inherently a path (there's no
+   verb/subcommand structure the way `git`/`npm` have one), so it always
+   tripped the path check, and — being genuinely unknown to the engine —
+   would keep tripping it forever; there was no way to ever silence that
+   class of ask. But the shape a rule stores is always literally
+   `(executable, subcommand)`: for a command like this, the "subcommand" *is*
+   the path, so offering it doesn't generalize to other files the way `git
+   push` generalizes to other remotes — it only ever re-matches that exact
+   invocation. Fixed by tiering rule 3 on `RuleDecision.known_command`
+   (`kodo/security/_rules.py`, `_rule_offer()`): a command that matched an
+   explicit built-in `CommandRule` skips the path check entirely (its
+   category already bounds the risk, and its offer already ignores
+   everything past the subcommand — same as before, just made explicit); a
+   command that fell through to the generic default-ask only skips the
+   check when the path-like token *is* the subcommand — a path-like
+   argument anywhere else still disqualifies the offer, since the shape
+   can't capture it and a different path would silently match. `git push`,
+   `pytest ../other/`, and `cat > out.txt` are unaffected by this change.
 
 ---
 
@@ -295,8 +391,13 @@ no change.
 
 - **Pure heuristics** — the LLM judge is removed, not demoted to a fallback.
 - **Build/test script runners always allow** (built-in Tier 2).
-- **Complex commands and commands with path arguments are never
-  rule-eligible** (session or global).
+- **Complex commands (pipes/`&&`/`;`/redirections/substitutions/nested
+  shells) are never rule-eligible** (session or global).
+- **Path-like arguments are tiered by `known_command`** (§2.4a.7): a known
+  command's offer ignores them (bounded category, already generalizes past
+  the subcommand); an unknown command's offer excludes them unless the
+  path-like token *is* the subcommand — that case is an exact-literal
+  match, not a generalization, so it's safe.
 - **Destructive shapes are never rule-eligible**, even per-session.
 - **The OS temp directory is always reachable**, in every workflow mode and
   regardless of `command_control` posture nuance within the rule engine —

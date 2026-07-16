@@ -51,6 +51,58 @@ def test_heredoc_operator_keeps_delimiter_as_target() -> None:
     assert p.segments[0].redirections[0].target == "EOF"
 
 
+def test_heredoc_body_does_not_pollute_args() -> None:
+    p = parse_command(
+        "cat > out.cpp << 'EOF'\n#include <cstdio>\nstatic void helper() { printf(\"hi;\"); }\nEOF"
+    )
+    assert len(p.segments) == 1
+    seg = p.segments[0]
+    assert seg.executable == "cat"
+    assert seg.args == ()
+    redir = {r.operator: r for r in seg.redirections}
+    assert redir[">"].target == "out.cpp"
+    assert redir["<<"].target == "EOF"
+    assert redir["<<"].heredoc_body == (
+        '#include <cstdio>\nstatic void helper() { printf("hi;"); }\n'
+    )
+
+
+def test_heredoc_body_extracted_before_trailing_command() -> None:
+    # A bare newline is not a segment separator (matches every other
+    # multi-line case this parser handles) — an explicit `;` is required for
+    # the text after the terminator line to start a new segment.
+    p = parse_command("cat <<EOF\nbody line\nEOF\n; echo after")
+    assert p.executables == ("cat", "echo")
+    assert p.operators == (";",)
+    assert p.segments[1].args == ("after",)
+
+
+def test_dash_heredoc_strips_leading_tabs_from_terminator() -> None:
+    p = parse_command("cat <<-EOF\n\tindented body\n\tEOF")
+    redir = p.segments[0].redirections[0]
+    assert redir.heredoc_body == "\tindented body\n"
+
+
+def test_here_string_is_not_treated_as_heredoc() -> None:
+    p = parse_command("cat <<< 'just a string'")
+    seg = p.segments[0]
+    assert seg.redirections[0].operator == "<<<"
+    assert seg.redirections[0].target == "just a string"
+
+
+def test_unterminated_heredoc_body_runs_to_end_without_raising() -> None:
+    p = parse_command("cat <<EOF\nline one\nline two")
+    redir = p.segments[0].redirections[0]
+    assert redir.heredoc_body == "line one\nline two"
+
+
+def test_two_heredocs_attach_bodies_in_order() -> None:
+    p = parse_command("cat <<A && cat <<B\nfirst\nA\nsecond\nB")
+    first, second = p.segments
+    assert first.redirections[0].heredoc_body == "first\n"
+    assert second.redirections[0].heredoc_body == "second\n"
+
+
 def test_empty_command() -> None:
     p = parse_command("")
     assert p.segments == ()

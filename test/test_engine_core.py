@@ -542,6 +542,62 @@ async def test_handle_command_control_set_normalizes(
 
 
 # ---------------------------------------------------------------------------
+# add_security_rule (doc/SECURITY_RULES_PLAN.md §2.4)
+# ---------------------------------------------------------------------------
+
+
+async def test_add_security_rule_session_scope_updates_session_and_transient(
+    tmp_path: Path,
+) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    transient.attach_session("s1", resumed=False)
+
+    await engine.add_security_rule("session", "git", "push")
+
+    assert engine._session.security_rules == frozenset({("git", "push")})
+    assert transient.security_rules == frozenset({("git", "push")})
+
+
+async def test_add_security_rule_session_scope_survives_resume(tmp_path: Path) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    transient.attach_session("s1", resumed=False)
+    await engine.add_security_rule("session", "npm", "publish")
+
+    # A fresh engine resuming the same session id should see the same rule.
+    engine2, transient2, _s2, _g2 = _make_engine(tmp_path)
+    transient2.attach_session("s1", resumed=True)
+    engine2._session.security_rules = transient2.security_rules
+
+    assert engine2._session.security_rules == frozenset({("npm", "publish")})
+
+
+async def test_add_security_rule_global_scope_does_not_touch_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "real-home"))
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    transient.attach_session("s1", resumed=False)
+
+    await engine.add_security_rule("global", "docker", "run")
+
+    assert engine._session.security_rules == frozenset()
+    assert transient.security_rules == frozenset()
+    from kodo.security import global_rules
+
+    assert ("docker", "run") in global_rules()
+
+
+async def test_add_security_rule_unknown_scope_is_a_noop(tmp_path: Path) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    transient.attach_session("s1", resumed=False)
+
+    await engine.add_security_rule("bogus", "git", "push")
+
+    assert engine._session.security_rules == frozenset()
+    assert transient.security_rules == frozenset()
+
+
+# ---------------------------------------------------------------------------
 # thinking_level: _current_base_llm / handle_thinking_level_set / start() seeding
 # ---------------------------------------------------------------------------
 

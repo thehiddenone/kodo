@@ -12,10 +12,13 @@ client's reply is a ``kind=response`` correlated by ``id``.
   permission prompt (``prompt.permission``, WS_PROTOCOL.md §6.5) and blocks
   until the user allows or denies the tool call.
 
-Both methods register a :class:`asyncio.Future` via
-:meth:`~kodo.transport.AppState.register_response_future` and await it.
-The WS dispatcher resolves the future when the matching ``kind=response``
-arrives.
+All three register a :class:`asyncio.Future` via
+:meth:`~kodo.transport.SessionChannel.register_response_future` and await it.
+The connection registry resolves the future when the matching
+``kind=response`` arrives. The future (and the request envelope that fired
+it) is session-scoped, not tied to whichever socket was live at the time —
+see :mod:`kodo.transport._connection` — so a client disconnect/reconnect
+never loses one of these waits; only genuine session teardown does.
 
 ``fire()`` is an alias for ``fire_approval()`` kept for call-site
 compatibility. :class:`GateOrchestrator` satisfies the ``GateLike`` protocol
@@ -59,10 +62,16 @@ class PermissionResponse:
         action: ``'allow'`` or ``'deny'``.
         feedback: Optional free-text the user attached to the decision
             (returned to the agent verbatim on a denial).
+        remember: ``'session'`` / ``'global'`` if the user chose to
+            permanently allow the offered rule shape, else ``None``
+            (doc/SECURITY_RULES_PLAN.md §2.3). Only acted on by
+            ``ToolDispatcher`` when the originating decision actually carried
+            a ``rule_offer`` — never trusted from the wire alone.
     """
 
     action: str
     feedback: str
+    remember: str | None = None
 
 
 class GateOrchestrator:
@@ -88,7 +97,8 @@ class GateOrchestrator:
         """Initialise with the application state.
 
         Args:
-            app_state (AppState): WebSocket application state.
+            app_state (ResponseChannel): The session's response channel
+                (:class:`~kodo.transport.SessionChannel` in production).
             transient (TransientStore): Session store for pending-prompt persistence.
         """
         self.__app_state = app_state
@@ -212,15 +222,25 @@ class GateOrchestrator:
         reason: str,
         params: list[dict[str, str]],
         recovered: bool = False,
+        rule_offer: tuple[str, str] | None = None,
     ) -> PermissionResponse:
         """Emit a ``prompt.permission`` ``kind=request`` and block until the
         user allows or denies the gated tool call.
 
-        Like :meth:`fire_questions`, no ``pending_prompt`` is persisted: the
-        gated ``tool_use`` is flushed to ``session.jsonl`` before dispatch, so
-        a server restart resolves the dangling call through the engine's
-        resume path (the un-executed tool gets an interrupted stand-in; the
-        agent may simply retry, re-triggering the same judgement).
+        Unlike :meth:`fire_questions`, this *does* persist one piece of state:
+        ``pending_security_alert`` on the transient store is set to
+        *tool_call_id* for the duration of the wait (mirroring how
+        :meth:`fire_approval` persists ``pending_prompt``), and cleared the
+        instant the wait resolves — normally, or via a non-cancellation
+        exception. It is deliberately left set if the wait is cancelled
+        (server restart, or a live disconnect — see
+        ``Connection``/``SessionChannel`` in :mod:`kodo.transport`), because
+        that is exactly the signal cold-restart resume needs: this specific
+        ``tool_call_id`` is provably still at the gate, never dispatched, so
+        it is safe to re-judge and — if still "ask" — re-fire this same
+        prompt, instead of falling back to the generic interrupted-stand-in
+        given to a dangling call that might have started executing (see
+        doc/SECURITY.md §7, :meth:`~kodo.runtime._engine._resume.ResumeMixin._resume_main_turn`).
 
         Args:
             tool_call_id: The gated ``tool_use`` block's id (feed correlation).
@@ -233,9 +253,14 @@ class GateOrchestrator:
             recovered: ``True`` when this prompt is for a salvaged malformed
                 tool call — carried on the wire so the client can render a
                 distinct "recovered" banner.
+            rule_offer: The ``(executable, subcommand)`` shape the client may
+                offer "always allow — this session / all sessions" checkboxes
+                for, or ``None`` for an ordinary Allow/Deny-only prompt
+                (doc/SECURITY_RULES_PLAN.md §2.3).
 
         Returns:
-            PermissionResponse: The user's decision and optional feedback.
+            PermissionResponse: The user's decision, optional feedback, and
+            ``remember`` choice.
         """
         req_id = uuid.uuid4().hex
         loop = asyncio.get_event_loop()
@@ -252,17 +277,38 @@ class GateOrchestrator:
             "reason": reason,
             "params": params,
             "recovered": recovered,
+            "rule_offer": (
+                {"executable": rule_offer[0], "subcommand": rule_offer[1]}
+                if rule_offer is not None
+                else None
+            ),
         }
-        await self.__app_state.send(Envelope(kind="request", id=req_id, payload=payload))
-        _log.info("Permission prompt fired: tool=%s risk=%s req_id=%s", tool_name, risk, req_id[:8])
+        self.__transient.update(pending_security_alert=tool_call_id)
+        try:
+            await self.__app_state.send(Envelope(kind="request", id=req_id, payload=payload))
+            _log.info(
+                "Permission prompt fired: tool=%s risk=%s req_id=%s", tool_name, risk, req_id[:8]
+            )
 
-        response_payload = await future
-        action = str(response_payload.get("action", "deny"))
-        if action not in ("allow", "deny"):
-            action = "deny"
-        feedback = str(response_payload.get("feedback") or "")
-        _log.info("Permission prompt resolved: req_id=%s action=%s", req_id[:8], action)
-        return PermissionResponse(action=action, feedback=feedback)
+            response_payload = await future
+            action = str(response_payload.get("action", "deny"))
+            if action not in ("allow", "deny"):
+                action = "deny"
+            feedback = str(response_payload.get("feedback") or "")
+            remember = response_payload.get("remember")
+            if remember not in ("session", "global"):
+                remember = None
+            _log.info("Permission prompt resolved: req_id=%s action=%s", req_id[:8], action)
+            self.__transient.update(pending_security_alert=None)
+            return PermissionResponse(action=action, feedback=feedback, remember=remember)
+        except asyncio.CancelledError:
+            # Leave pending_security_alert persisted — the wait is being cut
+            # short (server restart or a live disconnect) with the call still
+            # un-dispatched, so resume can safely re-judge and re-ask it.
+            raise
+        except Exception:
+            self.__transient.update(pending_security_alert=None)
+            raise
 
     @staticmethod
     def __normalize_answers(raw: object, count: int) -> list[dict[str, object]]:

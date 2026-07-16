@@ -113,7 +113,11 @@ class ConnectionRegistry:
                 elif msg.type == WSMsgType.ERROR:
                     _log.error("WebSocket protocol error: %s", ws.exception())
         finally:
-            conn.cancel_pending()
+            # No cancellation here: pending server-initiated requests belong
+            # to the session's SessionChannel now, not this Connection, so
+            # they outlive the socket (see kodo.transport._connection). Only
+            # genuine session teardown ends one, via its worker task being
+            # cancelled.
             self.__manager.drop_connection(conn)
             self.__active -= 1
             if self.__active <= 0:
@@ -160,7 +164,14 @@ class ConnectionRegistry:
 
         if env.kind == "response":
             if env.correlation_id:
-                conn.resolve_response(env.correlation_id, env.payload)
+                session = self.__manager.session_for_connection(conn.id)
+                if session is not None:
+                    session.channel.resolve_response(env.correlation_id, env.payload)
+                else:
+                    _log.debug(
+                        "kind=response on a connection bound to no session (correlation_id=%s)",
+                        env.correlation_id,
+                    )
             return
 
         msg_type = str(env.payload.get("type", ""))

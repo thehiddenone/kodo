@@ -98,6 +98,7 @@ def _make_services(rec: _Recorder) -> _EngineServices:
         create_project=rec.make("create_project", {"root": "/tmp/proj"}),
         init_project=rec.make("init_project", {"root": "/tmp/existing"}),
         notify_tool_call_in_progress=rec.make("notify_tool_call_in_progress"),
+        add_security_rule=rec.make("add_security_rule"),
     )
 
 
@@ -202,6 +203,16 @@ async def test_engine_services_notify_tool_call_in_progress() -> None:
     await services.notify_tool_call_in_progress("tc_2")
 
     assert rec.calls == [("notify_tool_call_in_progress", ("tc_2",))]
+
+
+@pytest.mark.asyncio
+async def test_engine_services_add_security_rule_forwards_args() -> None:
+    rec = _Recorder()
+    services = _make_services(rec)
+
+    await services.add_security_rule("session", "git", "push")
+
+    assert rec.calls == [("add_security_rule", ("session", "git", "push"))]
 
 
 # ---------------------------------------------------------------------------

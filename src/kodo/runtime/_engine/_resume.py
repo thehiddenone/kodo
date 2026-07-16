@@ -3,10 +3,13 @@
 Every tool-calling main turn flushes its assistant ``tool_use`` to disk
 before dispatch (see :mod:`._turns`), so an interrupted turn always leaves a
 dangling assistant message. Cold-restart resume only safely *re-dispatches*
-a dangling call from :data:`_RESUME_REDISPATCH_TOOLS`; any other dangling
-tool call is reported back to the model as interrupted rather than
-re-executed, since re-running an arbitrary tool (a shell command, a file
-write, ...) could duplicate its side effects.
+a dangling call from :data:`_RESUME_REDISPATCH_TOOLS` — or the single
+dangling call, of any tool, that ``TransientStore.pending_security_alert``
+proves was still waiting at the security gate and therefore never actually
+dispatched (doc/SECURITY.md §7). Any other dangling tool call is reported
+back to the model as interrupted rather than re-executed, since re-running an
+arbitrary tool (a shell command, a file write, ...) could duplicate its side
+effects.
 """
 
 from __future__ import annotations
@@ -94,7 +97,17 @@ class ResumeMixin:
         Either way this appends one more, LLM-visible ``assistant`` message
         telling the agent the previous turn was cut short — see
         :data:`_STOPPED_TURN_NOTICE`.
+
+        Unlike cold-restart resume, a live Stop never re-dispatches anything
+        — not even a call ``pending_security_alert`` names — the same
+        "I will not silently resume or retry it" rule applies to a call still
+        sitting at the permission gate. Any such marker is still cleared here
+        so it cannot outlive the dangling call it pointed at (which this
+        method is folding into an ordinary interrupted result) and linger,
+        unmatched, into a future resume.
         """
+        if self._transient.pending_security_alert is not None:
+            self._transient.update(pending_security_alert=None)
         if self._has_dangling_tool_use():
             last = self._main_messages[-1]
             assert isinstance(last.content, list)
@@ -140,7 +153,7 @@ class ResumeMixin:
 
         Every tool-calling turn flushes its assistant ``tool_use`` to disk
         before dispatch, so any interrupted turn leaves a dangling assistant
-        message. Three cases, handled per pending call:
+        message. Four cases, handled per pending call:
 
         * **Sub-agent spawns** (:data:`_SUBAGENT_SPAWNING_TOOLS`) are
           re-dispatched through the subsession replay ledger — a completed
@@ -151,6 +164,13 @@ class ResumeMixin:
           re-fired to the client from scratch. Anything the user had entered
           before the crash is deliberately not stored anywhere, so there is
           nothing to restore — they answer the whole batch again.
+        * **The one call ``TransientStore.pending_security_alert`` names**, if
+          any, is also re-dispatched for real: that marker proves the call
+          was still waiting at the security gate — never handed to the tool —
+          when the interruption happened, so re-dispatching it re-runs
+          judgement fresh (picking up e.g. an "always allow" rule granted
+          since) and, if still "ask", re-fires the exact same
+          ``prompt.permission`` instead of a stub. See doc/SECURITY.md §7.
         * **Every other tool** (a shell command, a file write, ...) is *not*
           re-executed: its side effects may already have landed before the
           interruption, and there is no result ledger to dedupe against.
@@ -167,6 +187,13 @@ class ResumeMixin:
         tool_uses = [b for b in last.content if isinstance(b, dict) and b.get("type") == "tool_use"]
         if not tool_uses:
             return
+
+        # Claim the alert now, unconditionally: whether or not its id turns up
+        # among tool_uses below (it always should), this resume pass is the
+        # one deciding this call's fate, so the marker must not outlive it.
+        alert_tool_call_id = self._transient.pending_security_alert
+        if alert_tool_call_id is not None:
+            self._transient.update(pending_security_alert=None)
 
         entry_agent = self._last_entry_agent()
         ledger = self._build_replay_ledger()
@@ -201,7 +228,7 @@ class ResumeMixin:
             tool_name = str(b["name"])
             raw_input = b.get("input")
             tool_input = raw_input if isinstance(raw_input, dict) else {}
-            if tool_name in _RESUME_REDISPATCH_TOOLS:
+            if tool_name in _RESUME_REDISPATCH_TOOLS or tool_use_id == alert_tool_call_id:
                 spawned = await self._dispatch_tool_calls(
                     [(tool_use_id, tool_name, tool_input)],
                     dispatcher.dispatch,

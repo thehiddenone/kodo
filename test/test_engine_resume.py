@@ -69,9 +69,15 @@ def test_has_dangling_tool_use_true_when_tool_use_present() -> None:
 
 
 class _FakeTransientLines:
-    def __init__(self, lines: list[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        lines: list[dict[str, object]],
+        pending_security_alert: str | None = None,
+    ) -> None:
         self._lines = lines
         self.appended: list[tuple] = []
+        self.pending_security_alert = pending_security_alert
+        self.update_calls: list[dict[str, object]] = []
 
     def read_session_lines(self) -> list[dict[str, object]]:
         return self._lines
@@ -85,6 +91,11 @@ class _FakeTransientLines:
         kind: str | None = None,
     ) -> None:
         self.appended.append((role, content, entry_agent, kind))
+
+    def update(self, **kwargs: object) -> None:
+        self.update_calls.append(kwargs)
+        if "pending_security_alert" in kwargs:
+            self.pending_security_alert = kwargs["pending_security_alert"]
 
 
 def _engine_with_lines(lines: list[dict[str, object]]) -> WorkflowEngine:
@@ -259,13 +270,16 @@ def _resumable_engine(
     tool_uses: list[dict[str, object]],
     session_lines: list[dict[str, object]],
     tmp_path: Path,
+    pending_security_alert: str | None = None,
 ) -> tuple[WorkflowEngine, _FakeCompactor, _FakeSink, list[tuple]]:
     engine = object.__new__(WorkflowEngine)
     engine._main_messages = [
         Message(role="user", content="go"),
         Message(role="assistant", content=tool_uses),
     ]
-    engine._transient = _FakeTransientLines(session_lines)
+    engine._transient = _FakeTransientLines(
+        session_lines, pending_security_alert=pending_security_alert
+    )
     engine._registry = _FakeRegistry()
     engine._session = SessionState(session_id="s1")
     engine._session.effective_autonomous = False
@@ -384,3 +398,98 @@ async def test_resume_main_turn_preserves_dangling_call_order(tmp_path: Path) ->
     results_msg = captured[0][-1]
     ids = [block["tool_use_id"] for block in results_msg.content]
     assert ids == ["tu_1", "tu_2"]
+
+
+# ---------------------------------------------------------------------------
+# _resume_main_turn — pending_security_alert (dangling security alert)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resume_main_turn_redispatches_call_matching_pending_security_alert(
+    tmp_path: Path,
+) -> None:
+    """A dangling run_command whose id matches pending_security_alert is
+    provably still at the gate (never dispatched), so it is redispatched for
+    real instead of stubbed — same treatment as ask_user/spawn tools."""
+    tool_uses = [
+        {"type": "tool_use", "id": "tu_1", "name": "run_command", "input": {"command": "x"}}
+    ]
+    engine, _compactor, _sink, dispatch_calls = _resumable_engine(
+        tool_uses=tool_uses,
+        session_lines=[],
+        tmp_path=tmp_path,
+        pending_security_alert="tu_1",
+    )
+
+    await engine._resume_main_turn()
+
+    assert dispatch_calls == [([("tu_1", "run_command", {"command": "x"})], "guide")]
+
+
+@pytest.mark.asyncio
+async def test_resume_main_turn_clears_pending_security_alert_before_redispatch(
+    tmp_path: Path,
+) -> None:
+    """The marker is claimed (cleared) up front, not left dangling if the
+    redispatched call resolves without asking again (e.g. now allowed by a
+    rule) — fire_permission only clears it when it actually re-fires."""
+    tool_uses = [{"type": "tool_use", "id": "tu_1", "name": "run_command", "input": {}}]
+    engine, _compactor, _sink, _dispatch_calls = _resumable_engine(
+        tool_uses=tool_uses,
+        session_lines=[],
+        tmp_path=tmp_path,
+        pending_security_alert="tu_1",
+    )
+
+    await engine._resume_main_turn()
+
+    assert engine._transient.pending_security_alert is None
+    assert {"pending_security_alert": None} in engine._transient.update_calls
+
+
+@pytest.mark.asyncio
+async def test_resume_main_turn_does_not_redispatch_call_not_matching_alert(
+    tmp_path: Path,
+) -> None:
+    """A stale/unrelated pending_security_alert (pointing at some other id)
+    must not cause an unrelated dangling call to be redispatched."""
+    tool_uses = [{"type": "tool_use", "id": "tu_1", "name": "run_command", "input": {}}]
+    engine, _compactor, _sink, dispatch_calls = _resumable_engine(
+        tool_uses=tool_uses,
+        session_lines=[],
+        tmp_path=tmp_path,
+        pending_security_alert="some-other-id",
+    )
+
+    await engine._resume_main_turn()
+
+    assert dispatch_calls == []
+    # Still claimed/cleared — this resume pass is the one deciding whatever
+    # is dangling now, so a stale marker from an earlier turn must not persist.
+    assert engine._transient.pending_security_alert is None
+
+
+@pytest.mark.asyncio
+async def test_resume_main_turn_only_alert_matched_call_redispatched_among_several(
+    tmp_path: Path,
+) -> None:
+    """Only the specific tool_use_id the alert names is redispatched; a
+    second dangling non-spawn call in the same batch still gets stubbed
+    (unit-level check of the id-matching condition in isolation — dispatch is
+    normally strictly sequential, so in practice the gating call is always
+    the earliest dangling one, not a later one)."""
+    tool_uses = [
+        {"type": "tool_use", "id": "tu_1", "name": "run_command", "input": {}},
+        {"type": "tool_use", "id": "tu_2", "name": "edit_file", "input": {}},
+    ]
+    engine, _compactor, _sink, dispatch_calls = _resumable_engine(
+        tool_uses=tool_uses,
+        session_lines=[],
+        tmp_path=tmp_path,
+        pending_security_alert="tu_1",
+    )
+
+    await engine._resume_main_turn()
+
+    assert dispatch_calls == [([("tu_1", "run_command", {})], "guide")]

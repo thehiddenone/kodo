@@ -51,7 +51,7 @@ from kodo.project import (
     kodo_user_dir,
     session_temp_dir,
 )
-from kodo.security import SecurityLayer
+from kodo.security import SecurityLayer, add_global_rule
 from kodo.state import TransientStore
 from kodo.subagents import AgentLoadError, AgentRegistry
 from kodo.tools import LogicalPathResolver, PathResolver, ProjectPathResolver, RootPath
@@ -215,6 +215,7 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
             create_project=self._create_project,
             init_project=self._init_project,
             notify_tool_call_in_progress=self._emitters.notify_tool_call_in_progress,
+            add_security_rule=self.add_security_rule,
         )
 
     @property
@@ -308,6 +309,7 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
             self._session.workflow_mode = self._transient.workflow_mode
             self._session.edit_control = self._transient.edit_control
             self._session.command_control = self._transient.command_control
+            self._session.security_rules = self._transient.security_rules
             # Re-validate against the *current* model rather than trusting the
             # persisted tier blindly — the shared local/cloud selection may
             # have changed while this session was closed (doc/SESSIONS.md).
@@ -585,6 +587,24 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
         )
         self._transient.update(command_control=self._session.command_control)
         await self._emitters.emit_state()
+
+    async def add_security_rule(self, scope: str, executable: str, subcommand: str) -> None:
+        """Persist a Phase 2 "always allow" rule at the given scope
+        (doc/SECURITY_RULES_PLAN.md §2.4).
+
+        ``"session"`` mirrors ``command_control``'s session/transient
+        relationship: the session-facing rule set and the crash-resume copy
+        in ``transient.json`` are updated together. ``"global"`` reaches
+        straight into :mod:`kodo.security`'s process-wide store — every
+        other open session's very next matching call sees it too, with no
+        session-state mirroring needed. Any other value is a no-op (the
+        dispatcher never sends one; this is the fail-closed default for an
+        unrecognized scope).
+        """
+        if scope == "session":
+            self._session.security_rules = self._transient.add_security_rule(executable, subcommand)
+        elif scope == "global":
+            add_global_rule(executable, subcommand)
 
     def _freeze_effective_modes(self) -> None:
         """Snapshot the two frozen toggles into their ``effective_*`` twins.

@@ -169,8 +169,17 @@ class SessionManager:
         await session.channel.attach(conn)
 
     async def replay_backlog(self, session: Session) -> None:
-        """Flush *session*'s buffered backlog now that the base layer is sent."""
+        """Flush *session*'s buffered backlog and re-surface any still-open
+        server-initiated prompt, now that the base layer is sent.
+
+        The two are independent: buffered backlog is whatever streamed while
+        the window was gone; a re-surfaced prompt (approval/question/
+        permission/API key) is one whose future is still unresolved,
+        regardless of whether it was ever buffered — see
+        :meth:`SessionChannel.replay_pending_requests`.
+        """
         await session.channel.replay_backlog()
+        await session.channel.replay_pending_requests()
 
     def drop_connection(self, conn: Connection) -> None:
         """Handle a dropped connection: detach + start the grace window."""

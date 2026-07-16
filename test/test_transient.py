@@ -281,6 +281,100 @@ def test_resumed_session_restores_edit_and_command_control(kodo_dir: Path) -> No
     assert second.command_control == "defensive"
 
 
+def test_security_rules_defaults_to_empty(store: TransientStore) -> None:
+    assert store.security_rules == frozenset()
+
+
+def test_add_security_rule_persists_and_accumulates(store: TransientStore) -> None:
+    store.add_security_rule("git", "push")
+    store.add_security_rule("npm", "publish")
+
+    data = json.loads((store.session_dir / "transient.json").read_text(encoding="utf-8"))
+    assert sorted(data["security_rules"]) == [["git", "push"], ["npm", "publish"]]
+    assert store.security_rules == frozenset({("git", "push"), ("npm", "publish")})
+
+
+def test_add_security_rule_is_idempotent(store: TransientStore) -> None:
+    store.add_security_rule("git", "push")
+    store.add_security_rule("git", "push")
+    assert store.security_rules == frozenset({("git", "push")})
+
+
+def test_resumed_session_restores_security_rules(kodo_dir: Path) -> None:
+    session_id = "1748792413"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    first.add_security_rule("docker", "run")
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.security_rules == frozenset({("docker", "run")})
+
+
+def test_malformed_security_rules_falls_back_to_empty(kodo_dir: Path) -> None:
+    session_id = "1748792414"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    path = first.session_dir / "transient.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["security_rules"] = "not-a-list"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.security_rules == frozenset()
+
+
+def test_pending_security_alert_defaults_to_none(store: TransientStore) -> None:
+    assert store.pending_security_alert is None
+
+
+def test_pending_security_alert_update_is_persisted(store: TransientStore) -> None:
+    store.update(pending_security_alert="tu_1")
+    data = json.loads((store.session_dir / "transient.json").read_text(encoding="utf-8"))
+    assert data["pending_security_alert"] == "tu_1"
+    assert store.pending_security_alert == "tu_1"
+
+
+def test_pending_security_alert_cleared_by_explicit_none(store: TransientStore) -> None:
+    store.update(pending_security_alert="tu_1")
+    store.update(pending_security_alert=None)
+    assert store.pending_security_alert is None
+    data = json.loads((store.session_dir / "transient.json").read_text(encoding="utf-8"))
+    assert data["pending_security_alert"] is None
+
+
+def test_pending_security_alert_left_unchanged_when_omitted(store: TransientStore) -> None:
+    store.update(pending_security_alert="tu_1")
+    store.update(stage="RUNNING")
+    assert store.pending_security_alert == "tu_1"
+
+
+def test_resumed_session_restores_pending_security_alert(kodo_dir: Path) -> None:
+    session_id = "1748792413"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    first.update(pending_security_alert="tu_9")
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.pending_security_alert == "tu_9"
+
+
+def test_malformed_pending_security_alert_falls_back_to_none(kodo_dir: Path) -> None:
+    session_id = "1748792414"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    path = first.session_dir / "transient.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["pending_security_alert"] = 42
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.pending_security_alert is None
+
+
 def test_thinking_level_defaults_to_empty_string(store: TransientStore) -> None:
     assert store.thinking_level == ""
 

@@ -94,8 +94,7 @@ def test_inject_appends_tags_after_prompt() -> None:
 def test_inject_escapes_filename_xml_specials() -> None:
     out = inject_attachments("hi", [("id-a", 'weird "name" & <tag>.txt')])
     assert out == (
-        'hi\n\n<ATTACHMENT ID="id-a" filename="weird &quot;name&quot; '
-        '&amp; &lt;tag&gt;.txt"/>'
+        'hi\n\n<ATTACHMENT ID="id-a" filename="weird &quot;name&quot; &amp; &lt;tag&gt;.txt"/>'
     )
 
 

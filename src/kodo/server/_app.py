@@ -284,11 +284,13 @@ async def _handle_session_hello(
         await session.channel.send(Envelope.make_event("session.history", {"entries": history}))
 
     # Only now replay anything buffered while this session was disconnected
-    # (e.g. a mid-turn tool_call whose frame never reached the old socket).
-    # These must land strictly after session.history above, or the webview's
-    # reducer can see a live tool_call before history and permanently drop the
-    # scrollback (its "history already applied" guard trips on the wrong
-    # condition — see kodo-vsix reducer.ts).
+    # (e.g. a mid-turn tool_call whose frame never reached the old socket),
+    # plus any still-unanswered approval/question/permission/API-key prompt
+    # (SessionManager.replay_backlog). These must land strictly after
+    # session.history above, or the webview's reducer can see a live
+    # tool_call before history and permanently drop the scrollback (its
+    # "history already applied" guard trips on the wrong condition — see
+    # kodo-vsix reducer.ts).
     await req.manager.replay_backlog(session)
 
 

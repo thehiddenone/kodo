@@ -84,6 +84,15 @@ class PermissionLike(Protocol):
         """Optional free-text the user attached to the decision."""
         ...
 
+    @property
+    def remember(self) -> str | None:
+        """``'session'`` / ``'global'`` if the user chose to permanently
+        allow the offered rule shape, else ``None`` (doc/SECURITY_RULES_PLAN.md
+        §2.3). ``ToolDispatcher`` only acts on this when the originating
+        decision actually carried a ``rule_offer`` — a stray value here from
+        an ask with no offer is ignored, never trusted blindly from the wire."""
+        ...
+
 
 class SecurityDecisionLike(Protocol):
     """Structural shape of the security layer's verdict on one tool call.
@@ -99,6 +108,13 @@ class SecurityDecisionLike(Protocol):
     @property
     def reason(self) -> str:
         """One sentence explaining the verdict (shown in the prompt)."""
+        ...
+
+    @property
+    def rule_offer(self) -> tuple[str, str] | None:
+        """For a ``run_command`` ask, the ``(executable, subcommand)`` shape
+        the permission prompt may offer to permanently allow, or ``None``
+        (doc/SECURITY_RULES_PLAN.md §2.2)."""
         ...
 
 
@@ -119,8 +135,14 @@ class SecurityLike(Protocol):
         autonomous: bool,
         default_cwd: str,
         roots: tuple[str, ...],
+        session_rules: frozenset[tuple[str, str]] = frozenset(),
     ) -> SecurityDecisionLike:
-        """Judge one tool call: allow it, or ask the user for permission."""
+        """Judge one tool call: allow it, or ask the user for permission.
+
+        ``session_rules`` is this session's Phase 2 "always allow" grants
+        (``SessionLike.security_rules``); the layer merges in the
+        process-wide global store itself.
+        """
         ...
 
 
@@ -172,6 +194,7 @@ class GateLike(Protocol):
         reason: str,
         params: list[dict[str, str]],
         recovered: bool = False,
+        rule_offer: tuple[str, str] | None = None,
     ) -> PermissionLike:
         """Surface a security permission prompt and block until the user decides.
 
@@ -180,8 +203,12 @@ class GateLike(Protocol):
         customer-visible parameter preview (``{"name", "value"}`` rows);
         ``risk`` is the tool's :class:`~kodo.toolspecs.SecurityImpact` label.
         ``recovered`` is ``True`` when the prompt is for a salvaged
-        malformed tool call (the client renders a distinct banner). Returns the
-        user's ``allow``/``deny`` decision plus optional feedback.
+        malformed tool call (the client renders a distinct banner).
+        ``rule_offer`` is the ``(executable, subcommand)`` shape the client
+        should offer "always allow — this session / all sessions" checkboxes
+        for, or ``None`` for an ordinary Allow/Deny-only prompt
+        (doc/SECURITY_RULES_PLAN.md §2.3). Returns the user's ``allow``/
+        ``deny`` decision plus optional feedback and ``remember`` choice.
         """
         ...
 
@@ -201,11 +228,18 @@ class SessionLike(Protocol):
     (``"permissive"`` / ``"defensive"`` / ``"smart"``) — read live per tool
     call by the security gate in :class:`~kodo.tools.ToolDispatcher`, so a
     mid-turn toggle takes effect on the very next call.
+
+    ``security_rules`` is this session's Phase 2 "always allow" grants —
+    ``(executable, subcommand)`` shapes, read live per ``run_command`` call
+    the same way ``command_control`` is (a rule granted mid-session applies
+    to the very next matching call). The layer merges the process-wide
+    global store in on top of this set itself.
     """
 
     phase: str
     effective_autonomous: bool
     command_control: str
+    security_rules: frozenset[tuple[str, str]]
 
 
 class EngineServices(Protocol):
@@ -349,6 +383,21 @@ class EngineServices(Protocol):
         run_command timeout genuinely starts. Lets the client defer its
         "waiting for tool output" timeout animation past whatever judging
         round or permission wait preceded this point (doc/SECURITY.md §6).
+        """
+        ...
+
+    async def add_security_rule(self, scope: str, executable: str, subcommand: str) -> None:
+        """Persist a Phase 2 "always allow" rule at the given scope.
+
+        Fired by :class:`ToolDispatcher` when a permission response carries
+        a ``remember`` choice for a call whose decision offered a
+        ``rule_offer`` (doc/SECURITY_RULES_PLAN.md §2.3/§2.4). ``scope`` is
+        ``"session"`` (this session only, survives crash-resume) or
+        ``"global"`` (every session, this machine); any other value is a
+        no-op. ``executable``/``subcommand`` are exactly the offered shape —
+        never re-derived from the live tool call, so a stale or manipulated
+        client response can at most grant the *specific* shape the server
+        already decided was safe to generalize.
         """
         ...
 

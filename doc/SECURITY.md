@@ -242,13 +242,80 @@ evaluate_command()` — a deterministic verdict ladder, first hit wins
    asks; agents should prefer `python -m` or a script file, both of which
    the table allows.
 
-Each rule (and the default-ask) also carries the Phase 2 hooks:
+Each rule (and the default-ask) also carries the Phase 2 fields:
 `rule_eligible` (may a persistent user rule override this ask?) and the
-generalized `(executable, subcommand)` `shape` a user rule would store —
-destructive / privilege / obfuscation findings are never eligible. The
-`intent` field remains mandatory on first-degree mutators (TOOLS.md §8A) as
-permission-panel and feed metadata, but it is **no longer a judgement
+generalized `(executable, subcommand)` `shape` a user rule stores —
+destructive / privilege / obfuscation findings are never eligible. Two
+things happen with these, both in `evaluate_command()` itself (§3.2a):
+
+1. **Known-rule lookup.** If the ask's `shape` is already in the caller's
+   `known_rules` (session rules ∪ the global store), the ask silently
+   becomes an **allow** instead — no prompt at all.
+2. **Offer computation.** Otherwise, if the ask is `rule_eligible` *and* the
+   whole command clears a stricter, independent bar — a single segment (no
+   `|`/`&&`/`;`), no redirections, no substitutions/nested shells — the
+   decision carries a `rule_offer` of that same shape. `git push origin
+   main` is offered; `cat > out.txt` is not (a redirection), even though
+   both are `rule_eligible` asks in their own right — see §3.2a for why
+   eligibility alone isn't enough.
+
+   The path-like-argument check (`/`, `\`, `..`, `~`, a drive letter) is
+   **tiered by `known_command`** — whether the ask matched an explicit,
+   named `CommandRule` (`git push`, `apt install`, `npx`, …) versus fell
+   through to the generic "not in the known-safe command set" default:
+   - **Known**: any path-like argument is ignored. The rule's danger is
+     already bounded by its category, and granting it already generalizes
+     over everything after the subcommand (`git push` generalizes over the
+     remote) — a path there is no different. `apt install ./local.deb` is
+     offered as `("apt", "install")`.
+   - **Unknown**: a path-like argument *after* the subcommand still
+     disqualifies the offer — `pytest ../other/` is not offered, because the
+     stored `(executable, subcommand)` shape can't capture that trailing
+     path, and a future call with a *different* path would silently match
+     the same rule. A path-like **subcommand itself** is fine, though: a
+     bespoke single-argument CLI like `1brc ./measurements.txt` is offered
+     as `("1brc", "./measurements.txt")` — the shape already pins the rule
+     to that exact literal text, so `1brc ./other.txt` produces a different,
+     non-matching shape and still asks. This is what makes an unknown
+     command's offer effectively an "exact literal match," while a known
+     command's is a true generalization.
+
+The `intent` field remains mandatory on first-degree mutators (TOOLS.md §8A)
+as permission-panel and feed metadata, but it is **no longer a judgement
 input**.
+
+### 3.2a Phase 2: "always allow" user rules
+
+A user rule is *exactly* the generalized `(executable, subcommand)` shape —
+never arguments, paths, flags, or the literal command line
+(SECURITY_RULES_PLAN.md §2.1). Two independent, additive scopes:
+
+- **Session** — `kodo.runtime.SessionState.security_rules` (a
+  `frozenset[tuple[str, str]]`), mirrored into `kodo.state.TransientStore`
+  the same way `command_control` is (`TransientStore.add_security_rule`,
+  persisted in `transient.json`) — survives a server crash/resume, dropped
+  when the session itself ends. `kodo.security` never imports
+  `kodo.runtime`/`kodo.state`; this scope is ordinary runtime state the
+  layer only ever *receives*, via `SecurityLayer.evaluate(session_rules=…)`.
+- **Global** — `kodo.security._store` (`add_global_rule`/`global_rules`), a
+  flat JSON list at `~/.kodo/etc/security_rules.json`, beside the server's
+  `settings.json` (`kodo.project.WorkspaceLayout` — one instance per
+  machine, shared by every VS Code window's session). Read fresh from disk
+  on every `run_command` judgement (the file is tiny; no cache to
+  invalidate), so a rule granted in one window's session is visible to
+  every other open session's very next matching call. This is a
+  deliberately **user-wide, cross-project** relaxation of the user's own
+  future asks — not a per-project trust boundary. (The unrelated,
+  never-wired `ProjectLayout.security_json` stub predates this decision and
+  is not used by Phase 2; see SECURITY_RULES_PLAN.md.)
+
+The permission prompt is where a rule is granted: `prompt.permission`
+carries `rule_offer` on an offer-eligible ask (WS_PROTOCOL.md §6.5);
+`prompt.permission.response` carries `remember: "session" | "global" |
+null`. The server never trusts a client-declared shape — only `remember` on
+an `allow` for a decision that itself carried a `rule_offer` is acted on, and
+even then the *server's own* `rule_offer` shape is what gets granted, not
+anything read back off the wire. See §4 for the exact call sequence.
 
 ## 4. Wiring
 
@@ -261,25 +328,43 @@ ToolDispatcher.dispatch(tool, input, tool_use_id)          kodo/tools/_dispatch.
   │        command_control = ctx.session.command_control,  ← live, never frozen
   │        autonomous      = ctx.session.effective_autonomous,
   │        default_cwd     = ctx.resolver.default_cwd,
-  │        roots           = ctx.root_paths)
+  │        roots           = ctx.root_paths,
+  │        session_rules   = ctx.session.security_rules)   ← merged with the global store inside
   │    "allow" → proceed
-  │    "ask"   → ctx.gate.fire_permission(...)             kodo/runtime/_gates.py
+  │    "ask"   → ctx.gate.fire_permission(..., rule_offer=decision.rule_offer)
   │              → prompt.permission (kind=request)        WS_PROTOCOL.md §6.5
-  │              → user allows → proceed
-  │              → user denies → {"error": "The user DENIED …"} (tool NOT run)
+  │              → user allows, remember="session"/"global"/null
+  │                 → rule_offer is not None and remember set
+  │                    → ctx.services.add_security_rule(remember, *rule_offer)
+  │                 → proceed
+  │              → user denies → {"error": "The user DENIED …"} (tool NOT run;
+  │                 any `remember` on a denial is ignored — see §3.2a)
   └─ tool_cls(ctx).handle(input)
 ```
 
+`add_security_rule` (`kodo.tools.EngineServices` protocol) reaches
+`WorkflowEngine.add_security_rule` (`kodo/runtime/_engine/_core.py`):
+`"session"` updates `SessionState.security_rules` and
+`TransientStore.add_security_rule` together (the same session/transient
+pairing `handle_command_control_set` uses); `"global"` calls
+`kodo.security.add_global_rule` directly — no session-state mirroring
+needed, since every session already reads the global store live per call.
+
 - **Layering.** `kodo.security` imports only `kodo.common` (the
-  OS-temp-directory helper, see below), `kodo.toolspecs` (the catalog), and
-  `kodo.shellparser` (the parse) — it sits beside `toolspecs` in the import
-  graph and is consumed **only by `runtime`**. `kodo.tools` never imports it:
-  the dispatcher sees the layer through the `SecurityLike` /
-  `SecurityDecisionLike` structural protocols in `tools/_context.py`, exactly
-  as `GateLike` decouples it from `runtime`. The engine constructs one
-  `SecurityLayer` per `WorkflowEngine` and passes it into every dispatcher
-  via `_make_dispatcher` — so the Guide, the Problem Solver, and **every
-  sub-agent** flow through the same gate.
+  OS-temp-directory helper, see below), `kodo.toolspecs` (the catalog),
+  `kodo.shellparser` (the parse), and `kodo.project` (`WorkspaceLayout`,
+  for the global rule store's on-disk location only) — it sits beside
+  `toolspecs` in the import graph and is consumed **only by `runtime`**.
+  `kodo.tools` never imports it: the dispatcher sees the layer through the
+  `SecurityLike` / `SecurityDecisionLike` structural protocols in
+  `tools/_context.py`, exactly as `GateLike` decouples it from `runtime`.
+  Session-scoped rules are the one Phase 2 exception to "security never
+  reaches into runtime" — they flow the *other* direction, as a plain
+  `frozenset` argument the caller passes into `evaluate()`, so
+  `kodo.security` still never imports `kodo.runtime`/`kodo.state`. The
+  engine constructs one `SecurityLayer` per `WorkflowEngine` and passes it
+  into every dispatcher via `_make_dispatcher` — so the Guide, the Problem
+  Solver, and **every sub-agent** flow through the same gate.
 - **The OS temp directory carve-out spans two independent gatekeepers**, not
   just the security layer: `kodo.common.system_temp_roots()` (T0, no
   intra-kodo dependencies) is consumed by both `kodo.security._analysis`
@@ -292,11 +377,13 @@ ToolDispatcher.dispatch(tool, input, tool_use_id)          kodo/tools/_dispatch.
   `kodo.security` decoupling above intact. `LogicalPathResolver` (Problem
   Solver mode) already took absolute paths as-is, so it needed no change —
   the temp directory was already reachable there.
-- **`SessionLike`** gained `command_control` (read live per call);
-  `SessionState` already carried it.
+- **`SessionLike`** carries `command_control` and `security_rules` (both
+  read live per call — a rule granted mid-session applies to the very next
+  matching call, same as a `command_control` toggle).
 - The **decision** (`SecurityDecision`) carries `action`, a one-sentence
-  `reason`, and a `source` tag (`policy` / `threshold` / `workspace` /
-  `static` / `rules`) that is logged for every call.
+  `reason`, a `source` tag (`policy` / `threshold` / `workspace` /
+  `static` / `rules`) that is logged for every call, and (for `run_command`
+  only) `rule_offer`.
 
 ## 5. The shell parsers
 
@@ -335,6 +422,35 @@ content whole, before the grouping check runs). This is deliberately
 `while`) are not parsed and still fail closed to ask, unchanged — only the
 common "just wrap a command" forms are flattened.
 
+`parse_command()` also extracts **here-document bodies** (`kodo.shellparser.
+_parser._extract_heredocs`) before tokenizing: `<<DELIM`/`<<-DELIM` through
+the matching terminator line is pulled out as a separate `Redirection.
+heredoc_body` rather than being left in the token stream, where it used to
+be misread as bogus trailing words/segments of whatever command preceded
+it — `cat > out.cpp << 'EOF'` followed by a C++ snippet would pick up the
+snippet's first token as a fabricated "subcommand" (`'cat static' is not in
+the known-safe command set`) purely because the body happened to contain
+shell metacharacters (`;`, `&&`, `()`, …) the tokenizer had no way to know
+were data, not syntax. Handles multiple heredocs on one line (`cmd1 <<A |
+cmd2 <<B`) in the real left-to-right order shells resolve them.
+
+This was more than a confusing-reason bug: a **bare shell fed a heredoc**
+(`bash << 'EOF' … EOF`, no `-c`, no script argument) used to have its
+misparsed body tokens satisfy the "`sh build.sh` runs a workspace script"
+allowance (`if segment.args: return ok`) — silently **allowing arbitrary
+shell code smuggled in over a heredoc**, e.g. `bash << 'EOF'\nrm -rf
+important/\nEOF` asked nothing. `kodo.security._classify._heredoc_nested_command`
+closes this the same way `-c`/`-e` already work: a bare shell's heredoc body
+becomes its `nested_command` (recursively judged, same as `bash -c "…"`); a
+bare script-interpreter's (`python`, `node`, `ruby`, `perl`, …) becomes
+`nested_opaque` (statically unanalyzable, always asks) — in both cases only
+when there's no other positional argument (`bash script.sh << EOF` feeds the
+heredoc to *script.sh*'s stdin as data, the same trust the flagless form
+already gets; the `-c`/`-e` inline-code rules apply identically). Every other
+receiving command (`cat`, `tee`, `mysql`, …) simply has its heredoc body
+discarded from the token stream — it was already just data, and the fix's
+only job there is to stop it from polluting `args`/`subcommand`.
+
 The security layer picks the dialect by platform (`os.name`).
 
 ## 6. Wire protocol & VSIX UI
@@ -351,7 +467,8 @@ The security layer picks the dialect by platform (`os.name`).
   "intent": "Install the test runner the plan's step 3 requires",
   "reason": "The command targets paths outside the workspace: /etc/hosts.",
   "params": [ { "name": "command", "value": "…" }, … ],
-  "recovered": false }
+  "recovered": false,
+  "rule_offer": { "executable": "git", "subcommand": "push" } }
 ```
 
 `recovered` (default `false`) is `true` only when the prompt is for a
@@ -360,21 +477,30 @@ banner above the reason when it is set.
 
 `params` is the customer-visible preview: input properties projected through
 the tool's `input_visibility` map (hidden properties never reach the prompt),
-values truncated at 400 chars. Response (`kind=response`, correlated by id):
+values truncated at 400 chars. `rule_offer` (default `null`) is set only for
+an offer-eligible `run_command` ask (§3.2a) — the client shows two "always
+allow" checkboxes when present. Response (`kind=response`, correlated by id):
 
 ```json
-{ "type": "prompt.permission.response", "action": "allow" | "deny", "feedback": "…" | null }
+{ "type": "prompt.permission.response", "action": "allow" | "deny", "feedback": "…" | null, "remember": "session" | "global" | null }
 ```
 
-Malformed/unknown actions are treated as **deny** server-side.
+Malformed/unknown actions are treated as **deny** server-side. `remember`
+(default `null`) is the checkbox scope chosen, if any — see §3.2a/§4 for how
+the server verifies and applies it.
 
 **VSIX**: `session-controller.ts` caches the request as `pendingPermission`
 (re-posted to the webview on rehydrate, like the approval gate) and forwards
 it as a `permission_request` message; `PermissionPanel.tsx` renders in place
 of the prompt input (the `ApprovalGate` pattern) with the tool name, a risk
 badge, the declared intent, the layer's reason, the parameter rows, an
-optional feedback textarea, and **Allow** / **Deny** buttons. The panel is
-**transient** — never a session entry: the gated tool call's own card is
+optional feedback textarea, and **Allow** / **Deny** buttons. When
+`ruleOffer` is set, two mutually-exclusive checkboxes ("Always allow `<shape>`
+— this session" / "— all sessions") appear above the buttons; the checked
+scope (or `null`) rides along with whichever button is clicked as
+`permission_respond`'s `remember` field — the server only *acts* on it
+alongside Allow (§3.2a), so a stray checked box on Deny is inert. The panel
+is **transient** — never a session entry: the gated tool call's own card is
 already in the feed and its result records the outcome (a denial is visible
 as the tool's error result). Reconnects re-deliver an unanswered request via
 the standard `Outbox` buffer-and-replay.
@@ -411,12 +537,75 @@ so the bar is deferred past the permission wait.
 
 The gated `tool_use` is flushed to `session.jsonl` **before** dispatch (the
 round-4 flush-before-dispatch rule, see SESSIONS.md), and no `pending_prompt`
-is persisted for permission gates (same choice as `ask_user`). If the server
-dies while a prompt is open, resume finds a dangling non-spawn `tool_use` and
-stubs it with an interrupted-tool result — the tool never ran, the agent sees
-the interruption and may retry, which re-triggers the same judgement. The
-gated tool is deliberately **not** in `_RESUME_REDISPATCH_TOOLS`: re-executing
-is unsafe for calls that might have been mid-flight rather than mid-prompt.
+is persisted for permission gates (same choice as `ask_user`). This section
+covers two distinct interruptions and how each is recovered — a genuine
+server-process restart (the "dangling security alert" mechanism below), and a
+live client disconnect/reconnect that never kills the process at all (§7b).
+
+### 7a. Dangling security alerts (cold-restart resume)
+
+Because no `pending_prompt` is persisted, the naive dangling-`tool_use`
+resume (SESSIONS.md "Resume") cannot tell "this call died while still
+waiting on the permission gate — it never actually ran" apart from "this call
+died mid-execution — it may already have written a file or run a command."
+Confusing the two would be unsafe: blindly re-executing a call whose side
+effects may already have landed could duplicate them.
+
+`TransientStore.pending_security_alert` closes that gap: it holds the
+`tool_call_id` of the one `run_command`-class call currently blocked inside
+`GateOrchestrator.fire_permission`'s `await future` — set immediately before
+the wait, cleared the instant it resolves (normally, or on any exception
+*other than* cancellation), mirroring how `fire_approval` persists
+`pending_prompt`. A cancelled wait — process death, or the worker task being
+torn down for real — leaves it set, because that is exactly proof the call
+never reached dispatch.
+
+On cold-restart resume, `_resume_main_turn` (`kodo/runtime/_engine/_resume.py`)
+claims this marker once, up front, and clears it unconditionally — this
+resume pass is the one deciding that call's fate either way. If the
+dangling `tool_use` it is currently handling matches the claimed id, it is
+redispatched for real (the same treatment `_RESUME_REDISPATCH_TOOLS` gives
+sub-agent spawns and `ask_user`): security judgement runs fresh — picking up
+e.g. an "always allow" rule granted since — and, if still `ask`, the exact
+same `prompt.permission` is re-fired to the user. Any other dangling call
+(including a security-gated one whose marker doesn't match — it must have
+died elsewhere, not at the gate) still gets the conservative
+interrupted-tool stand-in, unchanged. A live, user-initiated Stop
+(`_persist_interrupted_turn`) never redispatches anything — including a
+gate-pending call — but does clear a stale marker so it cannot outlive the
+call it pointed at.
+
+### 7b. Live disconnect/reconnect (no process restart)
+
+A VS Code window reload — or any transient socket drop where the singleton
+server process itself keeps running — is a different event from a crash: the
+session stays resident (`SessionManager` never rebuilds it), so the
+dangling-`tool_use` resume path above never runs at all. Before this was
+fixed, every server-initiated request/response future (`prompt.approval`,
+`prompt.question`, `prompt.permission`, and the API-key broker) was owned by
+the *socket* (`Connection`), which `ConnectionRegistry.run_ws`'s `finally`
+unconditionally cancelled on every disconnect — including a reconnect a
+moment later. The cancellation propagated, uncaught, straight through the
+worker task, silently and permanently ending it: no more prompts, ever, for
+that session, until the whole server process was restarted.
+
+The fix moves this ownership to `SessionChannel` (session-scoped, survives
+reconnects — `kodo/transport/_connection.py`) instead of `Connection`
+(socket-scoped, dies on disconnect): a disconnect no longer cancels anything,
+so the worker task simply stays parked at its `await future`, exactly as
+intended. `SessionChannel.send()` additionally remembers every `kind=request`
+envelope until its response arrives; `SessionManager.replay_backlog` (called
+right after the reconnect base layer — `hello.ack`/`state`/`session.history`
+— per `_app.py`'s `_handle_session_hello`) now also calls
+`SessionChannel.replay_pending_requests()`, re-sending any still-unanswered
+request with its original id to the newly attached connection. That is what
+lets a *fresh* webview — one with no in-memory record of the prompt at all,
+e.g. because the extension host itself restarted — re-render the panel and
+still resolve the same waiting future. Only genuine session teardown (delete,
+server shutdown) actually ends one of these waits now, via the owning
+engine's worker task being cancelled — `KeyBroker.get_key` still catches that
+`CancelledError` and returns a `connection_lost` error rather than
+propagating it.
 
 ## 8. Costs and short-circuits
 
@@ -464,16 +653,24 @@ expected to simply retry.
 
 ## 10. Future work (deliberately out of scope)
 
-- **Phase 2 user rules** — persistent "always allow `git push`"-style rules
-  (generalized `(executable, subcommand)` shapes only; complex commands and
-  commands with path arguments are never rule-eligible), created from the
-  permission panel and stored per-session / globally (`kodo/security/
-  _store.py` remains the stub; `security.add_rule` stays reserved in
-  WS_PROTOCOL.md §7.7). Full design: SECURITY_RULES_PLAN.md Phase 2.
-- **Phase 3** — ask-rate telemetry, rules-management UI, deeper
-  PowerShell/cmd tables, validator scenarios for the gate; and possibly an
-  AST-based safe-subset analysis for inline `python -c` code, today's main
-  deterministic-ask friction.
+Phase 2 user rules (§3.2a) are implemented. What's left:
+
+- **Phase 3** — ask-rate telemetry, a standalone rules-management UI
+  (list/revoke a session's or the machine's granted rules outside the flow
+  of answering a live prompt — `security.add_rule`/`security.rules.list`/
+  `security.rules.delete` stay reserved in WS_PROTOCOL.md §7.7 for this),
+  deeper PowerShell/cmd tables, validator scenarios for the gate; and
+  possibly an AST-based safe-subset analysis for inline `python -c` code,
+  today's main deterministic-ask friction. Full design: SECURITY_RULES_PLAN.md
+  Phase 3.
+- **Redirecting/path-bearing commands stay outside the offer entirely**
+  (§3.2a rule #2/#3 — `cat > out.txt`, any command with a path argument) —
+  the release valve for that class is growing the built-in allow table
+  (Tier 3 tuning), not a user rule; a conservative, deliberate choice, not a
+  gap to close casually (SECURITY_RULES_PLAN.md "Fixed decisions").
+- **Edit Control enforcement** — `edit_control` (`review_all`) pausing for
+  sign-off on each edit is a review-workflow feature, not a security one,
+  and is still state-tracking only.
 - **Edit Control enforcement** — `edit_control` (`review_all`) pausing for
   sign-off on each edit is a review-workflow feature, not a security one,
   and is still state-tracking only.

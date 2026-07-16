@@ -27,10 +27,12 @@ _SETTINGS: dict[str, object] = {"mode": "local", "models": {"local": "llamacpp-q
 class _FakeWS:
     """Minimal stand-in for an aiohttp WebSocketResponse."""
 
-    closed = False
+    def __init__(self) -> None:
+        self.closed = False
+        self.sent: list[str] = []
 
-    async def send_str(self, _data: str) -> None:
-        return None
+    async def send_str(self, data: str) -> None:
+        self.sent.append(data)
 
 
 def _conn() -> Connection:
@@ -119,6 +121,71 @@ async def test_open_unknown_id_creates_fresh(manager_factory) -> None:  # type: 
     mgr: SessionManager = manager_factory()
     fresh = await mgr.open("does-not-exist", "windowA")
     assert fresh is not None and fresh.id != "does-not-exist"
+
+
+# ---------------------------------------------------------------------------
+# A disconnect (unlike genuine teardown) never loses a pending server-
+# initiated request — the doc/SECURITY.md §7 "dangling security alert" fix's
+# other half (see kodo.transport._connection, ConnectionRegistry.run_ws).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dropped_connection_does_not_cancel_a_pending_gate_future(
+    manager_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    """SessionManager.drop_connection only detaches + starts the grace
+    window; unlike the pre-fix Connection.cancel_pending(), it must not
+    touch any future registered on the session's channel."""
+    import asyncio
+
+    mgr: SessionManager = manager_factory(grace=100.0)
+    session: Session = await mgr.create("windowA")
+    conn = _conn()
+    await mgr.bind_connection(session, conn)
+
+    loop = asyncio.get_event_loop()
+    future: asyncio.Future[dict[str, object]] = loop.create_future()
+    session.channel.register_response_future("req-1", future)
+
+    mgr.drop_connection(conn)
+
+    assert not future.done()
+    assert not future.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_replay_backlog_also_replays_pending_requests(manager_factory) -> None:  # type: ignore[no-untyped-def]
+    """SessionManager.replay_backlog is the single call site _app.py invokes
+    on reconnect (after the base layer); it must fan out to both the
+    disconnect-buffered Outbox and any still-unanswered server-initiated
+    request, so a reconnecting window re-renders an outstanding prompt panel
+    it has no in-memory record of."""
+    import asyncio
+
+    from kodo.common import Envelope
+
+    mgr: SessionManager = manager_factory(grace=100.0)
+    session: Session = await mgr.create("windowA")
+    conn = _conn()
+    await mgr.bind_connection(session, conn)
+
+    loop = asyncio.get_event_loop()
+    future: asyncio.Future[dict[str, object]] = loop.create_future()
+    session.channel.register_response_future("req-1", future)
+    await session.channel.send(
+        Envelope(kind="request", id="req-1", payload={"type": "prompt.permission"})
+    )
+
+    mgr.drop_connection(conn)
+    conn2 = _conn()
+    await mgr.bind_connection(session, conn2)
+
+    await mgr.replay_backlog(session)
+
+    assert conn2.ws.sent  # type: ignore[attr-defined]
+    replayed = Envelope.from_json(conn2.ws.sent[0])  # type: ignore[attr-defined]
+    assert replayed.id == "req-1"
 
 
 # ---------------------------------------------------------------------------

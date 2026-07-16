@@ -22,8 +22,10 @@ from kodo.runtime import WorkflowEngine
 
 
 class _FakeTransient:
-    def __init__(self) -> None:
+    def __init__(self, pending_security_alert: str | None = None) -> None:
         self.appended: list[tuple[str, object, str | None, str | None]] = []
+        self.pending_security_alert = pending_security_alert
+        self.update_calls: list[dict[str, object]] = []
 
     def append_message(
         self,
@@ -35,11 +37,18 @@ class _FakeTransient:
     ) -> None:
         self.appended.append((role, content, entry_agent, kind))
 
+    def update(self, **kwargs: object) -> None:
+        self.update_calls.append(kwargs)
+        if "pending_security_alert" in kwargs:
+            self.pending_security_alert = kwargs["pending_security_alert"]
 
-def _bare_engine(*, main_messages: list[Message]) -> tuple[WorkflowEngine, _FakeTransient]:
+
+def _bare_engine(
+    *, main_messages: list[Message], pending_security_alert: str | None = None
+) -> tuple[WorkflowEngine, _FakeTransient]:
     """Construct a WorkflowEngine with only the attributes these methods read."""
     engine = object.__new__(WorkflowEngine)
-    transient = _FakeTransient()
+    transient = _FakeTransient(pending_security_alert=pending_security_alert)
     engine._main_messages = main_messages
     engine._transient = transient
     return engine, transient
@@ -123,6 +132,38 @@ def test_persist_interrupted_turn_resolves_every_pending_tool_use() -> None:
     tool_results_msg = engine._main_messages[-2]
     ids = {block["tool_use_id"] for block in tool_results_msg.content}
     assert ids == {"tu_1", "tu_2"}
+
+
+def test_persist_interrupted_turn_clears_stale_pending_security_alert() -> None:
+    """A live Stop never redispatches a gate-pending call — same "I will not
+    silently resume or retry it" rule as any other dangling call — but must
+    still clear the marker so it cannot outlive the call it pointed at and
+    linger, unmatched, into a later cold-restart resume."""
+    dangling = Message(
+        role="assistant",
+        content=[{"type": "tool_use", "id": "tu_1", "name": "run_command", "input": {}}],
+    )
+    engine, transient = _bare_engine(main_messages=[dangling], pending_security_alert="tu_1")
+
+    engine._persist_interrupted_turn("guide")
+
+    assert transient.pending_security_alert is None
+    # The call is still folded into an ordinary interrupted result, not
+    # silently redispatched.
+    tool_results_msg = engine._main_messages[-2]
+    assert tool_results_msg.content[0]["tool_use_id"] == "tu_1"
+    assert "did not complete before the user clicked Stop" in tool_results_msg.content[0]["content"]
+
+
+def test_persist_interrupted_turn_noop_when_no_pending_security_alert() -> None:
+    """No marker to begin with -> no spurious update() call for it."""
+    plain_reply = Message(role="assistant", content="partial")
+    engine, transient = _bare_engine(main_messages=[plain_reply])
+
+    engine._persist_interrupted_turn("guide")
+
+    assert transient.pending_security_alert is None
+    assert not any("pending_security_alert" in call for call in transient.update_calls)
 
 
 # ---------------------------------------------------------------------------

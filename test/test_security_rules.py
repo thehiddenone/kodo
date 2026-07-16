@@ -156,6 +156,121 @@ def test_dangerous_asks_carry_eligibility_flags() -> None:
 
 
 # ----------------------------------------------------------------------
+# Phase 2: "always allow" rule offers + known-rule silencing
+# (doc/SECURITY_RULES_PLAN.md §2.2/§2.4)
+# ----------------------------------------------------------------------
+
+
+def test_eligible_ask_carries_a_rule_offer() -> None:
+    d = _posix("git push origin main")
+    assert d.action == "ask"
+    assert d.rule_offer == ("git", "push")
+
+
+def test_known_rule_silences_a_matching_ask() -> None:
+    d = evaluate_command(
+        "git push origin main",
+        cwd="/ws/proj",
+        roots=_ROOTS,
+        windows=False,
+        known_rules=frozenset({("git", "push")}),
+    )
+    assert d.action == "allow"
+    assert d.rule_offer is None
+
+
+def test_known_rule_does_not_silence_a_different_shape() -> None:
+    d = evaluate_command(
+        "npm publish",
+        cwd="/ws/proj",
+        roots=_ROOTS,
+        windows=False,
+        known_rules=frozenset({("git", "push")}),
+    )
+    assert d.action == "ask"
+
+
+def test_known_rule_never_silences_a_non_eligible_ask() -> None:
+    # Even a bogus/mismatched rule store entry can't reach a destructive ask —
+    # eligibility is checked before the rule lookup, not implied by it.
+    d = evaluate_command(
+        "rm -rf build",
+        cwd="/ws/proj",
+        roots=_ROOTS,
+        windows=False,
+        known_rules=frozenset({("rm", "build")}),
+    )
+    assert d.action == "ask"
+    assert d.category == "destructive"
+
+
+def test_redirection_disqualifies_the_offer_even_when_eligible() -> None:
+    # `cat > out.txt` still asks (writing is not the read-only fast path) and
+    # is category-eligible ("unknown" -> default-ask eligible=True), but a
+    # redirection makes the whole-command shape too broad to offer.
+    d = _posix("cat > out.txt")
+    assert d.action == "ask"
+    assert d.rule_eligible is True
+    assert d.rule_offer is None
+
+
+def test_path_like_argument_disqualifies_the_offer() -> None:
+    """A path-like argument *after* the subcommand still disqualifies an
+    unknown command's offer — the stored shape can't capture that argument,
+    so a future call with a different path would silently match the same
+    rule. ``mytool`` matches no built-in ``CommandRule`` (unknown tier)."""
+    eligible = _posix("mytool cowsay")
+    assert eligible.rule_offer == ("mytool", "cowsay")
+    with_path = _posix("mytool build tools/thing")
+    assert with_path.rule_offer is None
+
+
+def test_known_command_offer_ignores_path_like_arguments() -> None:
+    """A command matching an explicit built-in ``CommandRule`` (e.g. ``apt
+    install``, ``npx``) is bounded by its category regardless of what
+    follows the subcommand — its offer already generalizes over every
+    trailing argument (paths included), the same way ``git push`` general-
+    izes over the remote."""
+    d = _posix("apt install ./local.deb")
+    assert d.rule_offer == ("apt", "install")
+    assert d.known_command is True
+
+    npx = _posix("npx create-react-app ./my-app")
+    assert npx.rule_offer == ("npx", "create-react-app")
+
+
+def test_unknown_command_offer_allows_a_path_like_subcommand() -> None:
+    """When the path-like token *is* the subcommand itself (a bespoke CLI's
+    sole positional argument), the offer is still granted — the stored
+    ``(executable, subcommand)`` shape pins the rule to that exact literal
+    text, so a different file produces a different shape and still asks."""
+    d = _posix("1brc ./measurements.txt")
+    assert d.rule_offer == ("1brc", "./measurements.txt")
+    assert d.known_command is False
+
+    different_file = _posix("1brc ./other.txt")
+    assert different_file.action == "ask"
+    assert different_file.shape == ("1brc", "./other.txt")
+
+
+def test_pipeline_disqualifies_the_offer() -> None:
+    d = _posix("echo hi && git push")
+    assert d.action == "ask"
+    assert d.rule_offer is None
+
+
+def test_known_rule_applies_inside_nested_shell() -> None:
+    d = evaluate_command(
+        'bash -c "git push"',
+        cwd="/ws/proj",
+        roots=_ROOTS,
+        windows=False,
+        known_rules=frozenset({("git", "push")}),
+    )
+    assert d.action == "allow"
+
+
+# ----------------------------------------------------------------------
 # Structural red flags
 # ----------------------------------------------------------------------
 
@@ -203,6 +318,51 @@ def test_value_expansion_tolerated_readonly_but_not_mutating() -> None:
 def test_xargs_readonly_child_allows_mutating_child_asks() -> None:
     assert _posix("ls | xargs cat").action == "allow"
     assert _posix("ls | xargs rm").action == "ask"
+
+
+# ----------------------------------------------------------------------
+# Here-documents: body must not pollute segment args/subcommand, and a bare
+# shell/interpreter fed one over stdin is code, not data (doc/SECURITY_RULES_PLAN.md
+# "Phase 1 hardening" — a heredoc is the stdin-flag equivalent of `-c`/`-e`).
+# ----------------------------------------------------------------------
+
+
+def test_heredoc_body_does_not_leak_into_subcommand() -> None:
+    # The reported bug: a C++ snippet containing `static` as its first
+    # non-comment token used to become `cat`'s bogus "subcommand", producing
+    # a confusing "'cat static' is not in the known-safe command set" ask.
+    d = _posix(
+        "cat > out.cpp << 'EOF'\n#include <cstdio>\nstatic void helper() { printf(\"hi;\"); }\nEOF"
+    )
+    assert "static" not in d.reason
+    assert d.shape == ("cat", "")
+
+
+def test_bare_shell_fed_heredoc_is_recursed_as_code() -> None:
+    # Previously: the heredoc body's stray words were misparsed as literal
+    # `bash` arguments, which satisfied the (unrelated) "`sh build.sh` runs a
+    # workspace script" allowance — silently ALLOWING arbitrary shell code
+    # smuggled in over a heredoc. Closed by treating a bare (no positional
+    # script argument) shell's heredoc body the same as `bash -c "..."`.
+    dangerous = _posix("bash << 'EOF'\nrm -rf /ws/proj/build\nEOF")
+    assert dangerous.action == "ask"
+    assert dangerous.category == "destructive"
+
+    benign = _posix("bash << 'EOF'\npytest -q\nEOF")
+    assert benign.action == "allow"
+
+
+def test_shell_script_argument_heredoc_is_still_stdin_data() -> None:
+    # `bash script.sh <<EOF`: the heredoc is script.sh's stdin, not bash's
+    # program — same trust boundary as the flagless `bash script.sh` form.
+    d = _posix("bash script.sh << 'EOF'\nsome data; rm -rf /tmp\nEOF")
+    assert d.action == "allow"
+
+
+def test_bare_interpreter_fed_heredoc_is_opaque() -> None:
+    d = _posix("python3 << 'EOF'\nimport os\nos.system('rm -rf /')\nEOF")
+    assert d.action == "ask"
+    assert d.category == "obfuscation"
 
 
 def test_outside_workspace_still_asks_first() -> None:

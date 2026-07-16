@@ -6,7 +6,8 @@ use and reused across restarts when the session is resumed.  Layout::
     .kodo/sessions/<posix-timestamp>/
         meta.json        — human-readable metadata (name, creation time)
         transient.json   — mutable runtime state (stage, prompt, autonomous,
-                           active_subsession)
+                           active_subsession, security_rules,
+                           pending_security_alert)
         session.jsonl    — append-only MAIN session log: top-level LLM messages
                            (agent-agnostic — Guide and Problem Solver
                            share it) interleaved with ``subsession_start`` /
@@ -178,7 +179,9 @@ class TransientStore:
     __edit_control: str
     __command_control: str
     __thinking_level: str
+    __security_rules: frozenset[tuple[str, str]]
     __pending_prompt: dict[str, object] | None
+    __pending_security_alert: str | None
     __active_subsession: dict[str, object] | None
     __current_project: dict[str, str] | None
     __lock: asyncio.Lock
@@ -202,7 +205,9 @@ class TransientStore:
         self.__edit_control = "smart"
         self.__command_control = "smart"
         self.__thinking_level = ""
+        self.__security_rules = frozenset()
         self.__pending_prompt = None
+        self.__pending_security_alert = None
         self.__active_subsession = None
         self.__current_project = None
         self.__lock = asyncio.Lock()
@@ -478,6 +483,26 @@ class TransientStore:
         return self.__thinking_level
 
     @property
+    def security_rules(self) -> frozenset[tuple[str, str]]:
+        """Persisted Phase 2 "always allow" grants for this session
+        (doc/SECURITY_RULES_PLAN.md §2) — ``(executable, subcommand)``
+        shapes. Mutated only via :meth:`add_security_rule`.
+        """
+        return self.__security_rules
+
+    def add_security_rule(self, executable: str, subcommand: str) -> frozenset[tuple[str, str]]:
+        """Grant ``(executable, subcommand)`` for the rest of this session
+        and persist it to ``transient.json``, surviving crash-resume.
+
+        Returns:
+            frozenset[tuple[str, str]]: The updated rule set.
+        """
+        self.__security_rules = self.__security_rules | {(executable, subcommand)}
+        if self.__paths is not None:
+            self.__flush(self.__paths)
+        return self.__security_rules
+
+    @property
     def pending_prompt(self) -> dict[str, object] | None:
         """The outstanding ``prompt.approval`` request, if any.
 
@@ -487,6 +512,25 @@ class TransientStore:
         ``tool_use`` drives the dangling-tool-use resume path instead.)
         """
         return self.__pending_prompt
+
+    @property
+    def pending_security_alert(self) -> str | None:
+        """The ``tool_call_id`` of a ``run_command``-class call currently
+        blocked at the security permission gate (``prompt.permission``), if
+        any — set for the duration of :meth:`GateOrchestrator.fire_permission`'s
+        wait and cleared the instant it resolves.
+
+        Unlike ``prompt.permission`` itself (which carries no persisted
+        ``pending_prompt`` — doc/SECURITY.md §7), this one field distinguishes
+        a dangling tool call that died **before** dispatch (still at the
+        gate, provably never executed) from one that died mid-execution
+        (unknown side effects, never safe to retry). Only the former case is
+        exempt from the interrupted-stub fallback on cold-restart resume —
+        see :meth:`~kodo.runtime._engine._resume.ResumeMixin._resume_main_turn`.
+        Because dispatch is strictly sequential, at most one tool call can be
+        gating at any instant.
+        """
+        return self.__pending_security_alert
 
     def attach_session(self, session_id: str, resumed: bool) -> None:
         """Attach to an existing session or create a new one.
@@ -542,6 +586,7 @@ class TransientStore:
         command_control: str | None = None,
         thinking_level: str | None = None,
         pending_prompt: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
+        pending_security_alert: str | None = _UNSET,  # type: ignore[assignment]
         active_subsession: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
         current_project: dict[str, str] | None = _UNSET,  # type: ignore[assignment]
     ) -> None:
@@ -560,6 +605,9 @@ class TransientStore:
             pending_prompt (dict[str, object] | None): Outstanding
                 ``prompt.approval`` request to persist, or ``None`` to clear
                 it. Left unchanged if omitted.
+            pending_security_alert (str | None): The ``tool_call_id`` of a
+                call currently blocked at the security permission gate, or
+                ``None`` to clear it. Left unchanged if omitted.
             active_subsession (dict[str, object] | None): The in-flight
                 sub-agent subsession record to persist, or ``None`` to clear it
                 (the main agent holds the turn again). Left unchanged if omitted.
@@ -582,6 +630,8 @@ class TransientStore:
             self.__thinking_level = thinking_level
         if pending_prompt is not _UNSET:
             self.__pending_prompt = pending_prompt
+        if pending_security_alert is not _UNSET:
+            self.__pending_security_alert = pending_security_alert
         if active_subsession is not _UNSET:
             self.__active_subsession = active_subsession
         if current_project is not _UNSET:
@@ -776,8 +826,20 @@ class TransientStore:
                 command if command in ("defensive", "permissive", "smart") else "smart"
             )
             self.__thinking_level = str(data.get("thinking_level", ""))
+            raw_rules = data.get("security_rules")
+            self.__security_rules = (
+                frozenset(
+                    (str(rule[0]), str(rule[1]))
+                    for rule in raw_rules
+                    if isinstance(rule, list) and len(rule) == 2
+                )
+                if isinstance(raw_rules, list)
+                else frozenset()
+            )
             pending = data.get("pending_prompt")
             self.__pending_prompt = pending if isinstance(pending, dict) else None
+            alert = data.get("pending_security_alert")
+            self.__pending_security_alert = alert if isinstance(alert, str) and alert else None
             active = data.get("active_subsession")
             self.__active_subsession = active if isinstance(active, dict) else None
             project = data.get("current_project")
@@ -831,7 +893,9 @@ class TransientStore:
             "edit_control": self.__edit_control,
             "command_control": self.__command_control,
             "thinking_level": self.__thinking_level,
+            "security_rules": sorted([list(rule) for rule in self.__security_rules]),
             "pending_prompt": self.__pending_prompt,
+            "pending_security_alert": self.__pending_security_alert,
             "active_subsession": self.__active_subsession,
             "current_project": self.__current_project,
         }
