@@ -18,6 +18,7 @@ from kodo.security import add_global_rule, global_rules, global_rules_path
 @pytest.fixture(autouse=True)
 def _temp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Windows
     return tmp_path
 
 

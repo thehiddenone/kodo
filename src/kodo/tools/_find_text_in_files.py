@@ -122,7 +122,7 @@ class FindTextInFilesTool(Tool):
                 truncated = True
                 break
             data = event.get("data", {})
-            path = data.get("path", {}).get("text", "")
+            path = data.get("path", {}).get("text", "").replace("\\", "/")
             if path.startswith("./"):
                 path = path[2:]
             text = data.get("lines", {}).get("text", "")
@@ -130,7 +130,7 @@ class FindTextInFilesTool(Tool):
                 {
                     "path": path,
                     "line": data.get("line_number", 0),
-                    "text": text.rstrip("\n"),
+                    "text": text.rstrip("\r\n"),
                 }
             )
         return matches, truncated

@@ -26,6 +26,7 @@ __all__ = [
     "EngineServices",
     "GateLike",
     "PermissionLike",
+    "PermissionPartLike",
     "RootPath",
     "SecurityDecisionLike",
     "SecurityLike",
@@ -85,12 +86,36 @@ class PermissionLike(Protocol):
         ...
 
     @property
-    def remember(self) -> str | None:
-        """``'session'`` / ``'global'`` if the user chose to permanently
-        allow the offered rule shape, else ``None`` (doc/SECURITY_RULES_PLAN.md
-        §2.3). ``ToolDispatcher`` only acts on this when the originating
-        decision actually carried a ``rule_offer`` — a stray value here from
-        an ask with no offer is ignored, never trusted blindly from the wire."""
+    def remember(self) -> tuple[str | None, ...]:
+        """One entry per part the server offered (``GateLike.fire_permission``'s
+        ``parts``, same order/length): ``'session'`` / ``'global'`` where the
+        user chose to permanently allow that part's offered rule shape, else
+        ``None`` (doc/SECURITY_RULES_PLAN.md §2.6). ``ToolDispatcher`` only
+        acts on an entry when the corresponding part actually carried a
+        ``rule_offer`` — a stray value here for a non-offered part is
+        ignored, never trusted blindly from the wire."""
+        ...
+
+
+class PermissionPartLike(Protocol):
+    """Structural shape of one elementary command within a compound
+    ``run_command`` ask that still needs the user's attention.
+
+    Satisfied by :class:`kodo.security.AskPart` (by shape, no inheritance —
+    mirrors how :class:`SecurityDecisionLike` decouples ``kodo.tools`` from
+    ``kodo.security``).
+    """
+
+    @property
+    def reason(self) -> str:
+        """One user-facing sentence explaining why this part asks."""
+        ...
+
+    @property
+    def rule_offer(self) -> tuple[str, str] | None:
+        """The ``(executable, subcommand)`` shape this part may be
+        permanently allowed as, or ``None`` when not offer-eligible
+        (doc/SECURITY_RULES_PLAN.md §2.2/§2.6)."""
         ...
 
 
@@ -111,10 +136,12 @@ class SecurityDecisionLike(Protocol):
         ...
 
     @property
-    def rule_offer(self) -> tuple[str, str] | None:
-        """For a ``run_command`` ask, the ``(executable, subcommand)`` shape
-        the permission prompt may offer to permanently allow, or ``None``
-        (doc/SECURITY_RULES_PLAN.md §2.2)."""
+    def parts(self) -> tuple[PermissionPartLike, ...]:
+        """For a ``run_command`` ask, every elementary command that still
+        needs the user's attention, in command order, deduplicated by shape —
+        empty for every other tool and for any ``"allow"``
+        (doc/SECURITY_RULES_PLAN.md §2.6). The source of truth the dispatcher
+        forwards to ``GateLike.fire_permission``."""
         ...
 
 
@@ -194,7 +221,7 @@ class GateLike(Protocol):
         reason: str,
         params: list[dict[str, str]],
         recovered: bool = False,
-        rule_offer: tuple[str, str] | None = None,
+        parts: tuple[PermissionPartLike, ...] = (),
     ) -> PermissionLike:
         """Surface a security permission prompt and block until the user decides.
 
@@ -204,11 +231,13 @@ class GateLike(Protocol):
         ``risk`` is the tool's :class:`~kodo.toolspecs.SecurityImpact` label.
         ``recovered`` is ``True`` when the prompt is for a salvaged
         malformed tool call (the client renders a distinct banner).
-        ``rule_offer`` is the ``(executable, subcommand)`` shape the client
-        should offer "always allow — this session / all sessions" checkboxes
-        for, or ``None`` for an ordinary Allow/Deny-only prompt
-        (doc/SECURITY_RULES_PLAN.md §2.3). Returns the user's ``allow``/
-        ``deny`` decision plus optional feedback and ``remember`` choice.
+        ``parts`` is every elementary command within the call that still
+        needs the user's attention (one for an ordinary single-command ask,
+        several for a compound pipeline/`&&`/`;` chain — doc/SECURITY_RULES_PLAN.md
+        §2.6); the client shows one "always allow — this session / all
+        sessions" checkbox pair per part whose ``rule_offer`` is set. Returns
+        the user's ``allow``/``deny`` decision plus optional feedback and a
+        ``remember`` tuple parallel to ``parts``.
         """
         ...
 

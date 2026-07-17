@@ -137,7 +137,7 @@ class ReadFileTool(Tool):
                 current = None
                 continue
             data = event.get("data", {})
-            text = data.get("lines", {}).get("text", "").rstrip("\n")
+            text = data.get("lines", {}).get("text", "").rstrip("\r\n")
             if etype == "context":
                 if current is not None:
                     after = current["context_after"]

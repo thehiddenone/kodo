@@ -28,6 +28,12 @@ no matter how benign its executable.
 ``category`` and ``rule_eligible`` flow into the decision for the permission
 prompt and the Phase 2 "always allow" affordance; ``shape`` is the
 generalized ``(executable, subcommand)`` a future user rule would store.
+
+A command with more than one asking segment (a pipeline/``&&``/``;`` chain)
+does **not** collapse to one undifferentiated ask: every segment is judged
+independently, and every one that still needs the user's attention —
+deduplicated by shape — becomes one :class:`AskPart` in ``RuleDecision.parts``
+(doc/SECURITY_RULES_PLAN.md §2.6), each with its own offer eligibility.
 """
 
 from __future__ import annotations
@@ -35,41 +41,16 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from ._analysis import _READONLY_EXECUTABLES, CommandAnalysis, analyze_command
+from ._analysis import _READONLY_CMDLETS, _READONLY_EXECUTABLES, analyze_command
 from ._classify import SHELL_EXECUTABLES, NormalizedSegment
 
-__all__ = ["CommandRule", "RuleDecision", "evaluate_command"]
+__all__ = ["AskPart", "CommandRule", "RuleDecision", "evaluate_command"]
 
 # Recursive evaluation (command substitutions, `sh -c` nesting) gives up —
 # and asks — beyond this depth; legitimate dev commands never nest this far.
 _MAX_DEPTH = 3
-
-# PowerShell cmdlets that only read; the POSIX equivalents live in
-# ``_analysis._READONLY_EXECUTABLES`` (which segment-level checks also use).
-_READONLY_CMDLETS = frozenset(
-    {
-        "get-childitem",
-        "get-content",
-        "get-location",
-        "get-item",
-        "get-itemproperty",
-        "get-date",
-        "get-command",
-        "get-help",
-        "get-process",
-        "get-service",
-        "select-string",
-        "test-path",
-        "resolve-path",
-        "measure-object",
-        "write-output",
-        "tasklist",
-        "findstr",
-        "more",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -169,30 +150,56 @@ class CommandRule:
 
 
 @dataclass(frozen=True)
+class AskPart:
+    """One elementary command within a ``run_command`` line that still needs
+    the user's attention (doc/SECURITY_RULES_PLAN.md §2.6).
+
+    A simple, single-segment command produces exactly one part. A pipeline
+    joined by ``|``/``||``/``&&``/``;`` may produce one part per distinct
+    elementary command that isn't already silenced by an existing rule or an
+    unconditional built-in allow — deduplicated by shape when the same
+    elementary command repeats in the chain.
+
+    Attributes:
+        reason: One user-facing sentence explaining why this part asks.
+        rule_offer: The ``(executable, subcommand)`` shape this part may be
+            permanently allowed as, or ``None`` when not offer-eligible.
+    """
+
+    reason: str
+    rule_offer: tuple[str, str] | None = None
+
+
+@dataclass(frozen=True)
 class RuleDecision:
     """The engine's verdict on one command.
 
     Attributes:
         action: ``"allow"`` or ``"ask"``.
-        reason: One user-facing sentence.
-        category: The matched danger category (``benign-dev`` for allows).
+        reason: One user-facing sentence — identical to ``parts[0].reason``
+            when there is exactly one part; a ``"; "``-joined summary of
+            every part's reason when there is more than one.
+        category: The matched danger category (``benign-dev`` for allows) of
+            the *first* asking part.
         source: ``"workspace"`` (escape finding), ``"static"`` (read-only
-            fast path), or ``"rules"`` (the rule ladder).
-        shape: The generalized ``(executable, subcommand)`` of the deciding
-            segment — the Phase 2 user-rule shape — or ``None``.
+            fast path), or ``"rules"`` (the rule ladder), for the first
+            asking part.
+        shape: The generalized ``(executable, subcommand)`` of the first
+            asking segment — the Phase 2 user-rule shape — or ``None``.
         rule_eligible: Whether an existing user rule matching ``shape`` may
-            silently turn this ask into an allow, and whether a *new* one may
-            be offered (subject to the additional whole-command shape checks
+            silently turn the first asking part into an allow, and whether a
+            *new* one may be offered (subject to the additional shape checks
             in :func:`_rule_offer` — category eligibility is necessary but
             not sufficient for the offer itself; see ``rule_offer`` below).
         rule_offer: The ``(executable, subcommand)`` shape the permission
-            prompt should offer to permanently allow, or ``None`` when this
-            ask isn't offer-eligible (doc/SECURITY_RULES_PLAN.md §2.2) — set
-            only on an ``"ask"`` that survived the known-rules check (an ask
-            already silenced by an existing rule becomes an ``"allow"`` and
-            never reaches this field).
-        known_command: Whether this ask matched an explicit, named
-            ``CommandRule`` in the built-in table (``git push``, ``apt
+            prompt should offer to permanently allow for the first asking
+            part, or ``None`` when it isn't offer-eligible
+            (doc/SECURITY_RULES_PLAN.md §2.2) — set only on an ``"ask"`` that
+            survived the known-rules check (an ask already silenced by an
+            existing rule becomes an ``"allow"`` and never reaches this
+            field). Mirrors ``parts[0].rule_offer``.
+        known_command: Whether the first asking part matched an explicit,
+            named ``CommandRule`` in the built-in table (``git push``, ``apt
             install``, …) rather than falling through to the generic
             "not in the known-safe command set" default. Feeds
             :func:`_rule_offer`'s path-argument check (§2.2 rule 3): a known
@@ -202,6 +209,12 @@ class RuleDecision:
             for a path-like *subcommand* itself, since that's the one case
             where the literal shape still pins the rule to this exact
             invocation.
+        parts: Every elementary command in the pipeline that still needs the
+            user's attention, in command order, deduplicated by shape —
+            empty when ``action == "allow"``. The single source of truth for
+            the permission prompt's checkboxes (§2.6); the singular fields
+            above exist only so a zero-or-one-part decision (the overwhelming
+            majority of commands) reads exactly as it always has.
     """
 
     action: str
@@ -212,6 +225,7 @@ class RuleDecision:
     rule_eligible: bool = False
     rule_offer: tuple[str, str] | None = None
     known_command: bool = False
+    parts: tuple[AskPart, ...] = ()
 
 
 def _ask(
@@ -221,6 +235,7 @@ def _ask(
     shape: tuple[str, str] | None = None,
     eligible: bool = False,
     known: bool = False,
+    rule_offer: tuple[str, str] | None = None,
 ) -> RuleDecision:
     return RuleDecision(
         action="ask",
@@ -229,7 +244,9 @@ def _ask(
         source=source,
         shape=shape,
         rule_eligible=eligible,
+        rule_offer=rule_offer,
         known_command=known,
+        parts=(AskPart(reason=reason, rule_offer=rule_offer),),
     )
 
 
@@ -312,6 +329,8 @@ def evaluate_command(
             source="static",
         )
 
+    asks: list[RuleDecision] = []
+    seen_shapes: set[tuple[str, str]] = set()
     for segment in analysis.segments:
         if not segment.executable:
             continue
@@ -324,39 +343,33 @@ def evaluate_command(
             depth=_depth,
             known_rules=known_rules,
         )
+        if verdict.action == "allow":
+            continue
         shape = verdict.shape
-        if verdict.action == "ask" and verdict.rule_eligible and shape is not None:
-            if shape in known_rules:
-                exe, sub = shape
-                display = f"{exe} {sub}".strip()
-                verdict = RuleDecision(
-                    action="allow",
-                    reason=f"User rule: always allow '{display}'.",
-                    category="benign-dev",
-                    source="rules",
-                )
-            else:
-                offer = _rule_offer(analysis, segment, shape, known=verdict.known_command)
-                if offer is not None:
-                    verdict = RuleDecision(
-                        action=verdict.action,
-                        reason=verdict.reason,
-                        category=verdict.category,
-                        source=verdict.source,
-                        shape=verdict.shape,
-                        rule_eligible=verdict.rule_eligible,
-                        rule_offer=offer,
-                        known_command=verdict.known_command,
-                    )
-        if verdict.action != "allow":
-            return verdict
+        if verdict.rule_eligible and shape is not None and shape in known_rules:
+            continue  # Silenced by an existing session/global rule.
+        if shape is not None:
+            if shape in seen_shapes:
+                continue  # Same elementary command already represented.
+            seen_shapes.add(shape)
+        if verdict.rule_eligible and shape is not None:
+            offer = _rule_offer(segment, shape, known=verdict.known_command)
+            if offer is not None:
+                verdict = replace(verdict, rule_offer=offer)
+        asks.append(verdict)
 
-    return RuleDecision(
-        action="allow",
-        reason="Every command in the pipeline is a known-safe development operation.",
-        category="benign-dev",
-        source="rules",
-    )
+    if not asks:
+        return RuleDecision(
+            action="allow",
+            reason="Every command in the pipeline is a known-safe development operation.",
+            category="benign-dev",
+            source="rules",
+        )
+
+    primary = asks[0]
+    reason = primary.reason if len(asks) == 1 else "; ".join(a.reason for a in asks)
+    parts = tuple(AskPart(reason=a.reason, rule_offer=a.rule_offer) for a in asks)
+    return replace(primary, reason=reason, parts=parts)
 
 
 def _judge_segment(
@@ -504,18 +517,26 @@ def _is_path_like(token: str) -> bool:
 
 
 def _rule_offer(
-    analysis: CommandAnalysis,
     segment: NormalizedSegment,
     shape: tuple[str, str],
     *,
     known: bool,
 ) -> tuple[str, str] | None:
     """The Phase 2 "always allow" offer for *shape*, or ``None`` when this
-    ask's whole-command shape disqualifies it (doc/SECURITY_RULES_PLAN.md
-    §2.2). Category/rule eligibility (``RuleDecision.rule_eligible``) is
+    segment's own shape disqualifies it (doc/SECURITY_RULES_PLAN.md §2.2/
+    §2.6). Category/rule eligibility (``RuleDecision.rule_eligible``) is
     checked by the caller before this runs — that gate is necessary but not
-    sufficient: a single eligible segment wrapped in a pipeline, redirection,
-    or substitution is still never offered.
+    sufficient: a segment carrying a value substitution or a nested/opaque
+    command is still never offered. Judged **per segment**, not over the
+    whole command line — a pipeline/`&&`/`;` chain is split and each
+    elementary command is offered independently (§2.6); a plain output/input
+    redirection to a workspace-confined file (``cat file.txt > out.txt``) no
+    longer disqualifies the offer either, since the outside-workspace check
+    still runs on every future invocation regardless of any granted rule,
+    and the one real risk — a script piped into a shell/interpreter via
+    ``<``/``<<`` — is caught upstream by the ``nested_command``/
+    ``nested_opaque`` checks below, which were never offer-eligible to begin
+    with.
 
     The path-argument check (§2.2 rule 3) is tiered by *known* (mirrors
     ``RuleDecision.known_command``):
@@ -536,9 +557,7 @@ def _rule_offer(
       different file produces a different, non-matching shape and still
       asks.
     """
-    if analysis.operators or analysis.unresolved:
-        return None  # Complex command (pipe/&&/;) or a substitution.
-    if segment.has_redirections or segment.has_substitution:
+    if segment.has_substitution:
         return None
     if segment.nested_command is not None or segment.nested_opaque:
         return None

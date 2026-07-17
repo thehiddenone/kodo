@@ -32,7 +32,7 @@ def scan_tracked_files(project_root: Path) -> list[dict[str, object]]:
         last = history[-1]
         results.append(
             {
-                "path": str(real_rel),
+                "path": real_rel.as_posix(),
                 "status": derive_status(last),
                 "last_event": str(last.get("timestamp", "")),
             }

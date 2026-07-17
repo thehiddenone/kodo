@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import socket
 import stat
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -22,6 +23,19 @@ from kodo.llms.llamacpp._llama_server import LlamaServer, LlamaServerConfig
 
 
 def _make_fake_executable(tmp_path: Path, script: str) -> Path:
+    """A tiny fake "llama-server" the test can launch as a real child process.
+
+    ``asyncio.create_subprocess_exec`` runs the path directly (no shell), so
+    on Windows it must be something ``CreateProcess`` can launch on its own —
+    a ``.py`` file with a POSIX shebang is not (``WinError 193``). A ``.bat``
+    wrapper that re-invokes the current interpreter works on both platforms.
+    """
+    script_path = tmp_path / "fake-llama-server.py"
+    script_path.write_text(script, encoding="utf-8")
+    if sys.platform == "win32":
+        path = tmp_path / "fake-llama-server.bat"
+        path.write_text(f'@echo off\r\n"{sys.executable}" "{script_path}" %*\r\n', encoding="utf-8")
+        return path
     path = tmp_path / "fake-llama-server"
     path.write_text(f"#!/usr/bin/env python3\n{script}\n", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)

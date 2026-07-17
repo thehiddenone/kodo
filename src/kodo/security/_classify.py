@@ -131,14 +131,10 @@ class NormalizedSegment:
         nested_opaque: The segment carries inline non-shell code
             (``python -c``, ``-EncodedCommand``) that cannot be analyzed.
         piped_input: The segment's stdin is the previous segment's pipe.
-        writes_file: A redirection writes to a file (not a stream merge).
-        has_redirections: The segment carries any redirection at all
-            (read, write, or here-doc/here-string) — a coarser signal than
-            ``writes_file``, used only to keep a redirecting command like
-            ``cat > out.txt`` out of the Phase 2 "always allow" offer
-            (doc/SECURITY_RULES_PLAN.md §2.2: a rule-eligible ask is only
-            *offered* for a single bare segment, never one with paths or
-            redirections baked into its shape).
+        writes_file: A redirection writes to a file (not a stream merge) —
+            keeps a writer out of the read-only fast path; a plain,
+            workspace-confined redirection no longer disqualifies the Phase 2
+            "always allow" offer on its own (doc/SECURITY_RULES_PLAN.md §2.6).
     """
 
     executable: str
@@ -150,7 +146,6 @@ class NormalizedSegment:
     nested_opaque: bool = False
     piped_input: bool = False
     writes_file: bool = False
-    has_redirections: bool = False
 
 
 def leaf_name(executable: str) -> str:
@@ -188,7 +183,6 @@ def _normalize(segment: Segment, *, windows: bool, piped_input: bool) -> Normali
     )
     if any(SUB_MARK in r.target for r in segment.redirections):
         has_sub = True
-    has_redirections = bool(segment.redirections)
 
     tokens = _peel_prefixes(tokens, windows=windows)
     if not tokens:
@@ -197,7 +191,6 @@ def _normalize(segment: Segment, *, windows: bool, piped_input: bool) -> Normali
             has_substitution=has_sub,
             piped_input=piped_input,
             writes_file=writes,
-            has_redirections=has_redirections,
         )
 
     exe = leaf_name(tokens[0])
@@ -230,7 +223,6 @@ def _normalize(segment: Segment, *, windows: bool, piped_input: bool) -> Normali
         nested_opaque=opaque,
         piped_input=piped_input,
         writes_file=writes,
-        has_redirections=has_redirections,
     )
 
 

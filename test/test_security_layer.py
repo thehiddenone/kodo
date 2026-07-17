@@ -21,6 +21,7 @@ from kodo.shellparser import parse_powershell_command
 @pytest.fixture(autouse=True)
 def _temp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Windows
     return tmp_path
 
 
@@ -266,6 +267,23 @@ async def test_smart_run_command_ask_carries_rule_offer() -> None:
     )
     assert d.action == "ask"
     assert d.rule_offer == ("git", "push")
+    assert len(d.parts) == 1
+    assert d.parts[0].rule_offer == ("git", "push")
+
+
+@pytest.mark.asyncio
+async def test_smart_run_command_ask_carries_multiple_parts_for_a_compound_command() -> None:
+    layer = SecurityLayer()
+    d = await _eval(
+        layer,
+        "run_command",
+        {"command": "mycli one && othercli two", "intent": "run two tools", "timeout": 30},
+        "smart",
+    )
+    assert d.action == "ask"
+    assert len(d.parts) == 2
+    assert d.parts[0].rule_offer == ("mycli", "one")
+    assert d.parts[1].rule_offer == ("othercli", "two")
 
 
 @pytest.mark.asyncio
@@ -433,7 +451,7 @@ class _FakeGate:
         class _Resp:
             action = self.action
             feedback = self.feedback
-            remember = None
+            remember: tuple[str | None, ...] = ()
 
         return _Resp()
 

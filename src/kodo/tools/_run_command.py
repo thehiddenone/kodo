@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import signal
+import sys
 
 from ._tool import Tool
 
@@ -63,25 +64,28 @@ class RunCommandTool(Tool):
             start_new_session=_POSIX,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-        except TimeoutError:
-            stdout, stderr = await self.__kill(process)
-            note = f"Command timed out after {timeout:g}s and was killed."
-            err_text = stderr.decode("utf-8", errors="replace")
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            except TimeoutError:
+                stdout, stderr = await self.__kill(process)
+                note = f"Command timed out after {timeout:g}s and was killed."
+                err_text = stderr.decode("utf-8", errors="replace")
+                return json.dumps(
+                    {
+                        "exit_code": None,
+                        "stdout": stdout.decode("utf-8", errors="replace"),
+                        "stderr": f"{note}\n{err_text}" if err_text else note,
+                    }
+                )
             return json.dumps(
                 {
-                    "exit_code": None,
+                    "exit_code": process.returncode,
                     "stdout": stdout.decode("utf-8", errors="replace"),
-                    "stderr": f"{note}\n{err_text}" if err_text else note,
+                    "stderr": stderr.decode("utf-8", errors="replace"),
                 }
             )
-        return json.dumps(
-            {
-                "exit_code": process.returncode,
-                "stdout": stdout.decode("utf-8", errors="replace"),
-                "stderr": stderr.decode("utf-8", errors="replace"),
-            }
-        )
+        finally:
+            self.__close_transport(process)
 
     @staticmethod
     def __resolve_timeout(raw: object) -> float:
@@ -113,12 +117,26 @@ class RunCommandTool(Tool):
             return b"", b""
 
     @staticmethod
+    def __close_transport(process: asyncio.subprocess.Process) -> None:
+        """Explicitly close the process's transport once fully drained.
+
+        ``asyncio.subprocess.Process`` otherwise only closes its transport
+        from a ``__del__`` finalizer. On Windows' ProactorEventLoop, that
+        finalizer can run after a short-lived event loop (e.g. a test's) has
+        already closed, turning a harmless cleanup into an unraisable
+        "Event loop is closed" exception. Closing here, while the loop is
+        still open, makes cleanup deterministic instead.
+        """
+        transport = process._transport  # type: ignore[attr-defined]
+        transport.close()
+
+    @staticmethod
     def __terminate(process: asyncio.subprocess.Process) -> None:
         """Hard-kill the command. On POSIX this kills the whole process group
         (set up via ``start_new_session``) so grandchildren die too; elsewhere
         it kills the spawned process directly."""
         try:
-            if _POSIX:
+            if sys.platform != "win32":
                 os.killpg(os.getpgid(process.pid), signal.SIGKILL)
             else:
                 process.kill()

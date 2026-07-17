@@ -58,6 +58,7 @@ from ._ask_user import AskUserTool
 from ._context import (
     EngineServices,
     GateLike,
+    PermissionPartLike,
     RootPath,
     SecurityLike,
     SessionLike,
@@ -338,7 +339,7 @@ class ToolDispatcher:
 
         decision_action = "allow"
         decision_reason = ""
-        rule_offer: tuple[str, str] | None = None
+        parts: tuple[PermissionPartLike, ...] = ()
         if ctx.security is not None:
             decision = await ctx.security.evaluate(
                 tool_name=tool_name,
@@ -351,7 +352,7 @@ class ToolDispatcher:
             )
             decision_action = decision.action
             decision_reason = decision.reason
-            rule_offer = decision.rule_offer
+            parts = decision.parts
 
         if not force_ask and decision_action != "ask":
             return None
@@ -377,21 +378,23 @@ class ToolDispatcher:
             reason=reason,
             params=_permission_params(spec, tool_input),
             recovered=force_ask,
-            rule_offer=rule_offer,
+            parts=parts,
         )
         if response.action == "allow":
             _log.info("security: user ALLOWED %s (%s)", tool_name, ctx.agent_name)
-            if rule_offer is not None and response.remember in ("session", "global"):
-                # Only the shape the server itself already offered can ever be
-                # granted — the client cannot ask to remember anything else.
-                await ctx.services.add_security_rule(response.remember, *rule_offer)
-                _log.info(
-                    "security: %s granted %s rule for %r (%s)",
-                    response.remember,
-                    tool_name,
-                    rule_offer,
-                    ctx.agent_name,
-                )
+            # `zip` truncates to the shorter side — a short/malformed
+            # `remember` from the client just grants fewer rules, never more;
+            # only a shape the server itself offered can ever be granted.
+            for part, scope in zip(parts, response.remember, strict=False):
+                if part.rule_offer is not None and scope in ("session", "global"):
+                    await ctx.services.add_security_rule(scope, *part.rule_offer)
+                    _log.info(
+                        "security: %s granted %s rule for %r (%s)",
+                        scope,
+                        tool_name,
+                        part.rule_offer,
+                        ctx.agent_name,
+                    )
             return None
         _log.info("security: user DENIED %s (%s)", tool_name, ctx.agent_name)
         feedback = response.feedback.strip()

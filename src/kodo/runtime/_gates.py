@@ -34,6 +34,7 @@ from dataclasses import dataclass
 
 from kodo.common import Envelope, ResponseChannel
 from kodo.state import TransientStore
+from kodo.tools import PermissionPartLike
 from kodo.transport import SREQ_PROMPT_APPROVAL, SREQ_PROMPT_PERMISSION, SREQ_PROMPT_QUESTION
 
 __all__ = ["ApprovalResponse", "GateOrchestrator", "PermissionResponse"]
@@ -62,16 +63,18 @@ class PermissionResponse:
         action: ``'allow'`` or ``'deny'``.
         feedback: Optional free-text the user attached to the decision
             (returned to the agent verbatim on a denial).
-        remember: ``'session'`` / ``'global'`` if the user chose to
-            permanently allow the offered rule shape, else ``None``
-            (doc/SECURITY_RULES_PLAN.md §2.3). Only acted on by
-            ``ToolDispatcher`` when the originating decision actually carried
-            a ``rule_offer`` — never trusted from the wire alone.
+        remember: One entry per part the server offered (parallel to the
+            ``parts`` passed into :meth:`fire_permission`): ``'session'`` /
+            ``'global'`` where the user chose to permanently allow that
+            part's offered rule shape, else ``None``
+            (doc/SECURITY_RULES_PLAN.md §2.6). Only acted on by
+            ``ToolDispatcher`` for a part that actually carried a
+            ``rule_offer`` — never trusted from the wire alone.
     """
 
     action: str
     feedback: str
-    remember: str | None = None
+    remember: tuple[str | None, ...] = ()
 
 
 class GateOrchestrator:
@@ -222,7 +225,7 @@ class GateOrchestrator:
         reason: str,
         params: list[dict[str, str]],
         recovered: bool = False,
-        rule_offer: tuple[str, str] | None = None,
+        parts: tuple[PermissionPartLike, ...] = (),
     ) -> PermissionResponse:
         """Emit a ``prompt.permission`` ``kind=request`` and block until the
         user allows or denies the gated tool call.
@@ -253,14 +256,16 @@ class GateOrchestrator:
             recovered: ``True`` when this prompt is for a salvaged malformed
                 tool call — carried on the wire so the client can render a
                 distinct "recovered" banner.
-            rule_offer: The ``(executable, subcommand)`` shape the client may
-                offer "always allow — this session / all sessions" checkboxes
-                for, or ``None`` for an ordinary Allow/Deny-only prompt
-                (doc/SECURITY_RULES_PLAN.md §2.3).
+            parts: Every elementary command within the call that still needs
+                the user's attention — one for an ordinary single-command
+                ask, several for a compound pipeline/``&&``/``;`` chain
+                (doc/SECURITY_RULES_PLAN.md §2.6). The client shows one
+                "always allow — this session / all sessions" checkbox pair
+                per part whose ``rule_offer`` is set.
 
         Returns:
             PermissionResponse: The user's decision, optional feedback, and
-            ``remember`` choice.
+            a ``remember`` tuple parallel to *parts*.
         """
         req_id = uuid.uuid4().hex
         loop = asyncio.get_event_loop()
@@ -277,11 +282,17 @@ class GateOrchestrator:
             "reason": reason,
             "params": params,
             "recovered": recovered,
-            "rule_offer": (
-                {"executable": rule_offer[0], "subcommand": rule_offer[1]}
-                if rule_offer is not None
-                else None
-            ),
+            "parts": [
+                {
+                    "reason": part.reason,
+                    "rule_offer": (
+                        {"executable": part.rule_offer[0], "subcommand": part.rule_offer[1]}
+                        if part.rule_offer is not None
+                        else None
+                    ),
+                }
+                for part in parts
+            ],
         }
         self.__transient.update(pending_security_alert=tool_call_id)
         try:
@@ -295,9 +306,13 @@ class GateOrchestrator:
             if action not in ("allow", "deny"):
                 action = "deny"
             feedback = str(response_payload.get("feedback") or "")
-            remember = response_payload.get("remember")
-            if remember not in ("session", "global"):
-                remember = None
+            remember_raw = response_payload.get("remember")
+            remember: tuple[str | None, ...] = ()
+            if isinstance(remember_raw, list):
+                remember = tuple(
+                    r if isinstance(r, str) and r in ("session", "global") else None
+                    for r in remember_raw
+                )
             _log.info("Permission prompt resolved: req_id=%s action=%s", req_id[:8], action)
             self.__transient.update(pending_security_alert=None)
             return PermissionResponse(action=action, feedback=feedback, remember=remember)

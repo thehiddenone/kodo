@@ -204,14 +204,18 @@ def test_known_rule_never_silences_a_non_eligible_ask() -> None:
     assert d.category == "destructive"
 
 
-def test_redirection_disqualifies_the_offer_even_when_eligible() -> None:
+def test_plain_redirection_no_longer_disqualifies_the_offer() -> None:
     # `cat > out.txt` still asks (writing is not the read-only fast path) and
-    # is category-eligible ("unknown" -> default-ask eligible=True), but a
-    # redirection makes the whole-command shape too broad to offer.
+    # is category-eligible ("unknown" -> default-ask eligible=True). A plain,
+    # workspace-confined redirection no longer disqualifies the offer (§2.6):
+    # the outside-workspace check still runs on every future invocation, and
+    # the real risk (a script piped into a shell/interpreter) is caught
+    # separately by the nested_command/nested_opaque checks, which are never
+    # offer-eligible in the first place.
     d = _posix("cat > out.txt")
     assert d.action == "ask"
     assert d.rule_eligible is True
-    assert d.rule_offer is None
+    assert d.rule_offer == ("cat", "")
 
 
 def test_path_like_argument_disqualifies_the_offer() -> None:
@@ -253,9 +257,68 @@ def test_unknown_command_offer_allows_a_path_like_subcommand() -> None:
     assert different_file.shape == ("1brc", "./other.txt")
 
 
-def test_pipeline_disqualifies_the_offer() -> None:
+def test_pipeline_still_offers_each_eligible_part() -> None:
+    # `echo hi` allows silently (read-only fast path); `git push` is the only
+    # asking segment, so it's offered exactly as it would be standalone (§2.6:
+    # a pipeline no longer blanket-disqualifies every offer in it).
     d = _posix("echo hi && git push")
     assert d.action == "ask"
+    assert d.rule_offer == ("git", "push")
+    assert len(d.parts) == 1
+    assert d.parts[0].rule_offer == ("git", "push")
+
+
+def test_pipeline_with_two_distinct_eligible_parts_offers_both() -> None:
+    d = _posix("mycli one && othercli two")
+    assert d.action == "ask"
+    assert len(d.parts) == 2
+    assert d.parts[0].rule_offer == ("mycli", "one")
+    assert d.parts[1].rule_offer == ("othercli", "two")
+
+
+def test_pipeline_dedupes_a_repeated_identical_part() -> None:
+    d = _posix("mycli one && npm test && mycli one")
+    assert d.action == "ask"
+    assert len(d.parts) == 1
+    assert d.parts[0].rule_offer == ("mycli", "one")
+
+
+def test_pipeline_silences_the_part_already_covered_by_a_known_rule() -> None:
+    d = evaluate_command(
+        "mycli one && othercli two",
+        cwd="/ws/proj",
+        roots=_ROOTS,
+        windows=False,
+        known_rules=frozenset({("mycli", "one")}),
+    )
+    assert d.action == "ask"
+    assert len(d.parts) == 1
+    assert d.parts[0].rule_offer == ("othercli", "two")
+
+
+def test_pipeline_with_sudo_never_offers_the_sudo_part() -> None:
+    d = _posix("mycli one && sudo rm -rf build")
+    assert d.action == "ask"
+    assert len(d.parts) == 2
+    assert d.parts[0].rule_offer == ("mycli", "one")
+    assert d.parts[1].rule_offer is None
+
+
+def test_value_substitution_blocks_only_its_own_segment() -> None:
+    # `$VAR` inside one segment loses only that segment's offer; an unrelated
+    # segment elsewhere in the same chain is unaffected (per-segment, not
+    # whole-line — §2.6).
+    d = _posix("mycli $FOO && othercli two")
+    assert d.action == "ask"
+    assert len(d.parts) == 2
+    assert d.parts[0].rule_offer is None
+    assert d.parts[1].rule_offer == ("othercli", "two")
+
+
+def test_eval_always_asks_never_offer_eligible() -> None:
+    d = _posix('eval "echo hi"')
+    assert d.action == "ask"
+    assert d.category == "obfuscation"
     assert d.rule_offer is None
 
 

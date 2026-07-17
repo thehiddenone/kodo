@@ -14,6 +14,7 @@ import pytest
 
 from kodo.common import Envelope
 from kodo.runtime import ApprovalResponse, GateOrchestrator
+from kodo.security import AskPart
 from kodo.transport import SREQ_PROMPT_APPROVAL, SREQ_PROMPT_PERMISSION, SREQ_PROMPT_QUESTION
 
 # ---------------------------------------------------------------------------
@@ -329,29 +330,33 @@ async def test_fire_permission_sends_kind_request_with_payload() -> None:
     assert env.payload["tool_name"] == "run_command"
     assert env.payload["risk"] == "High"
     assert env.payload["recovered"] is False
-    assert env.payload["rule_offer"] is None
+    assert env.payload["parts"] == []
     assert response.action == "allow"
 
 
 @pytest.mark.asyncio
-async def test_fire_permission_carries_rule_offer() -> None:
+async def test_fire_permission_carries_parts_with_rule_offer() -> None:
     state = _make_app_state()
     gate = GateOrchestrator(state, _make_transient())
+    parts = (AskPart(reason="'push' publishes commits to a remote.", rule_offer=("git", "push")),)
 
     async def _run():
-        task = asyncio.create_task(
-            gate.fire_permission(**_fire_permission_kwargs(rule_offer=("git", "push")))
-        )
+        task = asyncio.create_task(gate.fire_permission(**_fire_permission_kwargs(parts=parts)))
         await asyncio.sleep(0)
         req_id = next(iter(state._captured))
-        state._captured[req_id].set_result({"action": "allow", "remember": "session"})
+        state._captured[req_id].set_result({"action": "allow", "remember": ["session"]})
         return await task
 
     response = await _run()
 
     env = _get_sent_envelopes(state)[0]
-    assert env.payload["rule_offer"] == {"executable": "git", "subcommand": "push"}
-    assert response.remember == "session"
+    assert env.payload["parts"] == [
+        {
+            "reason": "'push' publishes commits to a remote.",
+            "rule_offer": {"executable": "git", "subcommand": "push"},
+        }
+    ]
+    assert response.remember == ("session",)
 
 
 @pytest.mark.asyncio
@@ -374,18 +379,33 @@ async def test_fire_permission_deny_defaults_and_normalizes_action() -> None:
 async def test_fire_permission_invalid_remember_normalizes_to_none() -> None:
     state = _make_app_state()
     gate = GateOrchestrator(state, _make_transient())
+    parts = (AskPart(reason="'push' publishes commits to a remote.", rule_offer=("git", "push")),)
 
     async def _run():
-        task = asyncio.create_task(
-            gate.fire_permission(**_fire_permission_kwargs(rule_offer=("git", "push")))
-        )
+        task = asyncio.create_task(gate.fire_permission(**_fire_permission_kwargs(parts=parts)))
         await asyncio.sleep(0)
         req_id = next(iter(state._captured))
-        state._captured[req_id].set_result({"action": "allow", "remember": "forever"})
+        state._captured[req_id].set_result({"action": "allow", "remember": ["forever"]})
         return await task
 
     response = await _run()
-    assert response.remember is None
+    assert response.remember == (None,)
+
+
+@pytest.mark.asyncio
+async def test_fire_permission_non_list_remember_normalizes_to_empty() -> None:
+    state = _make_app_state()
+    gate = GateOrchestrator(state, _make_transient())
+
+    async def _run():
+        task = asyncio.create_task(gate.fire_permission(**_fire_permission_kwargs()))
+        await asyncio.sleep(0)
+        req_id = next(iter(state._captured))
+        state._captured[req_id].set_result({"action": "allow", "remember": "session"})
+        return await task
+
+    response = await _run()
+    assert response.remember == ()
 
 
 @pytest.mark.asyncio

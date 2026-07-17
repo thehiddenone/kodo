@@ -33,13 +33,14 @@ from ._layer import (
     SecurityDecision,
     SecurityLayer,
 )
-from ._rules import CommandRule, RuleDecision, evaluate_command
+from ._rules import AskPart, CommandRule, RuleDecision, evaluate_command
 from ._store import add_global_rule, global_rules, global_rules_path
 
 __all__ = [
     "MODE_DEFENSIVE",
     "MODE_PERMISSIVE",
     "MODE_SMART",
+    "AskPart",
     "CommandAnalysis",
     "CommandRule",
     "RuleDecision",

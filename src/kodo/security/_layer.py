@@ -42,7 +42,7 @@ from dataclasses import dataclass
 
 from kodo.toolspecs import ALL_TOOLS, SecurityImpact, ToolSpec
 
-from ._rules import RuleDecision, evaluate_command
+from ._rules import AskPart, RuleDecision, evaluate_command
 from ._store import global_rules
 
 __all__ = [
@@ -103,22 +103,36 @@ class SecurityDecision:
             fast path), or ``"rules"`` (the heuristic rule engine).
         rule_offer: For a ``run_command`` ask only, the ``(executable,
             subcommand)`` shape the permission prompt should offer to
-            permanently allow (session or global), or ``None`` when this ask
-            isn't offer-eligible (doc/SECURITY_RULES_PLAN.md §2.2).
+            permanently allow (session or global) for the *first* asking
+            part, or ``None`` when it isn't offer-eligible
+            (doc/SECURITY_RULES_PLAN.md §2.2). Mirrors ``parts[0].rule_offer``.
+        parts: For a ``run_command`` ask, every elementary command in the
+            pipeline that still needs the user's attention, in command
+            order, deduplicated by shape — empty for every other tool and
+            for any ``"allow"`` (doc/SECURITY_RULES_PLAN.md §2.6). The
+            source of truth for the permission prompt's checkboxes.
     """
 
     action: str
     reason: str
     source: str
     rule_offer: tuple[str, str] | None = None
+    parts: tuple[AskPart, ...] = ()
 
 
 def _allow(reason: str, source: str) -> SecurityDecision:
     return SecurityDecision(action="allow", reason=reason, source=source)
 
 
-def _ask(reason: str, source: str, rule_offer: tuple[str, str] | None = None) -> SecurityDecision:
-    return SecurityDecision(action="ask", reason=reason, source=source, rule_offer=rule_offer)
+def _ask(
+    reason: str,
+    source: str,
+    rule_offer: tuple[str, str] | None = None,
+    parts: tuple[AskPart, ...] = (),
+) -> SecurityDecision:
+    return SecurityDecision(
+        action="ask", reason=reason, source=source, rule_offer=rule_offer, parts=parts
+    )
 
 
 class SecurityLayer:
@@ -263,7 +277,9 @@ class SecurityLayer:
         )
         if verdict.action == "allow":
             return _allow(verdict.reason, verdict.source)
-        return _ask(verdict.reason, verdict.source, rule_offer=verdict.rule_offer)
+        return _ask(
+            verdict.reason, verdict.source, rule_offer=verdict.rule_offer, parts=verdict.parts
+        )
 
     @staticmethod
     def __evaluate_filesystem(tool_input: dict[str, object]) -> SecurityDecision:

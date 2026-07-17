@@ -245,19 +245,23 @@ evaluate_command()` — a deterministic verdict ladder, first hit wins
 Each rule (and the default-ask) also carries the Phase 2 fields:
 `rule_eligible` (may a persistent user rule override this ask?) and the
 generalized `(executable, subcommand)` `shape` a user rule stores —
-destructive / privilege / obfuscation findings are never eligible. Two
-things happen with these, both in `evaluate_command()` itself (§3.2a):
+destructive / privilege / obfuscation findings are never eligible (`sudo`/
+`su`/`doas` and the dedicated `eval` ask are `privilege`/`obfuscation`, so
+they can never become a permanent rule, no matter where they sit in a
+pipeline). Two things happen with these, **per pipeline segment**, both in
+`evaluate_command()` itself (§3.2a/§3.2b):
 
-1. **Known-rule lookup.** If the ask's `shape` is already in the caller's
-   `known_rules` (session rules ∪ the global store), the ask silently
-   becomes an **allow** instead — no prompt at all.
-2. **Offer computation.** Otherwise, if the ask is `rule_eligible` *and* the
-   whole command clears a stricter, independent bar — a single segment (no
-   `|`/`&&`/`;`), no redirections, no substitutions/nested shells — the
-   decision carries a `rule_offer` of that same shape. `git push origin
-   main` is offered; `cat > out.txt` is not (a redirection), even though
-   both are `rule_eligible` asks in their own right — see §3.2a for why
-   eligibility alone isn't enough.
+1. **Known-rule lookup.** If a segment's ask `shape` is already in the
+   caller's `known_rules` (session rules ∪ the global store), that segment
+   silently becomes an **allow** instead — no prompt for it at all.
+2. **Offer computation.** Otherwise, if the segment's ask is `rule_eligible`
+   *and that segment itself* (not the whole command line) has no
+   substitution, nested shell, or opaque inline code, it carries a
+   `rule_offer` of its own shape. `git push origin main` is offered;
+   `echo $FOO && git push` still offers `git push` even though the `echo`
+   segment carries a substitution — the gate is per segment, not per line
+   (§3.2b). A plain, workspace-confined redirection (`cat > out.txt`) no
+   longer disqualifies a segment's offer either — see §3.2b for why.
 
    The path-like-argument check (`/`, `\`, `..`, `~`, a drive letter) is
    **tiered by `known_command`** — whether the ask matched an explicit,
@@ -310,12 +314,51 @@ never arguments, paths, flags, or the literal command line
   is not used by Phase 2; see SECURITY_RULES_PLAN.md.)
 
 The permission prompt is where a rule is granted: `prompt.permission`
-carries `rule_offer` on an offer-eligible ask (WS_PROTOCOL.md §6.5);
-`prompt.permission.response` carries `remember: "session" | "global" |
-null`. The server never trusts a client-declared shape — only `remember` on
-an `allow` for a decision that itself carried a `rule_offer` is acted on, and
-even then the *server's own* `rule_offer` shape is what gets granted, not
-anything read back off the wire. See §4 for the exact call sequence.
+carries one `parts` entry — `{reason, rule_offer}` — per elementary command
+still needing attention (§3.2b); `prompt.permission.response` carries
+`remember: (string | null)[]`, parallel to `parts`. The server never trusts
+a client-declared shape — only a `remember` entry on an `allow` for a part
+that itself carried a `rule_offer` is acted on, and even then the *server's
+own* `rule_offer` shape is what gets granted, not anything read back off the
+wire. See §4 for the exact call sequence.
+
+### 3.2b Compound commands split per elementary command
+
+A pipeline/`&&`/`;`/`|` chain does **not** collapse to one undifferentiated
+ask. `evaluate_command()` judges every segment, silently allows whatever
+already has a matching rule or an unconditional built-in allow, and
+collects every remaining ask — deduplicated by `(executable, subcommand)`
+shape when the same elementary command repeats in the chain — into
+`RuleDecision.parts`. `git status && ./deploy.sh staging && ./deploy.sh prod`
+produces two parts (`deploy.sh staging` and `deploy.sh prod` are different
+shapes; `git status` is already unconditionally allowed and never becomes a
+part at all); `./deploy.sh staging && ./deploy.sh staging` deduplicates to
+one. A part whose ask isn't `rule_eligible` (e.g. `sudo`, always privilege-
+category) still appears with its own `reason`, just with `rule_offer: null`
+— no checkbox, but the user still sees why that part asks.
+
+Two whole-line gates from the original design were narrowed to per-segment
+once the split existed:
+
+- **Redirection no longer disqualifies an offer.** The worry it guarded
+  against was a script piped into a shell/interpreter via `<`/`<<`
+  (`bash << EOF`) — that's caught upstream by `nested_command`/
+  `nested_opaque` (§5), which were never offer-eligible to begin with. A
+  plain, workspace-confined redirection (`cat file.txt > out.txt`) has
+  nothing left to disqualify: the outside-workspace check (§3.2 step 1)
+  still runs on every future invocation regardless of any granted rule, so
+  `cat > file.ext << 'EOF' … EOF` — the exact friction case §2.4a.6 of
+  SECURITY_RULES_PLAN.md called out as permanently un-offerable — is now
+  offered like any other unknown command.
+- **A value substitution (`$VAR`/`%VAR%`) only disqualifies its own
+  segment**, not the whole line. `mycli $FOO && othercli two` still offers
+  `othercli two`; only the segment actually carrying the substitution loses
+  its checkbox.
+
+`eval` (POSIX) is a dedicated, always-ask, never-offer-eligible rule
+(`category="obfuscation"`), mirroring how `Invoke-Expression` already works
+on Windows — previously it fell through to the generic "unknown command"
+ask, which *is* offer-eligible.
 
 ## 4. Wiring
 
@@ -331,11 +374,12 @@ ToolDispatcher.dispatch(tool, input, tool_use_id)          kodo/tools/_dispatch.
   │        roots           = ctx.root_paths,
   │        session_rules   = ctx.session.security_rules)   ← merged with the global store inside
   │    "allow" → proceed
-  │    "ask"   → ctx.gate.fire_permission(..., rule_offer=decision.rule_offer)
+  │    "ask"   → ctx.gate.fire_permission(..., parts=decision.parts)
   │              → prompt.permission (kind=request)        WS_PROTOCOL.md §6.5
-  │              → user allows, remember="session"/"global"/null
-  │                 → rule_offer is not None and remember set
-  │                    → ctx.services.add_security_rule(remember, *rule_offer)
+  │              → user allows, remember=["session"/"global"/null, …]  ← parallel to parts
+  │                 → for each (part, scope) in zip(parts, remember):
+  │                      part.rule_offer is not None and scope set
+  │                         → ctx.services.add_security_rule(scope, *part.rule_offer)
   │                 → proceed
   │              → user denies → {"error": "The user DENIED …"} (tool NOT run;
   │                 any `remember` on a denial is ignored — see §3.2a)
@@ -383,7 +427,9 @@ needed, since every session already reads the global store live per call.
 - The **decision** (`SecurityDecision`) carries `action`, a one-sentence
   `reason`, a `source` tag (`policy` / `threshold` / `workspace` /
   `static` / `rules`) that is logged for every call, and (for `run_command`
-  only) `rule_offer`.
+  only) `rule_offer` (the first asking part's shape, kept for logging/tests)
+  and `parts` — every elementary command still needing attention (§3.2b),
+  the field `fire_permission` and the wire actually use.
 
 ## 5. The shell parsers
 
@@ -468,7 +514,9 @@ The security layer picks the dialect by platform (`os.name`).
   "reason": "The command targets paths outside the workspace: /etc/hosts.",
   "params": [ { "name": "command", "value": "…" }, … ],
   "recovered": false,
-  "rule_offer": { "executable": "git", "subcommand": "push" } }
+  "parts": [
+    { "reason": "'push' publishes commits to a remote.", "rule_offer": { "executable": "git", "subcommand": "push" } }
+  ] }
 ```
 
 `recovered` (default `false`) is `true` only when the prompt is for a
@@ -477,33 +525,40 @@ banner above the reason when it is set.
 
 `params` is the customer-visible preview: input properties projected through
 the tool's `input_visibility` map (hidden properties never reach the prompt),
-values truncated at 400 chars. `rule_offer` (default `null`) is set only for
-an offer-eligible `run_command` ask (§3.2a) — the client shows two "always
-allow" checkboxes when present. Response (`kind=response`, correlated by id):
+values truncated at 400 chars. `parts` (default `[]`) is one `{reason,
+rule_offer}` per elementary command still needing attention (§3.2b) — a
+compound pipeline/`&&`/`;` chain may carry several, each independently
+offerable; the client shows two "always allow" checkboxes for every entry
+whose `rule_offer` is non-null. Response (`kind=response`, correlated by id):
 
 ```json
-{ "type": "prompt.permission.response", "action": "allow" | "deny", "feedback": "…" | null, "remember": "session" | "global" | null }
+{ "type": "prompt.permission.response", "action": "allow" | "deny", "feedback": "…" | null, "remember": ["session" | "global" | null, …] }
 ```
 
 Malformed/unknown actions are treated as **deny** server-side. `remember`
-(default `null`) is the checkbox scope chosen, if any — see §3.2a/§4 for how
-the server verifies and applies it.
+(default `[]`) is an array parallel to `parts` — the checkbox scope chosen
+for each entry, if any — see §3.2a/§3.2b/§4 for how the server verifies and
+applies it.
 
 **VSIX**: `session-controller.ts` caches the request as `pendingPermission`
 (re-posted to the webview on rehydrate, like the approval gate) and forwards
 it as a `permission_request` message; `PermissionPanel.tsx` renders in place
 of the prompt input (the `ApprovalGate` pattern) with the tool name, a risk
 badge, the declared intent, the layer's reason, the parameter rows, an
-optional feedback textarea, and **Allow** / **Deny** buttons. When
-`ruleOffer` is set, two mutually-exclusive checkboxes ("Always allow `<shape>`
-— this session" / "— all sessions") appear above the buttons; the checked
-scope (or `null`) rides along with whichever button is clicked as
-`permission_respond`'s `remember` field — the server only *acts* on it
-alongside Allow (§3.2a), so a stray checked box on Deny is inert. The panel
-is **transient** — never a session entry: the gated tool call's own card is
-already in the feed and its result records the outcome (a denial is visible
-as the tool's error result). Reconnects re-deliver an unanswered request via
-the standard `Outbox` buffer-and-replay.
+optional feedback textarea, and **Allow** / **Deny** buttons. A single
+`parts` entry renders exactly as before: when its `ruleOffer` is set, two
+mutually-exclusive checkboxes ("Always allow `<shape>` — this session" /
+"— all sessions") appear above the buttons. More than one part renders the
+top `reason` as a summary, then one block per part with its own reason line
+and its own checkbox pair. Every checked scope (or `null`) rides along with
+whichever button is clicked as `permission_respond`'s `remember` array,
+index-aligned with `parts` — the server only *acts* on an entry alongside
+Allow, and only for a part that actually carried a `rule_offer` (§3.2a), so
+a stray checked box on Deny is inert. The panel is **transient** — never a
+session entry: the gated tool call's own card is already in the feed and its
+result records the outcome (a denial is visible as the tool's error result).
+Reconnects re-deliver an unanswered request via the standard `Outbox`
+buffer-and-replay.
 
 The former **`security.judging`** event (and its "Evaluating Kōdo's action…"
 `SecurityJudgingIndicator`) is **retired**: it existed to cover the LLM
@@ -663,11 +718,13 @@ Phase 2 user rules (§3.2a) are implemented. What's left:
   possibly an AST-based safe-subset analysis for inline `python -c` code,
   today's main deterministic-ask friction. Full design: SECURITY_RULES_PLAN.md
   Phase 3.
-- **Redirecting/path-bearing commands stay outside the offer entirely**
-  (§3.2a rule #2/#3 — `cat > out.txt`, any command with a path argument) —
-  the release valve for that class is growing the built-in allow table
-  (Tier 3 tuning), not a user rule; a conservative, deliberate choice, not a
-  gap to close casually (SECURITY_RULES_PLAN.md "Fixed decisions").
+- **An unknown command's path-like *argument* (not subcommand) still stays
+  outside the offer** (§3.2 rule 3, "Unknown" — `pytest ../other/`, a
+  bespoke CLI's second-plus path argument) — the release valve for that
+  class is growing the built-in allow table (Tier 3 tuning), not a user
+  rule; a conservative, deliberate choice, not a gap to close casually
+  (SECURITY_RULES_PLAN.md "Fixed decisions"). Plain redirection (`cat >
+  out.txt`) no longer falls in this bucket — see §3.2b.
 - **Edit Control enforcement** — `edit_control` (`review_all`) pausing for
   sign-off on each edit is a review-workflow feature, not a security one,
   and is still state-tracking only.

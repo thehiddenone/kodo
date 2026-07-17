@@ -400,6 +400,12 @@ _POSIX_RULES: tuple[CommandRule, ...] = _SHARED_RULES + (
         reason="Escalates privileges.",
     ),
     _ask(
+        "eval",
+        None,
+        category="obfuscation",
+        reason="'eval' executes a dynamically-built command string.",
+    ),
+    _ask(
         "rm",
         None,
         ("-r", "-R", "--recursive"),

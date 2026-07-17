@@ -41,7 +41,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 __all__ = ["TransientStore", "new_session_id", "read_diff_files", "read_web_search_notes"]
@@ -868,11 +868,23 @@ class TransientStore:
         """Stamp ``last_modified`` with the current time and rewrite ``meta.json``.
 
         Called after every persisted write (``session.jsonl``, subsession logs,
-        tool-call documents) so the session list can show recency.
+        tool-call documents) so the session list can show recency. Strictly
+        increases even when the wall clock's resolution (coarser on some
+        Windows configurations than the microsecond precision ``isoformat()``
+        implies) yields the same instant as the previous stamp for two writes
+        in quick succession.
         """
         if self.__paths is None:
             return
-        self.__last_modified = datetime.now(tz=UTC).isoformat()
+        now = datetime.now(tz=UTC)
+        if self.__last_modified:
+            try:
+                previous = datetime.fromisoformat(self.__last_modified)
+            except ValueError:
+                previous = None
+            if previous is not None and now <= previous:
+                now = previous + timedelta(microseconds=1)
+        self.__last_modified = now.isoformat()
         self.__write_meta(self.__paths)
 
     def __write_meta(self, paths: _SessionPaths) -> None:

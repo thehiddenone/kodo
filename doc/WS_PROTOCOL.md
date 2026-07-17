@@ -684,7 +684,7 @@ A `kind=event` (no reply) telling the extension to delete a stored key, e.g. aft
 
 Fired when the security layer's verdict on a tool call is `ask` (doc/SECURITY.md): the dispatcher blocks the gated call until the user decides. `tool_call_id` correlates the prompt with the gated call's feed entry; `risk` is the tool's `SecurityImpact` label; `reason` is the layer's one-sentence justification; `params` is the customer-visible parameter preview (input properties projected through the tool's `input_visibility` map — hidden properties never appear — values truncated at 400 chars). `recovered` (default `false`) is `true` only when the prompt is a **forced** confirmation of a *salvaged malformed tool call* (a local model that emitted a tool call as plain text — doc/SECURITY.md §9); the client then renders an extra warning banner. A recovered prompt is forced regardless of the security verdict, but only outside Autonomous mode.
 
-`rule_offer` (default `null`) is set only for a `run_command` ask the heuristic rule engine judged generalizable to a permanent "always allow" rule (doc/SECURITY_RULES_PLAN.md §2.2) — `{executable, subcommand}` (`subcommand` `""` when the executable alone is the shape). When present, the client shows two checkboxes offering to remember it for this session or for every session on this machine; `null` means an ordinary Allow/Deny-only prompt.
+`parts` (default `[]`) is every elementary command within the call that still needs the user's attention, in command order, deduplicated by shape (doc/SECURITY_RULES_PLAN.md §2.6) — one entry for an ordinary single-command ask, several for a compound pipeline/`&&`/`;`/`|` chain judged and offered independently. Each entry is `{reason, rule_offer}`: `reason` is that part's one-sentence justification; `rule_offer` is `{executable, subcommand} | null` (`subcommand` `""` when the executable alone is the shape) — set only when the heuristic rule engine judged that part generalizable to a permanent "always allow" rule (doc/SECURITY_RULES_PLAN.md §2.2). For each entry whose `rule_offer` is non-null, the client shows two checkboxes offering to remember it for this session or for every session on this machine; an entry with `rule_offer: null` (e.g. `sudo`, always excluded) still shows its `reason` with no checkboxes. `parts: []` never occurs on an `ask` in practice (every ask carries at least one part); a single part with `rule_offer: null` is an ordinary Allow/Deny-only prompt.
 
 ```json
 { "type": "prompt.permission",
@@ -692,22 +692,25 @@ Fired when the security layer's verdict on a tool call is `ask` (doc/SECURITY.md
   "tool_name": "run_command",
   "external_name": "Run Command",
   "risk": "High",
-  "intent": "Install the test runner the plan requires",
-  "reason": "'git push' publishes commits to a remote.",
-  "params": [ { "name": "command", "value": "git push origin main" } ],
+  "intent": "Deploy the two staging services",
+  "reason": "'push' publishes commits to a remote.; 'deploy.sh' is not in the known-safe command set.",
+  "params": [ { "name": "command", "value": "git push && ./deploy.sh staging" } ],
   "recovered": false,
-  "rule_offer": { "executable": "git", "subcommand": "push" } }
+  "parts": [
+    { "reason": "'push' publishes commits to a remote.", "rule_offer": { "executable": "git", "subcommand": "push" } },
+    { "reason": "'deploy.sh' is not in the known-safe command set.", "rule_offer": { "executable": "deploy.sh", "subcommand": "staging" } }
+  ] }
 ```
 
 Response payload:
 
 ```json
-{ "type": "prompt.permission.response", "action": "allow", "feedback": null, "remember": "session" }
+{ "type": "prompt.permission.response", "action": "allow", "feedback": null, "remember": ["session", null] }
 ```
 
 `action` is `allow` or `deny` (anything else is treated as `deny`); `feedback` is optional free text — on a denial it is returned to the agent verbatim inside the tool's error result. On **allow** the call dispatches normally; on **deny** the tool is *not executed* and the agent receives `{"error": "The user DENIED permission …"}`.
 
-`remember` is `"session"`, `"global"`, or `null` (default) — the scope to grant `rule_offer` at, straight from the two checkboxes. It is only acted on when the response is `allow` **and** the originating decision actually carried a `rule_offer`: the server never trusts a client-declared shape, only the one it already offered, so a stale or manipulated response can at most grant exactly the shape the security layer already decided was safe to generalize. `"session"` persists in this session's transient state (survives crash-resume, dropped when the session ends); `"global"` persists user-wide at `~/.kodo/etc/security_rules.json` and applies to every session on this machine from the very next matching call, no restart required. A granted rule silences the *same* `(executable, subcommand)` ask automatically from then on — no further `prompt.permission` for it, at that scope, ever (until the user deletes it — no delete UI exists yet, Phase 3).
+`remember` is an array the same length as `parts`, one `"session"` / `"global"` / `null` (default) per entry, straight from that part's two checkboxes; a shorter or non-array `remember` is treated as all-`null` for the missing entries — the client just grants fewer rules, never more. Each entry is only acted on when the response is `allow` **and** the corresponding part actually carried a `rule_offer`: the server never trusts a client-declared shape, only the one it already offered, so a stale or manipulated response can at most grant exactly the shapes the security layer already decided were safe to generalize. `"session"` persists in this session's transient state (survives crash-resume, dropped when the session ends); `"global"` persists user-wide at `~/.kodo/etc/security_rules.json` and applies to every session on this machine from the very next matching call, no restart required. A granted rule silences the *same* `(executable, subcommand)` ask automatically from then on — no further `prompt.permission` for it, at that scope, ever (until the user deletes it — no delete UI exists yet, Phase 3).
 
 The panel is transient client-side (no session entry): the gated tool call's own card records the outcome. No `pending_prompt` is persisted — a server *process* crash mid-prompt resolves through the engine's dangling-tool-use resume path. Unlike the general case, though, this specific call is provably known to have never dispatched (`TransientStore.pending_security_alert`, doc/SECURITY.md §7a), so instead of the generic interrupted stand-in, resume re-judges it fresh and — if still `ask` — re-fires this exact prompt (new `id`, same `tool_call_id`) rather than giving up. A live disconnect/reconnect that never restarts the *process* doesn't even reach that path — see §8.
 
@@ -1206,6 +1209,6 @@ These are anticipated and structured so adding them is purely additive — no ex
 | 7.4 | two-workflow selection (guided / problem-solving) |
 | 8 | FR-WS-04 |
 | 6.5, 7.4b | FR-SEC-05 (security layer permission prompt — doc/SECURITY.md) |
-| 6.5 | FR-SEC-07 (persistent user-defined allow rules, `rule_offer`/`remember` — implemented; only a standalone list/revoke UI is planned, §7.7) |
+| 6.5 | FR-SEC-07 (persistent user-defined allow rules, per-part `parts`/`remember` — implemented; only a standalone list/revoke UI is planned, §7.7) |
 | 7.4c, 7.4d, 5.5d | FR-MIR-03/04 (checkpoint undo/redo/rollback/roll-forward + listing — implemented; only the client browsing UI is planned) |
 | 5.13, 7.7, 9.1 | ⟪planned⟫ — FR-WKS-10/11, FR-COS-03 |

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import asyncio.subprocess
 import ctypes
+import ctypes.wintypes
 import json
 import logging
 import os
@@ -38,6 +39,7 @@ _HEALTH_TIMEOUT: float = 120.0
 _STOP_GRACE: float = 5.0
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _PROCESS_TERMINATE = 0x0001
+_STILL_ACTIVE = 259
 
 # stdout+stderr of the most recent launch attempt — truncated on every
 # start(), read back only if the process exits before becoming ready.
@@ -90,11 +92,22 @@ def _read_tail(path: Path, max_chars: int) -> str:
 
 def _is_pid_alive(pid: int) -> bool:
     if sys.platform == "win32":
+        # A bare OpenProcess-succeeds check is not enough for a process this
+        # module itself spawned: asyncio's Windows subprocess transport keeps
+        # its own handle open until awaited, which keeps the PID's process
+        # object alive (and openable) for a while after the process has
+        # actually exited. GetExitCodeProcess distinguishes "still running"
+        # (STILL_ACTIVE) from "exited, handle just not closed yet".
         handle = ctypes.windll.kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if handle:
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.wintypes.DWORD()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == _STILL_ACTIVE
+        finally:
             ctypes.windll.kernel32.CloseHandle(handle)
-            return True
-        return False
     try:
         os.kill(pid, 0)
         return True

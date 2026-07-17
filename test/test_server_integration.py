@@ -555,7 +555,7 @@ async def test_local_llm_install_pushes_registry_state_again_on_completion(
     assert completed.payload["type"] == "local_llm.registry_state"
     completed_entry = _local_entry(completed.payload, "test-model")
     assert completed_entry["installed"] is True
-    assert completed_entry["installed_path"] == "/fake/model.gguf"
+    assert Path(completed_entry["installed_path"]) == Path("/fake/model.gguf")
 
 
 async def test_local_llm_install_pushes_registry_state_after_failure_too(

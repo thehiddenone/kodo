@@ -16,6 +16,7 @@ so error-path scenarios assert the envelope shape rather than success keys.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -493,9 +494,13 @@ async def test_toolchain_build_compliance(tmp_path: Path) -> None:
     assert isinstance(no_scripts, dict) and no_scripts["success"] is False
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    build_sh = scripts / "build.sh"
-    build_sh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    build_sh.chmod(0o755)
+    if os.name == "posix":
+        build_script = scripts / "build.sh"
+        build_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        build_script.chmod(0o755)
+    else:
+        build_script = scripts / "build.ps1"
+        build_script.write_text("exit 0\n", encoding="utf-8")
     # Absolute project_path runs the script; a relative one resolves through
     # the run's resolver ("." = the project root in Guided mode).
     built = _assert_compliant("toolchain_build", await _dispatch(d, "toolchain_build", payload))

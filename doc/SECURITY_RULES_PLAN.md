@@ -157,11 +157,17 @@ and destructive shapes are excluded outright (§2.2).
 
 ### 2.2 Eligibility — computed server-side, per prompt
 
-The layer attaches a `rule_offer` to the ask decision only when **all** hold:
+The layer attaches a `rule_offer` to *each part* of the ask decision (§2.6)
+only when **all** hold, judged per elementary command, not over the whole
+line:
 
-1. Single segment — no pipes, `&&`, `;`, redirections. (*Complex commands
-   are never rule-eligible.*)
-2. No substitutions, no nested shells.
+1. ~~Single segment — no pipes, `&&`, `;`, redirections~~ **(superseded by
+   §2.6, 2026-07-16):** a compound command is split and each segment offered
+   independently; a segment's own plain redirection no longer disqualifies
+   it either — only `sudo`/`eval`/nested-shell segments stay unconditionally
+   unofferable, and that's driven by rule 4 (category), not this rule.
+2. No substitutions (`segment.has_substitution`, judged per segment — §2.6),
+   no nested shells (`nested_command`/`nested_opaque`).
 3. **Path-like arguments, tiered by whether the command is *known* or
    *unknown*** (§2.4a.7): a **known** command — one that matched an
    explicit, named `CommandRule` in the built-in table (`git push`, `apt
@@ -211,6 +217,9 @@ not the concrete command — as the thing being granted:
   `prompt.permission.response` gains `remember: "session" | "global" | null`.
   The reserved `security.add_rule` command becomes the internal effect of
   `remember` (and stays available for a future standalone rules UI).
+  *(Superseded by §2.6: these became the plural, index-aligned
+  `parts: [{reason, rule_offer}, ...]` / `remember: [scope, ...]` once a
+  compound command could carry more than one offer.)*
 - **Evaluation order**: user rules are checked *after* Tier 0 and the
   non-overridable Tier 1 categories, *before* overridable Tier 1 asks and the
   default-ask. A user rule can silence "unknown command" and
@@ -283,6 +292,13 @@ Where the shipped code departs from §2.4's sketch, and why:
    lets the user stop being asked *at all* for the shapes that are safe to
    generalize (`git push`, `npm publish`, `docker run`, …) — but a
    file-writing `cat`/`tee`/… still asks every time, once, on purpose.
+
+   **Superseded by §2.6 (2026-07-16):** re-examined, plain redirection was
+   never the actual risk — the heredoc-hardening fix above already routes
+   the one genuinely dangerous case (a script piped into a shell/interpreter
+   via `<`/`<<`) through `nested_command`/`nested_opaque`, which are not
+   `rule_eligible` regardless of redirection. `cat > file.ext << 'EOF' …
+   EOF` is offer-eligible as of §2.6.
 7. **The blanket path-argument exclusion (§2.2 rule 3, original form) was
    too strict for single-argument bespoke CLIs (2026-07-15 fix).** A user
    ran a project-local tool, `1brc ./measurements.txt`, and got no offer at
@@ -305,6 +321,63 @@ Where the shipped code departs from §2.4's sketch, and why:
    argument anywhere else still disqualifies the offer, since the shape
    can't capture it and a different path would silently match. `git push`,
    `pytest ../other/`, and `cat > out.txt` are unaffected by this change.
+
+### 2.6 Compound commands split per elementary command (2026-07-16)
+
+Before this change, §2.2 rule 1 ("single segment — no pipes, `&&`, `;`,
+redirections") meant a compound command's offer was all-or-nothing at the
+*whole-command* level: the moment `evaluate_command()` hit the first
+non-allow segment it returned immediately, and `_rule_offer()` refused to
+offer *any* segment if the command had more than one (`analysis.operators`)
+or contained a substitution anywhere on the line (`analysis.unresolved`).
+`git status && ./deploy.sh staging` either fully allowed (both parts already
+on the built-in allow/read-only list) or produced one undifferentiated
+Allow/Deny with zero checkboxes the instant either part was unrecognized.
+
+The engine now judges **every segment independently** and offers a rule per
+elementary command that still needs attention:
+
+- `RuleDecision` gains `parts: tuple[AskPart, ...]` — one `AskPart(reason,
+  rule_offer)` per segment that asks and isn't already silenced by an
+  existing session/global rule, deduplicated by `(executable, subcommand)`
+  shape when the same elementary command repeats in the chain (`cmd && cmd`
+  → one part, not two). The existing singular fields (`shape`,
+  `rule_eligible`, `rule_offer`, `category`, …) are kept, unchanged, mirroring
+  the *first* asking part — additive, not a breaking change, so every
+  existing single-segment test and caller keeps working verbatim.
+- `sudo`/`su`/`doas` (never `rule_eligible` — `privilege` category) and the
+  new dedicated `eval` ask (POSIX, `obfuscation` category, added in this same
+  change — previously `eval` fell through to the generic offer-eligible
+  "unknown command" default) still appear as a part with their own `reason`,
+  just with `rule_offer: null` — no checkbox, wherever they sit in the chain.
+- §2.2 rule 1's whole-line gates on `analysis.operators`/`analysis.unresolved`
+  are gone — a pipeline no longer blocks every offer in it, and a value
+  expansion (`$VAR`/`%VAR%`) in one segment no longer blocks an unrelated
+  segment's offer elsewhere in the same chain (`segment.has_substitution`
+  already gated per-segment; it was simply redundant with the whole-line
+  check, which is what got removed).
+- §2.2 rule 1's `segment.has_redirections` check is also gone — re-examined,
+  the original worry (a script piped into a shell/interpreter via `<`/`<<`)
+  is fully covered by the `nested_command`/`nested_opaque` checks in
+  `_judge_segment`, which were never offer-eligible regardless of
+  redirection. A plain, workspace-confined redirection (`cat file.txt >
+  out.txt`) has nothing left to disqualify — the outside-workspace check
+  (§1) still runs on every future invocation regardless of any granted rule.
+  This resolves the exact friction §2.4a.6 called out as permanently
+  un-offerable (`cat > file.ext << 'EOF' … EOF`).
+- Command substitutions (`$(...)`/backticks) are unaffected: they still
+  short-circuit the whole evaluation with a single, non-split, non-offerable
+  ask before the segment loop ever runs (§1 step 2) — a failing nested
+  command means the *whole* line is suspect, not just one part of it.
+
+Wire protocol (`prompt.permission`/`.response`, WS_PROTOCOL.md §6.5): the
+singular `rule_offer`/`remember` fields become the plural, index-aligned
+`parts: [{reason, rule_offer}, ...]` and `remember: [scope, ...]`.
+`kodo.tools._dispatch.__security_gate` now calls `add_security_rule` once
+per `(part, scope)` pair where `part.rule_offer is not None and scope in
+("session", "global")`, instead of once for the single offer.
+`kodo.state.TransientStore.add_security_rule`/`WorkflowEngine.add_security_rule`
+are unchanged — they already grant one shape at a time.
 
 ---
 
@@ -391,8 +464,11 @@ no change.
 
 - **Pure heuristics** — the LLM judge is removed, not demoted to a fallback.
 - **Build/test script runners always allow** (built-in Tier 2).
-- **Complex commands (pipes/`&&`/`;`/redirections/substitutions/nested
-  shells) are never rule-eligible** (session or global).
+- **A compound command (pipes/`&&`/`;`) is split and judged per elementary
+  command (§2.6)** — each segment is independently offer-eligible, never
+  all-or-nothing at the whole-line level. Within one segment, a substitution
+  or nested/opaque shell command still makes *that segment* never
+  rule-eligible (session or global); a plain redirection no longer does.
 - **Path-like arguments are tiered by `known_command`** (§2.4a.7): a known
   command's offer ignores them (bounded category, already generalizes past
   the subcommand); an unknown command's offer excludes them unless the

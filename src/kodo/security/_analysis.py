@@ -112,6 +112,33 @@ _READONLY_EXECUTABLES = frozenset(
     }
 )
 
+# PowerShell cmdlets that only read — the aliased form ``ls``/``cat``/etc.
+# resolve to on Windows (``._classify._PS_ALIASES``) before reaching here, so
+# the POSIX names above never match; checked in addition to
+# ``_READONLY_EXECUTABLES`` when the segment was normalized in Windows mode.
+_READONLY_CMDLETS = frozenset(
+    {
+        "get-childitem",
+        "get-content",
+        "get-location",
+        "get-item",
+        "get-itemproperty",
+        "get-date",
+        "get-command",
+        "get-help",
+        "get-process",
+        "get-service",
+        "select-string",
+        "test-path",
+        "resolve-path",
+        "measure-object",
+        "write-output",
+        "tasklist",
+        "findstr",
+        "more",
+    }
+)
+
 # Redirection targets like `&1` / `&2` merge streams; they are not files.
 _FD_MERGE_RE = re.compile(r"^&\d+$")
 
@@ -204,7 +231,7 @@ def analyze_command(
             _classify(target, cwd, roots, win, outside, force_path=True)
 
     segments = normalize_segments(parsed, windows=win)
-    read_only = _is_read_only(segments)
+    read_only = _is_read_only(segments, windows=win)
     return CommandAnalysis(
         outside_paths=tuple(outside),
         unresolved=tuple(unresolved),
@@ -215,21 +242,24 @@ def analyze_command(
     )
 
 
-def _is_read_only(segments: tuple[NormalizedSegment, ...]) -> bool:
+def _is_read_only(segments: tuple[NormalizedSegment, ...], *, windows: bool) -> bool:
     """Every executable allow-listed and no file-writing redirection.
 
     Operates on the *normalized* (wrapper-peeled) segments rather than the
     raw parse, so a transparent wrapper can't hide a mutating command behind
     a read-only-looking prefix — ``env rm -rf x`` must resolve to ``rm``, not
-    short-circuit on ``env`` itself.
+    short-circuit on ``env`` itself. In Windows mode, ``._classify`` has
+    already resolved PowerShell aliases (``ls`` → ``get-childitem``), so the
+    allow-list is widened with the cmdlet names.
     """
     if any(segment.writes_file for segment in segments):
         return False
     named = [segment for segment in segments if segment.executable]
     if not named:
         return False
+    readonly = _READONLY_EXECUTABLES | _READONLY_CMDLETS if windows else _READONLY_EXECUTABLES
     return all(
-        segment.executable in _READONLY_EXECUTABLES
+        segment.executable in readonly
         and segment.nested_command is None
         and not segment.nested_opaque
         for segment in named

@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import os
 import signal
+import sys
 
 __all__ = ["UtilTimeout", "run_util"]
 
@@ -78,7 +79,7 @@ async def run_util(
 def _terminate(process: asyncio.subprocess.Process) -> None:
     """Hard-kill the util's process tree (group on POSIX)."""
     try:
-        if _POSIX:
+        if sys.platform != "win32":
             os.killpg(os.getpgid(process.pid), signal.SIGKILL)
         else:
             process.kill()

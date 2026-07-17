@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import cast
@@ -43,6 +44,33 @@ from kodo.validator import _evaluate as validator_evaluate
 from kodo.validator import _models as validator_models
 
 _RECV_TIMEOUT = 5.0
+
+
+def _can_create_symlinks() -> bool:
+    """Whether this process can create filesystem symlinks.
+
+    On Windows, ``Path.symlink_to`` needs either Administrator privileges or
+    Developer Mode enabled (``SeCreateSymbolicLinkPrivilege``) — absent
+    either, it raises ``OSError: [WinError 1314]``. ``clone_kodo_home``
+    documents this as a real, expected failure mode rather than something to
+    work around, so the tests that exercise its symlinking behavior skip
+    (instead of failing) when the current process lacks that privilege.
+    """
+    with tempfile.TemporaryDirectory() as raw_dir:
+        d = Path(raw_dir)
+        target = d / "target"
+        target.write_text("x", encoding="utf-8")
+        try:
+            (d / "link").symlink_to(target)
+        except OSError:
+            return False
+        return True
+
+
+_SYMLINKS_SUPPORTED = _can_create_symlinks()
+_NO_SYMLINK_PRIVILEGE_REASON = (
+    "Creating symlinks requires elevated privilege/Developer Mode on this platform"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -80,6 +108,7 @@ def _make_template(base: Path) -> Path:
     return template
 
 
+@pytest.mark.skipif(not _SYMLINKS_SUPPORTED, reason=_NO_SYMLINK_PRIVILEGE_REASON)
 def test_clone_home_symlinks_copies_and_skips(tmp_path: Path) -> None:
     template = _make_template(tmp_path)
     home = tmp_path / "run-home"
@@ -101,6 +130,7 @@ def test_clone_home_symlinks_copies_and_skips(tmp_path: Path) -> None:
     assert settings["mode"] == "local"
 
 
+@pytest.mark.skipif(not _SYMLINKS_SUPPORTED, reason=_NO_SYMLINK_PRIVILEGE_REASON)
 def test_clone_home_applies_settings_overrides(tmp_path: Path) -> None:
     template = _make_template(tmp_path)
     home = tmp_path / "run-home"

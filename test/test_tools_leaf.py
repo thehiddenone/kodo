@@ -9,6 +9,7 @@ file-I/O / shell tools — plus the shared ``tools_for_agent`` resolver.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -791,7 +792,11 @@ async def test_run_command_allows_working_dir_under_system_temp_dir(
     result = json.loads(
         await dispatcher.dispatch(
             "run_command",
-            {"command": "pwd", "working_dir": str(scratch_dir), "timeout": 10},
+            {
+                "command": f'"{sys.executable}" -c "pass"',
+                "working_dir": str(scratch_dir),
+                "timeout": 10,
+            },
         )
     )
     assert "error" not in result
@@ -808,8 +813,9 @@ async def test_run_command_requires_timeout(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_command_kills_on_timeout(tmp_path: Path) -> None:
     dispatcher = _make_dispatcher(tmp_path)
+    sleep_cmd = f'"{sys.executable}" -c "import time; time.sleep(5)"'
     result = json.loads(
-        await dispatcher.dispatch("run_command", {"command": "sleep 5", "timeout": 0.2})
+        await dispatcher.dispatch("run_command", {"command": sleep_cmd, "timeout": 0.2})
     )
     assert result["exit_code"] is None
     assert "timed out" in result["stderr"].lower()
@@ -821,14 +827,27 @@ async def test_run_command_timeout_kills_backgrounded_child(tmp_path: Path) -> N
     # the stdout/stderr pipes used to wedge the post-kill drain forever (killing
     # only the wrapping shell left the grandchild holding the pipes open). With
     # process-group kill + a bounded drain, the call must still return promptly.
+    # A Python-spawned grandchild (rather than shell `&`, whose syntax and
+    # backgrounding semantics differ between POSIX shells and cmd.exe) inherits
+    # the same stdout/stderr pipe on every platform, so this reproduces the
+    # regression cross-platform.
     import time
+
+    script = tmp_path / "background_child.py"
+    script.write_text(
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "print('started', flush=True)\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
 
     dispatcher = _make_dispatcher(tmp_path)
     start = time.monotonic()
     result = json.loads(
         await dispatcher.dispatch(
             "run_command",
-            {"command": "sleep 30 & echo started; sleep 30", "timeout": 0.3},
+            {"command": f'"{sys.executable}" "{script}"', "timeout": 0.3},
         )
     )
     elapsed = time.monotonic() - start
@@ -842,9 +861,13 @@ async def test_run_command_timeout_kills_backgrounded_child(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_run_command_closes_stdin(tmp_path: Path) -> None:
     # A command that reads stdin must get immediate EOF, not hang on the
-    # server's inherited stdin. `cat` with no file reads stdin until EOF.
+    # server's inherited stdin. Reading stdin to EOF via Python is the
+    # cross-platform equivalent of POSIX `cat` with no file argument.
     dispatcher = _make_dispatcher(tmp_path)
-    result = json.loads(await dispatcher.dispatch("run_command", {"command": "cat", "timeout": 5}))
+    read_stdin_cmd = f'"{sys.executable}" -c "import sys; sys.stdin.read()"'
+    result = json.loads(
+        await dispatcher.dispatch("run_command", {"command": read_stdin_cmd, "timeout": 5})
+    )
     assert result["exit_code"] == 0
 
 
