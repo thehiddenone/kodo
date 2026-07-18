@@ -652,7 +652,34 @@ the existing `kodo.tools` → `kodo.security` decoupling (§4). Problem Solver
 mode's `LogicalPathResolver` already took absolute paths as-is, so it needed
 no change.
 
-## Fixed decisions
+## Rules management UI — global scope (post-launch, 2026-07-17)
+
+Phase 3 item 2, global half only — session-scope listing/revoking is still
+future work, left for a session-webview surface.
+
+kodo: `kodo.security._store` gained `remove_global_rule`/
+`remove_global_path_rule` (mirrors `add_global_rule`/`add_global_path_rule`;
+no-op, not an error, if the rule is already absent). A new T4 facade,
+`kodo.runtime._security_rules` (`list_global_security_rules`/
+`delete_global_security_rules`, re-exported from `kodo.runtime`), is what
+`server/_app.py` actually calls — `kodo.security` is consumed only by
+`runtime` (doc/INTERNALS.md §2.2), so `server` was not given a direct
+`kodo.security` import for this. New control-connection-only WS commands
+`security.rules.list` / `security.rules.delete` (doc/WS_PROTOCOL.md §7.6c)
+merge both on-disk stores — command-shape (`security_rules.json`) and
+path-shape (`security_path_rules.json`) — into one `{kind, executable,
+value}` list; `delete` takes a batch and replies with the post-deletion set
+so the panel refreshes from the response alone.
+
+kodo-vsix: new **Kōdo Settings** webview panel (`kodo-settings-panel.ts`,
+singleton `createOrShow` like the existing Cloud AI / Local Inference
+settings panels) with a left nav + right content layout — for now a single
+"Global Allow-Rules" section: a checkbox per rule, "Select All" / "Clear
+Selection" / "Delete Selected" (enabled only once ≥1 row is checked) /
+"Close". Opened from a new gear (`$(gear)`) icon on the Kōdo sidebar view's
+title bar — `kodo.openSettings`, replacing `kodo.openPanel` in that slot
+(the "open a session tab" command still exists, just no longer has a
+sidebar icon of its own; reachable via the Command Palette).
 
 - **Pure heuristics** — the LLM judge is removed, not demoted to a fallback.
 - **Build/test script runners always allow** (built-in Tier 2).

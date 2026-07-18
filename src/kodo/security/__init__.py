@@ -41,6 +41,8 @@ from ._store import (
     global_path_rules_path,
     global_rules,
     global_rules_path,
+    remove_global_path_rule,
+    remove_global_rule,
 )
 
 __all__ = [
@@ -61,4 +63,6 @@ __all__ = [
     "global_path_rules_path",
     "global_rules",
     "global_rules_path",
+    "remove_global_path_rule",
+    "remove_global_rule",
 ]

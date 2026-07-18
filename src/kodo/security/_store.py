@@ -44,6 +44,8 @@ __all__ = [
     "global_path_rules_path",
     "global_rules",
     "global_rules_path",
+    "remove_global_path_rule",
+    "remove_global_rule",
 ]
 
 _log = logging.getLogger(__name__)
@@ -104,10 +106,43 @@ def add_global_path_rule(executable: str, path: str) -> frozenset[tuple[str, str
     return _add(global_path_rules_path(), global_path_rules(), executable, path)
 
 
+def remove_global_rule(executable: str, subcommand: str) -> frozenset[tuple[str, str]]:
+    """Revoke a previously granted global ``(executable, subcommand)`` rule.
+
+    A no-op (not an error) if the rule isn't present — the management UI's
+    "delete selected" always reflects the store's state back afterward, so a
+    stale selection racing a second deletion just settles on the same result.
+
+    Returns:
+        frozenset[tuple[str, str]]: The updated global rule set.
+    """
+    return _remove(global_rules_path(), global_rules(), executable, subcommand)
+
+
+def remove_global_path_rule(executable: str, path: str) -> frozenset[tuple[str, str]]:
+    """Revoke a previously granted global ``(executable, resolved_path)`` rule.
+
+    Same best-effort, no-op-if-absent semantics as :func:`remove_global_rule`.
+
+    Returns:
+        frozenset[tuple[str, str]]: The updated global path-rule set.
+    """
+    return _remove(global_path_rules_path(), global_path_rules(), executable, path)
+
+
 def _add(
     path: Path, current: frozenset[tuple[str, str]], executable: str, value: str
 ) -> frozenset[tuple[str, str]]:
-    updated = current | {(executable, value)}
+    return _write(path, current | {(executable, value)})
+
+
+def _remove(
+    path: Path, current: frozenset[tuple[str, str]], executable: str, value: str
+) -> frozenset[tuple[str, str]]:
+    return _write(path, current - {(executable, value)})
+
+
+def _write(path: Path, updated: frozenset[tuple[str, str]]) -> frozenset[tuple[str, str]]:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -115,7 +150,7 @@ def _add(
             encoding="utf-8",
         )
     except OSError:
-        _log.warning("Failed to persist global security rule to %s", path)
+        _log.warning("Failed to persist global security rules to %s", path)
     return updated
 
 

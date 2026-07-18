@@ -64,7 +64,12 @@ from kodo.llms.llamacpp import (
 )
 from kodo.llms.local import LocalModelError
 from kodo.project import ProjectLayoutError, WorkspaceLayout, kodo_user_dir
-from kodo.runtime import CheckpointState, MirrorDirtyError
+from kodo.runtime import (
+    CheckpointState,
+    MirrorDirtyError,
+    delete_global_security_rules,
+    list_global_security_rules,
+)
 from kodo.subagents import AgentRegistry
 from kodo.titling import warm_up_titler_cache
 from kodo.transport import (
@@ -105,6 +110,8 @@ from kodo.transport import (
     MSG_PROJECT_CREATE,
     MSG_PROJECT_SET,
     MSG_PROMPT_SUBMIT,
+    MSG_SECURITY_RULES_DELETE,
+    MSG_SECURITY_RULES_LIST,
     MSG_SESSION_DELETE,
     MSG_SESSION_LIST,
     MSG_SESSION_RELEASE,
@@ -471,6 +478,25 @@ async def _handle_session_delete(req: Request) -> None:
     # The session is gone: close the socket so the client treats the closure as
     # success. (drop_connection is a no-op now — delete() already detached it.)
     await req.connection.ws.close()
+
+
+# ------------------------------------------------------------------
+# Global security rules (machine-wide, control connection) — Kōdo Settings
+# panel's "Global Allow-Rules" section (doc/SECURITY_RULES_PLAN.md §Phase 3
+# item 2). Session-scoped rules are not exposed here — they live in
+# per-session runtime state and are managed from the session webview instead.
+# ------------------------------------------------------------------
+
+
+async def _handle_security_rules_list(req: Request) -> None:
+    await req.reply({"type": "security.rules.list.ack", "rules": list_global_security_rules()})
+
+
+async def _handle_security_rules_delete(req: Request) -> None:
+    raw = req.env.payload.get("rules", [])
+    rules = [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
+    updated = delete_global_security_rules(rules)
+    await req.reply({"type": "security.rules.delete.ack", "rules": updated})
 
 
 # ------------------------------------------------------------------
@@ -1495,6 +1521,8 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_SESSION_LIST, _handle_session_list)
     conn_registry.register_handler(MSG_SESSION_RELEASE, _handle_session_release)
     conn_registry.register_handler(MSG_SESSION_DELETE, _handle_session_delete)
+    conn_registry.register_handler(MSG_SECURITY_RULES_LIST, _handle_security_rules_list)
+    conn_registry.register_handler(MSG_SECURITY_RULES_DELETE, _handle_security_rules_delete)
     conn_registry.register_handler(MSG_PROMPT_SUBMIT, _handle_prompt)
     conn_registry.register_handler(MSG_MODE_SET, _handle_mode)
     conn_registry.register_handler(MSG_WORKFLOW_SET, _handle_workflow)

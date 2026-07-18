@@ -205,6 +205,26 @@ MSG_PROJECT_CREATE = "project.create"
 # the client sends it yet; it is inert today.
 MSG_SECURITY_ADD_RULE = "security.add_rule"
 
+# Client → Server. Control connection only. List every globally-granted
+# "always allow" Phase 2 rule (doc/SECURITY_RULES_PLAN.md §2, Phase 3 item 2)
+# — both the command-shape store (``~/.kodo/etc/security_rules.json``) and
+# the workspace-escape path-shape store (``~/.kodo/etc/security_path_rules.json``),
+# merged into one list. No payload. Replies ``security.rules.list.ack``
+# ``{rules: [{kind: "command"|"path", executable, value}, ...]}`` — session
+# rules are not included (they live in per-session runtime state, not this
+# machine-wide store, and are managed from the session webview instead).
+MSG_SECURITY_RULES_LIST = "security.rules.list"
+
+# Client → Server. Control connection only. Revoke a batch of previously
+# granted global rules — backs the Kōdo Settings panel's "Delete Selected"
+# button (kodo-vsix ``kodo-settings-panel.ts``). Payload: ``{rules: [{kind,
+# executable, value}, ...]}``, the same shape ``security.rules.list.ack``
+# returns. Unknown/already-removed entries are silently no-ops. Replies
+# ``security.rules.delete.ack`` with the same ``rules`` shape as
+# ``security.rules.list.ack``, reflecting the post-deletion state, so the
+# panel can refresh from the response alone.
+MSG_SECURITY_RULES_DELETE = "security.rules.delete"
+
 # Client → Server. Manually trigger context compaction for this session. Honoured
 # only when the entry agent is idle (``state.phase == "awaiting_user"``) and
 # there is context to compact; otherwise ignored. Drives the same path as the

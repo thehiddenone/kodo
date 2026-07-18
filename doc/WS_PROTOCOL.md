@@ -1137,21 +1137,58 @@ Notes:
   the validator's User-Proxy answers (doc/VALIDATOR.md §9), which pin a low
   tier (e.g. `"minimal"`) so `ask_user` answers don't burn time thinking.
 
+### 7.6c `security.rules.list` / `security.rules.delete` — global rule management
+
+Control connection only (the sidebar/settings-panel connection, `hello`'s
+`payload.role == "control"`, §4.1) — backs the **Kōdo Settings** webview
+panel's "Global Allow-Rules" section (kodo-vsix `kodo-settings-panel.ts`),
+opened from a gear icon on the Kōdo sidebar view's title bar. Only *global*
+rules are exposed this way; session rules live in per-session runtime state
+and are left for a future session-webview management surface
+(SECURITY_RULES_PLAN.md Phase 3 item 2).
+
+```json
+{ "type": "security.rules.list" }
+```
+
+→ `security.rules.list.ack` `{ "rules": [ {"kind": "command", "executable": "git", "value": "status"},
+  {"kind": "path", "executable": "cat", "value": "/Users/me/scratch"} ] }`
+
+```json
+{ "type": "security.rules.delete", "rules": [
+  {"kind": "command", "executable": "git", "value": "status"} ] }
+```
+
+→ `security.rules.delete.ack` with the same `rules` shape as `.list.ack`,
+reflecting the post-deletion set — the panel refreshes from the response
+alone rather than issuing a follow-up `list`.
+
+`rules` combines both on-disk global stores (doc/SECURITY_RULES_PLAN.md §2.7):
+`kind: "command"` entries are `(executable, subcommand)` pairs from
+`~/.kodo/etc/security_rules.json`; `kind: "path"` entries are `(executable,
+resolved_absolute_path)` workspace-escape pairs from
+`~/.kodo/etc/security_path_rules.json`. `delete` entries not present in
+either store are silently no-ops (a stale selection racing a second delete
+just settles on the same result). Deleting a rule here does not retroactively
+re-ask anything already granted mid-turn in an open session — it only stops
+matching *future* calls, same as the store itself (`kodo.security` re-reads
+both files fresh on every check, §2.4).
+
 ### 7.7 ⟪planned⟫ — standalone rules management, credential push
 
 Persistent user-defined allow rules (FR-SEC-07) — generalized `(executable,
 subcommand)` shapes layered into the heuristic rule ladder — are
 **implemented**, but only as the *implicit* effect of `remember` on
 `prompt.permission.response` (§6.5): allowing a gated call with a checkbox
-checked installs the rule; there is no separate request for it. The
-following remain reserved for a **future standalone rules management panel**
-(doc/SECURITY.md §10, SECURITY_RULES_PLAN.md Phase 3) — listing/revoking a
-session's or the machine's granted rules outside the flow of answering a
-live prompt:
+checked installs the rule; there is no separate request for it.
+Global-scope listing/revoking now exists (§7.6c). The following remain
+reserved for a **future session-webview rules panel**
+(doc/SECURITY.md §10, SECURITY_RULES_PLAN.md Phase 3):
 
 - `security.add_rule` — reserved; not sent by kodo-vsix today (superseded by
   `prompt.permission.response.remember` for the only flow that exists).
-- `security.rules.list` / `security.rules.delete` — not handled today.
+- Session-scope `security.rules.list` / `.delete` equivalents — not handled
+  today; §7.6c is global-only.
 - `credentials.set` — superseded by the `api_key.request`/response flow (§6.3):
   the server pulls keys on demand rather than the client pushing them.
 

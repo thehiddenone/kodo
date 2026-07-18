@@ -13,6 +13,7 @@ from ._checkpoints import CheckpointEntry, CheckpointState, MirrorDirtyError
 from ._engine import WorkflowEngine
 from ._gates import ApprovalResponse, GateOrchestrator, PermissionResponse
 from ._guide import GuideMarker
+from ._security_rules import delete_global_security_rules, list_global_security_rules
 from ._session import SessionState
 from ._session_log import SessionLog
 
@@ -28,6 +29,8 @@ __all__ = [
     "SessionState",
     "ToolDispatcher",
     "WorkflowEngine",
+    "delete_global_security_rules",
+    "list_global_security_rules",
     "locate_guide_session",
     "tools_for_agent",
 ]
