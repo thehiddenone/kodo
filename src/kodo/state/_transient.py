@@ -672,6 +672,7 @@ class TransientStore:
         entry_agent: str | None = None,
         attachments: list[dict[str, str]] | None = None,
         kind: str | None = None,
+        detail: dict[str, object] | None = None,
     ) -> None:
         """Append one top-level LLM message to the main ``session.jsonl``.
 
@@ -701,6 +702,13 @@ class TransientStore:
                 replays as the same ``interrupted`` callout as the live one
                 instead of a fake user message. Never part of ``content``, so it
                 never reaches the LLM wire format on reload.
+            detail (dict[str, object] | None): Optional client-only payload
+                alongside ``kind`` — e.g. ``kind="agent_unstuck_nudge"``
+                carries ``{"reasons", "note", "mode"}`` here
+                (doc/STUCK_DETECTION.md) so the feed can show *why* Kōdo
+                nudged the agent without that explanation ever reaching the
+                LLM (only ``role``/``content`` round-trip into the live
+                message array on reload).
         """
         if self.__paths is None:
             return
@@ -711,6 +719,8 @@ class TransientStore:
             record["attachments"] = attachments
         if kind is not None:
             record["kind"] = kind
+        if detail is not None:
+            record["detail"] = detail
         self.__append_line(self.__paths.session_log, record)
         self.__touch_last_modified()
 
@@ -761,6 +771,7 @@ class TransientStore:
         role: str,
         content: str | list[dict[str, object]],
         kind: str | None = None,
+        detail: dict[str, object] | None = None,
     ) -> None:
         """Append one message to a sub-agent's isolated subsession log.
 
@@ -771,7 +782,12 @@ class TransientStore:
             kind (str | None): Optional entry discriminator. ``"subagent_task"``
                 tags the structured task the engine seeds a subsession with, so
                 history reconstruction renders it as a distinct *task brief*
-                rather than a user prompt bubble. ``None`` for ordinary turns.
+                rather than a user prompt bubble. ``"agent_unstuck_nudge"``
+                (doc/STUCK_DETECTION.md) tags the stuck-watchdog's continuation
+                nudge the same way. ``None`` for ordinary turns.
+            detail (dict[str, object] | None): Optional client-only payload
+                alongside ``kind`` — see :meth:`append_message`'s twin
+                parameter for the shape ``kind="agent_unstuck_nudge"`` uses.
         """
         if self.__paths is None:
             return
@@ -780,6 +796,8 @@ class TransientStore:
         record: dict[str, object] = {"role": role, "content": content}
         if kind is not None:
             record["kind"] = kind
+        if detail is not None:
+            record["detail"] = detail
         self.__append_line(path, record)
         self.__touch_last_modified()
 

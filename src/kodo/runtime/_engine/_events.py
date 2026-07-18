@@ -27,6 +27,7 @@ from kodo.transport import (
     EVT_AGENT_FINISHED,
     EVT_AGENT_STARTED,
     EVT_AGENT_TOOL_CALL_IN_PROGRESS,
+    EVT_AGENT_UNSTUCK_NUDGE,
     EVT_CONTEXT_COMPACTING,
     EVT_CONTEXT_STATS,
     EVT_ERROR,
@@ -230,6 +231,22 @@ class EngineEmitters:
             Envelope.make_event(
                 EVT_SECURITY_RULE_ADDED,
                 {"scope": scope, "executable": executable, "subcommand": subcommand},
+            )
+        )
+
+    async def emit_agent_unstuck_nudge(self, note: str, reasons: list[str], mode: str) -> None:
+        """Push the client-only explanation for a just-injected stuck-agent nudge.
+
+        Fired right after the nudge is persisted (doc/STUCK_DETECTION.md,
+        ``WatchdogMixin._persist_nudge`` and ``_run_entry_agent``'s deferred
+        path) — the nudge's actual ``content`` is a real LLM-facing turn the
+        agent's next streamed response follows on from, but the client never
+        typed it and has no local echo, so this event (not the message
+        content) is what the feed renders in its place.
+        """
+        await self._sink.send(
+            Envelope.make_event(
+                EVT_AGENT_UNSTUCK_NUDGE, {"note": note, "reasons": reasons, "mode": mode}
             )
         )
 

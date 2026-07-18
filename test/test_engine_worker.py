@@ -88,7 +88,11 @@ def _make_engine(
     engine.calls: list[tuple[str, str, list[str] | None]] = []
 
     def _recorder(label: str):
-        async def _fn(text: str, attachments: list[str] | None = None) -> None:
+        async def _fn(
+            text: str,
+            attachments: list[str] | None = None,
+            nudge_detail: dict[str, object] | None = None,
+        ) -> None:
             engine.calls.append((label, text, attachments))
 
         return _fn
@@ -308,7 +312,11 @@ async def test_non_list_attachments_are_coerced_to_empty_list() -> None:
 async def test_phase_done_breaks_worker_loop() -> None:
     engine = _make_engine(workflow_mode="guided")
 
-    async def _finish(text: str, attachments: list[str] | None = None) -> None:
+    async def _finish(
+        text: str,
+        attachments: list[str] | None = None,
+        nudge_detail: dict[str, object] | None = None,
+    ) -> None:
         engine.calls.append(("guide", text, attachments))
         engine._session.phase = "done"
 
@@ -331,7 +339,11 @@ async def test_unrecoverable_401_error_revokes_key_and_stops_session() -> None:
     engine = _make_engine(workflow_mode="guided")
     engine._current_vendor = "anthropic"
 
-    async def _fail(text: str, attachments: list[str] | None = None) -> None:
+    async def _fail(
+        text: str,
+        attachments: list[str] | None = None,
+        nudge_detail: dict[str, object] | None = None,
+    ) -> None:
         raise UnrecoverableError("bad key", 401)
 
     engine._run_guide_with_input = _fail
@@ -351,7 +363,11 @@ async def test_unrecoverable_non_401_error_does_not_revoke_key() -> None:
     engine = _make_engine(workflow_mode="guided")
     engine._current_vendor = "anthropic"
 
-    async def _fail(text: str, attachments: list[str] | None = None) -> None:
+    async def _fail(
+        text: str,
+        attachments: list[str] | None = None,
+        nudge_detail: dict[str, object] | None = None,
+    ) -> None:
         raise UnrecoverableError("quota exceeded", 429)
 
     engine._run_guide_with_input = _fail
@@ -368,7 +384,11 @@ async def test_unrecoverable_non_401_error_does_not_revoke_key() -> None:
 async def test_generic_exception_resets_phase_to_awaiting_user() -> None:
     engine = _make_engine(workflow_mode="guided")
 
-    async def _fail(text: str, attachments: list[str] | None = None) -> None:
+    async def _fail(
+        text: str,
+        attachments: list[str] | None = None,
+        nudge_detail: dict[str, object] | None = None,
+    ) -> None:
         raise ValueError("kaboom")
 
     engine._run_guide_with_input = _fail
@@ -420,7 +440,11 @@ async def test_config_changed_cancelled_error_propagates_uncaught() -> None:
 async def test_prompt_cancelled_error_propagates_uncaught() -> None:
     engine = _make_engine(workflow_mode="guided")
 
-    async def _cancel(text: str, attachments: list[str] | None = None) -> None:
+    async def _cancel(
+        text: str,
+        attachments: list[str] | None = None,
+        nudge_detail: dict[str, object] | None = None,
+    ) -> None:
         raise asyncio.CancelledError()
 
     engine._run_guide_with_input = _cancel
@@ -450,7 +474,11 @@ async def test_handle_input_no_agent_cycles_phase_and_logs() -> None:
 async def test_generic_exception_after_phase_already_done_leaves_it_done() -> None:
     engine = _make_engine(workflow_mode="guided")
 
-    async def _fail(text: str, attachments: list[str] | None = None) -> None:
+    async def _fail(
+        text: str,
+        attachments: list[str] | None = None,
+        nudge_detail: dict[str, object] | None = None,
+    ) -> None:
         engine._session.phase = "done"
         raise ValueError("kaboom after done")
 

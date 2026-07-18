@@ -11,8 +11,11 @@ client's reply is a ``kind=response`` correlated by ``id``.
 - :meth:`GateOrchestrator.fire_permission` — surfaces a security-layer
   permission prompt (``prompt.permission``, WS_PROTOCOL.md §6.5) and blocks
   until the user allows or denies the tool call.
+- :meth:`GateOrchestrator.fire_stuck_alert` — surfaces the stuck-agent
+  watchdog's alarm (``prompt.stuck_alert``, doc/STUCK_DETECTION.md) and
+  blocks until the user unsticks the agent or dismisses it.
 
-All three register a :class:`asyncio.Future` via
+All four register a :class:`asyncio.Future` via
 :meth:`~kodo.transport.SessionChannel.register_response_future` and await it.
 The connection registry resolves the future when the matching
 ``kind=response`` arrives. The future (and the request envelope that fired
@@ -35,9 +38,14 @@ from dataclasses import dataclass
 from kodo.common import Envelope, ResponseChannel
 from kodo.state import TransientStore
 from kodo.tools import PermissionPartLike
-from kodo.transport import SREQ_PROMPT_APPROVAL, SREQ_PROMPT_PERMISSION, SREQ_PROMPT_QUESTION
+from kodo.transport import (
+    SREQ_PROMPT_APPROVAL,
+    SREQ_PROMPT_PERMISSION,
+    SREQ_PROMPT_QUESTION,
+    SREQ_PROMPT_STUCK_ALERT,
+)
 
-__all__ = ["ApprovalResponse", "GateOrchestrator", "PermissionResponse"]
+__all__ = ["ApprovalResponse", "GateOrchestrator", "PermissionResponse", "StuckAlertResponse"]
 
 _log = logging.getLogger(__name__)
 
@@ -75,6 +83,17 @@ class PermissionResponse:
     action: str
     feedback: str
     remember: tuple[str | None, ...] = ()
+
+
+@dataclass(frozen=True)
+class StuckAlertResponse:
+    """User response to the stuck-agent watchdog's alarm.
+
+    Attributes:
+        action: ``'unstick'`` or ``'dismiss'``.
+    """
+
+    action: str
 
 
 class GateOrchestrator:
@@ -324,6 +343,56 @@ class GateOrchestrator:
         except Exception:
             self.__transient.update(pending_security_alert=None)
             raise
+
+    async def fire_stuck_alert(
+        self, *, agent_name: str, display_name: str, reasons: list[str]
+    ) -> StuckAlertResponse:
+        """Emit a ``prompt.stuck_alert`` ``kind=request`` and block until the
+        user decides.
+
+        Fired by :meth:`~kodo.runtime._engine._watchdog.WatchdogMixin
+        ._make_stall_handler`'s closure (doc/STUCK_DETECTION.md) — either
+        ~5s after an entry-agent turn has already ended normally (a fully
+        decoupled follow-up: the session already looks idle), or inline for
+        a sub-agent turn (blocking it exactly like :meth:`fire_permission`,
+        since its parent is already blocked on it either way).
+
+        No ``pending_prompt``-style state is persisted: unlike a gated tool
+        call, nothing is left mid-dispatch if this wait is cut short by a
+        crash — the alarm is simply dropped, and the next matching stall (if
+        any) schedules a fresh one. Client shows a permission-style panel
+        with no rule checkboxes (there is nothing to "always allow" here).
+
+        Args:
+            agent_name: Internal name of the stalled agent (entry agent or
+                sub-agent).
+            display_name: Its human-readable display name, for the panel text.
+            reasons: One-sentence, user-facing description per matched red
+                flag (:class:`~kodo.runtime._engine._watchdog.RedFlag`.hint).
+
+        Returns:
+            StuckAlertResponse: The user's decision.
+        """
+        req_id = uuid.uuid4().hex
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[dict[str, object]] = loop.create_future()
+        self.__app_state.register_response_future(req_id, future)
+
+        payload: dict[str, object] = {
+            "type": SREQ_PROMPT_STUCK_ALERT,
+            "agent_name": agent_name,
+            "display_name": display_name,
+            "reasons": reasons,
+        }
+        await self.__app_state.send(Envelope(kind="request", id=req_id, payload=payload))
+        _log.info("Stuck alert fired: agent=%s req_id=%s", agent_name, req_id[:8])
+
+        response_payload = await future
+        action = str(response_payload.get("action", "dismiss"))
+        if action not in ("unstick", "dismiss"):
+            action = "dismiss"
+        _log.info("Stuck alert resolved: req_id=%s action=%s", req_id[:8], action)
+        return StuckAlertResponse(action=action)
 
     @staticmethod
     def __normalize_answers(raw: object, count: int) -> list[dict[str, object]]:

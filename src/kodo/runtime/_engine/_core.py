@@ -76,12 +76,15 @@ from ._shared import _slugify_project_name, _unique_child_dir
 from ._subagents import SubagentMixin
 from ._titling import SessionTitler
 from ._turns import TurnLoopMixin
+from ._watchdog import WatchdogMixin
 from ._worker import WorkerMixin
 
 _log = logging.getLogger(__name__)
 
 
-class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin, ResumeMixin):
+class WorkflowEngine(
+    LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin, ResumeMixin, WatchdogMixin
+):
     """Single-worker runtime engine hosting the Guide session.
 
     Args:
@@ -121,6 +124,8 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
     _last_thinking_base_llm: str | None
     _replay_subsessions: list[dict[str, object]] | None
     _resume_subsession_pending: bool
+    _entry_turn_seq: int
+    _stuck_watchdog_task: asyncio.Task[None] | None
 
     def __init__(
         self,
@@ -177,6 +182,12 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
         self._last_thinking_base_llm = None
         self._replay_subsessions = None
         self._resume_subsession_pending = False
+        # Stuck-agent watchdog (doc/STUCK_DETECTION.md): bumped once per
+        # entry-agent turn so a background alarm watcher can tell it has been
+        # superseded; the watcher task itself is held here so asyncio never
+        # garbage-collects it mid-sleep.
+        self._entry_turn_seq = 0
+        self._stuck_watchdog_task = None
         # The security layer judging every tool call (doc/SECURITY.md) —
         # deterministic heuristic rules, no LLM involved.
         self._security = SecurityLayer()

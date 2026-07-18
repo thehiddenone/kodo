@@ -60,6 +60,8 @@ from ._shared import (
     _JUDGE_AGENT_NAME,
     _PROBLEM_SOLVER_AGENT_NAME,
     _SPECS_BY_NAME,
+    StallDecision,
+    TurnSignal,
 )
 from ._subagents import _DEFAULT_WEB_SEARCH_TIMEOUT_S
 
@@ -74,16 +76,22 @@ class TurnLoopMixin:
     # ------------------------------------------------------------------
 
     async def _run_guide_with_input(
-        self: EngineHost, text: str, attachments: list[str] | None = None
+        self: EngineHost,
+        text: str,
+        attachments: list[str] | None = None,
+        nudge_detail: dict[str, object] | None = None,
     ) -> None:
-        await self._run_entry_agent(_GUIDE_AGENT_NAME, text, attachments)
+        await self._run_entry_agent(_GUIDE_AGENT_NAME, text, attachments, nudge_detail=nudge_detail)
 
     # ------------------------------------------------------------------
     # Problem Solver LLM loop (standalone, outside the Kodo pipeline)
     # ------------------------------------------------------------------
 
     async def _run_problem_solver_with_input(
-        self: EngineHost, text: str, attachments: list[str] | None = None
+        self: EngineHost,
+        text: str,
+        attachments: list[str] | None = None,
+        nudge_detail: dict[str, object] | None = None,
     ) -> None:
         """Drive the standalone Problem Solver agent for one user prompt.
 
@@ -93,7 +101,9 @@ class TurnLoopMixin:
         change and — unlike before — Problem Solver turns now persist to
         ``session.jsonl``.
         """
-        await self._run_entry_agent(_PROBLEM_SOLVER_AGENT_NAME, text, attachments)
+        await self._run_entry_agent(
+            _PROBLEM_SOLVER_AGENT_NAME, text, attachments, nudge_detail=nudge_detail
+        )
 
     # ------------------------------------------------------------------
     # Judge LLM loop (validator-only, never selected by kodo-vsix)
@@ -113,7 +123,11 @@ class TurnLoopMixin:
         await self._run_entry_agent(_JUDGE_AGENT_NAME, text, attachments)
 
     async def _run_entry_agent(
-        self: EngineHost, agent_name: str, text: str, attachments: list[str] | None = None
+        self: EngineHost,
+        agent_name: str,
+        text: str,
+        attachments: list[str] | None = None,
+        nudge_detail: dict[str, object] | None = None,
     ) -> None:
         """Drive a top-level entry agent (Guide or Problem Solver).
 
@@ -130,7 +144,20 @@ class TurnLoopMixin:
         fetches content on demand via the ``read_attachment`` tool), while
         ``session.jsonl`` persists only the clean prompt plus links to the
         stored copies — see :meth:`_store_attachments`.
+
+        ``nudge_detail`` is set only when this call is the deferred half of a
+        stuck-agent nudge (doc/STUCK_DETECTION.md,
+        :meth:`~._watchdog.WatchdogMixin._schedule_entry_turn_alarm`): *text*
+        is then the fixed continuation instruction, not something the user
+        typed, so it persists with ``kind="agent_unstuck_nudge"`` instead of
+        as an ordinary prompt bubble.
         """
+        # Marks the *current* entry-agent turn so a stale background watcher
+        # from an earlier turn (doc/STUCK_DETECTION.md) can tell it has been
+        # superseded and no-op instead of alarming about a turn the user
+        # already moved past.
+        self._entry_turn_seq += 1
+
         agent = self._registry.get(agent_name, self._session.effective_autonomous)
         plugin, model_id, routing = await self._resolve_plugin(agent.capability)
         # Remember the model that owns this main context, so a later model switch
@@ -151,7 +178,16 @@ class TurnLoopMixin:
                 attachments=[
                     {"id": s["id"], "name": s["name"], "stored": s["stored"]} for s in stored
                 ],
+                kind="agent_unstuck_nudge" if nudge_detail is not None else None,
+                detail=nudge_detail,
             )
+            if nudge_detail is not None:
+                reasons = nudge_detail.get("reasons")
+                await self._emitters.emit_agent_unstuck_nudge(
+                    str(nudge_detail.get("note", "")),
+                    [str(r) for r in reasons] if isinstance(reasons, list) else [],
+                    str(nudge_detail.get("mode", "")),
+                )
             # Always echo the authoritative stored set when the user staged
             # anything — even an empty set (every file failed validation) — so
             # the client retargets the optimistically-rendered chips to the
@@ -193,6 +229,9 @@ class TurnLoopMixin:
             persist=self._persist_main_messages(agent_name),
             flush_before_dispatch=True,
             track_context=True,
+            on_stall=self._make_stall_handler(
+                agent_name=agent_name, routing=routing, is_entry_turn=True
+            ),
         )
         await self._sink.send(Envelope.make_stream_end(stream_id))
         await self._emitters.emit_agent_finished(agent_name)
@@ -274,6 +313,7 @@ class TurnLoopMixin:
         persist: Callable[[list[Message]], None] | None = None,
         flush_before_dispatch: bool = False,
         track_context: bool = False,
+        on_stall: Callable[[TurnSignal], Awaitable[StallDecision]] | None = None,
     ) -> tuple[list[Message], list[Path]]:
         """Run one LLM turn with tool-use loop until the model stops calling tools.
 
@@ -314,6 +354,16 @@ class TurnLoopMixin:
                 live context gauge (the compactor's ``context_tokens``) and is
                 pushed to the client. Sub-agent/titler turns leave it ``False``
                 — only the main context counts toward the compaction threshold.
+            on_stall: Called whenever a round ends with no tool calls, right
+                before the turn would otherwise end (doc/STUCK_DETECTION.md).
+                Returning ``StallDecision(retry=True, message=...)`` appends
+                that message and loops again instead of ending the turn;
+                ``retry=False`` (or ``on_stall=None``) ends it exactly as
+                before. This is the *only* seam stuck-detection has into the
+                turn loop — everything else (settings, red-flag detection,
+                the alarm gate, the worker queue) lives in the closure the
+                caller builds (:meth:`~._watchdog.WatchdogMixin._make_stall_handler`),
+                keeping this method itself agnostic of all of it.
 
         Returns:
             tuple[list[Message], list[Path]]: Updated messages and (unused) files.
@@ -427,20 +477,36 @@ class TurnLoopMixin:
             thinking_text = "".join(thinking_parts)
 
             if not tool_calls:
+                turn_text = "".join(text_parts)
                 if thinking_text:
                     messages = messages + [
                         Message(
                             role="assistant",
                             content=[
                                 self._thinking_block(thinking_text, thinking_signature),
-                                {"type": "text", "text": "".join(text_parts) or "(no text)"},
+                                {"type": "text", "text": turn_text or "(no text)"},
                             ],
                         )
                     ]
                 else:
                     messages = messages + [
-                        Message(role="assistant", content="".join(text_parts) or "(no text)")
+                        Message(role="assistant", content=turn_text or "(no text)")
                     ]
+
+                if on_stall is not None:
+                    signal = TurnSignal(
+                        text=turn_text,
+                        thinking_text=thinking_text,
+                        stop_reason=turn_end.stop_reason if turn_end is not None else "end_turn",
+                    )
+                    decision = await on_stall(signal)
+                    if decision.retry and decision.message is not None:
+                        messages = messages + [decision.message]
+                        _flush()
+                        if track_context:
+                            self._main_messages = messages
+                        continue
+
                 _flush()
                 if track_context:
                     self._main_messages = messages

@@ -43,7 +43,7 @@ from ._checkpointing import CheckpointCoordinator
 from ._compaction import ContextCompactor
 from ._events import EngineEmitters
 from ._services import _EngineServices
-from ._shared import _GUIDE_AGENT_NAME
+from ._shared import _GUIDE_AGENT_NAME, RedFlag, StallDecision, TurnSignal
 from ._titling import SessionTitler
 
 
@@ -77,6 +77,8 @@ class EngineHost(Protocol):
     _replay_subsessions: list[dict[str, object]] | None
     _resume_subsession_pending: bool
     _last_thinking_base_llm: str | None
+    _entry_turn_seq: int
+    _stuck_watchdog_task: asyncio.Task[None] | None
 
     # -- core helpers (defined in _core) ---------------------------------------
     def _agent_available(self, name: str) -> bool: ...
@@ -144,11 +146,17 @@ class EngineHost(Protocol):
 
     # -- turn loop (defined in _turns) -------------------------------------------
     async def _run_guide_with_input(
-        self, text: str, attachments: list[str] | None = None
+        self,
+        text: str,
+        attachments: list[str] | None = None,
+        nudge_detail: dict[str, object] | None = None,
     ) -> None: ...
 
     async def _run_problem_solver_with_input(
-        self, text: str, attachments: list[str] | None = None
+        self,
+        text: str,
+        attachments: list[str] | None = None,
+        nudge_detail: dict[str, object] | None = None,
     ) -> None: ...
 
     async def _run_judge_with_input(
@@ -156,7 +164,11 @@ class EngineHost(Protocol):
     ) -> None: ...
 
     async def _run_entry_agent(
-        self, agent_name: str, text: str, attachments: list[str] | None = None
+        self,
+        agent_name: str,
+        text: str,
+        attachments: list[str] | None = None,
+        nudge_detail: dict[str, object] | None = None,
     ) -> None: ...
 
     async def _store_attachments(
@@ -180,6 +192,7 @@ class EngineHost(Protocol):
         persist: Callable[[list[Message]], None] | None = None,
         flush_before_dispatch: bool = False,
         track_context: bool = False,
+        on_stall: Callable[[TurnSignal], Awaitable[StallDecision]] | None = None,
     ) -> tuple[list[Message], list[Path]]: ...
 
     @staticmethod
@@ -258,3 +271,27 @@ class EngineHost(Protocol):
     ) -> dict[str, object]: ...
 
     def _build_replay_ledger(self) -> list[dict[str, object]]: ...
+
+    # -- stuck-agent watchdog (defined in _watchdog) ---------------------------------
+    def _make_stall_handler(
+        self,
+        *,
+        agent_name: str,
+        routing: LLMRouting,
+        is_entry_turn: bool,
+        subsession_id: str | None = None,
+    ) -> Callable[[TurnSignal], Awaitable[StallDecision]]: ...
+
+    async def _persist_nudge(
+        self,
+        *,
+        agent_name: str,
+        subsession_id: str | None,
+        flags: list[RedFlag],
+        display_name: str,
+        mode: str,
+    ) -> Message: ...
+
+    def _schedule_entry_turn_alarm(
+        self, agent_name: str, display_name: str, flags: list[RedFlag]
+    ) -> None: ...

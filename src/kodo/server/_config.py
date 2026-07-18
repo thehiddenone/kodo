@@ -44,6 +44,26 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
             },
         },
     },
+    # Governs the stuck-agent watchdog (kodo.runtime._engine._watchdog,
+    # doc/STUCK_DETECTION.md) — detects a turn that ended without finishing
+    # its task (e.g. an empty final response, or a truncated generation) and
+    # nudges the agent to continue. Not yet exposed in the Kōdo Settings
+    # webview panel or the WS protocol; edit settings.json + config.reload.
+    "stuck_detection": {
+        # "off" | "local_only" | "local_and_cloud" — which model residence
+        # the watchdog runs for. Local LLMs are the primary target (this is
+        # a small/quantized-model failure mode cloud models rarely exhibit).
+        "active": "local_only",
+        # "top_level" | "top_level_and_subagents" — whether only the main
+        # entry agent (Guide/Problem Solver) is watched, or sub-agents
+        # (run_subagent/run_author_critic_iteration) too.
+        "scope": "top_level",
+        # In interactive mode, whether a detected stall is nudged
+        # automatically (True) or surfaced as a prompt.stuck_alert the user
+        # must confirm (False). Autonomous mode always nudges immediately,
+        # regardless of this flag.
+        "auto_unstuck_interactive": False,
+    },
 }
 
 _log = logging.getLogger(__name__)

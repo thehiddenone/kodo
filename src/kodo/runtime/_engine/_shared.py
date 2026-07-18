@@ -1,17 +1,23 @@
 """Shared constants and helpers for the engine subpackage.
 
 Only what more than one engine module (or an external test) needs lives
-here: the well-known agent names, the tool-spec index, and the
-project-directory helpers. Constants owned by a single concern live in
-that concern's module (e.g. titling limits in :mod:`._titling`).
+here: the well-known agent names, the tool-spec index, the project-directory
+helpers, and the two small stuck-detection data shapes that both
+:mod:`._turns` and :mod:`._watchdog` need — they live here rather than in
+:mod:`._watchdog` itself because :mod:`._proto` (imported by every mixin,
+including :mod:`._watchdog`) must also reference them in ``EngineHost``'s
+protocol signatures, and :mod:`._proto` cannot import a mixin module without
+risking a cycle. Constants owned by a single concern live in that concern's
+module (e.g. titling limits in :mod:`._titling`).
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
-from kodo.llms import ToolSpec
+from kodo.llms import Message, ToolSpec
 from kodo.toolspecs import ALL_TOOLS
 
 _GUIDE_AGENT_NAME = "guide"
@@ -45,6 +51,56 @@ _DIRECT_ONLY_AGENTS = frozenset({_COMPACTOR_AGENT_NAME, _WEB_SEARCH_AGENT_NAME})
 # Every tool spec keyed by name — used to normalize each tool's output against
 # its declared schema and to project the customer-visible detail rows.
 _SPECS_BY_NAME: dict[str, ToolSpec] = {t.name: t for t in ALL_TOOLS}
+
+
+@dataclass(frozen=True)
+class TurnSignal:
+    """What one no-tool-call turn produced — input to every red-flag detector
+    (doc/STUCK_DETECTION.md, :mod:`._watchdog`).
+
+    Attributes:
+        text: The turn's visible text (``""`` when the model produced none —
+            the same emptiness the ``"(no text)"`` sentinel in
+            :meth:`~._turns.TurnLoopMixin._run_agent_turn` papers over).
+        thinking_text: The turn's thinking block, if any (context only; no
+            detector currently inspects it, but a future one may).
+        stop_reason: The provider's stop reason for this call (``"end_turn"``,
+            ``"max_tokens"``, …).
+    """
+
+    text: str
+    thinking_text: str
+    stop_reason: str
+
+
+@dataclass(frozen=True)
+class StallDecision:
+    """What :meth:`~._watchdog.WatchdogMixin._make_stall_handler`'s closure
+    decided for one stalled round.
+
+    Attributes:
+        retry: When ``True``, :meth:`~._turns.TurnLoopMixin._run_agent_turn`
+            appends ``message`` and loops again instead of ending the turn.
+        message: The nudge to append when ``retry`` is ``True``; ``None``
+            otherwise.
+    """
+
+    retry: bool
+    message: Message | None = None
+
+
+@dataclass(frozen=True)
+class RedFlag:
+    """One matched stuck-agent red flag (:mod:`._watchdog`).
+
+    Attributes:
+        code: Short machine-readable id (persisted in the nudge's ``detail``).
+        hint: One-sentence, user-facing description of what was observed —
+            joined into the nudge's user-facing note, never sent to the LLM.
+    """
+
+    code: str
+    hint: str
 
 
 def _slugify_project_name(name: str) -> str:

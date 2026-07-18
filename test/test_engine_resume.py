@@ -287,6 +287,7 @@ def _resumable_engine(
     engine._emitters = _FakeEmitters()
     engine._sink = _FakeSink()
     engine._orch_session_id = "orch-1"
+    engine._entry_turn_seq = 0
 
     async def _resolve_plugin(capability: str, force_model_key: str | None = None):
         from types import SimpleNamespace

@@ -499,6 +499,16 @@ Pushed right after a `prompt.permission` response grants a rule (§6.5) — the 
 
 `scope`/`executable`/`subcommand` are exactly the granted shape — same fields and same "resolved absolute path in `subcommand`" convention for a workspace-escape/path rule as `rule_offer` on `prompt.permission` (§6.5). One event per granted part: a compound command whose response grants more than one part's rule fires this once per grant, in the order `add_security_rule`/`add_security_path_rule` are called.
 
+### 5.9e `agent.unstuck_nudge` — the stuck-agent watchdog nudged an agent
+
+Fired right after the stuck-agent watchdog (doc/STUCK_DETECTION.md) injects its fixed continuation nudge into an agent's turn — either immediately (autonomous mode, or interactive mode with `stuck_detection.auto_unstuck_interactive`), or once the user answers "unstick" on a `prompt.stuck_alert` (§6.5a). The nudge itself is a real `user`-role turn the agent responds to (so the token stream that follows makes sense as a continuation), but the client never typed it and has no local echo, so this event — not the injected text — is what the feed renders in its place.
+
+```json
+{ "type": "agent.unstuck_nudge", "note": "Kōdo noticed the Problem Solver appeared to stop mid-task (its last turn ended with no tool call and no visible response) and continued it automatically.", "reasons": ["empty_final_turn"], "mode": "auto" }
+```
+
+`note` is a ready-to-render, one-sentence explanation; `reasons` are the matched red-flag codes (`kodo.runtime._engine._watchdog.RedFlag.code` — extensible, see doc/STUCK_DETECTION.md); `mode` is `"auto"` (autonomous mode, or interactive with `auto_unstuck_interactive`) or `"manual"` (the user clicked "Unstick it"). Also persisted as an `agent_unstuck_nudge`-*kind* message (`{role: "user", content: <the fixed continuation text>, kind: "agent_unstuck_nudge", detail: {reasons, note, mode}}`) — not a bare marker, since it must round-trip into the live LLM context on resume too — so it replays via `session.history` (§5.11) the same way. Rendered as a non-context, informational feed entry (`exclude_from_context: true`) — the LLM-facing `content` never appears in the feed, only `note`/`reasons`/`mode`.
+
 ### 5.10 `error` — unsolicited server error
 
 For errors not tied to a specific request. Errors tied to a request are returned as `response` payloads with an `error` field (§2.2).
@@ -520,7 +530,7 @@ Pushed once after `hello.ack` when the resumed session has prior turns, so a fre
 { "type": "session.history", "entries": [ { ...session-entry... }, ... ] }
 ```
 
-Entries mirror the WebView's session model. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed. Other display-only entries (status) are still ephemeral and dropped on rehydrate.
+Entries mirror the WebView's session model. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed, as is `agent_unstuck_nudge` (`{note, reasons, mode}` — reconstructed from its `kind="agent_unstuck_nudge"` message the same way, §5.9e). Other display-only entries (status) are still ephemeral and dropped on rehydrate.
 
 A `web_search` `tool_call` entry additionally carries `webSearchNotes: string[]` — its live narration (§5.5e), read back from the best-effort sidecar file rather than from `session.jsonl` (empty if the run was aborted before it flushed, or for every non-`web_search` tool call).
 
@@ -725,6 +735,29 @@ Response payload:
 `remember` is an array the same length as `parts`, one `"session"` / `"global"` / `null` (default) per entry, straight from that part's radio-button pair; a shorter or non-array `remember` is treated as all-`null` for the missing entries — the client just grants fewer rules, never more. Each entry is only acted on when the response is `allow` **and** the corresponding part actually carried a `rule_offer`: the server never trusts a client-declared shape, only the one it already offered, so a stale or manipulated response can at most grant exactly the shapes the security layer already decided were safe to generalize. `"session"` persists in this session's transient state (survives crash-resume, dropped when the session ends); `"global"` persists user-wide at `~/.kodo/etc/security_rules.json` and applies to every session on this machine from the very next matching call, no restart required. A granted rule silences the *same* `(executable, subcommand)` ask automatically from then on — no further `prompt.permission` for it, at that scope, ever (until the user deletes it — no delete UI exists yet, Phase 3) — and fires `security.rule_added` (§5.9d) so the user gets their own durable record of the grant. A workspace-escape path rule (§2.7 above) persists in a separate store (session state / `~/.kodo/etc/security_path_rules.json`) with the same two scopes, and silences a future call by *resolving that call's own path argument first*, not by literal string match — `cd ../kodo` and `cd /Users/dev/dev_root/kodo` (same cwd) hit the same granted rule.
 
 The panel is transient client-side (no session entry): the gated tool call's own card records the outcome. No `pending_prompt` is persisted — a server *process* crash mid-prompt resolves through the engine's dangling-tool-use resume path. Unlike the general case, though, this specific call is provably known to have never dispatched (`TransientStore.pending_security_alert`, doc/SECURITY.md §7a), so instead of the generic interrupted stand-in, resume re-judges it fresh and — if still `ask` — re-fires this exact prompt (new `id`, same `tool_call_id`) rather than giving up. A live disconnect/reconnect that never restarts the *process* doesn't even reach that path — see §8.
+
+### 6.5a `prompt.stuck_alert` — stuck-agent watchdog alarm
+
+Fired by the stuck-agent watchdog (doc/STUCK_DETECTION.md) when a turn ended without finishing its task and interactive mode is not configured to nudge automatically (`stuck_detection.auto_unstuck_interactive` is `false` — always effectively `true` in autonomous mode instead, which never fires this prompt). Two different firing shapes depending on scope:
+
+- **Entry-agent scope** (the shared Guide/Problem Solver turn): fires **~5s after the turn has already ended normally** — `phase` is already `"awaiting_user"`, the session already looks idle, and the client's prompt input is already usable again. This is a fully decoupled follow-up, not something blocking the turn.
+- **Sub-agent scope**: fires **inline**, blocking that sub-agent's turn exactly like `prompt.permission` blocks a gated tool call — its parent turn is already blocked on it either way (a spinner is already showing), so there is no "looks idle" state to preserve.
+
+```json
+{ "type": "prompt.stuck_alert", "agent_name": "problem_solver", "display_name": "Problem Solver", "reasons": ["its last turn ended with no tool call and no visible response"] }
+```
+
+`agent_name` is the internal agent name (entry agent or sub-agent); `display_name` its human-readable name for the panel text; `reasons` is one user-facing sentence per matched red flag (`kodo.runtime._engine._watchdog.RedFlag.hint` — the detector set is extensible, see doc/STUCK_DETECTION.md, so this list may grow independently of the wire shape).
+
+Response payload:
+
+```json
+{ "type": "prompt.stuck_alert.response", "action": "unstick" }
+```
+
+`action` is `unstick` or `dismiss` (anything else is treated as `dismiss`). On **unstick** the engine injects the same fixed continuation nudge the immediate/auto path uses and fires `agent.unstuck_nudge` (§5.9e); on **dismiss**, or if the wait is cut short, nothing further happens — the turn (or session) simply stays as it was.
+
+The panel is transient client-side, modeled on `prompt.permission`'s but with no rule-offer checkboxes (there is nothing here to "always allow") and distinct Unstick/Dismiss actions. No `pending_prompt`-style state is persisted server-side: unlike a gated tool call, nothing is left mid-dispatch if this wait is cut short by a crash — the alarm is simply dropped, and the next matching stall (if any) schedules a fresh one.
 
 ---
 

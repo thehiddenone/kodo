@@ -231,6 +231,23 @@ class HistoryProjector:
         if msg.get("kind") == "stopped_notice":
             out.append({"type": "interrupted"})
             return out
+        # The stuck-watchdog's continuation nudge (doc/STUCK_DETECTION.md) —
+        # a real, LLM-visible "please continue" turn, but replayed as a
+        # distinct feed entry (not a fake user-typed bubble) carrying the
+        # client-only explanation of *why* Kōdo sent it.
+        if msg.get("kind") == "agent_unstuck_nudge":
+            detail = msg.get("detail")
+            detail = detail if isinstance(detail, dict) else {}
+            reasons = detail.get("reasons")
+            out.append(
+                {
+                    "type": "agent_unstuck_nudge",
+                    "note": str(detail.get("note", "")),
+                    "reasons": [str(r) for r in reasons] if isinstance(reasons, list) else [],
+                    "mode": str(detail.get("mode", "")),
+                }
+            )
+            return out
         if isinstance(content, str):
             if role == "user":
                 atts = _history_attachment_links(msg.get("attachments"), session_dir)

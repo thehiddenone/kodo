@@ -335,9 +335,7 @@ def test_add_security_path_rule_persists_and_accumulates(store: TransientStore) 
 
     data = json.loads((store.session_dir / "transient.json").read_text(encoding="utf-8"))
     assert sorted(data["security_path_rules"]) == [["cat", "/etc/hosts"], ["cd", "/outside/path"]]
-    assert store.security_path_rules == frozenset(
-        {("cat", "/etc/hosts"), ("cd", "/outside/path")}
-    )
+    assert store.security_path_rules == frozenset({("cat", "/etc/hosts"), ("cd", "/outside/path")})
 
 
 def test_add_security_path_rule_is_idempotent(store: TransientStore) -> None:

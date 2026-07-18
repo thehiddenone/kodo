@@ -84,6 +84,20 @@ Maximum number of concurrent in-flight requests per cloud vendor feed (`kodo/llm
 
 Overrides the directory where downloaded GGUF files are cached (default `~/.kodo/llama.cpp/models`). Read directly by `kodo/llms/llamacpp/_manager.py`'s `get_local_model_manager`.
 
+### 2.6 `stuck_detection`
+
+Governs the stuck-agent watchdog (doc/STUCK_DETECTION.md) — detects a turn that ended without finishing its task (e.g. an empty final response, or one truncated by the output-length cap) and nudges the agent to continue. Not yet exposed in the Kōdo Settings webview panel or a dedicated WS set-command; change it by editing this file and sending `config.reload`, same as any other setting.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `stuck_detection.active` | `"off"` \| `"local_only"` \| `"local_and_cloud"` | `"local_only"` | Which model residence the watchdog runs for. Local LLMs are the primary target — this is a small/quantized-model failure mode cloud models rarely exhibit. |
+| `stuck_detection.scope` | `"top_level"` \| `"top_level_and_subagents"` | `"top_level"` | Whether only the main entry agent (Guide/Problem Solver) is watched, or sub-agents (`run_subagent`/`run_author_critic_iteration`) too. |
+| `stuck_detection.auto_unstuck_interactive` | `bool` | `false` | Outside autonomous mode, whether a detected stall is nudged automatically (`true`) or surfaced as a `prompt.stuck_alert` the user must confirm (`false`). Autonomous mode always nudges immediately, regardless of this flag. |
+
+```json
+{ "stuck_detection": { "active": "local_only", "scope": "top_level", "auto_unstuck_interactive": false } }
+```
+
 ---
 
 ## 3. Default user settings
@@ -106,6 +120,11 @@ Overrides the directory where downloaded GGUF files are cached (default `~/.kodo
         "max": "claude-fable-5"
       }
     }
+  },
+  "stuck_detection": {
+    "active": "local_only",
+    "scope": "top_level",
+    "auto_unstuck_interactive": false
   }
 }
 ```

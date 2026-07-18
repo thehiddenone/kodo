@@ -188,6 +188,10 @@ class ResumeMixin:
         if not tool_uses:
             return
 
+        # New entry-agent turn — see the matching note in _run_entry_agent
+        # (doc/STUCK_DETECTION.md).
+        self._entry_turn_seq += 1
+
         # Claim the alert now, unconditionally: whether or not its id turns up
         # among tool_uses below (it always should), this resume pass is the
         # one deciding this call's fate, so the marker must not outlive it.
@@ -261,6 +265,9 @@ class ResumeMixin:
             persist=self._persist_main_messages(entry_agent),
             flush_before_dispatch=True,
             track_context=True,
+            on_stall=self._make_stall_handler(
+                agent_name=entry_agent, routing=routing, is_entry_turn=True
+            ),
         )
         await self._sink.send(Envelope.make_stream_end(stream_id))
         await self._emitters.emit_agent_finished(entry_agent)

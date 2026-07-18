@@ -324,6 +324,12 @@ class SubagentMixin:
             agent_name=name,
             stop_after_tools=lambda: dispatcher.stop_requested,
             persist=_persist,
+            on_stall=self._make_stall_handler(
+                agent_name=name,
+                routing=routing,
+                is_entry_turn=False,
+                subsession_id=subsession_id,
+            ),
         )
 
         await self._sink.send(Envelope.make_stream_end(stream_id))

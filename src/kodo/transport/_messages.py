@@ -424,6 +424,27 @@ SREQ_PROMPT_APPROVAL = "prompt.approval"
 # executed and the agent receives a "user DENIED permission" error result.
 SREQ_PROMPT_PERMISSION = "prompt.permission"
 
+# Server → Client request. Fired by the stuck-agent watchdog
+# (doc/STUCK_DETECTION.md, ``kodo.runtime._engine._watchdog``) when a turn
+# ended without finishing its task (e.g. an empty final response, or one cut
+# off by the output-length cap) and interactive mode is not configured to
+# nudge automatically (``stuck_detection.auto_unstuck_interactive``, always
+# effectively True in autonomous mode instead — no prompt fires there). For
+# the entry-agent scope this fires ~5s after the turn already ended normally
+# (the session looks idle, chat input already usable) — a fully decoupled
+# follow-up, not something blocking the turn. For the sub-agent scope it
+# fires inline, blocking that sub-agent's turn exactly like
+# ``prompt.permission`` — there the caller (its parent) is already blocked on
+# it either way. No ``pending_prompt`` is persisted: unlike a gated tool call,
+# nothing is left mid-dispatch if the wait is cut short, so a crash before an
+# answer simply drops the alarm (the next matching stall schedules a fresh
+# one). Client shows a permission-style panel (no rule checkboxes — there is
+# nothing to "always allow" here) with distinct Unstick/Dismiss actions; on
+# "unstick" the engine appends the same fixed continuation nudge either
+# immediately-nudge path uses, persisted with ``kind: "agent_unstuck_nudge"``
+# so it renders as a distinct feed entry, not a fake user-typed message.
+SREQ_PROMPT_STUCK_ALERT = "prompt.stuck_alert"
+
 # ---------------------------------------------------------------------------
 # Server → Client event payload types — visibility  (WS_PROTOCOL.md §5)
 # ---------------------------------------------------------------------------
@@ -565,6 +586,19 @@ EVT_ERROR = "error"
 # ``prompt.permission``, §6.5). Also persisted as a ``security_rule_added``
 # marker so it replays on reload (see ``EngineEmitters.emit_security_rule_added``).
 EVT_SECURITY_RULE_ADDED = "security.rule_added"
+
+# Server → Client event. Fired right after the stuck-agent watchdog
+# (doc/STUCK_DETECTION.md) injects its continuation nudge — immediately
+# (autonomous mode, or interactive with ``auto_unstuck_interactive``), or
+# once the user answers "unstick" on a ``prompt.stuck_alert``. The nudge
+# itself is a real ``user``-role turn the agent responds to (so the live
+# token stream that follows makes sense), but the client never typed it and
+# has no local echo, so this event carries what to show instead of the raw
+# instruction text: ``{note, reasons: [str, ...], mode: "auto" | "manual"}``.
+# Also persisted as an ``agent_unstuck_nudge``-kind message (not a bare
+# marker — it must round-trip into the live LLM context too) so it replays
+# on reload the same way (see ``HistoryProjector._message_to_entries``).
+EVT_AGENT_UNSTUCK_NUDGE = "agent.unstuck_nudge"
 
 # Server → Client events. Drive the sidebar's llama.cpp/model controls only —
 # no workflow meaning. ``llamacpp.install.progress`` streams ``{percent,

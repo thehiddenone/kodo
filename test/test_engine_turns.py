@@ -101,7 +101,9 @@ class _FakeTransient:
         self.diffs_written: list[dict[str, object]] = []
         self._store_result: tuple[str, str] | None = ("attach-1", "attachments/a1.txt")
 
-    def append_message(self, role, content, entry_agent=None, attachments=None, kind=None) -> None:
+    def append_message(
+        self, role, content, entry_agent=None, attachments=None, kind=None, detail=None
+    ) -> None:
         self.appended.append((role, content, entry_agent, attachments))
 
     async def write_agent_record(self, agent_name: str, record: dict[str, object]) -> None:
@@ -195,6 +197,7 @@ def _base_engine(*, gateway: _FakeGateway | None = None) -> WorkflowEngine:
     engine._checkpoints = _FakeCheckpoints()
     engine._compactor = _FakeCompactor()
     engine._orch_session_id = "sess-1"
+    engine._entry_turn_seq = 0
 
     def _llm_logs_dir() -> Path:
         return Path("/tmp/llm_logs")
@@ -212,7 +215,7 @@ async def test_run_guide_with_input_delegates() -> None:
     engine = object.__new__(WorkflowEngine)
     calls: list[tuple[str, str, list[str] | None]] = []
 
-    async def _run_entry_agent(agent_name, text, attachments=None):
+    async def _run_entry_agent(agent_name, text, attachments=None, nudge_detail=None):
         calls.append((agent_name, text, attachments))
 
     engine._run_entry_agent = _run_entry_agent
@@ -224,7 +227,7 @@ async def test_run_problem_solver_with_input_delegates() -> None:
     engine = object.__new__(WorkflowEngine)
     calls = []
 
-    async def _run_entry_agent(agent_name, text, attachments=None):
+    async def _run_entry_agent(agent_name, text, attachments=None, nudge_detail=None):
         calls.append((agent_name, text, attachments))
 
     engine._run_entry_agent = _run_entry_agent
@@ -236,7 +239,7 @@ async def test_run_judge_with_input_delegates() -> None:
     engine = object.__new__(WorkflowEngine)
     calls = []
 
-    async def _run_entry_agent(agent_name, text, attachments=None):
+    async def _run_entry_agent(agent_name, text, attachments=None, nudge_detail=None):
         calls.append((agent_name, text, attachments))
 
     engine._run_entry_agent = _run_entry_agent

@@ -73,6 +73,12 @@ class WorkerMixin:
             attachments = (
                 [str(p) for p in raw_attachments] if isinstance(raw_attachments, list) else []
             )
+            # Set only for the deferred half of a stuck-agent nudge
+            # (doc/STUCK_DETECTION.md, WatchdogMixin._schedule_entry_turn_alarm)
+            # — *text* is then the fixed continuation instruction, not
+            # something the user typed.
+            raw_nudge_detail = task.get("nudge_detail")
+            nudge_detail = raw_nudge_detail if isinstance(raw_nudge_detail, dict) else None
             # Freeze every mode toggle for the whole prompt (guide + every
             # sub-agent it spawns). A toggle the user flips mid-prompt updates
             # the user-facing value but takes effect only when the next prompt
@@ -83,8 +89,10 @@ class WorkerMixin:
                 # Name the session from its first prompt. Fire-and-forget: the
                 # titler runs the local summarizer in a background thread and
                 # reports the result whenever it lands (session.naming/
-                # session.name), so it never delays the main agent's turn.
-                self._titler.maybe_generate_session_title(text)
+                # session.name), so it never delays the main agent's turn. A
+                # nudge is never the "first prompt" worth titling from.
+                if nudge_detail is None:
+                    self._titler.maybe_generate_session_title(text)
 
                 # The entry agent is chosen per prompt from the current
                 # workflow mode: Problem Solver for "problem_solving", the
@@ -93,7 +101,9 @@ class WorkerMixin:
                 # only ever sends "guided"/"problem_solving").
                 if self._session.workflow_mode == "problem_solving":
                     if self._agent_available(_PROBLEM_SOLVER_AGENT_NAME):
-                        await self._run_problem_solver_with_input(text, attachments)
+                        await self._run_problem_solver_with_input(
+                            text, attachments, nudge_detail=nudge_detail
+                        )
                     else:
                         await self._handle_input_no_agent(_PROBLEM_SOLVER_AGENT_NAME, text)
                 elif self._session.workflow_mode == "judge":
@@ -111,7 +121,7 @@ class WorkerMixin:
                     )
                     await self._emitters.emit_state()
                 elif self._agent_available(_GUIDE_AGENT_NAME):
-                    await self._run_guide_with_input(text, attachments)
+                    await self._run_guide_with_input(text, attachments, nudge_detail=nudge_detail)
                 else:
                     await self._handle_input_no_agent(_GUIDE_AGENT_NAME, text)
 
