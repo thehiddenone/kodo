@@ -7,7 +7,12 @@ into the VS Code extension's permission panel.
 
 Related docs: [TOOLS.md](TOOLS.md) (tool catalog, `intent` contract, impact
 levels), [WS_PROTOCOL.md](WS_PROTOCOL.md) (§6.5 `prompt.permission`, §7.4b
-`command_control.set`), [INTERNALS.md](INTERNALS.md) (package tiers).
+`command_control.set`), [INTERNALS.md](INTERNALS.md) (package tiers),
+[SECURITY_RULES_PLAN.md](SECURITY_RULES_PLAN.md) (phased design/decision
+log for the `run_command` heuristic engine), and
+[SECURITY_RULES_GUIDE.md](SECURITY_RULES_GUIDE.md) (a use-case-by-use-case
+reference — "given this exact command, what happens and why," walked
+through in the engine's own check order).
 
 ---
 
@@ -192,17 +197,25 @@ evaluate_command()` — a deterministic verdict ladder, first hit wins
 (design + phased plan: [SECURITY_RULES_PLAN.md](SECURITY_RULES_PLAN.md)):
 
 1. **Workspace escape** — any `outside_paths` → **ask** (reason lists the
-   paths). *A command that targets anything outside the workspace and the OS
-   temp directory is always raised to the user.* A temp-dir target simply
-   skips this step — it still runs the rest of the ladder, so e.g. `rm -rf
-   /tmp/x` still asks (destructive, category rule) while `cat /tmp/x` or
-   `touch /tmp/x` allow.
+   paths), **judged per segment**, not over the whole line — a plain
+   redirection/argument outside every workspace root and the OS temp
+   directory raises that specific segment to the user; a segment whose
+   executable is on the read-only/`cd` allow-list may additionally carry a
+   permanent-rule offer keyed on the resolved path itself (§3.2c). A
+   temp-dir target simply skips this step for its own segment — it still
+   runs the rest of the ladder, so e.g. `rm -rf /tmp/x` still asks
+   (destructive, category rule) while `cat /tmp/x` or `touch /tmp/x` allow.
 2. **Command substitutions** — each `$(...)`/backtick snippet is recursively
    evaluated as its own command (depth-capped at 3); a dangerous inner
    command asks. `echo $(date)` allows; `echo $(rm -rf /)` asks.
-3. **Read-only fast path** — `read_only` → **allow**. Value expansions
-   (`$VAR`) are tolerated here: an unknown value fed to a pure reader
-   cannot mutate anything.
+3. **Read-only fast path** — `read_only` **and no segment has an
+   outside-workspace finding** → **allow**. The second half of that AND is
+   new (§3.2c): `read_only` alone only knows about executables and writes,
+   nothing about paths, so a lone `cat /etc/hosts` — every executable
+   "read-only", nothing written — must not slip through just because step 1
+   moved from a whole-line short-circuit to a per-segment one. Value
+   expansions (`$VAR`) are tolerated in the fast path itself: an unknown
+   value fed to a pure reader cannot mutate anything.
 4. **Per-segment rules** — every pipeline segment must individually clear:
    - *structural red flags*: a bare shell as a pipe target (`curl … | sh`),
      inline/encoded code (`python -c`, `-EncodedCommand`,
@@ -360,6 +373,60 @@ once the split existed:
 on Windows — previously it fell through to the generic "unknown command"
 ask, which *is* offer-eligible.
 
+### 3.2c Workspace-escape path offers for read-only/`cd` commands
+
+A curated bucket of non-destructive commands — the read-only allow-list
+(`cat`, `ls`, `grep`, `head`, …) plus `cd`/`Set-Location` — can be offered a
+permanent rule even when the only issue is a path outside the workspace,
+where every other outside-workspace ask (§3.2 step 1) never offers
+(SECURITY_RULES_PLAN.md §2.7). The offer's shape is different from every
+other category: `(executable, resolved_absolute_path)`, not `(executable,
+subcommand)` — matching a future call means resolving *that* call's own
+argument (relative or absolute, against its own cwd) and comparing the
+resolved form, not literal string equality. `cd ../kodo` and `cd
+/Users/dev/dev_root/kodo`, from the same cwd, resolve to the same string and
+hit the same granted rule.
+
+- **One offer per distinct resolved path**, not per command — `cat
+  /etc/hosts /etc/passwd` offers two independent checkboxes; a grant for one
+  executable doesn't cover another (`cat /etc/hosts && grep x /etc/hosts`
+  still asks twice, once per executable).
+- **Integrates with the §3.2b split**: `cd /outside/path && git status`
+  offers exactly one part — `git status` doesn't even appear, since it was
+  already silently allowed.
+- **Segment-wide, not argument-wide**: a write anywhere in the segment
+  (`writes_file`) disqualifies every path offer in that segment, including
+  an unrelated read target (`cat /etc/hosts > /etc/hosts2` — neither path is
+  offered).
+- **A small sensitive-path denylist** (`~/.ssh`, `~/.aws`, `~/.gnupg`,
+  `~/.kube`, `~/.docker`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`,
+  `~/.config/gcloud`) is never offer-eligible even for an otherwise-eligible
+  command — the ask still happens, just with no checkbox for that path.
+- **Nested/substituted contexts stay non-offerable for free** — the existing
+  command-substitution/nested-shell wrapping (§3.2 steps 2/4) already
+  discards a recursive `evaluate_command()` call's `.parts`/`.rule_offer`
+  unconditionally on failure, so an eligible command wrapped in `bash -c
+  "cat /etc/hosts"` never surfaces its own offer (a `known_path_rules` grant
+  still silences the wrapped occurrence, same as a bare one).
+
+**Storage is a separate store**, not a new field on the existing one:
+`~/.kodo/etc/security_path_rules.json` (global) and a parallel
+`TransientStore.security_path_rules`/`SessionState.security_path_rules`
+(session) — mirroring the command-shape machinery, kept genuinely separate
+since the two rule kinds are matched with different semantics (literal vs.
+resolve-then-compare) and the existing schema has no "kind" discriminator to
+extend safely. **The wire protocol needs no change at all**: `AskPart`
+gained a Python-internal `kind: "command" | "path"` field that routes
+`kodo.tools._dispatch.__security_gate`'s grant call to `add_security_rule`
+or `add_security_path_rule`, but `runtime._gates.fire_permission` only ever
+serializes `{reason, rule_offer}` onto the wire — `kind` never crosses the
+socket, and the server always grants from its own in-memory `AskPart`, never
+from anything read back off the client (§3.2a's "never trusts a
+client-declared shape" invariant, unchanged). kodo-vsix needed **zero**
+changes: `rule_offer: {executable, subcommand}` was already rendered as
+fully opaque strings at every hop, so a resolved absolute path in the
+`subcommand` slot renders correctly as-is.
+
 ## 4. Wiring
 
 ```
@@ -372,14 +439,17 @@ ToolDispatcher.dispatch(tool, input, tool_use_id)          kodo/tools/_dispatch.
   │        autonomous      = ctx.session.effective_autonomous,
   │        default_cwd     = ctx.resolver.default_cwd,
   │        roots           = ctx.root_paths,
-  │        session_rules   = ctx.session.security_rules)   ← merged with the global store inside
+  │        session_rules   = ctx.session.security_rules,   ← merged with the global store inside
+  │        session_path_rules = ctx.session.security_path_rules)  ← ditto, §3.2c
   │    "allow" → proceed
   │    "ask"   → ctx.gate.fire_permission(..., parts=decision.parts)
   │              → prompt.permission (kind=request)        WS_PROTOCOL.md §6.5
   │              → user allows, remember=["session"/"global"/null, …]  ← parallel to parts
   │                 → for each (part, scope) in zip(parts, remember):
   │                      part.rule_offer is not None and scope set
-  │                         → ctx.services.add_security_rule(scope, *part.rule_offer)
+  │                         → part.kind == "path"
+  │                              → ctx.services.add_security_path_rule(scope, *part.rule_offer)
+  │                           else → ctx.services.add_security_rule(scope, *part.rule_offer)
   │                 → proceed
   │              → user denies → {"error": "The user DENIED …"} (tool NOT run;
   │                 any `remember` on a denial is ignored — see §3.2a)

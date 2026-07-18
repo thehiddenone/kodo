@@ -473,6 +473,133 @@ def test_multi_segment_requires_every_segment_safe() -> None:
 
 
 # ----------------------------------------------------------------------
+# Workspace-escape path offers (§2.7): a read-only/`cd` command whose only
+# issue is a path outside the workspace may be offered an exact-resolved-
+# path "always allow" rule, judged and offered per segment (not whole-line).
+# ----------------------------------------------------------------------
+
+
+def test_bare_readonly_command_outside_workspace_still_asks() -> None:
+    # The read-only fast path must never fire just because every executable
+    # is on the readonly list — it has no notion of paths at all.
+    d = _posix("cat /etc/hosts")
+    assert d.action == "ask"
+    assert d.source == "workspace"
+    assert len(d.parts) == 1
+    assert d.parts[0].rule_offer == ("cat", "/etc/hosts")
+    assert d.parts[0].kind == "path"
+
+
+def test_bare_readonly_command_inside_workspace_still_fast_allows() -> None:
+    # A plain in-workspace relative is never even resolved, so it can't
+    # produce an outside-path finding — the fast path must still fire.
+    d = _posix("cat notes.txt")
+    assert d.action == "allow"
+    assert d.source == "static"
+
+
+def test_cd_outside_workspace_is_offered_and_sibling_segment_is_silent() -> None:
+    # The motivating example: a workspace-safe segment (`git status`) doesn't
+    # even appear as a part once `cd`'s own escape is judged per segment.
+    d = _posix("cd /outside/path && git status")
+    assert d.action == "ask"
+    assert len(d.parts) == 1
+    assert d.parts[0].rule_offer == ("cd", "/outside/path")
+    assert d.parts[0].kind == "path"
+
+
+def test_multiple_outside_paths_in_one_segment_offer_independently() -> None:
+    d = _posix("cat /etc/hosts /etc/passwd")
+    assert d.action == "ask"
+    assert len(d.parts) == 2
+    assert d.parts[0].rule_offer == ("cat", "/etc/hosts")
+    assert d.parts[1].rule_offer == ("cat", "/etc/passwd")
+
+
+def test_same_path_via_different_executables_is_not_collapsed() -> None:
+    # A grant for `cat` shouldn't silently also cover `grep` — dedup is
+    # keyed on (executable, path), not path alone.
+    d = _posix("cat /etc/hosts && grep x /etc/hosts")
+    assert d.action == "ask"
+    assert len(d.parts) == 2
+    assert d.parts[0].rule_offer == ("cat", "/etc/hosts")
+    assert d.parts[1].rule_offer == ("grep", "/etc/hosts")
+
+
+def test_ineligible_executable_outside_workspace_asks_with_no_offer() -> None:
+    d = _posix("rm -rf /outside/thing")
+    assert d.action == "ask"
+    assert d.source == "workspace"
+    assert d.parts[0].rule_offer is None
+
+
+def test_write_disqualifies_the_whole_segments_offers() -> None:
+    # `writes_file` is judged per segment, not per argument: the read side
+    # loses its offer too, even though only the write target is risky.
+    d = _posix("cat /etc/hosts > /etc/hosts2")
+    assert d.action == "ask"
+    assert len(d.parts) == 2
+    assert d.parts[0].rule_offer is None
+    assert d.parts[1].rule_offer is None
+
+
+def test_sensitive_path_never_offered_even_for_eligible_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", "/home/bob")
+    d = _posix("cat /home/bob/.ssh/id_rsa")
+    assert d.action == "ask"
+    assert d.parts[0].rule_offer is None
+
+
+def test_known_path_rule_silences_a_matching_call() -> None:
+    d = evaluate_command(
+        "cat /etc/hosts",
+        cwd="/ws/proj",
+        roots=_ROOTS,
+        windows=False,
+        known_path_rules=frozenset({("cat", "/etc/hosts")}),
+    )
+    assert d.action == "allow"
+
+
+def test_known_path_rule_applies_inside_nested_shell_but_stays_non_offerable() -> None:
+    # Nested contexts never surface an offer of their own regardless (the
+    # outer wrapping discards inner `.parts`), but a known rule still
+    # silences the wrapped occurrence, same as the command-shape case.
+    d = evaluate_command(
+        'bash -c "cat /etc/hosts"',
+        cwd="/ws/proj",
+        roots=_ROOTS,
+        windows=False,
+        known_path_rules=frozenset({("cat", "/etc/hosts")}),
+    )
+    assert d.action == "allow"
+
+
+def test_windows_set_location_outside_workspace_is_offered() -> None:
+    d = _win("cd C:\\outside\\path")
+    assert d.action == "ask"
+    # The offer is case/slash-folded for reliable matching; the reason text
+    # (not asserted here) keeps the original resolved casing.
+    assert d.parts[0].rule_offer == ("set-location", "c:\\outside\\path")
+    assert d.parts[0].kind == "path"
+
+
+def test_windows_known_path_rule_matches_regardless_of_case() -> None:
+    # A rule granted for the lowercase, folded form (as `_path_rule_offer`
+    # always returns) must still silence a differently-cased future call.
+    d = evaluate_command(
+        "cd C:\\Outside\\Path",
+        cwd="C:\\ws\\proj",
+        roots=_WROOTS,
+        windows=True,
+        known_path_rules=frozenset({("set-location", "c:\\outside\\path")}),
+    )
+    assert d.action == "allow"
+
+
+# ----------------------------------------------------------------------
 # Windows / PowerShell dialect
 # ----------------------------------------------------------------------
 

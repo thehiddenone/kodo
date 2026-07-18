@@ -4,9 +4,15 @@ Judges one ``run_command`` shell command deterministically, from structure
 alone (doc/SECURITY_RULES_PLAN.md). The verdict ladder, first hit wins:
 
 1. **Workspace escape** — any argument/redirection resolving outside every
-   workspace root *and* outside the OS temp directory asks (unchanged from
-   the static analysis era; the temp-directory carve-out is new — see
-   :mod:`kodo.common._tempdir`).
+   workspace root *and* outside the OS temp directory asks (the temp-directory
+   carve-out — see :mod:`kodo.common._tempdir`). Judged **per segment**, not
+   per line (doc/SECURITY_RULES_PLAN.md §2.7): a segment whose executable is
+   in the read-only/``cd`` set and isn't otherwise disqualified gets a
+   permanent "always allow" offer keyed on the *resolved absolute path* —
+   matched by resolving a future call's own argument the same way before
+   comparing, not by literal string equality. Everything else (unknown/
+   destructive executables, a sensitive-looking path) still asks with no
+   offer, exactly as before.
 2. **Command substitutions** — ``$(...)`` / backticks *execute* their content,
    so each one is recursively evaluated; a dangerous inner command asks.
 3. **Read-only fast path** — every executable on the conservative read-only
@@ -43,7 +49,12 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-from ._analysis import _READONLY_CMDLETS, _READONLY_EXECUTABLES, analyze_command
+from ._analysis import (
+    _READONLY_CMDLETS,
+    _READONLY_EXECUTABLES,
+    _within_any_root,
+    analyze_command,
+)
 from ._classify import SHELL_EXECUTABLES, NormalizedSegment
 
 __all__ = ["AskPart", "CommandRule", "RuleDecision", "evaluate_command"]
@@ -163,11 +174,23 @@ class AskPart:
     Attributes:
         reason: One user-facing sentence explaining why this part asks.
         rule_offer: The ``(executable, subcommand)`` shape this part may be
-            permanently allowed as, or ``None`` when not offer-eligible.
+            permanently allowed as, or ``None`` when not offer-eligible. For
+            a ``kind="path"`` part, ``subcommand`` actually holds a resolved
+            absolute filesystem path, not a command subcommand (§2.7) — the
+            wire protocol carries it in the same ``{executable, subcommand}``
+            shape either way; only ``kind`` (Python-internal, never
+            serialized — see ``runtime._gates.fire_permission``) tells
+            ``kodo.tools._dispatch`` which store to grant it into.
+        kind: ``"command"`` (the ordinary per-segment danger-category ask,
+            granted via ``add_security_rule``) or ``"path"`` (a workspace-
+            escape ask for an eligible read-only/``cd`` command, granted via
+            ``add_security_path_rule`` — doc/SECURITY_RULES_PLAN.md §2.7).
+            Never sent over the wire; purely routes the grant call.
     """
 
     reason: str
     rule_offer: tuple[str, str] | None = None
+    kind: str = "command"
 
 
 @dataclass(frozen=True)
@@ -236,6 +259,7 @@ def _ask(
     eligible: bool = False,
     known: bool = False,
     rule_offer: tuple[str, str] | None = None,
+    kind: str = "command",
 ) -> RuleDecision:
     return RuleDecision(
         action="ask",
@@ -246,7 +270,7 @@ def _ask(
         rule_eligible=eligible,
         rule_offer=rule_offer,
         known_command=known,
-        parts=(AskPart(reason=reason, rule_offer=rule_offer),),
+        parts=(AskPart(reason=reason, rule_offer=rule_offer, kind=kind),),
     )
 
 
@@ -258,6 +282,7 @@ def evaluate_command(
     windows: bool | None = None,
     rules: tuple[CommandRule, ...] | None = None,
     known_rules: frozenset[tuple[str, str]] = frozenset(),
+    known_path_rules: frozenset[tuple[str, str]] = frozenset(),
     _depth: int = 0,
 ) -> RuleDecision:
     """Judge *command* against the workspace and the rule table.
@@ -277,6 +302,15 @@ def evaluate_command(
             (doc/SECURITY_RULES_PLAN.md §2.4); threaded into every recursive
             call (command substitutions, nested shells) so a rule silences a
             wrapped occurrence exactly like a bare one.
+        known_path_rules: The caller's already-granted workspace-escape path
+            rules — session-scoped and global, merged — as ``(executable,
+            resolved_absolute_path)`` shapes (doc/SECURITY_RULES_PLAN.md
+            §2.7). Unlike ``known_rules`` this is matched against a value
+            ``analyze_command`` already resolved to absolute form, so
+            membership is a literal-tuple check here too — the "resolve a
+            relative argument first" step happens once, upstream, in
+            ``_analysis.analyze_command``, not on every lookup. Threaded into
+            every recursive call the same way ``known_rules`` is.
 
     Returns:
         RuleDecision: allow or ask, with reason, category, and the Phase 2
@@ -293,15 +327,11 @@ def evaluate_command(
 
     analysis = analyze_command(command, cwd=cwd, roots=roots, windows=win)
 
-    if analysis.outside_paths:
-        listed = ", ".join(analysis.outside_paths[:5])
-        return _ask(
-            f"The command targets paths outside the workspace: {listed}.",
-            "workspace",
-            source="workspace",
-        )
-
     # `$(...)` / backticks execute their content: judge each nested command.
+    # This still short-circuits the WHOLE evaluation on a bad nested
+    # command — a failing substitution means the whole line is suspect, not
+    # just one part of it — unlike the per-segment workspace-escape handling
+    # below (§2.7).
     for snippet in analysis.command_subs:
         inner = _strip_command_sub(snippet)
         if not inner:
@@ -313,6 +343,7 @@ def evaluate_command(
             windows=win,
             rules=rules,
             known_rules=known_rules,
+            known_path_rules=known_path_rules,
             _depth=_depth + 1,
         )
         if verdict.action != "allow":
@@ -321,7 +352,14 @@ def evaluate_command(
                 verdict.category,
             )
 
-    if analysis.read_only:
+    # The read-only fast path must ALSO require no segment has an outside-
+    # workspace finding — `_is_read_only` only knows about executables/
+    # writes, nothing about paths, so `cat /etc/hosts` (a lone, otherwise-
+    # readonly segment) would silently auto-allow here if this weren't
+    # ANDed in. `cat file.txt` (a plain in-workspace relative) is unaffected:
+    # `_resolve` never even resolves it, so `segment_outside_paths` is empty
+    # tuples all the way down and `any(...)` is `False`.
+    if analysis.read_only and not any(analysis.segment_outside_paths):
         return RuleDecision(
             action="allow",
             reason="Read-only command with all targets inside the workspace.",
@@ -331,9 +369,53 @@ def evaluate_command(
 
     asks: list[RuleDecision] = []
     seen_shapes: set[tuple[str, str]] = set()
-    for segment in analysis.segments:
+    seen_paths: set[tuple[str, str]] = set()
+    sensitive_roots = _sensitive_roots()
+    for i, segment in enumerate(analysis.segments):
         if not segment.executable:
             continue
+
+        outside_here = analysis.segment_outside_paths[i]
+        if outside_here:
+            # A segment with ANY outside-workspace finding is judged solely
+            # on that — it unconditionally skips `_judge_segment` below,
+            # regardless of how many of its paths turn out to already be
+            # covered by `known_path_rules`. Falling through instead would
+            # let e.g. `cd /outside/path` (once granted) hit the
+            # unconditional built-in `cd` allow-rule for an UNGRANTED path,
+            # or produce a spurious redundant ask on a segment like
+            # `cat /etc/hosts > /etc/hosts2` once only the read side is
+            # granted.
+            eligible = _is_path_offer_eligible(segment)
+            for path in dict.fromkeys(outside_here):  # already deduped per-segment; defensive
+                # `match_path` (case/slash-folded on Windows) is what gets
+                # offered, deduped, and checked against `known_path_rules` —
+                # `path` (original resolved casing) is only for the
+                # human-facing reason text, so a granted rule reliably
+                # silences a differently-cased future call.
+                match_path = _normalize_path_key(path, windows=win)
+                key = (segment.executable, match_path)
+                if key in known_path_rules or key in seen_paths:
+                    continue
+                seen_paths.add(key)
+                offer = _path_rule_offer(
+                    segment.executable,
+                    match_path,
+                    eligible=eligible,
+                    sensitive_roots=sensitive_roots,
+                    windows=win,
+                )
+                asks.append(
+                    _ask(
+                        f"The command targets a path outside the workspace: {path}.",
+                        "workspace",
+                        source="workspace",
+                        rule_offer=offer,
+                        kind="path",
+                    )
+                )
+            continue
+
         verdict = _judge_segment(
             segment,
             rules=rules,
@@ -342,6 +424,7 @@ def evaluate_command(
             windows=win,
             depth=_depth,
             known_rules=known_rules,
+            known_path_rules=known_path_rules,
         )
         if verdict.action == "allow":
             continue
@@ -355,7 +438,15 @@ def evaluate_command(
         if verdict.rule_eligible and shape is not None:
             offer = _rule_offer(segment, shape, known=verdict.known_command)
             if offer is not None:
-                verdict = replace(verdict, rule_offer=offer)
+                # Sync `parts[0]` alongside the top-level mirror field — the
+                # final assembly below reads `a.parts[0]` as its single
+                # source of truth, so a post-hoc `rule_offer` update that
+                # only touched the top-level field would silently vanish.
+                verdict = replace(
+                    verdict,
+                    rule_offer=offer,
+                    parts=(replace(verdict.parts[0], rule_offer=offer),),
+                )
         asks.append(verdict)
 
     if not asks:
@@ -368,7 +459,7 @@ def evaluate_command(
 
     primary = asks[0]
     reason = primary.reason if len(asks) == 1 else "; ".join(a.reason for a in asks)
-    parts = tuple(AskPart(reason=a.reason, rule_offer=a.rule_offer) for a in asks)
+    parts = tuple(a.parts[0] for a in asks)
     return replace(primary, reason=reason, parts=parts)
 
 
@@ -381,8 +472,17 @@ def _judge_segment(
     windows: bool,
     depth: int,
     known_rules: frozenset[tuple[str, str]] = frozenset(),
+    known_path_rules: frozenset[tuple[str, str]] = frozenset(),
 ) -> RuleDecision:
-    """One pipeline segment through red flags, the rule table, the default."""
+    """One pipeline segment through red flags, the rule table, the default.
+
+    Only ever reached for a segment with no outside-workspace finding of its
+    own — the caller (``evaluate_command``) judges/offers those directly and
+    never calls in here for them (doc/SECURITY_RULES_PLAN.md §2.7). The one
+    place this function still needs ``known_path_rules`` is its own recursive
+    ``evaluate_command`` call for a nested shell (``sh -c "…"``), so a path
+    rule silences a wrapped occurrence exactly like a bare one.
+    """
     exe = segment.executable
     shape = (exe, segment.subcommand)
     display = f"{exe} {segment.subcommand}".strip()
@@ -403,6 +503,7 @@ def _judge_segment(
                 windows=windows,
                 rules=rules,
                 known_rules=known_rules,
+                known_path_rules=known_path_rules,
                 _depth=depth + 1,
             )
             if verdict.action != "allow":
@@ -566,6 +667,106 @@ def _rule_offer(
     if any(_is_path_like(arg) for arg in segment.args[1:]):
         return None
     return shape
+
+
+# `cd`/PowerShell `Set-Location` (POSIX `chdir`/`sl` and the PowerShell
+# aliases `chdir`/`sl` all normalize to one of these two canonical names
+# during `_classify._normalize` before a segment ever reaches this module —
+# no dialect branching needed here).
+_CD_EXECUTABLES = frozenset({"cd", "set-location"})
+
+# A small, hardcoded denylist: never offer-eligible even for an otherwise-
+# eligible read-only/cd command (doc/SECURITY_RULES_PLAN.md §2.7) — the ask
+# still happens (the user can always manually Allow once), just with no
+# checkbox for that specific path. Expressed as (home-relative parts) tuples
+# rather than bare strings so `_sensitive_roots` can join them cleanly.
+_SENSITIVE_HOME_PARTS: tuple[tuple[str, ...], ...] = (
+    (".ssh",),
+    (".aws",),
+    (".gnupg",),
+    (".kube",),
+    (".docker",),
+    (".netrc",),
+    (".npmrc",),
+    (".pypirc",),
+    (".config", "gcloud"),
+)
+
+
+def _sensitive_roots() -> tuple[str, ...]:
+    """Credential-shaped locations under the current home directory.
+
+    Computed fresh on every call — never cached at import time — so a test
+    that redirects ``HOME`` (as ``test_security_store.py``'s ``_temp_home``
+    fixture already does for the global rule store) sees the right roots,
+    mirroring how ``_resolve`` already expands ``~`` per-token rather than
+    once globally.
+    """
+    home = os.path.expanduser("~")
+    return tuple(os.path.join(home, *parts) for parts in _SENSITIVE_HOME_PARTS)
+
+
+def _normalize_path_key(path: str, *, windows: bool) -> str:
+    """Fold *path* for rule-*matching* purposes only (mirrors
+    ``_within_any_root``'s own comparison normalization: case-fold +
+    slash-fold on Windows, unchanged on POSIX).
+
+    Windows paths are case-insensitive, so a rule granted for ``C:\\Outside``
+    must still silence a later call spelled ``c:\\outside`` — the *displayed*
+    reason text keeps the original resolved casing (built from the
+    unnormalized path in ``evaluate_command``); only the value used as the
+    offer/dedup/``known_path_rules`` key goes through this fold, and the
+    offer shown to the user is this normalized form (a small, deliberate
+    cosmetic tradeoff — a lowercase drive letter — in exchange for the grant
+    actually working reliably).
+    """
+    return path.replace("/", "\\").lower() if windows else path
+
+
+def _is_path_offer_eligible(segment: NormalizedSegment) -> bool:
+    """Whether *segment*'s executable is in the read-only/``cd`` bucket
+    (doc/SECURITY_RULES_PLAN.md §2.7) and the segment carries no file-writing
+    redirection.
+
+    Judged **per segment**, not per argument: a write anywhere in the
+    segment disqualifies *every* path offer for that segment, including an
+    unrelated read target (``cat /etc/hosts > /etc/hosts2`` — the read of
+    ``/etc/hosts`` doesn't get offered either, even though only the write
+    target is the risky part). This mirrors ``_rule_offer``'s own
+    segment-wide granularity for ``has_substitution``/nested-shell — a
+    deliberate, conservative simplification, not an oversight.
+    """
+    eligible = _READONLY_EXECUTABLES | _READONLY_CMDLETS | _CD_EXECUTABLES
+    return segment.executable in eligible and not segment.writes_file
+
+
+def _path_rule_offer(
+    executable: str,
+    resolved_path: str,
+    *,
+    eligible: bool,
+    sensitive_roots: tuple[str, ...],
+    windows: bool,
+) -> tuple[str, str] | None:
+    """The Phase 2 "always allow" offer for one workspace-escaping path, or
+    ``None`` when disqualified (doc/SECURITY_RULES_PLAN.md §2.7).
+
+    Mirrors ``_rule_offer``'s role for command-shape asks, but for the
+    workspace-escape category: ``eligible`` (the segment's own executable +
+    no write, from ``_is_path_offer_eligible``) is necessary but not
+    sufficient — a credential-shaped path (``_sensitive_roots``) is never
+    offered even for an eligible executable. The returned shape's second
+    element is the resolved *absolute path* itself (already computed by
+    ``_analysis.analyze_command`` before this is ever called), not a
+    subcommand — matching a future call means resolving its own argument the
+    same way and comparing, not literal string equality (§2.7's
+    "known_path_rules" lookup in ``evaluate_command`` does exactly this).
+    """
+    if not eligible:
+        return None
+    if _within_any_root(resolved_path, sensitive_roots, windows):
+        return None
+    return (executable, resolved_path)
 
 
 def _strip_command_sub(snippet: str) -> str:

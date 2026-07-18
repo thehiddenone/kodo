@@ -157,7 +157,17 @@ class CommandAnalysis:
     Attributes:
         outside_paths: Argument/redirection tokens that resolve to a path
             *outside* every workspace root and outside the OS temp directory
-            (normalized absolute form).
+            (normalized absolute form), flattened across the whole command in
+            first-occurrence order — derived from ``segment_outside_paths``
+            below, kept for callers that only care about the whole-command
+            fact (e.g. logging).
+        segment_outside_paths: The same findings, but attributed per segment
+            — one sub-tuple per ``segments`` entry, positionally aligned
+            (``normalize_segments`` never filters, so the two tuples are
+            always the same length). This is what the rule engine judges on
+            (doc/SECURITY_RULES_PLAN.md §2.7): a segment with a non-empty
+            entry here gets its own per-path ask, independent of what other
+            segments in the same pipeline are doing.
         unresolved: Substitution snippets (``$(...)``, ``$VAR``, ``%VAR%`` …)
             that make targets statically unresolvable.
         command_subs: The subset of ``unresolved`` that *executes* a nested
@@ -177,6 +187,7 @@ class CommandAnalysis:
     command_subs: tuple[str, ...] = ()
     segments: tuple[NormalizedSegment, ...] = ()
     operators: tuple[str, ...] = ()
+    segment_outside_paths: tuple[tuple[str, ...], ...] = ()
 
 
 def analyze_command(
@@ -220,15 +231,30 @@ def analyze_command(
 
     parsed: ParsedCommand = parse_powershell_command(masked) if win else parse_command(masked)
 
-    outside: list[str] = []
-    for segment in parsed.segments:
+    # Each segment gets its own accumulating list, so a path repeated across
+    # segments (`cat /etc/hosts && grep x /etc/hosts`) is attributed to BOTH
+    # occurrences — `_classify`'s own within-list dedup (`if resolved in
+    # outside: return`) must not see a path a *different* segment already
+    # recorded, or the second segment's finding would be silently dropped.
+    per_segment: list[list[str]] = [[] for _ in parsed.segments]
+    for i, segment in enumerate(parsed.segments):
         for arg in segment.args:
-            _classify(arg, cwd, roots, win, outside)
+            _classify(arg, cwd, roots, win, per_segment[i])
         for redir in segment.redirections:
             target = redir.target
             if not target or _FD_MERGE_RE.match(target):
                 continue
-            _classify(target, cwd, roots, win, outside, force_path=True)
+            _classify(target, cwd, roots, win, per_segment[i], force_path=True)
+
+    # Flatten to the whole-command view, first-occurrence order, deduped —
+    # reproduces exactly what the old single-shared-list pass computed.
+    outside: list[str] = []
+    seen: set[str] = set()
+    for paths in per_segment:
+        for path in paths:
+            if path not in seen:
+                seen.add(path)
+                outside.append(path)
 
     segments = normalize_segments(parsed, windows=win)
     read_only = _is_read_only(segments, windows=win)
@@ -239,6 +265,7 @@ def analyze_command(
         command_subs=tuple(command_subs),
         segments=segments,
         operators=parsed.operators,
+        segment_outside_paths=tuple(tuple(paths) for paths in per_segment),
     )
 
 

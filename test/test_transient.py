@@ -325,6 +325,52 @@ def test_malformed_security_rules_falls_back_to_empty(kodo_dir: Path) -> None:
     assert second.security_rules == frozenset()
 
 
+def test_security_path_rules_defaults_to_empty(store: TransientStore) -> None:
+    assert store.security_path_rules == frozenset()
+
+
+def test_add_security_path_rule_persists_and_accumulates(store: TransientStore) -> None:
+    store.add_security_path_rule("cat", "/etc/hosts")
+    store.add_security_path_rule("cd", "/outside/path")
+
+    data = json.loads((store.session_dir / "transient.json").read_text(encoding="utf-8"))
+    assert sorted(data["security_path_rules"]) == [["cat", "/etc/hosts"], ["cd", "/outside/path"]]
+    assert store.security_path_rules == frozenset(
+        {("cat", "/etc/hosts"), ("cd", "/outside/path")}
+    )
+
+
+def test_add_security_path_rule_is_idempotent(store: TransientStore) -> None:
+    store.add_security_path_rule("cat", "/etc/hosts")
+    store.add_security_path_rule("cat", "/etc/hosts")
+    assert store.security_path_rules == frozenset({("cat", "/etc/hosts")})
+
+
+def test_resumed_session_restores_security_path_rules(kodo_dir: Path) -> None:
+    session_id = "1748792415"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    first.add_security_path_rule("cat", "/etc/hosts")
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.security_path_rules == frozenset({("cat", "/etc/hosts")})
+
+
+def test_malformed_security_path_rules_falls_back_to_empty(kodo_dir: Path) -> None:
+    session_id = "1748792416"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    path = first.session_dir / "transient.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["security_path_rules"] = "not-a-list"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.security_path_rules == frozenset()
+
+
 def test_pending_security_alert_defaults_to_none(store: TransientStore) -> None:
     assert store.pending_security_alert is None
 

@@ -69,8 +69,11 @@ class HistoryProjector:
         ``user_message`` / ``assistant_response`` / ``tool_call`` entries; a
         ``subsession_start`` marker emits a takeover divider and splices the
         sub-agent's full inner transcript (read from its subsession log), and a
-        ``subsession_end`` marker emits a hand-back divider. This gives the
-        WebView a faithful replay of who did what, including sub-agent work.
+        ``subsession_end`` marker emits a hand-back divider. A
+        ``security_rule_added`` marker (doc/SECURITY_RULES_PLAN.md §2.4/§2.7)
+        replays the user's own record of a granted "always allow" rule. This
+        gives the WebView a faithful replay of who did what, including
+        sub-agent work.
 
         Each ``tool_call`` entry's ``checkpoint`` (root/sha/parent/index/undone)
         is reconstructed from the persisted ``checkpoint_sha``/``checkpoint_root``
@@ -149,6 +152,15 @@ class HistoryProjector:
                         "type": "runtime_error",
                         "message": str(line.get("message", "")),
                         "recoverable": line.get("recoverable") is not False,
+                    }
+                )
+            elif kind == "security_rule_added":
+                entries.append(
+                    {
+                        "type": "security_rule_added",
+                        "scope": str(line.get("scope", "")),
+                        "executable": str(line.get("executable", "")),
+                        "subcommand": str(line.get("subcommand", "")),
                     }
                 )
         return entries

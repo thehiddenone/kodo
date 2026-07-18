@@ -78,6 +78,14 @@ class SessionState:
             call, like ``command_control``); mirrors
             ``TransientStore.security_rules`` for crash-resume, the same
             relationship ``command_control`` has to its transient twin.
+        security_path_rules: The workspace-escape sibling of
+            ``security_rules`` (doc/SECURITY_RULES_PLAN.md §2.7) —
+            ``(executable, resolved_absolute_path)`` shapes granted for a
+            non-destructive command (read-only/``cd``) whose only issue was
+            targeting a path outside the workspace. Same never-frozen,
+            mirrors-``TransientStore.security_path_rules`` relationship as
+            ``security_rules``; kept as a separate field rather than folded
+            in since the two rule kinds are matched with different semantics.
     """
 
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -92,6 +100,7 @@ class SessionState:
     command_control: str = "smart"
     thinking_level: str = ""
     security_rules: frozenset[tuple[str, str]] = field(default_factory=frozenset)
+    security_path_rules: frozenset[tuple[str, str]] = field(default_factory=frozenset)
 
     def to_dict(self) -> dict[str, object]:
         """Serialise to a plain dict for wire-protocol events.

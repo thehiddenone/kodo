@@ -491,6 +491,28 @@ async def test_history_entries_error_marker_recoverable_defaults_true(tmp_path: 
     assert entries == [{"type": "runtime_error", "message": "oops", "recoverable": True}]
 
 
+async def test_history_entries_security_rule_added_marker(tmp_path: Path) -> None:
+    projector, transient, _c = _make_projector(tmp_path)
+    transient._lines = [
+        {
+            "type": "security_rule_added",
+            "scope": "session",
+            "executable": "git",
+            "subcommand": "push",
+            "ts": "2026-07-17T00:00:00+00:00",
+        }
+    ]
+    entries = await projector.history_entries()
+    assert entries == [
+        {
+            "type": "security_rule_added",
+            "scope": "session",
+            "executable": "git",
+            "subcommand": "push",
+        }
+    ]
+
+
 async def test_history_entries_splices_subsession_transcript(tmp_path: Path) -> None:
     projector, transient, _c = _make_projector(tmp_path)
     transient._lines = [

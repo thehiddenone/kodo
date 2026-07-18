@@ -536,6 +536,16 @@ EVT_USAGE_UPDATE = "usage.update"
 # EVT_API_KEY_REVOKE for the rejected vendor.
 EVT_ERROR = "error"
 
+# Server → Client event. Fired right after a Phase 2 "always allow" security
+# rule is granted (doc/SECURITY_RULES_PLAN.md §2.4/§2.7) — the user's own
+# record of what they just chose, distinct from the gated tool call's own
+# card. ``{scope: "session" | "global", executable, subcommand}`` — the exact
+# shape the permission prompt offered (``subcommand`` holds a resolved
+# absolute path for a workspace-escape/path rule, same as ``rule_offer`` on
+# ``prompt.permission``, §6.5). Also persisted as a ``security_rule_added``
+# marker so it replays on reload (see ``EngineEmitters.emit_security_rule_added``).
+EVT_SECURITY_RULE_ADDED = "security.rule_added"
+
 # Server → Client events. Drive the sidebar's llama.cpp/model controls only —
 # no workflow meaning. ``llamacpp.install.progress`` streams ``{percent,
 # message}`` for the llama.cpp binary install; ``percent == -1`` signals

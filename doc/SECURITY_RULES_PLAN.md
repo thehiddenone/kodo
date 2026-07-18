@@ -4,7 +4,9 @@ Replacing the SMART-mode **LLM intent judge** with a deterministic, heuristic
 rule engine. Companion to [SECURITY.md](SECURITY.md) (which describes the
 implemented layer); this document is the phased plan and the rationale for the
 switch. As phases land, SECURITY.md is updated to describe the new behavior
-and this plan records what was decided and why.
+and this plan records what was decided and why. For "given this exact
+command, what happens and why" — a use-case reference rather than a decision
+log — see [SECURITY_RULES_GUIDE.md](SECURITY_RULES_GUIDE.md).
 
 ---
 
@@ -185,9 +187,14 @@ line:
    thanks to the default table.
 4. The matched rule (or default-ask) is `rule_eligible`: **deployment,
    system, network, and unknown are eligible; destructive, privilege,
-   obfuscation, Tier 0 structural, and outside-workspace asks never are.**
-   `git push` can be permanently allowed; `sudo …`, `rm -rf …`, and
-   `curl | sh` can only ever be allowed once.
+   obfuscation, and Tier 0 structural asks never are.** `git push` can be
+   permanently allowed; `sudo …`, `rm -rf …`, and `curl | sh` can only ever
+   be allowed once. **Outside-workspace asks are eligible only for a small
+   curated bucket** (read-only executables + `cd`/`Set-Location`) and only
+   via a *different* offer shape — a resolved absolute path, not a
+   subcommand — see §2.7; every other outside-workspace ask (an unknown or
+   destructive command, or an eligible command targeting a credential-shaped
+   path) still never offers.
 
 No offer → the panel is exactly today's Allow / Deny.
 
@@ -379,6 +386,191 @@ per `(part, scope)` pair where `part.rule_offer is not None and scope in
 `kodo.state.TransientStore.add_security_rule`/`WorkflowEngine.add_security_rule`
 are unchanged — they already grant one shape at a time.
 
+### 2.7 Workspace-escape path offers for read-only/`cd` commands (2026-07-17)
+
+Before this change, §2.2 rule 4 made the outside-workspace category
+categorically non-offerable — `cd /some/sibling/repo && git status`
+(discussed live: `cd /Users/dev/dev_root/kodo && git status --short`, run
+from a `kodo-vsix`-only workspace) got one plain, whole-line Allow/Deny with
+no checkbox, forever, no matter how benign `cd`/`git status` are
+individually. The escape check (§1 step 1, `analysis.outside_paths`) was a
+**whole-command** short-circuit: the instant *any* argument/redirection
+anywhere in the line resolved outside every workspace root, `evaluate_command()`
+returned immediately — before the per-segment loop (§2.6) ever ran, so the
+per-segment split never got a chance to help here.
+
+**Scope, confirmed via `AskUserQuestion`:** eligible executables are the
+existing read-only allow-list (`_READONLY_EXECUTABLES`/`_READONLY_CMDLETS` —
+`cat`, `ls`, `grep`, `head`, …) plus `cd`/`Set-Location` (`_CD_EXECUTABLES`,
+a separate bucket from the read-only list since `cd` doesn't read or output
+anything — it's non-destructive/session-scoped, not "read-only" in the same
+sense); one rule per **distinct resolved path**, not per command (`cat
+/etc/hosts /etc/passwd` offers two independent checkboxes); integrated with
+the §2.6 per-segment split (`cd /outside/path && git status` offers exactly
+one part — `git status` doesn't even appear, since it was already silently
+allowed); a small hardcoded sensitive-path denylist (`~/.ssh`, `~/.aws`,
+`~/.gnupg`, `~/.kube`, `~/.docker`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`,
+`~/.config/gcloud`) is never offer-eligible even for an otherwise-eligible
+command — the ask still happens, just with no checkbox for that path.
+
+**The offer shape is different from every other category**: `(executable,
+resolved_absolute_path)`, not `(executable, subcommand)`. Matching a future
+call means *resolving that call's own argument first* (relative or
+absolute, against its own cwd) and comparing the resolved form — not literal
+string equality. In practice this needs no new resolution step: the static
+analysis (`kodo.security._analysis.analyze_command`/`_classify`/`_resolve`)
+already computes the fully-resolved absolute form of every token it flags as
+"outside" (a plain relative token without `..` is never even resolved at
+all — by design, it's cwd-confined and can't escape — so it never produces
+an outside-path finding to match against in the first place). `cd ../kodo`
+and `cd /Users/dev/dev_root/kodo`, evaluated from the same cwd, resolve to
+the identical string and hit the same granted rule.
+
+**Read-only fast path stays safe.** §1 step 3's fast path
+(`analysis.read_only`) only ever checked executables + `writes_file` — it
+has no notion of paths, so its safety always depended entirely on the
+outside-workspace check running first, unconditionally, over the whole
+command. Splitting that check per-segment means the fast path must now
+**also** require no segment has an outside-path finding
+(`analysis.read_only and not any(analysis.segment_outside_paths)`), or a
+lone `cat /etc/hosts` — every executable in the "line" is `cat`, read-only,
+no write — would silently auto-allow. `cat file.txt` (a plain in-workspace
+relative) is unaffected: it's never even resolved, so the AND changes
+nothing for the overwhelming common case.
+
+**A segment with any outside-path finding unconditionally skips the normal
+per-segment rule table** (`_judge_segment`), regardless of how many of its
+paths are already covered by a granted rule. This is load-bearing, not a
+performance nicety: `cd` already has an unconditional built-in allow-rule
+(§1.3, matches any argument) — if a segment fell through to that table the
+instant its own outside-path findings happened to be fully silenced, `cd
+/outside/granted-path && cd /outside/UNgranted-path` risk being conflated
+(there's only one segment here, but the general shape generalizes: a
+write-plus-read segment like `cat /etc/hosts > /etc/hosts2` where only the
+read side is granted must not spuriously re-ask via the rule table once the
+read is silenced).
+
+**Segment-wide, not argument-wide, eligibility.** `writes_file` disqualifies
+*every* path offer in a segment, including an unrelated read target (`cat
+/etc/hosts > /etc/hosts2` — the read of `/etc/hosts` doesn't get offered
+either). Mirrors `_rule_offer`'s own segment-wide granularity for
+`has_substitution`/nested-shell — deliberate, not an oversight.
+
+**Nested/substituted contexts stay non-offerable, for free.** Command
+substitutions and nested shells already wrap a recursive `evaluate_command()`
+call's failure into a single, generic, non-offerable ask (`Embedded command
+substitution …`/`Nested shell command: …`), discarding the inner call's
+`.parts`/`.rule_offer` unconditionally — this was already true before §2.7
+and needed no change: an eligible command wrapped in `bash -c "cat
+/etc/hosts"` still never surfaces its own offer, only the outer wrapping
+does (though a `known_path_rules` grant still silences the wrapped
+occurrence, exactly like a bare one).
+
+**Storage is a fully separate store, not a schema change to the existing
+one** — `~/.kodo/etc/security_path_rules.json` (global,
+`add_global_path_rule`/`global_path_rules`) and a parallel
+`TransientStore.security_path_rules`/`add_security_path_rule` (session),
+mirroring `_store.py`'s/`_transient.py`'s existing command-shape machinery
+almost line for line. Deliberately not folded into the existing
+`security_rules.json`/`transient.json` schema: both hard-assume a flat
+2-element `[executable, subcommand]` list with **no "kind" discriminator**,
+and extending that live, already-shipped schema would need a migration path
+the separate-file approach avoids entirely. (The two rule *kinds* were
+already not fully unambiguous even within the existing single schema before
+this change — an unknown-command exact-literal offer, §2.4a.7's `1brc
+./measurements.txt` example, can itself store a path-shaped "subcommand" —
+so keeping them in genuinely separate stores removes rather than introduces
+ambiguity.)
+
+**A `kind` field, Python-internal only, routes the grant — never on the
+wire.** `AskPart` gained `kind: "command" | "path"` (default `"command"`,
+so every pre-existing `AskPart` construction site needed no change).
+`kodo.tools._dispatch.__security_gate`'s grant loop branches on
+`part.kind` to call `add_security_rule` or `add_security_path_rule`. The
+wire protocol needs **no change at all** for this: `fire_permission`
+(`runtime._gates`) already serializes only `part.reason`/`part.rule_offer`
+into the outbound `{reason, rule_offer}` — `kind` never crosses the socket —
+and the server always grants from its **own** in-memory `AskPart` objects on
+`allow`, never anything reconstructed from the client's response (the
+existing "server never trusts a client-declared shape" invariant, §3.2a/§4,
+extends unchanged: only now there are two kinds of shape the server might
+have offered, and it always remembers which is which itself). This also
+means **kodo-vsix needed zero changes** — confirmed by reading
+`PermissionPanel.tsx`/`types.ts`/`session-controller.ts` in full:
+`rule_offer: {executable, subcommand}` is rendered as fully opaque strings
+(`${executable} ${subcommand}`.trim()) at every hop, so a resolved absolute
+path in the `subcommand` slot renders correctly with no code change — it
+just shows as `Always allow cat /etc/hosts`-style text.
+
+**Windows**: `cd`/`chdir`/`sl` all normalize to the single canonical
+`set-location` during `_classify._normalize`'s alias-resolution pass, before
+any rule ever sees the segment — `_CD_EXECUTABLES = {"cd", "set-location"}`
+needs no dialect branching. Windows paths are case-insensitive, so the
+offer/dedup/`known_path_rules` key goes through the same case+slash fold
+`_within_any_root` already uses for its own comparisons
+(`_normalize_path_key`) — the *displayed* reason text keeps the original
+resolved casing; only the granted shape itself is folded (a small,
+deliberate cosmetic tradeoff — a lowercase drive letter in the permission
+panel — in exchange for a rule granted as `C:\Outside` reliably silencing a
+later `c:\outside`).
+
+### 2.8 Radio-button choice + a durable "rule added" record (2026-07-17, later)
+
+Two client-facing follow-ups, confirmed via `AskUserQuestion` before either was built:
+
+**The session/global choice became a grouped, mutually-exclusive radio pair
+instead of two independent checkboxes.** The two options were always
+mutually exclusive in effect (picking one clears the other — see §2.3's
+`toggleRemember`), but checkboxes read as independently toggleable, which is
+misleading. `PermissionPanel.tsx`'s `RuleOfferCheckboxes` became
+`RuleOfferChoice`: still the same bordered `permissionRuleOffer` box (the
+existing border already delineates the group's bounds — no new styling
+needed there), but `<input type="radio" name="{requestId}-rule-offer-{i}">`
+per part so multiple parts' pairs in a compound-command prompt never
+cross-group. Click-to-deselect (return to "no rule remembered") is preserved
+across the type change by driving the toggle off `onClick` rather than
+`onChange` — a native radio's `onChange` does not fire when you click an
+already-checked option, but `onClick` always does, so re-clicking the
+selected option still clears it exactly as the checkbox did. The component
+also takes a `scopes` list and falls back to a single plain checkbox when it
+has fewer than two entries — confirmed defensive-only: nothing in the wire
+protocol today ever restricts a `rule_offer` to a single scope, so that
+branch is currently unreachable, kept only so a future scope-restricted
+offer (none planned) degrades sensibly instead of rendering a meaningless
+one-option radio group. WS_PROTOCOL.md §6.5 updated to describe the radio
+pair instead of checkboxes.
+
+**A new `security.rule_added` event + `security_rule_added` session-entry
+type is the user's own durable record of what they just granted** —
+distinct from the gated tool call's own card, and explicitly excluded from
+LLM context (`exclude_from_context: true`, same bucket as `thinking_block`/
+`interrupted`/`error_notice`). Fired from `WorkflowEngine.add_security_rule`/
+`add_security_path_rule` (`_core.py`) right after the rule is actually
+persisted — one event per granted part, in grant order — via a new
+`EngineEmitters.emit_security_rule_added(scope, executable, subcommand)`
+that mirrors `emit_error`'s shape exactly: persist a `security_rule_added`
+marker (`TransientStore.append_marker`) *and* push the live event, so
+`HistoryProjector.history_entries` replays the same record after a reload
+(new `elif kind == "security_rule_added"` branch, `_history.py`). Wire
+payload is `{scope, executable, subcommand}` — the exact granted shape,
+reusing the same "resolved absolute path in `subcommand`" convention as
+`rule_offer` on `prompt.permission` for a path rule, so the client needs no
+`kind` field and no branching to render either kind (see WS_PROTOCOL.md
+§5.9d).
+
+kodo-vsix: `SessionEntry`/`Action` gained a `security_rule_added` variant
+(`types.ts`); `session-controller.ts` bridges the `security.rule_added` WS
+event; `reducer.ts` handles both the live action (plain append, mirroring
+how `tool_call` appends — no streaming state to fold in, since this always
+fires mid-turn after any toolgen/token streaming for the call has already
+committed) and the `session_history` replay branch. `SessionEntryView.tsx`
+renders it as a new, deliberately plain style (`styles.securityRuleAdded`) —
+an ℹ️ icon paired with ordinary `--vscode-foreground` text, *not* one of the
+colored `<kodo_info>`/`<kodo_warn>`/`<kodo_crit>`/`<kodo>` Markdown callouts,
+since this is neither a warning nor a success, just a factual record: "Added
+an always-allow rule for `<executable> <subcommand>` — this session." /
+"— all sessions."
+
 ---
 
 ## Phase 3 — Tuning, management, and hardening
@@ -479,5 +671,11 @@ no change.
   regardless of `command_control` posture nuance within the rule engine —
   the same way `/tmp` is ordinary scratch space on a real machine.
 - **Session rules survive crash-resume** (they live in `SessionState`).
+- **A workspace-escape ask is offer-eligible only for a curated read-only/
+  `cd` bucket, and only via a separate path-shaped rule** (§2.7) — every
+  other outside-workspace ask (an unknown/destructive command, or an
+  eligible command targeting a credential-shaped path) stays permanently
+  un-offerable, matching this file's own earlier, now-superseded framing of
+  "outside-workspace asks never are [rule-eligible]" for that remaining set.
 - The `intent` field stays mandatory as permission-panel/feed metadata but is
   no longer a judgement input.

@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from kodo.toolspecs import ALL_TOOLS, SecurityImpact, ToolSpec
 
 from ._rules import AskPart, RuleDecision, evaluate_command
-from ._store import global_rules
+from ._store import global_path_rules, global_rules
 
 __all__ = [
     "MODE_DEFENSIVE",
@@ -153,6 +153,7 @@ class SecurityLayer:
         default_cwd: str,
         roots: tuple[str, ...],
         session_rules: frozenset[tuple[str, str]] = frozenset(),
+        session_path_rules: frozenset[tuple[str, str]] = frozenset(),
     ) -> SecurityDecision:
         """Judge one tool call.
 
@@ -170,6 +171,10 @@ class SecurityLayer:
                 (``(executable, subcommand)`` shapes) — merged with the
                 process-wide global store for ``run_command``'s rule engine.
                 Ignored by every other tool.
+            session_path_rules: This session's workspace-escape path rules
+                (``(executable, resolved_absolute_path)`` shapes,
+                doc/SECURITY_RULES_PLAN.md §2.7) — same merge-with-global
+                treatment as ``session_rules``. Ignored by every other tool.
 
         Returns:
             SecurityDecision: allow or ask, with reason.
@@ -196,7 +201,7 @@ class SecurityLayer:
             mode = MODE_PERMISSIVE
 
         decision = self.__evaluate_mode(
-            mode, spec, impact, tool_input, default_cwd, roots, session_rules
+            mode, spec, impact, tool_input, default_cwd, roots, session_rules, session_path_rules
         )
         _log.info(
             "security: %s %s (%s, mode=%s, source=%s): %s",
@@ -218,6 +223,7 @@ class SecurityLayer:
         default_cwd: str,
         roots: tuple[str, ...],
         session_rules: frozenset[tuple[str, str]],
+        session_path_rules: frozenset[tuple[str, str]],
     ) -> SecurityDecision:
         if mode == MODE_PERMISSIVE:
             if impact >= SecurityImpact.CRITICAL:
@@ -242,7 +248,9 @@ class SecurityLayer:
                 "threshold",
             )
         if spec.name == "run_command":
-            return self.__evaluate_run_command(tool_input, default_cwd, roots, session_rules)
+            return self.__evaluate_run_command(
+                tool_input, default_cwd, roots, session_rules, session_path_rules
+            )
         if spec.name == "filesystem":
             return self.__evaluate_filesystem(tool_input)
         if spec.name == "rollback":
@@ -265,15 +273,22 @@ class SecurityLayer:
         default_cwd: str,
         roots: tuple[str, ...],
         session_rules: frozenset[tuple[str, str]],
+        session_path_rules: frozenset[tuple[str, str]],
     ) -> SecurityDecision:
         """The heuristic rule engine's verdict (doc/SECURITY_RULES_PLAN.md §1),
         including any Phase 2 "always allow" rule the user already granted
-        (session-scoped, merged with the process-wide global store)."""
+        (session-scoped, merged with the process-wide global store — both
+        the command-shape and workspace-escape path-shape stores, §2.7)."""
         command = str(tool_input.get("command", ""))
         cwd = self.__effective_cwd(tool_input, default_cwd)
         known_rules = session_rules | global_rules()
+        known_path_rules = session_path_rules | global_path_rules()
         verdict: RuleDecision = evaluate_command(
-            command, cwd=cwd, roots=roots, known_rules=known_rules
+            command,
+            cwd=cwd,
+            roots=roots,
+            known_rules=known_rules,
+            known_path_rules=known_path_rules,
         )
         if verdict.action == "allow":
             return _allow(verdict.reason, verdict.source)

@@ -51,7 +51,7 @@ from kodo.project import (
     kodo_user_dir,
     session_temp_dir,
 )
-from kodo.security import SecurityLayer, add_global_rule
+from kodo.security import SecurityLayer, add_global_path_rule, add_global_rule
 from kodo.state import TransientStore
 from kodo.subagents import AgentLoadError, AgentRegistry
 from kodo.tools import LogicalPathResolver, PathResolver, ProjectPathResolver, RootPath
@@ -216,6 +216,7 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
             init_project=self._init_project,
             notify_tool_call_in_progress=self._emitters.notify_tool_call_in_progress,
             add_security_rule=self.add_security_rule,
+            add_security_path_rule=self.add_security_path_rule,
         )
 
     @property
@@ -310,6 +311,7 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
             self._session.edit_control = self._transient.edit_control
             self._session.command_control = self._transient.command_control
             self._session.security_rules = self._transient.security_rules
+            self._session.security_path_rules = self._transient.security_path_rules
             # Re-validate against the *current* model rather than trusting the
             # persisted tier blindly — the shared local/cloud selection may
             # have changed while this session was closed (doc/SESSIONS.md).
@@ -599,12 +601,36 @@ class WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin
         other open session's very next matching call sees it too, with no
         session-state mirroring needed. Any other value is a no-op (the
         dispatcher never sends one; this is the fail-closed default for an
-        unrecognized scope).
+        unrecognized scope) — and, unlike the two real scopes, does not push
+        ``emit_security_rule_added``.
         """
         if scope == "session":
             self._session.security_rules = self._transient.add_security_rule(executable, subcommand)
         elif scope == "global":
             add_global_rule(executable, subcommand)
+        else:
+            return
+        await self._emitters.emit_security_rule_added(scope, executable, subcommand)
+
+    async def add_security_path_rule(self, scope: str, executable: str, path: str) -> None:
+        """Persist a workspace-escape path rule at the given scope
+        (doc/SECURITY_RULES_PLAN.md §2.7) — the sibling of
+        :meth:`add_security_rule` for an eligible read-only/``cd`` command
+        whose only issue was targeting a resolved absolute path outside the
+        workspace. Same session/global semantics as :meth:`add_security_rule`
+        (including the ``emit_security_rule_added`` notification); kept as a
+        separate method (rather than a ``kind`` param) so a caller can't
+        misroute a grant by passing the wrong string.
+        """
+        if scope == "session":
+            self._session.security_path_rules = self._transient.add_security_path_rule(
+                executable, path
+            )
+        elif scope == "global":
+            add_global_path_rule(executable, path)
+        else:
+            return
+        await self._emitters.emit_security_rule_added(scope, executable, path)
 
     def _freeze_effective_modes(self) -> None:
         """Snapshot the two frozen toggles into their ``effective_*`` twins.

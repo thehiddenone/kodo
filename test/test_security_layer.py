@@ -317,6 +317,52 @@ async def test_smart_run_command_global_rule_silences_matching_ask() -> None:
 
 
 @pytest.mark.asyncio
+async def test_smart_run_command_outside_workspace_carries_path_offer() -> None:
+    layer = SecurityLayer()
+    d = await _eval(
+        layer,
+        "run_command",
+        {"command": "cat /etc/hosts", "intent": "read the hosts file", "timeout": 5},
+        "smart",
+    )
+    assert d.action == "ask"
+    assert d.source == "workspace"
+    assert len(d.parts) == 1
+    assert d.parts[0].rule_offer == ("cat", "/etc/hosts")
+    assert d.parts[0].kind == "path"
+
+
+@pytest.mark.asyncio
+async def test_smart_run_command_session_path_rule_silences_matching_ask() -> None:
+    layer = SecurityLayer()
+    d = await layer.evaluate(
+        tool_name="run_command",
+        tool_input={"command": "cat /etc/hosts", "intent": "read", "timeout": 5},
+        command_control="smart",
+        autonomous=False,
+        default_cwd="/ws/proj",
+        roots=("/ws/proj",),
+        session_path_rules=frozenset({("cat", "/etc/hosts")}),
+    )
+    assert d.action == "allow"
+
+
+@pytest.mark.asyncio
+async def test_smart_run_command_global_path_rule_silences_matching_ask() -> None:
+    from kodo.security import add_global_path_rule
+
+    add_global_path_rule("cat", "/etc/hosts")
+    layer = SecurityLayer()
+    d = await _eval(
+        layer,
+        "run_command",
+        {"command": "cat /etc/hosts", "intent": "read", "timeout": 5},
+        "smart",
+    )
+    assert d.action == "allow"
+
+
+@pytest.mark.asyncio
 async def test_smart_filesystem_policy() -> None:
     layer = SecurityLayer()
     ask = await _eval(
@@ -467,6 +513,7 @@ class _FakeSession:
     effective_autonomous = False
     command_control = "defensive"
     security_rules: frozenset[tuple[str, str]] = frozenset()
+    security_path_rules: frozenset[tuple[str, str]] = frozenset()
 
 
 @pytest.mark.asyncio

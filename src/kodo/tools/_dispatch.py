@@ -349,6 +349,7 @@ class ToolDispatcher:
                 default_cwd=str(ctx.resolver.default_cwd),
                 roots=tuple(rp.path for rp in ctx.root_paths),
                 session_rules=ctx.session.security_rules,
+                session_path_rules=ctx.session.security_path_rules,
             )
             decision_action = decision.action
             decision_reason = decision.reason
@@ -387,11 +388,15 @@ class ToolDispatcher:
             # only a shape the server itself offered can ever be granted.
             for part, scope in zip(parts, response.remember, strict=False):
                 if part.rule_offer is not None and scope in ("session", "global"):
-                    await ctx.services.add_security_rule(scope, *part.rule_offer)
+                    if part.kind == "path":
+                        await ctx.services.add_security_path_rule(scope, *part.rule_offer)
+                    else:
+                        await ctx.services.add_security_rule(scope, *part.rule_offer)
                     _log.info(
-                        "security: %s granted %s rule for %r (%s)",
+                        "security: %s granted %s %s rule for %r (%s)",
                         scope,
                         tool_name,
+                        part.kind,
                         part.rule_offer,
                         ctx.agent_name,
                     )

@@ -34,7 +34,14 @@ from ._layer import (
     SecurityLayer,
 )
 from ._rules import AskPart, CommandRule, RuleDecision, evaluate_command
-from ._store import add_global_rule, global_rules, global_rules_path
+from ._store import (
+    add_global_path_rule,
+    add_global_rule,
+    global_path_rules,
+    global_path_rules_path,
+    global_rules,
+    global_rules_path,
+)
 
 __all__ = [
     "MODE_DEFENSIVE",
@@ -46,9 +53,12 @@ __all__ = [
     "RuleDecision",
     "SecurityDecision",
     "SecurityLayer",
+    "add_global_path_rule",
     "add_global_rule",
     "analyze_command",
     "evaluate_command",
+    "global_path_rules",
+    "global_path_rules_path",
     "global_rules",
     "global_rules_path",
 ]

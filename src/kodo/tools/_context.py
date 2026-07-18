@@ -115,7 +115,16 @@ class PermissionPartLike(Protocol):
     def rule_offer(self) -> tuple[str, str] | None:
         """The ``(executable, subcommand)`` shape this part may be
         permanently allowed as, or ``None`` when not offer-eligible
-        (doc/SECURITY_RULES_PLAN.md §2.2/§2.6)."""
+        (doc/SECURITY_RULES_PLAN.md §2.2/§2.6). For a ``kind="path"`` part,
+        ``subcommand`` actually holds a resolved absolute path (§2.7)."""
+        ...
+
+    @property
+    def kind(self) -> str:
+        """``"command"`` or ``"path"`` — routes a granted ``remember`` to
+        ``EngineServices.add_security_rule`` or ``.add_security_path_rule``
+        respectively (doc/SECURITY_RULES_PLAN.md §2.7). Never sent over the
+        wire; purely a server-internal routing tag."""
         ...
 
 
@@ -163,12 +172,15 @@ class SecurityLike(Protocol):
         default_cwd: str,
         roots: tuple[str, ...],
         session_rules: frozenset[tuple[str, str]] = frozenset(),
+        session_path_rules: frozenset[tuple[str, str]] = frozenset(),
     ) -> SecurityDecisionLike:
         """Judge one tool call: allow it, or ask the user for permission.
 
         ``session_rules`` is this session's Phase 2 "always allow" grants
-        (``SessionLike.security_rules``); the layer merges in the
-        process-wide global store itself.
+        (``SessionLike.security_rules``); ``session_path_rules`` is its
+        workspace-escape sibling (``SessionLike.security_path_rules``,
+        doc/SECURITY_RULES_PLAN.md §2.7). The layer merges in the
+        process-wide global stores itself.
         """
         ...
 
@@ -263,12 +275,18 @@ class SessionLike(Protocol):
     the same way ``command_control`` is (a rule granted mid-session applies
     to the very next matching call). The layer merges the process-wide
     global store in on top of this set itself.
+
+    ``security_path_rules`` is the workspace-escape sibling of
+    ``security_rules`` (doc/SECURITY_RULES_PLAN.md §2.7) —
+    ``(executable, resolved_absolute_path)`` shapes, same live-read/merge
+    semantics.
     """
 
     phase: str
     effective_autonomous: bool
     command_control: str
     security_rules: frozenset[tuple[str, str]]
+    security_path_rules: frozenset[tuple[str, str]]
 
 
 class EngineServices(Protocol):
@@ -427,6 +445,15 @@ class EngineServices(Protocol):
         never re-derived from the live tool call, so a stale or manipulated
         client response can at most grant the *specific* shape the server
         already decided was safe to generalize.
+        """
+        ...
+
+    async def add_security_path_rule(self, scope: str, executable: str, path: str) -> None:
+        """Persist a workspace-escape path rule at the given scope
+        (doc/SECURITY_RULES_PLAN.md §2.7) — the sibling of
+        :meth:`add_security_rule` for a ``kind="path"`` part's ``rule_offer``.
+        Same scope/no-op semantics; ``executable``/``path`` are exactly the
+        server's own offered shape, never re-derived from the wire.
         """
         ...
 

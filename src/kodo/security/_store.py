@@ -37,7 +37,14 @@ from pathlib import Path
 
 from kodo.project import WorkspaceLayout
 
-__all__ = ["add_global_rule", "global_rules", "global_rules_path"]
+__all__ = [
+    "add_global_path_rule",
+    "add_global_rule",
+    "global_path_rules",
+    "global_path_rules_path",
+    "global_rules",
+    "global_rules_path",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -62,8 +69,45 @@ def add_global_rule(executable: str, subcommand: str) -> frozenset[tuple[str, st
     Returns:
         frozenset[tuple[str, str]]: The updated global rule set.
     """
-    updated = global_rules() | {(executable, subcommand)}
-    path = global_rules_path()
+    return _add(global_rules_path(), global_rules(), executable, subcommand)
+
+
+def global_path_rules_path() -> Path:
+    """``~/.kodo/etc/security_path_rules.json`` — the workspace-escape
+    sibling of :func:`global_rules_path` (doc/SECURITY_RULES_PLAN.md §2.7).
+
+    Deliberately a separate file rather than a new key/shape in
+    ``security_rules.json``: a command-shape rule is a literal ``(executable,
+    subcommand)`` match, while a path-shape rule's second element is a
+    resolved absolute path matched by *resolving the incoming argument
+    first* — different semantics, kept in genuinely separate stores rather
+    than requiring a "kind" discriminator on every read of the existing,
+    already-shipped file.
+    """
+    return WorkspaceLayout().etc_dir / "security_path_rules.json"
+
+
+def global_path_rules() -> frozenset[tuple[str, str]]:
+    """The current global path-rule set — ``(executable, resolved_absolute_
+    path)`` pairs — read fresh from disk."""
+    return _load(global_path_rules_path())
+
+
+def add_global_path_rule(executable: str, path: str) -> frozenset[tuple[str, str]]:
+    """Grant ``(executable, resolved_absolute_path)`` globally and persist it.
+
+    Same best-effort semantics as :func:`add_global_rule`.
+
+    Returns:
+        frozenset[tuple[str, str]]: The updated global path-rule set.
+    """
+    return _add(global_path_rules_path(), global_path_rules(), executable, path)
+
+
+def _add(
+    path: Path, current: frozenset[tuple[str, str]], executable: str, value: str
+) -> frozenset[tuple[str, str]]:
+    updated = current | {(executable, value)}
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(

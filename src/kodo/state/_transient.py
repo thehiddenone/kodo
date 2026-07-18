@@ -7,7 +7,7 @@ use and reused across restarts when the session is resumed.  Layout::
         meta.json        — human-readable metadata (name, creation time)
         transient.json   — mutable runtime state (stage, prompt, autonomous,
                            active_subsession, security_rules,
-                           pending_security_alert)
+                           security_path_rules, pending_security_alert)
         session.jsonl    — append-only MAIN session log: top-level LLM messages
                            (agent-agnostic — Guide and Problem Solver
                            share it) interleaved with ``subsession_start`` /
@@ -180,6 +180,7 @@ class TransientStore:
     __command_control: str
     __thinking_level: str
     __security_rules: frozenset[tuple[str, str]]
+    __security_path_rules: frozenset[tuple[str, str]]
     __pending_prompt: dict[str, object] | None
     __pending_security_alert: str | None
     __active_subsession: dict[str, object] | None
@@ -206,6 +207,7 @@ class TransientStore:
         self.__command_control = "smart"
         self.__thinking_level = ""
         self.__security_rules = frozenset()
+        self.__security_path_rules = frozenset()
         self.__pending_prompt = None
         self.__pending_security_alert = None
         self.__active_subsession = None
@@ -501,6 +503,30 @@ class TransientStore:
         if self.__paths is not None:
             self.__flush(self.__paths)
         return self.__security_rules
+
+    @property
+    def security_path_rules(self) -> frozenset[tuple[str, str]]:
+        """Persisted workspace-escape path grants for this session
+        (doc/SECURITY_RULES_PLAN.md §2.7) — ``(executable, resolved_absolute_
+        path)`` shapes. The path sibling of :attr:`security_rules` — kept in
+        a separate field/key rather than folded into it, since the two rule
+        kinds are matched with different semantics (literal vs.
+        resolve-then-compare). Mutated only via :meth:`add_security_path_rule`.
+        """
+        return self.__security_path_rules
+
+    def add_security_path_rule(self, executable: str, path: str) -> frozenset[tuple[str, str]]:
+        """Grant ``(executable, resolved_absolute_path)`` for the rest of
+        this session and persist it to ``transient.json``, surviving
+        crash-resume.
+
+        Returns:
+            frozenset[tuple[str, str]]: The updated path-rule set.
+        """
+        self.__security_path_rules = self.__security_path_rules | {(executable, path)}
+        if self.__paths is not None:
+            self.__flush(self.__paths)
+        return self.__security_path_rules
 
     @property
     def pending_prompt(self) -> dict[str, object] | None:
@@ -836,6 +862,16 @@ class TransientStore:
                 if isinstance(raw_rules, list)
                 else frozenset()
             )
+            raw_path_rules = data.get("security_path_rules")
+            self.__security_path_rules = (
+                frozenset(
+                    (str(rule[0]), str(rule[1]))
+                    for rule in raw_path_rules
+                    if isinstance(rule, list) and len(rule) == 2
+                )
+                if isinstance(raw_path_rules, list)
+                else frozenset()
+            )
             pending = data.get("pending_prompt")
             self.__pending_prompt = pending if isinstance(pending, dict) else None
             alert = data.get("pending_security_alert")
@@ -906,6 +942,7 @@ class TransientStore:
             "command_control": self.__command_control,
             "thinking_level": self.__thinking_level,
             "security_rules": sorted([list(rule) for rule in self.__security_rules]),
+            "security_path_rules": sorted([list(rule) for rule in self.__security_path_rules]),
             "pending_prompt": self.__pending_prompt,
             "pending_security_alert": self.__pending_security_alert,
             "active_subsession": self.__active_subsession,

@@ -549,13 +549,19 @@ async def test_handle_command_control_set_normalizes(
 async def test_add_security_rule_session_scope_updates_session_and_transient(
     tmp_path: Path,
 ) -> None:
-    engine, transient, _s, _g = _make_engine(tmp_path)
+    engine, transient, sink, _g = _make_engine(tmp_path)
     transient.attach_session("s1", resumed=False)
 
     await engine.add_security_rule("session", "git", "push")
 
     assert engine._session.security_rules == frozenset({("git", "push")})
     assert transient.security_rules == frozenset({("git", "push")})
+    assert sink.sent[-1].payload == {
+        "type": "security.rule_added",
+        "scope": "session",
+        "executable": "git",
+        "subcommand": "push",
+    }
 
 
 async def test_add_security_rule_session_scope_survives_resume(tmp_path: Path) -> None:
@@ -588,13 +594,77 @@ async def test_add_security_rule_global_scope_does_not_touch_session(
 
 
 async def test_add_security_rule_unknown_scope_is_a_noop(tmp_path: Path) -> None:
-    engine, transient, _s, _g = _make_engine(tmp_path)
+    engine, transient, sink, _g = _make_engine(tmp_path)
     transient.attach_session("s1", resumed=False)
 
     await engine.add_security_rule("bogus", "git", "push")
 
     assert engine._session.security_rules == frozenset()
     assert transient.security_rules == frozenset()
+    assert sink.sent == []
+
+
+# ---------------------------------------------------------------------------
+# add_security_path_rule (doc/SECURITY_RULES_PLAN.md §2.7)
+# ---------------------------------------------------------------------------
+
+
+async def test_add_security_path_rule_session_scope_updates_session_and_transient(
+    tmp_path: Path,
+) -> None:
+    engine, transient, sink, _g = _make_engine(tmp_path)
+    transient.attach_session("s1", resumed=False)
+
+    await engine.add_security_path_rule("session", "cat", "/etc/hosts")
+
+    assert engine._session.security_path_rules == frozenset({("cat", "/etc/hosts")})
+    assert transient.security_path_rules == frozenset({("cat", "/etc/hosts")})
+    assert sink.sent[-1].payload == {
+        "type": "security.rule_added",
+        "scope": "session",
+        "executable": "cat",
+        "subcommand": "/etc/hosts",
+    }
+
+
+async def test_add_security_path_rule_session_scope_survives_resume(tmp_path: Path) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    transient.attach_session("s1", resumed=False)
+    await engine.add_security_path_rule("session", "cd", "/outside/path")
+
+    # A fresh engine resuming the same session id should see the same rule.
+    engine2, transient2, _s2, _g2 = _make_engine(tmp_path)
+    transient2.attach_session("s1", resumed=True)
+    engine2._session.security_path_rules = transient2.security_path_rules
+
+    assert engine2._session.security_path_rules == frozenset({("cd", "/outside/path")})
+
+
+async def test_add_security_path_rule_global_scope_does_not_touch_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "real-home"))
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    transient.attach_session("s1", resumed=False)
+
+    await engine.add_security_path_rule("global", "cat", "/etc/hosts")
+
+    assert engine._session.security_path_rules == frozenset()
+    assert transient.security_path_rules == frozenset()
+    from kodo.security import global_path_rules
+
+    assert ("cat", "/etc/hosts") in global_path_rules()
+
+
+async def test_add_security_path_rule_unknown_scope_is_a_noop(tmp_path: Path) -> None:
+    engine, transient, sink, _g = _make_engine(tmp_path)
+    transient.attach_session("s1", resumed=False)
+
+    await engine.add_security_path_rule("bogus", "cat", "/etc/hosts")
+
+    assert engine._session.security_path_rules == frozenset()
+    assert transient.security_path_rules == frozenset()
+    assert sink.sent == []
 
 
 # ---------------------------------------------------------------------------

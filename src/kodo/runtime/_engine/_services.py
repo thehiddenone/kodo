@@ -31,6 +31,7 @@ class _EngineServices:
         init_project: Callable[[str], Awaitable[dict[str, object]]],
         notify_tool_call_in_progress: Callable[[str], Awaitable[None]],
         add_security_rule: Callable[[str, str, str], Awaitable[None]],
+        add_security_path_rule: Callable[[str, str, str], Awaitable[None]],
     ) -> None:
         self.__run_subagent = run_subagent
         self.__run_dependency_manager = run_dependency_manager
@@ -42,6 +43,7 @@ class _EngineServices:
         self.__init_project = init_project
         self.__notify_tool_call_in_progress = notify_tool_call_in_progress
         self.__add_security_rule = add_security_rule
+        self.__add_security_path_rule = add_security_path_rule
 
     async def run_subagent(
         self, caller: str, name: str, task_input: dict[str, object]
@@ -99,3 +101,7 @@ class _EngineServices:
     async def add_security_rule(self, scope: str, executable: str, subcommand: str) -> None:
         """Delegate to the engine's ``add_security_rule``."""
         await self.__add_security_rule(scope, executable, subcommand)
+
+    async def add_security_path_rule(self, scope: str, executable: str, path: str) -> None:
+        """Delegate to the engine's ``add_security_path_rule``."""
+        await self.__add_security_path_rule(scope, executable, path)

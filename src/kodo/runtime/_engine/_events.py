@@ -30,6 +30,7 @@ from kodo.transport import (
     EVT_CONTEXT_COMPACTING,
     EVT_CONTEXT_STATS,
     EVT_ERROR,
+    EVT_SECURITY_RULE_ADDED,
     EVT_SESSION_NAMING,
     EVT_STATE,
     EVT_USAGE_UPDATE,
@@ -201,6 +202,34 @@ class EngineEmitters:
                     "message": message,
                     "recoverable": recoverable,
                 },
+            )
+        )
+
+    async def emit_security_rule_added(self, scope: str, executable: str, subcommand: str) -> None:
+        """Push the user's own record of a just-granted "always allow" rule,
+        and persist it as a marker.
+
+        Fired by :meth:`WorkflowEngine.add_security_rule` /
+        :meth:`~WorkflowEngine.add_security_path_rule` right after the rule is
+        actually persisted (doc/SECURITY_RULES_PLAN.md §2.4/§2.7) — ``scope``
+        is always ``"session"`` or ``"global"`` here (the caller already
+        filtered out the unknown-scope no-op). The marker (``type:
+        "security_rule_added"``) lets :class:`~._history.HistoryProjector`
+        replay the same notice on reload, mirroring :meth:`emit_error`.
+        """
+        self._transient.append_marker(
+            {
+                "type": "security_rule_added",
+                "scope": scope,
+                "executable": executable,
+                "subcommand": subcommand,
+                "ts": datetime.now(tz=UTC).isoformat(),
+            }
+        )
+        await self._sink.send(
+            Envelope.make_event(
+                EVT_SECURITY_RULE_ADDED,
+                {"scope": scope, "executable": executable, "subcommand": subcommand},
             )
         )
 
