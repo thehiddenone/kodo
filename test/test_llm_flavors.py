@@ -584,6 +584,42 @@ def test_get_effective_flavor_id_empty_when_entry_has_no_flavors(tmp_path: Path)
 
 
 # ---------------------------------------------------------------------------
+# LlamaFlavor.get_context_size — raw parse of the flavor's own llama_args,
+# no fallback onto the entry (that's resolve_context_window's job, below)
+# ---------------------------------------------------------------------------
+
+
+def test_get_context_size_reads_ctx_size_flag() -> None:
+    flavor = LlamaFlavor(id="f", name="f", llama_args={"--ctx-size": "1048576"})
+    assert flavor.get_context_size() == 1_048_576
+
+
+def test_get_context_size_reads_short_c_flag() -> None:
+    flavor = LlamaFlavor(id="f", name="f", llama_args={"-c": "65536"})
+    assert flavor.get_context_size() == 65_536
+
+
+def test_get_context_size_prefers_ctx_size_over_short_c() -> None:
+    flavor = LlamaFlavor(id="f", name="f", llama_args={"--ctx-size": "1048576", "-c": "65536"})
+    assert flavor.get_context_size() == 1_048_576
+
+
+def test_get_context_size_is_zero_when_ctx_size_is_zero() -> None:
+    flavor = LlamaFlavor(id="f", name="f", llama_args={"--ctx-size": "0"})
+    assert flavor.get_context_size() == 0
+
+
+def test_get_context_size_is_zero_when_absent() -> None:
+    flavor = LlamaFlavor(id="f", name="f", llama_args={"--n-gpu-layers": "20"})
+    assert flavor.get_context_size() == 0
+
+
+def test_get_context_size_is_zero_when_unparseable() -> None:
+    flavor = LlamaFlavor(id="f", name="f", llama_args={"--ctx-size": "not-a-number"})
+    assert flavor.get_context_size() == 0
+
+
+# ---------------------------------------------------------------------------
 # resolve_context_window — deduced from the flavor's own -c/--ctx-size
 # ---------------------------------------------------------------------------
 

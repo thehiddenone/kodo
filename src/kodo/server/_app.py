@@ -398,6 +398,7 @@ def _local_registry_payload() -> dict[str, object]:
             "mac_tip": e.mac_tip,
             "min_memory": e.min_memory,
             "memory": e.memory,
+            "context_window": e.context_window,
             "flavors": _flavors_payload(e, kodo_dir),
             "active_flavor": get_active_flavor(kodo_dir, e.name),
         }

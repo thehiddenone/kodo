@@ -180,12 +180,17 @@ how kodo-vsix compares them against `detected_vram_gb` + `detected_ram_gb`.
 All eight
 fields are always `""`/`0` for `custom_hf`/`custom_file`/`custom_server_url`
 — none of the `local_llm.add_*` WS commands accept them, so a user-added
-entry can never populate them. Unlike `context_window` (dataclass-only, never
-sent to kodo-vsix on the entry itself — its *effective, flavor-resolved*
-value is never sent over the wire at all, only used server-side for
-auto-compaction budgeting via `resolve_context_window`, §4.6), all eight of
+entry can never populate them. All eight of
 these **are** included in
-`_local_registry_payload()`'s wire shape (§4.4). `flavors` **is** sent to
+`_local_registry_payload()`'s wire shape (§4.4), alongside the raw
+`context_window` field itself — added so kodo-vsix can render the sidebar's
+per-card "Context:" line (§4.4) — though its *effective, flavor-resolved*
+value is still never sent over the wire as its own field; that value is
+computed twice independently instead, server-side via
+`resolve_context_window` (§4.6, for auto-compaction budgeting) and
+client-side in kodo-vsix (`flavorContextSize`/`resolveContextSize` in
+`llm-registry-types.ts`, mirroring `LlamaFlavor.get_context_size`/
+`resolve_context_window` for display). `flavors` **is** sent to
 kodo-vsix too — predefined entries plus any custom ones merged in, see §4.6
 — since flavors are the only source of llama-server launch args now: there
 is no `llama_args` field on `LocalLLMEntry` at all any more.
@@ -408,7 +413,8 @@ caught and swallowed, since this must never block the `hello` handshake.
 `_local_registry_payload()` (`server/_app.py`) sends every `LocalLLMEntry`
 field kodo-vsix needs — `name`, `kind`, `description`, `repo_id`, `filename`,
 `path`, `url`, `installed`, `installed_path`, `base_llm`, `quant_author`,
-`quant_type`, `size_hint`, `gpu_tip`, `mac_tip`, `min_memory`, `memory` — plus
+`quant_type`, `size_hint`, `gpu_tip`, `mac_tip`, `min_memory`, `memory`,
+`context_window` — plus
 top-level `llama_server_override_path`, `detected_vram_gb`,
 `detected_ram_gb`, and `thinking_families` (§4.5). `installed_path` is new: the absolute path to the
 installed file(s) (`LocalModelManager.get_model_path()` for
@@ -434,6 +440,10 @@ already reports in full.
 [LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md) §11. kodo-vsix polls
 `manager-state.json` directly off disk once a second instead, independent of
 the WS connection.
+
+**Display convention: `name` is never shown to the user, `description` always is.** For a `hardcoded_hf` entry, `name` is an internal registry-key slug (e.g. `unsloth-qwen36-27b-q8-k-xl`); `description` is the human-readable label (e.g. "Qwen 3.6 27B UD-Q8_K_XL by Unsloth"). Every kodo-vsix surface that lists local models — the sidebar model-picker cards, the Local Inference Settings model cards, the "running: …" status line, the flavor-management modal title, and download-progress rows — titles itself off `entry.description`, falling back to `entry.name` only where `description` can legitimately be empty (a `custom_*` kind entry, where `name` is whatever display text the user typed when adding it, per §4). `name` still flows through the wire/DOM as a plain identifier (dataset keys, radio values, postMessage payload fields) — that's fine; the rule is only about user-visible text.
+
+Each sidebar model-picker card also shows two meta lines below its title: `Quant: <entry.quant_type>` (falling back to `"—"` for a `custom_*` entry, which never has one — see above) and `Context: <resolved size>`. The context figure is **not** `entry.context_window` verbatim — it's resolved the same way `resolve_context_window` resolves it server-side (§4.6), just computed client-side against the card's *currently selected* flavor: `resolveContextSize(entry, activeFlavor)` in `llm-registry-types.ts` calls `flavorContextSize(activeFlavor)` (mirroring `LlamaFlavor.get_context_size()` — scans that flavor's own `llama_args` for `--ctx-size`/`-c`) and falls back to `entry.context_window` when that's absent or `0` (including every built-in flavor's default `--ctx-size: "0"` "use the GGUF's own trained length" sentinel). Recomputed whenever the card's flavor `<select>` changes, so switching flavors updates the Context line without a server round trip. `sidebar-provider.ts`'s webview script can't import that TS module directly (it's a plain string-embedded `<script>`, not a bundled module — see §4.4's `_local_registry_payload` note), so it carries its own inline JS copy of the same two functions; keep them in sync by hand if either side's resolution rule changes.
 
 ### 4.5 Thinking-tier families
 

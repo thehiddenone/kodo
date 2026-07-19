@@ -330,6 +330,29 @@ class LlamaFlavor:
     min_ram: int = 0
     min_vram: int = 0
 
+    def get_context_size(self) -> int:
+        """The context size (tokens) this flavor's launch args declare.
+
+        Scans :attr:`llama_args` for ``--ctx-size`` (checked first, since
+        that's the flag every built-in flavor sets) or ``-c``, parsed as an
+        integer. Does not fall back to the entry's own ``context_window`` —
+        that's :func:`resolve_context_window`'s job, which calls this method
+        and falls back itself when it returns ``0``.
+
+        Returns:
+            int: The parsed context size, or ``0`` if neither key is
+            present or the value doesn't parse to an integer (including the
+            ``--ctx-size 0`` "use the GGUF's own trained context length"
+            sentinel every built-in flavor sets by default).
+        """
+        raw = self.llama_args.get("--ctx-size", self.llama_args.get("-c"))
+        if raw is None:
+            return 0
+        try:
+            return int(str(raw).strip())
+        except ValueError:
+            return 0
+
     @staticmethod
     def make_default_kv_q8() -> LlamaFlavor:
         return LlamaFlavor(
@@ -361,6 +384,87 @@ class LlamaFlavor:
                 "--jinja": "",
             },
         )
+
+    @staticmethod
+    def make_qwen_512k_kv_q8(id: str, name: str) -> LlamaFlavor:
+        return LlamaFlavor(
+            id=id,
+            name=name,
+            description="Default flavor",
+            llama_args={
+                "--ctx-size": "524288",
+                "--rope-scaling": "yarn",
+                "--rope-scale": "2.0",
+                "--yarn-orig-ctx": "262144",
+                "--override-kv": "qwen35.context_length=int:524288",
+                "--cache-type-k": "q8_0",
+                "--cache-type-v": "q8_0",
+                "--n-gpu-layers": "-1",
+                "--reasoning-format": "auto",
+                "--jinja": "",
+            },
+        )
+
+    @staticmethod
+    def make_qwen_1m_kv_q8(id: str, name: str) -> LlamaFlavor:
+        return LlamaFlavor(
+            id=id,
+            name=name,
+            description="Default flavor",
+            llama_args={
+                "--ctx-size": "1048576",
+                "--rope-scaling": "yarn",
+                "--rope-scale": "4.0",
+                "--yarn-orig-ctx": "262144",
+                "--override-kv": "qwen35.context_length=int:1048576",
+                "--cache-type-k": "q8_0",
+                "--cache-type-v": "q8_0",
+                "--n-gpu-layers": "-1",
+                "--reasoning-format": "auto",
+                "--jinja": "",
+            },
+        )
+
+    @staticmethod
+    def make_qwen_moe_512k_kv_q8(id: str, name: str) -> LlamaFlavor:
+        return LlamaFlavor(
+            id=id,
+            name=name,
+            description="Default flavor",
+            llama_args={
+                "--ctx-size": "524288",
+                "--rope-scaling": "yarn",
+                "--rope-scale": "2.0",
+                "--yarn-orig-ctx": "262144",
+                "--override-kv": "qwen35moe.context_length=int:524288",
+                "--cache-type-k": "q8_0",
+                "--cache-type-v": "q8_0",
+                "--n-gpu-layers": "-1",
+                "--reasoning-format": "auto",
+                "--jinja": "",
+            },
+        )
+
+    @staticmethod
+    def make_qwen_moe_1m_kv_q8(id: str, name: str) -> LlamaFlavor:
+        return LlamaFlavor(
+            id=id,
+            name=name,
+            description="Default flavor",
+            llama_args={
+                "--ctx-size": "1048576",
+                "--rope-scaling": "yarn",
+                "--rope-scale": "4.0",
+                "--yarn-orig-ctx": "262144",
+                "--override-kv": "qwen35moe.context_length=int:1048576",
+                "--cache-type-k": "q8_0",
+                "--cache-type-v": "q8_0",
+                "--n-gpu-layers": "-1",
+                "--reasoning-format": "auto",
+                "--jinja": "",
+            },
+        )
+
 
     @staticmethod
     def default_flavours_field() -> tuple[LlamaFlavor, ...]:
@@ -485,6 +589,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="AlexAtomic/qwen36-27b-GGUF",
         filename="qwen36-27b-Q8_0.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_512k_kv_q8('atomicchat-qwen36-27b-q8-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_1m_kv_q8('atomicchat-qwen36-27b-q8-1m-kv-q8', '1M context size'),
+        ),
         base_llm="Qwen36-27B",
         quant_author="AtomicChat",
         quant_type="Q8_0",
@@ -505,6 +614,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
         filename="Qwen3.6-27B-UD-Q8_K_XL.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_512k_kv_q8('unsloth-qwen36-27b-q8-k-xl-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_1m_kv_q8('unsloth-qwen36-27b-q8-k-xl-1m-kv-q8', '1M context size'),
+        ),
         base_llm="Qwen36-27B",
         quant_author="Unsloth",
         quant_type="UD-Q8_K_XL",
@@ -524,6 +638,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
         filename="Qwen3.6-27B-UD-Q6_K_XL.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_512k_kv_q8('unsloth-qwen36-27b-q6-k-xl-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_1m_kv_q8('unsloth-qwen36-27b-q6-k-xl-1m-kv-q8', '1M context size'),
+        ),
         base_llm="Qwen36-27B",
         quant_author="Unsloth",
         quant_type="UD-Q6_K_XL",
@@ -543,6 +662,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
         filename="Qwen3.6-27B-UD-Q5_K_XL.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_512k_kv_q8('unsloth-qwen36-27b-q5-k-xl-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_1m_kv_q8('unsloth-qwen36-27b-q5-k-xl-1m-kv-q8', '1M context size'),
+        ),
         base_llm="Qwen36-27B",
         quant_author="Unsloth",
         quant_type="UD-Q5_K_XL",
@@ -560,6 +684,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
         filename="Qwen3.6-27B-UD-Q4_K_XL.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_512k_kv_q8('unsloth-qwen36-27b-q4-k-xl-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_1m_kv_q8('unsloth-qwen36-27b-q4-k-xl-1m-kv-q8', '1M context size'),
+        ),
         base_llm="Qwen36-27B",
         quant_author="Unsloth",
         quant_type="UD-Q4_K_XL",
@@ -579,6 +708,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
         filename="Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8('unsloth-qwen36-35b-a3b-q8-k-xl-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8('unsloth-qwen36-35b-a3b-q8-k-xl-1m-kv-q8', '1M context size'),
+        ),
         base_llm="Qwen36-35B-A3B",
         quant_author="Unsloth",
         quant_type="UD-Q8_K_XL",
@@ -599,6 +733,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
         filename="Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8('unsloth-qwen36-35b-a3b-q6-k-xl-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8('unsloth-qwen36-35b-a3b-q6-k-xl-1m-kv-q8', '1M context size'),
+        ),
         base_llm="Qwen36-35B-A3B",
         quant_author="Unsloth",
         quant_type="UD-Q6_K_XL",
@@ -617,6 +756,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
         filename="Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8('unsloth-qwen36-35b-a3b-q5-k-xl-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8('unsloth-qwen36-35b-a3b-q5-k-xl-1m-kv-q8', '1M context size'),
+        ),
         base_llm="Qwen36-35B-A3B",
         quant_author="Unsloth",
         quant_type="UD-Q5_K_XL",
@@ -635,6 +779,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
         filename="Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8('unsloth-qwen36-35b-a3b-q4-k-xl-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8('unsloth-qwen36-35b-a3b-q4-k-xl-1m-kv-q8', '1M context size'),
+        ),
         base_llm="Qwen36-35B-A3B",
         quant_author="Unsloth",
         quant_type="UD-Q4_K_XL",
@@ -944,6 +1093,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
         filename="Qwen3.5-9B-UD-Q8_K_XL.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_512k_kv_q8('unsloth-qwen35-9b-q8-k-xl-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_1m_kv_q8('unsloth-qwen35-9b-q8-k-xl-kv-q8', '1M context size'),
+        ),
         base_llm="Qwen35-9B",
         quant_author="Unsloth",
         quant_type="UD-Q8_K_XL",
@@ -966,6 +1120,26 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         quant_author="Unsloth",
         quant_type="F16",
         size_hint="65.4 GB",
+        gpu_tip="~75GB total at 128K context — this is a big one, but it's GPT-OSS's sparse MoE "
+        "architecture at its best. A 16GB GPU (e.g. RX 7800 XT) runs the shared layers at full "
+        "speed while llama.cpp offloads the experts to ~96GB of DDR5 system RAM — no datacenter "
+        "card required.",
+        mac_tip="Needs ~75GB — a 128GB MacBook Pro (M4 Max or M5 Max) is required, and it's right "
+        "at the edge even there.",
+        min_memory=128,
+        memory=128,
+    ),
+    LocalLLMEntry(
+        name="unsloth-gpt-oss-120b-ud-q8-k-xl",
+        kind="hardcoded_hf",
+        description="GPT OSS 120B UD-Q8_K_XL by Unsloth",
+        repo_id="unsloth/gpt-oss-120b-GGUF",
+        filename="UD-Q8_K_XL/gpt-oss-120b-UD-Q8_K_XL-00001-of-00002.gguf",
+        context_window=131_072,
+        base_llm="GPT-OSS-120B",
+        quant_author="Unsloth",
+        quant_type="UD-Q8_K_XL",
+        size_hint="64.5 GB",
         gpu_tip="~75GB total at 128K context — this is a big one, but it's GPT-OSS's sparse MoE "
         "architecture at its best. A 16GB GPU (e.g. RX 7800 XT) runs the shared layers at full "
         "speed while llama.cpp offloads the experts to ~96GB of DDR5 system RAM — no datacenter "
@@ -1066,7 +1240,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         memory=24,
     ),
     LocalLLMEntry(
-        name="unsloth-gemma4-26b-ud-q8-k-xl",
+        name="unsloth-gemma4-26b-a4b-ud-q8-k-xl",
         kind="hardcoded_hf",
         description="Gemma 4 26B A4B UD-Q8_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
@@ -1085,7 +1259,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         memory=48,
     ),
     LocalLLMEntry(
-        name="unsloth-gemma4-26b-ud-q6-k-xl",
+        name="unsloth-gemma4-26b-a4b-ud-q6-k-xl",
         kind="hardcoded_hf",
         description="Gemma 4 26B A4B UD-Q6_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
@@ -1104,7 +1278,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         memory=48,
     ),
     LocalLLMEntry(
-        name="unsloth-gemma4-26b-ud-q5-k-xl",
+        name="unsloth-gemma4-26b-a4b-ud-q5-k-xl",
         kind="hardcoded_hf",
         description="Gemma 4 26B A4B UD-Q5_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
@@ -1122,7 +1296,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         memory=32,
     ),
     LocalLLMEntry(
-        name="unsloth-gemma4-26b-ud-q4-k-xl",
+        name="unsloth-gemma4-26b-a4b-ud-q4-k-xl",
         kind="hardcoded_hf",
         description="Gemma 4 26B A4B UD-Q4_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
@@ -1141,7 +1315,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         memory=32,
     ),
     LocalLLMEntry(
-        name="unsloth-gemma4-26b-qat-ud-q4-k-xl",
+        name="unsloth-gemma4-26b-a4b-qat-ud-q4-k-xl",
         kind="hardcoded_hf",
         description="Gemma 4 26B A4B QAT UD-Q4_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-qat-GGUF",
@@ -1158,7 +1332,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         memory=32,
     ),
     LocalLLMEntry(
-        name="unsloth-gemma4-26b-ud-q3-k-xl",
+        name="unsloth-gemma4-26b-a4b-ud-q3-k-xl",
         kind="hardcoded_hf",
         description="Gemma 4 26B A4B UD-Q3_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
@@ -1175,7 +1349,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         memory=24,
     ),
     LocalLLMEntry(
-        name="unsloth-gemma4-26b-ud-q2-k-xl",
+        name="unsloth-gemma4-26b-a4b-ud-q2-k-xl",
         kind="hardcoded_hf",
         description="Gemma 4 26B A4B UD-Q2_K_XL by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
@@ -1192,7 +1366,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         memory=16,
     ),
     LocalLLMEntry(
-        name="unsloth-gemma4-26b-ud-iq4-xs",
+        name="unsloth-gemma4-26b-a4b-ud-iq4-xs",
         kind="hardcoded_hf",
         description="Gemma 4 26B A4B UD-IQ4_XS by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
@@ -1209,7 +1383,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         memory=24,
     ),
     LocalLLMEntry(
-        name="unsloth-gemma4-26b-ud-iq3-xxs",
+        name="unsloth-gemma4-26b-a4b-ud-iq3-xxs",
         kind="hardcoded_hf",
         description="Gemma 4 26B A4B UD-IQ3_XXS by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
@@ -1226,7 +1400,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         memory=16,
     ),
     LocalLLMEntry(
-        name="unsloth-gemma4-26b-ud-iq2-xxs",
+        name="unsloth-gemma4-26b-a4b-ud-iq2-xxs",
         kind="hardcoded_hf",
         description="Gemma 4 26B A4B UD-IQ2_XXS by Unsloth",
         repo_id="unsloth/gemma-4-26B-A4B-it-GGUF",
@@ -1407,6 +1581,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-bf16.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8('deepreinforce-ornith10-35b-bf16-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8('deepreinforce-ornith10-35b-bf16-1m-kv-q8', '1M context size'),
+        ),
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",
         quant_type="BF16",
@@ -1427,6 +1606,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q8_0.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8('deepreinforce-ornith10-35b-q8-0-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8('deepreinforce-ornith10-35b-q8-0-1m-kv-q8', '1M context size'),
+        ),
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",
         quant_type="Q8_0",
@@ -1446,6 +1630,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q6_K.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8('deepreinforce-ornith10-35b-q6-k-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8('deepreinforce-ornith10-35b-q6-k-1m-kv-q8', '1M context size'),
+        ),
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",
         quant_type="Q6_K",
@@ -1465,6 +1654,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q5_K_M.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8('deepreinforce-ornith10-35b-q5-k-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8('deepreinforce-ornith10-35b-q5-k-1m-kv-q8', '1M context size'),
+        ),
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",
         quant_type="Q5_K_M",
@@ -1483,6 +1677,11 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q4_K_M.gguf",
         context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8('deepreinforce-ornith10-35b-q4-k-512k-kv-q8', '512K context size'),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8('deepreinforce-ornith10-35b-q4-k-1m-kv-q8', '1M context size'),
+        ),
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",
         quant_type="Q4_K_M",
@@ -1996,17 +2195,14 @@ def set_active_flavor(kodo_dir: Path, entry_name: str, flavor_id: str) -> None:
 def resolve_context_window(entry: LocalLLMEntry, flavor: LlamaFlavor | None) -> int:
     """The effective context window (tokens) for *entry* launched with *flavor*.
 
-    Deduced from *flavor*'s own ``-c``/``--ctx-size`` launch arg when it
-    parses to a positive integer (``--ctx-size`` is checked first, since
-    that's the flag every built-in flavor sets — see
-    :meth:`LlamaFlavor.make_default_kv_q8`); otherwise (absent, ``0``, or
-    unparseable — e.g. ``--ctx-size 0``'s "read the GGUF's own trained
-    context length" sentinel) falls back to *entry*'s own
-    ``context_window``. There is no separate ``context_window`` field on
-    :class:`LlamaFlavor` any more — this function is the single place that
-    turns launch args into a token-budgeting number (see
-    :func:`kodo.llms.get_context_window`, which uses it via
-    :func:`resolve_effective_llama_config`).
+    Deduced from :meth:`flavor.get_context_size() <LlamaFlavor.get_context_size>`
+    when it's positive; otherwise (absent, ``0``, or unparseable — e.g.
+    ``--ctx-size 0``'s "read the GGUF's own trained context length"
+    sentinel) falls back to *entry*'s own ``context_window``. There is no
+    separate ``context_window`` field on :class:`LlamaFlavor` any more —
+    this function is the single place that turns launch args into a
+    token-budgeting number (see :func:`kodo.llms.get_context_window`, which
+    uses it via :func:`resolve_effective_llama_config`).
 
     Args:
         entry: The registry entry supplying the fallback value.
@@ -2017,14 +2213,9 @@ def resolve_context_window(entry: LocalLLMEntry, flavor: LlamaFlavor | None) -> 
         int: The effective context window in tokens.
     """
     if flavor is not None:
-        raw = flavor.llama_args.get("--ctx-size", flavor.llama_args.get("-c"))
-        if raw is not None:
-            try:
-                value = int(str(raw).strip())
-            except ValueError:
-                value = 0
-            if value > 0:
-                return value
+        value = flavor.get_context_size()
+        if value > 0:
+            return value
     return entry.context_window
 
 
