@@ -194,6 +194,7 @@ class EngineHost(Protocol):
         flush_before_dispatch: bool = False,
         track_context: bool = False,
         on_stall: Callable[[TurnSignal], Awaitable[StallDecision]] | None = None,
+        on_tool_calls: Callable[[], None] | None = None,
     ) -> tuple[list[Message], list[Path]]: ...
 
     @staticmethod
@@ -283,6 +284,8 @@ class EngineHost(Protocol):
         subsession_id: str | None = None,
     ) -> Callable[[TurnSignal], Awaitable[StallDecision]]: ...
 
+    def _make_progress_handler(self, *, is_entry_turn: bool) -> Callable[[], None] | None: ...
+
     async def _persist_nudge(
         self,
         *,
@@ -293,7 +296,9 @@ class EngineHost(Protocol):
         mode: str,
     ) -> Message: ...
 
-    async def _persist_stuck_critical(self, *, flags: list[RedFlag], display_name: str) -> None: ...
+    async def _persist_stuck_critical(
+        self, *, agent_name: str, flags: list[RedFlag], display_name: str
+    ) -> None: ...
 
     def _schedule_entry_turn_alarm(
         self, agent_name: str, display_name: str, flags: list[RedFlag]

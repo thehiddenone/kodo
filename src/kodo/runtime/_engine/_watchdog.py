@@ -21,18 +21,24 @@ residence, ``scope`` by entry-agent-only vs. entry-agent-and-sub-agents, and
 immediately and asking first via the ``prompt.stuck_alert`` gate
 (:meth:`~.._gates.GateOrchestrator.fire_stuck_alert`). Autonomous mode always
 nudges immediately. An entry-agent turn only ever gets one nudge per streak
-(:data:`WatchdogMixin._stuck_streak`, cleared on the next genuine response):
-if it stalls again right after, the turn ends with a client-only "gave up"
-notice (:meth:`WatchdogMixin._persist_stuck_critical`) instead of nudging or
-asking a second time.
+(:data:`WatchdogMixin._stuck_streak`, cleared on the next genuine response
+*or* the next round that actually produces a tool call — a round that calls
+a tool is evidence of progress even if the stall that preceded it was never
+explained, so it gets the same "streak is over" treatment as a real final
+response; see :meth:`WatchdogMixin._make_progress_handler`): if it stalls
+again right after with no real progress in between, the turn ends with a
+client-only "gave up" notice (:meth:`WatchdogMixin._persist_stuck_critical`)
+instead of nudging or asking a second time.
 
-:class:`WatchdogMixin` builds one ``on_stall`` closure per turn
-(:meth:`WatchdogMixin._make_stall_handler`), threaded into
+:class:`WatchdogMixin` builds one ``on_stall`` closure and one
+``on_tool_calls`` closure per turn (:meth:`WatchdogMixin._make_stall_handler`,
+:meth:`WatchdogMixin._make_progress_handler`), threaded into
 :meth:`~._turns.TurnLoopMixin._run_agent_turn` at every call site
-(:mod:`._turns`, :mod:`._resume`, :mod:`._subagents`). The closure — not
-``_run_agent_turn`` — owns every stuck-specific decision, so the shared turn
+(:mod:`._turns`, :mod:`._resume`, :mod:`._subagents`). The closures — not
+``_run_agent_turn`` — own every stuck-specific decision, so the shared turn
 loop stays completely agnostic of settings, gates, and the worker queue; it
-only ever sees a ``TurnSignal -> StallDecision`` function.
+only ever sees a ``TurnSignal -> StallDecision`` function and a plain
+no-argument callback.
 """
 
 from __future__ import annotations
@@ -56,7 +62,7 @@ _log = logging.getLogger(__name__)
 # chat input already usable) before the interactive alarm fires — long enough
 # that a prompt already queued up behind this one gets a chance to start
 # first (which cancels the alarm; see WatchdogMixin._schedule_entry_turn_alarm).
-_ENTRY_TURN_ALARM_DELAY_S = 5.0
+_ENTRY_TURN_ALARM_DELAY_S = 1.0
 
 # Safety valve against a sub-agent that never recovers: caps how many times
 # one sub-agent _run_agent_turn call will retry inline (autonomous/
@@ -234,14 +240,18 @@ class WatchdogMixin:
             if is_entry_turn:
                 if self._stuck_streak:
                     # One nudge already went out since the last real response
-                    # and this turn stalled again right after it — nudging a
-                    # second time has shown no sign of working, so stop here
-                    # and tell the user why instead of asking (or trying)
-                    # again. _stuck_streak stays set: only a genuine response
-                    # (above) clears it, so a third/fourth/... consecutive
-                    # stall surfaces this same notice again rather than
-                    # nudging.
-                    await self._persist_stuck_critical(flags=flags, display_name=display_name)
+                    # and this turn stalled again right after it (with no
+                    # successful tool call in between — see
+                    # _make_progress_handler) — nudging a second time has
+                    # shown no sign of working, so stop here and tell the
+                    # user why instead of asking (or trying) again.
+                    # _stuck_streak stays set: only a genuine response or a
+                    # successful tool call clears it, so a third/fourth/...
+                    # consecutive stall surfaces this same notice again
+                    # rather than nudging.
+                    await self._persist_stuck_critical(
+                        agent_name=agent_name, flags=flags, display_name=display_name
+                    )
                     return StallDecision(retry=False)
 
                 immediate = self._session.effective_autonomous or cfg.auto_unstuck_interactive
@@ -302,6 +312,30 @@ class WatchdogMixin:
 
         return _on_stall
 
+    def _make_progress_handler(
+        self: EngineHost, *, is_entry_turn: bool
+    ) -> Callable[[], None] | None:
+        """Build the ``on_tool_calls`` callback for one ``_run_agent_turn`` call.
+
+        Entry-agent scope only: a round that produces a real tool call is
+        evidence the agent is not actually stuck, so it clears
+        :data:`_stuck_streak` exactly like a genuine no-tool-call final
+        response does in ``_on_stall`` — without this, one early stall stays
+        "armed" through any number of subsequent successful tool-call rounds,
+        so an unrelated later stall goes straight to
+        :meth:`_persist_stuck_critical` instead of getting its own nudge.
+        Sub-agent scope has no cross-turn streak (``_stuck_streak`` is
+        entry-agent-only, doc/STUCK_DETECTION.md §2.4a), so this returns
+        ``None`` for it and ``_run_agent_turn`` simply skips the callback.
+        """
+        if not is_entry_turn:
+            return None
+
+        def _on_tool_calls() -> None:
+            self._stuck_streak = False
+
+        return _on_tool_calls
+
     async def _persist_nudge(
         self: EngineHost,
         *,
@@ -327,6 +361,13 @@ class WatchdogMixin:
             "note": note,
             "mode": mode,
         }
+        _log.info(
+            "Stuck-agent nudge (session=%s agent=%s mode=%s reasons=%s)",
+            self._orch_session_id,
+            agent_name,
+            mode,
+            [flag.code for flag in flags],
+        )
         if subsession_id is not None:
             self._transient.append_subsession_message(
                 subsession_id,
@@ -347,24 +388,32 @@ class WatchdogMixin:
         return Message(role="user", content=_NUDGE_LLM_TEXT)
 
     async def _persist_stuck_critical(
-        self: EngineHost, *, flags: list[RedFlag], display_name: str
+        self: EngineHost, *, agent_name: str, flags: list[RedFlag], display_name: str
     ) -> None:
         """End an entry-agent turn for good instead of nudging (or asking) again.
 
         Only reached once :data:`_stuck_streak` is already set — i.e. this is
-        the *second* consecutive stall since the last real response, so the
-        one nudge already sent (auto or manual) did not get the model
-        unstuck. Client-only, mirroring ``emit_error``: never fed back to the
-        LLM, and — unlike the nudge — does not clear :data:`_stuck_streak`;
-        only a genuine non-stalled response does (see ``_on_stall``'s ``not
-        flags`` branch), so a third, fourth, ... consecutive stall keeps
-        surfacing this same notice rather than nudging again.
+        the *second* consecutive stall since the last real response (with no
+        intervening successful tool call — see
+        :meth:`_make_progress_handler`), so the one nudge already sent (auto
+        or manual) did not get the model unstuck. Client-only, mirroring
+        ``emit_error``: never fed back to the LLM, and — unlike the nudge —
+        does not clear :data:`_stuck_streak` itself; only a genuine
+        non-stalled response or a successful tool-call round does, so a
+        third, fourth, ... consecutive stall keeps surfacing this same
+        notice rather than nudging again.
         """
         reasons = "; ".join(flag.hint for flag in flags)
         message = (
             f"Kōdo already nudged {display_name} once, but it stalled again right "
             f"after ({reasons}). Ending the turn instead of trying again — you may "
             "need to rephrase the prompt or step in."
+        )
+        _log.warning(
+            "Stuck-agent critical (session=%s agent=%s reasons=%s)",
+            self._orch_session_id,
+            agent_name,
+            [flag.code for flag in flags],
         )
         await self._emitters.emit_agent_stuck_critical(message)
 

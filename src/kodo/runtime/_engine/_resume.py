@@ -268,6 +268,7 @@ class ResumeMixin:
             on_stall=self._make_stall_handler(
                 agent_name=entry_agent, routing=routing, is_entry_turn=True
             ),
+            on_tool_calls=self._make_progress_handler(is_entry_turn=True),
         )
         await self._sink.send(Envelope.make_stream_end(stream_id))
         await self._emitters.emit_agent_finished(entry_agent)

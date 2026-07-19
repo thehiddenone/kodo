@@ -238,6 +238,7 @@ class TurnLoopMixin:
             on_stall=self._make_stall_handler(
                 agent_name=agent_name, routing=routing, is_entry_turn=True
             ),
+            on_tool_calls=self._make_progress_handler(is_entry_turn=True),
         )
         await self._sink.send(Envelope.make_stream_end(stream_id))
         await self._emitters.emit_agent_finished(agent_name)
@@ -320,6 +321,7 @@ class TurnLoopMixin:
         flush_before_dispatch: bool = False,
         track_context: bool = False,
         on_stall: Callable[[TurnSignal], Awaitable[StallDecision]] | None = None,
+        on_tool_calls: Callable[[], None] | None = None,
     ) -> tuple[list[Message], list[Path]]:
         """Run one LLM turn with tool-use loop until the model stops calling tools.
 
@@ -370,6 +372,13 @@ class TurnLoopMixin:
                 the alarm gate, the worker queue) lives in the closure the
                 caller builds (:meth:`~._watchdog.WatchdogMixin._make_stall_handler`),
                 keeping this method itself agnostic of all of it.
+            on_tool_calls: Called whenever a round ends *with* tool calls,
+                right before they are dispatched — the counterpart to
+                ``on_stall``'s no-tool-calls case. A real tool call is
+                evidence the agent is progressing, regardless of whether the
+                tool itself later succeeds or fails
+                (:meth:`~._watchdog.WatchdogMixin._make_progress_handler`
+                uses this to clear the entry-agent stuck streak).
 
         Returns:
             tuple[list[Message], list[Path]]: Updated messages and (unused) files.
@@ -517,6 +526,9 @@ class TurnLoopMixin:
                 if track_context:
                     self._main_messages = messages
                 break
+
+            if on_tool_calls is not None:
+                on_tool_calls()
 
             assistant_content: list[dict[str, object]] = []
             if thinking_text:

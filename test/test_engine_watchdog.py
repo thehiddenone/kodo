@@ -145,6 +145,7 @@ def _watchdog_engine(
     gateway: _FakeGateway | None = None,
 ) -> WorkflowEngine:
     engine = object.__new__(WorkflowEngine)
+    engine._orch_session_id = "s1"
     engine._registry = _FakeRegistry()
     engine._session = SessionState(session_id="s1")
     engine._session.effective_autonomous = autonomous
@@ -414,7 +415,7 @@ async def test_on_stall_interactive_auto_unstuck_also_nudges_immediately() -> No
 
 async def test_on_stall_interactive_entry_turn_schedules_deferred_alarm() -> None:
     """Not auto: the turn ends normally now; remediation is a decoupled
-    follow-up. Uses the real 5s delay deliberately (unlike the sibling tests
+    follow-up. Uses the real 1s delay deliberately (unlike the sibling tests
     below) to prove scheduling itself doesn't block the caller or fire the
     gate early — cancelled immediately after, so this stays fast."""
     engine = _watchdog_engine(autonomous=False, gate_answers=["unstick"])
@@ -481,7 +482,7 @@ async def test_on_stall_interactive_entry_turn_alarm_dismissed_queues_nothing(mo
 async def test_on_stall_entry_turn_alarm_honors_a_new_turn_during_the_grace_period(
     monkeypatch,
 ) -> None:
-    """Q: if a new turn starts while the 5s grace period is running, does the
+    """Q: if a new turn starts while the 1s grace period is running, does the
     watchdog honor that and skip the stale alarm? Yes — _entry_turn_seq is
     bumped once per new entry-agent turn (_run_entry_agent/_resume_main_turn),
     and the watcher re-checks it (and session.phase) right after waking, both
@@ -496,7 +497,7 @@ async def test_on_stall_entry_turn_alarm_honors_a_new_turn_during_the_grace_peri
     assert engine._stuck_watchdog_task is not None
 
     # Simulate a brand-new prompt starting (and, for good measure, finishing)
-    # before the watcher's 5s nap is over — exactly what _run_entry_agent does
+    # before the watcher's 1s nap is over — exactly what _run_entry_agent does
     # at the top of every call.
     engine._entry_turn_seq += 1
 
@@ -633,6 +634,40 @@ async def test_on_stall_entry_turn_streak_clears_on_a_genuine_response() -> None
     assert engine._emitters.critical_messages == []
 
 
+async def test_on_stall_entry_turn_streak_clears_on_a_successful_tool_call_round() -> None:
+    """"get stuck -> successful tool call -> get stuck" nudges both times too:
+    a productive round in between (no on_stall call at all — _run_agent_turn
+    only invokes on_stall when a round has *no* tool calls) still needs to
+    clear the streak via _make_progress_handler, or an unrelated later stall
+    escalates straight to critical despite the agent having made real
+    progress in between (the exact bug traced in session 1784487585:
+    read_file/create_file all succeeded between two stalls, yet the second
+    stall went critical because nothing had cleared _stuck_streak)."""
+    engine = _watchdog_engine(autonomous=True)
+    stall_handler = engine._make_stall_handler(
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+    )
+    progress_handler = engine._make_progress_handler(is_entry_turn=True)
+    assert progress_handler is not None
+    stalled = TurnSignal(text="", thinking_text="", stop_reason="end_turn")
+
+    first = await stall_handler(stalled)
+    progress_handler()  # a round with tool calls — _run_agent_turn's on_tool_calls hook
+    second = await stall_handler(stalled)
+
+    assert [first.retry, second.retry] == [True, True]
+    assert len(engine._transient.appended) == 2  # nudged both times
+    assert engine._emitters.critical_messages == []
+
+
+async def test_make_progress_handler_is_a_noop_for_subagent_scope() -> None:
+    """_stuck_streak is entry-agent-only (doc/STUCK_DETECTION.md §2.4a) — a
+    sub-agent turn has no cross-turn streak to clear, so the hook is simply
+    absent rather than a callable that does nothing."""
+    engine = _watchdog_engine()
+    assert engine._make_progress_handler(is_entry_turn=False) is None
+
+
 async def test_on_stall_subagent_stall_count_cap_gives_up_after_max_consecutive_nudges() -> None:
     """Sub-agent scope is unchanged by the entry-agent streak/critical logic:
     still capped at _MAX_CONSECUTIVE_NUDGES inline retries, no critical notice."""
@@ -674,6 +709,7 @@ def _agent_turn_kwargs(engine: WorkflowEngine, **overrides: object) -> dict[str,
         on_stall=engine._make_stall_handler(
             agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
         ),
+        on_tool_calls=engine._make_progress_handler(is_entry_turn=True),
     )
     base.update(overrides)
     return base
