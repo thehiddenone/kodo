@@ -124,6 +124,16 @@ async def _open_session(ws: aiohttp.ClientWebSocketResponse) -> str:
     return str(resp.payload["session_id"])
 
 
+async def _control_hello(ws: aiohttp.ClientWebSocketResponse) -> Envelope:
+    """A role=control hello — mints no session, so (unlike a plain ``hello``)
+    no ``state``/``session.name`` events follow the ack. Safe to use mid-test
+    as a side-effect-free ``local_registry`` snapshot without leaving stray
+    frames in the socket for the next ``_recv`` to trip over."""
+    req = _make_request("hello", client="vsix", window_id="control-snapshot", role="control")
+    await ws.send_str(req.to_json())
+    return await _recv_response(ws, req.id)
+
+
 # ---------------------------------------------------------------------------
 # hello — create / resume / ownership
 # ---------------------------------------------------------------------------
@@ -656,6 +666,14 @@ def _custom_flavor_ids(entry: dict[str, object]) -> list[str]:
 
 
 async def test_add_flavor_appears_in_registry_state(ws: aiohttp.ClientWebSocketResponse) -> None:
+    # Query the pre-existing (predefined) flavors first rather than assuming
+    # how many this hardcoded entry ships with — that count is an
+    # implementation detail of _local_registry.py, not this test's concern.
+    before = await _control_hello(ws)
+    before_flavors = cast(
+        "list[dict[str, object]]", _local_entry(before.payload, _FLAVOR_TEST_ENTRY)["flavors"]
+    )
+
     req = _make_request(
         "local_llm.add_flavor",
         name=_FLAVOR_TEST_ENTRY,
@@ -669,10 +687,9 @@ async def test_add_flavor_appears_in_registry_state(ws: aiohttp.ClientWebSocketR
     entry = _local_entry(resp.payload, _FLAVOR_TEST_ENTRY)
     assert entry["active_flavor"] == ""
     flavors = cast("list[dict[str, object]]", entry["flavors"])
-    assert len(flavors) == 2
-    assert flavors[0]["id"] == "default"
-    assert flavors[0]["predefined"] is True
-    added_flavor = flavors[1]
+    assert len(flavors) == len(before_flavors) + 1
+    assert flavors[: len(before_flavors)] == before_flavors
+    added_flavor = flavors[-1]
     assert added_flavor["id"] == "1m-context"
     assert added_flavor["name"] == "1M Context"
     assert added_flavor["llama_args"] == {"--ctx-size": "1048576", "--rope-scaling": "yarn"}
@@ -795,6 +812,11 @@ async def test_add_flavor_rejects_custom_server_url_entry(
 async def test_add_flavor_dedupes_id_when_different_names_share_a_slug(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
+    # Compare the ids before/after instead of assuming what predefined ids
+    # this hardcoded entry ships with.
+    before = await _control_hello(ws)
+    before_ids = set(_flavor_ids(_local_entry(before.payload, _FLAVOR_TEST_ENTRY)))
+
     resp = None
     for flavor_name in ("Tight VRAM", "tight vram"):
         req = _make_request(
@@ -803,8 +825,9 @@ async def test_add_flavor_dedupes_id_when_different_names_share_a_slug(
         await ws.send_str(req.to_json())
         resp = await _recv(ws)
     assert resp is not None
-    ids = sorted(_flavor_ids(_local_entry(resp.payload, _FLAVOR_TEST_ENTRY)))
-    assert ids == ["default", "tight-vram", "tight-vram-2"]
+    after_ids = set(_flavor_ids(_local_entry(resp.payload, _FLAVOR_TEST_ENTRY)))
+    assert after_ids - before_ids == {"tight-vram", "tight-vram-2"}
+    assert before_ids - after_ids == set()  # nothing pre-existing was removed
 
 
 async def test_add_flavor_rejects_duplicate_name(
@@ -824,6 +847,14 @@ async def test_add_flavor_rejects_duplicate_name(
 async def test_set_active_flavor_then_remove_resets_to_default(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
+    # Snapshot the predefined flavors up front rather than assuming this
+    # hardcoded entry ships with exactly one ("default") — removing the only
+    # custom flavor should leave the registry exactly as it was before.
+    before = await _control_hello(ws)
+    before_flavors = cast(
+        "list[dict[str, object]]", _local_entry(before.payload, _FLAVOR_TEST_ENTRY)["flavors"]
+    )
+
     req = _make_request("local_llm.add_flavor", name=_FLAVOR_TEST_ENTRY, flavor_name="Tight VRAM")
     await ws.send_str(req.to_json())
     added = await _recv(ws)
@@ -839,11 +870,10 @@ async def test_set_active_flavor_then_remove_resets_to_default(
     await ws.send_str(req.to_json())
     removed = await _recv(ws)
     entry = _local_entry(removed.payload, _FLAVOR_TEST_ENTRY)
-    # Removing the only custom flavor leaves just the built-in default.
+    # Removing the only custom flavor leaves just the predefined ones, as
+    # they were before this test touched anything.
     flavors = cast("list[dict[str, object]]", entry["flavors"])
-    assert len(flavors) == 1
-    assert flavors[0]["id"] == "default"
-    assert flavors[0]["predefined"] is True
+    assert flavors == before_flavors
     assert entry["active_flavor"] == ""
 
 
