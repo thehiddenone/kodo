@@ -225,6 +225,26 @@ MSG_SECURITY_RULES_LIST = "security.rules.list"
 # panel can refresh from the response alone.
 MSG_SECURITY_RULES_DELETE = "security.rules.delete"
 
+# Client → Server. Control connection only. Read the ``stuck_detection``
+# settings block (doc/STUCK_DETECTION.md §2.2, doc/SETTINGS.md §2.6) — backs
+# the Kōdo Settings panel's "General" section (kodo-vsix
+# ``kodo-settings-panel.ts``). No payload. Replies ``stuck_detection.get.ack``
+# ``{active: "off"|"local_only"|"local_and_cloud", scope: "top_level"|
+# "top_level_and_subagents", auto_unstuck_interactive: bool}`` — always all
+# three fields, defensively defaulted the same way the watchdog itself
+# resolves a missing/malformed settings.json value.
+MSG_STUCK_DETECTION_GET = "stuck_detection.get"
+
+# Client → Server. Control connection only. Write the ``stuck_detection``
+# settings block. Payload: the same three fields ``stuck_detection.get.ack``
+# returns; a missing/unrecognised field is defaulted the same way before
+# being persisted. Settings are read fresh from disk on every stall check
+# (kodo.runtime._engine._watchdog), so — unlike ``llm.select`` — no
+# ``config.reload`` follow-up is needed for a live session to pick up the new
+# values. Replies ``stuck_detection.set.ack`` echoing the persisted values,
+# so the panel can refresh from the response alone.
+MSG_STUCK_DETECTION_SET = "stuck_detection.set"
+
 # Client → Server. Manually trigger context compaction for this session. Honoured
 # only when the entry agent is idle (``state.phase == "awaiting_user"``) and
 # there is context to compact; otherwise ignored. Drives the same path as the
@@ -251,11 +271,29 @@ MSG_CONFIG_RELOAD = "config.reload"
 # additionally stops the titler's own llama-server first (kodo.titling.
 # stop_titling) — its files live inside the same llama.cpp install being
 # replaced — and restarts it once the new build is installed (mirroring what
-# ``llamacpp.install`` does on success), see doc/INTERNALS.md §10c. The
-# ``local_llm.*`` download commands below are fire-and-forget instead: the
-# handler kicks off the transfer in the background and replies immediately
-# with ``local_llm.registry_state``. Progress itself is **not** pushed over
-# the wire at all — kodo-vsix polls ``manager-state.json`` directly off disk
+# ``llamacpp.install`` does on success), see doc/INTERNALS.md §10c. This only
+# happens once ``llamacpp.update`` has confirmed there is actually something
+# to do: with no ``version`` it first resolves the latest build number and,
+# if already installed, replies with a single ``percent: 100, up_to_date:
+# true`` progress event instead (titler untouched); with a pinned ``version``
+# it first confirms the build exists on GitHub Releases (``build_exists``)
+# and fails fast (``percent: -1``, titler and current install both untouched)
+# if not, rather than uninstalling the current build before discovering the
+# requested one can't be installed. ``llamacpp.update`` also accepts an
+# optional ``version`` field (a build number, e.g. ``"b12345"`` or
+# ``"12345"``) to pin an explicit release instead of installing latest — this
+# is the "Kōdo Settings" panel's "Install specific version" action (kodo-vsix
+# `kodo-settings-panel.ts`); a malformed value streams an
+# ``EVT_LLAMACPP_INSTALL_PROGRESS`` failure (``percent: -1``) rather than
+# installing anything. ``llamacpp.uninstall`` and
+# ``llamacpp.version_info`` are plain request/response (no progress stream):
+# the former removes the current install (stopping the running llama-server
+# and titler first if needed), the latter reports the installed build and the
+# latest one available on GitHub Releases. The ``local_llm.*`` download
+# commands below are fire-and-forget instead: the handler kicks off the
+# transfer in the background and replies immediately with
+# ``local_llm.registry_state``. Progress itself is **not** pushed over the
+# wire at all — kodo-vsix polls ``manager-state.json`` directly off disk
 # (doc/LOCAL_MODEL_MANAGER.md §11), which is what lets a download keep
 # running (and stay watchable) across the requesting connection/window
 # closing entirely.
@@ -264,6 +302,8 @@ MSG_CONFIG_RELOAD = "config.reload"
 #   local_llm.pause   {name} — signal an in-flight download to stop between chunks
 MSG_LLAMACPP_INSTALL = "llamacpp.install"
 MSG_LLAMACPP_UPDATE = "llamacpp.update"
+MSG_LLAMACPP_UNINSTALL = "llamacpp.uninstall"
+MSG_LLAMACPP_VERSION_INFO = "llamacpp.version_info"
 MSG_LOCAL_LLM_INSTALL = "local_llm.install"
 MSG_LOCAL_LLM_RESUME = "local_llm.resume"
 MSG_LOCAL_LLM_PAUSE = "local_llm.pause"

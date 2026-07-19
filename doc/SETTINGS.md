@@ -86,7 +86,7 @@ Overrides the directory where downloaded GGUF files are cached (default `~/.kodo
 
 ### 2.6 `stuck_detection`
 
-Governs the stuck-agent watchdog (doc/STUCK_DETECTION.md) — detects a turn that ended without finishing its task (e.g. an empty final response, or one truncated by the output-length cap) and nudges the agent to continue. Not yet exposed in the Kōdo Settings webview panel or a dedicated WS set-command; change it by editing this file and sending `config.reload`, same as any other setting.
+Governs the stuck-agent watchdog (doc/STUCK_DETECTION.md) — detects a turn that ended without finishing its task (e.g. an empty final response, or one truncated by the output-length cap) and nudges the agent to continue. Exposed in the Kōdo Settings webview panel's "General" section via the `stuck_detection.get`/`.set` WS commands (WS_PROTOCOL.md §7.6d); this file is still the on-disk ground truth, and hand-editing it + sending `config.reload` still works.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|

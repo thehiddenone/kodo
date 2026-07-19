@@ -465,7 +465,6 @@ class LlamaFlavor:
             },
         )
 
-
     @staticmethod
     def default_flavours_field() -> tuple[LlamaFlavor, ...]:
         return (LlamaFlavor.make_default_kv_q8(),)
@@ -582,6 +581,9 @@ class LocalLLMEntry:
 
 # Compiled-in GGUFs — ported from the old flat registry, dropping `residence`.
 _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
+    #
+    # Qwen36-27B
+    #
     LocalLLMEntry(
         name="atomicchat-qwen36-27b-q8",
         kind="hardcoded_hf",
@@ -591,8 +593,10 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_512k_kv_q8('atomicchat-qwen36-27b-q8-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_1m_kv_q8('atomicchat-qwen36-27b-q8-1m-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_512k_kv_q8(
+                "atomicchat-qwen36-27b-q8-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_1m_kv_q8("atomicchat-qwen36-27b-q8-1m-kv-q8", "1M context size"),
         ),
         base_llm="Qwen36-27B",
         quant_author="AtomicChat",
@@ -616,8 +620,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_512k_kv_q8('unsloth-qwen36-27b-q8-k-xl-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_1m_kv_q8('unsloth-qwen36-27b-q8-k-xl-1m-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_512k_kv_q8(
+                "unsloth-qwen36-27b-q8-k-xl-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_1m_kv_q8(
+                "unsloth-qwen36-27b-q8-k-xl-1m-kv-q8", "1M context size"
+            ),
         ),
         base_llm="Qwen36-27B",
         quant_author="Unsloth",
@@ -640,8 +648,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_512k_kv_q8('unsloth-qwen36-27b-q6-k-xl-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_1m_kv_q8('unsloth-qwen36-27b-q6-k-xl-1m-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_512k_kv_q8(
+                "unsloth-qwen36-27b-q6-k-xl-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_1m_kv_q8(
+                "unsloth-qwen36-27b-q6-k-xl-1m-kv-q8", "1M context size"
+            ),
         ),
         base_llm="Qwen36-27B",
         quant_author="Unsloth",
@@ -664,8 +676,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_512k_kv_q8('unsloth-qwen36-27b-q5-k-xl-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_1m_kv_q8('unsloth-qwen36-27b-q5-k-xl-1m-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_512k_kv_q8(
+                "unsloth-qwen36-27b-q5-k-xl-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_1m_kv_q8(
+                "unsloth-qwen36-27b-q5-k-xl-1m-kv-q8", "1M context size"
+            ),
         ),
         base_llm="Qwen36-27B",
         quant_author="Unsloth",
@@ -686,8 +702,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_512k_kv_q8('unsloth-qwen36-27b-q4-k-xl-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_1m_kv_q8('unsloth-qwen36-27b-q4-k-xl-1m-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_512k_kv_q8(
+                "unsloth-qwen36-27b-q4-k-xl-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_1m_kv_q8(
+                "unsloth-qwen36-27b-q4-k-xl-1m-kv-q8", "1M context size"
+            ),
         ),
         base_llm="Qwen36-27B",
         quant_author="Unsloth",
@@ -701,6 +721,9 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         min_memory=24,
         memory=32,
     ),
+    #
+    # Qwen36-35B-A3B
+    #
     LocalLLMEntry(
         name="unsloth-qwen36-35b-a3b-q8-k-xl",
         kind="hardcoded_hf",
@@ -710,8 +733,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_moe_512k_kv_q8('unsloth-qwen36-35b-a3b-q8-k-xl-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_moe_1m_kv_q8('unsloth-qwen36-35b-a3b-q8-k-xl-1m-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                "unsloth-qwen36-35b-a3b-q8-k-xl-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                "unsloth-qwen36-35b-a3b-q8-k-xl-1m-kv-q8", "1M context size"
+            ),
         ),
         base_llm="Qwen36-35B-A3B",
         quant_author="Unsloth",
@@ -735,8 +762,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_moe_512k_kv_q8('unsloth-qwen36-35b-a3b-q6-k-xl-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_moe_1m_kv_q8('unsloth-qwen36-35b-a3b-q6-k-xl-1m-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                "unsloth-qwen36-35b-a3b-q6-k-xl-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                "unsloth-qwen36-35b-a3b-q6-k-xl-1m-kv-q8", "1M context size"
+            ),
         ),
         base_llm="Qwen36-35B-A3B",
         quant_author="Unsloth",
@@ -758,8 +789,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_moe_512k_kv_q8('unsloth-qwen36-35b-a3b-q5-k-xl-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_moe_1m_kv_q8('unsloth-qwen36-35b-a3b-q5-k-xl-1m-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                "unsloth-qwen36-35b-a3b-q5-k-xl-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                "unsloth-qwen36-35b-a3b-q5-k-xl-1m-kv-q8", "1M context size"
+            ),
         ),
         base_llm="Qwen36-35B-A3B",
         quant_author="Unsloth",
@@ -781,8 +816,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_moe_512k_kv_q8('unsloth-qwen36-35b-a3b-q4-k-xl-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_moe_1m_kv_q8('unsloth-qwen36-35b-a3b-q4-k-xl-1m-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                "unsloth-qwen36-35b-a3b-q4-k-xl-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                "unsloth-qwen36-35b-a3b-q4-k-xl-1m-kv-q8", "1M context size"
+            ),
         ),
         base_llm="Qwen36-35B-A3B",
         quant_author="Unsloth",
@@ -796,6 +835,9 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         min_memory=32,
         memory=36,
     ),
+    #
+    # Qwen3-Coder-Next-80B
+    #
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-q8-k-xl",
         kind="hardcoded_hf",
@@ -1086,6 +1128,9 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         min_memory=32,
         memory=48,
     ),
+    #
+    # Qwen35-9B
+    #
     LocalLLMEntry(
         name="unsloth-qwen35-9b-q8-k-xl",
         kind="hardcoded_hf",
@@ -1095,8 +1140,10 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_512k_kv_q8('unsloth-qwen35-9b-q8-k-xl-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_1m_kv_q8('unsloth-qwen35-9b-q8-k-xl-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_512k_kv_q8(
+                "unsloth-qwen35-9b-q8-k-xl-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_1m_kv_q8("unsloth-qwen35-9b-q8-k-xl-kv-q8", "1M context size"),
         ),
         base_llm="Qwen35-9B",
         quant_author="Unsloth",
@@ -1108,6 +1155,9 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         min_memory=24,
         memory=24,
     ),
+    #
+    # GPT-OSS-120B
+    #
     LocalLLMEntry(
         name="unsloth-gpt-oss-120b-f16",
         kind="hardcoded_hf",
@@ -1149,6 +1199,9 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         min_memory=128,
         memory=128,
     ),
+    #
+    # GPT-OSS-20B
+    #
     LocalLLMEntry(
         name="unsloth-gpt-oss-20b-f16",
         kind="hardcoded_hf",
@@ -1239,6 +1292,9 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         min_memory=16,
         memory=24,
     ),
+    #
+    # Gemma4-26B-A4B
+    #
     LocalLLMEntry(
         name="unsloth-gemma4-26b-a4b-ud-q8-k-xl",
         kind="hardcoded_hf",
@@ -1416,6 +1472,9 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         min_memory=16,
         memory=16,
     ),
+    #
+    # Gemma4-31B
+    #
     LocalLLMEntry(
         name="unsloth-gemma4-31b-ud-q8-k-xl",
         kind="hardcoded_hf",
@@ -1574,6 +1633,9 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         min_memory=16,
         memory=16,
     ),
+    #
+    # Ornith10-35B
+    #
     LocalLLMEntry(
         name="deepreinforce-ornith10-35b-bf16",
         kind="hardcoded_hf",
@@ -1583,8 +1645,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_moe_512k_kv_q8('deepreinforce-ornith10-35b-bf16-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_moe_1m_kv_q8('deepreinforce-ornith10-35b-bf16-1m-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                "deepreinforce-ornith10-35b-bf16-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                "deepreinforce-ornith10-35b-bf16-1m-kv-q8", "1M context size"
+            ),
         ),
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",
@@ -1608,8 +1674,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_moe_512k_kv_q8('deepreinforce-ornith10-35b-q8-0-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_moe_1m_kv_q8('deepreinforce-ornith10-35b-q8-0-1m-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                "deepreinforce-ornith10-35b-q8-0-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                "deepreinforce-ornith10-35b-q8-0-1m-kv-q8", "1M context size"
+            ),
         ),
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",
@@ -1632,8 +1702,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_moe_512k_kv_q8('deepreinforce-ornith10-35b-q6-k-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_moe_1m_kv_q8('deepreinforce-ornith10-35b-q6-k-1m-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                "deepreinforce-ornith10-35b-q6-k-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                "deepreinforce-ornith10-35b-q6-k-1m-kv-q8", "1M context size"
+            ),
         ),
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",
@@ -1656,8 +1730,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_moe_512k_kv_q8('deepreinforce-ornith10-35b-q5-k-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_moe_1m_kv_q8('deepreinforce-ornith10-35b-q5-k-1m-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                "deepreinforce-ornith10-35b-q5-k-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                "deepreinforce-ornith10-35b-q5-k-1m-kv-q8", "1M context size"
+            ),
         ),
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",
@@ -1679,8 +1757,12 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
-            LlamaFlavor.make_qwen_moe_512k_kv_q8('deepreinforce-ornith10-35b-q4-k-512k-kv-q8', '512K context size'),
-            LlamaFlavor.make_qwen_moe_1m_kv_q8('deepreinforce-ornith10-35b-q4-k-1m-kv-q8', '1M context size'),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                "deepreinforce-ornith10-35b-q4-k-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                "deepreinforce-ornith10-35b-q4-k-1m-kv-q8", "1M context size"
+            ),
         ),
         base_llm="Ornith10-35B",
         quant_author="DeepReinforce",

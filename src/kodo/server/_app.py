@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import logging.handlers
+import re
 import shutil
 import sys
 import uuid
@@ -53,14 +54,18 @@ from kodo.llms import (
     update_flavor,
 )
 from kodo.llms.llamacpp import (
+    LlamaInstall,
     LlamaPlugin,
     LlamaServer,
     LlamaServerConfig,
+    build_exists,
     ensure_llama_running,
+    fetch_latest_build_number,
     find_installed,
     find_running_server,
     get_local_model_manager,
     install_llamacpp,
+    uninstall_llamacpp,
     update_llamacpp,
 )
 from kodo.llms.local import LocalModelError
@@ -93,7 +98,9 @@ from kodo.transport import (
     MSG_LLAMA_START,
     MSG_LLAMA_STOP,
     MSG_LLAMACPP_INSTALL,
+    MSG_LLAMACPP_UNINSTALL,
     MSG_LLAMACPP_UPDATE,
+    MSG_LLAMACPP_VERSION_INFO,
     MSG_LLM_COMPLETE,
     MSG_LLM_SELECT,
     MSG_LOCAL_LLM_ADD_FILE,
@@ -118,6 +125,8 @@ from kodo.transport import (
     MSG_SESSION_LIST,
     MSG_SESSION_RELEASE,
     MSG_STOP,
+    MSG_STUCK_DETECTION_GET,
+    MSG_STUCK_DETECTION_SET,
     MSG_THINKING_LEVEL_SET,
     MSG_WORKFLOW_SET,
     MSG_WORKSPACE_FOLDERS,
@@ -503,6 +512,73 @@ async def _handle_security_rules_delete(req: Request) -> None:
 
 
 # ------------------------------------------------------------------
+# Stuck-agent watchdog settings (machine-wide, control connection) — Kōdo
+# Settings panel's "General" section (doc/STUCK_DETECTION.md §2.2, doc/
+# SETTINGS.md §2.6). settings.json's stuck_detection block is read fresh per
+# stall check, so unlike model selection this never needs a config.reload
+# notification for a live session to pick up a change.
+# ------------------------------------------------------------------
+
+_STUCK_DETECTION_ACTIVE_VALUES = ("off", "local_only", "local_and_cloud")
+_STUCK_DETECTION_SCOPE_VALUES = ("top_level", "top_level_and_subagents")
+
+
+def _stuck_detection_payload(raw: dict[str, object]) -> dict[str, object]:
+    """Defensively parse/clamp a ``stuck_detection`` block to its three fields.
+
+    Mirrors ``kodo.runtime._engine._watchdog``'s own defensive parsing (kept
+    as a separate copy rather than an import — ``_watchdog`` is a private
+    module of a different package) so an unrecognised/missing value here
+    falls back to the same documented default the watchdog itself would use,
+    both when reading the file back and when validating a client's `.set`.
+    """
+    active = raw.get("active")
+    scope = raw.get("scope")
+    return {
+        "active": active if active in _STUCK_DETECTION_ACTIVE_VALUES else "local_only",
+        "scope": scope if scope in _STUCK_DETECTION_SCOPE_VALUES else "top_level",
+        "auto_unstuck_interactive": bool(raw.get("auto_unstuck_interactive", False)),
+    }
+
+
+def _persist_stuck_detection(block: dict[str, object]) -> None:
+    """Write the ``stuck_detection`` block into settings.json.
+
+    Patches the raw user file (not the merged defaults view), so unrelated
+    keys the user never set stay absent — same read-modify-write shape as
+    ``_persist_local_model_selection``.
+    """
+    path = WorkspaceLayout().settings_json
+    data: dict[str, object] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except (json.JSONDecodeError, OSError) as exc:
+            _log.warning("Rewriting unreadable settings file %s: %s", path, exc)
+    data["stuck_detection"] = block
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _make_stuck_detection_get_handler(config: Config) -> HandlerFn:
+    async def _handle_stuck_detection_get(req: Request) -> None:
+        settings = config.reload_settings()
+        raw = settings.get("stuck_detection")
+        raw = raw if isinstance(raw, dict) else {}
+        await req.reply({"type": "stuck_detection.get.ack", **_stuck_detection_payload(raw)})
+
+    return _handle_stuck_detection_get
+
+
+async def _handle_stuck_detection_set(req: Request) -> None:
+    block = _stuck_detection_payload(req.env.payload)
+    _persist_stuck_detection(block)
+    await req.reply({"type": "stuck_detection.set.ack", **block})
+
+
+# ------------------------------------------------------------------
 # Session-scoped engine handlers
 # ------------------------------------------------------------------
 
@@ -825,17 +901,120 @@ async def _handle_llamacpp_install(req: Request) -> None:
         asyncio.create_task(start_titling(kodo_user_dir()))
 
 
+def _parse_build_number(raw: object) -> int | None:
+    """Parse a build-number field like ``"b12345"``/``"12345"``/``12345``.
+
+    Returns ``None`` if *raw* doesn't match — callers distinguish "field
+    absent" (also ``None``-producing) from "field present but malformed" by
+    checking the raw value themselves.
+    """
+    match = re.match(r"^b?(\d+)$", str(raw).strip(), re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
 async def _handle_llamacpp_update(req: Request) -> None:
+    # Optional pinned version (Kōdo Settings panel's "Install specific
+    # version" action, WS_PROTOCOL.md §7.6) — a malformed value fails fast
+    # via the same progress-stream error shape a failed download would use,
+    # rather than falling back to "latest" silently.
+    raw_version = req.env.payload.get("version")
+    version = _parse_build_number(raw_version) if raw_version is not None else None
+    if raw_version is not None and version is None:
+        msg = f'Invalid llama.cpp version {raw_version!r} — expected e.g. "b12345" or "12345".'
+        await req.connection.send(
+            Envelope.make_event(EVT_LLAMACPP_INSTALL_PROGRESS, {"percent": -1, "message": msg})
+        )
+        return
+
+    kodo_dir = kodo_user_dir()
+    installed = find_installed(kodo_dir)
+
+    if version is None:
+        # "Update llama.cpp" (to latest) — resolve and check *before* doing
+        # anything else, so an already-current install neither triggers a
+        # needless uninstall/reinstall cycle nor stops the titler.
+        try:
+            version = await asyncio.to_thread(fetch_latest_build_number)
+        except Exception as exc:  # noqa: BLE001 — network/parse failure, reported not raised
+            msg = f"Could not check the latest llama.cpp version: {exc}"
+            await req.connection.send(
+                Envelope.make_event(EVT_LLAMACPP_INSTALL_PROGRESS, {"percent": -1, "message": msg})
+            )
+            return
+        if installed is not None and installed.build >= version:
+            await req.connection.send(
+                Envelope.make_event(
+                    EVT_LLAMACPP_INSTALL_PROGRESS,
+                    {
+                        "percent": 100,
+                        "message": f"llama.cpp b{installed.build} is already up to date.",
+                        "up_to_date": True,
+                    },
+                )
+            )
+            return
+    else:
+        # Pinned version ("Install specific version…") — confirm the release
+        # actually exists on GitHub *before* uninstalling the current build,
+        # so a typo'd/nonexistent build number leaves the existing
+        # installation intact and never touches the titler.
+        exists = await asyncio.to_thread(build_exists, version)
+        if not exists:
+            msg = f"llama.cpp b{version} was not found on GitHub Releases."
+            await req.connection.send(
+                Envelope.make_event(EVT_LLAMACPP_INSTALL_PROGRESS, {"percent": -1, "message": msg})
+            )
+            return
+
     # Stop the titler's llama-server first — it runs off the same llama.cpp
     # install that update_llamacpp is about to replace (uninstall + fresh
     # install) — then let a successful update restart it, same as a fresh
     # install (doc/INTERNALS.md §10c).
     await stop_titling()
-    ok = await _stream_llamacpp_progress(
-        req, lambda progress_cb: update_llamacpp(kodo_user_dir(), progress_cb=progress_cb)
-    )
+
+    def _update(progress_cb: Callable[[int, str], None]) -> LlamaInstall:
+        return update_llamacpp(kodo_dir, version=version, progress_cb=progress_cb)
+
+    ok = await _stream_llamacpp_progress(req, _update)
     if ok:
-        asyncio.create_task(start_titling(kodo_user_dir()))
+        asyncio.create_task(start_titling(kodo_dir))
+
+
+async def _handle_llamacpp_uninstall(req: Request) -> None:
+    # Stop anything running off the install we're about to delete — the
+    # titler's own llama-server (kodo.titling) and kodo's main chat
+    # llama-server both run off the same binary files.
+    await stop_titling()
+    server = LlamaServer.get_active_llama_server()
+    if server is not None:
+        await server.stop()
+    uninstall_llamacpp(kodo_user_dir())
+    await req.connection.send(
+        Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "model": None})
+    )
+    await req.reply(
+        {"type": "llamacpp.uninstall.ack", "llama_installed": False, "llama_version": None}
+    )
+
+
+async def _handle_llamacpp_version_info(req: Request) -> None:
+    installed = find_installed(kodo_user_dir())
+    installed_version = f"b{installed.build}" if installed is not None else None
+    try:
+        latest_build = await asyncio.to_thread(fetch_latest_build_number)
+        latest_version: str | None = f"b{latest_build}"
+        error: str | None = None
+    except Exception as exc:  # noqa: BLE001 — network/parse failure, reported not raised
+        latest_version = None
+        error = str(exc)
+    await req.reply(
+        {
+            "type": "llamacpp.version_info.ack",
+            "installed_version": installed_version,
+            "latest_version": latest_version,
+            "error": error,
+        }
+    )
 
 
 def _run_background_download(
@@ -1567,6 +1746,10 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_SESSION_DELETE, _handle_session_delete)
     conn_registry.register_handler(MSG_SECURITY_RULES_LIST, _handle_security_rules_list)
     conn_registry.register_handler(MSG_SECURITY_RULES_DELETE, _handle_security_rules_delete)
+    conn_registry.register_handler(
+        MSG_STUCK_DETECTION_GET, _make_stuck_detection_get_handler(config)
+    )
+    conn_registry.register_handler(MSG_STUCK_DETECTION_SET, _handle_stuck_detection_set)
     conn_registry.register_handler(MSG_PROMPT_SUBMIT, _handle_prompt)
     conn_registry.register_handler(MSG_MODE_SET, _handle_mode)
     conn_registry.register_handler(MSG_WORKFLOW_SET, _handle_workflow)
@@ -1586,6 +1769,8 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_CONFIG_RELOAD, _make_config_reload_handler(config))
     conn_registry.register_handler(MSG_LLAMACPP_INSTALL, _handle_llamacpp_install)
     conn_registry.register_handler(MSG_LLAMACPP_UPDATE, _handle_llamacpp_update)
+    conn_registry.register_handler(MSG_LLAMACPP_UNINSTALL, _handle_llamacpp_uninstall)
+    conn_registry.register_handler(MSG_LLAMACPP_VERSION_INFO, _handle_llamacpp_version_info)
     conn_registry.register_handler(MSG_LOCAL_LLM_INSTALL, _handle_local_llm_install)
     conn_registry.register_handler(MSG_LOCAL_LLM_RESUME, _handle_local_llm_resume)
     conn_registry.register_handler(MSG_LOCAL_LLM_PAUSE, _handle_local_llm_pause)

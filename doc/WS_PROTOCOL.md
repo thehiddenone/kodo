@@ -552,11 +552,12 @@ These drive the sidebar's llama.cpp / model controls; they carry no workflow mea
 { "type": "llama.state", "running": true, "model": "qwen36-27b", "port": 8080 }
 { "type": "llama.state", "running": false, "model": null, "error": "..." }
 { "type": "llamacpp.install.progress", "percent": 42, "message": "..." }
+{ "type": "llamacpp.install.progress", "percent": 100, "message": "llama.cpp b9876 is already up to date.", "up_to_date": true }
 ```
 
 `percent: -1` signals failure (the `message` carries the reason). `llama.state` with `starting: true` ⟪planned⟫ may precede a running/error update; the client treats a missing `running` field as "still starting." Selecting a `custom_server_url` local entry (§7.6, doc/LLM_REGISTRY.md) reports `llama.state {running: false, model: null}` — that entry isn't a process kodo manages, so "running" here always describes kodo's *own* llama-server, which stays stopped until a kodo-managed local model is selected again.
 
-`llamacpp.update` (§7.6) streams the same `llamacpp.install.progress` shape — it is the identical uninstall-then-reinstall flow, just entered from a different request.
+`llamacpp.update` (§7.6) streams the same `llamacpp.install.progress` shape — it is the identical uninstall-then-reinstall flow, just entered from a different request. A single-shot `percent: 100` carrying `up_to_date: true` means the server short-circuited *before* touching the install or the titler: for an unpinned request, the installed build was already `>=` the latest on GitHub; the pinned-version case has no analogous short-circuit (see §7.6).
 
 There is no `local_llm.install.progress` (or any other) byte-level download-progress event — `local_llm.install`/`local_llm.resume`/`local_llm.pause` (§7.6) are fire-and-forget, and kodo-vsix follows progress by polling `manager-state.json` directly off disk instead (doc/LOCAL_MODEL_MANAGER.md §11), independent of any WS connection.
 
@@ -1010,13 +1011,43 @@ both are one-shot binary fetches with no pause/resume.
 (`update_llamacpp`, doc/INTERNALS.md §10); it also stops the session titler's
 own llama-server first (its process runs off the same binary files being
 replaced) and restarts it once the new build is installed, same as
-`llamacpp.install` does on success (doc/INTERNALS.md §10c). No kodo-vsix UI
-calls this yet — it exists as a server capability the way `llm.select`/
-`llm.complete` (§7.6a/§7.6b) did before the validator used them.
+`llamacpp.install` does on success (doc/INTERNALS.md §10c). `llamacpp.update`
+accepts an optional `version` field (a build number, `"b12345"` or `"12345"`)
+to pin an explicit release instead of latest — this backs the **Kōdo
+Settings** panel's "Llama.cpp" section "Install specific version" action
+(kodo-vsix `kodo-settings-panel.ts`); `llamacpp.install` has no such field —
+it always installs latest. An unparsable `version` streams a single
+`llamacpp.install.progress` failure (`percent: -1`) instead of installing
+anything.
+
+Both cases are checked *before* the uninstall/reinstall cycle (and before the
+titler is stopped — doc/INTERNALS.md §10c): with no `version`, the handler
+resolves the latest build number first and, if the installed build is already
+`>=` it, replies with a single `percent: 100, up_to_date: true` event and
+does nothing else (the "Update llama.cpp" button's toast). With a pinned
+`version`, the handler calls `build_exists` (`_installer.py`, doc/INTERNALS.md
+§10) to confirm that build was actually published on GitHub Releases first;
+if not, it replies with a `percent: -1` failure and leaves the current
+installation — and the titler — untouched, rather than uninstalling the
+existing build and then failing to install a nonexistent one.
+
+`llamacpp.uninstall` removes the current install (`uninstall_llamacpp`) —
+stopping the titler's llama-server and kodo's own chat llama-server first,
+since both can be running off the binary being deleted — and is a plain
+request/response, not a progress stream (deleting a directory is
+near-instant, unlike a binary download). `llamacpp.version_info` reports the
+installed build alongside the latest one available on GitHub Releases
+(`fetch_latest_build_number`, doc/INTERNALS.md §10) — also plain
+request/response; a GitHub-fetch failure (network, rate limit, unparsable
+tag) is reported via the response's `error` field rather than raised, so the
+panel can show "unknown" instead of failing the whole request.
 
 ```json
-{ "type": "llamacpp.install" }       // install the llama.cpp binary
+{ "type": "llamacpp.install" }       // install the llama.cpp binary (always latest)
 { "type": "llamacpp.update" }        // uninstall + install the latest build
+{ "type": "llamacpp.update", "version": "b12345" }  // uninstall + install a pinned build
+{ "type": "llamacpp.uninstall" }     // remove the current install
+{ "type": "llamacpp.version_info" }  // query installed vs. latest-on-GitHub build
 { "type": "local_llm.install", "name": "qwen36-27b" }   // start (or continue) a fresh download
 { "type": "local_llm.resume", "name": "qwen36-27b" }    // resume a paused/failed download by id alone
 { "type": "local_llm.pause", "name": "qwen36-27b" }     // signal an in-flight download to stop between chunks
@@ -1033,6 +1064,14 @@ calls this yet — it exists as a server capability the way `llm.select`/
 { "type": "llama.start" }            // start (or restart) llama-server for the active model
 { "type": "llama.stop" }             // stop llama-server
 ```
+
+→ `llamacpp.uninstall.ack` `{ "llama_installed": false, "llama_version": null }`
+
+→ `llamacpp.version_info.ack` `{ "installed_version": "b9876" | null,
+  "latest_version": "b12345" | null, "error": null | "<fetch failure reason>" }`
+— `installed_version`/`error` `null` mean "not installed"/"no fetch error"
+respectively; `latest_version` is `null` only when the GitHub Releases fetch
+failed, in which case `error` carries the reason.
 
 `add_huggingface`/`add_file`'s `llama_args`/`context_window` no longer set a
 field on the entry itself (`LocalLLMEntry` carries no `llama_args` at all) —
@@ -1227,6 +1266,39 @@ just settles on the same result). Deleting a rule here does not retroactively
 re-ask anything already granted mid-turn in an open session — it only stops
 matching *future* calls, same as the store itself (`kodo.security` re-reads
 both files fresh on every check, §2.4).
+
+### 7.6d `stuck_detection.get` / `stuck_detection.set` — stuck-agent watchdog settings
+
+Control connection only, same framing as §7.6c — backs the **Kōdo Settings**
+webview panel's "General" section (kodo-vsix `kodo-settings-panel.ts`). Reads
+and writes the `stuck_detection` settings block (doc/STUCK_DETECTION.md
+§2.2, doc/SETTINGS.md §2.6) in `~/.kodo/etc/settings.json`.
+
+```json
+{ "type": "stuck_detection.get" }
+```
+
+→ `stuck_detection.get.ack` `{ "active": "local_only", "scope": "top_level",
+  "auto_unstuck_interactive": false }` — always all three fields.
+
+```json
+{ "type": "stuck_detection.set", "active": "local_and_cloud",
+  "scope": "top_level_and_subagents", "auto_unstuck_interactive": true }
+```
+
+→ `stuck_detection.set.ack` echoing the same three fields as persisted — the
+panel refreshes from the response alone rather than issuing a follow-up
+`get`.
+
+Both directions defensively clamp `active`/`scope` to their documented enum
+values and coerce `auto_unstuck_interactive` to a `bool`; a missing or
+unrecognised field falls back to its documented default (`"local_only"` /
+`"top_level"` / `false`) rather than erroring, mirroring how the watchdog
+itself (`kodo.runtime._engine._watchdog._stuck_settings`) resolves a
+stale/hand-edited settings.json. Unlike `llm.select`, `.set` requires no
+`config.reload` follow-up — `stuck_detection` is read fresh from disk on
+every stall check, so a live session picks up the new values on its very
+next check.
 
 ### 7.7 ⟪planned⟫ — standalone rules management, credential push
 

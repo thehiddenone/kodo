@@ -47,8 +47,9 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
     # Governs the stuck-agent watchdog (kodo.runtime._engine._watchdog,
     # doc/STUCK_DETECTION.md) — detects a turn that ended without finishing
     # its task (e.g. an empty final response, or a truncated generation) and
-    # nudges the agent to continue. Not yet exposed in the Kōdo Settings
-    # webview panel or the WS protocol; edit settings.json + config.reload.
+    # nudges the agent to continue. Exposed in the Kōdo Settings webview
+    # panel's "General" section via the stuck_detection.get/.set WS commands
+    # (doc/WS_PROTOCOL.md §7.6d); this block is still the ground truth.
     "stuck_detection": {
         # "off" | "local_only" | "local_and_cloud" — which model residence
         # the watchdog runs for. Local LLMs are the primary target (this is

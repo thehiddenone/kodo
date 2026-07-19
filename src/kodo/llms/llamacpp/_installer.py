@@ -27,7 +27,9 @@ from typing import cast
 
 __all__ = [
     "LlamaInstall",
+    "build_exists",
     "check_llamacpp_update",
+    "fetch_latest_build_number",
     "find_installed",
     "install_llamacpp",
     "server_executable",
@@ -140,7 +142,7 @@ def _asset_url(build_number: int, platform_key: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_latest_build_number() -> int:
+def fetch_latest_build_number() -> int:
     """Fetch the latest llama.cpp build number from GitHub Releases.
 
     Returns:
@@ -303,7 +305,7 @@ def check_llamacpp_update(kodo_dir: Path) -> bool:
         bool: ``True`` if an update is available and all download URLs are
         reachable.  ``False`` if already up to date or any URL is unreachable.
     """
-    latest = _fetch_latest_build_number()
+    latest = fetch_latest_build_number()
     installed = find_installed(kodo_dir)
     installed_build = installed.build if installed is not None else None
     _log.info(
@@ -329,16 +331,41 @@ def check_llamacpp_update(kodo_dir: Path) -> bool:
     return True
 
 
+def build_exists(build_number: int) -> bool:
+    """Return ``True`` if a llama.cpp release exists for *build_number*.
+
+    Probes the current platform's binary asset URL (and, on Windows, the CUDA
+    runtime DLL asset) via HTTP HEAD — same accessibility check
+    :func:`check_llamacpp_update` runs against the latest build, just against
+    an arbitrary pinned one. Used to validate a "Install specific version"
+    request *before* the current installation is touched.
+
+    Args:
+        build_number (int): Release build number, e.g. ``12345`` for tag ``b12345``.
+
+    Returns:
+        bool: ``True`` if every required asset responds with 2xx.
+    """
+    platform_key = _current_platform_key()
+    _, binary_url = _asset_url(build_number, platform_key)
+    urls = [binary_url]
+    if platform_key == "win-x64":
+        urls.append(_WINDOWS_CUDA_DLLS_URL.format(N=build_number))
+    return all(_url_accessible(url) for url in urls)
+
+
 def install_llamacpp(
     kodo_dir: Path,
     *,
+    version: int | None = None,
     progress_cb: ProgressCb | None = None,
 ) -> LlamaInstall:
-    """Download and install the latest llama.cpp release for the current platform.
+    """Download and install a llama.cpp release for the current platform.
 
-    Fetches the latest build number from GitHub, downloads and extracts the
-    platform binary, verifies it runs, then writes ``llama-meta.json``.  If
-    the same build is already installed the download is skipped.
+    Fetches the latest build number from GitHub (unless *version* pins an
+    explicit build), downloads and extracts the platform binary, verifies it
+    runs, then writes ``llama-meta.json``.  If the same build is already
+    installed the download is skipped.
 
     Progress is reported via *progress_cb* as ``(percent: int, message: str)``
     calls.  ``percent == 100`` signals success; ``percent == -1`` signals an
@@ -346,6 +373,9 @@ def install_llamacpp(
 
     Args:
         kodo_dir (Path): User-level ``~/.kodo`` directory.
+        version (int | None): Explicit build number to install (e.g. ``12345``
+            for ``b12345``). ``None`` (the default) installs the latest
+            release.
         progress_cb (ProgressCb | None): Optional progress callback.
 
     Returns:
@@ -365,8 +395,12 @@ def install_llamacpp(
         return RuntimeError(msg)
 
     try:
-        _progress(0, "Fetching latest release info from GitHub…")
-        build_number = _fetch_latest_build_number()
+        if version is not None:
+            build_number = version
+            _progress(0, f"Installing llama.cpp b{build_number}…")
+        else:
+            _progress(0, "Fetching latest release info from GitHub…")
+            build_number = fetch_latest_build_number()
 
         existing = find_installed(kodo_dir)
         if existing is not None and existing.build == build_number:
@@ -458,15 +492,20 @@ def uninstall_llamacpp(kodo_dir: Path) -> None:
 def update_llamacpp(
     kodo_dir: Path,
     *,
+    version: int | None = None,
     progress_cb: ProgressCb | None = None,
 ) -> LlamaInstall:
-    """Uninstall the current llama.cpp build and install the latest one.
+    """Uninstall the current llama.cpp build and install another one.
 
     Equivalent to calling :func:`uninstall_llamacpp` followed by
-    :func:`install_llamacpp`.
+    :func:`install_llamacpp`. Also used to install a specific pinned
+    *version* over an existing (possibly different) build — the uninstall
+    step is a no-op if nothing is installed yet.
 
     Args:
         kodo_dir (Path): User-level ``~/.kodo`` directory.
+        version (int | None): Explicit build number to install. ``None``
+            (the default) installs the latest release.
         progress_cb (ProgressCb | None): Optional progress callback forwarded
             to :func:`install_llamacpp`.
 
@@ -477,4 +516,4 @@ def update_llamacpp(
         RuntimeError: If the installation step fails.
     """
     uninstall_llamacpp(kodo_dir)
-    return install_llamacpp(kodo_dir, progress_cb=progress_cb)
+    return install_llamacpp(kodo_dir, version=version, progress_cb=progress_cb)

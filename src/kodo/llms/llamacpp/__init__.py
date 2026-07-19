@@ -6,8 +6,12 @@ lifecycle utilities formerly in the top-level ``kodo.llm_utils`` package:
 
 * **Installer** — platform-aware download/extraction of llama.cpp into
   ``~/.kodo/llama.cpp/b{N}/`` (:func:`install_llamacpp`, :func:`uninstall_llamacpp`,
-  :func:`update_llamacpp`, :func:`check_llamacpp_update`, :func:`find_installed`,
-  :func:`server_executable`).
+  :func:`update_llamacpp`, :func:`check_llamacpp_update`, :func:`build_exists`,
+  :func:`fetch_latest_build_number`, :func:`find_installed`, :func:`server_executable`).
+  ``install_llamacpp``/``update_llamacpp`` accept an optional ``version`` (a
+  build number) to pin an explicit release instead of installing latest;
+  :func:`build_exists` checks whether a given build number was actually
+  published before anything pinned to it uninstalls the current build.
 * **Local model manager access** — :func:`get_local_model_manager` resolves
   the models directory (``llm_models_dir`` in ``settings.json``, falling back
   to ``~/.kodo/llama.cpp/models``) and returns the process-wide
@@ -27,7 +31,9 @@ cycle: they are only ever used by llama.cpp inference, so they belong under the
 
 from ._installer import (
     LlamaInstall,
+    build_exists,
     check_llamacpp_update,
+    fetch_latest_build_number,
     find_installed,
     install_llamacpp,
     server_executable,
@@ -51,8 +57,10 @@ __all__ = [
     "MalformedToolCallError",
     "RunningServer",
     "ThinkingStreamParser",
+    "build_exists",
     "check_llamacpp_update",
     "ensure_llama_running",
+    "fetch_latest_build_number",
     "find_installed",
     "find_running_server",
     "get_local_model_manager",

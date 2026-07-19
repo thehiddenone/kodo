@@ -485,7 +485,7 @@ handlers) — via `kodo.llms.llamacpp`, never from the private modules.
 
 | Module | Defines | Links |
 |---|---|---|
-| [_installer.py](../src/kodo/llms/llamacpp/_installer.py) | `LlamaInstall`, `install/uninstall/update_llamacpp`, `check_llamacpp_update`, `find_installed`, `server_executable` | Platform-aware llama.cpp binary install into `~/.kodo/llama.cpp/bN/`. No `kodo` imports. |
+| [_installer.py](../src/kodo/llms/llamacpp/_installer.py) | `LlamaInstall`, `install/uninstall/update_llamacpp`, `check_llamacpp_update`, `build_exists`, `fetch_latest_build_number`, `find_installed`, `server_executable` | Platform-aware llama.cpp binary install into `~/.kodo/llama.cpp/bN/`. `install_llamacpp`/`update_llamacpp` take an optional `version` (a build number) to pin an explicit release instead of latest. `build_exists` HEAD-probes a given build's release assets — `server/_app.py`'s `llamacpp.update` handler calls it for a pinned `version` *before* uninstalling the current build, so a nonexistent build number fails without touching the existing install. No `kodo` imports. |
 | [_llama_server.py](../src/kodo/llms/llamacpp/_llama_server.py) | `LlamaServer`, `LlamaServerConfig`, `RunningServer`, `find_running_server` | PID-managed `llama-server` subprocess; class-level singleton via `get_active_llama_server()`; `adopt()` reclaims a survivor after restart. |
 | [_manager.py](../src/kodo/llms/llamacpp/_manager.py) | `ensure_llama_running`, `get_local_model_manager` | Composes installer + `kodo.llms.local.LocalModelManager` + server: ensures the right model server is up for a `LocalLLMEntry` (not valid for `custom_server_url` — see LLM_REGISTRY.md §4), honoring the llama-server binary override if set. `get_local_model_manager` resolves the models directory and caches one `LocalModelManager` per directory for the process lifetime; also called directly from `server/_app.py`'s `local_llm.*` WS handlers (no more `_downloader.py` adapter — see LOCAL_MODEL_MANAGER.md §9). |
 
@@ -629,7 +629,7 @@ any first prompt over 8 words — §12, WS_PROTOCOL.md §5.9a/§5.9b) and by
   the main chat model's own `LlamaServer.stop()` call there.
 - **Install** — `_handle_llamacpp_install` (`llamacpp.install`) schedules
   `start_titling` after a successful install.
-- **Update** — the new `_handle_llamacpp_update` (`llamacpp.update`
+- **Update** — `_handle_llamacpp_update` (`llamacpp.update`
   WS command, `server/_app.py`, §14) calls `stop_titling` *first* (the
   titler's process runs off the same llama.cpp binary files
   `update_llamacpp` is about to replace), then `update_llamacpp`, then
@@ -637,6 +637,27 @@ any first prompt over 8 words — §12, WS_PROTOCOL.md §5.9a/§5.9b) and by
   `update_llamacpp`/`check_llamacpp_update` (`_installer.py`, §10) existed
   but had no caller anywhere before this; `llamacpp.update` (WS_PROTOCOL.md
   §7.6) is a new, minimal WS command with no kodo-vsix UI yet.
+- **Uninstall** — `_handle_llamacpp_uninstall` (`llamacpp.uninstall` WS
+  command, `server/_app.py`) calls `stop_titling` and stops kodo's own
+  chat `LlamaServer` if running (both can be running off the binary files
+  `uninstall_llamacpp` is about to delete), then `uninstall_llamacpp`. Plain
+  request/response, no progress stream — deleting a directory is
+  near-instant. Also called internally by `update_llamacpp` itself
+  (uninstall-then-reinstall), which is why `_handle_llamacpp_update`
+  independently stops/restarts titling around its own call rather than
+  relying on the uninstall handler's stop (they're never both in the
+  request path at once).
+- **Version query** — `_handle_llamacpp_version_info` (`llamacpp.version_info`
+  WS command) reports `find_installed`'s build alongside
+  `fetch_latest_build_number()` (renamed from the former private
+  `_fetch_latest_build_number`, now in `_installer.py`'s public surface) —
+  a GitHub-fetch failure is caught and reported via the response's `error`
+  field rather than raised, since an unreachable/rate-limited GitHub API
+  should degrade the "Kōdo Settings" panel's latest-version display to
+  "unknown", not fail the whole request. Both this and `.uninstall` back the
+  panel's "Llama.cpp" section (kodo-vsix `kodo-settings-panel.ts`), added
+  2026-07-19 alongside `install_llamacpp`/`update_llamacpp`'s new optional
+  `version` parameter (WS_PROTOCOL.md §7.6).
 
 **State:** Complete; see `test/test_titling.py`
 (`kodo.titling._server`) and `test/test_engine_titling.py`
