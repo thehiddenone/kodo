@@ -79,10 +79,18 @@ def _temp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+
     # See test_server_integration.py's _temp_home: keep server boot fully
-    # offline instead of racing a real HuggingFace download every test.
-    monkeypatch.setattr(_app_module, "warm_up_titler_cache", lambda: None)
-    monkeypatch.setattr(_titling_module, "generate_title", lambda text: None)
+    # offline instead of racing a real titler llama-server download/spin-up
+    # every test.
+    async def _no_op_start_titling(kodo_dir: Path) -> None:
+        return None
+
+    async def _no_op_generate_title(text: str) -> None:
+        return None
+
+    monkeypatch.setattr(_app_module, "start_titling", _no_op_start_titling)
+    monkeypatch.setattr(_titling_module, "generate_title", _no_op_generate_title)
     return home
 
 
@@ -870,8 +878,6 @@ def test_build_child_env_redirects_home_and_pins_hf(
     # HF cache is pinned to the *real* global location, not under the run home.
     assert env["HF_HOME"] == str(real_home / ".cache" / "huggingface")
     assert str(run_home) not in env["HF_HOME"]
-    # The titler loads from the shared cache without hitting the Hub.
-    assert env["KODO_TITLER_LOCAL_FILES_ONLY"] == "1"
 
 
 def test_build_child_env_respects_existing_hf_home(

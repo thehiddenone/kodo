@@ -1,14 +1,17 @@
 """Local session-titling summarizer.
 
 Public surface for :mod:`kodo.runtime._engine._titling`'s
-:class:`~kodo.runtime._engine._titling.SessionTitler`, which fires this off in
-a background thread rather than running it as a sub-agent LLM turn. See
-``doc/SESSIONS.md`` and ``doc/WS_PROTOCOL.md`` (``session.name``/
-``session.naming``) for the wire contract this feeds.
+:class:`~kodo.runtime._engine._titling.SessionTitler`, which calls
+:func:`generate_title` for any first prompt over 8 words, and for
+``server/_app.py``, which calls :func:`start_titling`/:func:`stop_titling`
+around kodo startup and llama.cpp install/update. See ``doc/SESSIONS.md`` and
+``doc/WS_PROTOCOL.md`` (``session.name``/``session.naming``) for the wire
+contract this feeds, and doc/INTERNALS.md §10c for the titler's own
+dedicated-llama-server architecture.
 """
 
 from __future__ import annotations
 
-from ._summarizer import generate_title, titler_home_dir, warm_up_titler_cache
+from ._server import generate_title, start_titling, stop_titling, titler_home_dir
 
-__all__ = ["generate_title", "titler_home_dir", "warm_up_titler_cache"]
+__all__ = ["generate_title", "start_titling", "stop_titling", "titler_home_dir"]

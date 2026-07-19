@@ -293,9 +293,7 @@ class EngineHost(Protocol):
         mode: str,
     ) -> Message: ...
 
-    async def _persist_stuck_critical(
-        self, *, flags: list[RedFlag], display_name: str
-    ) -> None: ...
+    async def _persist_stuck_critical(self, *, flags: list[RedFlag], display_name: str) -> None: ...
 
     def _schedule_entry_turn_alarm(
         self, agent_name: str, display_name: str, flags: list[RedFlag]

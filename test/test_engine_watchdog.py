@@ -613,7 +613,7 @@ async def test_on_stall_entry_turn_streak_escalates_to_critical_after_one_nudge(
 
 
 async def test_on_stall_entry_turn_streak_clears_on_a_genuine_response() -> None:
-    """"get stuck -> good response -> get stuck" nudges both times: a
+    """ "get stuck -> good response -> get stuck" nudges both times: a
     non-stalled round in between clears the streak."""
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_stall_handler(
@@ -638,9 +638,7 @@ async def test_on_stall_subagent_stall_count_cap_gives_up_after_max_consecutive_
     still capped at _MAX_CONSECUTIVE_NUDGES inline retries, no critical notice."""
     engine = _watchdog_engine(
         autonomous=True,
-        settings={
-            "stuck_detection": {"active": "local_only", "scope": "top_level_and_subagents"}
-        },
+        settings={"stuck_detection": {"active": "local_only", "scope": "top_level_and_subagents"}},
     )
     handler = engine._make_stall_handler(
         agent_name="investigator",

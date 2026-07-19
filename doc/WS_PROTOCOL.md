@@ -456,12 +456,12 @@ Emitted right after a submitted prompt's file attachments (§7.1) are validated,
 
 ### 5.9a `session.name` — session title
 
-The human-readable name of the session, derived from the first prompt and persisted to `meta.json`. `SessionTitler` (`runtime/_engine/_titling.py`) picks one of two paths by word count, both fire-and-forget from the queue worker (never awaited), so neither can delay the main agent's turn the way the old `session_titler` sub-agent (a full LLM call, 10-15s) used to:
+The human-readable name of the session, derived from the first prompt and persisted to `meta.json`. `SessionTitler` (`runtime/_engine/_titling.py`) picks one of two paths by word count, both fire-and-forget from the queue worker (never awaited), so neither can delay the main agent's turn the way the old `session_titler` sub-agent (a full LLM call through the main chat model, 10-15s) used to:
 
-- **≤10 words** (`_SHORT_PROMPT_MAX_WORDS`): the title is the prompt's own first 5 words (`_SHORT_TITLE_WORDS`), Title Cased — deterministic, instant, no LLM call.
-- **>10 words**: the title is produced by `kodo.titling` (a small local CPU summarization model, `Falconsai/text_summarization` run via `transformers`). If that call raises or returns a degenerate/unacceptable title (outside the 2-8 word band), the titler falls back to the prompt's own first 5 words instead — the same shortcut the ≤10-word path uses — so a summarizer failure no longer leaves the session unnamed.
+- **≤8 words** (`_MAX_TITLE_WORDS`): the title is the prompt itself, sanitized — deterministic, instant, no LLM call.
+- **>8 words**: the title is produced by `kodo.titling.generate_title` — a guardrailed chat-completion call to a small, dedicated llama-server running `unsloth/Qwen3-0.6B-GGUF` (its own process, own port, doc/INTERNALS.md §10c; genuinely async I/O, awaited directly). If that call raises or returns a degenerate/unacceptable title (outside the 2-8 word band), the titler falls back to the prompt's own words instead (the same sanitize-and-clamp-to-8 path the ≤8-word case uses) — so a summarizer failure no longer leaves the session unnamed.
 
-Both paths run through the same `_sanitize_title`, so every title — model-generated or taken verbatim from the prompt — ends up pure alphanumeric: any run of non-alphanumeric characters (punctuation, quotes, symbols) is collapsed to a single word separator and dropped, then each word is Title Cased with exactly one space between words. No comma, period, apostrophe, or symbol ever survives into a title.
+Both paths run through the same `_sanitize_title`, so every title — model-generated or taken verbatim from the prompt — ends up pure alphanumeric: any run of non-alphanumeric characters (punctuation, quotes, symbols) is collapsed to a single word separator and dropped, then each word is Title Cased with exactly one space between words, clamped to at most 8 words. No comma, period, apostrophe, or symbol ever survives into a title.
 
 Replayed once after `hello.ack` with the current name (default `"Unnamed Session"`), then pushed again when a title is generated. The client renames the editor tab and the session header.
 
@@ -471,7 +471,7 @@ Replayed once after `hello.ack` with the current name (default `"Unnamed Session
 
 ### 5.9b `session.naming` — titler in flight
 
-Brackets the summarizer call for a prompt over `_SHORT_PROMPT_MAX_WORDS` (which streams nothing) so the client can show a "Naming session …" indicator instead of an unexplained pause. Emitted `true` before the call and `false` when it finishes (success or failure). Not emitted for the short-prompt path (`_report_short_title`), since it's synchronous and has no wall-clock gap to signal.
+Brackets the summarizer call for a prompt over `_MAX_TITLE_WORDS` (which streams nothing) so the client can show a "Naming session …" indicator instead of an unexplained pause. Emitted `true` before the call and `false` when it finishes (success or failure). Not emitted for the short-prompt path (`_report_short_title`), since it's synchronous and has no wall-clock gap to signal.
 
 ```json
 { "type": "session.naming", "active": true }
@@ -555,6 +555,8 @@ These drive the sidebar's llama.cpp / model controls; they carry no workflow mea
 ```
 
 `percent: -1` signals failure (the `message` carries the reason). `llama.state` with `starting: true` ⟪planned⟫ may precede a running/error update; the client treats a missing `running` field as "still starting." Selecting a `custom_server_url` local entry (§7.6, doc/LLM_REGISTRY.md) reports `llama.state {running: false, model: null}` — that entry isn't a process kodo manages, so "running" here always describes kodo's *own* llama-server, which stays stopped until a kodo-managed local model is selected again.
+
+`llamacpp.update` (§7.6) streams the same `llamacpp.install.progress` shape — it is the identical uninstall-then-reinstall flow, just entered from a different request.
 
 There is no `local_llm.install.progress` (or any other) byte-level download-progress event — `local_llm.install`/`local_llm.resume`/`local_llm.pause` (§7.6) are fire-and-forget, and kodo-vsix follows progress by polling `manager-state.json` directly off disk instead (doc/LOCAL_MODEL_MANAGER.md §11), independent of any WS connection.
 
@@ -1000,12 +1002,21 @@ three flavor commands below, and the `llama_server_override.*` pair all reply
 with §5.12a `local_llm.registry_state`; none of them stream progress over the
 wire — a download's live byte progress is read by polling
 `manager-state.json` off disk instead (doc/LOCAL_MODEL_MANAGER.md §11).
-`llamacpp.install` is the one exception, still streaming
+`llamacpp.install`/`llamacpp.update` are the exception, still streaming
 `llamacpp.install.progress` (§5.12) on the requesting connection, since
-that's a one-shot binary fetch with no pause/resume.
+both are one-shot binary fetches with no pause/resume.
+
+`llamacpp.update` uninstalls the current build and installs the latest one
+(`update_llamacpp`, doc/INTERNALS.md §10); it also stops the session titler's
+own llama-server first (its process runs off the same binary files being
+replaced) and restarts it once the new build is installed, same as
+`llamacpp.install` does on success (doc/INTERNALS.md §10c). No kodo-vsix UI
+calls this yet — it exists as a server capability the way `llm.select`/
+`llm.complete` (§7.6a/§7.6b) did before the validator used them.
 
 ```json
 { "type": "llamacpp.install" }       // install the llama.cpp binary
+{ "type": "llamacpp.update" }        // uninstall + install the latest build
 { "type": "local_llm.install", "name": "qwen36-27b" }   // start (or continue) a fresh download
 { "type": "local_llm.resume", "name": "qwen36-27b" }    // resume a paused/failed download by id alone
 { "type": "local_llm.pause", "name": "qwen36-27b" }     // signal an in-flight download to stop between chunks

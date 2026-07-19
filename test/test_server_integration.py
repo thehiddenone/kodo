@@ -34,16 +34,25 @@ _RECV_TIMEOUT = 5.0
 def _temp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    # _start_background best-effort-warms the titler model cache on startup
-    # (doc/INTERNALS.md §10c); stubbed here so server boot stays fully
-    # offline/deterministic like the rest of this file (see module docstring)
-    # instead of racing a real HuggingFace download every test.
-    monkeypatch.setattr(_app_module, "warm_up_titler_cache", lambda: None)
-    # SessionTitler fires kodo.titling.generate_title fire-and-forget on the
+
+    # _start_background fire-and-forgets kodo.titling.start_titling on
+    # startup when llama.cpp is installed (doc/INTERNALS.md §10c); stubbed
+    # here so server boot stays fully offline/deterministic like the rest of
+    # this file (see module docstring) instead of racing a real model
+    # download/llama-server spin-up every test.
+    async def _no_op_start_titling(kodo_dir: Path) -> None:
+        return None
+
+    monkeypatch.setattr(_app_module, "start_titling", _no_op_start_titling)
+
+    # SessionTitler awaits kodo.titling.generate_title fire-and-forget on the
     # first prompt of every session (runtime/_engine/_titling.py) — stubbed
     # here too, otherwise any test that submits a real prompt triggers a real
-    # HuggingFace download/model load in the background, same as above.
-    monkeypatch.setattr(_titling_module, "generate_title", lambda text: None)
+    # HTTP call against a titler llama-server that was never started.
+    async def _no_op_generate_title(text: str) -> None:
+        return None
+
+    monkeypatch.setattr(_titling_module, "generate_title", _no_op_generate_title)
     return tmp_path
 
 

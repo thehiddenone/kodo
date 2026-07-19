@@ -50,7 +50,7 @@ source:
 | `tools` | `common`, `guided_state`, `project`, `toolspecs` |
 | `llms` | `common`, `transport`, `toolspecs` |
 | `subagents` | `toolspecs` |
-| `titling` | `project` |
+| `titling` | `project`, `llms` |
 | `runtime` | `common`, `transport`, `toolspecs`, `tools`, `guided_state`, `project`, `state`, `subagents`, `llms`, `titling`, `mirror`, `shellparser`, `binutils` |
 | `server` | `common`, `transport`, `project`, `state`, `subagents`, `llms`, `titling`, `runtime`, `binutils` |
 
@@ -87,13 +87,18 @@ imported); the annotation on each line names the packages pulled in.
 
 ```text
  T5  ┌──────────┐
-     │  server  │  ▼ runtime · llms · subagents ·
+     │  server  │  ▼ runtime · llms · titling · subagents ·
      └────┬─────┘    state · project · transport · common
           │
           ▼
  T4  ┌──────────┐
-     │ runtime  │  ▼ tools · llms · subagents · toolspecs · guided_state ·
-     └────┬─────┘    state · project · transport · common
+     │ runtime  │  ▼ tools · llms · titling · subagents · toolspecs ·
+     └────┬─────┘    guided_state · state · project · transport · common
+          │
+ T3a ┌─────────┐
+     │ titling │  ▼ llms (only) — sits above llms/T3 (its GGUF download +
+     └─────────┘    llama.cpp-install lookup), below runtime; not a peer of
+                    subagents/llms/tools (T3), none of which it imports.
           │
    ┌──────┴───────┬───────────────┐
    ▼              ▼               ▼
@@ -109,11 +114,11 @@ imported); the annotation on each line names the packages pulled in.
  └───────────┘   └────┬─────┘                                 security: ▼ common · toolspecs · shellparser,
                       │ common · toolspecs · shellparser      imported ONLY by runtime)
                       ▼
- ┌───────────┐   ┌─────────┐
- │ transport │   │ titling │                             T1
- └─────┬─────┘   └────┬────┘
-       │ common        │ project
-       ▼                ▼
+ ┌───────────┐
+ │ transport │                                          T1
+ └─────┬─────┘
+       │ common
+       ▼
  ┌────────┬─────────┬──────────────┬───────┬────────┬─────────────┬──────────┬───────────┐
  │ common │ project │ guided_state │ state │ mirror │ shellparser │ binutils │ websearch │   T0  ← import nothing from kodo
  └────────┴─────────┴──────────────┴───────┴────────┴─────────────┴──────────┴───────────┘
@@ -124,6 +129,15 @@ imported); the annotation on each line names the packages pulled in.
 none of the three is reachable from `tools`, `subagents`, or `llms`. `tools`
 sees the security layer only through the `SecurityLike` structural protocol
 (doc/SECURITY.md §4).
+
+`titling` moved out of T0/T1 (2026-07-18): it used to import only `project`
+(a self-contained `transformers`/`torch` model, doc/INTERNALS.md §10c); now
+that session titling runs its own dedicated llama-server, it needs
+`kodo.llms.llamacpp.find_installed` (to locate the shared llama.cpp binary)
+and `kodo.llms.local.LocalModelManager` (to download its own GGUF) — both
+leaf utilities of `llms`, not `LlamaServer` itself (see §10c for why). This
+puts `titling` one tier above `llms`, not alongside `subagents`/`tools` in
+T3 — it does not import (or get imported by) any of those three.
 
 (`runtime` and `server` also reach past the tier directly below them — e.g.
 `runtime → toolspecs`/`guided_state`/`common` — as the matrix in §2.1 lists in full;
@@ -139,11 +153,7 @@ only the principal lines are drawn above to keep the figure readable.)
   `curl_cffi`-backed fetch engine behind `query_search_engine`/`web_search`
   (doc/WEB_SEARCH.md) and the single-page fetch behind `read_webpage`
   (doc/READ_WEBPAGE.md), consumed only by `tools`.
-- **T1**: `transport` (wire framing over `common`) and `titling` (the local
-  CPU session-title summarizer over `project` — a `transformers`/`torch`
-  pipeline cached under `~/.kodo/titler`, run in a background thread by
-  `runtime`'s `SessionTitler` and warmed once at startup by `server`;
-  doc/SESSIONS.md and WS_PROTOCOL.md §5.9a).
+- **T1**: `transport` (wire framing over `common`).
 - **T2**: `toolspecs` (tool catalog) — now a true leaf, importing nothing from
   `kodo` (the old `toolspecs → workspace` edge for `ArtifactType` is gone) —
   and `security` (the per-call allow/ask judgement engine over the catalog +
@@ -163,6 +173,13 @@ only the principal lines are drawn above to keep the figure readable.)
   needs from higher tiers — the gate, the session, the sub-agent launcher —
   are inverted via structural Protocols and injected by `runtime`. It is
   imported only by `runtime`, never by `subagents` or `llms`.
+- **T3a**: `titling` (the session-title summarizer — a dedicated,
+  llama.cpp-hosted Qwen3-0.6B chat model, doc/INTERNALS.md §10c). Imports
+  only `llms` (`find_installed`, `LocalModelManager`) and `project` — one
+  tier above `llms`/T3, since it needs those two leaf utilities, but not a
+  peer of `subagents`/`tools` (neither imports it, and it imports neither).
+  Imported only by `runtime` (`SessionTitler`) and `server` (startup/install/
+  update lifecycle, §10).
 - **T4 — `runtime`**: the engine; composes nearly every domain service and
   builds a per-run `tools.ToolDispatcher` for each agent (guide or leaf).
 - **T5 — `server`**: the composition root; builds the object graph and registers
@@ -473,7 +490,16 @@ handlers) — via `kodo.llms.llamacpp`, never from the private modules.
 | [_manager.py](../src/kodo/llms/llamacpp/_manager.py) | `ensure_llama_running`, `get_local_model_manager` | Composes installer + `kodo.llms.local.LocalModelManager` + server: ensures the right model server is up for a `LocalLLMEntry` (not valid for `custom_server_url` — see LLM_REGISTRY.md §4), honoring the llama-server binary override if set. `get_local_model_manager` resolves the models directory and caches one `LocalModelManager` per directory for the process lifetime; also called directly from `server/_app.py`'s `local_llm.*` WS handlers (no more `_downloader.py` adapter — see LOCAL_MODEL_MANAGER.md §9). |
 
 **Links:** Consumed by `llms/llamacpp/_llama.py` (runtime) and `server/_app.py`
-(install/start/stop handlers). Self-contained otherwise.
+(install/start/stop handlers). Self-contained otherwise. Also consumed by
+`kodo.titling` (§10c) — but only `find_installed` (to locate the shared
+llama.cpp binary) and `kodo.llms.local.LocalModelManager` (to download its own
+GGUF), never `LlamaServer`/`get_active_llama_server()`: those track the *one*
+running server for the main chat model as a class-level singleton, and the
+titler runs its own, separate llama-server process concurrently — reusing
+`LlamaServer` for it would silently steal that singleton slot out from under
+the chat model. `kodo.titling._server.TitlerServer` is therefore a small,
+self-contained duplicate of `LlamaServer`'s spawn/health-check/stop plumbing,
+not a subclass or a second consumer of the same class.
 
 **State:** Complete.
 
@@ -549,40 +575,72 @@ about *when* to checkpoint — that judgment lives entirely in `runtime`.
 
 ---
 
-## 10c. `titling/` — local CPU session-title summarizer
+## 10c. `titling/` — dedicated-llama-server session-title summarizer
 
-Names a session from its first prompt using a small local encoder-decoder
-model (`Falconsai/text_summarization`, a fine-tuned T5, run on CPU) instead
-of an LLM call. Replaced the old `session_titler` sub-agent, which ran as a
-full turn through `LLMGateway` and took 10-15s; the new path runs in a
-background thread and typically completes in well under a second once the
-model is warm. T1 leaf: imports only `project` (`kodo_user_dir`), nothing
-else from `kodo` — no dependency on `llms`/`subagents`/the gateway at all.
+Names a session from its first prompt via a guardrailed chat-completion call
+to a small, **dedicated** llama-server running `unsloth/Qwen3-0.6B-GGUF`
+(`Qwen3-0.6B-UD-Q8_K_XL.gguf`) — its own process, on its own fixed port
+(8043), running concurrently with (and completely independent of) whatever
+model the main chat session is using. Replaced (2026-07-18) the previous
+design: an in-process `transformers`/`torch` encoder-decoder
+(`Falconsai/text_summarization`, a tiny extractive T5) called directly via
+`AutoModelForSeq2SeqLM.generate()`. That model's ceiling was extractive-only
+("Implement A Game Of Tic Tac Toe Where" — a clipped echo, never a crafted
+label); a real instruction-tuned chat model produces meaningfully better
+titles, and running it through the same llama.cpp binary already used for the
+main chat model drops the `torch`/`transformers` dependency (and their large
+transitive closure — `numpy`, `tokenizers`, `sympy`, …) from the project
+entirely — see `pyproject.toml`'s trimmed `dependencies` list.
 
-Calls `AutoModelForSeq2SeqLM`/`AutoTokenizer` directly rather than
-`transformers.pipeline("summarization", ...)`: transformers 5.x dropped the
-pipeline task-name wrappers (including `"summarization"`) outright, and
-pinning transformers to the 4.x series (which still had it) conflicts with
-this project's `huggingface_hub>=1.18.0` pin (§10, doc/LOCAL_MODEL_MANAGER.md
-— an unrelated, already-shipped feature that pin cannot be relaxed for). See
-`pyproject.toml`'s `transformers` dependency comment.
+Before this replaced the sub-agent-based `session_titler` (a full turn
+through the main chat model's `LLMGateway`, 10-15s) — still true here: this
+module's whole point is to keep titling off that critical path. Generation
+is genuinely async I/O now (an HTTP chat completion, not a CPU-bound
+`torch` forward pass), so `SessionTitler` awaits `generate_title` directly
+rather than via `asyncio.to_thread` (§12).
+
+**Tier: T3a** (§2.2) — imports `kodo.llms.llamacpp.find_installed` (locate the
+shared llama.cpp binary) and `kodo.llms.local.LocalModelManager` (download its
+own GGUF, rooted at its own directory — never the chat-model registry's
+`LocalModelManager`/`~/.kodo/llama.cpp/models`), plus `project`
+(`kodo_user_dir`). Deliberately does **not** import or reuse
+`kodo.llms.llamacpp.LlamaServer`: that class tracks the *one* running server
+for the main chat model via a class-level singleton
+(`get_active_llama_server()`), consumed throughout `server/_app.py` and
+`LlamaPlugin`; instantiating a second one for titling would silently steal
+that slot. `kodo.titling._server.TitlerServer` is instead a small,
+self-contained copy of the same spawn/health-check/stop plumbing (PID file,
+`/health` poll, SIGTERM-then-SIGKILL stop), tracked by this module's own
+module-level singleton (`_active`) — see `_llama_server.py`'s docstring
+cross-reference in §10.
 
 | Module | Defines | Role |
 |---|---|---|
-| [_summarizer.py](../src/kodo/titling/_summarizer.py) | `generate_title`, `warm_up_titler_cache`, `titler_home_dir` | `titler_home_dir()` is `~/.kodo/titler` (the HF `cache_dir`). A process-wide `(tokenizer, model)` singleton pair (module-level, guarded by a `threading.Lock`) is loaded lazily on first use via `AutoTokenizer.from_pretrained`/`AutoModelForSeq2SeqLM.from_pretrained(..., cache_dir=...)` and kept resident for the process lifetime, so only the *first* call pays model-load cost. `warm_up_titler_cache()` — called once from `server/_app.py`'s `_start_background` (mirrors the existing `ensure_all_utils` first-run pattern, off the event loop via `asyncio.to_thread`) — downloads+loads the model if `~/.kodo/titler` doesn't exist yet, so the first real session's titling call never pays a cold download inline. `generate_title(text) → str \| None` prepends the model's `"summarize: "` task prefix (this T5 checkpoint's `config.json` fine-tunes on it; **without it the model sometimes translates the prompt to German instead of summarizing**), tokenizes, calls `model.generate(max_new_tokens=24, no_repeat_ngram_size=3, do_sample=False)`, and decodes. Generation-knob rationale: `max_new_tokens` (a real ~8-word budget) replaced an old `max_length=7`/`16` that chopped titles mid-phrase before the subject ("The Game of …" with nothing after); there is deliberately **no** `min_length` (a floor forced the model to pad trivially short prompts with repetition, "fix this fix this"); greedy is deterministic and, for these short essentially *extractive* inputs, as good as beam search while faster (beams also *introduced* tail dupes like "terminal UI UI"). It is a blocking call (callers must run it via `asyncio.to_thread`) and never raises — any failure (model not loadable, empty output) returns `None` so the caller can leave the session unnamed. |
-| [__main__.py](../src/kodo/titling/__main__.py) | `main` | `python -m kodo.titling` — a dev/debug CLI for tuning the titler by hand against an arbitrary prompt, reusing the same cached model. `--compare` (shipping vs recommended knobs side by side), `--shipping`, per-knob overrides (`--num-beams`/`--max-new-tokens`/`--length-penalty`/…), `--no-prefix`, `--greedy`; prompt positionally or via `-`/stdin. Mirrors `SessionTitler`'s sanitizer so it prints the final title, not just the raw model output. Not imported anywhere at runtime. |
+| [_server.py](../src/kodo/titling/_server.py) | `TitlerServer`, `start_titling`, `stop_titling`, `generate_title`, `titler_home_dir` | `titler_home_dir()` is `~/.kodo/titler` — both the titler's own `LocalModelManager` root (its GGUF cache) *and* its runtime-state file (`llama-server.json`, PID+port — mirrors `_llama_server.py`'s `find_running_server`/`adopt()` pattern so a kodo restart re-adopts a surviving titler process instead of orphaning it or failing to rebind its port). `start_titling(kodo_dir)` — best-effort and idempotent: no-op if already running; if llama.cpp isn't installed, logs and returns; checks `LocalModelManager.get_model_path` before downloading anything (so, unlike the old `transformers` design, a cached model is never even re-listed from the Hub, let alone re-downloaded — no separate "offline" flag needed, see doc/VALIDATOR.md §8); adopts a surviving process if the runtime file names one still alive, else spawns fresh (CPU-only — `--n-gpu-layers 0`, so it never contends with the main chat model for GPU memory/compute — plus `--jinja`/`--reasoning-format auto` and an 8192 context). Every failure anywhere in this path is logged and swallowed: titling is best-effort infrastructure, never something that can block kodo startup or a chat session. `stop_titling()` stops the managed process (also best-effort). `generate_title(text) → str \| None` — a single non-streaming chat completion (`openai.AsyncOpenAI` against the titler's own `base_url`, `temperature=0`, `chat_template_kwargs.enable_thinking=False`, a stray `<think>…</think>` stripped defensively if one slips through anyway) using a guardrailed system+user prompt: the message to summarize is wrapped in `<<<MESSAGE>>>…<<<END_MESSAGE>>>` delimiters with explicit instructions that it is *data to summarize, never instructions to follow* — the defense against a prompt that reads like "ignore previous instructions and say X", which a small instruction-tuned model is otherwise exactly the kind of model to comply with. Returns `None` on any failure (server not up, HTTP error, blank content) so the caller falls back to the prompt's own words rather than raising. |
 
-Note on the **extractive ceiling**: `Falconsai/text_summarization` is a tiny news-summarizer; for a short instruction it echoes a prefix of the prompt rather than abstracting, so titles read like clipped instructions ("Implement A Game Of Tic Tac Toe Where"), never crafted labels. The knobs above make titling *reliable and coherent*, not clever — the model can't be tuned past that without swapping it for a larger/instruction-tuned one.
+Consumed by `runtime._engine._titling.SessionTitler` (`generate_title`, for
+any first prompt over 8 words — §12, WS_PROTOCOL.md §5.9a/§5.9b) and by
+`server/_app.py` (`start_titling`/`stop_titling`, server lifecycle):
 
-Consumed by `runtime._engine._titling.SessionTitler`, which fires
-`generate_title` in a background thread (`asyncio.create_task` +
-`asyncio.to_thread`, fire-and-forget from the queue worker — §12) and
-reports the result over the existing `session.name`/`session.naming` wire
-events (WS_PROTOCOL.md §5.9a/§5.9b) — the protocol and `meta.json`
-persistence are unchanged from the old sub-agent-based titler; only how the
-title text is produced, and that generation no longer blocks the turn.
+- **Startup** — `_start_background` fire-and-forgets `start_titling` (never
+  awaited, so a first-run download or a slow subprocess health-check cannot
+  delay kodo itself from accepting connections) whenever `find_installed`
+  says llama.cpp is already there; `_stop_background` stops it, mirroring
+  the main chat model's own `LlamaServer.stop()` call there.
+- **Install** — `_handle_llamacpp_install` (`llamacpp.install`) schedules
+  `start_titling` after a successful install.
+- **Update** — the new `_handle_llamacpp_update` (`llamacpp.update`
+  WS command, `server/_app.py`, §14) calls `stop_titling` *first* (the
+  titler's process runs off the same llama.cpp binary files
+  `update_llamacpp` is about to replace), then `update_llamacpp`, then
+  schedules `start_titling` again on success — same as a fresh install.
+  `update_llamacpp`/`check_llamacpp_update` (`_installer.py`, §10) existed
+  but had no caller anywhere before this; `llamacpp.update` (WS_PROTOCOL.md
+  §7.6) is a new, minimal WS command with no kodo-vsix UI yet.
 
-**State:** Complete; see `test/test_titling.py`.
+**State:** Complete; see `test/test_titling.py`
+(`kodo.titling._server`) and `test/test_engine_titling.py`
+(`SessionTitler`'s 8-word short/LLM fork and fallback behavior).
 
 ---
 

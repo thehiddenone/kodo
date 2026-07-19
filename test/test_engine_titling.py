@@ -1,12 +1,14 @@
 """Behavioral tests for :class:`kodo.runtime._engine._titling.SessionTitler`.
 
-The old sub-agent-based titler ran a full LLM turn (10-15s); the new one runs
-:func:`kodo.titling.generate_title` in a background thread and fires it from
-the queue worker without awaiting it. These tests monkeypatch
-``generate_title`` (network-free, deterministic) and drive
-:class:`SessionTitler` against a real :class:`TransientStore` + a fake
-:class:`MessageSink`, asserting the ``session.naming``/``session.name``
-event sequence and ``meta.json`` persistence.
+The old sub-agent-based titler ran a full LLM turn (10-15s); the current one
+awaits :func:`kodo.titling.generate_title` directly (a chat-completion call
+against the titler's own dedicated llama-server — genuinely async I/O) and
+fires it from the queue worker without awaiting *that*. These tests
+monkeypatch ``generate_title`` with an async stub (network-free,
+deterministic) and drive :class:`SessionTitler` against a real
+:class:`TransientStore` + a fake :class:`MessageSink`, asserting the
+``session.naming``/``session.name`` event sequence and ``meta.json``
+persistence.
 """
 
 from __future__ import annotations
@@ -54,11 +56,14 @@ async def _drain(titler: SessionTitler) -> None:
 async def test_generates_and_persists_title(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(_titling, "generate_title", lambda text: "csv export endpoint")
+    async def _gen(text: str) -> str:
+        return "csv export endpoint"
+
+    monkeypatch.setattr(_titling, "generate_title", _gen)
 
     titler, sink, transient = _make_titler(tmp_path)
-    # 11 words — over _SHORT_PROMPT_MAX_WORDS, so this goes through the
-    # summarizer rather than being titled from its own leading words.
+    # 11 words — over _MAX_TITLE_WORDS, so this goes through the summarizer
+    # rather than being titled verbatim from the prompt itself.
     titler.maybe_generate_session_title("please add csv export to the reports page for our users")
     await _drain(titler)
 
@@ -72,7 +77,10 @@ async def test_generates_and_persists_title(
 async def test_naming_indicator_brackets_the_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(_titling, "generate_title", lambda text: "a real title here")
+    async def _gen(text: str) -> str:
+        return "a real title here"
+
+    monkeypatch.setattr(_titling, "generate_title", _gen)
 
     titler, sink, _ = _make_titler(tmp_path)
     titler.maybe_generate_session_title(
@@ -89,7 +97,12 @@ async def test_blank_prompt_is_a_noop(
     prompt: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[str] = []
-    monkeypatch.setattr(_titling, "generate_title", lambda text: calls.append(text) or "x y z")
+
+    async def _gen(text: str) -> str:
+        calls.append(text)
+        return "x y z"
+
+    monkeypatch.setattr(_titling, "generate_title", _gen)
 
     titler, sink, transient = _make_titler(tmp_path)
     titler.maybe_generate_session_title(prompt)
@@ -107,17 +120,22 @@ async def test_blank_prompt_is_a_noop(
         ("help me", "Help Me"),
         ("hi", "Hi"),
         ("add a login page", "Add A Login Page"),
-        ("add csv export to the reports page", "Add Csv Export To The"),
-        ("please fix this login bug, thanks!", "Please Fix This Login Bug"),
+        ("add csv export to the reports page", "Add Csv Export To The Reports Page"),
+        ("please fix this login bug, thanks!", "Please Fix This Login Bug Thanks"),
     ],
 )
 async def test_short_prompt_is_titled_from_its_own_words(
     prompt: str, expected: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # _SHORT_PROMPT_MAX_WORDS (10) or fewer words never reaches the
-    # summarizer — the title is the prompt's own first _SHORT_TITLE_WORDS (5).
+    # _MAX_TITLE_WORDS (8) or fewer words never reaches the summarizer — the
+    # title is the prompt itself, sanitized (every case above is <= 8 words).
     calls: list[str] = []
-    monkeypatch.setattr(_titling, "generate_title", lambda text: calls.append(text) or "x y z")
+
+    async def _gen(text: str) -> str:
+        calls.append(text)
+        return "x y z"
+
+    monkeypatch.setattr(_titling, "generate_title", _gen)
 
     titler, sink, transient = _make_titler(tmp_path)
     titler.maybe_generate_session_title(prompt)
@@ -132,12 +150,35 @@ async def test_short_prompt_is_titled_from_its_own_words(
     assert not any("active" in env.payload for env in sink.sent)
 
 
+async def test_nine_word_prompt_routes_through_the_summarizer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # One word over the _MAX_TITLE_WORDS (8) threshold — confirms the fork
+    # boundary itself, not just "well over"/"well under" cases.
+    calls: list[str] = []
+
+    async def _gen(text: str) -> str:
+        calls.append(text)
+        return "nine word summary right here now"
+
+    monkeypatch.setattr(_titling, "generate_title", _gen)
+
+    titler, sink, transient = _make_titler(tmp_path)
+    titler.maybe_generate_session_title("one two three four five six seven eight nine")
+    await _drain(titler)
+
+    assert len(calls) == 1
+    assert transient.is_session_named
+    naming_events = [env for env in sink.sent if "active" in env.payload]
+    assert [e.payload["active"] for e in naming_events] == [True, False]
+
+
 async def test_already_named_session_is_a_noop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     called = False
 
-    def _gen(text: str) -> str:
+    async def _gen(text: str) -> str:
         nonlocal called
         called = True
         return "some title"
@@ -158,7 +199,7 @@ async def test_second_prompt_does_not_race_first_in_flight_call(
 ) -> None:
     call_count = 0
 
-    def _gen(text: str) -> str:
+    async def _gen(text: str) -> str:
         nonlocal call_count
         call_count += 1
         return "first call title"
@@ -166,8 +207,8 @@ async def test_second_prompt_does_not_race_first_in_flight_call(
     monkeypatch.setattr(_titling, "generate_title", _gen)
 
     titler, _, _ = _make_titler(tmp_path)
-    # Over _SHORT_PROMPT_MAX_WORDS, so both prompts route through the
-    # summarizer (and thus the in-flight guard being tested here).
+    # Over _MAX_TITLE_WORDS, so both prompts route through the summarizer
+    # (and thus the in-flight guard being tested here).
     titler.maybe_generate_session_title(
         "the first rather long user prompt about something interesting today please"
     )
@@ -187,7 +228,10 @@ async def test_degenerate_output_falls_back_to_leading_words(
 ) -> None:
     # A single bare word fails the 2-8 word acceptable-title band, so the
     # titler falls back to the prompt's own leading words.
-    monkeypatch.setattr(_titling, "generate_title", lambda text: "python")
+    async def _gen(text: str) -> str:
+        return "python"
+
+    monkeypatch.setattr(_titling, "generate_title", _gen)
 
     titler, sink, transient = _make_titler(tmp_path)
     titler.maybe_generate_session_title(
@@ -196,14 +240,17 @@ async def test_degenerate_output_falls_back_to_leading_words(
     await _drain(titler)
 
     assert transient.is_session_named
-    assert any(env.payload.get("name") == "Some Rather Longer User Prompt" for env in sink.sent)
+    assert any(
+        env.payload.get("name") == "Some Rather Longer User Prompt About Something Here"
+        for env in sink.sent
+    )
 
 
 async def test_generation_failure_falls_back_to_leading_words(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def _boom(text: str) -> str:
-        raise RuntimeError("model not loadable")
+    async def _boom(text: str) -> str:
+        raise RuntimeError("titler llama-server not available")
 
     monkeypatch.setattr(_titling, "generate_title", _boom)
 
@@ -214,7 +261,10 @@ async def test_generation_failure_falls_back_to_leading_words(
     await _drain(titler)
 
     assert transient.is_session_named
-    assert any(env.payload.get("name") == "Some Rather Longer User Prompt" for env in sink.sent)
+    assert any(
+        env.payload.get("name") == "Some Rather Longer User Prompt About Something Here"
+        for env in sink.sent
+    )
 
 
 @pytest.mark.parametrize(
@@ -242,6 +292,21 @@ async def test_generation_failure_falls_back_to_leading_words(
 )
 def test_sanitize_title(raw: str, expected: str | None) -> None:
     assert SessionTitler._sanitize_title(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("hi\nthere", "Hi There"),
+        ("  fix   this   bug  ", "Fix This Bug"),
+        (
+            "one two three four five six seven eight nine ten",
+            "One Two Three Four Five Six Seven Eight",
+        ),
+    ],
+)
+def test_sanitize_prompt_text_flattens_multiline_and_whitespace(text: str, expected: str) -> None:
+    assert SessionTitler._sanitize_prompt_text(text) == expected
 
 
 @pytest.mark.parametrize(

@@ -7,9 +7,9 @@ directory, and this module populates that scratch home from a **template**
 kodo home:
 
 * heavy, immutable entries (``bin/``, ``llama.cpp/`` — binaries and GGUF
-  models; ``titler/`` — the session-titler's cached summarization model,
-  ``kodo.titling``) are **symlinked** so local inference works without
-  copying gigabytes;
+  models; ``titler/`` — the session-titler's cached GGUF model, plus its own
+  llama-server runtime-state file, ``kodo.titling``) are **symlinked** so
+  local inference works without copying gigabytes;
 * runtime state that must start fresh (``sessions/``, ``logs/``, the
   ``kodo-server`` discovery file) is **skipped**;
 * everything else (``etc/settings.json``, the local LLM registry, …) is

@@ -258,9 +258,12 @@ roster also renders every callee's schemas.
   `return_result` (`{summary}`); the silent `_run_silent_return_turn` grants
   it the tool and captures the payload, with raw text as a fallback. Session
   titling used to work the same way (`session_titler`, a sub-agent LLM call
-  taking 10-15s) but is now `kodo.titling`, a small local CPU summarization
-  model run in a background thread — no sub-agent spec, no LLM turn at all.
-  See `SessionTitler` (`runtime/_engine/_titling.py`) and §5.9a/§5.9b of
+  through the main chat model, taking 10-15s) but is now `kodo.titling` — a
+  guardrailed chat-completion call to a small, dedicated Qwen3-0.6B
+  llama-server (its own process, separate from the main chat model's),
+  awaited directly from a fire-and-forget background task rather than
+  running as a main-agent turn. See `SessionTitler`
+  (`runtime/_engine/_titling.py`), doc/INTERNALS.md §10c, and §5.9a/§5.9b of
   `WS_PROTOCOL.md`.
 
 ## Thinking level

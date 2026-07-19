@@ -69,9 +69,12 @@ The server is a machine-wide singleton rooted at `$HOME/.kodo`
 - **symlinked**: `bin/`, `llama.cpp/` — llama.cpp builds and GGUF models;
   local inference works without copying tens of GB. (A download during a run
   writes through the symlink into the template's `llama.cpp/models` — accepted
-  by design.) Also `titler/` — the session-titler's cached summarization
-  model (`kodo.titling`, doc/INTERNALS.md §10c), for the same reason: without
-  this, every run would redownload it on first titling call.
+  by design.) Also `titler/` — the session-titler's cached GGUF model *and* its
+  own llama-server runtime state (`kodo.titling`, doc/INTERNALS.md §10c), for
+  the same reason: without this, every run would redownload the model on
+  startup. `start_titling` checks the local manager state before downloading
+  anything, so once cached (shared via this symlink), no run ever re-downloads
+  or re-lists it from HuggingFace.
 - **skipped**: `sessions/`, `logs/`, the `kodo-server` discovery file —
   per-run state starts fresh, and a stale discovery PID can't confuse the
   spawned server.
@@ -266,12 +269,13 @@ default (`--out` overrides). Entry point: `python -m kodo.validator.scenarios`.
 **HuggingFace cache across runs.** Every run's server child has `HOME`
 redirected to its throwaway home, which would otherwise push HuggingFace's
 default cache under that home. `ServerProcess` (`build_child_env`) instead pins
-`HF_HOME` to the **real, global** cache and sets `KODO_TITLER_LOCAL_FILES_ONLY=1`
-so the session titler loads its already-cached summarization model (shared
-globally via the symlinked `~/.kodo/titler`) **without** HEAD-ing the Hub each
-run. That flag is a titler-only, per-call `local_files_only` — *not* a global
-offline switch — so GGUF downloads, which resolve metadata through
-`huggingface_hub`, are unaffected.
+`HF_HOME` to the **real, global** cache, covering both GGUF downloads
+(`kodo.llms.local`) and the session titler's own model download
+(`kodo.titling`). The titler needs no separate offline flag the way its old
+`transformers`-based predecessor did: `start_titling` checks its local
+manager state (shared globally via the symlinked `~/.kodo/titler`) before
+downloading anything, so once cached, no run re-downloads or even re-lists it
+from the Hub.
 
 ## 8b. Reusable prompts (`kodo.validator.prompts`)
 

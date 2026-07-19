@@ -245,19 +245,25 @@ MSG_CONFIG_RELOAD = "config.reload"
 
 # Client → Server. Window-global local-model management, sent over the
 # session-less control connection (extension.ts sidebar), never a session
-# connection. ``llamacpp.install`` still streams EVT_LLAMACPP_INSTALL_PROGRESS
-# on the requesting connection until done (that install is a one-shot binary
-# fetch with no pause/resume). The ``local_llm.*`` download commands below are
-# fire-and-forget instead: the handler kicks off the transfer in the
-# background and replies immediately with ``local_llm.registry_state``.
-# Progress itself is **not** pushed over the wire at all — kodo-vsix polls
-# ``manager-state.json`` directly off disk (doc/LOCAL_MODEL_MANAGER.md §11),
-# which is what lets a download keep running (and stay watchable) across the
-# requesting connection/window closing entirely.
+# connection. ``llamacpp.install``/``llamacpp.update`` still stream
+# EVT_LLAMACPP_INSTALL_PROGRESS on the requesting connection until done (both
+# are one-shot binary fetches with no pause/resume). ``llamacpp.update``
+# additionally stops the titler's own llama-server first (kodo.titling.
+# stop_titling) — its files live inside the same llama.cpp install being
+# replaced — and restarts it once the new build is installed (mirroring what
+# ``llamacpp.install`` does on success), see doc/INTERNALS.md §10c. The
+# ``local_llm.*`` download commands below are fire-and-forget instead: the
+# handler kicks off the transfer in the background and replies immediately
+# with ``local_llm.registry_state``. Progress itself is **not** pushed over
+# the wire at all — kodo-vsix polls ``manager-state.json`` directly off disk
+# (doc/LOCAL_MODEL_MANAGER.md §11), which is what lets a download keep
+# running (and stay watchable) across the requesting connection/window
+# closing entirely.
 #   local_llm.install {name} — start (or continue) a fresh download
 #   local_llm.resume  {name} — resume a paused/failed download by id alone
 #   local_llm.pause   {name} — signal an in-flight download to stop between chunks
 MSG_LLAMACPP_INSTALL = "llamacpp.install"
+MSG_LLAMACPP_UPDATE = "llamacpp.update"
 MSG_LOCAL_LLM_INSTALL = "local_llm.install"
 MSG_LOCAL_LLM_RESUME = "local_llm.resume"
 MSG_LOCAL_LLM_PAUSE = "local_llm.pause"

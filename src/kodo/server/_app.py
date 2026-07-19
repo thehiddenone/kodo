@@ -61,6 +61,7 @@ from kodo.llms.llamacpp import (
     find_running_server,
     get_local_model_manager,
     install_llamacpp,
+    update_llamacpp,
 )
 from kodo.llms.local import LocalModelError
 from kodo.project import ProjectLayoutError, WorkspaceLayout, kodo_user_dir
@@ -71,7 +72,7 @@ from kodo.runtime import (
     list_global_security_rules,
 )
 from kodo.subagents import AgentRegistry
-from kodo.titling import warm_up_titler_cache
+from kodo.titling import start_titling, stop_titling
 from kodo.transport import (
     EVT_ERROR,
     EVT_LLAMA_STATE,
@@ -92,6 +93,7 @@ from kodo.transport import (
     MSG_LLAMA_START,
     MSG_LLAMA_STOP,
     MSG_LLAMACPP_INSTALL,
+    MSG_LLAMACPP_UPDATE,
     MSG_LLM_COMPLETE,
     MSG_LLM_SELECT,
     MSG_LOCAL_LLM_ADD_FILE,
@@ -771,18 +773,31 @@ def _make_config_reload_handler(config: Config) -> HandlerFn:
 # ------------------------------------------------------------------
 
 
-async def _handle_llamacpp_install(req: Request) -> None:
+async def _stream_llamacpp_progress(
+    req: Request, work: Callable[[Callable[[int, str], None]], object]
+) -> bool:
+    """Run *work* (``install_llamacpp``/``update_llamacpp``) off-thread, streaming progress.
+
+    Shared by :func:`_handle_llamacpp_install` and :func:`_handle_llamacpp_update`
+    — both stream the same ``EVT_LLAMACPP_INSTALL_PROGRESS`` shape on the
+    requesting connection until *work* finishes.
+
+    Returns:
+        bool: ``True`` if *work* completed without raising.
+    """
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()
+    ok = True
 
     def progress_cb(pct: int, msg: str) -> None:
         loop.call_soon_threadsafe(queue.put_nowait, (pct, msg))
 
     async def run() -> None:
+        nonlocal ok
         try:
-            await asyncio.to_thread(install_llamacpp, kodo_user_dir(), progress_cb=progress_cb)
+            await asyncio.to_thread(work, progress_cb)
         except Exception:  # noqa: BLE001
-            pass
+            ok = False
         finally:
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
@@ -795,6 +810,31 @@ async def _handle_llamacpp_install(req: Request) -> None:
         await req.connection.send(
             Envelope.make_event(EVT_LLAMACPP_INSTALL_PROGRESS, {"percent": pct, "message": msg})
         )
+    return ok
+
+
+async def _handle_llamacpp_install(req: Request) -> None:
+    ok = await _stream_llamacpp_progress(
+        req, lambda progress_cb: install_llamacpp(kodo_user_dir(), progress_cb=progress_cb)
+    )
+    if ok:
+        # "installation procedure calls start titling" (doc/INTERNALS.md
+        # §10c) — fire-and-forget so a first-run model download/subprocess
+        # spin-up never delays this response.
+        asyncio.create_task(start_titling(kodo_user_dir()))
+
+
+async def _handle_llamacpp_update(req: Request) -> None:
+    # Stop the titler's llama-server first — it runs off the same llama.cpp
+    # install that update_llamacpp is about to replace (uninstall + fresh
+    # install) — then let a successful update restart it, same as a fresh
+    # install (doc/INTERNALS.md §10c).
+    await stop_titling()
+    ok = await _stream_llamacpp_progress(
+        req, lambda progress_cb: update_llamacpp(kodo_user_dir(), progress_cb=progress_cb)
+    )
+    if ok:
+        asyncio.create_task(start_titling(kodo_user_dir()))
 
 
 def _run_background_download(
@@ -1448,20 +1488,22 @@ async def _start_background(app: web.Application) -> None:
     user_dir = kodo_user_dir()
 
     # Ensure the bundled third-party utils (uv, ripgrep, fd) are present under
-    # ~/.kodo/bin, and the session-titler model is cached under
-    # ~/.kodo/titler (kodo.titling — doc/INTERNALS.md §10c). Both are
-    # best-effort and idempotent: a no-op once already present, so this only
-    # does real work on a first console-style launch. Off the event loop
-    # (asyncio.to_thread, run concurrently) so a first-run download of either
-    # does not block server readiness any longer than the slower of the two.
-    await asyncio.gather(
-        asyncio.to_thread(ensure_all_utils, user_dir),
-        asyncio.to_thread(warm_up_titler_cache),
-    )
+    # ~/.kodo/bin. Best-effort and idempotent: a no-op once already present,
+    # so this only does real work on a first console-style launch. Off the
+    # event loop (asyncio.to_thread) so a first-run download does not delay
+    # server readiness.
+    await asyncio.to_thread(ensure_all_utils, user_dir)
+
+    llama_install = find_installed(user_dir)
+    if llama_install is not None:
+        # Fire-and-forget (doc/INTERNALS.md §10c) — a first-run titler model
+        # download or a slow subprocess health-check must never delay kodo
+        # itself from accepting connections; titling is simply unavailable
+        # until this finishes.
+        asyncio.create_task(start_titling(user_dir))
 
     running = find_running_server(user_dir)
     if running is not None:
-        llama_install = find_installed(user_dir)
         model_path = (
             get_local_model_manager(user_dir).get_model_path(running.model)
             if running.model
@@ -1483,6 +1525,7 @@ async def _stop_background(app: web.Application) -> None:
     server = LlamaServer.get_active_llama_server()
     if server is not None and server.is_running:
         await server.stop()
+    await stop_titling()
     await app[_MANAGER_KEY].shutdown()
 
 
@@ -1541,6 +1584,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_CHECKPOINT_LIST, _handle_checkpoint_list)
     conn_registry.register_handler(MSG_CONFIG_RELOAD, _make_config_reload_handler(config))
     conn_registry.register_handler(MSG_LLAMACPP_INSTALL, _handle_llamacpp_install)
+    conn_registry.register_handler(MSG_LLAMACPP_UPDATE, _handle_llamacpp_update)
     conn_registry.register_handler(MSG_LOCAL_LLM_INSTALL, _handle_local_llm_install)
     conn_registry.register_handler(MSG_LOCAL_LLM_RESUME, _handle_local_llm_resume)
     conn_registry.register_handler(MSG_LOCAL_LLM_PAUSE, _handle_local_llm_pause)
