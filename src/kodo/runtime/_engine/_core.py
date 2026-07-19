@@ -126,6 +126,7 @@ class WorkflowEngine(
     _resume_subsession_pending: bool
     _entry_turn_seq: int
     _stuck_watchdog_task: asyncio.Task[None] | None
+    _stuck_streak: bool
 
     def __init__(
         self,
@@ -185,9 +186,14 @@ class WorkflowEngine(
         # Stuck-agent watchdog (doc/STUCK_DETECTION.md): bumped once per
         # entry-agent turn so a background alarm watcher can tell it has been
         # superseded; the watcher task itself is held here so asyncio never
-        # garbage-collects it mid-sleep.
+        # garbage-collects it mid-sleep. _stuck_streak tracks whether the
+        # entry-agent's last nudge (since its last real response) has not yet
+        # gotten it unstuck — in-memory only, lost on restart by design (a
+        # crash just costs one extra nudge before the next stall goes
+        # critical, never a correctness issue).
         self._entry_turn_seq = 0
         self._stuck_watchdog_task = None
+        self._stuck_streak = False
         # The security layer judging every tool call (doc/SECURITY.md) —
         # deterministic heuristic rules, no LLM involved.
         self._security = SecurityLayer()

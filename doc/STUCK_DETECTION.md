@@ -33,12 +33,13 @@ class RedFlag:
 
 `TurnSignal`/`StallDecision` live in `kodo/runtime/_engine/_shared.py`, not `_watchdog.py` — `_proto.py` (the `EngineHost` protocol every mixin, including `WatchdogMixin`, types `self` against) needs to reference them in method signatures, and `_proto.py` cannot import a mixin module without risking a cycle (`_watchdog.py` itself imports `EngineHost` from `_proto.py`). `_shared.py` has no such constraint, so the shapes live there and both `_watchdog.py` and `_proto.py` import from it.
 
-Two detectors ship today, both drawn directly from real failure modes:
+Three detectors ship today, all drawn directly from real failure modes:
 
 | `code` | Fires when | Evidence |
 |---|---|---|
 | `empty_final_turn` | No tool call **and** no visible text | The motivating session above — a legitimate completion always says *something*; an empty final turn is never a real "I'm done". |
 | `truncated_generation` | `stop_reason == "max_tokens"` | llama.cpp's `"length"` finish reason, remapped in `kodo/llms/llamacpp/_llama.py`'s `_map_finish_reason` — the model was cut off mid-generation by its output-token cap, possibly mid-sentence or mid-plan. |
+| `terse_final_response` | The visible text, with punctuation stripped, reduces to zero or one word | A reply like `"Done."` or `"Yes."` carries no real content — it reads the same as an empty turn even though `text.strip()` is non-empty. Two words (`"Sounds good."`, `"All set."`) are accepted as a real, if brief, completion. |
 
 `detect_red_flags(signal)` runs every registered detector and returns every match (never short-circuits). **To add a new red flag**: write one more `TurnSignal -> RedFlag | None` function and append it to `_DETECTORS` in `_watchdog.py` — no other wiring required. Nothing about the settings, the gate, or the turn loop needs to change.
 
@@ -68,20 +69,32 @@ Three call sites build this closure, one per shape of turn:
 - `_resume.py`'s `_resume_main_turn` — `is_entry_turn=True` (a crash-resumed continuation of the same shape of turn).
 - `_subagents.py`'s `_drive_subsession` — `is_entry_turn=False`, `subsession_id=<id>`.
 
-`_make_stall_handler`'s closure holds one piece of mutable state, `stall_count`, capped at `_MAX_CONSECUTIVE_NUDGES` (2) — a safety valve against a model that never recovers: after two consecutive inline retries within *one* `_run_agent_turn` call, the closure gives up and lets the turn end normally rather than looping forever. This cap only bites the inline-retry paths (immediate, or a sub-agent's repeated manual "Unstick it"); the entry-agent deferred path never loops at all (see below), so each of its nudges starts a brand-new `_run_agent_turn` call with its own fresh counter.
+`_make_stall_handler`'s closure holds one piece of *sub-agent-only* mutable state, `stall_count`, capped at `_MAX_CONSECUTIVE_NUDGES` (2) — a safety valve against a sub-agent that never recovers: after two consecutive inline retries within *one* `_run_agent_turn` call, the closure gives up and lets the turn end normally rather than looping forever. This cap only bites a sub-agent's inline-retry paths (immediate, or repeated manual "Unstick it"). Entry-agent scope does not use `stall_count` at all — see §2.4a.
 
 ### 2.4 Remediation — two shapes, one decision tree
 
 The closure's decision tree (inside `_on_stall`):
 
-1. No red flags matched → `retry=False` (nothing else runs — in particular `_registry`/`_display_name` are never touched on the fast path).
+1. No red flags matched → `retry=False` (nothing else runs — in particular `_registry`/`_display_name` are never touched on the fast path). For entry-agent scope, this also clears `_stuck_streak` (§2.4a) — a genuine response always ends whatever streak was building.
 2. Settings don't apply (`active`, `scope`, residence) → `retry=False`.
-3. `stall_count >= _MAX_CONSECUTIVE_NUDGES` → `retry=False`.
-4. **Immediate** (`effective_autonomous` OR `auto_unstuck_interactive`) → persist the nudge, `retry=True` — appended to the *current* `messages` list, loop continues **inline**, in both the entry-agent and sub-agent case.
+3. **Entry-agent scope** branches on `_stuck_streak` (§2.4a) before anything else: if already set, this is a second consecutive stall since the last real response — go critical (§2.4a) instead of nudging or asking again.
+4. **Immediate** (`effective_autonomous` OR `auto_unstuck_interactive`) → persist the nudge, `retry=True` — appended to the *current* `messages` list, loop continues **inline**, in both the entry-agent and sub-agent case. Entry-agent scope also sets `_stuck_streak = True` here.
 5. **Deferred, entry-agent scope** → the turn ends normally (`retry=False`) and `_schedule_entry_turn_alarm` is scheduled as a decoupled background task.
-6. **Deferred, sub-agent scope** → `await self._gate.fire_stuck_alert(...)` is awaited **inline**, blocking this sub-agent's turn.
+6. **Deferred, sub-agent scope** → `await self._gate.fire_stuck_alert(...)` is awaited **inline**, blocking this sub-agent's turn. Sub-agent scope alone still uses `stall_count >= _MAX_CONSECUTIVE_NUDGES` as its cap, unchanged from before.
 
 Why entry-agent and sub-agent scope diverge at steps 5/6: an entry-agent turn ending normally is the *correct*, desired UX — `session.phase` goes to `"awaiting_user"`, the chat input is usable again, and the user should see that. Blocking that turn for up to several seconds (or indefinitely, waiting on a human) while it's supposed to look idle would be a regression. A sub-agent turn has no such state to protect: its parent is *already* blocked on it (spinner already showing, exactly like any other long-running sub-agent call), so asking inline — the same shape as an ordinary `prompt.permission` gate — costs nothing extra.
+
+### 2.4a Escalation — one nudge per streak, then a critical notice
+
+An entry-agent turn gets **at most one** nudge since its last genuine (non-stalled) response. `WatchdogMixin._stuck_streak` (`bool`, engine-instance state, declared alongside `_entry_turn_seq` in `_core.py`/`_proto.py`) tracks whether that one nudge is still outstanding:
+
+- Cleared (`False`) whenever `_on_stall` sees a round with no red flags (step 1 above) — a real response always resets the streak.
+- Set `True` the moment a nudge actually lands for the entry agent — either inline, right after `_persist_nudge` in the immediate path (step 4), or, for the deferred/interactive path, inside `_run_entry_agent`'s `nudge_detail is not None` branch (`_turns.py`) once the queued nudge prompt is actually processed as a fresh turn. It is **not** set merely because an alarm was *scheduled* — dismissing a `prompt.stuck_alert` never sets it.
+- If a *second* consecutive stall is detected while `_stuck_streak` is already `True`, `WatchdogMixin._persist_stuck_critical` runs instead of any nudge/alarm path, and the turn ends (`retry=False`). `_stuck_streak` is deliberately **not** cleared here — only a genuine response clears it — so a third, fourth, ... consecutive stall (e.g. the user manually re-prompts and it stalls again) keeps surfacing the same critical notice rather than nudging again.
+
+This state is in-memory only, not persisted to `transient.json` — a server restart mid-streak just costs one extra nudge before the next stall goes critical, never a correctness issue (unlike `pending_security_alert`, which protects a dangling *tool dispatch*). Scope is deliberately entry-agent only: a sub-agent turn already has its own bounded inline-retry-then-silent-end behavior via `stall_count`/`_MAX_CONSECUTIVE_NUDGES` (§2.3), and a sub-agent subsession is comparatively short-lived, so the cross-turn "already tried once" problem this section addresses doesn't really arise there.
+
+The critical notice itself (`EVT_AGENT_STUCK_CRITICAL` / `agent.stuck_critical`, `EngineEmitters.emit_agent_stuck_critical`) is a single user-facing sentence, **never fed back to the LLM** — client-only, mirroring `emit_error` rather than the nudge. See §2.5.
 
 **`_schedule_entry_turn_alarm`** (entry-agent, deferred case only): captures `self._entry_turn_seq` (bumped once at the top of every `_run_entry_agent`/`_resume_main_turn` call), sleeps 5 seconds (`_ENTRY_TURN_ALARM_DELAY_S`), then re-checks `_entry_turn_seq` and `session.phase == "awaiting_user"` before firing `prompt.stuck_alert`. This double-checks (once before sleeping resolves would be redundant; the checks are *after* the sleep, and again after the gate resolves) that nothing else has superseded this turn in the meantime — a new prompt that started **and finished** inside the 5s window moves `_entry_turn_seq` forward even though `phase` would otherwise read `"awaiting_user"` again by coincidence. On "unstick", the nudge is enqueued onto the normal worker queue (`self._queue.put({"text": ..., "attachments": [], "nudge_detail": {...}})`) — functionally identical to a fresh `prompt.submit`, just tagged so it doesn't look like one (§2.5) and skips session titling (`_worker.py`: `if nudge_detail is None: self._titler.maybe_generate_session_title(text)`).
 
@@ -93,11 +106,13 @@ The nudge is a real `role: "user"` message the agent responds to (`_NUDGE_LLM_TE
 
 Because the client never typed this message, it has no local echo — `EVT_AGENT_UNSTUCK_NUDGE` (`agent.unstuck_nudge`) is pushed live right after persisting (`EngineEmitters.emit_agent_unstuck_nudge`) so the running session shows it immediately; `HistoryProjector._message_to_entries`'s `kind == "agent_unstuck_nudge"` branch replays the same thing from `session.jsonl` on reload. Both produce the same `{note, reasons, mode}` shape kodo-vsix renders (`SessionEntryView.tsx`'s `agent_unstuck_nudge` case — an icon + the `note` sentence, styled like `security_rule_added`'s notice row).
 
+The critical notice (§2.4a) is simpler, mirroring `emit_error`/`security_rule_added` instead: `EngineEmitters.emit_agent_stuck_critical` persists a bare `{"type": "agent_stuck_critical", "message": ...}` marker via `TransientStore.append_marker` (not a `kind`-tagged message — there is no LLM-visible turn to attach it to) and pushes `EVT_AGENT_STUCK_CRITICAL` (`agent.stuck_critical`) live. `HistoryProjector.history_entries`'s `kind == "agent_stuck_critical"` branch replays it from `session.jsonl` on reload. kodo-vsix renders `{message}` as a red `<kodo_crit>` callout (`SessionEntryView.tsx`'s `agent_stuck_critical` case), the same treatment as `error_notice`/`interrupted` — a plain append with no streaming state to clear, since by the time this fires the turn has already ended normally through the ordinary turn-end path.
+
 ### 2.6 The alarm gate — `prompt.stuck_alert`
 
 A fourth `GateOrchestrator` request type (`fire_stuck_alert`, `kodo/runtime/_gates.py`), alongside `fire_approval`/`fire_questions`/`fire_permission` — same `kind=request`/Future/`register_response_future` mechanism, full spec in [WS_PROTOCOL.md](WS_PROTOCOL.md) §6.5a. Modeled visually on `PermissionPanel` per its sibling-gate precedent, but:
 
-- info-blue rather than warning-amber (`StuckAlertPanel.tsx`, `styles.ts`'s `stuckAlertCard`/`stuckAlertBadge`) — this is a behavioral observation, not a security risk.
+- info-blue rather than warning-amber (`StuckAlertPanel.tsx`, `styles.ts`'s `stuckAlertCard`) — this is a behavioral observation, not a security risk. (No badge in the header — removed; the title sentence plus the STUCK? tag already say enough.)
 - distinct **Unstick it** / **Dismiss** actions, no rule-offer checkboxes (there is nothing here to "always allow").
 - **No `pending_*`-style crash-resume persistence.** Unlike `prompt.permission` (which persists `pending_security_alert` because a dangling *tool call* needs re-judging on resume) or `prompt.approval` (`pending_prompt`), nothing is left mid-dispatch if this wait is cut short by a server crash — the alarm is simply dropped, and the next matching stall (if any) schedules a fresh one. This was a deliberate scope cut: the heavier resume machinery those two gates need exists to protect a *tool dispatch* that might have partially landed; nothing here is dispatched at all until the user answers.
 
@@ -109,3 +124,4 @@ kodo-vsix renders it identically for both scopes (same blocking-panel placement 
 - **`workflow_mode == "judge"` never gets the nudge's `kind`/`detail` tagging.** `_run_judge_with_input` doesn't accept `nudge_detail` (unlike `_run_guide_with_input`/`_run_problem_solver_with_input`) — a judge-session nudge would ride through as a plain untagged prompt. In practice this never surfaces: `kodo.validator._evaluate` always forces the judge session into autonomous mode (`MSG_MODE_SET, autonomous=True`), so remediation for a judge turn is always the immediate/inline path, which never touches the worker queue or `nudge_detail` at all.
 - **The validator's scripted/LLM user-proxy doesn't know `prompt.stuck_alert`.** `kodo.validator._client.py`'s `__build_answer` falls back to `{"error": "unsupported_request"}` for any request type it doesn't recognize — `fire_stuck_alert` reads `action` from that (absent → defaults to `"dismiss"`), so an interactive (non-autonomous) validator scenario that hits a genuine stall gets a clean, immediate "dismiss" rather than hanging. Teaching the validator's user-proxy to actually answer "unstick" is a reasonable future enhancement, not a correctness gap.
 - **Scope is `run_subagent`/`run_author_critic_iteration` sub-agents only.** The internal *silent* tool-calling loops (`compactor`, `web_search`'s `_run_silent_tool_loop_turn`) don't go through `_run_agent_turn` at all and are out of scope — they already have their own "nudge the model to keep going" handling (`_run_silent_tool_loop_turn`'s own no-tool-calls branch).
+- **The one-nudge-then-critical escalation (§2.4a) is entry-agent scope only**, and `_stuck_streak` is in-memory, not persisted — a deliberate pair of scope cuts, not oversights. Sub-agent scope keeps its pre-existing `stall_count`/`_MAX_CONSECUTIVE_NUDGES` behavior unchanged (up to 2 inline retries, then a silent end with no critical notice).

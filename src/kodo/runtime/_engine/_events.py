@@ -26,6 +26,7 @@ from kodo.state import TransientStore
 from kodo.transport import (
     EVT_AGENT_FINISHED,
     EVT_AGENT_STARTED,
+    EVT_AGENT_STUCK_CRITICAL,
     EVT_AGENT_TOOL_CALL_IN_PROGRESS,
     EVT_AGENT_UNSTUCK_NUDGE,
     EVT_CONTEXT_COMPACTING,
@@ -249,6 +250,27 @@ class EngineEmitters:
                 EVT_AGENT_UNSTUCK_NUDGE, {"note": note, "reasons": reasons, "mode": mode}
             )
         )
+
+    async def emit_agent_stuck_critical(self, message: str) -> None:
+        """Push a client-only notice that the stuck-agent watchdog gave up, and persist it.
+
+        Fired when an entry-agent turn stalls for the *second* consecutive
+        time since its last real response (doc/STUCK_DETECTION.md,
+        ``WatchdogMixin._persist_stuck_critical``) — the first stall already
+        got one nudge, and stalling again right after means nudging is not
+        working. Unlike the nudge (a real LLM-facing continuation turn), this
+        ends the turn: persisted as a marker (``type: "agent_stuck_critical"``)
+        so :class:`~._history.HistoryProjector` replays the same notice on
+        reload, mirroring :meth:`emit_error`.
+        """
+        self._transient.append_marker(
+            {
+                "type": "agent_stuck_critical",
+                "message": message,
+                "ts": datetime.now(tz=UTC).isoformat(),
+            }
+        )
+        await self._sink.send(Envelope.make_event(EVT_AGENT_STUCK_CRITICAL, {"message": message}))
 
     async def emit_agent_started(self, agent_name: str) -> None:
         """Announce that *agent_name* took the floor."""

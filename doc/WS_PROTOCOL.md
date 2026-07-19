@@ -509,6 +509,16 @@ Fired right after the stuck-agent watchdog (doc/STUCK_DETECTION.md) injects its 
 
 `note` is a ready-to-render, one-sentence explanation; `reasons` are the matched red-flag codes (`kodo.runtime._engine._watchdog.RedFlag.code` — extensible, see doc/STUCK_DETECTION.md); `mode` is `"auto"` (autonomous mode, or interactive with `auto_unstuck_interactive`) or `"manual"` (the user clicked "Unstick it"). Also persisted as an `agent_unstuck_nudge`-*kind* message (`{role: "user", content: <the fixed continuation text>, kind: "agent_unstuck_nudge", detail: {reasons, note, mode}}`) — not a bare marker, since it must round-trip into the live LLM context on resume too — so it replays via `session.history` (§5.11) the same way. Rendered as a non-context, informational feed entry (`exclude_from_context: true`) — the LLM-facing `content` never appears in the feed, only `note`/`reasons`/`mode`.
 
+### 5.9f `agent.stuck_critical` — the stuck-agent watchdog gave up on an entry-agent turn
+
+Fired when an entry-agent turn stalls a *second* consecutive time since its last real response (doc/STUCK_DETECTION.md §2.4a) — the one nudge already sent (§5.9e) did not get the model unstuck, so nudging (or asking via `prompt.stuck_alert`) a second time is skipped and the turn ends instead.
+
+```json
+{ "type": "agent.stuck_critical", "message": "Kōdo already nudged the Problem Solver once, but it stalled again right after (its last turn ended with no tool call and no visible response). Ending the turn instead of trying again — you may need to rephrase the prompt or step in." }
+```
+
+`message` is a single ready-to-render sentence. Unlike the nudge, there is no LLM-facing turn behind this event — it is entirely client-only, mirroring `error` (§5.10) rather than `agent.unstuck_nudge`. Also persisted as a bare `agent_stuck_critical` marker (`{type: "agent_stuck_critical", message, ts}`, not a `kind`-tagged message) so it replays via `session.history` (§5.11).
+
 ### 5.10 `error` — unsolicited server error
 
 For errors not tied to a specific request. Errors tied to a request are returned as `response` payloads with an `error` field (§2.2).
@@ -530,7 +540,7 @@ Pushed once after `hello.ack` when the resumed session has prior turns, so a fre
 { "type": "session.history", "entries": [ { ...session-entry... }, ... ] }
 ```
 
-Entries mirror the WebView's session model. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed, as is `agent_unstuck_nudge` (`{note, reasons, mode}` — reconstructed from its `kind="agent_unstuck_nudge"` message the same way, §5.9e). Other display-only entries (status) are still ephemeral and dropped on rehydrate.
+Entries mirror the WebView's session model. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed, as is `agent_unstuck_nudge` (`{note, reasons, mode}` — reconstructed from its `kind="agent_unstuck_nudge"` message the same way, §5.9e) and `agent_stuck_critical` (`{message}` — reconstructed from its bare `agent_stuck_critical` marker, §5.9f). Other display-only entries (status) are still ephemeral and dropped on rehydrate.
 
 A `web_search` `tool_call` entry additionally carries `webSearchNotes: string[]` — its live narration (§5.5e), read back from the best-effort sidecar file rather than from `session.jsonl` (empty if the run was aborted before it flushed, or for every non-`web_search` tool call).
 

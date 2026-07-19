@@ -53,6 +53,7 @@ class _FakeGateway:
 class _FakeEmitters:
     def __init__(self) -> None:
         self.nudges: list[tuple[str, list[str], str]] = []
+        self.critical_messages: list[str] = []
         self.cost_total = 0.0
 
     async def handle_stream_event(self, event: object, stream_id: str) -> None:
@@ -79,6 +80,9 @@ class _FakeEmitters:
 
     async def emit_agent_unstuck_nudge(self, note: str, reasons: list[str], mode: str) -> None:
         self.nudges.append((note, reasons, mode))
+
+    async def emit_agent_stuck_critical(self, message: str) -> None:
+        self.critical_messages.append(message)
 
 
 _AppendedEntry = tuple[str, object, str | None, str | None, "dict[str, object] | None"]
@@ -151,6 +155,7 @@ def _watchdog_engine(
     engine._queue = asyncio.Queue()
     engine._entry_turn_seq = 0
     engine._stuck_watchdog_task = None
+    engine._stuck_streak = False
     default_settings: dict[str, object] = {
         "stuck_detection": {
             "active": "local_only",
@@ -191,27 +196,75 @@ def test_detect_red_flags_healthy_turn_has_none() -> None:
 
 
 def test_detect_red_flags_empty_final_turn() -> None:
+    # Empty text is also zero words once punctuation-stripped, so this now
+    # trips terse_final_response too — both detectors independently agree an
+    # empty turn is a stall.
     signal = TurnSignal(text="", thinking_text="hmm let me check", stop_reason="end_turn")
     flags = detect_red_flags(signal)
-    assert [f.code for f in flags] == ["empty_final_turn"]
+    assert {f.code for f in flags} == {"empty_final_turn", "terse_final_response"}
 
 
 def test_detect_red_flags_whitespace_only_text_still_counts_as_empty() -> None:
     signal = TurnSignal(text="   \n\t", thinking_text="", stop_reason="end_turn")
     flags = detect_red_flags(signal)
-    assert [f.code for f in flags] == ["empty_final_turn"]
+    assert {f.code for f in flags} == {"empty_final_turn", "terse_final_response"}
 
 
 def test_detect_red_flags_truncated_generation() -> None:
-    signal = TurnSignal(text="I was about to say", thinking_text="", stop_reason="max_tokens")
+    signal = TurnSignal(
+        text="I was about to explain the fix", thinking_text="", stop_reason="max_tokens"
+    )
     flags = detect_red_flags(signal)
     assert [f.code for f in flags] == ["truncated_generation"]
 
 
-def test_detect_red_flags_both_can_fire_together() -> None:
+def test_detect_red_flags_all_three_can_fire_together() -> None:
     signal = TurnSignal(text="", thinking_text="", stop_reason="max_tokens")
     flags = detect_red_flags(signal)
-    assert {f.code for f in flags} == {"empty_final_turn", "truncated_generation"}
+    assert {f.code for f in flags} == {
+        "empty_final_turn",
+        "truncated_generation",
+        "terse_final_response",
+    }
+
+
+def test_detect_red_flags_terse_final_response() -> None:
+    signal = TurnSignal(text="Done.", thinking_text="", stop_reason="end_turn")
+    flags = detect_red_flags(signal)
+    assert [f.code for f in flags] == ["terse_final_response"]
+
+
+def test_detect_red_flags_terse_final_response_strips_a_standalone_punctuation_token() -> None:
+    # Without stripping punctuation first, "Done !" would naively split into
+    # two whitespace-separated tokens ("Done", "!"); stripping punctuation
+    # first removes the standalone "!" so this still reads as one real word.
+    signal = TurnSignal(text="Done !", thinking_text="", stop_reason="end_turn")
+    flags = detect_red_flags(signal)
+    assert [f.code for f in flags] == ["terse_final_response"]
+
+
+def test_detect_red_flags_terse_final_response_pure_punctuation_counts_as_zero_words() -> None:
+    # Punctuation-only text strips down to zero words, which is still "at
+    # most one" and counts as terse — this also happens to trip
+    # empty_final_turn, since text.strip() here is non-empty but the text
+    # has no real content either way.
+    signal = TurnSignal(text="...", thinking_text="", stop_reason="end_turn")
+    flags = detect_red_flags(signal)
+    assert "terse_final_response" in {f.code for f in flags}
+
+
+def test_detect_red_flags_two_words_is_acceptable() -> None:
+    signal = TurnSignal(text="Sounds good.", thinking_text="", stop_reason="end_turn")
+    assert detect_red_flags(signal) == []
+
+
+def test_detect_red_flags_multi_word_response_is_not_terse() -> None:
+    signal = TurnSignal(
+        text="Finished the benchmark and wrote the report",
+        thinking_text="",
+        stop_reason="end_turn",
+    )
+    assert detect_red_flags(signal) == []
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +327,9 @@ async def test_on_stall_no_flags_is_a_pure_noop() -> None:
         agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
     )
 
-    decision = await handler(TurnSignal(text="all done", thinking_text="", stop_reason="end_turn"))
+    decision = await handler(
+        TurnSignal(text="all done, see summary above", thinking_text="", stop_reason="end_turn")
+    )
 
     assert decision.retry is False
     assert engine._transient.appended == []
@@ -326,9 +381,11 @@ async def test_on_stall_autonomous_nudges_immediately_and_persists() -> None:
     assert (role, entry_agent, kind) == ("user", "problem_solver", "agent_unstuck_nudge")
     assert detail is not None
     assert detail["mode"] == "auto"
-    assert detail["reasons"] == ["empty_final_turn"]
+    assert detail["reasons"] == ["empty_final_turn", "terse_final_response"]
     # No local echo on the client, so the live event carries the explanation.
-    assert engine._emitters.nudges == [(detail["note"], ["empty_final_turn"], "auto")]
+    assert engine._emitters.nudges == [
+        (detail["note"], ["empty_final_turn", "terse_final_response"], "auto")
+    ]
     # Immediate path never touches the gate.
     assert engine._gate.calls == []
 
@@ -397,7 +454,8 @@ async def test_on_stall_interactive_entry_turn_alarm_fires_and_unsticks(monkeypa
 
     assert len(engine._gate.calls) == 1
     assert engine._gate.calls[0]["reasons"] == [
-        "its last turn ended with no tool call and no visible response"
+        "its last turn ended with no tool call and no visible response",
+        "its last response was at most one word, not a real completion",
     ]
     # "unstick" re-enters through the normal worker queue, tagged as a nudge.
     assert engine._queue.qsize() == 1
@@ -535,18 +593,68 @@ async def test_on_stall_subagent_scope_excluded_by_default_top_level_scope() -> 
     assert engine._gate.calls == []
 
 
-async def test_on_stall_stall_count_cap_gives_up_after_max_consecutive_nudges() -> None:
-    """Safety valve: one handler instance won't retry forever inline."""
+async def test_on_stall_entry_turn_streak_escalates_to_critical_after_one_nudge() -> None:
+    """Entry-agent scope gets exactly one nudge per streak (doc/STUCK_DETECTION.md
+    §2.4a): a second consecutive stall right after goes critical instead of
+    nudging (or retrying) again — and stays critical on a third, since only a
+    genuine response clears the streak."""
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_stall_handler(
         agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
     )
     signal = TurnSignal(text="", thinking_text="", stop_reason="end_turn")
 
+    decisions = [await handler(signal) for _ in range(3)]
+
+    assert [d.retry for d in decisions] == [True, False, False]
+    assert len(engine._transient.appended) == 1  # exactly one nudge ever persisted
+    assert len(engine._emitters.critical_messages) == 2  # 2nd and 3rd stall both go critical
+    assert engine._stuck_streak is True  # never cleared except by a real response
+
+
+async def test_on_stall_entry_turn_streak_clears_on_a_genuine_response() -> None:
+    """"get stuck -> good response -> get stuck" nudges both times: a
+    non-stalled round in between clears the streak."""
+    engine = _watchdog_engine(autonomous=True)
+    handler = engine._make_stall_handler(
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+    )
+    stalled = TurnSignal(text="", thinking_text="", stop_reason="end_turn")
+    healthy = TurnSignal(
+        text="all done, see summary above", thinking_text="", stop_reason="end_turn"
+    )
+
+    first = await handler(stalled)
+    recovered = await handler(healthy)
+    second = await handler(stalled)
+
+    assert [first.retry, recovered.retry, second.retry] == [True, False, True]
+    assert len(engine._transient.appended) == 2  # nudged both times
+    assert engine._emitters.critical_messages == []
+
+
+async def test_on_stall_subagent_stall_count_cap_gives_up_after_max_consecutive_nudges() -> None:
+    """Sub-agent scope is unchanged by the entry-agent streak/critical logic:
+    still capped at _MAX_CONSECUTIVE_NUDGES inline retries, no critical notice."""
+    engine = _watchdog_engine(
+        autonomous=True,
+        settings={
+            "stuck_detection": {"active": "local_only", "scope": "top_level_and_subagents"}
+        },
+    )
+    handler = engine._make_stall_handler(
+        agent_name="investigator",
+        routing=_LOCAL_ROUTING,
+        is_entry_turn=False,
+        subsession_id="sub-1",
+    )
+    signal = TurnSignal(text="", thinking_text="", stop_reason="end_turn")
+
     decisions = [await handler(signal) for _ in range(_MAX_CONSECUTIVE_NUDGES + 1)]
 
     assert [d.retry for d in decisions] == [True] * _MAX_CONSECUTIVE_NUDGES + [False]
-    assert len(engine._transient.appended) == _MAX_CONSECUTIVE_NUDGES
+    assert len(engine._transient.appended_sub) == _MAX_CONSECUTIVE_NUDGES
+    assert engine._emitters.critical_messages == []
 
 
 # ---------------------------------------------------------------------------

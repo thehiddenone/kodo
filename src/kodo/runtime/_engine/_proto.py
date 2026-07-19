@@ -79,6 +79,7 @@ class EngineHost(Protocol):
     _last_thinking_base_llm: str | None
     _entry_turn_seq: int
     _stuck_watchdog_task: asyncio.Task[None] | None
+    _stuck_streak: bool
 
     # -- core helpers (defined in _core) ---------------------------------------
     def _agent_available(self, name: str) -> bool: ...
@@ -291,6 +292,10 @@ class EngineHost(Protocol):
         display_name: str,
         mode: str,
     ) -> Message: ...
+
+    async def _persist_stuck_critical(
+        self, *, flags: list[RedFlag], display_name: str
+    ) -> None: ...
 
     def _schedule_entry_turn_alarm(
         self, agent_name: str, display_name: str, flags: list[RedFlag]

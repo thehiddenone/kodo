@@ -188,6 +188,12 @@ class TurnLoopMixin:
                     [str(r) for r in reasons] if isinstance(reasons, list) else [],
                     str(nudge_detail.get("mode", "")),
                 )
+                # This is the deferred half of a stuck-agent nudge landing
+                # (doc/STUCK_DETECTION.md) — mark the streak now that the
+                # nudge has actually been sent, so if *this* turn stalls too,
+                # WatchdogMixin._on_stall ends it with a critical notice
+                # instead of scheduling another alarm.
+                self._stuck_streak = True
             # Always echo the authoritative stored set when the user staged
             # anything — even an empty set (every file failed validation) — so
             # the client retargets the optimistically-rendered chips to the

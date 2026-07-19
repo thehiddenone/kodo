@@ -71,9 +71,10 @@ class HistoryProjector:
         sub-agent's full inner transcript (read from its subsession log), and a
         ``subsession_end`` marker emits a hand-back divider. A
         ``security_rule_added`` marker (doc/SECURITY_RULES_PLAN.md §2.4/§2.7)
-        replays the user's own record of a granted "always allow" rule. This
-        gives the WebView a faithful replay of who did what, including
-        sub-agent work.
+        replays the user's own record of a granted "always allow" rule, and an
+        ``agent_stuck_critical`` marker (doc/STUCK_DETECTION.md) replays the
+        stuck-watchdog's "gave up nudging" notice. This gives the WebView a
+        faithful replay of who did what, including sub-agent work.
 
         Each ``tool_call`` entry's ``checkpoint`` (root/sha/parent/index/undone)
         is reconstructed from the persisted ``checkpoint_sha``/``checkpoint_root``
@@ -162,6 +163,10 @@ class HistoryProjector:
                         "executable": str(line.get("executable", "")),
                         "subcommand": str(line.get("subcommand", "")),
                     }
+                )
+            elif kind == "agent_stuck_critical":
+                entries.append(
+                    {"type": "agent_stuck_critical", "message": str(line.get("message", ""))}
                 )
         return entries
 

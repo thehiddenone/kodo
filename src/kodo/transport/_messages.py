@@ -600,6 +600,16 @@ EVT_SECURITY_RULE_ADDED = "security.rule_added"
 # on reload the same way (see ``HistoryProjector._message_to_entries``).
 EVT_AGENT_UNSTUCK_NUDGE = "agent.unstuck_nudge"
 
+# Server → Client event. Fired when an entry-agent turn stalls for the
+# *second* consecutive time since its last real response — the first stall
+# already got one nudge (``EVT_AGENT_UNSTUCK_NUDGE``), and stalling again
+# right after means nudging is not working. Unlike the nudge, this ends the
+# turn instead of retrying or asking again: ``{message}`` is a single
+# user-facing sentence explaining what happened, client-only (never fed back
+# to the LLM). Also persisted as an ``agent_stuck_critical`` marker so it
+# replays on reload, mirroring ``EVT_ERROR``/``EngineEmitters.emit_error``.
+EVT_AGENT_STUCK_CRITICAL = "agent.stuck_critical"
+
 # Server → Client events. Drive the sidebar's llama.cpp/model controls only —
 # no workflow meaning. ``llamacpp.install.progress`` streams ``{percent,
 # message}`` for the llama.cpp binary install; ``percent == -1`` signals
