@@ -345,6 +345,7 @@ over different inputs and with different disqualifiers:
 | | `_rule_offer` (command-shape) | `_path_rule_offer` (path-shape) |
 |---|---|---|
 | Precondition from the caller | `rule_eligible` category (deployment/system/network/unknown) | executable in read-only/`cd` bucket, no write in the segment |
+| Control-structure keyword (`for`/`if`/`do`/`done`/…) | Disqualifies unconditionally, known or not | n/a — never in the read-only/`cd` bucket, so never eligible in the first place |
 | Substitution in the segment | Disqualifies | *(segments with substitutions never reach here — they're either in §3's whole-line wrap or the general leniency of §5e)* |
 | Nested/opaque shell | Disqualifies | *(same — never reaches here)* |
 | Path-like **argument** | Known command: ignored. Unknown command: disqualifies *unless* it's the subcommand itself | n/a — the whole point of this shape *is* a path |
@@ -373,6 +374,7 @@ generalization).
 | `1brc ./measurements.txt` | `(1brc, ./measurements.txt)` — unknown, but the path *is* the subcommand |
 | `cat /etc/hosts` | `(cat, /etc/hosts)` — path-shape, eligible executable |
 | `cat ~/.ssh/id_rsa` | `None` — path-shape, sensitive-path denylist |
+| `for f in $(git ls-files); do echo "$f"; done` | Three asks (`for f`, `do echo`, `done`), all `None` — the parser splits the loop into pseudo-segments on `;`, but a control-structure keyword is never an invocable program a rule could generalize over |
 
 ---
 

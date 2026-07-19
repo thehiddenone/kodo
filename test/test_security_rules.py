@@ -322,6 +322,37 @@ def test_eval_always_asks_never_offer_eligible() -> None:
     assert d.rule_offer is None
 
 
+def test_control_keyword_pseudo_segments_never_offer() -> None:
+    # `;` inside a `for ... do ... done` loop splits into pseudo-segments
+    # whose "executable" is a shell keyword, not an invocable program — the
+    # loop still asks (the parser has no grammar for compound statements),
+    # but none of `for`/`do`/`done` may be turned into a permanent rule.
+    d = _posix('for f in a b c; do echo "$f"; done')
+    assert d.action == "ask"
+    assert [p.reason for p in d.parts] == [
+        "'for f' is not in the known-safe command set.",
+        "'do echo' is not in the known-safe command set.",
+        "'done' is not in the known-safe command set.",
+    ]
+    assert all(p.rule_offer is None for p in d.parts)
+
+
+def test_control_keyword_offer_suppressed_even_without_substitution() -> None:
+    # `for f in a b c` (no `$(...)`/`$VAR`) would otherwise be offer-eligible
+    # as an "unknown command" — the keyword check must run regardless.
+    d = _posix("for f in a b c; do echo hi; done")
+    assert all(p.rule_offer is None for p in d.parts)
+
+
+@pytest.mark.parametrize(
+    "keyword_line", ["if true; then echo hi; fi", "while true; do echo hi; done"]
+)
+def test_other_control_keywords_never_offer(keyword_line: str) -> None:
+    d = _posix(keyword_line)
+    assert d.action == "ask"
+    assert all(p.rule_offer is None for p in d.parts)
+
+
 def test_known_rule_applies_inside_nested_shell() -> None:
     d = evaluate_command(
         'bash -c "git push"',

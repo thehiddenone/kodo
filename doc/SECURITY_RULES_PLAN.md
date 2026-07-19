@@ -195,6 +195,18 @@ line:
    subcommand — see §2.7; every other outside-workspace ask (an unknown or
    destructive command, or an eligible command targeting a credential-shaped
    path) still never offers.
+5. **The segment's executable is not a control-structure keyword**
+   (`_rules._CONTROL_KEYWORDS` — POSIX `if`/`then`/`elif`/`else`/`fi`,
+   `for`/`while`/`until`/`do`/`done`, `case`/`esac`/`in`/`select`/
+   `function`/`time`/`coproc`; PowerShell `elseif`/`switch`/`foreach`/
+   `try`/`catch`/`finally`/`trap`/`begin`/`process`/`end`/`param`; cmd.exe
+   `goto`) — added 2026-07-18. `._parser`/`._powershell` split pipeline
+   segments on `;`/`&`/`&&`/`||`/`|` with no grammar for compound
+   statements, so a loop or conditional's own keywords surface as their own
+   pseudo-segment (`for f in $(...); do ...; done` → asking segments `for
+   f`, `do ...`, `done`). The line still asks exactly as before — this rule
+   only strips the offer, since a reserved word is never an invocable
+   program a rule could meaningfully generalize over.
 
 No offer → the panel is exactly today's Allow / Deny.
 

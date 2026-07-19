@@ -617,6 +617,53 @@ def _is_path_like(token: str) -> bool:
     ) or bool(_DRIVE_RE.match(token))
 
 
+# Control-structure reserved words, across every dialect this engine parses.
+# `._parser`/`._powershell` split pipeline segments on `;`/`&`/`&&`/`||`/`|`
+# with no grammar awareness of `for`/`if`/`while`/... compound statements, so
+# a loop or conditional's own keywords ("for f", "do echo", "done", "then", a
+# `for /L ... do` cmd.exe one-liner, ...) surface as pseudo-segments with a
+# reserved word as their "executable" — never an invocable program a rule
+# could meaningfully generalize over. The segment still asks (the compound
+# statement as a whole is exactly as unanalyzable as before); only the offer
+# is suppressed, doc/SECURITY_RULES_PLAN.md §2.2 rule 5.
+_CONTROL_KEYWORDS = frozenset(
+    {
+        # POSIX sh/bash/zsh/ksh
+        "if",
+        "then",
+        "elif",
+        "else",
+        "fi",
+        "for",
+        "while",
+        "until",
+        "do",
+        "done",
+        "case",
+        "esac",
+        "in",
+        "select",
+        "function",
+        "time",
+        "coproc",
+        # PowerShell
+        "elseif",
+        "switch",
+        "foreach",
+        "try",
+        "catch",
+        "finally",
+        "trap",
+        "begin",
+        "process",
+        "end",
+        "param",
+        # cmd.exe
+        "goto",
+    }
+)
+
+
 def _rule_offer(
     segment: NormalizedSegment,
     shape: tuple[str, str],
@@ -657,7 +704,19 @@ def _rule_offer(
       the shape already pins the rule to that exact literal text, so a
       different file produces a different, non-matching shape and still
       asks.
+
+    A segment whose executable is a shell/PowerShell/cmd control-structure
+    keyword (``_CONTROL_KEYWORDS`` — ``for``, ``do``, ``done``, ``if``,
+    ``then``, ...) is never offered, known or not (§2.2 rule 5): the
+    line-level parser has no grammar for compound statements, so a keyword
+    orphaned into its own pseudo-segment by the `;`/`&`/`&&`/`||`/`|` split
+    is never an invocable program — offering a rule for it would either never
+    match again (the same loop rarely repeats verbatim) or, worse, silently
+    generalize over a keyword that appears in unrelated, unreviewed compound
+    statements later.
     """
+    if segment.executable in _CONTROL_KEYWORDS:
+        return None
     if segment.has_substitution:
         return None
     if segment.nested_command is not None or segment.nested_opaque:
