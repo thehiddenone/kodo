@@ -429,6 +429,71 @@ async def test_uninstall_removes_files_and_state(
 
 
 # ---------------------------------------------------------------------------
+# Update checking (ETag comparison)
+# ---------------------------------------------------------------------------
+
+
+async def test_check_for_update_false_when_etag_unchanged(
+    manager: LocalModelManager, http_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _payload(100)
+    _patch_hf(monkeypatch, http_server, {"model.gguf": payload})
+
+    await manager.download_model("m1", "org/repo", "model.gguf")
+
+    assert await manager.check_for_update("m1") is False
+
+
+async def test_check_for_update_true_when_remote_etag_differs(
+    manager: LocalModelManager, http_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _payload(100)
+    _patch_hf(monkeypatch, http_server, {"model.gguf": payload})
+    await manager.download_model("m1", "org/repo", "model.gguf")
+
+    # The repo published a new revision of the same file — same filename,
+    # different ETag — without kodo re-downloading anything yet.
+    def fake_resolve_new_etag(
+        repo_id: str, filename: str, **_kwargs: object
+    ) -> ResolvedFile:
+        return ResolvedFile(
+            filename=filename,
+            url=f"{http_server}/{filename}",
+            headers={},
+            etag="etag-model.gguf-v2",
+            size=len(payload),
+            commit_hash="cafef00d",
+        )
+
+    monkeypatch.setattr("kodo.llms.local._manager.resolve_file", fake_resolve_new_etag)
+
+    assert await manager.check_for_update("m1") is True
+
+
+async def test_check_for_update_false_when_not_installed(manager: LocalModelManager) -> None:
+    assert await manager.check_for_update("never-downloaded") is False
+
+
+async def test_check_for_update_false_on_resolve_failure(
+    manager: LocalModelManager, http_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repo that's since been renamed/deleted shouldn't surface as an
+    error — from a caller's point of view, "can't tell" and "no update"
+    collapse to the same "nothing to flag" outcome (see the method's
+    docstring)."""
+    payload = _payload(100)
+    _patch_hf(monkeypatch, http_server, {"model.gguf": payload})
+    await manager.download_model("m1", "org/repo", "model.gguf")
+
+    def fake_resolve_gone(repo_id: str, filename: str, **_kwargs: object) -> ResolvedFile:
+        raise ShardResolutionError(f"HuggingFace repository not found: {repo_id!r}")
+
+    monkeypatch.setattr("kodo.llms.local._manager.resolve_file", fake_resolve_gone)
+
+    assert await manager.check_for_update("m1") is False
+
+
+# ---------------------------------------------------------------------------
 # Restart reconciliation and live-progress persistence
 # ---------------------------------------------------------------------------
 

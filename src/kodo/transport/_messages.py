@@ -300,6 +300,21 @@ MSG_CONFIG_RELOAD = "config.reload"
 #   local_llm.install {name} — start (or continue) a fresh download
 #   local_llm.resume  {name} — resume a paused/failed download by id alone
 #   local_llm.pause   {name} — signal an in-flight download to stop between chunks
+#   local_llm.update  {name} — re-fetch an installed model whose remote GGUF has
+#                               changed (LocalModelManager.check_for_update caught
+#                               an ETag mismatch). Implemented as a synchronous
+#                               ``uninstall`` (reusing the exact same manager call
+#                               ``local_llm.uninstall`` makes) immediately followed
+#                               by the same fire-and-forget download path
+#                               ``local_llm.install`` uses — i.e. a server-side
+#                               "click Uninstall, wait for it, click Install"
+#                               rather than a new atomic code path. Replies with
+#                               ``local_llm.registry_state`` reflecting the
+#                               now-uninstalled entry (the same shape an ordinary
+#                               ``local_llm.uninstall`` would send), then a second
+#                               time once the fresh download settles, exactly like
+#                               ``local_llm.install``. See doc/LOCAL_MODEL_MANAGER.md
+#                               §12.
 MSG_LLAMACPP_INSTALL = "llamacpp.install"
 MSG_LLAMACPP_UPDATE = "llamacpp.update"
 MSG_LLAMACPP_UNINSTALL = "llamacpp.uninstall"
@@ -307,8 +322,23 @@ MSG_LLAMACPP_VERSION_INFO = "llamacpp.version_info"
 MSG_LOCAL_LLM_INSTALL = "local_llm.install"
 MSG_LOCAL_LLM_RESUME = "local_llm.resume"
 MSG_LOCAL_LLM_PAUSE = "local_llm.pause"
+MSG_LOCAL_LLM_UPDATE = "local_llm.update"
 MSG_LLAMA_START = "llama.start"
 MSG_LLAMA_STOP = "llama.stop"
+
+# Client → Server. Fire-and-forget, sent by kodo-vsix's Local Inference
+# Settings panel every time it's opened, carrying every currently-installed
+# ``hardcoded_hf``/``custom_hf`` model name: ``{names: [str, ...]}``. No reply
+# is sent synchronously — the client doesn't wait for one (WS_PROTOCOL.md
+# §7.6e) — the handler instead resolves each name's installed GGUF(s) against
+# their HuggingFace ETag in a background task (metadata-only HEAD-equivalent
+# calls, no bytes downloaded — LocalModelManager.check_for_update) and, once
+# every name has been checked, pushes a single EVT_LOCAL_LLM_UPDATES_AVAILABLE
+# on the same connection. A name that isn't a known/installed/HF-backed entry
+# (stale client-side list, or a ``custom_file``/``custom_server_url`` entry
+# that isn't from HF at all) is silently skipped rather than erroring — this
+# is a best-effort scan, not a validated mutation.
+MSG_LOCAL_LLM_CHECK_UPDATES = "local_llm.check_updates"
 
 # Client → Server. Synchronous local-model switch (WS_PROTOCOL.md §7.6a).
 # ``{name}`` — ``name`` is a *local registry* name. The server persists the
@@ -688,6 +718,16 @@ EVT_LLAMA_STATE = "llama.state"
 # ``active_flavor`` (a flavor id, or ``""`` for Default) — see
 # doc/LLM_REGISTRY.md §4.6.
 EVT_LOCAL_LLM_REGISTRY_STATE = "local_llm.registry_state"
+
+# Server → Client event. Reply to MSG_LOCAL_LLM_CHECK_UPDATES, sent once the
+# background ETag scan of every requested name finishes. Payload:
+# ``{updatable: [name, ...]}`` — just the subset with a remote GGUF that no
+# longer matches the locally-recorded ETag, not a full registry snapshot (the
+# webview already has one; this only adds the "which of these are stale"
+# fact). An empty list is still sent (not omitted) so a webview that showed a
+# stale "updates available" banner from a previous scan clears it once a
+# fresh scan comes back clean.
+EVT_LOCAL_LLM_UPDATES_AVAILABLE = "local_llm.updates_available"
 
 # Server → Client event. Pushed when the engine itself disables Autonomous mode
 # (the Guide's ``disable_autonomous_mode`` tool) — as opposed to a user toggle

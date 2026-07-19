@@ -525,6 +525,51 @@ class LocalModelManager:
             )
         return path
 
+    async def check_for_update(self, model_id: str, *, token: str | None = None) -> bool:
+        """True if *model_id*'s installed GGUF(s) no longer match the HF remote.
+
+        Metadata-only: re-resolves each MAIN/SHARD file's current ETag via
+        :func:`kodo.llms.local._hf.resolve_file` (the same call
+        :meth:`download_model` makes before transferring bytes) and compares
+        it against the ETag recorded at download time — no bytes are
+        transferred. mmproj files are deliberately excluded, mirroring
+        :attr:`ModelRecord.is_installed`'s own MAIN/SHARD-only definition of
+        "this model".
+
+        Returns ``False`` — not an error — whenever there is nothing
+        conclusive to report: the model was never downloaded, isn't fully
+        installed, a file completed before this package recorded ETags (`etag
+        is None`), or the HF metadata round trip itself fails (e.g. the repo
+        was renamed/deleted, or a transient network error). A caller wanting
+        to distinguish "confirmed up to date" from "couldn't tell" should
+        treat any of these the same way this method does: as "nothing to flag
+        right now."
+
+        Args:
+            model_id (str): Caller-chosen model key.
+            token (str | None): HF access token, for gated/private repos.
+
+        Returns:
+            bool: ``True`` only when a fresh remote ETag was successfully
+            resolved for every MAIN/SHARD file and at least one differs from
+            what's on record.
+        """
+        record = self.get_record(model_id)
+        if record is None or not record.is_installed:
+            return False
+        for file in record.main_files:
+            if not file.etag:
+                return False
+            try:
+                resolved = await asyncio.to_thread(
+                    resolve_file, file.repo_id, file.filename, revision=file.revision, token=token
+                )
+            except LocalModelError:
+                return False
+            if resolved.etag != file.etag:
+                return True
+        return False
+
     def uninstall(self, model_id: str) -> None:
         """Delete every file belonging to *model_id* and drop its state entry.
 

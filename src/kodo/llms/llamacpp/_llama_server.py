@@ -21,6 +21,7 @@ import ctypes.wintypes
 import json
 import logging
 import os
+import shlex
 import signal
 import sys
 from contextlib import suppress
@@ -304,7 +305,7 @@ class LlamaServer:
         self.__active_port = self.__config.port
 
         cmd = self.__build_command()
-        _log.debug("Starting llama-server: %s", " ".join(cmd))
+        _log.debug("Starting llama-server: %s", shlex.join(cmd))
 
         startup_log_path = self.__startup_log_path()
         startup_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -355,6 +356,13 @@ class LlamaServer:
         _log.info("llama-server stopped")
 
     def __build_command(self) -> list[str]:
+        # Returned as argv (list[str]), passed straight into
+        # create_subprocess_exec(*cmd, ...) with no shell involved — so an
+        # argument containing spaces (e.g. --reasoning-budget-message's
+        # sentence) is fine as one list element, no quoting needed here.
+        # Only the debug log of this command needs shlex.join to render such
+        # arguments unambiguously, since plain " ".join() would make them
+        # look like separate bare tokens.
         cfg = self.__config
         cmd: list[str] = [
             str(cfg.executable),

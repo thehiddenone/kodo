@@ -45,6 +45,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import signal
 import sys
 from contextlib import suppress
@@ -297,7 +298,7 @@ class TitlerServer:
             raise RuntimeError("titler llama-server is already running")
 
         cmd = self.__build_command()
-        _log.debug("Starting titler llama-server: %s", " ".join(cmd))
+        _log.debug("Starting titler llama-server: %s", shlex.join(cmd))
 
         log_dir = self.__kodo_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -338,6 +339,11 @@ class TitlerServer:
         _log.info("Titler llama-server stopped")
 
     def __build_command(self) -> list[str]:
+        # Returned as argv (list[str]), passed straight into
+        # create_subprocess_exec(*cmd, ...) with no shell involved — an
+        # argument containing spaces is fine as one list element, no quoting
+        # needed here. Only the debug log of this command needs shlex.join
+        # to render such arguments unambiguously.
         cmd = [
             str(self.__executable),
             "--log-timestamps",

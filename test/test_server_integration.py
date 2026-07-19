@@ -612,6 +612,99 @@ async def test_local_llm_install_pushes_registry_state_after_failure_too(
     assert _local_entry(completed.payload, "test-model")["installed"] is False
 
 
+async def test_local_llm_update_uninstalls_then_reinstalls(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """local_llm.update is a server-side "click Uninstall, wait, click
+    Install" (doc/LOCAL_MODEL_MANAGER.md §12) — reusing the exact same
+    LocalModelManager.uninstall/download_model calls those two commands make,
+    so it must push the same shape of registry_state transitions: installed
+    (already true here) -> uninstalled -> kickoff (still uninstalled) ->
+    installed again."""
+    from kodo.llms.local import LocalModelManager
+
+    req = _make_request(
+        "local_llm.add_huggingface",
+        name="test-model",
+        description="",
+        repo_id="acme/test-model",
+        filename="model.gguf",
+    )
+    await ws.send_str(req.to_json())
+    await _recv(ws)  # add's own registry_state, not under test
+
+    installed = {"v": True}
+    monkeypatch.setattr(
+        LocalModelManager,
+        "get_model_path",
+        lambda self, name: Path("/fake/model.gguf") if installed["v"] else None,
+    )
+
+    def _fake_uninstall(self: object, name: str) -> None:
+        installed["v"] = False
+
+    async def _fake_download(self: object, *a: object, **k: object) -> None:
+        installed["v"] = True
+
+    monkeypatch.setattr(LocalModelManager, "uninstall", _fake_uninstall)
+    monkeypatch.setattr(LocalModelManager, "download_model", _fake_download)
+
+    req = _make_request("local_llm.update", name="test-model")
+    await ws.send_str(req.to_json())
+
+    uninstalled = await _recv(ws)
+    assert uninstalled.payload["type"] == "local_llm.registry_state"
+    assert _local_entry(uninstalled.payload, "test-model")["installed"] is False
+
+    completed = await _recv(ws)
+    assert completed.payload["type"] == "local_llm.registry_state"
+    completed_entry = _local_entry(completed.payload, "test-model")
+    assert completed_entry["installed"] is True
+    assert Path(completed_entry["installed_path"]) == Path("/fake/model.gguf")
+
+
+async def test_local_llm_update_rejects_unknown_model(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    req = _make_request("local_llm.update", name="does-not-exist")
+    await ws.send_str(req.to_json())
+    err = await _recv(ws)
+    assert err.payload["type"] == "error"
+    assert err.payload["code"] == "local_llm_error"
+
+
+async def test_local_llm_check_updates_reports_only_stale_names(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kodo.llms.local import LocalModelManager
+
+    for name in ("stale-model", "current-model"):
+        req = _make_request(
+            "local_llm.add_huggingface",
+            name=name,
+            description="",
+            repo_id=f"acme/{name}",
+            filename="model.gguf",
+        )
+        await ws.send_str(req.to_json())
+        await _recv(ws)  # each add's own registry_state, not under test
+
+    async def _fake_check(self: object, name: str, **k: object) -> bool:
+        return name == "stale-model"
+
+    monkeypatch.setattr(LocalModelManager, "check_for_update", _fake_check)
+
+    req = _make_request(
+        "local_llm.check_updates",
+        names=["stale-model", "current-model", "unknown-model"],
+    )
+    await ws.send_str(req.to_json())
+
+    evt = await _recv(ws)
+    assert evt.payload["type"] == "local_llm.updates_available"
+    assert evt.payload["updatable"] == ["stale-model"]
+
+
 async def test_add_huggingface_seeds_a_default_flavor_from_its_llama_args(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:

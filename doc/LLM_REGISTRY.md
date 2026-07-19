@@ -351,6 +351,23 @@ this as a resumable download, same as one the user paused deliberately.
 retired — superseded by `LocalModelManager`'s own `manager-state.json`,
 scoped under the models directory itself rather than `etc/`.
 
+### 4.1a Update checking and re-fetch
+
+Every time the Local Inference Settings panel opens, kodo-vsix fires
+`local_llm.check_updates {names}` (fire-and-forget, every installed
+`hardcoded_hf`/`custom_hf` name) so the server can compare each model's
+on-disk GGUF ETag against HuggingFace's current one
+(`LocalModelManager.check_for_update` — metadata-only, no bytes downloaded)
+and reply with `local_llm.updates_available {updatable}`. A non-empty result
+shows a yellow banner and adds an **Update** button to each stale, installed
+card. Clicking it disables the button and sends `local_llm.update {name}`,
+which the server implements as a plain `uninstall` immediately followed by
+the same `download_model` path `install` uses — i.e. exactly "click
+Uninstall, wait, click Install," reusing those two existing manager calls
+rather than a new atomic re-fetch. Full design (why ETag, why fire-and-forget,
+why uninstall+reinstall instead of an in-place overwrite) is in
+[LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md) §12.
+
 ### 4.2 llama-server binary override
 
 A **global** setting, not a model — addresses the lack of CUDA support in

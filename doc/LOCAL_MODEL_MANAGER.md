@@ -561,3 +561,93 @@ Pausing mid-download is deterministic (no timing/sleep races): the test's
 crossed, which runs synchronously on the same event-loop thread as the
 transfer, so the very next chunk-boundary check in that worker sees it (with
 parallelism forced to 1, there's only ever the one worker to check).
+
+---
+
+## 12. Update checking (ETag comparison) and "Update" (uninstall + reinstall)
+
+Whether an installed model's remote GGUF has since changed — a re-quant, a
+bug fix, a re-upload — is answered without downloading anything, by
+comparing the ETag recorded at install time against a freshly-resolved one.
+
+- **`LocalModelManager.check_for_update(model_id, *, token=None) -> bool`**
+  (`_manager.py`) re-resolves every MAIN/SHARD file's current HF metadata via
+  the same `resolve_file` call `download_model` makes before transferring
+  bytes — a metadata-only HEAD-equivalent request, no bytes fetched — and
+  compares the returned ETag against `ModelFile.etag` as recorded on disk.
+  `True` only once every file resolves successfully and at least one ETag
+  differs. mmproj files are excluded, mirroring `ModelRecord.is_installed`'s
+  own MAIN/SHARD-only definition of "this model". Deliberately permissive on
+  failure: not installed, no recorded ETag yet (a file completed before this
+  package tracked ETags), or the HF round trip itself failing (renamed/
+  deleted repo, transient network error) all return `False` rather than
+  raising — from a caller's point of view "confirmed current" and "couldn't
+  tell" are both just "nothing to flag right now" (see the method's
+  docstring, and `test_check_for_update_*` in `test/test_llms_local.py`).
+  Like every other read on this class, it costs nothing extra to call
+  speculatively.
+
+- **`local_llm.check_updates {names: [str, ...]}`** (server `_app.py`
+  `_handle_local_llm_check_updates`) is the WS entry point kodo-vsix's Local
+  Inference Settings panel calls every time it opens, passing every
+  currently-installed `hardcoded_hf`/`custom_hf` model name (client-filtered
+  via `isDownloadableLocalEntry(kind) && entry.installed` in
+  `extension.ts`'s `_sendCheckLocalLlmUpdates`) — a `custom_file`/
+  `custom_server_url` entry isn't HF-backed and has no remote to compare
+  against, so kodo-vsix never includes one, and the server independently
+  skips any name that isn't a known `hardcoded_hf`/`custom_hf` entry (a stale
+  client-side list is not an error). **Fire-and-forget, deliberately**: the
+  client sends it and moves on (`_sendControl`, not `sendControlAwait`) —
+  checking N models each costs a real HF metadata round trip, and the
+  webview shouldn't block opening on that. The handler runs the scan as a
+  background `asyncio.create_task` and, once every name has been checked,
+  pushes one `local_llm.updates_available {updatable: [name, ...]}` event on
+  the same connection — an empty list is sent (not omitted) so a stale
+  "updates available" banner from a previous scan clears on a clean rescan.
+  kodo-vsix's top-level WS dispatcher (`extension.ts`
+  `_onLocalLlmUpdatesAvailable`) *replaces* (never merges)
+  `localUpdatableNamesState` with each reply, then re-pushes panel state —
+  the Local Inference Settings panel's `#updates-banner` (yellow, only
+  visible when the list is non-empty) and each installed card's "Update"
+  button (`local-inference-settings-panel.ts` `renderUpdatesBanner`/
+  `renderModelCard`) both read straight off it.
+
+- **`local_llm.update {name}`** (`_handle_local_llm_update`) is deliberately
+  *not* a new atomic "re-download in place" code path. It's composed from
+  the exact same two calls `local_llm.uninstall`/`local_llm.install` already
+  make — `LocalModelManager.uninstall(name)` (synchronous, same as
+  `local_llm.uninstall`) immediately followed by the same fire-and-forget
+  `download_model` dispatch via `_run_background_download` that
+  `local_llm.install` uses — so an update goes through the exact same
+  manager-state transitions (installed -> uninstalled -> kickoff ->
+  downloading -> installed/failed) a user manually clicking Uninstall then
+  Install would produce, rather than a bespoke shortcut that could drift out
+  of sync with those two paths. Two `local_llm.registry_state` pushes follow,
+  same shape as install's: one right after the uninstall (already correctly
+  showing `installed: false` — no separate "kickoff" state needed, since
+  post-uninstall *is* pre-download), then one more once the fresh download
+  settles. Only defined for `hardcoded_hf`/`custom_hf` entries — same gate
+  `local_llm.install` uses — and replies with the standard
+  `local_llm_error`/`error` event for an unknown or non-downloadable name.
+  See `test_local_llm_update_uninstalls_then_reinstalls` in
+  `test/test_server_integration.py`.
+
+- **kodo-vsix UI**: the "Update" button only ever renders on an installed,
+  HF-backed card whose name is currently in `updatableNames` — clicking it
+  disables the button and relabels it "Updating…" (the same
+  immediate-feedback pattern `local-inference-settings-panel.ts` already
+  uses for "Download and Install"/Pause/Resume), then fires `local_llm.
+  update`. No separate re-enable path exists: the entry briefly reports
+  `installed: false` mid-update, at which point the card naturally falls
+  back to rendering "Download and Install" (or "Downloading — see progress
+  above" once the reinstall's transfer starts) instead of "Update" — the
+  normal install-flow rendering already covers every stage, so nothing
+  update-specific needs to persist across the transition. `extension.ts`
+  also drops the name from `localUpdatableNamesState` the moment the button
+  is clicked, immediately (not just optimistically — the triggered update is
+  what actually brings the file back in sync), rather than waiting for a
+  fresh `check_updates` scan.
+
+- **HF tokens**: like `download_model`, `check_for_update` accepts a
+  per-call `token` but nothing in this feature passes one yet — gated repos
+  are out of scope here the same way they're out of scope for install (§8).

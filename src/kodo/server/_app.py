@@ -83,6 +83,7 @@ from kodo.transport import (
     EVT_LLAMA_STATE,
     EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_LOCAL_LLM_REGISTRY_STATE,
+    EVT_LOCAL_LLM_UPDATES_AVAILABLE,
     MSG_CHECKPOINT_LIST,
     MSG_CHECKPOINT_REDO,
     MSG_CHECKPOINT_ROLL_FORWARD,
@@ -107,6 +108,7 @@ from kodo.transport import (
     MSG_LOCAL_LLM_ADD_FLAVOR,
     MSG_LOCAL_LLM_ADD_HUGGINGFACE,
     MSG_LOCAL_LLM_ADD_SERVER_URL,
+    MSG_LOCAL_LLM_CHECK_UPDATES,
     MSG_LOCAL_LLM_INSTALL,
     MSG_LOCAL_LLM_PAUSE,
     MSG_LOCAL_LLM_REMOVE,
@@ -114,6 +116,7 @@ from kodo.transport import (
     MSG_LOCAL_LLM_RESUME,
     MSG_LOCAL_LLM_SET_ACTIVE_FLAVOR,
     MSG_LOCAL_LLM_UNINSTALL,
+    MSG_LOCAL_LLM_UPDATE,
     MSG_LOCAL_LLM_UPDATE_FLAVOR,
     MSG_MODE_SET,
     MSG_PROJECT_CREATE,
@@ -1123,6 +1126,78 @@ async def _handle_local_llm_uninstall(req: Request) -> None:
     await _send_registry_state(req)
 
 
+async def _handle_local_llm_update(req: Request) -> None:
+    """Re-fetch an installed model whose remote GGUF has changed.
+
+    Deliberately composed from the exact same two calls
+    ``local_llm.uninstall``/``local_llm.install`` already make —
+    ``LocalModelManager.uninstall`` then ``.download_model`` via
+    ``_run_background_download`` — rather than a new "atomic update" code
+    path, so an update goes through the same manager-state transitions
+    (uninstalled -> kickoff -> downloading -> installed/failed) a user
+    manually clicking Uninstall then Install would produce. See
+    doc/LOCAL_MODEL_MANAGER.md §12.
+    """
+    name = str(req.env.payload.get("name", "")).strip()
+    if not name:
+        return
+    kodo_dir = kodo_user_dir()
+    entry = get_local_registry(kodo_dir).get(name)
+    if entry is None or entry.kind not in ("hardcoded_hf", "custom_hf"):
+        await _reply_local_llm_error(req, f"Unknown or non-downloadable model: {name!r}")
+        return
+    manager = get_local_model_manager(kodo_dir)
+    await asyncio.to_thread(manager.uninstall, name)
+    _log.info("Uninstalled model %r for update", name)
+    # Reflects the now-uninstalled entry — the same state a plain
+    # local_llm.uninstall would send, and (since the model is already not
+    # installed at this point) also the correct "kickoff" state for the
+    # install half below. Must be sent before the background task is created,
+    # same ordering requirement as _handle_local_llm_install.
+    await _send_registry_state(req)
+    _run_background_download(
+        name,
+        lambda: manager.download_model(entry.name, entry.repo_id, entry.filename),
+        req.connection,
+    )
+
+
+async def _handle_local_llm_check_updates(req: Request) -> None:
+    """Fire-and-forget background ETag scan — see MSG_LOCAL_LLM_CHECK_UPDATES.
+
+    No synchronous reply: the client doesn't wait for one, and the scan
+    itself (one metadata round trip per installed file, across however many
+    names were sent) can take a while. ``EVT_LOCAL_LLM_UPDATES_AVAILABLE`` is
+    pushed on this connection once every name has been checked.
+    """
+    raw_names = req.env.payload.get("names", [])
+    names = (
+        [str(n).strip() for n in raw_names if str(n).strip()]
+        if isinstance(raw_names, list)
+        else []
+    )
+    if not names:
+        return
+    kodo_dir = kodo_user_dir()
+    registry = get_local_registry(kodo_dir)
+    manager = get_local_model_manager(kodo_dir)
+    connection = req.connection
+
+    async def run() -> None:
+        updatable: list[str] = []
+        for name in names:
+            entry = registry.get(name)
+            if entry is None or entry.kind not in ("hardcoded_hf", "custom_hf"):
+                continue  # not an HF-backed entry — no remote to compare against
+            if await manager.check_for_update(name):
+                updatable.append(name)
+        await connection.send(
+            Envelope.make_event(EVT_LOCAL_LLM_UPDATES_AVAILABLE, {"updatable": updatable})
+        )
+
+    asyncio.create_task(run())
+
+
 async def _send_registry_state(req: Request) -> None:
     await req.connection.send(
         Envelope.make_event(EVT_LOCAL_LLM_REGISTRY_STATE, _local_registry_payload())
@@ -1774,6 +1849,8 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_LOCAL_LLM_INSTALL, _handle_local_llm_install)
     conn_registry.register_handler(MSG_LOCAL_LLM_RESUME, _handle_local_llm_resume)
     conn_registry.register_handler(MSG_LOCAL_LLM_PAUSE, _handle_local_llm_pause)
+    conn_registry.register_handler(MSG_LOCAL_LLM_UPDATE, _handle_local_llm_update)
+    conn_registry.register_handler(MSG_LOCAL_LLM_CHECK_UPDATES, _handle_local_llm_check_updates)
     conn_registry.register_handler(MSG_LOCAL_LLM_UNINSTALL, _handle_local_llm_uninstall)
     conn_registry.register_handler(MSG_LOCAL_LLM_REMOVE, _handle_local_llm_remove)
     conn_registry.register_handler(MSG_LOCAL_LLM_ADD_HUGGINGFACE, _handle_local_llm_add_huggingface)

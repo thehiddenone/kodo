@@ -599,6 +599,14 @@ flavor changes actual llama-server launch args and there is only one
 machine-wide llama-server process to launch them on. See doc/LLM_REGISTRY.md
 §4.6 and §7.6 below.
 
+### 5.12b `local_llm.updates_available` — reply to `local_llm.check_updates`
+
+```json
+{ "type": "local_llm.updates_available", "updatable": ["qwen36-27b-ud-q4"] }
+```
+
+Sent once the background ETag scan `local_llm.check_updates` (§7.6) kicked off finishes — not a synchronous reply, since the request itself doesn't wait for one. `updatable` is the subset of the requested names whose on-disk GGUF ETag no longer matches HuggingFace's (`LocalModelManager.check_for_update`, doc/LOCAL_MODEL_MANAGER.md §12); an empty array is still sent (not omitted) so a stale "updates available" banner from a previous scan clears on a clean rescan. Same single-connection-reply shape as `local_llm.registry_state` — not a broadcast.
+
 ### 5.13 ⟪removed⟫ — the former artifact events
 
 `artifact.published` and `artifact.removed` were specified but never emitted, and are now meaningless: there is no artifact system to publish or remove anything from (STATE_AND_LIFECYCLE.md §1.1) — agents write real files directly, tracked by a per-document `.jsonl` evolution log instead. `guide.compacted` was superseded by the in-place `context.compacted` scheme (§5.7a) before it ever shipped. The legacy `file.change` event name is retained in the client for forward-compatibility but the engine does not emit it. A future event surfacing per-document jsonl status changes (mirroring `guided_dev_status`) would be purely additive if added.
@@ -998,10 +1006,10 @@ The full `mode`/`active_cloud_vendor`/`models` schema is documented in [SETTINGS
 These drive the Local Inference Settings webview and the sidebar's llama.cpp
 controls. Full semantics (entry kinds, installed-state rules, the
 llama-server override) are in [LLM_REGISTRY.md](LLM_REGISTRY.md).
-`local_llm.install`/`.resume`/`.pause`/`.uninstall`/`.remove`/`add_*`, the
-three flavor commands below, and the `llama_server_override.*` pair all reply
-with §5.12a `local_llm.registry_state`; none of them stream progress over the
-wire — a download's live byte progress is read by polling
+`local_llm.install`/`.resume`/`.pause`/`.update`/`.uninstall`/`.remove`/
+`add_*`, the three flavor commands below, and the `llama_server_override.*`
+pair all reply with §5.12a `local_llm.registry_state`; none of them stream
+progress over the wire — a download's live byte progress is read by polling
 `manager-state.json` off disk instead (doc/LOCAL_MODEL_MANAGER.md §11).
 `llamacpp.install`/`llamacpp.update` are the exception, still streaming
 `llamacpp.install.progress` (§5.12) on the requesting connection, since
@@ -1042,6 +1050,26 @@ request/response; a GitHub-fetch failure (network, rate limit, unparsable
 tag) is reported via the response's `error` field rather than raised, so the
 panel can show "unknown" instead of failing the whole request.
 
+`local_llm.check_updates` and `local_llm.update` are the model-*content*
+analogue of the `llamacpp.*` binary-update commands above, but for an
+individual GGUF rather than the llama.cpp binary — see doc/LOCAL_MODEL_MANAGER.md
+§12 for the full design. `local_llm.check_updates {names: [...]}` is
+fire-and-forget (unlike everything else in this section, it does **not**
+reply with `local_llm.registry_state` — see §5.12b `local_llm.updates_available`
+above) and is sent by kodo-vsix every time the Local Inference Settings panel
+opens, carrying every installed `hardcoded_hf`/`custom_hf` model name; the
+server checks each one's on-disk GGUF ETag against HuggingFace in the
+background (`LocalModelManager.check_for_update`, metadata-only — no bytes
+downloaded) and replies later with the stale subset. `local_llm.update {name}`
+re-fetches one flagged model — implemented as a synchronous
+`LocalModelManager.uninstall` immediately followed by the same
+`download_model` background-download path `local_llm.install` uses, i.e. a
+server-side "click Uninstall, wait, click Install" reusing those exact same
+manager calls rather than a new atomic code path — and so replies with
+`local_llm.registry_state` twice, same as `local_llm.install`: once
+reflecting the now-uninstalled entry, once more when the fresh download
+settles.
+
 ```json
 { "type": "llamacpp.install" }       // install the llama.cpp binary (always latest)
 { "type": "llamacpp.update" }        // uninstall + install the latest build
@@ -1051,6 +1079,8 @@ panel can show "unknown" instead of failing the whole request.
 { "type": "local_llm.install", "name": "qwen36-27b" }   // start (or continue) a fresh download
 { "type": "local_llm.resume", "name": "qwen36-27b" }    // resume a paused/failed download by id alone
 { "type": "local_llm.pause", "name": "qwen36-27b" }     // signal an in-flight download to stop between chunks
+{ "type": "local_llm.update", "name": "qwen36-27b" }    // re-fetch: uninstall, then the same install path
+{ "type": "local_llm.check_updates", "names": ["qwen36-27b", "gpt-oss-20b"] } // fire-and-forget ETag scan
 { "type": "local_llm.uninstall", "name": "qwen36-27b" } // free the downloaded GGUF, keep the entry (also "cancel")
 { "type": "local_llm.remove", "name": "my-model" }      // remove a custom entry (uninstalls first if needed)
 { "type": "local_llm.add_huggingface", "name": "...", "description": "...",
