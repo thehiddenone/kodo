@@ -34,7 +34,16 @@ CREATE_FILE: ToolSpec = ToolSpec(
         "To delete, copy, or move whole files or directories, use the "
         "`filesystem` tool instead.\n"
         "The path must resolve inside the project root, unless `temporary` "
-        "is true (see below)."
+        "is true (see below).\n\n"
+        "The user may reject this call (Edit Control review). A `rejected` "
+        "result means try a different approach or ask the user what they "
+        "want instead. A `rejected_with_feedback` result includes a "
+        "`feedback` array — each entry has the user's `feedback` text and a "
+        "`general_feedback` flag: when false, the entry also names a "
+        "`targeted_code` snippet (with `line_from`/`line_to`) it targets; "
+        "when true, it's a general note about the file as a whole with no "
+        "particular line. Address every entry and retry this same call with "
+        "revised `content` that incorporates the feedback."
     ),
     input_schema={
         "type": "object",
@@ -73,8 +82,64 @@ CREATE_FILE: ToolSpec = ToolSpec(
     output_schema={
         "type": "object",
         "properties": {
-            "status": {"type": "string", "description": "Always 'created' on success."},
-            "path": {"type": "string", "description": "The path that was created."},
+            "status": {
+                "type": "string",
+                "enum": ["created", "rejected", "rejected_with_feedback"],
+                "description": (
+                    "'created' on success. 'rejected' when the user declined the Edit "
+                    "Control review gate — nothing was written. 'rejected_with_feedback' "
+                    "when they declined with inline feedback (see `feedback`)."
+                ),
+            },
+            "path": {"type": "string", "description": "The path that was (or would be) created."},
+            "feedback": {
+                "type": "array",
+                "description": (
+                    "Present only when `status` is 'rejected_with_feedback'. One entry "
+                    "per note the user attached to a selection in the proposed content, "
+                    "in the order they were added."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "general_feedback": {
+                            "type": "boolean",
+                            "description": (
+                                "True when this note isn't anchored to any particular line "
+                                "(the user added it with nothing selected) — `line_from`/"
+                                "`line_to`/`targeted_code` are absent. False for a "
+                                "line-anchored note."
+                            ),
+                        },
+                        "line_from": {
+                            "type": "integer",
+                            "description": (
+                                "1-based start line in the proposed content. Absent when "
+                                "`general_feedback` is true."
+                            ),
+                        },
+                        "line_to": {
+                            "type": "integer",
+                            "description": (
+                                "1-based end line in the proposed content. Absent when "
+                                "`general_feedback` is true."
+                            ),
+                        },
+                        "targeted_code": {
+                            "type": "string",
+                            "description": (
+                                "The exact selected text the note targets. Absent when "
+                                "`general_feedback` is true."
+                            ),
+                        },
+                        "feedback": {
+                            "type": "string",
+                            "description": "The user's free-text note.",
+                        },
+                    },
+                    "required": ["general_feedback", "feedback"],
+                },
+            },
             "checkpoint_sha": {
                 "type": "string",
                 "description": (
@@ -99,7 +164,7 @@ CREATE_FILE: ToolSpec = ToolSpec(
         "content": "visible",
         "temporary": "visible",
     },
-    output_visibility={"status": "always", "path": "always"},
+    output_visibility={"status": "always", "path": "always", "feedback": "visible"},
     when_to_use=(
         "Creating a brand-new file — the default, preferred way to add one. "
         "Fails loudly instead of overwriting if the file already exists, so "

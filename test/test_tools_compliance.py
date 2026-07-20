@@ -215,6 +215,15 @@ def test_tool_result_succeeded_classification() -> None:
     assert tool_result_succeeded({"status": "created", "path": "a.txt"}) is True
     # schema_compliance is ignored: a repaired-but-successful result still passes.
     assert tool_result_succeeded({"status": "edited", SCHEMA_COMPLIANCE_KEY: False}) is True
+    # Edit Control review gate: a rejected create_file/edit_file carries no
+    # `error`/`exit_code`/`success` key, but is not a success either.
+    assert tool_result_succeeded({"status": "rejected", "path": "a.txt"}) is False
+    assert (
+        tool_result_succeeded(
+            {"status": "rejected_with_feedback", "path": "a.txt", "feedback": []}
+        )
+        is False
+    )
 
 
 def test_visibility_keys_reference_declared_properties() -> None:

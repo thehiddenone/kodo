@@ -577,8 +577,11 @@ class WorkflowEngine(
         Unlike the frozen toggles this is **never** frozen: the client owns the
         value (forcing ``"allow_all"`` while Autonomous is in effect, restoring
         the user's pick otherwise) and the engine simply mirrors whatever it last
-        sent, so the stored value is always exactly what the UI shows. State
-        tracking only — enforcement is deferred to the M4 security layer.
+        sent, so the stored value is always exactly what the UI shows. Enforced
+        for ``create_file``/``edit_file`` by
+        :class:`~kodo.tools.ToolDispatcher`'s edit-review gate
+        (WS_PROTOCOL.md §6.5b), read live per call — not part of the security
+        layer.
 
         Args:
             value: ``"review_all"`` | ``"allow_all"`` | ``"smart"``. Unknown

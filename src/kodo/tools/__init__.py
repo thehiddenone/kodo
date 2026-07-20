@@ -20,6 +20,8 @@ from __future__ import annotations
 from ._ask_user import AskUserTool
 from ._context import (
     ApprovalLike,
+    EditReviewFeedbackLike,
+    EditReviewLike,
     EngineServices,
     GateLike,
     PermissionLike,
@@ -36,7 +38,8 @@ from ._create_new_project import CreateNewProjectTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
 from ._dispatch import DISPATCHABLE_TOOLS_BY_NAME, ToolDispatcher, tools_for_agent
 from ._document_feedback import DocumentFeedbackTool
-from ._edit_file import EditFileTool
+from ._edit_file import EditFileTool, compute_new_content
+from ._edit_review import should_review_edit
 from ._escalate_blocker import EscalateBlockerTool
 from ._filesystem import FilesystemTool
 from ._finalize_project import FinalizeProjectTool
@@ -80,6 +83,8 @@ __all__ = [
     "DisableAutonomousModeTool",
     "DocumentFeedbackTool",
     "EditFileTool",
+    "EditReviewFeedbackLike",
+    "EditReviewLike",
     "EngineServices",
     "EscalateBlockerTool",
     "FilesystemTool",
@@ -118,7 +123,9 @@ __all__ = [
     "UpdateWebSearchStateTool",
     "WaitTool",
     "WebSearchTool",
+    "compute_new_content",
     "resolve_logical",
     "resolve_within",
+    "should_review_edit",
     "tools_for_agent",
 ]

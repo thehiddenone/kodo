@@ -176,6 +176,9 @@ def tool_result_succeeded(output: dict[str, object] | None) -> bool | None:
 
     - ``None`` input → ``None`` (the result has not arrived; show neither badge).
     - An ``{"error": ...}`` envelope → ``False`` (sanctioned failure result).
+    - A ``status`` starting with ``"rejected"`` (``create_file``/``edit_file``'s
+      Edit Control review gate) → ``False`` — the user declined the call, so
+      it carries no ``error`` key, but it is not a success either.
     - An ``exit_code`` field (``run_command``) → ``True`` only when it is the
       integer ``0``; a non-zero code, or ``null`` (e.g. a timed-out command),
       is a failure.
@@ -197,6 +200,9 @@ def tool_result_succeeded(output: dict[str, object] | None) -> bool | None:
     if output is None:
         return None
     if "error" in output:
+        return False
+    status = output.get("status")
+    if isinstance(status, str) and status.startswith("rejected"):
         return False
     if "exit_code" in output:
         return output["exit_code"] == 0

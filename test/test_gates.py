@@ -14,8 +14,14 @@ import pytest
 
 from kodo.common import Envelope
 from kodo.runtime import ApprovalResponse, GateOrchestrator
+from kodo.runtime._gates import EditReviewFeedbackEntry, EditReviewResponse
 from kodo.security import AskPart
-from kodo.transport import SREQ_PROMPT_APPROVAL, SREQ_PROMPT_PERMISSION, SREQ_PROMPT_QUESTION
+from kodo.transport import (
+    SREQ_PROMPT_APPROVAL,
+    SREQ_PROMPT_EDIT_REVIEW,
+    SREQ_PROMPT_PERMISSION,
+    SREQ_PROMPT_QUESTION,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -468,3 +474,267 @@ async def test_fire_permission_leaves_pending_security_alert_on_cancellation() -
         if call.kwargs == {"pending_security_alert": None}
     ]
     assert calls_clearing_alert == []
+
+
+# ---------------------------------------------------------------------------
+# EditReviewResponse
+# ---------------------------------------------------------------------------
+
+
+def test_edit_review_response_defaults_to_empty_feedback() -> None:
+    r = EditReviewResponse(action="approve")
+    assert r.action == "approve"
+    assert r.feedback == ()
+
+
+def test_edit_review_response_carries_feedback_entries() -> None:
+    entry = EditReviewFeedbackEntry(
+        line_from=1, line_to=2, targeted_code="def foo(): pass", feedback="use a dataclass"
+    )
+    r = EditReviewResponse(action="reject", feedback=(entry,))
+    assert r.action == "reject"
+    assert r.feedback == (entry,)
+
+
+def test_edit_review_feedback_entry_defaults_to_line_anchored() -> None:
+    entry = EditReviewFeedbackEntry(feedback="fix this")
+    assert entry.general_feedback is False
+    assert entry.line_from is None
+    assert entry.line_to is None
+    assert entry.targeted_code is None
+
+
+def test_edit_review_feedback_entry_general_carries_no_line_reference() -> None:
+    entry = EditReviewFeedbackEntry(feedback="also add tests", general_feedback=True)
+    assert entry.general_feedback is True
+    assert entry.line_from is None
+    assert entry.line_to is None
+    assert entry.targeted_code is None
+
+
+# ---------------------------------------------------------------------------
+# fire_edit_review emits kind=request and persists pending_edit_review
+# ---------------------------------------------------------------------------
+
+
+def _fire_edit_review_kwargs(**overrides: object) -> dict[str, object]:
+    kwargs: dict[str, object] = {
+        "tool_call_id": "tu_3",
+        "tool_name": "edit_file",
+        "path": "src/foo.py",
+        "mode": "modification",
+        "old_content": "def foo():\n    pass\n",
+        "new_content": "def foo():\n    return 1\n",
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+@pytest.mark.asyncio
+async def test_fire_edit_review_sends_kind_request_with_payload() -> None:
+    state = _make_app_state()
+    gate = GateOrchestrator(state, _make_transient())
+
+    async def _run():
+        task = asyncio.create_task(gate.fire_edit_review(**_fire_edit_review_kwargs()))
+        await asyncio.sleep(0)
+        req_id = next(iter(state._captured))
+        state._captured[req_id].set_result({"action": "approve"})
+        return await task
+
+    response = await _run()
+
+    env = _get_sent_envelopes(state)[0]
+    assert env.kind == "request"
+    assert env.payload["type"] == SREQ_PROMPT_EDIT_REVIEW
+    assert env.payload["tool_call_id"] == "tu_3"
+    assert env.payload["tool_name"] == "edit_file"
+    assert env.payload["path"] == "src/foo.py"
+    assert env.payload["mode"] == "modification"
+    assert env.payload["old_content"] == "def foo():\n    pass\n"
+    assert env.payload["new_content"] == "def foo():\n    return 1\n"
+    assert response.action == "approve"
+    assert response.feedback == ()
+
+
+@pytest.mark.asyncio
+async def test_fire_edit_review_reject_carries_feedback() -> None:
+    state = _make_app_state()
+    gate = GateOrchestrator(state, _make_transient())
+
+    async def _run():
+        task = asyncio.create_task(gate.fire_edit_review(**_fire_edit_review_kwargs()))
+        await asyncio.sleep(0)
+        req_id = next(iter(state._captured))
+        state._captured[req_id].set_result(
+            {
+                "action": "reject",
+                "feedback": [
+                    {
+                        "line_from": 1,
+                        "line_to": 2,
+                        "targeted_code": "def foo():\n    return 1",
+                        "feedback": "use a dataclass instead",
+                    }
+                ],
+            }
+        )
+        return await task
+
+    response = await _run()
+
+    assert response.action == "reject"
+    assert response.feedback == (
+        EditReviewFeedbackEntry(
+            line_from=1, line_to=2, targeted_code="def foo():\n    return 1",
+            feedback="use a dataclass instead",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_fire_edit_review_reject_carries_general_feedback() -> None:
+    """A note added with nothing selected (`general_feedback: true`) carries
+    no line reference — the client omits `line_from`/`line_to`/
+    `targeted_code` entirely rather than sending placeholder values."""
+    state = _make_app_state()
+    gate = GateOrchestrator(state, _make_transient())
+
+    async def _run():
+        task = asyncio.create_task(gate.fire_edit_review(**_fire_edit_review_kwargs()))
+        await asyncio.sleep(0)
+        req_id = next(iter(state._captured))
+        state._captured[req_id].set_result(
+            {
+                "action": "reject",
+                "feedback": [
+                    {"general_feedback": True, "feedback": "also add a docstring"},
+                    {
+                        "general_feedback": False,
+                        "line_from": 1,
+                        "line_to": 2,
+                        "targeted_code": "def foo():\n    return 1",
+                        "feedback": "use a dataclass instead",
+                    },
+                ],
+            }
+        )
+        return await task
+
+    response = await _run()
+
+    assert response.action == "reject"
+    assert response.feedback == (
+        EditReviewFeedbackEntry(feedback="also add a docstring", general_feedback=True),
+        EditReviewFeedbackEntry(
+            line_from=1, line_to=2, targeted_code="def foo():\n    return 1",
+            feedback="use a dataclass instead",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_fire_edit_review_drops_malformed_feedback_entries() -> None:
+    state = _make_app_state()
+    gate = GateOrchestrator(state, _make_transient())
+
+    async def _run():
+        task = asyncio.create_task(gate.fire_edit_review(**_fire_edit_review_kwargs()))
+        await asyncio.sleep(0)
+        req_id = next(iter(state._captured))
+        state._captured[req_id].set_result(
+            {
+                "action": "reject",
+                "feedback": [
+                    "not-a-dict",
+                    {
+                        "line_from": "not-an-int",
+                        "line_to": 2,
+                        "targeted_code": "x",
+                        "feedback": "y",
+                    },
+                    {"line_from": 3, "line_to": 4, "targeted_code": "z", "feedback": "ok"},
+                ],
+            }
+        )
+        return await task
+
+    response = await _run()
+    assert response.feedback == (
+        EditReviewFeedbackEntry(line_from=3, line_to=4, targeted_code="z", feedback="ok"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_fire_edit_review_invalid_action_normalizes_to_reject() -> None:
+    state = _make_app_state()
+    gate = GateOrchestrator(state, _make_transient())
+
+    async def _run():
+        task = asyncio.create_task(gate.fire_edit_review(**_fire_edit_review_kwargs()))
+        await asyncio.sleep(0)
+        req_id = next(iter(state._captured))
+        state._captured[req_id].set_result({"action": "not-a-real-action"})
+        return await task
+
+    response = await _run()
+    assert response.action == "reject"
+
+
+@pytest.mark.asyncio
+async def test_fire_edit_review_persists_pending_edit_review_before_await() -> None:
+    """The marker must be set before the request is even sent, so a crash
+    that happens between send and await still leaves it durable."""
+    state = _make_app_state()
+    transient = _make_transient()
+    gate = GateOrchestrator(state, transient)
+
+    task = asyncio.create_task(gate.fire_edit_review(**_fire_edit_review_kwargs()))
+    await asyncio.sleep(0)
+
+    transient.update.assert_any_call(pending_edit_review="tu_3")
+
+    req_id = next(iter(state._captured))
+    state._captured[req_id].set_result({"action": "approve"})
+    await task
+
+
+@pytest.mark.asyncio
+async def test_fire_edit_review_clears_pending_edit_review_on_resolve() -> None:
+    state = _make_app_state()
+    transient = _make_transient()
+    gate = GateOrchestrator(state, transient)
+
+    task = asyncio.create_task(gate.fire_edit_review(**_fire_edit_review_kwargs()))
+    await asyncio.sleep(0)
+    req_id = next(iter(state._captured))
+    state._captured[req_id].set_result({"action": "reject"})
+    await task
+
+    transient.update.assert_any_call(pending_edit_review=None)
+    assert transient.update.call_args_list[-1].kwargs == {"pending_edit_review": None}
+
+
+@pytest.mark.asyncio
+async def test_fire_edit_review_leaves_pending_edit_review_on_cancellation() -> None:
+    """A cancelled wait (server restart, or a live disconnect that no longer
+    reaches this far) must NOT clear the marker — cold-restart resume needs
+    it to know this call never reached dispatch."""
+    state = _make_app_state()
+    transient = _make_transient()
+    gate = GateOrchestrator(state, transient)
+
+    task = asyncio.create_task(gate.fire_edit_review(**_fire_edit_review_kwargs()))
+    await asyncio.sleep(0)
+    transient.update.assert_any_call(pending_edit_review="tu_3")
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    calls_clearing = [
+        call
+        for call in transient.update.call_args_list
+        if call.kwargs == {"pending_edit_review": None}
+    ]
+    assert calls_clearing == []

@@ -73,10 +73,12 @@ class _FakeTransientLines:
         self,
         lines: list[dict[str, object]],
         pending_security_alert: str | None = None,
+        pending_edit_review: str | None = None,
     ) -> None:
         self._lines = lines
         self.appended: list[tuple] = []
         self.pending_security_alert = pending_security_alert
+        self.pending_edit_review = pending_edit_review
         self.update_calls: list[dict[str, object]] = []
 
     def read_session_lines(self) -> list[dict[str, object]]:
@@ -96,6 +98,8 @@ class _FakeTransientLines:
         self.update_calls.append(kwargs)
         if "pending_security_alert" in kwargs:
             self.pending_security_alert = kwargs["pending_security_alert"]
+        if "pending_edit_review" in kwargs:
+            self.pending_edit_review = kwargs["pending_edit_review"]
 
 
 def _engine_with_lines(lines: list[dict[str, object]]) -> WorkflowEngine:
@@ -271,6 +275,7 @@ def _resumable_engine(
     session_lines: list[dict[str, object]],
     tmp_path: Path,
     pending_security_alert: str | None = None,
+    pending_edit_review: str | None = None,
 ) -> tuple[WorkflowEngine, _FakeCompactor, _FakeSink, list[tuple]]:
     engine = object.__new__(WorkflowEngine)
     engine._main_messages = [
@@ -278,7 +283,9 @@ def _resumable_engine(
         Message(role="assistant", content=tool_uses),
     ]
     engine._transient = _FakeTransientLines(
-        session_lines, pending_security_alert=pending_security_alert
+        session_lines,
+        pending_security_alert=pending_security_alert,
+        pending_edit_review=pending_edit_review,
     )
     engine._registry = _FakeRegistry()
     engine._session = SessionState(session_id="s1")
@@ -494,3 +501,100 @@ async def test_resume_main_turn_only_alert_matched_call_redispatched_among_sever
     await engine._resume_main_turn()
 
     assert dispatch_calls == [([("tu_1", "run_command", {})], "guide")]
+
+
+# ---------------------------------------------------------------------------
+# _resume_main_turn — pending_edit_review (dangling edit-review gate)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resume_main_turn_redispatches_call_matching_pending_edit_review(
+    tmp_path: Path,
+) -> None:
+    """A dangling create_file/edit_file whose id matches pending_edit_review
+    is provably still at the review gate (never dispatched), so it is
+    redispatched for real instead of stubbed — same treatment as
+    pending_security_alert."""
+    tool_uses = [
+        {"type": "tool_use", "id": "tu_1", "name": "edit_file", "input": {"path": "a.py"}}
+    ]
+    engine, _compactor, _sink, dispatch_calls = _resumable_engine(
+        tool_uses=tool_uses,
+        session_lines=[],
+        tmp_path=tmp_path,
+        pending_edit_review="tu_1",
+    )
+
+    await engine._resume_main_turn()
+
+    assert dispatch_calls == [([("tu_1", "edit_file", {"path": "a.py"})], "guide")]
+
+
+@pytest.mark.asyncio
+async def test_resume_main_turn_clears_pending_edit_review_before_redispatch(
+    tmp_path: Path,
+) -> None:
+    tool_uses = [{"type": "tool_use", "id": "tu_1", "name": "create_file", "input": {}}]
+    engine, _compactor, _sink, _dispatch_calls = _resumable_engine(
+        tool_uses=tool_uses,
+        session_lines=[],
+        tmp_path=tmp_path,
+        pending_edit_review="tu_1",
+    )
+
+    await engine._resume_main_turn()
+
+    assert engine._transient.pending_edit_review is None
+    assert {"pending_edit_review": None} in engine._transient.update_calls
+
+
+@pytest.mark.asyncio
+async def test_resume_main_turn_does_not_redispatch_call_not_matching_edit_review(
+    tmp_path: Path,
+) -> None:
+    """A stale/unrelated pending_edit_review (pointing at some other id) must
+    not cause an unrelated dangling call to be redispatched."""
+    tool_uses = [{"type": "tool_use", "id": "tu_1", "name": "create_file", "input": {}}]
+    engine, _compactor, _sink, dispatch_calls = _resumable_engine(
+        tool_uses=tool_uses,
+        session_lines=[],
+        tmp_path=tmp_path,
+        pending_edit_review="some-other-id",
+    )
+
+    await engine._resume_main_turn()
+
+    assert dispatch_calls == []
+    assert engine._transient.pending_edit_review is None
+
+
+@pytest.mark.asyncio
+async def test_resume_main_turn_pending_security_alert_and_pending_edit_review_independent(
+    tmp_path: Path,
+) -> None:
+    """The two markers can name different dangling calls independently (one
+    call denied by security never even reaches the review gate in practice,
+    but the resume machinery itself treats the two markers orthogonally)."""
+    tool_uses = [
+        {"type": "tool_use", "id": "tu_1", "name": "run_command", "input": {}},
+        {"type": "tool_use", "id": "tu_2", "name": "edit_file", "input": {}},
+    ]
+    engine, _compactor, _sink, dispatch_calls = _resumable_engine(
+        tool_uses=tool_uses,
+        session_lines=[],
+        tmp_path=tmp_path,
+        pending_security_alert="tu_1",
+        pending_edit_review="tu_2",
+    )
+
+    await engine._resume_main_turn()
+
+    # Each redispatch-eligible call is dispatched individually (the real loop
+    # calls _dispatch_tool_calls once per tool_use, never batched).
+    assert dispatch_calls == [
+        ([("tu_1", "run_command", {})], "guide"),
+        ([("tu_2", "edit_file", {})], "guide"),
+    ]
+    assert engine._transient.pending_security_alert is None
+    assert engine._transient.pending_edit_review is None

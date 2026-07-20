@@ -521,6 +521,25 @@ SREQ_PROMPT_PERMISSION = "prompt.permission"
 # so it renders as a distinct feed entry, not a fake user-typed message.
 SREQ_PROMPT_STUCK_ALERT = "prompt.stuck_alert"
 
+# Server → Client request. Fired by ``ToolDispatcher.__edit_review_gate``
+# (WS_PROTOCOL.md §6.5b) for a ``create_file``/``edit_file`` call the
+# session's Edit Control setting wants reviewed before it writes anything —
+# always for ``review_all``, never for ``allow_all``, heuristically (by path)
+# for ``smart``. Independent of and always evaluated *after*
+# ``SREQ_PROMPT_PERMISSION``: Command Control and Edit Control are orthogonal
+# settings, so the same call can ask twice (security first, then review).
+# The pending wait IS persisted (``pending_edit_review``, mirroring
+# ``pending_security_alert``), so a cold-restart resume re-judges and
+# re-fires it rather than falling back to a generic interrupted stand-in; a
+# live disconnect/reconnect needs no special handling at all — every
+# outstanding request is resent generically. Client opens a read-only tab
+# (the full content for a new file, a diff for a modification) alongside an
+# approve/reject panel that also collects optional line-anchored feedback;
+# on approve the call dispatches normally, on reject the tool is *not*
+# executed and the agent receives a ``rejected``/``rejected_with_feedback``
+# result instead of the usual success shape.
+SREQ_PROMPT_EDIT_REVIEW = "prompt.edit_review"
+
 # ---------------------------------------------------------------------------
 # Server → Client event payload types — visibility  (WS_PROTOCOL.md §5)
 # ---------------------------------------------------------------------------

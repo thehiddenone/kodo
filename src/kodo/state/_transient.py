@@ -7,7 +7,8 @@ use and reused across restarts when the session is resumed.  Layout::
         meta.json        — human-readable metadata (name, creation time)
         transient.json   — mutable runtime state (stage, prompt, autonomous,
                            active_subsession, security_rules,
-                           security_path_rules, pending_security_alert)
+                           security_path_rules, pending_security_alert,
+                           pending_edit_review)
         session.jsonl    — append-only MAIN session log: top-level LLM messages
                            (agent-agnostic — Guide and Problem Solver
                            share it) interleaved with ``subsession_start`` /
@@ -183,6 +184,7 @@ class TransientStore:
     __security_path_rules: frozenset[tuple[str, str]]
     __pending_prompt: dict[str, object] | None
     __pending_security_alert: str | None
+    __pending_edit_review: str | None
     __active_subsession: dict[str, object] | None
     __current_project: dict[str, str] | None
     __lock: asyncio.Lock
@@ -210,6 +212,7 @@ class TransientStore:
         self.__security_path_rules = frozenset()
         self.__pending_prompt = None
         self.__pending_security_alert = None
+        self.__pending_edit_review = None
         self.__active_subsession = None
         self.__current_project = None
         self.__lock = asyncio.Lock()
@@ -558,6 +561,24 @@ class TransientStore:
         """
         return self.__pending_security_alert
 
+    @property
+    def pending_edit_review(self) -> str | None:
+        """The ``tool_call_id`` of a ``create_file``/``edit_file`` call
+        currently blocked at the Edit Control review gate
+        (``prompt.edit_review``), if any — set for the duration of
+        :meth:`GateOrchestrator.fire_edit_review`'s wait and cleared the
+        instant it resolves.
+
+        Mirrors :attr:`pending_security_alert` exactly, for the same reason:
+        it distinguishes a dangling tool call that died **before** dispatch
+        (still at the gate, provably never executed) from one that died
+        mid-execution — see
+        :meth:`~kodo.runtime._engine._resume.ResumeMixin._resume_main_turn`.
+        Because dispatch is strictly sequential, at most one tool call can be
+        gating at any instant.
+        """
+        return self.__pending_edit_review
+
     def attach_session(self, session_id: str, resumed: bool) -> None:
         """Attach to an existing session or create a new one.
 
@@ -613,6 +634,7 @@ class TransientStore:
         thinking_level: str | None = None,
         pending_prompt: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
         pending_security_alert: str | None = _UNSET,  # type: ignore[assignment]
+        pending_edit_review: str | None = _UNSET,  # type: ignore[assignment]
         active_subsession: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
         current_project: dict[str, str] | None = _UNSET,  # type: ignore[assignment]
     ) -> None:
@@ -634,6 +656,10 @@ class TransientStore:
             pending_security_alert (str | None): The ``tool_call_id`` of a
                 call currently blocked at the security permission gate, or
                 ``None`` to clear it. Left unchanged if omitted.
+            pending_edit_review (str | None): The ``tool_call_id`` of a
+                ``create_file``/``edit_file`` call currently blocked at the
+                Edit Control review gate, or ``None`` to clear it. Left
+                unchanged if omitted.
             active_subsession (dict[str, object] | None): The in-flight
                 sub-agent subsession record to persist, or ``None`` to clear it
                 (the main agent holds the turn again). Left unchanged if omitted.
@@ -658,6 +684,8 @@ class TransientStore:
             self.__pending_prompt = pending_prompt
         if pending_security_alert is not _UNSET:
             self.__pending_security_alert = pending_security_alert
+        if pending_edit_review is not _UNSET:
+            self.__pending_edit_review = pending_edit_review
         if active_subsession is not _UNSET:
             self.__active_subsession = active_subsession
         if current_project is not _UNSET:
@@ -894,6 +922,8 @@ class TransientStore:
             self.__pending_prompt = pending if isinstance(pending, dict) else None
             alert = data.get("pending_security_alert")
             self.__pending_security_alert = alert if isinstance(alert, str) and alert else None
+            review = data.get("pending_edit_review")
+            self.__pending_edit_review = review if isinstance(review, str) and review else None
             active = data.get("active_subsession")
             self.__active_subsession = active if isinstance(active, dict) else None
             project = data.get("current_project")
@@ -963,6 +993,7 @@ class TransientStore:
             "security_path_rules": sorted([list(rule) for rule in self.__security_path_rules]),
             "pending_prompt": self.__pending_prompt,
             "pending_security_alert": self.__pending_security_alert,
+            "pending_edit_review": self.__pending_edit_review,
             "active_subsession": self.__active_subsession,
             "current_project": self.__current_project,
         }

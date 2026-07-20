@@ -48,8 +48,12 @@ class SessionState:
             **never** frozen: the client owns it, drives the value (auto-forcing
             ``"allow_all"`` while Autonomous mode is in effect), and the engine
             simply mirrors whatever the client last sent so its stored value is
-            always exactly what the UI shows. (State tracking only — no edit
-            gate is enforced; not part of the security layer.)
+            always exactly what the UI shows. **Enforced** for ``create_file``/
+            ``edit_file`` only — read live per call by
+            :class:`~kodo.tools.ToolDispatcher`'s edit-review gate
+            (``prompt.edit_review``, WS_PROTOCOL.md §6.5b), independent of and
+            always evaluated after ``command_control``'s security gate; not
+            part of the security layer itself.
         command_control: How much Kodo restricts potentially risky commands —
             ``"defensive"`` (ask on Moderate+ calls) | ``"permissive"`` (allow
             below Critical) | ``"smart"`` (judge per call; the default).

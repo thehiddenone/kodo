@@ -73,8 +73,11 @@ Two overrides apply in every posture:
   control to the user; prompting for permission to do that would be
   self-defeating.
 
-The separate **Edit Control** toggle (`edit_control`) remains state-tracking
-only — it is a review-workflow control, not part of the security layer.
+The separate **Edit Control** toggle (`edit_control`) is a review-workflow
+control, not part of the security layer — enforced independently by
+`ToolDispatcher.__edit_review_gate` for `create_file`/`edit_file` only, always
+evaluated *after* this gate. See WS_PROTOCOL.md §6.5b/§7.4a for the exact
+rules (there is no Edit Control section in this document).
 
 ## 3. SMART mode
 
@@ -795,9 +798,3 @@ Phase 2 user rules (§3.2a) are implemented. What's left:
   rule; a conservative, deliberate choice, not a gap to close casually
   (SECURITY_RULES_PLAN.md "Fixed decisions"). Plain redirection (`cat >
   out.txt`) no longer falls in this bucket — see §3.2b.
-- **Edit Control enforcement** — `edit_control` (`review_all`) pausing for
-  sign-off on each edit is a review-workflow feature, not a security one,
-  and is still state-tracking only.
-- **Edit Control enforcement** — `edit_control` (`review_all`) pausing for
-  sign-off on each edit is a review-workflow feature, not a security one,
-  and is still state-tracking only.

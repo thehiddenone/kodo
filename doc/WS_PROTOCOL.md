@@ -236,7 +236,7 @@ The header toggles split into **two frozen** and **three never-frozen**:
 
 **Never-frozen toggles** (`edit_control`, `command_control`, `thinking_level`) carry a **single** value and **no `effective_*` twin** — a flip applies to the next LLM call, not the next prompt.
 
-- `edit_control` — how file edits are handled: `review_all` (pause for sign-off) / `allow_all` / `smart` (default). Set via `edit_control.set` (§7.4a). **State tracking only** — no edit gate is enforced yet. **Client-owned**: the client keeps the user's selected posture and sends the **shown** value, which it forces to `allow_all` (and locks the toggle in the UI) while Autonomous mode is *in effect* — i.e. the frozen `effective_autonomous` during a turn, the live `autonomous` selection when idle — and restores the user's selection otherwise. The server simply mirrors whatever the client last sent, so its stored value is always exactly what the UI shows.
+- `edit_control` — how file edits are handled: `review_all` (pause for sign-off) / `allow_all` / `smart` (default). Set via `edit_control.set` (§7.4a). **Enforced** for `create_file`/`edit_file` only — the dispatcher reads it live per call and a review-worthy call fires `prompt.edit_review` (§6.5b); independent of and always evaluated after `command_control`'s security gate. **Client-owned**: the client keeps the user's selected posture and sends the **shown** value, which it forces to `allow_all` (and locks the toggle in the UI) while Autonomous mode is *in effect* — i.e. the frozen `effective_autonomous` during a turn, the live `autonomous` selection when idle — and restores the user's selection otherwise. The server simply mirrors whatever the client last sent, so its stored value is always exactly what the UI shows.
 - `command_control` — how much risky commands are restricted: `defensive` / `permissive` / `smart` (default). Set via `command_control.set` (§7.4b). **Enforced**: this is the security layer's posture — the dispatcher reads it live per tool call and an `ask` verdict fires `prompt.permission` (§6.5). See doc/SECURITY.md. **Client-owned**, same mirroring rule as `edit_control` (forced `permissive` under Autonomous).
 - `thinking_level` — the session's reasoning-tier slug for the currently active **local** model's thinking family (`kodo.llms.local_thinking_family`/`local_thinking_tiers`, doc/LLM_REGISTRY.md §4.5) — `""` on a cloud model or a local model with no thinking family. Set via `thinking_level.set` (§7.4e). **Server-owned**, unlike the two toggles above: the valid value set is model-dependent, so the engine validates every change against the active model rather than mirroring the client unconditionally, and re-derives it itself (no client request needed) whenever a brand-new session opens or the active model's thinking family changes mid-session (a `config.reload`-triggered model switch). doc/SESSIONS.md has the full session-lifecycle picture.
 
@@ -780,6 +780,41 @@ Response payload:
 
 The panel is transient client-side, modeled on `prompt.permission`'s but with no rule-offer checkboxes (there is nothing here to "always allow") and distinct Unstick/Dismiss actions. No `pending_prompt`-style state is persisted server-side: unlike a gated tool call, nothing is left mid-dispatch if this wait is cut short by a crash — the alarm is simply dropped, and the next matching stall (if any) schedules a fresh one.
 
+### 6.5b `prompt.edit_review` — create_file/edit_file review gate
+
+Fired by `ToolDispatcher.__edit_review_gate` for a `create_file`/`edit_file` call the session's Edit Control setting (§7.4a) wants reviewed before it writes anything: always for `"review_all"`, never for `"allow_all"`, heuristically (by path — `should_review_edit`, `kodo.tools._edit_review`) for `"smart"`. `allow_all`, `temporary: true`, and a call that's going to fail regardless (file already exists for `create_file`; empty/no-op/ambiguous/missing `old_string`, or an unresolvable out-of-workspace path, for either) all skip the gate entirely — no prompt, `handle()` raises its own ordinary error same as today.
+
+Independent of, and always evaluated **after**, `prompt.permission` (§6.5): Command Control and Edit Control are orthogonal settings, so the same call may ask twice — security first, then review.
+
+```json
+{ "type": "prompt.edit_review",
+  "tool_call_id": "toolu_01",
+  "tool_name": "edit_file",
+  "path": "src/foo.py",
+  "mode": "modification",
+  "old_content": "def foo():\n    pass\n",
+  "new_content": "def foo():\n    return 1\n" }
+```
+
+`mode` is `"new_file"` (`create_file` — `old_content` is always `""`) or `"modification"` (`edit_file` — a genuine diff). `path` is the agent-supplied path verbatim, matching `params`'s convention elsewhere. Content is sent raw over the wire and rendered client-side (a read-only tab — the full content for a new file, a diff for a modification); nothing touches disk until the user approves.
+
+Response payload:
+
+```json
+{ "type": "prompt.edit_review.response",
+  "action": "reject",
+  "feedback": [
+    { "general_feedback": false, "line_from": 12, "line_to": 15, "targeted_code": "def foo():\n    pass", "feedback": "use a dataclass instead" },
+    { "general_feedback": true, "feedback": "also add a docstring to the module" }
+  ] }
+```
+
+`action` is `approve` or `reject` (anything else is treated as `reject`, the same fail-closed convention as `prompt.permission`). `feedback` (default `[]`) is only meaningful on a `reject` — each entry is one note the user attached to the review, in the order they were added, and always carries `general_feedback`+`feedback`. A line-anchored note (`general_feedback: false`) additionally carries `{line_from, line_to, targeted_code}`, targeting a selection in the proposed (new) content — the old/removed side of a diff is never selectable. A general note (`general_feedback: true`, added via "+ Add feedback" with nothing selected) omits those three fields entirely — it isn't anchored to any particular line. There is deliberately no third wire-level action for "submit feedback" — it's `reject` with a non-empty `feedback` array.
+
+On **approve** the call dispatches normally — the tool's usual `{"status": "created"/"edited", "path", ...}` result. On **reject** the tool is *not executed* and the agent receives `{"status": "rejected", "path": ...}`, or `{"status": "rejected_with_feedback", "path": ..., "feedback": [...]}` when feedback was attached — both toolspecs' `description` instruct the agent to address every entry and retry the same call.
+
+The panel is transient client-side (no session entry): the gated tool call's own card records the outcome. Mirrors `prompt.permission`'s crash-resume story exactly: `TransientStore.pending_edit_review` names the one `tool_call_id` provably still waiting at this gate (dispatch is strictly sequential, so at most one), so a server *process* crash mid-prompt resumes by re-judging that call fresh — recomputing the proposed content off current on-disk state — and re-firing this exact prompt (new `id`, same `tool_call_id`) rather than falling back to the generic interrupted stand-in. A live disconnect/reconnect that never restarts the process doesn't even reach that path — see §8.
+
 ---
 
 ## 7. Client commands (client → server requests)
@@ -892,7 +927,7 @@ A `state` event with the updated `workflow_mode` follows.
 
 ### 7.4a `edit_control.set` — set the Edit Control posture
 
-Sets the Edit Control posture: `review_all` (pause for sign-off on every edit) / `allow_all` (apply without pausing) / `smart` (decide per edit; the default). Unknown values fall back to `smart`. Unlike `mode.set`/`workflow.set` this is **never frozen**: the client owns the value (forcing `allow_all` while Autonomous mode is in effect, restoring the user's pick otherwise) and the server mirrors whatever it last sent, so the stored value is always exactly what the UI shows. **State tracking only** — no edit gate is enforced yet (a review-workflow feature; not part of the security layer, see doc/SECURITY.md §9).
+Sets the Edit Control posture: `review_all` (pause for sign-off on every edit) / `allow_all` (apply without pausing) / `smart` (decide per edit; the default). Unknown values fall back to `smart`. Unlike `mode.set`/`workflow.set` this is **never frozen**: the client owns the value (forcing `allow_all` while Autonomous mode is in effect, restoring the user's pick otherwise) and the server mirrors whatever it last sent, so the stored value is always exactly what the UI shows. **Enforced** for `create_file`/`edit_file` only — the tool dispatcher reads the value live per call; a review-worthy call fires `prompt.edit_review` (§6.5b). Independent of and always evaluated after `command_control`'s security gate (§7.4b) — not part of the security layer.
 
 ```json
 { "type": "edit_control.set", "edit_control": "review_all" }
@@ -1415,5 +1450,6 @@ These are anticipated and structured so adding them is purely additive — no ex
 | 8 | FR-WS-04 |
 | 6.5, 7.4b | FR-SEC-05 (security layer permission prompt — doc/SECURITY.md) |
 | 6.5 | FR-SEC-07 (persistent user-defined allow rules, per-part `parts`/`remember` — implemented; only a standalone list/revoke UI is planned, §7.7) |
+| 6.5b, 7.4a | Edit Control review gate — pause create_file/edit_file for user review (new file / diff) before writing, with optional line-anchored feedback |
 | 7.4c, 7.4d, 5.5d | FR-MIR-03/04 (checkpoint undo/redo/rollback/roll-forward + listing — implemented; only the client browsing UI is planned) |
 | 5.13, 7.7, 9.1 | ⟪planned⟫ — FR-WKS-10/11, FR-COS-03 |

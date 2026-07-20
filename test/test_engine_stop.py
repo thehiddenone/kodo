@@ -22,9 +22,14 @@ from kodo.runtime import WorkflowEngine
 
 
 class _FakeTransient:
-    def __init__(self, pending_security_alert: str | None = None) -> None:
+    def __init__(
+        self,
+        pending_security_alert: str | None = None,
+        pending_edit_review: str | None = None,
+    ) -> None:
         self.appended: list[tuple[str, object, str | None, str | None]] = []
         self.pending_security_alert = pending_security_alert
+        self.pending_edit_review = pending_edit_review
         self.update_calls: list[dict[str, object]] = []
 
     def append_message(
@@ -41,14 +46,22 @@ class _FakeTransient:
         self.update_calls.append(kwargs)
         if "pending_security_alert" in kwargs:
             self.pending_security_alert = kwargs["pending_security_alert"]
+        if "pending_edit_review" in kwargs:
+            self.pending_edit_review = kwargs["pending_edit_review"]
 
 
 def _bare_engine(
-    *, main_messages: list[Message], pending_security_alert: str | None = None
+    *,
+    main_messages: list[Message],
+    pending_security_alert: str | None = None,
+    pending_edit_review: str | None = None,
 ) -> tuple[WorkflowEngine, _FakeTransient]:
     """Construct a WorkflowEngine with only the attributes these methods read."""
     engine = object.__new__(WorkflowEngine)
-    transient = _FakeTransient(pending_security_alert=pending_security_alert)
+    transient = _FakeTransient(
+        pending_security_alert=pending_security_alert,
+        pending_edit_review=pending_edit_review,
+    )
     engine._main_messages = main_messages
     engine._transient = transient
     return engine, transient
@@ -164,6 +177,34 @@ def test_persist_interrupted_turn_noop_when_no_pending_security_alert() -> None:
 
     assert transient.pending_security_alert is None
     assert not any("pending_security_alert" in call for call in transient.update_calls)
+
+
+def test_persist_interrupted_turn_clears_stale_pending_edit_review() -> None:
+    """Same rule as pending_security_alert: a live Stop never redispatches a
+    review-gate-pending call, but must still clear the marker."""
+    dangling = Message(
+        role="assistant",
+        content=[{"type": "tool_use", "id": "tu_1", "name": "edit_file", "input": {}}],
+    )
+    engine, transient = _bare_engine(main_messages=[dangling], pending_edit_review="tu_1")
+
+    engine._persist_interrupted_turn("guide")
+
+    assert transient.pending_edit_review is None
+    tool_results_msg = engine._main_messages[-2]
+    assert tool_results_msg.content[0]["tool_use_id"] == "tu_1"
+    assert "did not complete before the user clicked Stop" in tool_results_msg.content[0]["content"]
+
+
+def test_persist_interrupted_turn_noop_when_no_pending_edit_review() -> None:
+    """No marker to begin with -> no spurious update() call for it."""
+    plain_reply = Message(role="assistant", content="partial")
+    engine, transient = _bare_engine(main_messages=[plain_reply])
+
+    engine._persist_interrupted_turn("guide")
+
+    assert transient.pending_edit_review is None
+    assert not any("pending_edit_review" in call for call in transient.update_calls)
 
 
 # ---------------------------------------------------------------------------

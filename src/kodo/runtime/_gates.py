@@ -14,8 +14,12 @@ client's reply is a ``kind=response`` correlated by ``id``.
 - :meth:`GateOrchestrator.fire_stuck_alert` — surfaces the stuck-agent
   watchdog's alarm (``prompt.stuck_alert``, doc/STUCK_DETECTION.md) and
   blocks until the user unsticks the agent or dismisses it.
+- :meth:`GateOrchestrator.fire_edit_review` — surfaces the Edit Control
+  review gate (``prompt.edit_review``, WS_PROTOCOL.md §6.5b) for a
+  ``create_file``/``edit_file`` call and blocks until the user approves or
+  rejects it, optionally with line-anchored feedback.
 
-All four register a :class:`asyncio.Future` via
+All five register a :class:`asyncio.Future` via
 :meth:`~kodo.transport.SessionChannel.register_response_future` and await it.
 The connection registry resolves the future when the matching
 ``kind=response`` arrives. The future (and the request envelope that fired
@@ -40,12 +44,20 @@ from kodo.state import TransientStore
 from kodo.tools import PermissionPartLike
 from kodo.transport import (
     SREQ_PROMPT_APPROVAL,
+    SREQ_PROMPT_EDIT_REVIEW,
     SREQ_PROMPT_PERMISSION,
     SREQ_PROMPT_QUESTION,
     SREQ_PROMPT_STUCK_ALERT,
 )
 
-__all__ = ["ApprovalResponse", "GateOrchestrator", "PermissionResponse", "StuckAlertResponse"]
+__all__ = [
+    "ApprovalResponse",
+    "EditReviewFeedbackEntry",
+    "EditReviewResponse",
+    "GateOrchestrator",
+    "PermissionResponse",
+    "StuckAlertResponse",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -94,6 +106,49 @@ class StuckAlertResponse:
     """
 
     action: str
+
+
+@dataclass(frozen=True)
+class EditReviewFeedbackEntry:
+    """One note the user attached to a rejected review.
+
+    A line-anchored note (``general_feedback=False``) targets a specific
+    span of the proposed (new) content; a general note
+    (``general_feedback=True``, added via "+ Add feedback" with nothing
+    selected) carries no line reference at all and applies to the file as a
+    whole — ``line_from``/``line_to``/``targeted_code`` are ``None`` for it.
+
+    Attributes:
+        feedback: The user's free-text note.
+        general_feedback: True when this note isn't anchored to any
+            particular line.
+        line_from: 1-based start line in the proposed (new) content, or
+            None for a general note.
+        line_to: 1-based end line in the proposed (new) content, or None
+            for a general note.
+        targeted_code: The exact selected text the note targets, or None
+            for a general note.
+    """
+
+    feedback: str
+    general_feedback: bool = False
+    line_from: int | None = None
+    line_to: int | None = None
+    targeted_code: str | None = None
+
+
+@dataclass(frozen=True)
+class EditReviewResponse:
+    """User response to a ``create_file``/``edit_file`` review gate.
+
+    Attributes:
+        action: ``'approve'`` or ``'reject'``.
+        feedback: Line-anchored notes attached to a rejection, in the order
+            the user added them; empty on approval or a plain reject.
+    """
+
+    action: str
+    feedback: tuple[EditReviewFeedbackEntry, ...] = ()
 
 
 class GateOrchestrator:
@@ -393,6 +448,118 @@ class GateOrchestrator:
             action = "dismiss"
         _log.info("Stuck alert resolved: req_id=%s action=%s", req_id[:8], action)
         return StuckAlertResponse(action=action)
+
+    async def fire_edit_review(
+        self,
+        *,
+        tool_call_id: str,
+        tool_name: str,
+        path: str,
+        mode: str,
+        old_content: str,
+        new_content: str,
+    ) -> EditReviewResponse:
+        """Emit a ``prompt.edit_review`` ``kind=request`` and block until the
+        user approves or rejects the proposed ``create_file``/``edit_file``
+        call.
+
+        Persists ``pending_edit_review`` on the transient store for the
+        duration of the wait — mirroring how :meth:`fire_permission` persists
+        ``pending_security_alert`` — cleared the instant the wait resolves
+        normally, or via a non-cancellation exception, and deliberately left
+        set if the wait is cancelled (server restart, or a live disconnect),
+        so cold-restart resume can re-judge and, if the gate would still
+        fire, re-ask this same ``tool_call_id`` instead of falling back to
+        the generic interrupted stand-in (see
+        :meth:`~kodo.runtime._engine._resume.ResumeMixin._resume_main_turn`).
+
+        Args:
+            tool_call_id: The gated ``tool_use`` block's id (feed correlation).
+            tool_name: Internal tool name (``create_file`` or ``edit_file``).
+            path: The agent-supplied path, verbatim.
+            mode: ``'new_file'`` (create_file — ``old_content`` is always
+                ``""``) or ``'modification'`` (edit_file — a genuine diff).
+            old_content: Current file content (``""`` for a new file).
+            new_content: The proposed content.
+
+        Returns:
+            EditReviewResponse: The user's decision and any feedback notes.
+        """
+        req_id = uuid.uuid4().hex
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[dict[str, object]] = loop.create_future()
+        self.__app_state.register_response_future(req_id, future)
+
+        payload: dict[str, object] = {
+            "type": SREQ_PROMPT_EDIT_REVIEW,
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+            "path": path,
+            "mode": mode,
+            "old_content": old_content,
+            "new_content": new_content,
+        }
+        self.__transient.update(pending_edit_review=tool_call_id)
+        try:
+            await self.__app_state.send(Envelope(kind="request", id=req_id, payload=payload))
+            _log.info(
+                "Edit review fired: tool=%s mode=%s req_id=%s", tool_name, mode, req_id[:8]
+            )
+
+            response_payload = await future
+            action = str(response_payload.get("action", "reject"))
+            if action not in ("approve", "reject"):
+                action = "reject"
+            feedback = self.__normalize_feedback(response_payload.get("feedback"))
+            _log.info("Edit review resolved: req_id=%s action=%s", req_id[:8], action)
+            self.__transient.update(pending_edit_review=None)
+            return EditReviewResponse(action=action, feedback=feedback)
+        except asyncio.CancelledError:
+            # Leave pending_edit_review persisted — the wait is being cut
+            # short (server restart or a live disconnect) with the call still
+            # un-dispatched, so resume can safely re-judge and re-ask it.
+            raise
+        except Exception:
+            self.__transient.update(pending_edit_review=None)
+            raise
+
+    @staticmethod
+    def __normalize_feedback(raw: object) -> tuple[EditReviewFeedbackEntry, ...]:
+        """Coerce the client's ``feedback`` payload to a tuple of entries.
+
+        Malformed entries (missing/wrong-typed fields) are dropped rather
+        than raised on — the wire is client-controlled input, never trusted
+        blindly. A general note (``general_feedback: true``) carries no
+        ``line_from``/``line_to``/``targeted_code`` on the wire; anything
+        else is treated as line-anchored and requires them.
+        """
+        if not isinstance(raw, list):
+            return ()
+        entries: list[EditReviewFeedbackEntry] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                if bool(item.get("general_feedback", False)):
+                    entries.append(
+                        EditReviewFeedbackEntry(
+                            feedback=str(item.get("feedback", "")),
+                            general_feedback=True,
+                        )
+                    )
+                else:
+                    entries.append(
+                        EditReviewFeedbackEntry(
+                            feedback=str(item.get("feedback", "")),
+                            general_feedback=False,
+                            line_from=int(item.get("line_from", 0)),
+                            line_to=int(item.get("line_to", 0)),
+                            targeted_code=str(item.get("targeted_code", "")),
+                        )
+                    )
+            except (TypeError, ValueError):
+                continue
+        return tuple(entries)
 
     @staticmethod
     def __normalize_answers(raw: object, count: int) -> list[dict[str, object]]:

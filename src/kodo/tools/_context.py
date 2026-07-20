@@ -23,6 +23,8 @@ from ._paths import PathResolver
 
 __all__ = [
     "ApprovalLike",
+    "EditReviewFeedbackLike",
+    "EditReviewLike",
     "EngineServices",
     "GateLike",
     "PermissionLike",
@@ -253,6 +255,83 @@ class GateLike(Protocol):
         """
         ...
 
+    async def fire_edit_review(
+        self,
+        *,
+        tool_call_id: str,
+        tool_name: str,
+        path: str,
+        mode: str,
+        old_content: str,
+        new_content: str,
+    ) -> EditReviewLike:
+        """Surface the Edit Control review gate and block until the user
+        approves or rejects the proposed ``create_file``/``edit_file`` call.
+
+        Emitted by :class:`~kodo.tools.ToolDispatcher`'s edit-review gate
+        (``prompt.edit_review``, WS_PROTOCOL.md §6.5b) — independent of, and
+        always evaluated after, :meth:`fire_permission`. ``mode`` is
+        ``'new_file'`` (``old_content`` always ``""``) or ``'modification'``
+        (a genuine diff).
+        """
+        ...
+
+
+class EditReviewFeedbackLike(Protocol):
+    """Structural shape of one note attached to a rejected
+    ``create_file``/``edit_file`` review — line-anchored, or general
+    (``general_feedback=True``, no line reference) when added with nothing
+    selected.
+
+    Satisfied by :class:`kodo.runtime.EditReviewFeedbackEntry` (by shape).
+    """
+
+    @property
+    def feedback(self) -> str:
+        """The user's free-text note."""
+        ...
+
+    @property
+    def general_feedback(self) -> bool:
+        """True when this note isn't anchored to any particular line."""
+        ...
+
+    @property
+    def line_from(self) -> int | None:
+        """1-based start line in the proposed (new) content, or None for a
+        general note."""
+        ...
+
+    @property
+    def line_to(self) -> int | None:
+        """1-based end line in the proposed (new) content, or None for a
+        general note."""
+        ...
+
+    @property
+    def targeted_code(self) -> str | None:
+        """The exact selected text the note targets, or None for a general
+        note."""
+        ...
+
+
+class EditReviewLike(Protocol):
+    """Structural shape of a user's response to the edit-review gate.
+
+    Satisfied by :class:`kodo.runtime.EditReviewResponse` (by shape).
+    """
+
+    @property
+    def action(self) -> str:
+        """``'approve'`` or ``'reject'``."""
+        ...
+
+    @property
+    def feedback(self) -> tuple[EditReviewFeedbackLike, ...]:
+        """Line-anchored notes attached to a rejection, in the order the
+        user added them; empty on approval or a plain reject."""
+        ...
+
 
 class SessionLike(Protocol):
     """Structural shape of the session state a tool may read or write.
@@ -280,6 +359,12 @@ class SessionLike(Protocol):
     ``security_rules`` (doc/SECURITY_RULES_PLAN.md §2.7) —
     ``(executable, resolved_absolute_path)`` shapes, same live-read/merge
     semantics.
+
+    ``edit_control`` is the never-frozen Edit Control setting (``"review_all"``
+    / ``"allow_all"`` / ``"smart"``) — read live per ``create_file``/
+    ``edit_file`` call by :class:`~kodo.tools.ToolDispatcher`'s edit-review
+    gate, independent of and always evaluated after ``command_control``'s
+    security gate.
     """
 
     phase: str
@@ -287,6 +372,7 @@ class SessionLike(Protocol):
     command_control: str
     security_rules: frozenset[tuple[str, str]]
     security_path_rules: frozenset[tuple[str, str]]
+    edit_control: str
 
 
 class EngineServices(Protocol):

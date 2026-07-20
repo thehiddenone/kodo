@@ -18,9 +18,46 @@ import logging
 
 from ._tool import Tool
 
-__all__ = ["EditFileTool"]
+__all__ = ["EditFileTool", "compute_new_content"]
 
 _log = logging.getLogger(__name__)
+
+
+def compute_new_content(path: str, old_content: str, old_string: str, new_string: str) -> str:
+    """Replace the one exact, unique occurrence of ``old_string`` in
+    ``old_content`` with ``new_string``.
+
+    Shared by :meth:`EditFileTool.handle` and
+    :class:`~kodo.tools.ToolDispatcher`'s edit-review gate, so the gate's
+    preview and the real write can never drift — both call this same
+    function. Callers must already have checked ``old_string`` is non-empty
+    and differs from ``new_string``; those are cheap, tool-input-only checks
+    that don't need a file read first.
+
+    Args:
+        path: The tool-input path, used only to phrase the error messages.
+        old_content: The current file content.
+        old_string: The exact, unique snippet to replace.
+        new_string: Its replacement.
+
+    Returns:
+        str: ``old_content`` with the one match replaced.
+
+    Raises:
+        ValueError: ``old_string`` matches zero or more than one location.
+    """
+    occurrences = old_content.count(old_string)
+    if occurrences == 0:
+        raise ValueError(
+            f"old_string not found in {path!r}. It must match the file "
+            "content exactly, including whitespace and indentation."
+        )
+    if occurrences > 1:
+        raise ValueError(
+            f"old_string is not unique in {path!r} ({occurrences} matches). "
+            "Include more surrounding context so it identifies exactly one location."
+        )
+    return old_content.replace(old_string, new_string, 1)
 
 
 class EditFileTool(Tool):
@@ -51,28 +88,11 @@ class EditFileTool(Tool):
             _log.info("edit_file from %s failed: %s", ctx.agent_name, exc)
             return json.dumps({"error": str(exc)})
 
-        occurrences = old_content.count(old_string)
-        if occurrences == 0:
-            return json.dumps(
-                {
-                    "error": (
-                        f"old_string not found in {path!r}. It must match the file "
-                        "content exactly, including whitespace and indentation."
-                    )
-                }
-            )
-        if occurrences > 1:
-            return json.dumps(
-                {
-                    "error": (
-                        f"old_string is not unique in {path!r} ({occurrences} matches). "
-                        "Include more surrounding context so it identifies exactly one "
-                        "location."
-                    )
-                }
-            )
+        try:
+            new_content = compute_new_content(path, old_content, old_string, new_string)
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
 
-        new_content = old_content.replace(old_string, new_string, 1)
         try:
             target.write_text(new_content, encoding="utf-8")
         except OSError as exc:

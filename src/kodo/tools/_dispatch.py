@@ -69,7 +69,8 @@ from ._create_file import CreateFileTool
 from ._create_new_project import CreateNewProjectTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
 from ._document_feedback import DocumentFeedbackTool
-from ._edit_file import EditFileTool
+from ._edit_file import EditFileTool, compute_new_content
+from ._edit_review import should_review_edit
 from ._escalate_blocker import EscalateBlockerTool
 from ._filesystem import FilesystemTool
 from ._finalize_project import FinalizeProjectTool
@@ -301,6 +302,13 @@ class ToolDispatcher:
         denial = await self.__security_gate(tool_name, tool_input, tool_use_id, recovered)
         if denial is not None:
             return denial
+        if tool_name in (CREATE_FILE.name, EDIT_FILE.name):
+            # Independent of and always evaluated after the security gate —
+            # Command Control and Edit Control are orthogonal settings, so
+            # the same call may ask twice (security first, then review).
+            review_denial = await self.__edit_review_gate(tool_name, tool_input, tool_use_id)
+            if review_denial is not None:
+                return review_denial
         # run_command and web_search are the only calls the client animates a
         # timeout bar for; tell it execution is genuinely starting now, past
         # whatever judging round or permission wait the gate above may have
@@ -414,6 +422,101 @@ class ToolDispatcher:
         return json.dumps(
             {"error": f"The user DENIED permission for this {tool_name} call.{detail}"}
         )
+
+    async def __edit_review_gate(
+        self, tool_name: str, tool_input: dict[str, object], tool_use_id: str
+    ) -> str | None:
+        """Judge a ``create_file``/``edit_file`` call against Edit Control;
+        surface a review prompt when it applies.
+
+        Returns ``None`` when dispatch may proceed — Edit Control skips this
+        call (``allow_all``, a ``temporary`` call, a ``smart`` call outside
+        every heuristic-matched path, or a call that's going to fail
+        regardless — file-already-exists, no-op edit, ambiguous/missing
+        ``old_string``, unresolvable path — in which case ``handle()`` is
+        left to raise its own, identical error rather than showing a review
+        for a doomed call) — or a JSON-encoded ``rejected``/
+        ``rejected_with_feedback`` result when the user declines it,
+        short-circuiting dispatch so ``handle()`` never runs and nothing is
+        written.
+
+        Always evaluated *after* :meth:`__security_gate`: Command Control and
+        Edit Control are independent settings, so the same call can ask
+        twice (security first, then review).
+        """
+        ctx = self.__ctx
+        edit_control = ctx.session.edit_control
+        path = str(tool_input.get("path", ""))
+
+        if edit_control == "allow_all" or bool(tool_input.get("temporary")):
+            return None
+
+        old_string = ""
+        new_string = ""
+        if tool_name == EDIT_FILE.name:
+            old_string = str(tool_input.get("old_string", ""))
+            new_string = str(tool_input.get("new_string", ""))
+            if old_string == "" or old_string == new_string:
+                return None  # let handle() produce its usual validation error
+
+        try:
+            resolved = ctx.resolver.resolve(path)
+        except PermissionError:
+            return None  # out-of-workspace: let handle() raise its own, identical error
+
+        if tool_name == CREATE_FILE.name:
+            if resolved.exists():
+                return None  # let handle() raise its own FileExistsError
+            mode, old_content, new_content = "new_file", "", str(tool_input.get("content", ""))
+        else:
+            if not resolved.exists():
+                return None  # let handle() raise its own FileNotFoundError
+            try:
+                old_content = resolved.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                return None  # let handle() produce its own, identical error
+            try:
+                new_content = compute_new_content(path, old_content, old_string, new_string)
+            except ValueError:
+                return None  # let handle() produce its usual validation error
+            mode = "modification"
+
+        if edit_control == "smart" and not should_review_edit(resolved, ctx.root_paths):
+            return None
+
+        response = await ctx.gate.fire_edit_review(
+            tool_call_id=tool_use_id,
+            tool_name=tool_name,
+            path=path,
+            mode=mode,
+            old_content=old_content,
+            new_content=new_content,
+        )
+        if response.action == "approve":
+            _log.info("edit_review: user APPROVED %s (%s)", tool_name, ctx.agent_name)
+            return None
+
+        _log.info("edit_review: user REJECTED %s (%s)", tool_name, ctx.agent_name)
+        result: dict[str, object] = {
+            "status": "rejected_with_feedback" if response.feedback else "rejected",
+            "path": path,
+        }
+        if response.feedback:
+            result["feedback"] = [
+                (
+                    {"general_feedback": True, "feedback": entry.feedback}
+                    if entry.general_feedback
+                    else {
+                        "general_feedback": False,
+                        "line_from": entry.line_from,
+                        "line_to": entry.line_to,
+                        "targeted_code": entry.targeted_code,
+                        "feedback": entry.feedback,
+                    }
+                )
+                for entry in response.feedback
+            ]
+        return json.dumps(result)
 
 
 # Cap for permission-prompt parameter previews; the full value is visible in

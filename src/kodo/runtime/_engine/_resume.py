@@ -5,11 +5,12 @@ before dispatch (see :mod:`._turns`), so an interrupted turn always leaves a
 dangling assistant message. Cold-restart resume only safely *re-dispatches*
 a dangling call from :data:`_RESUME_REDISPATCH_TOOLS` — or the single
 dangling call, of any tool, that ``TransientStore.pending_security_alert``
-proves was still waiting at the security gate and therefore never actually
-dispatched (doc/SECURITY.md §7). Any other dangling tool call is reported
-back to the model as interrupted rather than re-executed, since re-running an
-arbitrary tool (a shell command, a file write, ...) could duplicate its side
-effects.
+or ``TransientStore.pending_edit_review`` proves was still waiting at the
+security or edit-review gate and therefore never actually dispatched
+(doc/SECURITY.md §7, WS_PROTOCOL.md §6.5b). Any other dangling tool call is
+reported back to the model as interrupted rather than re-executed, since
+re-running an arbitrary tool (a shell command, a file write, ...) could
+duplicate its side effects.
 """
 
 from __future__ import annotations
@@ -99,15 +100,18 @@ class ResumeMixin:
         :data:`_STOPPED_TURN_NOTICE`.
 
         Unlike cold-restart resume, a live Stop never re-dispatches anything
-        — not even a call ``pending_security_alert`` names — the same
-        "I will not silently resume or retry it" rule applies to a call still
-        sitting at the permission gate. Any such marker is still cleared here
-        so it cannot outlive the dangling call it pointed at (which this
-        method is folding into an ordinary interrupted result) and linger,
-        unmatched, into a future resume.
+        — not even a call ``pending_security_alert``/``pending_edit_review``
+        names — the same "I will not silently resume or retry it" rule
+        applies to a call still sitting at the permission or edit-review
+        gate. Any such marker is still cleared here so it cannot outlive the
+        dangling call it pointed at (which this method is folding into an
+        ordinary interrupted result) and linger, unmatched, into a future
+        resume.
         """
         if self._transient.pending_security_alert is not None:
             self._transient.update(pending_security_alert=None)
+        if self._transient.pending_edit_review is not None:
+            self._transient.update(pending_edit_review=None)
         if self._has_dangling_tool_use():
             last = self._main_messages[-1]
             assert isinstance(last.content, list)
@@ -171,6 +175,13 @@ class ResumeMixin:
           judgement fresh (picking up e.g. an "always allow" rule granted
           since) and, if still "ask", re-fires the exact same
           ``prompt.permission`` instead of a stub. See doc/SECURITY.md §7.
+        * **The one call ``TransientStore.pending_edit_review`` names**, if
+          any, is re-dispatched for real too, for the identical reason: the
+          marker proves it was still waiting at the Edit Control review gate
+          — never handed to the tool — so re-dispatching it recomputes the
+          proposed content fresh off the current on-disk state and, if the
+          gate would still fire, re-asks the same ``prompt.edit_review``
+          instead of a stub. See WS_PROTOCOL.md §6.5b.
         * **Every other tool** (a shell command, a file write, ...) is *not*
           re-executed: its side effects may already have landed before the
           interruption, and there is no result ledger to dedupe against.
@@ -192,12 +203,16 @@ class ResumeMixin:
         # (doc/STUCK_DETECTION.md).
         self._entry_turn_seq += 1
 
-        # Claim the alert now, unconditionally: whether or not its id turns up
-        # among tool_uses below (it always should), this resume pass is the
-        # one deciding this call's fate, so the marker must not outlive it.
+        # Claim both markers now, unconditionally: whether or not their id
+        # turns up among tool_uses below (it always should), this resume pass
+        # is the one deciding that call's fate, so neither marker must
+        # outlive it.
         alert_tool_call_id = self._transient.pending_security_alert
         if alert_tool_call_id is not None:
             self._transient.update(pending_security_alert=None)
+        edit_review_tool_call_id = self._transient.pending_edit_review
+        if edit_review_tool_call_id is not None:
+            self._transient.update(pending_edit_review=None)
 
         entry_agent = self._last_entry_agent()
         ledger = self._build_replay_ledger()
@@ -232,7 +247,10 @@ class ResumeMixin:
             tool_name = str(b["name"])
             raw_input = b.get("input")
             tool_input = raw_input if isinstance(raw_input, dict) else {}
-            if tool_name in _RESUME_REDISPATCH_TOOLS or tool_use_id == alert_tool_call_id:
+            if tool_name in _RESUME_REDISPATCH_TOOLS or tool_use_id in (
+                alert_tool_call_id,
+                edit_review_tool_call_id,
+            ):
                 spawned = await self._dispatch_tool_calls(
                     [(tool_use_id, tool_name, tool_input)],
                     dispatcher.dispatch,
