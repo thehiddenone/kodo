@@ -34,6 +34,7 @@ from kodo.toolspecs import (
     GUIDED_DEV_STATUS,
     INIT_PROJECT,
     INTENT_KEY,
+    NO_PROJECT_ERROR,
     QUERY_SEARCH_ENGINE,
     READ_ATTACHMENT,
     READ_FILE,
@@ -59,7 +60,6 @@ from ._context import (
     EngineServices,
     GateLike,
     PermissionPartLike,
-    RootPath,
     SecurityLike,
     SessionLike,
     ToolContext,
@@ -192,7 +192,6 @@ class ToolDispatcher:
         agent_name: Name of the running agent.
         session_id: Session ID for this run.
         mode: The run's workflow mode (``"guided"``/``"problem_solving"``).
-        project_root: The bound project's root, or ``None`` if none is bound.
         output_schema: The running sub-agent's ``output_schema`` (from its
             ``SubAgentSpec``), so ``return_result`` can validate its result.
             ``None`` for entry agents that never call ``return_result``.
@@ -214,8 +213,6 @@ class ToolDispatcher:
         session_id: str,
         security: SecurityLike | None = None,
         mode: str = "problem_solving",
-        project_root: Path | None = None,
-        root_paths: tuple[RootPath, ...] = (),
         util_paths: dict[str, Path] | None = None,
         output_schema: dict[str, object] | None = None,
         deadline: float | None = None,
@@ -229,8 +226,6 @@ class ToolDispatcher:
             agent_name=agent_name,
             session_id=session_id,
             mode=mode,
-            project_root=project_root,
-            root_paths=root_paths,
             util_paths=dict(util_paths or {}),
             output_schema=output_schema,
             deadline=deadline,
@@ -285,10 +280,19 @@ class ToolDispatcher:
                 "ToolDispatcher: unknown tool %r from %s", tool_name, self.__ctx.agent_name
             )
             return json.dumps({"error": f"Unknown tool: {tool_name!r}"})
+        spec = DISPATCHABLE_TOOLS_BY_NAME[tool_name]
+        # Generic gate for tools that need a bound project/workspace: reject
+        # before dispatch rather than let each tool discover this itself,
+        # unless the call is scoped to the private scratch directory
+        # (`temporary: true`), which never needs a project.
+        if spec.requires_project and not self.__ctx.has_workspace and not tool_input.get(
+            "temporary"
+        ):
+            return json.dumps({"error": NO_PROJECT_ERROR})
         # Generic gate for content-mutating tools: a spec that requires `intent`
         # never dispatches without a non-blank one (the security layer judges
         # calls by it), regardless of what the LLM API let through.
-        if requires_intent(DISPATCHABLE_TOOLS_BY_NAME[tool_name]):
+        if requires_intent(spec):
             intent = tool_input.get(INTENT_KEY)
             if not isinstance(intent, str) or not intent.strip():
                 return json.dumps(

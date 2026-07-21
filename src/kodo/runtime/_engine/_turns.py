@@ -240,6 +240,11 @@ class TurnLoopMixin:
             ),
             on_tool_calls=self._make_progress_handler(is_entry_turn=True),
         )
+        # Safety net for a final round that produced zero deltas of any kind
+        # (e.g. an immediately empty response) — mirrors kodo-vsix's own
+        # `stream_end` handler, which forcibly clears its "awaiting response"
+        # spinner for the identical reason.
+        self._session.awaiting_first_chunk = False
         await self._sink.send(Envelope.make_stream_end(stream_id))
         await self._emitters.emit_agent_finished(agent_name)
 
@@ -403,6 +408,12 @@ class TurnLoopMixin:
             tool_calls: list[ToolCallEvent] = []
             turn_end: TurnEnd | None = None
 
+            # Set before the send (not after) so a reconnect racing this exact
+            # instant already sees the true state if it reads `self._session`
+            # via `to_dict()` — cleared by `EngineEmitters.handle_stream_event`
+            # on the first real chunk, or by the `stream_end` sites below if
+            # none ever arrives.
+            self._session.awaiting_first_chunk = True
             await self._sink.send(
                 Envelope.make_event(EVT_LLM_TURN_START, {"agent": agent_name, "model": model})
             )
@@ -442,6 +453,7 @@ class TurnLoopMixin:
                 # (``track_context``): a subsession must leave its log ending
                 # on a clean tool_result boundary (see ``flush_before_dispatch``
                 # note above), so it does not get a dangling partial reply.
+                self._session.awaiting_first_chunk = False
                 await self._sink.send(Envelope.make_stream_end(stream_id))
                 if track_context:
                     partial = self._partial_assistant_message(
@@ -453,6 +465,7 @@ class TurnLoopMixin:
                     self._main_messages = messages
                 raise
             except Exception:
+                self._session.awaiting_first_chunk = False
                 await self._sink.send(Envelope.make_stream_end(stream_id))
                 raise
 
@@ -857,9 +870,16 @@ class TurnLoopMixin:
     ) -> ToolDispatcher:
         """Build a per-run tool dispatcher for *agent_name*.
 
-        ``mode``/``project_root`` are read live from session/current-project
-        state (not snapshotted) — same reasoning as ``effective_autonomous``:
-        a single dispatcher serves the whole prompt.
+        ``mode`` is frozen for the whole prompt, mirroring
+        ``session.effective_workflow_mode``. ``project_root``/``has_workspace``/
+        ``root_paths`` are **not** snapshotted here — ``ToolContext`` reads
+        them live from ``self._services`` (``_EngineServices.project_root``/
+        ``.has_workspace``/``.root_paths``, backed by this same
+        ``_project_root``/``_has_workspace``/``_root_paths``) on every access,
+        so a project bound mid-turn — by ``create_new_project``/``init_project``,
+        or a genuine ``workspace.folders`` push from the user editing the VS
+        Code workspace directly — is visible to the very next tool call in
+        the same turn, not just the next one.
 
         ``deadline`` is only ever passed for the ``web_search`` agent's
         silent tool-loop turn (see ``_run_silent_tool_loop_turn``); every
@@ -875,8 +895,6 @@ class TurnLoopMixin:
             agent_name=agent_name,
             session_id=session_id,
             mode=self._session.effective_workflow_mode,
-            project_root=(Path(self._current_project["root"]) if self._current_project else None),
-            root_paths=self._root_paths(),
             util_paths=self._util_paths(),
             output_schema=spec.output_schema if spec is not None else None,
             deadline=deadline,

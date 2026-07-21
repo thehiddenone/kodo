@@ -194,4 +194,5 @@ FILESYSTEM: ToolSpec = ToolSpec(
         "checkpointed, reviewed, or left in the project tree; this also lifts "
         "the `delete_dir` permission prompt, since nothing there is tracked.",
     ),
+    requires_project=True,
 )

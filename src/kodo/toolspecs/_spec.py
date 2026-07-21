@@ -95,6 +95,12 @@ class ToolSpec:
             available but the engine synthesizes the user's response). The
             full string (e.g. ``"unavailable — ..."``) is rendered verbatim
             into the ``## Tools`` section.
+        requires_project: Whether this tool needs a bound project/workspace
+            to run. :class:`~kodo.tools.ToolDispatcher` rejects a call to such
+            a tool before dispatch (with a message to call
+            ``create_new_project`` first) when no project is bound and the
+            call doesn't carry ``temporary: true`` — see
+            :mod:`kodo.toolspecs._workspace`.
     """
 
     name: str
@@ -108,3 +114,4 @@ class ToolSpec:
     output_visibility: dict[str, str]
     when_to_use: tuple[str, ...]
     autonomous_mode: str | None = None
+    requires_project: bool = False

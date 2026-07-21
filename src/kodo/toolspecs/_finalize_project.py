@@ -33,4 +33,5 @@ FINALIZE_PROJECT: ToolSpec = ToolSpec(
         "All product-level stages have completed and the workspace has "
         "nothing left in flight — the project is done.",
     ),
+    requires_project=True,
 )

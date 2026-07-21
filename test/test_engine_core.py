@@ -929,14 +929,16 @@ def test_root_paths_problem_solving_reports_workspace_folders(tmp_path: Path) ->
     assert paths[0].name == "a"
 
 
-def test_root_paths_falls_back_to_physical_root_when_no_folders(tmp_path: Path) -> None:
+def test_root_paths_empty_when_no_folders(tmp_path: Path) -> None:
+    """No fallback to physical_root: a homeless session reports zero roots,
+    so ``RootMirrorManager`` never gets handed a root to mirror (doc: the
+    checkpoint jail-escape fix — physical_root must never leak in here)."""
     engine, _t, _s, _g = _make_engine(tmp_path, physical_root=tmp_path)
     engine._session.workflow_mode = "problem_solving"
 
     paths = engine._root_paths()
 
-    assert len(paths) == 1
-    assert paths[0].path == str(tmp_path.resolve())
+    assert paths == ()
 
 
 # ---------------------------------------------------------------------------
@@ -1002,6 +1004,29 @@ def test_make_resolver_problem_solving_uses_logical_resolver(tmp_path: Path) -> 
     from kodo.tools import LogicalPathResolver
 
     assert isinstance(resolver, LogicalPathResolver)
+
+
+def test_make_resolver_logical_resolver_tracks_folders_added_after_construction(
+    tmp_path: Path,
+) -> None:
+    """A resolver built at the start of a turn must still see a project bound
+    *after* it was constructed — e.g. by ``create_new_project`` mid-turn, or
+    by the user adding a folder to the VS Code window directly (both funnel
+    into ``SessionWorkspace.set_folders``). Regression test: the resolver used
+    to snapshot the folder map at construction time, so a project bound later
+    in the same turn was invisible to it until the *next* turn rebuilt it."""
+    engine, _t, _s, _g = _make_engine(tmp_path)
+    engine._session.workflow_mode = "problem_solving"
+    resolver = engine._make_resolver("sess-1")
+
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    with pytest.raises(PermissionError):
+        resolver.resolve("proj/foo.py")
+
+    engine._session_workspace.set_folders({"proj": project_root})
+
+    assert resolver.resolve("proj/foo.py") == (project_root / "foo.py").resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -1293,6 +1318,137 @@ async def test_init_project_fails_when_kodo_dir_already_exists(tmp_path: Path) -
 
     with pytest.raises(ProjectLayoutError, match="already exists"):
         await engine._init_project(str(target))
+
+
+# ---------------------------------------------------------------------------
+# _has_workspace
+# ---------------------------------------------------------------------------
+
+
+def test_has_workspace_guided_false_until_project_bound(tmp_path: Path) -> None:
+    engine, _t, _s, _g = _make_engine(tmp_path)
+    engine._session.workflow_mode = "guided"
+    assert engine._has_workspace() is False
+    engine._current_project = {"root": str(tmp_path), "name": "proj"}
+    assert engine._has_workspace() is True
+
+
+def test_has_workspace_problem_solving_tracks_folders(tmp_path: Path) -> None:
+    engine, _t, _s, _g = _make_engine(tmp_path)
+    engine._session.workflow_mode = "problem_solving"
+    assert engine._has_workspace() is False
+    engine._session_workspace.set_folders({"proj": tmp_path})
+    assert engine._has_workspace() is True
+
+
+# ---------------------------------------------------------------------------
+# _bootstrap_project / _bootstrap_project_autonomous / _bootstrap_project_interactive
+# ---------------------------------------------------------------------------
+
+
+async def test_bootstrap_project_autonomous_uses_titler_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, _t, _s, _g = _make_engine(tmp_path, physical_root=tmp_path)
+    engine._session.autonomous = True
+    engine._session.effective_autonomous = True
+    engine._current_prompt_text = "build me a todo list app"
+    home = tmp_path / "home-dir"
+    monkeypatch.setattr(_core.Path, "home", staticmethod(lambda: home))
+
+    async def _fake_generate(text: str) -> str:
+        assert text == "build me a todo list app"
+        return "Todo App"
+
+    monkeypatch.setattr(_core, "generate_project_name", _fake_generate)
+
+    result = await engine._bootstrap_project()
+
+    assert result["name"] == "Todo App"
+    assert Path(result["path"]) == home / "kodo-projects" / "todo-app"
+    assert (Path(result["path"]) / ".kodo" / "kodo.md").exists()
+    assert engine._session_workspace.physical_root == (home / "kodo-projects").resolve()
+
+
+async def test_bootstrap_project_autonomous_falls_back_to_generic_name_on_titler_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, _t, _s, _g = _make_engine(tmp_path, physical_root=tmp_path)
+    engine._session.autonomous = True
+    engine._session.effective_autonomous = True
+    engine._current_prompt_text = "anything"
+    home = tmp_path / "home-dir"
+    monkeypatch.setattr(_core.Path, "home", staticmethod(lambda: home))
+
+    async def _fake_generate(text: str) -> None:
+        return None
+
+    monkeypatch.setattr(_core, "generate_project_name", _fake_generate)
+
+    result = await engine._bootstrap_project()
+
+    assert result["name"] == "project"
+    assert Path(result["path"]) == home / "kodo-projects" / "project"
+
+
+async def test_bootstrap_project_autonomous_prefers_agent_supplied_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An agent-supplied ``name`` is used as-is; the titler is never consulted."""
+    engine, _t, _s, _g = _make_engine(tmp_path, physical_root=tmp_path)
+    engine._session.autonomous = True
+    engine._session.effective_autonomous = True
+    home = tmp_path / "home-dir"
+    monkeypatch.setattr(_core.Path, "home", staticmethod(lambda: home))
+
+    async def _fake_generate(text: str) -> str:
+        raise AssertionError("titler should not be consulted when name is given")
+
+    monkeypatch.setattr(_core, "generate_project_name", _fake_generate)
+
+    result = await engine._bootstrap_project("Tic Tac Toe")
+
+    assert result["name"] == "Tic Tac Toe"
+    assert Path(result["path"]) == home / "kodo-projects" / "tic-tac-toe"
+
+
+async def test_bootstrap_project_interactive_creates_named_subdir_under_picked_folder(
+    tmp_path: Path,
+) -> None:
+    class _FolderGate(_FakeGate):
+        async def fire_choose_project_folder(self):  # noqa: ANN201
+            from kodo.runtime._gates import ChooseFolderResponse
+
+            return ChooseFolderResponse(path=str(tmp_path / "picked"))
+
+    engine, _t, _s, _g = _make_engine(tmp_path, gate=_FolderGate())
+    engine._session.autonomous = False
+    engine._session.effective_autonomous = False
+
+    result = await engine._bootstrap_project("Tic Tac Toe")
+
+    assert result["path"] == str(tmp_path / "picked" / "tic-tac-toe")
+    assert (tmp_path / "picked" / "tic-tac-toe" / ".kodo" / "kodo.md").exists()
+    # The picked folder itself is never scaffolded as a project — only used
+    # as the parent (Reading 2: sibling projects, never nested).
+    assert not (tmp_path / "picked" / ".kodo").exists()
+    assert engine._session_workspace.physical_root == (tmp_path / "picked").resolve()
+
+
+async def test_bootstrap_project_interactive_cancelled_returns_error(tmp_path: Path) -> None:
+    class _FolderGate(_FakeGate):
+        async def fire_choose_project_folder(self):  # noqa: ANN201
+            from kodo.runtime._gates import ChooseFolderResponse
+
+            return ChooseFolderResponse(path="", error="cancelled")
+
+    engine, _t, _s, _g = _make_engine(tmp_path, gate=_FolderGate())
+    engine._session.autonomous = False
+    engine._session.effective_autonomous = False
+
+    result = await engine._bootstrap_project()
+
+    assert result == {"error": "cancelled"}
 
 
 async def test_init_project_skips_workspace_add_when_already_present(tmp_path: Path) -> None:

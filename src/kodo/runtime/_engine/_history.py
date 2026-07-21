@@ -68,13 +68,18 @@ class HistoryProjector:
         Walks the main ``session.jsonl`` in order. Message lines become
         ``user_message`` / ``assistant_response`` / ``tool_call`` entries; a
         ``subsession_start`` marker emits a takeover divider and splices the
-        sub-agent's full inner transcript (read from its subsession log), and a
-        ``subsession_end`` marker emits a hand-back divider. A
-        ``security_rule_added`` marker (doc/SECURITY_RULES_PLAN.md §2.4/§2.7)
-        replays the user's own record of a granted "always allow" rule, and an
-        ``agent_stuck_critical`` marker (doc/STUCK_DETECTION.md) replays the
-        stuck-watchdog's "gave up nudging" notice. This gives the WebView a
-        faithful replay of who did what, including sub-agent work.
+        sub-agent's full inner transcript — messages *and* markers alike, in
+        order — read from its own subsession log, and a ``subsession_end``
+        marker emits a hand-back divider. Every other marker kind (``usage``,
+        ``compaction``, ``error``, ``security_rule_added``,
+        ``agent_stuck_critical`` — see :meth:`_marker_to_entries`) can appear
+        either at the top level or inside a subsession's own log, and is
+        rendered identically either way, in its correct chronological
+        position — this is what lets a resumed session's feed be a single
+        ordered replay instead of needing any live-state patchwork
+        (previously true only of ``usage``/"Kodo responded in..." rows,
+        which had no persisted form at all; see the WebView reducer's
+        ``session_history`` case).
 
         Each ``tool_call`` entry's ``checkpoint`` (root/sha/parent/index/undone)
         is reconstructed from the persisted ``checkpoint_sha``/``checkpoint_root``
@@ -120,55 +125,92 @@ class HistoryProjector:
             if kind == "subsession_start":
                 entries.append(self._divider_entry("subsession_start", line))
                 sid = str(line.get("subsession_id", ""))
-                for sub in self._transient.read_subsession_messages(sid):
-                    entries.extend(
-                        await self._message_to_entries(
-                            sub,
-                            tool_desc,
-                            results_by_id,
-                            toolcalls_dir,
-                            session_dir,
-                            checkpoint_states,
+                for sub in self._transient.read_subsession_lines(sid):
+                    if "role" in sub:
+                        entries.extend(
+                            await self._message_to_entries(
+                                sub,
+                                tool_desc,
+                                results_by_id,
+                                toolcalls_dir,
+                                session_dir,
+                                checkpoint_states,
+                            )
                         )
-                    )
+                    else:
+                        # Subsessions cannot nest, so the only marker kinds
+                        # that can appear here are the non-divider ones
+                        # _marker_to_entries handles.
+                        entries.extend(self._marker_to_entries(sub))
             elif kind == "subsession_end":
                 entries.append(self._divider_entry("subsession_end", line))
-            elif kind == "compaction":
-                tb = line.get("tokens_before", 0)
-                ta = line.get("tokens_after", 0)
-                entries.append(
-                    {
-                        "type": "context_compacted",
-                        "summaryExcerpt": str(line.get("summary", ""))[:_COMPACTION_EXCERPT_LEN],
-                        # Full summary so the reloaded divider expands to the same
-                        # post-compaction context shown live.
-                        "summary": str(line.get("summary", "")),
-                        "tokensBefore": tb if isinstance(tb, int) else 0,
-                        "tokensAfter": ta if isinstance(ta, int) else 0,
-                    }
-                )
-            elif kind == "error":
-                entries.append(
-                    {
-                        "type": "runtime_error",
-                        "message": str(line.get("message", "")),
-                        "recoverable": line.get("recoverable") is not False,
-                    }
-                )
-            elif kind == "security_rule_added":
-                entries.append(
-                    {
-                        "type": "security_rule_added",
-                        "scope": str(line.get("scope", "")),
-                        "executable": str(line.get("executable", "")),
-                        "subcommand": str(line.get("subcommand", "")),
-                    }
-                )
-            elif kind == "agent_stuck_critical":
-                entries.append(
-                    {"type": "agent_stuck_critical", "message": str(line.get("message", ""))}
-                )
+            else:
+                entries.extend(self._marker_to_entries(line))
         return entries
+
+    @staticmethod
+    def _marker_to_entries(line: dict[str, object]) -> list[dict[str, object]]:
+        """Convert one non-message, non-divider marker line to feed entries.
+
+        Shared by the main-log walk and the subsession splice in
+        :meth:`history_entries`: every marker kind here can happen inside a
+        subsession's own run just as easily as at the top level (a usage
+        stat, an error, a granted security rule, the stuck watchdog giving
+        up) — ``subsession_start``/``subsession_end`` are the only kinds that
+        can't, and stay handled by the caller since subsessions never nest.
+        """
+        kind = line.get("type")
+        if kind == "compaction":
+            tb = line.get("tokens_before", 0)
+            ta = line.get("tokens_after", 0)
+            return [
+                {
+                    "type": "context_compacted",
+                    "summaryExcerpt": str(line.get("summary", ""))[:_COMPACTION_EXCERPT_LEN],
+                    # Full summary so the reloaded divider expands to the same
+                    # post-compaction context shown live.
+                    "summary": str(line.get("summary", "")),
+                    "tokensBefore": tb if isinstance(tb, int) else 0,
+                    "tokensAfter": ta if isinstance(ta, int) else 0,
+                }
+            ]
+        if kind == "error":
+            return [
+                {
+                    "type": "runtime_error",
+                    "message": str(line.get("message", "")),
+                    "recoverable": line.get("recoverable") is not False,
+                }
+            ]
+        if kind == "security_rule_added":
+            return [
+                {
+                    "type": "security_rule_added",
+                    "scope": str(line.get("scope", "")),
+                    "executable": str(line.get("executable", "")),
+                    "subcommand": str(line.get("subcommand", "")),
+                }
+            ]
+        if kind == "agent_stuck_critical":
+            return [{"type": "agent_stuck_critical", "message": str(line.get("message", ""))}]
+        if kind == "usage":
+            tokens = line.get("last_call_tokens")
+            tokens = tokens if isinstance(tokens, dict) else {}
+            input_tokens = int(tokens.get("input") or 0)
+            cache_read = int(tokens.get("cache_read") or 0)
+            cache_write = int(tokens.get("cache_write") or 0)
+            duration = line.get("duration_seconds")
+            duration_seconds = duration if isinstance(duration, (int, float)) else 0.0
+            return [
+                {
+                    "type": "status_response",
+                    "durationMs": round(duration_seconds * 1000),
+                    "inputTokens": input_tokens,
+                    "outputTokens": int(tokens.get("output") or 0),
+                    "contextTokens": input_tokens + cache_read + cache_write,
+                }
+            ]
+        return []
 
     @staticmethod
     def _tool_results_from_messages(

@@ -63,6 +63,26 @@ class _FakeGate:
 class _FakeServices:
     """Structural ``EngineServices`` returning canned values."""
 
+    def __init__(
+        self,
+        *,
+        has_workspace: bool = True,
+        root_paths: tuple[RootPath, ...] = (),
+        project_root: Path | None = None,
+    ) -> None:
+        self._has_workspace = has_workspace
+        self._root_paths = root_paths
+        self._project_root = project_root
+
+    def has_workspace(self) -> bool:
+        return self._has_workspace
+
+    def root_paths(self) -> tuple[RootPath, ...]:
+        return self._root_paths
+
+    def project_root(self) -> Path | None:
+        return self._project_root
+
     async def run_subagent(
         self, caller: str, name: str, task_input: dict[str, object]
     ) -> dict[str, object]:
@@ -118,6 +138,7 @@ def _make_dispatcher(
     autonomous: bool = False,
     mode: str = "guided",
     project_root: Path | None | object = ...,
+    has_workspace: bool = True,
     root_paths: tuple[RootPath, ...] = (),
     util_paths: dict[str, Path] | None = None,
     output_schema: dict[str, object] | None = None,
@@ -130,12 +151,14 @@ def _make_dispatcher(
         resolver=ProjectPathResolver(tmp_path),
         gate=_FakeGate(),
         session=session,
-        services=_FakeServices(),
+        services=_FakeServices(
+            has_workspace=has_workspace,
+            root_paths=root_paths,
+            project_root=resolved_project_root,
+        ),
         agent_name=agent_name,
         session_id="sess-test",
         mode=mode,
-        project_root=resolved_project_root,
-        root_paths=root_paths,
         util_paths=util_paths,
         output_schema=output_schema,
     )
@@ -557,11 +580,10 @@ async def test_toolchain_deps_missing_dependencies_md_returns_remediation(tmp_pa
         resolver=ProjectPathResolver(tmp_path),
         gate=_FakeGate(),
         session=session,
-        services=_NoDepsMdServices(),
+        services=_NoDepsMdServices(project_root=tmp_path),
         agent_name="coder",
         session_id="sess-test",
         mode="guided",
-        project_root=tmp_path,
     )
     parsed = _assert_compliant(
         "toolchain_deps",
@@ -814,11 +836,10 @@ async def test_web_search_compliance(tmp_path: Path) -> None:
         resolver=ProjectPathResolver(tmp_path),
         gate=_FakeGate(),
         session=session,
-        services=_WebSearchAgentFailsServices(),
+        services=_WebSearchAgentFailsServices(project_root=tmp_path),
         agent_name="investigator",
         session_id="sess-test",
         mode="guided",
-        project_root=tmp_path,
     )
     failed = _assert_compliant(
         "web_search", await _dispatch(failing, "web_search", {"query": "anything"})

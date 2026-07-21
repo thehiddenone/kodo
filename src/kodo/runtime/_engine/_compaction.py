@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
 from typing import Protocol
 
 from kodo.common import Envelope, MessageSink
@@ -336,7 +335,6 @@ class ContextCompactor:
                 "reason": reason,
                 "tokens_before": tokens_before,
                 "tokens_after": tokens_after,
-                "ts": datetime.now(tz=UTC).isoformat(),
             }
         )
         self._host._main_messages = [context_msg]

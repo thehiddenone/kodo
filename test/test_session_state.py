@@ -19,6 +19,7 @@ def test_to_dict_defaults_carry_selected_and_effective_pairs() -> None:
     assert payload["edit_control"] == "smart"
     assert payload["command_control"] == "smart"
     assert payload["thinking_level"] == ""
+    assert payload["awaiting_first_chunk"] is False
     # The never-frozen toggles emit no effective twin.
     assert "effective_edit_control" not in payload
     assert "effective_command_control" not in payload
@@ -35,6 +36,7 @@ def test_to_dict_reports_diverged_selected_vs_effective() -> None:
     state.edit_control = "allow_all"
     state.command_control = "permissive"
     state.thinking_level = "unlimited"
+    state.awaiting_first_chunk = True
 
     payload = state.to_dict()
     assert payload["autonomous"] is True
@@ -44,3 +46,4 @@ def test_to_dict_reports_diverged_selected_vs_effective() -> None:
     assert payload["edit_control"] == "allow_all"
     assert payload["command_control"] == "permissive"
     assert payload["thinking_level"] == "unlimited"
+    assert payload["awaiting_first_chunk"] is True

@@ -54,6 +54,7 @@ from kodo.project import (
 from kodo.security import SecurityLayer, add_global_path_rule, add_global_rule
 from kodo.state import TransientStore
 from kodo.subagents import AgentLoadError, AgentRegistry
+from kodo.titling import generate_project_name
 from kodo.tools import LogicalPathResolver, PathResolver, ProjectPathResolver, RootPath
 from kodo.transport import (
     EVT_AUTONOMOUS_CHANGED,
@@ -72,7 +73,7 @@ from ._history import HistoryProjector
 from ._llm import LLMPlumbingMixin
 from ._resume import ResumeMixin
 from ._services import _EngineServices
-from ._shared import _slugify_project_name, _unique_child_dir
+from ._shared import _sanitize_short_name, _slugify_project_name, _unique_child_dir
 from ._subagents import SubagentMixin
 from ._titling import SessionTitler
 from ._turns import TurnLoopMixin
@@ -175,6 +176,7 @@ class WorkflowEngine(
         self._session = SessionState()
         self._worker = None
         self._main_messages = []
+        self._current_prompt_text = ""
         self._orch_session_id = ""
         self._current_vendor = None
         # Sentinel distinct from every real base_llm (including "") so the
@@ -231,9 +233,13 @@ class WorkflowEngine(
             disable_autonomous=self._disable_autonomous,
             create_project=self._create_project,
             init_project=self._init_project,
+            bootstrap_project=self._bootstrap_project,
             notify_tool_call_in_progress=self._emitters.notify_tool_call_in_progress,
             add_security_rule=self.add_security_rule,
             add_security_path_rule=self.add_security_path_rule,
+            has_workspace=self._has_workspace,
+            root_paths=self._root_paths,
+            project_root=self._project_root,
         )
 
     @property
@@ -738,15 +744,43 @@ class WorkflowEngine(
     # Environment helpers (shared by dispatch, checkpointing, projects)
     # ------------------------------------------------------------------
 
+    def _has_workspace(self) -> bool:
+        """Whether this run has any usable project/workspace right now.
+
+        Guided mode: a project is bound. Problem Solver mode: at least one
+        workspace folder is open. Unlike :meth:`_root_paths`, this
+        deliberately does *not* fall back to the physical root — it is the
+        signal :class:`~kodo.tools.ToolDispatcher` uses to reject a call to a
+        ``requires_project`` tool before dispatch, telling the agent to call
+        ``create_new_project`` first instead of silently operating against
+        ``$HOME``.
+        """
+        if self._session.workflow_mode == "guided":
+            return self._current_project is not None
+        return bool(self._session_workspace.folders)
+
+    def _project_root(self) -> Path | None:
+        """The bound Guided-mode project's root, or ``None``, read live.
+
+        Backs ``ToolContext.project_root`` via ``_EngineServices`` — called
+        fresh on every access rather than snapshotted at dispatcher-creation
+        time, so a project bound mid-turn is visible to the next tool call.
+        """
+        return Path(self._current_project["root"]) if self._current_project else None
+
     def _root_paths(self) -> tuple[RootPath, ...]:
         """The filesystem roots the run may operate within, mode-aware.
 
         Guided mode confines the agent to one project, so it reports just the
         bound project root. Problem Solver mode addresses the whole workspace, so
         it reports every open VS Code workspace folder (the map the extension
-        keeps synced via ``workspace.folders``). When no folders have been pushed
-        — e.g. a future console-only single-project run — it falls back to the
-        physical root, keeping ``get_root_paths`` always non-empty.
+        keeps synced via ``workspace.folders``). When no folders have been
+        pushed yet — no workspace open, nothing bootstrapped — this returns an
+        **empty tuple**. It deliberately does not fall back to the physical
+        root (which may itself be unset): a homeless session has no roots,
+        full stop, matching :meth:`_has_workspace`. This is what keeps
+        :class:`~kodo.runtime._checkpoints.RootMirrorManager` from ever being
+        handed a root to mirror before one genuinely exists.
         """
         if self._session.workflow_mode == "guided" and self._current_project is not None:
             cp = self._current_project
@@ -754,8 +788,7 @@ class WorkflowEngine(
         folders = self._session_workspace.folders
         if folders:
             return tuple(RootPath(name=name, path=str(p)) for name, p in folders.items())
-        root = self._session_workspace.physical_root
-        return (RootPath(name=root.name or str(root), path=str(root)),)
+        return ()
 
     @staticmethod
     def _util_paths() -> dict[str, Path]:
@@ -798,9 +831,7 @@ class WorkflowEngine(
             return ProjectPathResolver(
                 self._layout.root, extra_roots=(session_temp_dir(session_id),)
             )
-        return LogicalPathResolver(
-            self._session_workspace.folders, self._session_workspace.physical_root
-        )
+        return LogicalPathResolver(self._session_workspace)
 
     # ------------------------------------------------------------------
     # Rollback callback
@@ -960,6 +991,12 @@ class WorkflowEngine(
             if not name:
                 raise ValueError("create_project requires a non-empty 'name' or 'path'.")
             parent = self._session_workspace.physical_root
+            # Every caller of this branch has already established a workspace
+            # root (an existing workspace, or a bootstrap flow that just set
+            # one) — see _has_workspace()/_bootstrap_project*. Asserting here
+            # turns a violation of that invariant into a loud failure instead
+            # of a silent, wrong directory.
+            assert parent is not None, "create_project's no-path branch reached with no root"
             slug = _slugify_project_name(name)
             project_dir = await asyncio.to_thread(self._reserve_project_dir, parent, slug)
             await asyncio.to_thread(ProjectLayout(project_dir).init)
@@ -1041,3 +1078,62 @@ class WorkflowEngine(
             label,
         )
         return {"path": str(project_dir), "name": label, "scaffolded": scaffolded}
+
+    async def _bootstrap_project(self, name: str = "") -> dict[str, object]:
+        """Create a project when no workspace exists yet, mode-appropriately.
+
+        Backs ``EngineServices.bootstrap_project`` (called by the
+        ``create_new_project`` tool when the agent supplies no ``path`` and
+        :meth:`_has_workspace` is ``False`` — regardless of whether ``name``
+        was given). Autonomous sessions never prompt anyone; interactive
+        sessions ask the user to pick a workspace-home folder.
+        """
+        if self._session.effective_autonomous:
+            return await self._bootstrap_project_autonomous(name)
+        return await self._bootstrap_project_interactive(name)
+
+    async def _bootstrap_project_autonomous(self, name: str) -> dict[str, object]:
+        """Resolve a project name and create it under ``~/kodo-projects/``.
+
+        Uses the agent-supplied *name* if given; otherwise tries the titler
+        (:func:`kodo.titling.generate_project_name`, fed the current prompt's
+        text), falling back to the literal name ``"project"`` if that's
+        unavailable, fails, or produces something degenerate — an autonomous
+        run must never block on this. Sets the session's physical root to
+        ``~/kodo-projects/`` (creating it if needed) and delegates to
+        :meth:`_create_project`, which reserves a slug-named child directory
+        under it — identical placement logic to every other project-creation
+        path once a workspace root is known.
+        """
+        resolved = name.strip()
+        if not resolved and self._current_prompt_text:
+            try:
+                raw = await generate_project_name(self._current_prompt_text)
+                resolved = (_sanitize_short_name(raw) if raw else None) or ""
+            except Exception:
+                _log.exception("Autonomous project-name generation failed")
+        resolved = resolved or "project"
+        parent = Path.home() / "kodo-projects"
+        await asyncio.to_thread(parent.mkdir, parents=True, exist_ok=True)
+        self._session_workspace.set_physical_root(parent)
+        _log.info("Bootstrapping autonomous project %r under %s", resolved, parent)
+        return await self._create_project(resolved)
+
+    async def _bootstrap_project_interactive(self, name: str) -> dict[str, object]:
+        """Ask the user for a workspace-home folder, then create the project
+        as a named subdirectory inside it.
+
+        Fires :meth:`~kodo.runtime._gates.GateOrchestrator.fire_choose_project_folder`
+        (an "open directory" native dialog — no separate confirmation step,
+        since a freshly reserved child directory can never collide with
+        anything already there) and, on success, sets the picked folder as
+        the session's physical root and delegates to :meth:`_create_project`
+        — identical placement logic to every other project-creation path
+        once a workspace root is known: a slug-named child directory
+        reserved under it, never the picked folder itself.
+        """
+        response = await self._gate.fire_choose_project_folder()
+        if response.error:
+            return {"error": response.error}
+        self._session_workspace.set_physical_root(Path(response.path))
+        return await self._create_project(name.strip() or "project")

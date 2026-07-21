@@ -199,14 +199,39 @@ class ToolContext:
     agent_name: str               # the running agent (jsonl author/reviewer field)
     session_id: str
     mode: str = "problem_solving" # "guided" | "problem_solving" — frozen per prompt
-    project_root: Path | None = None  # the bound project's root, if any
     stop_requested: bool = False                             # set by escalate_blocker
     returned_output: dict[str, object] | None = None         # set by return_result
+
+    @property
+    def project_root(self) -> Path | None: ...   # -> services.project_root(), live
+    @property
+    def has_workspace(self) -> bool: ...          # -> services.has_workspace(), live
+    @property
+    def root_paths(self) -> tuple[RootPath, ...]: ...  # -> services.root_paths(), live
 ```
 
 Note what is **not** here: there is no `autonomous` field. The mode a handler
 honours is read live from `session.effective_autonomous` (frozen per prompt by
 the engine — see §8), so no per-run snapshot can drift from the session.
+
+`project_root`/`has_workspace`/`root_paths` are likewise **not** plain fields —
+they are properties that call `self.services.project_root()`/`.has_workspace()`/
+`.root_paths()` fresh on every access. One `ToolDispatcher` (and the one
+`ToolContext` it owns) serves an entire agent turn's multi-round tool-call
+loop, not just a single call — so if these were snapshotted once at
+dispatcher-creation time, a project bound *mid-turn* (`create_new_project`/
+`init_project` succeeding partway through the same turn, or the user adding a
+folder to the VS Code window by hand) would stay invisible to every other
+tool call in that turn, even though the engine's own workspace state had
+already moved on. That was a real bug (fixed 2026-07-21): `create_new_project`
+would scaffold the directory and genuinely register it in
+`SessionWorkspace.folders`, but every subsequent `requires_project` tool call
+in the same turn still saw the stale `has_workspace=False` snapshot and
+rejected with `NO_PROJECT_ERROR` — including retries of `create_new_project`
+itself, which kept "succeeding" (each creating a new sibling directory) while
+nothing else could ever run. Reading live closes that gap for both the
+gate check in `ToolDispatcher.dispatch` and the resolver (see the
+`LogicalPathResolver` note in §5a below).
 
 The three things a tool needs from *above* its tier are **structural
 Protocols**, also defined in `_context.py`:
@@ -230,10 +255,15 @@ Protocols**, also defined in `_context.py`:
   `run_author_critic_iteration(caller, ...,
   path, input_paths, instructions,
   for_revision)`, `rollback(...)`, `disable_autonomous_mode(...)`,
-  `create_project(name)`, and `init_project(path)`. Runtime injects a single
-  `_EngineServices` adapter (built inline in `runtime/_engine/`) wrapping the
-  engine's private `_run_*` / `_disable_autonomous` / `_create_project` /
-  `_init_project` methods. There is deliberately **no** `complete_artifact`-
+  `create_project(name)`, `init_project(path)`, and the three **live
+  workspace-state reads** `has_workspace()`, `root_paths()`, `project_root()`
+  — synchronous, called fresh on every access (never memoized) by
+  `ToolContext`'s same-named properties, backing the `EngineHost.
+  _has_workspace`/`_root_paths`/`_project_root` methods 1:1. Runtime injects a
+  single `_EngineServices` adapter (built inline in `runtime/_engine/`)
+  wrapping the engine's private `_run_*` / `_disable_autonomous` /
+  `_create_project` / `_init_project` / `_has_workspace` / `_root_paths` /
+  `_project_root` methods. There is deliberately **no** `complete_artifact`-
   style method: the accept/review flow (`_finalize_document`) is purely
   engine-internal, triggered from a post-dispatch hook after a
   `document_feedback` call — never through a tool or a protocol indirection.
@@ -328,6 +358,19 @@ thus its own `temporary: true` file-tool calls) uses, so a leaf sub-agent's
 `run_command` reaches its own subsession scratch directory, not the
 orchestrator's. Problem Solver's logical resolver already allows any absolute
 path, so it needed no equivalent change.
+
+**`LogicalPathResolver` liveness.** `LogicalPathResolver`
+([tools/_paths.py](../src/kodo/tools/_paths.py)) holds the live
+`SessionWorkspace` object itself (`kodo.project.SessionWorkspace`, an allowed
+T1 import for `kodo.tools`) rather than a copy of its folder map, and reads
+`.folders`/`.physical_root` fresh inside `resolve()`/`default_cwd` rather than
+at construction time. `SessionWorkspace.folders` always returns a defensive
+*copy* of its current internal dict, so a resolver built at the start of a
+turn — via `EngineHost._make_resolver` — still sees a folder registered
+*after* construction, whether that came from `_create_project`'s synchronous
+in-process update or a genuine `workspace.folders` WS push reconciling a real
+VS Code `onDidChangeWorkspaceFolders` event (WS_PROTOCOL.md §5.9c / §7). This
+is the resolver-side half of the `has_workspace` liveness fix described in §5.
 
 ---
 

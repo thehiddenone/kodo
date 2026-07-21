@@ -18,7 +18,7 @@ import pytest
 
 from kodo.guided_state import append_accepted, append_feedback, append_new_revision
 from kodo.runtime import GateOrchestrator, SessionState
-from kodo.tools import ToolDispatcher
+from kodo.tools import RootPath, ToolDispatcher
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -38,8 +38,25 @@ class _StubServices:
     no-op but accepts an override so a test can assert it was invoked.
     """
 
-    def __init__(self, rollback: Callable[[str], Awaitable[None]] | None = None) -> None:
+    def __init__(
+        self,
+        rollback: Callable[[str], Awaitable[None]] | None = None,
+        *,
+        has_workspace: bool = True,
+        project_root: Path | None = None,
+    ) -> None:
         self._rollback = rollback
+        self._has_workspace = has_workspace
+        self._project_root = project_root
+
+    def has_workspace(self) -> bool:
+        return self._has_workspace
+
+    def root_paths(self) -> tuple[RootPath, ...]:
+        return ()
+
+    def project_root(self) -> Path | None:
+        return self._project_root
 
     async def run_subagent(
         self, caller: str, name: str, task_input: dict[str, object]
@@ -92,6 +109,7 @@ def _make_dispatcher(
     *,
     mode: str = "guided",
     project_root: Path | None = None,
+    has_workspace: bool = True,
     autonomous: bool = False,
     session: SessionState | None = None,
     rollback_fn: Callable[[str], Awaitable[None]] | None = None,
@@ -105,11 +123,12 @@ def _make_dispatcher(
         resolver=MagicMock(),
         gate=GateOrchestrator(_make_app_state(), MagicMock()),
         session=session,
-        services=_StubServices(rollback=rollback_fn),
+        services=_StubServices(
+            rollback=rollback_fn, has_workspace=has_workspace, project_root=project_root
+        ),
         agent_name="guide",
         session_id="sess-test",
         mode=mode,
-        project_root=project_root,
     )
 
 
@@ -234,7 +253,7 @@ def _make_denying_dispatcher() -> ToolDispatcher:
         resolver=MagicMock(),
         gate=GateOrchestrator(_make_app_state(), MagicMock()),
         session=session,
-        services=_DenyingServices(),
+        services=_DenyingServices(has_workspace=True),
         agent_name="problem_solver",
         session_id="sess-test",
     )

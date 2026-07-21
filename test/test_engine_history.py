@@ -66,6 +66,9 @@ class _FakeTransient:
         return self._lines
 
     def read_subsession_messages(self, subsession_id: str) -> list[dict[str, object]]:
+        return [ln for ln in self._subsessions.get(subsession_id, []) if "role" in ln]
+
+    def read_subsession_lines(self, subsession_id: str) -> list[dict[str, object]]:
         return self._subsessions.get(subsession_id, [])
 
 
@@ -535,6 +538,44 @@ async def test_history_entries_splices_subsession_transcript(tmp_path: Path) -> 
     assert entries[1] == {"type": "subagent_task", "content": "look into it"}
     assert entries[2] == {"type": "assistant_response", "content": "found it"}
     assert entries[3]["type"] == "subsession_end"
+
+
+async def test_history_entries_splices_subsession_usage_marker_in_position(
+    tmp_path: Path,
+) -> None:
+    """A subsession's own ``usage`` marker (its "Kodo responded in..." row)
+    must render *between* its two turns, not bunched up elsewhere — the
+    original hydration-ordering bug this closes."""
+    projector, transient, _c = _make_projector(tmp_path)
+    transient._lines = [
+        {"type": "subsession_start", "subsession_id": "sub1", "agent": "investigator"},
+        {"type": "subsession_end", "subsession_id": "sub1", "agent": "investigator"},
+    ]
+    transient._subsessions["sub1"] = [
+        {"role": "assistant", "content": "first turn"},
+        {
+            "type": "usage",
+            "duration_seconds": 2.0,
+            "last_call_tokens": {"input": 10, "output": 5, "cache_read": 0, "cache_write": 0},
+        },
+        {"role": "assistant", "content": "second turn"},
+    ]
+
+    entries = await projector.history_entries()
+    types = [e["type"] for e in entries]
+
+    assert types == [
+        "subsession_start",
+        "assistant_response",
+        "status_response",
+        "assistant_response",
+        "subsession_end",
+    ]
+    status_entry = entries[types.index("status_response")]
+    assert status_entry["durationMs"] == 2000
+    assert status_entry["inputTokens"] == 10
+    assert status_entry["outputTokens"] == 5
+    assert status_entry["contextTokens"] == 10
 
 
 async def test_history_entries_includes_subsession_tool_results_in_lookup(tmp_path: Path) -> None:

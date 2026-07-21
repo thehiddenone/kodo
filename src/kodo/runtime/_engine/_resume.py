@@ -288,6 +288,9 @@ class ResumeMixin:
             ),
             on_tool_calls=self._make_progress_handler(is_entry_turn=True),
         )
+        # Safety net for a final round with zero deltas — see the matching
+        # comment in ``_turns.py``'s entry-turn caller.
+        self._session.awaiting_first_chunk = False
         await self._sink.send(Envelope.make_stream_end(stream_id))
         await self._emitters.emit_agent_finished(entry_agent)
         if self._session.phase != "done":

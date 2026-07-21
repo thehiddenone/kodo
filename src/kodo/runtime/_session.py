@@ -90,6 +90,16 @@ class SessionState:
             mirrors-``TransientStore.security_path_rules`` relationship as
             ``security_rules``; kept as a separate field rather than folded
             in since the two rule kinds are matched with different semantics.
+        awaiting_first_chunk: ``True`` from the moment an ``llm.turn_start``
+            is sent until the first ``ThinkingDelta``/``TokenDelta``/
+            ``ToolCallArgDelta`` of that call arrives (or the stream ends
+            with none at all). ``phase == "running"`` alone can't tell a
+            reconnecting client whether to show the "awaiting response"
+            spinner — it stays `"running"` for the whole multi-round tool-use
+            loop, including while mid-stream or mid-tool-call. This narrower
+            flag is what lets a fresh `hello`/`state` snapshot reconstruct
+            that spinner correctly instead of only ever setting it from the
+            live (and reconnect-losable) `llm.turn_start` event.
     """
 
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -105,6 +115,7 @@ class SessionState:
     thinking_level: str = ""
     security_rules: frozenset[tuple[str, str]] = field(default_factory=frozenset)
     security_path_rules: frozenset[tuple[str, str]] = field(default_factory=frozenset)
+    awaiting_first_chunk: bool = False
 
     def to_dict(self) -> dict[str, object]:
         """Serialise to a plain dict for wire-protocol events.
@@ -130,4 +141,5 @@ class SessionState:
             "edit_control": self.edit_control,
             "command_control": self.command_control,
             "thinking_level": self.thinking_level,
+            "awaiting_first_chunk": self.awaiting_first_chunk,
         }

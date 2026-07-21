@@ -89,4 +89,5 @@ RUN_AUTHOR_CRITIC_ITERATION: ToolSpec = ToolSpec(
         "or when findings stop decreasing (treating the latter as "
         "non-convergence).",
     ),
+    requires_project=True,
 )

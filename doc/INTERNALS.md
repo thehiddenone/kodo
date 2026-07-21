@@ -910,7 +910,15 @@ The package's public surface is unchanged by the split:
   `create_new_project` tool: slugify name → `_unique_child_dir` under the
   session physical root → `mkdir` → add to the logical-root map →
   `RootMirrorManager.prepare` (scaffolds `.kodo/`+mirror) → push
-  `EVT_WORKSPACE_ADD_FOLDER`.
+  `EVT_WORKSPACE_ADD_FOLDER`. The logical-root map update is synchronous and
+  in-process (`self._session_workspace.set_folders(...)`, before the
+  WS round trip even starts), and `_EngineServices` also exposes
+  `has_workspace()`/`root_paths()`/`project_root()` as **live** reads of
+  `EngineHost._has_workspace`/`_root_paths`/`_project_root` — `ToolContext`
+  calls them fresh on every access rather than caching a value from when the
+  dispatcher was built, so a project created (or a folder added by the user
+  directly in VS Code) partway through a turn is visible to that same turn's
+  very next tool call, not just the next turn (doc/TOOLS.md §5).
 - **Per-tool-call checkpointing (both workflow modes)** — `CheckpointCoordinator._enabled()`
   is now unconditional (Guided mode drives the same mirror Problem Solver
   always has — there is no separate Guided checkpoint system to collide with,

@@ -54,6 +54,21 @@ project *in place*.
   conservative default-to-mutating heuristic), the engine calls
   `mirror.commit(label)`: `git add -A` + commit, or a no-op (returns the
   unchanged HEAD) if nothing actually changed.
+- **Never `$HOME` or `/`.** `RootMirrorManager._ensure` refuses outright
+  (`UnsafeCheckpointRootError`, before any git command runs) if the resolved
+  root is the user's home directory or a filesystem root — a hard,
+  unconditional guard, independent of how the root got proposed. This closed
+  a real incident: `SessionWorkspace.physical_root` used to default to
+  `Path.home()` whenever the client hadn't pushed `workspace.folders` yet, and
+  `EngineCore._root_paths()` used that default as a fallback "root" to keep
+  `get_root_paths` non-empty — so a mutating tool call in the gap between "no
+  workspace open" and the extension's next `workspace.folders` push could
+  seed a mirror rooted at `$HOME` and run `git add -A` over the user's entire
+  home directory. Both halves of the fix now hold: `physical_root` is `Path |
+  None` with no default (`_root_paths()` returns `()` when nothing is known —
+  matching `_has_workspace()`, which already refused to fall back this way),
+  *and* the guard above stops a bad root from ever reaching git even if some
+  future bug reintroduces one.
 
 ## 2. The stateful model on top (`kodo.runtime._checkpoints`)
 

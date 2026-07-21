@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from pathlib import Path
+
+from kodo.tools import RootPath
 
 
 class _EngineServices:
@@ -29,9 +32,13 @@ class _EngineServices:
         disable_autonomous: Callable[[], Awaitable[None]],
         create_project: Callable[[str, str | None, bool], Awaitable[dict[str, object]]],
         init_project: Callable[[str], Awaitable[dict[str, object]]],
+        bootstrap_project: Callable[[str], Awaitable[dict[str, object]]],
         notify_tool_call_in_progress: Callable[[str], Awaitable[None]],
         add_security_rule: Callable[[str, str, str], Awaitable[None]],
         add_security_path_rule: Callable[[str, str, str], Awaitable[None]],
+        has_workspace: Callable[[], bool],
+        root_paths: Callable[[], tuple[RootPath, ...]],
+        project_root: Callable[[], Path | None],
     ) -> None:
         self.__run_subagent = run_subagent
         self.__run_dependency_manager = run_dependency_manager
@@ -41,9 +48,13 @@ class _EngineServices:
         self.__disable_autonomous = disable_autonomous
         self.__create_project = create_project
         self.__init_project = init_project
+        self.__bootstrap_project = bootstrap_project
         self.__notify_tool_call_in_progress = notify_tool_call_in_progress
         self.__add_security_rule = add_security_rule
         self.__add_security_path_rule = add_security_path_rule
+        self.__has_workspace = has_workspace
+        self.__root_paths = root_paths
+        self.__project_root = project_root
 
     async def run_subagent(
         self, caller: str, name: str, task_input: dict[str, object]
@@ -94,6 +105,10 @@ class _EngineServices:
         """Delegate to the engine's ``_init_project``."""
         return await self.__init_project(path)
 
+    async def bootstrap_project(self, name: str = "") -> dict[str, object]:
+        """Delegate to the engine's ``_bootstrap_project``."""
+        return await self.__bootstrap_project(name)
+
     async def notify_tool_call_in_progress(self, tool_call_id: str) -> None:
         """Delegate to the emitters' ``notify_tool_call_in_progress``."""
         await self.__notify_tool_call_in_progress(tool_call_id)
@@ -105,3 +120,15 @@ class _EngineServices:
     async def add_security_path_rule(self, scope: str, executable: str, path: str) -> None:
         """Delegate to the engine's ``add_security_path_rule``."""
         await self.__add_security_path_rule(scope, executable, path)
+
+    def has_workspace(self) -> bool:
+        """Delegate to the engine's ``_has_workspace``, read live."""
+        return self.__has_workspace()
+
+    def root_paths(self) -> tuple[RootPath, ...]:
+        """Delegate to the engine's ``_root_paths``, read live."""
+        return self.__root_paths()
+
+    def project_root(self) -> Path | None:
+        """Delegate to the engine's ``_project_root``, read live."""
+        return self.__project_root()

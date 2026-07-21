@@ -92,6 +92,7 @@ class WorkerMixin:
                 # session.name), so it never delays the main agent's turn. A
                 # nudge is never the "first prompt" worth titling from.
                 if nudge_detail is None:
+                    self._current_prompt_text = text
                     self._titler.maybe_generate_session_title(text)
 
                 # The entry agent is chosen per prompt from the current

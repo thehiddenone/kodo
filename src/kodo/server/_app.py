@@ -131,6 +131,7 @@ from kodo.transport import (
     MSG_STUCK_DETECTION_GET,
     MSG_STUCK_DETECTION_SET,
     MSG_THINKING_LEVEL_SET,
+    MSG_WINDOW_REBIND,
     MSG_WORKFLOW_SET,
     MSG_WORKSPACE_FOLDERS,
     Connection,
@@ -467,6 +468,19 @@ def _llama_payload(settings: dict[str, object] | None = None) -> dict[str, objec
 
 async def _handle_session_list(req: Request) -> None:
     await req.reply({"type": "session.list.ack", "sessions": req.manager.list_sessions()})
+
+
+async def _handle_window_rebind(req: Request) -> None:
+    """``window.rebind {old_window_id, new_window_id}`` — see MSG_WINDOW_REBIND.
+
+    Control-connection message, not session-scoped: a window may own several
+    open session tabs, all of which need re-keying together.
+    """
+    old_window_id = str(req.env.payload.get("old_window_id", ""))
+    new_window_id = str(req.env.payload.get("new_window_id", ""))
+    if old_window_id and new_window_id:
+        req.manager.rebind_window(old_window_id, new_window_id)
+    await req.reply({"type": "window.rebind.ack"})
 
 
 async def _handle_session_release(req: Request) -> None:
@@ -1817,6 +1831,7 @@ def create_app(config: Config) -> web.Application:
 
     conn_registry.register_handler(MSG_HELLO, _make_hello_handler(config))
     conn_registry.register_handler(MSG_SESSION_LIST, _handle_session_list)
+    conn_registry.register_handler(MSG_WINDOW_REBIND, _handle_window_rebind)
     conn_registry.register_handler(MSG_SESSION_RELEASE, _handle_session_release)
     conn_registry.register_handler(MSG_SESSION_DELETE, _handle_session_delete)
     conn_registry.register_handler(MSG_SECURITY_RULES_LIST, _handle_security_rules_list)

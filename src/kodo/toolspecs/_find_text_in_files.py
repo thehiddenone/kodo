@@ -156,4 +156,5 @@ FIND_TEXT_IN_FILES: ToolSpec = ToolSpec(
         "Pass `temporary: true` to search the session's private scratch "
         "directory instead of a project root.",
     ),
+    requires_project=True,
 )

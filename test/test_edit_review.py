@@ -117,6 +117,24 @@ class _FakeSession:
         self.edit_control = edit_control
 
 
+class _FakeWorkspaceServices:
+    """Satisfies just enough of EngineServices for the has_workspace/root_paths
+    gate — this test never triggers any other engine-side operation."""
+
+    def __init__(self, *, has_workspace: bool, root_paths: tuple[RootPath, ...]) -> None:
+        self._has_workspace = has_workspace
+        self._root_paths = root_paths
+
+    def has_workspace(self) -> bool:
+        return self._has_workspace
+
+    def root_paths(self) -> tuple[RootPath, ...]:
+        return self._root_paths
+
+    def project_root(self) -> Path | None:
+        return None
+
+
 def _make_dispatcher(gate: _FakeEditReviewGate, session: _FakeSession, tmp_path: Path):  # noqa: ANN201
     from kodo.tools import ProjectPathResolver, ToolDispatcher
 
@@ -125,10 +143,11 @@ def _make_dispatcher(gate: _FakeEditReviewGate, session: _FakeSession, tmp_path:
         gate=gate,  # type: ignore[arg-type]
         security=SecurityLayer(),
         session=session,  # type: ignore[arg-type]
-        services=None,  # type: ignore[arg-type]
+        services=_FakeWorkspaceServices(
+            has_workspace=True, root_paths=(RootPath(name="proj", path=str(tmp_path)),)
+        ),  # type: ignore[arg-type]
         agent_name="tester",
         session_id="s1",
-        root_paths=(RootPath(name="proj", path=str(tmp_path)),),
     )
 
 

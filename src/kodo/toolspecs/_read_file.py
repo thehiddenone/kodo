@@ -149,4 +149,5 @@ READ_FILE: ToolSpec = ToolSpec(
         "Searching a single file's content for a pattern (e.g. a prior finding's excerpt, a "
         "function definition) with surrounding context, instead of reading the whole file.",
     ),
+    requires_project=True,
 )

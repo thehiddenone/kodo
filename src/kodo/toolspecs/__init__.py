@@ -62,6 +62,7 @@ from ._update_web_search_state import UPDATE_WEB_SEARCH_STATE
 from ._visibility import build_detail_rows, stringify_value
 from ._wait import WAIT
 from ._web_search import WEB_SEARCH
+from ._workspace import NO_PROJECT_ERROR
 
 __all__ = [
     "ALL_TOOLS",
@@ -83,6 +84,7 @@ __all__ = [
     "INIT_PROJECT",
     "INTENT_KEY",
     "INTENT_PROPERTY",
+    "NO_PROJECT_ERROR",
     "OUTPUT_VISIBILITY_DEFAULT",
     "QUERY_SEARCH_ENGINE",
     "READ_ATTACHMENT",

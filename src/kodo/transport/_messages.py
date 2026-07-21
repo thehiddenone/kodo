@@ -83,6 +83,22 @@ MSG_STOP = "stop"
 # serializer couldn't restore (see kodo-vsix extension.ts).
 MSG_SESSION_LIST = "session.list"
 
+# Client → Server. Tells the server that this window's own stable id is about
+# to change from ``payload.old_window_id`` to ``payload.new_window_id`` —
+# sent and awaited *before* the client triggers the transition that causes
+# it (today: the extension adding the first workspace folder to a
+# previously folder-less window, which VS Code answers by restarting the
+# extension host under an id derived from the new folder path, discarding
+# the old randomly-persisted one). Re-keys every session this window
+# currently owns (SessionManager's in-memory owner map + each session's
+# owner.json) to the new id, so the reconnect that follows the transition
+# finds its sessions already under the id it will present, instead of
+# racing a derivation match that can never succeed for this transition (see
+# kodo-vsix extension.ts's ``_stableWindowId``). Server replies
+# ``{type: "window.rebind.ack"}`` unconditionally — rebinding a window with
+# no owned sessions is a harmless no-op.
+MSG_WINDOW_REBIND = "window.rebind"
+
 # Client → Server. Release the session named by ``payload.session_id`` from
 # this window's ownership immediately (graceful window close), so another
 # window can open it. Sent from a session tab's dispose handler, but skipped on
@@ -190,9 +206,13 @@ MSG_WORKSPACE_FOLDERS = "workspace.folders"
 MSG_PROJECT_SET = "project.set"
 
 # Client → Server. Scaffold a new project directly (no LLM round-trip) — backs
-# the VS Code "Create Project" command, which already has a concrete folder
-# from its own picker dialog. Payload: ``{path, name?, force?}`` (``name``
-# optional, ``path`` always supplied by the client). Shares
+# the VS Code "Create Project" command. Payload: ``{path?, name?, force?}``
+# (at least one of ``path``/``name`` required). ``path`` alone: the client
+# already has a concrete folder from its own picker dialog, which becomes the
+# project root as-is. ``name`` alone (no workspace-selecting dialog — the
+# command already has a workspace open): the server reserves a fresh sibling
+# directory under the session's ``physical_root``, identical to
+# ``CreateNewProjectTool``'s has-workspace placement. Shares
 # ``WorkflowEngine._create_project`` with the ``create_new_project`` tool, so
 # the server also pushes EVT_WORKSPACE_ADD_FOLDER on success. Replies
 # ``project.create.done`` ``{path, name}`` on success or ``project.create.error``
@@ -539,6 +559,20 @@ SREQ_PROMPT_STUCK_ALERT = "prompt.stuck_alert"
 # executed and the agent receives a ``rejected``/``rejected_with_feedback``
 # result instead of the usual success shape.
 SREQ_PROMPT_EDIT_REVIEW = "prompt.edit_review"
+
+# Server → Client request. Fired by ``GateOrchestrator.fire_choose_project_folder``
+# when `create_new_project` bootstraps a project interactively (no project/
+# workspace bound yet, and the session is not autonomous — see
+# ``EngineCore._bootstrap_project_interactive``, WS_PROTOCOL.md §6.6). No
+# extra request fields. Client shows a native folder-picker dialog (with the
+# OS's own "New Folder" affordance) plus, if the picked folder already has a
+# `.kodo/kodo.md`, an overwrite confirmation. No ``pending_prompt`` is
+# persisted — same reasoning as ``SREQ_PROMPT_STUCK_ALERT``: losing this wait
+# to a crash just fails the tool call, and the agent can retry. Response is
+# either ``{"path": <absolute picked folder>, "force": <bool>}`` or
+# ``{"error": "cancelled"}`` if the user dismissed the dialog (or declined to
+# overwrite) at any step.
+SREQ_PROMPT_CHOOSE_PROJECT_FOLDER = "prompt.choose_project_folder"
 
 # ---------------------------------------------------------------------------
 # Server → Client event payload types — visibility  (WS_PROTOCOL.md §5)

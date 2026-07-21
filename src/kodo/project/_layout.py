@@ -145,23 +145,27 @@ class SessionWorkspace:
     (see :func:`kodo.tools.resolve_logical`).
 
     Args:
-        physical_root: Parent of the window's first folder; defaults to ``~``
-            until the client pushes ``workspace.folders``.
+        physical_root: Parent of the window's first folder; ``None`` until
+            the client pushes ``workspace.folders`` or a project-bootstrap
+            flow resolves one explicitly. Never silently defaulted to ``~``
+            or any other directory — a homeless session genuinely has no
+            anchor yet, and every consumer of :attr:`physical_root` must
+            treat ``None`` as "nothing to work with" rather than guess.
         folders: Logical name → physical path of every open workspace folder.
     """
 
-    __physical_root: Path
+    __physical_root: Path | None
     __folders: dict[str, Path]
 
     def __init__(
         self, physical_root: Path | None = None, folders: dict[str, Path] | None = None
     ) -> None:
-        self.__physical_root = (physical_root or Path.home()).resolve()
+        self.__physical_root = physical_root.resolve() if physical_root is not None else None
         self.__folders = {name: Path(p).resolve() for name, p in (folders or {}).items()}
 
     @property
-    def physical_root(self) -> Path:
-        """Parent directory of the window's first folder; the default cwd."""
+    def physical_root(self) -> Path | None:
+        """Parent directory of the window's first folder; ``None`` if unknown."""
         return self.__physical_root
 
     @property
@@ -170,7 +174,8 @@ class SessionWorkspace:
         return dict(self.__folders)
 
     def set_physical_root(self, root: Path) -> None:
-        """Replace the physical root (pushed over the WS protocol)."""
+        """Replace the physical root (pushed over the WS protocol, or resolved
+        explicitly by a project-bootstrap flow)."""
         self.__physical_root = root.resolve()
 
     def set_folders(self, folders: dict[str, Path]) -> None:

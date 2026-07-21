@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kodo.runtime._engine import _slugify_project_name, _unique_child_dir
+from kodo.runtime._engine import _sanitize_short_name, _slugify_project_name, _unique_child_dir
 
 
 def test_slugify_lowercases_and_dashes() -> None:
@@ -32,3 +32,18 @@ def test_unique_child_dir_auto_suffixes_on_collision(tmp_path: Path) -> None:
     assert _unique_child_dir(tmp_path, "app") == tmp_path / "app-2"
     (tmp_path / "app-2").mkdir()
     assert _unique_child_dir(tmp_path, "app") == tmp_path / "app-3"
+
+
+def test_sanitize_short_name_title_cases_1_to_3_words() -> None:
+    assert _sanitize_short_name("todo app") == "Todo App"
+    assert _sanitize_short_name("  weather-dashboard!! ") == "Weather Dashboard"
+    assert _sanitize_short_name("recipe finder tool") == "Recipe Finder Tool"
+
+
+def test_sanitize_short_name_rejects_more_than_three_words() -> None:
+    assert _sanitize_short_name("a todo list app for groceries") is None
+
+
+def test_sanitize_short_name_rejects_empty_or_punctuation_only() -> None:
+    assert _sanitize_short_name("") is None
+    assert _sanitize_short_name("***") is None

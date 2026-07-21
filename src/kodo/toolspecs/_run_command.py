@@ -108,4 +108,5 @@ RUN_COMMAND: ToolSpec = ToolSpec(
         "— e.g., a one-off CLI invocation needed to scaffold or inspect the "
         "project.",
     ),
+    requires_project=True,
 )

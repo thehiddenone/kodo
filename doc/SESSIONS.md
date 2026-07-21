@@ -84,7 +84,13 @@ timestamp). `<subsession-id>` is a random hex ID minted per `run_subagent` call.
 
 ### `session.jsonl` — the main log
 
-`session.jsonl` is an append-only log that interleaves **two kinds of lines**:
+`session.jsonl` is an append-only log that interleaves **two kinds of lines**,
+every one stamped with a unique `id` and an ISO-8601 UTC `ts` (both added
+centrally by `TransientStore.__append_line`, so no caller needs to set
+them — a stable `id` lets a later entry reference one that resolved it, e.g.
+reconciling a dangling tool call; `ts` is for eventual client display, not
+read by anything server-side, since append order already *is* chronological
+order):
 
 - **Message lines** — `{"role": "user"|"assistant", "content": ..., "entry_agent": "guide"|"problem_solver"}`.
   These are the top-level LLM context. `entry_agent` is a display/audit tag only;
@@ -100,7 +106,7 @@ timestamp). `<subsession-id>` is a random hex ID minted per `run_subagent` call.
   `read_attachment` tool, not re-read from the links), so the reconstructed
   context matches submit time without the log ever holding the file bytes. See
   WS_PROTOCOL.md §7.1 / `kodo.runtime._attachments`.
-- **Marker lines** — `{"type": "subsession_start"|"subsession_end"|"compaction"|"error", ...}`.
+- **Marker lines** — `{"type": "subsession_start"|"subsession_end"|"compaction"|"error"|"security_rule_added"|"agent_stuck_critical"|"usage", ...}`.
   `subsession_start`/`subsession_end` record, *in chronological position*, when
   a sub-agent took over and when it handed control back. They carry
   `subsession_id`, `agent`, `display_name`, and `parent_display_name`;
@@ -108,12 +114,31 @@ timestamp). `<subsession-id>` is a random hex ID minted per `run_subagent` call.
   `return_result` (e.g. an author's `primary_path`). `compaction` records a
   context reset (`summary`, `reason`, `tokens_before`/`tokens_after`). `error`
   records an `EngineEmitters.emit_error` runtime failure (`message`,
-  `recoverable`) so a reload replays the same error card instead of silently
-  losing it — see `HistoryProjector.history_entries`'s `error` branch.
+  `recoverable`). `security_rule_added` and `agent_stuck_critical` similarly
+  durably record their live counterparts. `usage` records one LLM call's
+  per-turn stats (`cumulative_usd`, `duration_seconds`, `last_call_tokens`,
+  `model`) — the persisted twin of the live `usage.update` event, added so the
+  WebView's "Kodo responded in..." row replays in its correct chronological
+  position on reload instead of being reconstructed from whatever had
+  accumulated in the live client's memory (which used to bunch every such row
+  into one trailing block after a reload — see `HistoryProjector._marker_to_entries`
+  and the WebView reducer's `session_history` case).
+  All of these except `subsession_start`/`subsession_end` can equally appear
+  inside a **subsession's own log** (below) — an error, a granted security
+  rule, or the stuck watchdog can just as easily happen to a sub-agent's own
+  turn as to a top-level one; `EngineEmitters._append_marker` routes to
+  whichever log is active (`TransientStore.active_subsession`) so the event
+  lands where it actually happened, never bleeding into the parent's log.
 
 `TransientStore.read_messages()` returns only the message lines (for rebuilding
 LLM context); `read_session_lines()` returns everything (for resume and history
-rebuild).
+rebuild). A subsession's own `<subsession-id>.jsonl` under `subsessions/` is
+otherwise identical in shape and append/read API
+(`append_subsession_marker`/`read_subsession_messages`/`read_subsession_lines`
+mirror `append_marker`/`read_messages`/`read_session_lines`) — the only
+structural difference between a session and a subsession is that a subsession
+can never itself contain a `subsession_start`/`subsession_end` marker
+(subsessions do not nest).
 
 ## Thinking blocks
 

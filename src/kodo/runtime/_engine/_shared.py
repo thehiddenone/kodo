@@ -114,6 +114,26 @@ def _slugify_project_name(name: str) -> str:
     return slug or "project"
 
 
+def _sanitize_short_name(raw: str) -> str | None:
+    """Reduce the titler's raw project-name output to 1-3 clean, Title Case words.
+
+    Mirrors ``runtime._engine._titling.SessionTitler._sanitize_title``'s
+    approach (strip every non-alphanumeric run, Title Case each word) but for
+    the shorter 1-3 word band ``generate_project_name`` targets, rather than
+    session titles' 2-8 word band. Returns ``None`` if nothing usable
+    survives (e.g. the model's output was empty or pure punctuation) or the
+    result has more than 3 words — the caller should fall back to a generic
+    name rather than use a degenerate one.
+    """
+    line = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
+    if not line:
+        return None
+    words = [w for w in re.sub(r"[^0-9A-Za-z]+", " ", line).split() if w]
+    if not words or len(words) > 3:
+        return None
+    return " ".join(w[:1].upper() + w[1:] for w in words)
+
+
 def _unique_child_dir(parent: Path, slug: str) -> Path:
     """Return a not-yet-existing child of *parent* based on *slug*.
 

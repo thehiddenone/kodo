@@ -20,10 +20,11 @@ from kodo.runtime import GateOrchestrator, SessionState
 from kodo.tools import (
     DISPATCHABLE_TOOLS_BY_NAME,
     ProjectPathResolver,
+    RootPath,
     ToolDispatcher,
     tools_for_agent,
 )
-from kodo.toolspecs import DOCUMENT_FEEDBACK, READ_FILE, requires_intent
+from kodo.toolspecs import DOCUMENT_FEEDBACK, NO_PROJECT_ERROR, READ_FILE, requires_intent
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -59,6 +60,24 @@ class _StubServices:
     None of the leaf tools under test invoke these; they exist only to
     satisfy the protocol.
     """
+
+    def __init__(
+        self,
+        *,
+        has_workspace: bool = True,
+        project_root: Path | None = None,
+    ) -> None:
+        self._has_workspace = has_workspace
+        self._project_root = project_root
+
+    def has_workspace(self) -> bool:
+        return self._has_workspace
+
+    def root_paths(self) -> tuple[RootPath, ...]:
+        return ()
+
+    def project_root(self) -> Path | None:
+        return self._project_root
 
     async def run_subagent(
         self, caller: str, name: str, task_input: dict[str, object]
@@ -123,6 +142,7 @@ def _make_dispatcher(
     answer: str = "",
     autonomous: bool = False,
     mode: str = "guided",
+    has_workspace: bool = True,
 ) -> ToolDispatcher:
     session = SessionState()
     session.autonomous = autonomous
@@ -132,11 +152,10 @@ def _make_dispatcher(
         resolver=ProjectPathResolver(tmp_path),
         gate=_make_gate(answer),
         session=session,
-        services=_StubServices(),
+        services=_StubServices(has_workspace=has_workspace, project_root=tmp_path),
         agent_name=agent_name,
         session_id="sess-test",
         mode=mode,
-        project_root=tmp_path,
     )
 
 
@@ -918,6 +937,155 @@ def test_non_mutating_and_second_degree_tools_do_not_require_intent() -> None:
     for name in DISPATCHABLE_TOOLS_BY_NAME:
         if name not in _INTENT_TOOLS:
             assert not requires_intent(DISPATCHABLE_TOOLS_BY_NAME[name]), name
+
+
+# ---------------------------------------------------------------------------
+# requires_project gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_requires_project_tool_rejected_without_workspace(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path, has_workspace=False)
+    result = json.loads(
+        await dispatcher.dispatch("create_file", {"path": "foo.py", "content": "x = 1\n"})
+    )
+    assert result == {"error": NO_PROJECT_ERROR}
+    assert not (tmp_path / "foo.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_requires_project_tool_temporary_bypasses_gate_without_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch_root = tmp_path / "scratch"
+    monkeypatch.setattr("kodo.tools._tool.session_temp_dir", lambda session_id: scratch_root)
+    dispatcher = _make_dispatcher(tmp_path, has_workspace=False)
+    result = json.loads(
+        await dispatcher.dispatch(
+            "create_file", {"path": "foo.py", "content": "x = 1\n", "temporary": True}
+        )
+    )
+    assert result["status"] == "created"
+
+
+@pytest.mark.asyncio
+async def test_requires_project_tool_dispatches_normally_with_workspace(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path, has_workspace=True)
+    result = json.loads(
+        await dispatcher.dispatch("create_file", {"path": "foo.py", "content": "x = 1\n"})
+    )
+    assert result["status"] == "created"
+
+
+@pytest.mark.asyncio
+async def test_requires_project_gate_reads_has_workspace_live_within_one_turn(
+    tmp_path: Path,
+) -> None:
+    """A project bound mid-turn (e.g. by ``create_new_project``) must unblock
+    every later ``requires_project`` call in the *same* dispatcher instance —
+    regression test for the bug where ``has_workspace`` was snapshotted once
+    at dispatcher-creation time and never revisited for the rest of the turn,
+    even after a project genuinely came into existence."""
+    services = _StubServices(has_workspace=False, project_root=tmp_path)
+    dispatcher = _IntentDispatcher(
+        resolver=ProjectPathResolver(tmp_path),
+        gate=_make_gate(),
+        session=SessionState(),
+        services=services,
+        agent_name="test_agent",
+        session_id="sess-test",
+        mode="guided",
+    )
+
+    rejected = json.loads(
+        await dispatcher.dispatch("create_file", {"path": "foo.py", "content": "x = 1\n"})
+    )
+    assert rejected == {"error": NO_PROJECT_ERROR}
+
+    # Simulate create_new_project flipping the session's live workspace state
+    # mid-turn — no dispatcher reconstruction, exactly as production doesn't
+    # rebuild ToolDispatcher between tool-call rounds within one turn.
+    services._has_workspace = True
+
+    allowed = json.loads(
+        await dispatcher.dispatch("create_file", {"path": "foo.py", "content": "x = 1\n"})
+    )
+    assert allowed["status"] == "created"
+
+
+# ---------------------------------------------------------------------------
+# create_new_project bootstrap fork
+# ---------------------------------------------------------------------------
+
+
+class _BootstrapTrackingServices(_StubServices):
+    def __init__(self, *, has_workspace: bool = False) -> None:
+        super().__init__(has_workspace=has_workspace, project_root=None)
+        self.bootstrap_calls = 0
+        self.bootstrap_names: list[str] = []
+
+    async def bootstrap_project(self, name: str = "") -> dict[str, object]:
+        self.bootstrap_calls += 1
+        self.bootstrap_names.append(name)
+        return {"path": "/tmp/bootstrapped", "name": "Bootstrapped"}
+
+
+def _make_create_new_project_dispatcher(
+    tmp_path: Path, services: _StubServices
+) -> ToolDispatcher:
+    session = SessionState()
+    return _IntentDispatcher(
+        resolver=ProjectPathResolver(tmp_path),
+        gate=_make_gate(),
+        session=session,
+        services=services,
+        agent_name="test_agent",
+        session_id="sess-test",
+        mode="problem_solving",
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_new_project_bootstraps_when_no_workspace(tmp_path: Path) -> None:
+    services = _BootstrapTrackingServices(has_workspace=False)
+    dispatcher = _make_create_new_project_dispatcher(tmp_path, services)
+
+    result = json.loads(await dispatcher.dispatch("create_new_project", {}))
+
+    assert services.bootstrap_calls == 1
+    assert result == {"path": "/tmp/bootstrapped", "name": "Bootstrapped"}
+
+
+@pytest.mark.asyncio
+async def test_create_new_project_still_requires_name_or_path_when_workspace_exists(
+    tmp_path: Path,
+) -> None:
+    services = _BootstrapTrackingServices(has_workspace=True)
+    dispatcher = _make_create_new_project_dispatcher(tmp_path, services)
+
+    result = json.loads(await dispatcher.dispatch("create_new_project", {}))
+
+    assert services.bootstrap_calls == 0
+    assert "requires a non-empty" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_create_new_project_bootstraps_even_with_explicit_name_when_no_workspace(
+    tmp_path: Path,
+) -> None:
+    """A homeless session bootstraps regardless of whether the agent supplied
+    a ``name`` — a name alone gives ``create_project`` nowhere to place the
+    project until a workspace root is resolved (the checkpoint jail-escape
+    fix: no silent fallback to a default parent directory)."""
+    services = _BootstrapTrackingServices(has_workspace=False)
+    dispatcher = _make_create_new_project_dispatcher(tmp_path, services)
+
+    result = json.loads(await dispatcher.dispatch("create_new_project", {"name": "My App"}))
+
+    assert services.bootstrap_calls == 1
+    assert services.bootstrap_names == ["My App"]
+    assert result == {"path": "/tmp/bootstrapped", "name": "Bootstrapped"}
 
 
 @pytest.mark.asyncio

@@ -516,20 +516,43 @@ class _FakeSession:
     security_path_rules: frozenset[tuple[str, str]] = frozenset()
 
 
+class _FakeWorkspaceServices:
+    """Satisfies just enough of EngineServices for the has_workspace/root_paths
+    gate — these dispatch tests never trigger any other engine-side operation."""
+
+    def __init__(self, *, has_workspace: bool, root_paths: tuple[object, ...]) -> None:
+        self._has_workspace = has_workspace
+        self._root_paths = root_paths
+
+    def has_workspace(self) -> bool:
+        return self._has_workspace
+
+    def root_paths(self) -> tuple[object, ...]:
+        return self._root_paths
+
+    def project_root(self) -> object | None:
+        return None
+
+    async def notify_tool_call_in_progress(self, tool_call_id: str) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_dispatch_denied_returns_error_without_running(tmp_path) -> None:  # noqa: ANN001
+    from kodo.project import SessionWorkspace
     from kodo.tools import LogicalPathResolver, RootPath, ToolDispatcher
 
     gate = _FakeGate(action="deny", feedback="not now")
     dispatcher = ToolDispatcher(
-        resolver=LogicalPathResolver({"proj": tmp_path}, tmp_path),
+        resolver=LogicalPathResolver(SessionWorkspace(tmp_path, {"proj": tmp_path})),
         gate=gate,  # type: ignore[arg-type]
         security=SecurityLayer(),
         session=_FakeSession(),  # type: ignore[arg-type]
-        services=None,  # type: ignore[arg-type]
+        services=_FakeWorkspaceServices(
+            has_workspace=True, root_paths=(RootPath(name="proj", path=str(tmp_path)),)
+        ),  # type: ignore[arg-type]
         agent_name="tester",
         session_id="s1",
-        root_paths=(RootPath(name="proj", path=str(tmp_path)),),
     )
     marker = tmp_path / "marker.txt"
     result = json.loads(
@@ -548,18 +571,20 @@ async def test_dispatch_denied_returns_error_without_running(tmp_path) -> None: 
 
 @pytest.mark.asyncio
 async def test_dispatch_allowed_by_user_runs(tmp_path) -> None:  # noqa: ANN001
+    from kodo.project import SessionWorkspace
     from kodo.tools import LogicalPathResolver, RootPath, ToolDispatcher
 
     gate = _FakeGate(action="allow")
     dispatcher = ToolDispatcher(
-        resolver=LogicalPathResolver({"proj": tmp_path}, tmp_path),
+        resolver=LogicalPathResolver(SessionWorkspace(tmp_path, {"proj": tmp_path})),
         gate=gate,  # type: ignore[arg-type]
         security=SecurityLayer(),
         session=_FakeSession(),  # type: ignore[arg-type]
-        services=None,  # type: ignore[arg-type]
+        services=_FakeWorkspaceServices(
+            has_workspace=True, root_paths=(RootPath(name="proj", path=str(tmp_path)),)
+        ),  # type: ignore[arg-type]
         agent_name="tester",
         session_id="s1",
-        root_paths=(RootPath(name="proj", path=str(tmp_path)),),
     )
     result = json.loads(
         await dispatcher.dispatch(
@@ -574,17 +599,19 @@ async def test_dispatch_allowed_by_user_runs(tmp_path) -> None:  # noqa: ANN001
 
 @pytest.mark.asyncio
 async def test_dispatch_no_security_layer_skips_gate(tmp_path) -> None:  # noqa: ANN001
+    from kodo.project import SessionWorkspace
     from kodo.tools import LogicalPathResolver, RootPath, ToolDispatcher
 
     gate = _FakeGate(action="deny")
     dispatcher = ToolDispatcher(
-        resolver=LogicalPathResolver({"proj": tmp_path}, tmp_path),
+        resolver=LogicalPathResolver(SessionWorkspace(tmp_path, {"proj": tmp_path})),
         gate=gate,  # type: ignore[arg-type]
         session=_FakeSession(),  # type: ignore[arg-type]
-        services=None,  # type: ignore[arg-type]
+        services=_FakeWorkspaceServices(
+            has_workspace=True, root_paths=(RootPath(name="proj", path=str(tmp_path)),)
+        ),  # type: ignore[arg-type]
         agent_name="tester",
         session_id="s1",
-        root_paths=(RootPath(name="proj", path=str(tmp_path)),),
     )
     result = json.loads(
         await dispatcher.dispatch(

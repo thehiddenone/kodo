@@ -44,6 +44,7 @@ from kodo.state import TransientStore
 from kodo.tools import PermissionPartLike
 from kodo.transport import (
     SREQ_PROMPT_APPROVAL,
+    SREQ_PROMPT_CHOOSE_PROJECT_FOLDER,
     SREQ_PROMPT_EDIT_REVIEW,
     SREQ_PROMPT_PERMISSION,
     SREQ_PROMPT_QUESTION,
@@ -52,6 +53,7 @@ from kodo.transport import (
 
 __all__ = [
     "ApprovalResponse",
+    "ChooseFolderResponse",
     "EditReviewFeedbackEntry",
     "EditReviewResponse",
     "GateOrchestrator",
@@ -106,6 +108,22 @@ class StuckAlertResponse:
     """
 
     action: str
+
+
+@dataclass(frozen=True)
+class ChooseFolderResponse:
+    """Client response to a ``prompt.choose_project_folder`` request.
+
+    Attributes:
+        path: Absolute path of the picked folder (used as a workspace-home
+            parent, never the project directory itself); empty when
+            ``error`` is set.
+        error: ``'cancelled'`` if the user dismissed the folder dialog, else
+            ``None``.
+    """
+
+    path: str
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -448,6 +466,45 @@ class GateOrchestrator:
             action = "dismiss"
         _log.info("Stuck alert resolved: req_id=%s action=%s", req_id[:8], action)
         return StuckAlertResponse(action=action)
+
+    async def fire_choose_project_folder(self) -> ChooseFolderResponse:
+        """Emit a ``prompt.choose_project_folder`` ``kind=request`` and block
+        until the user picks a folder or cancels.
+
+        Fired by :meth:`~kodo.runtime._engine._core.EngineCore
+        ._bootstrap_project_interactive` when the ``create_new_project`` tool
+        is called with no project bound yet and the session is not
+        autonomous. No ``pending_prompt``-style state is persisted — same
+        reasoning as :meth:`fire_stuck_alert`: nothing is left mid-dispatch if
+        this wait is cut short by a crash, so the tool call simply errors and
+        the agent can retry.
+
+        Returns:
+            ChooseFolderResponse: The picked folder, or an ``error`` if the
+            user cancelled.
+        """
+        req_id = uuid.uuid4().hex
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[dict[str, object]] = loop.create_future()
+        self.__app_state.register_response_future(req_id, future)
+
+        await self.__app_state.send(
+            Envelope(
+                kind="request",
+                id=req_id,
+                payload={"type": SREQ_PROMPT_CHOOSE_PROJECT_FOLDER},
+            )
+        )
+        _log.info("Choose-project-folder fired: req_id=%s", req_id[:8])
+
+        response_payload = await future
+        error = response_payload.get("error")
+        if error:
+            _log.info("Choose-project-folder cancelled: req_id=%s", req_id[:8])
+            return ChooseFolderResponse(path="", error=str(error))
+        path = str(response_payload.get("path", ""))
+        _log.info("Choose-project-folder resolved: req_id=%s path=%r", req_id[:8], path)
+        return ChooseFolderResponse(path=path)
 
     async def fire_edit_review(
         self,

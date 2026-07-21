@@ -152,6 +152,35 @@ class SessionManager:
         self.__owner_window[session_id] = window_id
         return session
 
+    def rebind_window(self, old_window_id: str, new_window_id: str) -> None:
+        """Re-key every session owned by *old_window_id* to *new_window_id*.
+
+        Called (and awaited by the client, via the ``window.rebind`` message)
+        *before* a transition the client already knows will change its own
+        stable id — today, the extension adding the first workspace folder to
+        a previously folder-less window, which VS Code answers by restarting
+        the extension host under an id derived from the new folder path. Without
+        this, the reconnect that follows presents a *different* id than the one
+        every owned session is still keyed by, and :meth:`open` refuses it
+        outright (see its "held by a different window" check) — the session
+        looks permanently stranded even though the same logical window is
+        asking for it back.
+
+        A no-op (not an error) if *old_window_id* owns nothing — the client
+        cannot know in advance whether this window actually owns any session.
+        """
+        rebound = [sid for sid, owner in self.__owner_window.items() if owner == old_window_id]
+        for session_id in rebound:
+            self.__owner_window[session_id] = new_window_id
+            self.__write_owner(session_id, owner=new_window_id)
+        if rebound:
+            _log.info(
+                "Rebound window %s -> %s for sessions: %s",
+                old_window_id[:8],
+                new_window_id[:8],
+                ", ".join(rebound),
+            )
+
     # ------------------------------------------------------------------
     # Ownership / connection binding (called by the connection registry)
     # ------------------------------------------------------------------

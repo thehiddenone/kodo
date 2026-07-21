@@ -468,7 +468,9 @@ class EngineServices(Protocol):
         """Turn off autonomous mode and notify the client."""
         ...
 
-    async def create_project(self, name: str, path: str | None = None) -> dict[str, object]:
+    async def create_project(
+        self, name: str, path: str | None = None, force: bool = False
+    ) -> dict[str, object]:
         """Scaffold a new project directory and add it to the workspace.
 
         When ``path`` is given it supersedes ``name``: the project is laid out
@@ -479,10 +481,68 @@ class EngineServices(Protocol):
         checkpoint mirror, then asks the VS Code extension to add the
         directory to the open workspace.
 
+        ``force`` (only meaningful with ``path``) overwrites an existing
+        ``kodo.md`` at that path instead of raising — set when the caller
+        (e.g. the interactive folder-picker dialog) already confirmed the
+        overwrite with the user.
+
         Returns ``{"path": <absolute project dir>, "name": <workspace label>}``.
 
         Raises:
-            ProjectLayoutError: ``path``'s ``kodo.md`` already exists.
+            ProjectLayoutError: ``path``'s ``kodo.md`` already exists and
+                ``force`` is not set.
+        """
+        ...
+
+    async def bootstrap_project(self, name: str = "") -> dict[str, object]:
+        """Create a project when no workspace exists yet, mode-appropriately.
+
+        Backs ``create_new_project`` when the agent calls it with no ``path``
+        and :meth:`has_workspace` is ``False`` — regardless of whether
+        ``name`` was given, since a homeless session has nowhere to place
+        *any* name yet (see :mod:`kodo.toolspecs._workspace`). Autonomous
+        sessions never prompt anyone: they use *name* if given, else
+        synthesize one (via the titler, falling back to a generic one), and
+        create it as a named subdirectory under ``~/kodo-projects/``.
+        Interactive sessions ask the client to show a native "open directory"
+        folder-picker dialog (``prompt.choose_project_folder``) and create the
+        project as a named subdirectory under the picked folder.
+
+        Returns the same shape as :meth:`create_project`, or ``{"error":
+        ...}`` if the interactive dialog was cancelled.
+        """
+        ...
+
+    def has_workspace(self) -> bool:
+        """Whether this session has any usable project/workspace *right now*.
+
+        Read live on every dispatch (never snapshotted) so a project bound
+        mid-turn — by ``create_new_project``/``init_project``, or by the user
+        adding a folder to the VS Code window directly — is picked up by the
+        very next tool call in the same turn, not just the next turn.
+        Guided mode: a project is bound. Problem Solver mode: at least one
+        workspace folder is open (mirrors :meth:`~kodo.runtime.EngineCore
+        ._has_workspace`).
+        """
+        ...
+
+    def root_paths(self) -> tuple[RootPath, ...]:
+        """The filesystem roots this session's run may operate within, live.
+
+        Read fresh on every access (mirrors :meth:`~kodo.runtime.EngineCore
+        ._root_paths`) so ``get_root_paths`` and the security layer's root
+        list always reflect the session's current workspace, including a
+        folder added mid-turn — whether by a tool call or by a genuine VS
+        Code ``workspace.folders`` push from the user manually editing the
+        workspace.
+        """
+        ...
+
+    def project_root(self) -> Path | None:
+        """The bound Guided-mode project's root, or ``None``, read live.
+
+        Mirrors ``has_workspace``/``root_paths``: never snapshotted, so a
+        project bound mid-turn is visible to the very next tool call.
         """
         ...
 
@@ -563,11 +623,6 @@ class ToolContext:
             ``session.effective_workflow_mode``. Used to gate Guided-only
             tools (``guided_dev_status``) and to tag ``new_revision`` jsonl
             entries with which workflow produced them.
-        project_root: The bound project's root, or ``None`` if no project is
-            bound. Populated in both modes whenever a project is bound (Guided
-            always has one; Problem Solver may carry one over from a prior
-            Guided binding) — `kodo.guided_state` calls are skipped uniformly
-            when this is ``None``, with no per-tool mode branch needed.
         resolver: Path resolver for the native file/shell tools — a
             project-confined resolver in Guided mode, a logical (workspace-folder
             keyed) resolver in Problem Solver mode.
@@ -578,13 +633,13 @@ class ToolContext:
         session: Session state (protocol); ``effective_autonomous`` is the
             frozen mode for this prompt.
         services: Engine-side operations (protocol): sub-agent launch,
-            author/critic iteration, rollback, mode disable, project creation.
+            author/critic iteration, rollback, mode disable, project creation,
+            and the live ``has_workspace``/``root_paths``/``project_root``
+            queries ``project_root``/``has_workspace``/``root_paths`` below
+            delegate to.
         agent_name: Name of the running agent (used as the jsonl ``author``/
             ``reviewer`` field).
         session_id: Session ID for this run.
-        root_paths: Filesystem roots the agent may operate within, computed
-            mode-aware by the engine (the bound project in Guided; every open
-            workspace folder in Problem Solver).  Surfaced by ``get_root_paths``.
         util_paths: Absolute paths to the bundled third-party CLI utils keyed by
             manifest name (``"fd"``, ``"ripgrep"``), or absent when a util is not
             yet installed.  Injected by the engine from ``kodo.binutils`` so the
@@ -619,11 +674,34 @@ class ToolContext:
     session_id: str
     security: SecurityLike | None = None
     mode: str = "problem_solving"
-    project_root: Path | None = None
-    root_paths: tuple[RootPath, ...] = ()
     util_paths: dict[str, Path] = field(default_factory=dict)
     output_schema: dict[str, object] | None = None
     current_tool_use_id: str = ""
     stop_requested: bool = False
     returned_output: dict[str, object] | None = None
     deadline: float | None = None
+
+    @property
+    def project_root(self) -> Path | None:
+        """The bound Guided-mode project's root, or ``None`` — read live via
+        :meth:`EngineServices.project_root` on every access, never cached, so
+        a project bound mid-turn is visible to the next tool call."""
+        return self.services.project_root()
+
+    @property
+    def has_workspace(self) -> bool:
+        """Whether this run has *any* usable project/workspace *right now* —
+        read live via :meth:`EngineServices.has_workspace` on every access.
+        Unlike ``project_root``, this deliberately does *not* fall back to
+        the session's physical root — it is what
+        :class:`~kodo.tools.ToolDispatcher` checks before dispatching a
+        call to a tool whose spec sets ``requires_project=True``."""
+        return self.services.has_workspace()
+
+    @property
+    def root_paths(self) -> tuple[RootPath, ...]:
+        """Filesystem roots the agent may operate within, read live via
+        :meth:`EngineServices.root_paths` on every access (the bound project
+        in Guided; every open workspace folder in Problem Solver). Surfaced
+        by ``get_root_paths``."""
+        return self.services.root_paths()

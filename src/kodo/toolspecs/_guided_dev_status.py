@@ -66,4 +66,5 @@ GUIDED_DEV_STATUS: ToolSpec = ToolSpec(
         "still pending review/revision, and to confirm an invalidation cascade correctly "
         "marked downstream documents as needing rework.",
     ),
+    requires_project=True,
 )

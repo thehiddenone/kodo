@@ -25,10 +25,11 @@ protocol.
 """
 
 from ._core import WorkflowEngine
-from ._shared import _slugify_project_name, _unique_child_dir
+from ._shared import _sanitize_short_name, _slugify_project_name, _unique_child_dir
 
 __all__ = [
     "WorkflowEngine",
+    "_sanitize_short_name",
     "_slugify_project_name",
     "_unique_child_dir",
 ]

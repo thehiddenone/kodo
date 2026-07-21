@@ -30,6 +30,7 @@ from kodo.runtime._engine._events import EngineEmitters
 from kodo.runtime._engine._services import _EngineServices
 from kodo.runtime._engine._shared import _slugify_project_name, _unique_child_dir
 from kodo.runtime._session import SessionState
+from kodo.tools import RootPath
 
 # ---------------------------------------------------------------------------
 # _shared._slugify_project_name
@@ -97,9 +98,13 @@ def _make_services(rec: _Recorder) -> _EngineServices:
         disable_autonomous=rec.make("disable_autonomous"),
         create_project=rec.make("create_project", {"root": "/tmp/proj"}),
         init_project=rec.make("init_project", {"root": "/tmp/existing"}),
+        bootstrap_project=rec.make("bootstrap_project", {"root": "/tmp/bootstrapped"}),
         notify_tool_call_in_progress=rec.make("notify_tool_call_in_progress"),
         add_security_rule=rec.make("add_security_rule"),
         add_security_path_rule=rec.make("add_security_path_rule"),
+        has_workspace=lambda: True,
+        root_paths=lambda: (),
+        project_root=lambda: None,
     )
 
 
@@ -226,6 +231,49 @@ async def test_engine_services_add_security_path_rule_forwards_args() -> None:
     assert rec.calls == [("add_security_path_rule", ("global", "cat", "/etc/hosts"))]
 
 
+def test_engine_services_has_workspace_root_paths_project_root_are_live_reads() -> None:
+    """These three are sync pass-throughs to the engine's own live queries
+    (``EngineCore._has_workspace``/``_root_paths``/``_project_root``) — unlike
+    every other ``_EngineServices`` method, they must never be memoized:
+    ``ToolContext`` calls them fresh on every access so a project bound
+    mid-turn is visible to the very next tool call."""
+    rec = _Recorder()
+    box: dict[str, object] = {"has_workspace": False, "project_root": None}
+    services = _EngineServices(
+        run_subagent=rec.make("run_subagent"),
+        run_dependency_manager=rec.make("run_dependency_manager"),
+        run_web_search_agent=rec.make("run_web_search_agent"),
+        run_author_critic=rec.make("run_author_critic"),
+        rollback=rec.make("rollback"),
+        disable_autonomous=rec.make("disable_autonomous"),
+        create_project=rec.make("create_project"),
+        init_project=rec.make("init_project"),
+        bootstrap_project=rec.make("bootstrap_project"),
+        notify_tool_call_in_progress=rec.make("notify_tool_call_in_progress"),
+        add_security_rule=rec.make("add_security_rule"),
+        add_security_path_rule=rec.make("add_security_path_rule"),
+        has_workspace=lambda: bool(box["has_workspace"]),
+        root_paths=lambda: (RootPath(name="proj", path="/tmp/proj"),)
+        if box["has_workspace"]
+        else (),
+        project_root=lambda: box["project_root"],
+    )
+
+    assert services.has_workspace() is False
+    assert services.root_paths() == ()
+    assert services.project_root() is None
+
+    # Simulate create_new_project mutating the engine's live workspace state
+    # mid-turn — no new _EngineServices/ToolDispatcher is built, exactly as
+    # production reuses one dispatcher for a whole turn's tool-call loop.
+    box["has_workspace"] = True
+    box["project_root"] = Path("/tmp/proj")
+
+    assert services.has_workspace() is True
+    assert services.root_paths() == (RootPath(name="proj", path="/tmp/proj"),)
+    assert services.project_root() == Path("/tmp/proj")
+
+
 # ---------------------------------------------------------------------------
 # _events.EngineEmitters
 # ---------------------------------------------------------------------------
@@ -242,9 +290,14 @@ class _FakeSink:
 class _FakeTransient:
     def __init__(self) -> None:
         self.markers: list[dict[str, object]] = []
+        self.subsession_markers: list[tuple[str, dict[str, object]]] = []
+        self.active_subsession: dict[str, object] | None = None
 
     def append_marker(self, marker: dict[str, object]) -> None:
         self.markers.append(marker)
+
+    def append_subsession_marker(self, subsession_id: str, marker: dict[str, object]) -> None:
+        self.subsession_markers.append((subsession_id, marker))
 
 
 def _make_emitters(
@@ -311,6 +364,62 @@ async def test_handle_stream_event_turn_end_is_ignored() -> None:
     assert sink.sent == []
 
 
+# ---------------------------------------------------------------------------
+# _events.EngineEmitters.handle_stream_event — awaiting_first_chunk clearing
+# ---------------------------------------------------------------------------
+# The rehydration-snapshot fix for kodo-vsix's "Awaiting response" spinner
+# (see doc/WS_PROTOCOL.md §5.1) depends on the first real chunk of a turn
+# clearing SessionState.awaiting_first_chunk, so a reconnecting client's
+# fresh `state` snapshot reflects reality instead of only the (reconnect-
+# losable) live `llm.turn_start` event.
+
+
+@pytest.mark.asyncio
+async def test_handle_stream_event_thinking_delta_clears_awaiting_first_chunk() -> None:
+    emitters, _sink, _ = _make_emitters()
+    emitters._session.awaiting_first_chunk = True
+
+    await emitters.handle_stream_event(ThinkingDelta(text="hmm"), "stream_1")
+
+    assert emitters._session.awaiting_first_chunk is False
+
+
+@pytest.mark.asyncio
+async def test_handle_stream_event_token_delta_clears_awaiting_first_chunk() -> None:
+    emitters, _sink, _ = _make_emitters()
+    emitters._session.awaiting_first_chunk = True
+
+    await emitters.handle_stream_event(TokenDelta(text="hi"), "stream_1")
+
+    assert emitters._session.awaiting_first_chunk is False
+
+
+@pytest.mark.asyncio
+async def test_handle_stream_event_tool_call_arg_delta_clears_awaiting_first_chunk() -> None:
+    emitters, _sink, _ = _make_emitters()
+    emitters._session.awaiting_first_chunk = True
+
+    await emitters.handle_stream_event(
+        ToolCallArgDelta(tool_name="run_command", text='{"comm'), "stream_1"
+    )
+
+    assert emitters._session.awaiting_first_chunk is False
+
+
+@pytest.mark.asyncio
+async def test_handle_stream_event_turn_end_does_not_clear_awaiting_first_chunk() -> None:
+    # TurnEnd isn't a "real content" delta, so it must not be mistaken for one.
+    emitters, _sink, _ = _make_emitters()
+    emitters._session.awaiting_first_chunk = True
+    usage = Usage(
+        input_tokens=1, output_tokens=1, cache_write_tokens=0, cache_read_tokens=0, model="m"
+    )
+
+    await emitters.handle_stream_event(TurnEnd(usage=usage, stop_reason="end_turn"), "stream_1")
+
+    assert emitters._session.awaiting_first_chunk is True
+
+
 @pytest.mark.asyncio
 async def test_emit_state_also_emits_context_stats() -> None:
     emitters, sink, _ = _make_emitters(stats={"current_tokens": 42})
@@ -353,6 +462,40 @@ async def test_emit_usage_reports_tokens_and_running_cost() -> None:
         "cache_read": 2,
     }
     assert payload["model"] == "claude-x"
+
+
+@pytest.mark.asyncio
+async def test_emit_usage_persists_marker_to_main_log_when_no_active_subsession() -> None:
+    emitters, _sink, transient = _make_emitters()
+    usage = Usage(
+        input_tokens=10, output_tokens=20, cache_write_tokens=1, cache_read_tokens=2, model="m"
+    )
+    turn_end = TurnEnd(usage=usage, stop_reason="end_turn")
+
+    await emitters.emit_usage(turn_end, "claude-x", 2.5)
+
+    assert len(transient.markers) == 1
+    assert transient.markers[0]["type"] == "usage"
+    assert transient.markers[0]["duration_seconds"] == 2.5
+    assert transient.subsession_markers == []
+
+
+@pytest.mark.asyncio
+async def test_emit_usage_persists_marker_to_active_subsession() -> None:
+    emitters, _sink, transient = _make_emitters()
+    transient.active_subsession = {"subsession_id": "sub-1"}
+    usage = Usage(
+        input_tokens=10, output_tokens=20, cache_write_tokens=1, cache_read_tokens=2, model="m"
+    )
+    turn_end = TurnEnd(usage=usage, stop_reason="end_turn")
+
+    await emitters.emit_usage(turn_end, "claude-x", 2.5)
+
+    assert transient.markers == []
+    assert len(transient.subsession_markers) == 1
+    sid, marker = transient.subsession_markers[0]
+    assert sid == "sub-1"
+    assert marker["type"] == "usage"
 
 
 @pytest.mark.asyncio
@@ -402,12 +545,28 @@ async def test_emit_error_persists_marker_and_sends_event() -> None:
     assert transient.markers[0]["type"] == "error"
     assert transient.markers[0]["message"] == "boom"
     assert transient.markers[0]["recoverable"] is True
-    assert "ts" in transient.markers[0]
 
     payload = sink.sent[0].payload
     assert payload["code"] == "runtime_error"
     assert payload["message"] == "boom"
     assert payload["recoverable"] is True
+
+
+@pytest.mark.asyncio
+async def test_emit_error_persists_to_active_subsession_not_main_log() -> None:
+    """A subsession's own error must land in its own log, never the parent's
+    (the checkpoint jail-escape investigation's original observation: an
+    error mid-subsession was misattributed to the top-level session.jsonl)."""
+    emitters, _sink, transient = _make_emitters()
+    transient.active_subsession = {"subsession_id": "sub-1"}
+
+    await emitters.emit_error("boom", recoverable=True)
+
+    assert transient.markers == []
+    assert len(transient.subsession_markers) == 1
+    sid, marker = transient.subsession_markers[0]
+    assert sid == "sub-1"
+    assert marker["type"] == "error"
 
 
 @pytest.mark.asyncio

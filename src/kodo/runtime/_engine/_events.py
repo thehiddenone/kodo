@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
 
 from kodo.common import Envelope, MessageSink
 from kodo.llms import (
@@ -54,8 +53,9 @@ class EngineEmitters:
         context_stats: Returns the current ``context.stats`` payload — owned
             by the compactor, late-bound via this callable so the two
             collaborators need no mutual reference.
-        transient: Append-only JSONL session store, used by :meth:`emit_error`
-            to persist a durable marker alongside the live event.
+        transient: Append-only JSONL session store, used by every marker-
+            persisting emitter (:meth:`_append_marker`) to durably record the
+            event alongside the live push.
     """
 
     def __init__(
@@ -71,6 +71,23 @@ class EngineEmitters:
         self._transient = transient
         self._cumulative_usd = 0.0
 
+    def _append_marker(self, marker: dict[str, object]) -> None:
+        """Persist *marker* to whichever container is currently active.
+
+        The active subsession's own log if one is running, else the main
+        session log — every marker-persisting emitter goes through this so a
+        subsession's own events (its usage stats, an error mid-run, its
+        agent stalling) land in its own log, never bleeding into the
+        parent's. Mirrors :attr:`~kodo.state.TransientStore.active_subsession`
+        as the single source of truth for "what's running right now" (set by
+        ``SubagentMixin._open_subsession``/``_close_subsession``).
+        """
+        active = self._transient.active_subsession
+        if active is not None:
+            self._transient.append_subsession_marker(str(active["subsession_id"]), marker)
+        else:
+            self._transient.append_marker(marker)
+
     @property
     def cumulative_usd(self) -> float:
         """Running total of every LLM call's USD cost this session."""
@@ -83,10 +100,13 @@ class EngineEmitters:
     async def handle_stream_event(self, event: StreamEvent, stream_id: str) -> None:
         """Forward a streaming LLM event to the client feed."""
         if isinstance(event, ThinkingDelta):
+            self._session.awaiting_first_chunk = False
             await self._sink.send(Envelope.make_thinking_chunk(stream_id, event.text))
         elif isinstance(event, TokenDelta):
+            self._session.awaiting_first_chunk = False
             await self._sink.send(Envelope.make_stream_chunk(stream_id, event.text))
         elif isinstance(event, ToolCallArgDelta):
+            self._session.awaiting_first_chunk = False
             await self._sink.send(
                 Envelope.make_toolgen_chunk(stream_id, event.tool_name, event.text)
             )
@@ -107,24 +127,30 @@ class EngineEmitters:
         await self._sink.send(Envelope.make_event(EVT_CONTEXT_COMPACTING, {"active": active}))
 
     async def emit_usage(self, turn_end: TurnEnd, model: str, duration_seconds: float) -> None:
-        """Push a per-call usage record (tokens, model, running cost)."""
-        await self._sink.send(
-            Envelope.make_event(
-                EVT_USAGE_UPDATE,
-                {
-                    "cumulative_usd": round(self._cumulative_usd, 6),
-                    "duration_seconds": round(duration_seconds, 3),
-                    "last_call_tokens": {
-                        "input": turn_end.usage.input_tokens,
-                        "output": turn_end.usage.output_tokens,
-                        "cache_write": turn_end.usage.cache_write_tokens,
-                        "cache_read": turn_end.usage.cache_read_tokens,
-                    },
-                    "model": model,
-                    "breakdown": {},
-                },
-            )
-        )
+        """Push a per-call usage record (tokens, model, running cost), and
+        persist it as a ``usage`` marker.
+
+        The marker lets :class:`~._history.HistoryProjector` replay the same
+        "Kodo responded in..." row on reload, in its correct chronological
+        position — previously this was a live-only event with no persisted
+        equivalent, so the WebView had to reconstruct it by keeping whatever
+        had accumulated in memory and splicing it in after a fresh history
+        load, which is what let entries drift out of order across a reload.
+        """
+        payload = {
+            "cumulative_usd": round(self._cumulative_usd, 6),
+            "duration_seconds": round(duration_seconds, 3),
+            "last_call_tokens": {
+                "input": turn_end.usage.input_tokens,
+                "output": turn_end.usage.output_tokens,
+                "cache_write": turn_end.usage.cache_write_tokens,
+                "cache_read": turn_end.usage.cache_read_tokens,
+            },
+            "model": model,
+            "breakdown": {},
+        }
+        self._append_marker({"type": "usage", **payload})
+        await self._sink.send(Envelope.make_event(EVT_USAGE_UPDATE, payload))
 
     async def emit_session_naming(self, active: bool) -> None:
         """Tell the client whether the silent session-titler call is running.
@@ -188,12 +214,11 @@ class EngineEmitters:
         event, so an error surfaced right before the user reloaded the WebView
         vanished for good even though it aborted the turn.
         """
-        self._transient.append_marker(
+        self._append_marker(
             {
                 "type": "error",
                 "message": message,
                 "recoverable": recoverable,
-                "ts": datetime.now(tz=UTC).isoformat(),
             }
         )
         await self._sink.send(
@@ -219,13 +244,12 @@ class EngineEmitters:
         "security_rule_added"``) lets :class:`~._history.HistoryProjector`
         replay the same notice on reload, mirroring :meth:`emit_error`.
         """
-        self._transient.append_marker(
+        self._append_marker(
             {
                 "type": "security_rule_added",
                 "scope": scope,
                 "executable": executable,
                 "subcommand": subcommand,
-                "ts": datetime.now(tz=UTC).isoformat(),
             }
         )
         await self._sink.send(
@@ -263,11 +287,10 @@ class EngineEmitters:
         so :class:`~._history.HistoryProjector` replays the same notice on
         reload, mirroring :meth:`emit_error`.
         """
-        self._transient.append_marker(
+        self._append_marker(
             {
                 "type": "agent_stuck_critical",
                 "message": message,
-                "ts": datetime.now(tz=UTC).isoformat(),
             }
         )
         await self._sink.send(Envelope.make_event(EVT_AGENT_STUCK_CRITICAL, {"message": message}))

@@ -49,4 +49,5 @@ ROLLBACK: ToolSpec = ToolSpec(
         "typically after a root-cause resolution invalidates a large "
         "frontier and a checkpoint predates the contaminated work.",
     ),
+    requires_project=True,
 )

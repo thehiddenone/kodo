@@ -40,6 +40,7 @@ __all__ = [
     "CheckpointState",
     "MirrorDirtyError",
     "RootMirrorManager",
+    "UnsafeCheckpointRootError",
     "command_may_mutate",
 ]
 
@@ -161,6 +162,18 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _is_unsafe_checkpoint_root(root: Path) -> bool:
+    """Whether *root* is too broad ever to be a shadow-git mirror target.
+
+    Belt-and-braces: independent of how a root was resolved (a session with
+    no workspace, a race, a future bug), a checkpoint mirror must never be
+    rooted at the user's entire home directory or a filesystem root — either
+    would make ``git add -A`` sweep arbitrary user data. ``root`` is expected
+    already-resolved (see :meth:`RootMirrorManager._ensure`).
+    """
+    return root == Path.home() or root.parent == root
+
+
 @dataclass(frozen=True)
 class CheckpointRef:
     """A checkpoint commit the UI can act on.
@@ -183,6 +196,17 @@ class MirrorDirtyError(Exception):
     after every Kodo-driven mutation, so any leftover diff is external) are
     never overwritten without the caller explicitly choosing a *resolution*
     (``"stash"`` or ``"discard"``) and retrying.
+    """
+
+
+class UnsafeCheckpointRootError(Exception):
+    """Raised instead of ever mirroring a root at ``$HOME`` or a filesystem root.
+
+    A hard failure, not a silent skip or a fallback: reaching
+    :meth:`RootMirrorManager._ensure` with such a root means some caller
+    upstream resolved (or defaulted) to an unreasonably broad directory —
+    never a legitimate project root, and never something ``git add -A``
+    should ever run against.
     """
 
 
@@ -579,8 +603,20 @@ class RootMirrorManager:
         return best
 
     async def _ensure(self, root: Path) -> ShadowMirror:
-        """Return *root*'s mirror, scaffolding ``.kodo`` + initialising on first use."""
+        """Return *root*'s mirror, scaffolding ``.kodo`` + initialising on first use.
+
+        Raises:
+            UnsafeCheckpointRootError: *root* is ``$HOME`` or a filesystem
+                root — refused before ever touching git, regardless of how
+                it got here.
+        """
         root = root.resolve()
+        if _is_unsafe_checkpoint_root(root):
+            raise UnsafeCheckpointRootError(
+                f"Refusing to create a checkpoint mirror rooted at {root!s} — this is "
+                "the user's home directory or a filesystem root, never a legitimate "
+                "project root."
+            )
         cached = self.__mirrors.get(root)
         if cached is not None:
             return cached

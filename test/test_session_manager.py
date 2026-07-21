@@ -124,6 +124,57 @@ async def test_open_unknown_id_creates_fresh(manager_factory) -> None:  # type: 
 
 
 # ---------------------------------------------------------------------------
+# rebind_window — the 0-folder->1-folder windowId-stability fix
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rebind_window_lets_new_id_reclaim_a_session_the_old_id_owned(
+    manager_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    mgr: SessionManager = manager_factory(grace=100.0)
+    session: Session = await mgr.create("windowA")
+    conn_a = _conn()
+    await mgr.bind_connection(session, conn_a)
+    mgr.drop_connection(conn_a)
+
+    # Before rebinding, a genuinely different window is refused (windowA's
+    # grace is still running).
+    assert await mgr.open(session.id, "windowC") is None
+
+    mgr.rebind_window("windowA", "windowC")
+
+    # After rebinding, "windowC" is now recognized as this session's owner —
+    # the reconnect that follows an extension-host restart (e.g. the
+    # 0-folder->1-folder transition) finds its session waiting under the new
+    # id instead of racing a derivation match that can never succeed.
+    reclaimed = await mgr.open(session.id, "windowC")
+    assert reclaimed is not None and reclaimed.id == session.id
+
+    conn_c = _conn()
+    await mgr.bind_connection(reclaimed, conn_c)
+
+    # Ownership moved, it wasn't copied — the old id is now refused.
+    assert await mgr.open(session.id, "windowA") is None
+
+
+@pytest.mark.asyncio
+async def test_rebind_window_is_a_noop_for_an_id_that_owns_nothing(
+    manager_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    mgr: SessionManager = manager_factory()
+    session: Session = await mgr.create("windowA")
+
+    # The client cannot know in advance whether this window owns any
+    # session — rebinding an id with nothing owned must not raise or
+    # disturb unrelated sessions.
+    mgr.rebind_window("some-other-window-with-nothing-owned", "windowD")
+
+    reopened = await mgr.open(session.id, "windowA")
+    assert reopened is not None and reopened.id == session.id
+
+
+# ---------------------------------------------------------------------------
 # A disconnect (unlike genuine teardown) never loses a pending server-
 # initiated request — the doc/SECURITY.md §7 "dangling security alert" fix's
 # other half (see kodo.transport._connection, ConnectionRegistry.run_ws).

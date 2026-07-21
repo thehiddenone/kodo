@@ -820,7 +820,7 @@ class TransientStore:
         if self.__paths is None:
             return
         self.__paths.subsessions.mkdir(exist_ok=True)
-        path = self.__paths.subsessions / f"{subsession_id}.jsonl"
+        path = self.__subsession_path(subsession_id)
         record: dict[str, object] = {"role": role, "content": content}
         if kind is not None:
             record["kind"] = kind
@@ -829,8 +829,50 @@ class TransientStore:
         self.__append_line(path, record)
         self.__touch_last_modified()
 
+    def append_subsession_marker(self, subsession_id: str, marker: dict[str, object]) -> None:
+        """Append a non-message marker line to a sub-agent's subsession log.
+
+        The subsession-scoped twin of :meth:`append_marker`: an event that
+        happens *during* a subsession's own run (e.g. its per-turn usage
+        stats, or an error/stuck-watchdog notice for its own agent) belongs
+        in its own log, not the parent's — subsessions are otherwise
+        identical containers to the main session, just unable to nest (see
+        doc/SESSIONS.md). Markers carry a ``type`` key and never a ``role``
+        key, so :meth:`read_subsession_messages` skips them.
+
+        Args:
+            subsession_id (str): Session-wide unique subsession identifier.
+            marker (dict[str, object]): JSON-serialisable marker payload.
+        """
+        if self.__paths is None:
+            return
+        self.__paths.subsessions.mkdir(exist_ok=True)
+        self.__append_line(self.__subsession_path(subsession_id), marker)
+        self.__touch_last_modified()
+
+    def read_subsession_lines(self, subsession_id: str) -> list[dict[str, object]]:
+        """Return every line of a subsession's log in order, markers included.
+
+        The subsession-scoped twin of :meth:`read_session_lines`. Use
+        :meth:`read_subsession_messages` for LLM context reconstruction.
+
+        Args:
+            subsession_id (str): Subsession identifier.
+
+        Returns:
+            list[dict[str, object]]: Ordered raw line payloads (empty if the
+            subsession file does not exist).
+        """
+        if self.__paths is None:
+            return []
+        return self.__read_jsonl(self.__subsession_path(subsession_id))
+
     def read_subsession_messages(self, subsession_id: str) -> list[dict[str, object]]:
-        """Return a subsession's full message history in order.
+        """Return only the message lines from a subsession's log, in order.
+
+        Marker lines (e.g. ``usage``, ``error``) are filtered out so the
+        result is that subsession's LLM context, in order — the subsession
+        twin of :meth:`read_messages`.
 
         Args:
             subsession_id (str): Subsession identifier.
@@ -841,10 +883,26 @@ class TransientStore:
         """
         if self.__paths is None:
             return []
-        return self.__read_jsonl(self.__paths.subsessions / f"{subsession_id}.jsonl")
+        return [line for line in self.read_subsession_lines(subsession_id) if "role" in line]
+
+    def __subsession_path(self, subsession_id: str) -> Path:
+        assert self.__paths is not None
+        return self.__paths.subsessions / f"{subsession_id}.jsonl"
 
     @staticmethod
     def __append_line(path: Path, record: dict[str, object]) -> None:
+        """Write one JSONL line, stamping ``id``/``ts`` if the caller hasn't.
+
+        Every persisted entry — message or marker, main log or subsession —
+        goes through here, so this is the single place that guarantees both
+        fields are present: ``id`` (a stable identifier a later entry can
+        reference, e.g. to reconcile a dangling tool call once it resolves)
+        and ``ts`` (ISO-8601 UTC, for the client's eventual chronological
+        display — not read by anything server-side; append order is already
+        chronological order).
+        """
+        record.setdefault("id", uuid.uuid4().hex)
+        record.setdefault("ts", datetime.now(tz=UTC).isoformat())
         line = json.dumps(record) + "\n"
         with path.open("a", encoding="utf-8") as fh:
             fh.write(line)

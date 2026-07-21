@@ -95,4 +95,5 @@ GET_ROOT_PATHS: ToolSpec = ToolSpec(
         "scratch directory — e.g. to pass as `run_command`'s `working_dir` for "
         "throwaway work you don't want in the project itself.",
     ),
+    requires_project=True,
 )

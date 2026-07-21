@@ -196,6 +196,7 @@ def _base_engine(*, gateway: _FakeGateway | None = None) -> WorkflowEngine:
     engine._transient = _FakeTransient()
     engine._checkpoints = _FakeCheckpoints()
     engine._compactor = _FakeCompactor()
+    engine._session = SessionState()
     engine._orch_session_id = "sess-1"
     engine._entry_turn_seq = 0
 

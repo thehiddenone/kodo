@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from kodo.common import system_temp_roots
+from kodo.project import SessionWorkspace
 
 __all__ = [
     "LogicalPathResolver",
@@ -156,15 +157,37 @@ class ProjectPathResolver:
 
 
 class LogicalPathResolver:
-    """Problem-Solver-mode resolver: address every workspace folder by name."""
+    """Problem-Solver-mode resolver: address every workspace folder by name.
 
-    def __init__(self, folders: dict[str, Path], physical_root: Path) -> None:
-        self.__folders = {name: Path(p).resolve() for name, p in folders.items()}
-        self.__physical_root = physical_root.resolve()
+    Holds the live :class:`~kodo.project.SessionWorkspace` itself rather than
+    a snapshot of its folder map: ``SessionWorkspace.folders`` reads the
+    engine's current state on every access (updated in-process the instant
+    ``create_new_project``/``init_project`` scaffold a directory, and again
+    whenever the extension pushes a real ``workspace.folders`` change — e.g.
+    the user adding a folder to the VS Code window by hand). Resolving a
+    logical path against a resolver built earlier in the same turn therefore
+    still sees a project bound moments ago, with no re-construction needed.
+    """
+
+    def __init__(self, workspace: SessionWorkspace) -> None:
+        self.__workspace = workspace
 
     def resolve(self, path: str) -> Path:
-        return resolve_logical(self.__folders, path)
+        return resolve_logical(self.__workspace.folders, path)
 
     @property
     def default_cwd(self) -> Path:
-        return self.__physical_root
+        """The workspace's physical root.
+
+        Only ever read once :meth:`~kodo.runtime._engine._core.EngineCore
+        ._has_workspace` is true (the ``requires_project`` dispatch gate
+        already refuses every tool that could reach here otherwise), at
+        which point the physical root is guaranteed set — see
+        :meth:`~kodo.runtime._engine._core.EngineCore._root_paths`. The
+        assert exists to fail loudly, not to handle an expected case: a
+        silent ``None`` here would otherwise flow into a real subprocess cwd
+        or security-rule path matching as the string ``"None"``.
+        """
+        root = self.__workspace.physical_root
+        assert root is not None, "default_cwd read before a workspace/project exists"
+        return root

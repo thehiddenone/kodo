@@ -89,4 +89,5 @@ DOCUMENT_FEEDBACK: ToolSpec = ToolSpec(
         "To accept a file (`accept: true`, empty concerns) once it has no remaining concerns.",
         "To reject a file (`accept: false`, one or more concerns) so its author revises it.",
     ),
+    requires_project=True,
 )

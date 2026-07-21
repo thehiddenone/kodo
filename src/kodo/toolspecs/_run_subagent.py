@@ -58,4 +58,5 @@ RUN_SUBAGENT: ToolSpec = ToolSpec(
         "already-accepted upstream artifact (e.g., generating stubs and "
         "tests from an accepted test plan).",
     ),
+    requires_project=True,
 )

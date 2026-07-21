@@ -20,7 +20,13 @@ import pytest
 
 from kodo.llms.llamacpp import LlamaInstall
 from kodo.titling import _server
-from kodo.titling._server import TitlerServer, _build_messages, generate_title
+from kodo.titling._server import (
+    TitlerServer,
+    _build_messages,
+    _build_project_name_messages,
+    generate_project_name,
+    generate_title,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -438,3 +444,55 @@ async def test_generate_title_sends_guardrailed_messages_and_disables_thinking(
     call = fake_client.chat.completions.calls[0]
     assert call["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
     assert call["messages"] == _build_messages("do something")
+
+
+# ---------------------------------------------------------------------------
+# generate_project_name
+# ---------------------------------------------------------------------------
+
+
+async def test_generate_project_name_returns_none_when_server_not_active() -> None:
+    assert await generate_project_name("anything") is None
+
+
+async def test_generate_project_name_returns_stripped_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_server_and_client(monkeypatch, "  Todo App  ")
+
+    name = await generate_project_name("build me a todo list app")
+
+    assert name == "Todo App"
+
+
+async def test_generate_project_name_returns_none_for_blank_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_server_and_client(monkeypatch, "   ")
+
+    assert await generate_project_name("anything") is None
+
+
+async def test_generate_project_name_returns_none_on_client_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _server._active = cast(TitlerServer, _FakeRunningServer())
+
+    def _raise(**kwargs: Any) -> Any:
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(_server.openai, "AsyncOpenAI", _raise)
+
+    assert await generate_project_name("anything") is None
+
+
+async def test_generate_project_name_sends_guardrailed_messages_and_disables_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = _install_fake_server_and_client(monkeypatch, "Weather Dashboard")
+
+    await generate_project_name("build me a weather dashboard")
+
+    call = fake_client.chat.completions.calls[0]
+    assert call["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert call["messages"] == _build_project_name_messages("build me a weather dashboard")

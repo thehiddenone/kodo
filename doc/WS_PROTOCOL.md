@@ -215,7 +215,8 @@ Pushed on connect (also embedded in `hello.ack`), and whenever a field below cha
   "effective_workflow_mode": "guided" | "problem_solving" | "judge",
   "edit_control": "review_all" | "allow_all" | "smart",
   "command_control": "defensive" | "permissive" | "smart",
-  "thinking_level": "unlimited" | "medium" | "" | "..." }
+  "thinking_level": "unlimited" | "medium" | "" | "...",
+  "awaiting_first_chunk": false }
 ```
 
 `phase` semantics:
@@ -226,6 +227,19 @@ Pushed on connect (also embedded in `hello.ack`), and whenever a field below cha
 - `stopped` — STOP was issued; no work is in flight.
 - `done` — the project is finalized.
 - `error` — the engine hit an unrecoverable error.
+
+`awaiting_first_chunk` is `true` from the moment an `llm.turn_start` (§5.4) is
+sent until the first `agent.tokens`/`agent.thinking`/toolgen chunk of that
+call arrives, or the stream ends having produced none at all — it's a
+sub-state of `phase == "running"`, which by itself doesn't distinguish
+"awaiting the first chunk" from "mid-stream" or "mid-tool-call". It exists so
+a reconnecting client can correctly reconstruct kodo-vsix's "Awaiting
+response" spinner from this snapshot alone: the live `llm.turn_start` event is
+a one-shot push like any other and is not itself replayed by the outbox once
+delivered (§8), so without this field a client that reconnects mid-turn (any
+window reload while the engine has kept the turn running server-side, since a
+turn is fully decoupled from the WS connection — §8) would have no way to
+know whether to show it.
 
 The header toggles split into **two frozen** and **three never-frozen**:
 
@@ -280,7 +294,7 @@ The streamed text is not just a UI artifact: the engine accumulates it into a `{
 
 ### 5.4 `llm.turn_start` — an LLM call is beginning
 
-Emitted just before each `stream_query` so the panel can show an "awaiting" indicator before the first token arrives.
+Emitted just before each `stream_query` so the panel can show an "awaiting" indicator before the first token arrives. This live event is the *only* thing driving that indicator during a connected session; `state.awaiting_first_chunk` (§5.1) is its reconnect-safe counterpart — the snapshot a client reads on a fresh `hello`/`state` to reconstruct the same indicator when it missed the live event (e.g. it fired before a reload).
 
 ```json
 { "type": "llm.turn_start", "agent": "guide", "model": "claude-sonnet-4-6" }
@@ -483,7 +497,9 @@ Formerly bracketed the security layer's silent SMART-mode intent-judge LLM call.
 
 ### 5.9c `workspace.add_folder` — register a freshly-scaffolded project
 
-Emitted when an agent calls the `create_new_project` tool and the server has scaffolded the new project on disk (its directory, `.kodo/`/`kodo.md` marker, and an initial checkpoint mirror), or when an agent calls `init_project` to augment an *existing* directory the same way (`init_project` skips this push if the directory is already one of the session's registered workspace folders). Asks the extension to add the directory to the open workspace via `vscode.workspace.updateWorkspaceFolders` (no-op if already present). The extension's resulting `onDidChangeWorkspaceFolders` re-pushes `workspace.folders` (§7), reconciling the server's logical-root map. `path` is absolute; `name` is the workspace-folder label.
+Emitted when an agent calls the `create_new_project` tool and the server has scaffolded the new project on disk (its directory, `.kodo/`/`kodo.md` marker, and an initial checkpoint mirror), or when an agent calls `init_project` to augment an *existing* directory the same way (`init_project` skips this push if the directory is already one of the session's registered workspace folders). `create_new_project`'s bootstrap paths (§6.6) — the interactive folder-picker dialog and the autonomous `~/kodo-projects/<name>` directory — both funnel through the same scaffolding code (`EngineCore._create_project`'s no-`path` branch: a slug-named child reserved under whatever the session's physical root is), so this event fires identically for them and `path` is always the project's own directory, never its parent. Asks the extension to add the directory to the open workspace via `vscode.workspace.updateWorkspaceFolders` (no-op if already present).
+
+If this is the window's *first* folder (no `workspaceFolders` open yet), the extension runs the `window.rebind` hand-off (§7.1a) **before** calling `updateWorkspaceFolders` — VS Code restarts the extension host for this specific transition, and `_stableWindowId` cannot derive a matching id across it on its own (see §7.1a for why). Either way, the extension's resulting `onDidChangeWorkspaceFolders` re-pushes `workspace.folders` (§7), reconciling the server's logical-root map. `path` is absolute; `name` is the workspace-folder label.
 
 ```json
 { "type": "workspace.add_folder", "path": "/Users/me/projects/my-todo-app", "name": "My Todo App" }
@@ -817,6 +833,50 @@ The panel is transient client-side (no session entry): the gated tool call's own
 
 ---
 
+### 6.6 `prompt.choose_project_folder` — interactive project bootstrap
+
+Fired by `GateOrchestrator.fire_choose_project_folder` (`EngineCore._bootstrap_project_interactive`) when the `create_new_project` tool is called with **no `path`** and no project/workspace is bound yet in this session (`EngineCore._has_workspace()` is `False`) — regardless of whether the agent supplied a `name`, since a homeless session has nowhere to place *any* name until a workspace root is resolved — and the session is **not** autonomous. Autonomous sessions never reach this gate; they resolve a name (the agent's, else the titler's, else the generic fallback `"project"`) and create it under `~/kodo-projects/` instead, without asking anyone (`EngineCore._bootstrap_project_autonomous`).
+
+> Earlier revision of this section gated the bootstrap on "neither `name` nor `path` given" — that condition is never actually satisfied by a normal agent call (an agent almost always supplies `name`), so the interactive/autonomous paths below were effectively unreachable in practice. Fixed to gate on homelessness instead.
+
+No VS Code folder needs to be open for a session to reach this point at all: `kodo-vsix` launches the local server and lets a session start regardless of `workspaceFolders`, and any tool whose `ToolSpec.requires_project` is set (`create_file`, `edit_file`, `get_root_paths`, `rollback`, ...) rejects a call — before a project/workspace exists — with the fixed message `kodo.toolspecs._workspace.NO_PROJECT_ERROR`: "No project is open in this session. Call `create_new_project` to create one before making this tool call." (an ordinary `{"error": ...}` tool result, not a wire message of its own — see `ToolDispatcher.dispatch`). This is the trigger that leads an agent to call `create_new_project`, landing here.
+
+```json
+{ "type": "prompt.choose_project_folder" }
+```
+
+No extra request fields. The client shows a native "open directory" dialog (`vscode.window.showOpenDialog`, `canSelectFiles: false, canSelectFolders: true` — the OS's own dialog already has a "New Folder" affordance, so no custom UI is needed; `extension.ts`'s `_pickWorkspaceHomeFolder`, shared with the manual "Create Project" command's own no-workspace path, §6.6a). No overwrite confirmation is needed here: the picked folder is a **workspace-home parent**, never the project directory itself, so the server always reserves a fresh, not-yet-existing, slug-named subdirectory under it — there is nothing at the picked path itself that could ever be overwritten.
+
+Response payload:
+
+```json
+{ "type": "prompt.choose_project_folder.response", "path": "/Users/me/projects" }
+```
+
+or, if the user dismissed the dialog:
+
+```json
+{ "type": "prompt.choose_project_folder.response", "error": "cancelled" }
+```
+
+On success the server sets `path` as the session's physical root (`SessionWorkspace.set_physical_root`) and delegates to `EngineCore._create_project(name)` — the same no-`path` placement logic every other project-creation path uses: a slug-named child directory reserved under the root (`/Users/me/projects/my-app`, never `/Users/me/projects` itself). This is deliberate: a second homeless project created later in the same session lands as a **sibling** under the same parent, never nested inside the first one — the parent is remembered because `physical_root` naturally becomes it once the extension re-pushes the `workspace.folders` message after the first project's folder is added (§5.9c). On `error` the tool call returns `{"error": "cancelled"}` to the agent, which should relay this to the user rather than silently falling back to the autonomous path.
+
+No `pending_prompt`-style state is persisted — same reasoning as `prompt.stuck_alert` (§6.5a): nothing is left mid-dispatch if this wait is cut short by a crash, so the tool call simply errors and the agent can retry.
+
+### 6.6a The manual "Kōdo: Create Project" command's no-workspace path
+
+Not a wire message of its own — client-side-only UX built on `project.create` (§7, `MSG_PROJECT_CREATE`) — documented here because it deliberately mirrors §6.6's has-workspace placement and reuses one of its pickers.
+
+A workspace already open (`hasWorkspace`): the command just asks for a project name (`vscode.window.showInputBox`) and sends `project.create` with **`{name}` alone, no `path`** — landing on the exact same `EngineCore._create_project(name)` sibling-under-`physical_root` placement §6.6 uses, so the new project always lands next to the existing workspace folder(s).
+
+No workspace open: a modal explains a workspace is needed and offers two ways to get one — "Select Folder for New Workspace…" (`_pickWorkspaceHomeFolder`, the same picker §6.6 uses, added as the window's first workspace folder via `addWorkspaceFolder`/`_rebindWindowForFirstFolder`, §7.1a) or "Open .code-workspace File…" (a file picker filtered to `*.code-workspace`, opened via the `vscode.openFolder` command — which accepts a workspace-file URI directly and switches the whole window into it). Either choice reloads the window — VS Code has no live way to adopt a first folder or a different workspace file otherwise.
+
+Because the reload tears down the extension host mid-flow, "ask for a name" cannot continue synchronously — the command arms a `globalState` timestamp flag (`kodo.pendingCreateProjectArmedAt`) just before triggering the reload, and the next activation's `hello.ack` handler consumes it (`_resumePendingCreateProjectPrompt`) and resumes exactly at the has-workspace step above. The flag is a plain timestamp, not window-id-scoped like `window.rebind`'s open-session migration (§7.1a) — the `.code-workspace` case can't cheaply predict its post-reload window id (that depends on the first folder *declared inside* the file) — so a resuming window only honors a flag armed within the last 30s, bounding (not eliminating) the odds of a stale flag firing in an unrelated window whose own control connection happens to reconnect around the same time.
+
+Session continuity across this reload gets the full `window.rebind` treatment only for the plain-folder choice (it goes through `addWorkspaceFolder` like any other first-folder addition). Opening a `.code-workspace` file does not — same accepted gap as a user manually dragging a folder into an empty window (§7.1a): there is no hook to run a hand-off before VS Code tears down the old host for either case.
+
+---
+
 ## 7. Client commands (client → server requests)
 
 The client initiates these. Each is a `kind=request`; the server replies `kind=response` with an acknowledgement or requested data.
@@ -862,6 +922,33 @@ File content is **never inlined** into the prompt. The `problem_solver` and `gui
 Crucially, **file content is never written to `session.jsonl`.** The persisted user message stores the *clean* prompt plus opaque links (`attachments: [{id, name, stored}]`, `stored` relative to the session dir). On resume the links are re-expanded into the same `<ATTACHMENT>` tags (`HistoryProjector.load_main_messages`) — no file re-read needed, since the tags don't carry content — so the reconstructed LLM context is byte-identical. A link persisted before `id` existed gets a freshly minted one on resume so it still renders a tag, though `read_attachment` will report it unavailable (its on-disk copy predates the ID-keyed filename).
 
 After persisting, the server emits `user.attachments` (§5) carrying the stored copies' absolute paths so the live webview retargets the just-sent bubble's clickable chips at the durable copies (clicking posts `open_file`). On reload, `session.history` user-message entries carry the same `attachments: [{name, path}]` links. The chip opens the session's **stored copy**, so the session stays intact even if the original file is moved or deleted.
+
+### 7.1a `window.rebind` — window-id continuity hand-off
+
+Tells the server that this window's own stable id is about to change from `old_window_id` to `new_window_id` — sent and **awaited** before the client triggers the transition that causes it, so the transition is sequenced server-side rather than racing a derivation match:
+
+```json
+{ "type": "window.rebind", "old_window_id": "w-1a2b3c4d5e6f7089", "new_window_id": "w-9f8e7d6c5b4a3210" }
+```
+
+```json
+{ "type": "window.rebind.ack" }
+```
+
+**Why this exists.** `_stableWindowId` (`extension.ts`) derives a window's id from `workspaceFolders[0]`'s path once any folder is open, falling back to a `workspaceState`-persisted random id only while the window is genuinely folder-less. That fallback lives in storage scoped to the *current* workspace identity — and VS Code restarts the extension host the moment a folder-less window gains its first folder (its `rootPath` fundamentally changes), which is exactly the workspace-identity change that abandons that storage. The post-restart id, freshly derived from the new folder's path, can never match the pre-restart random one: there is no folder path to anchor to *before* the first folder exists, so this specific transition cannot be made stable by improving the derivation formula alone.
+
+`addWorkspaceFolder` (the handler for `workspace.add_folder`, §5.9c) detects exactly this case (`insertAt === 0`, i.e. this is about to become the window's first folder) and, before calling `vscode.workspace.updateWorkspaceFolders`:
+
+1. Computes `new_window_id` in advance (`_deriveWindowIdFromKey`, the same formula `_stableWindowId` uses).
+2. Sends `window.rebind` and awaits the ack — `SessionManager.rebind_window` re-keys its in-memory `owner_window` map (and each affected session's `owner.json`) from `old_window_id` to `new_window_id`. A no-op, not an error, if `old_window_id` owns nothing (the client cannot know in advance whether this window owns any session).
+3. Migrates the local `globalState` remembered-open-sessions list (`kodo.openSessions.<old_window_id>` → `kodo.openSessions.<new_window_id>`).
+4. Only then triggers the actual folder-add.
+
+Without this hand-off, the reload left a mid-turn session stranded two different ways at once: `_reconcileOpenSessions` (looked up under `kodo.openSessions.<new_window_id>`) found nothing to reopen, since the session was remembered under the old key; and even if the client somehow still knew the session id, `SessionManager.open` explicitly refuses to reopen a session for an id that differs from its recorded owner while that owner is still live/in-grace (§8) — so the reconnect was rejected outright, not merely delayed. Both failure modes are closed by the time the reload completes, since server and client already agree on the new id before it's ever presented.
+
+Best-effort on the round trip: if the control connection is unreachable, the extension still migrates `globalState` locally and proceeds with the folder-add regardless — no worse than having no rebind at all.
+
+Scoped to the transition the extension itself initiates (`create_new_project`/`init_project`/the manual "Create Project" command adding a first folder). A user manually dragging a folder into an empty window that happens to hold a live session isn't covered — the extension gets no advance notice before VS Code tears down the old host for that case either, so there's no hook to run this hand-off from.
 
 ### 7.2 `stop` — global STOP
 

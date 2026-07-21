@@ -72,6 +72,7 @@ class EngineHost(Protocol):
     _queue: asyncio.Queue[dict[str, object]]
     _session: SessionState
     _main_messages: list[Message]
+    _current_prompt_text: str
     _orch_session_id: str
     _current_vendor: str | None
     _replay_subsessions: list[dict[str, object]] | None
@@ -93,6 +94,8 @@ class EngineHost(Protocol):
     def _make_resolver(self, session_id: str) -> PathResolver: ...
 
     def _root_paths(self) -> tuple[RootPath, ...]: ...
+
+    def _has_workspace(self) -> bool: ...
 
     @staticmethod
     def _util_paths() -> dict[str, Path]: ...

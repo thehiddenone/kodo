@@ -332,6 +332,9 @@ class SubagentMixin:
             ),
         )
 
+        # Safety net for a final round with zero deltas — see the matching
+        # comment in ``_turns.py``'s entry-turn caller.
+        self._session.awaiting_first_chunk = False
         await self._sink.send(Envelope.make_stream_end(stream_id))
         await self._emitters.emit_agent_finished(name)
         output = dispatcher.returned_output

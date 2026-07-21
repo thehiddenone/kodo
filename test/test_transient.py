@@ -6,6 +6,7 @@ sessions load prior state, and agent/message logs are appended properly.
 """
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -520,8 +521,26 @@ def test_append_and_read_messages(store: TransientStore) -> None:
     store.append_message("assistant", "Hi! How can I help?")
     messages = store.read_messages()
     assert len(messages) == 2
-    assert messages[0] == {"role": "user", "content": "Hello there."}
-    assert messages[1] == {"role": "assistant", "content": "Hi! How can I help?"}
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"] == "Hello there."
+    assert messages[1]["role"] == "assistant"
+    assert messages[1]["content"] == "Hi! How can I help?"
+
+
+def test_appended_entries_are_stamped_with_id_and_ts(store: TransientStore) -> None:
+    """Every persisted entry gets a unique ``id`` and an ISO-8601 ``ts`` —
+    centralized in ``__append_line`` so every caller (message or marker, main
+    log or subsession) gets both for free, no matter which append method it
+    used."""
+    store.append_message("user", "Hello there.")
+    store.append_marker({"type": "error", "message": "boom", "recoverable": True})
+    lines = store.read_session_lines()
+    assert len(lines) == 2
+    ids = {line["id"] for line in lines}
+    assert len(ids) == 2  # unique per entry
+    for line in lines:
+        assert isinstance(line["id"], str) and line["id"]
+        datetime.fromisoformat(str(line["ts"]))  # parses without raising
 
 
 def test_read_messages_returns_empty_when_no_log(store: TransientStore) -> None:
