@@ -379,11 +379,22 @@ def _read_workspace(session_dir: Path) -> dict[str, object] | None:
     """Read a session's remembered VS Code workspace shape for `session.list`.
 
     Mirrors :func:`_read_project_root`'s read-only, defensive style. Returns
-    ``None`` when nothing was ever pushed (empty physical root and no
-    folders) so the client can tell "never had a workspace" apart from "had
-    one with zero folders" — the latter can't actually happen today (kodo-vsix
-    always sends at least the physical root once a workspace exists), but the
-    distinction costs nothing and keeps the contract honest.
+    ``None`` until at least one folder has earned a checkpoint commit
+    (``TransientStore.workspace_locked_paths`` non-empty) — a session that
+    merely had ``workspace.folders`` pushed to it (every session open in a
+    window gets that, per ``WorkflowEngine.handle_workspace_folders``) but
+    never committed anything has no legitimate claim on that workspace, and
+    must stay resumable with no reload/reopen at all. Without this gate, an
+    empty exploratory session co-resident in a window with a project-owning
+    session would get that project's workspace persisted into its own
+    ``transient.json`` and silently reopen it after a restart — see the
+    ``project_kodo_workspace_session_linkage`` memory (2026-07-22 round) for
+    the incident this fixes.
+
+    The returned ``locked`` flag is always ``True`` when the dict is
+    returned at all — kodo-vsix additionally uses it to decide whether
+    resuming this session into a *different current* workspace needs the
+    user's explicit confirmation first.
     """
     transient = session_dir / "transient.json"
     if not transient.exists():
@@ -392,16 +403,18 @@ def _read_workspace(session_dir: Path) -> dict[str, object] | None:
         data = json.loads(transient.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+    locked_paths = data.get("workspace_locked_paths")
+    if not locked_paths:
+        return None
     physical_root = str(data.get("workspace_physical_root", ""))
     raw_folders = data.get("workspace_folders")
     folders = (
         {str(k): str(v) for k, v in raw_folders.items()} if isinstance(raw_folders, dict) else {}
     )
-    if not physical_root and not folders:
-        return None
     code_file = data.get("workspace_code_file")
     return {
         "physical_root": physical_root,
         "folders": folders,
         "code_workspace_file": code_file if isinstance(code_file, str) and code_file else None,
+        "locked": True,
     }

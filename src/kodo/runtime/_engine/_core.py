@@ -83,6 +83,35 @@ from ._worker import WorkerMixin
 _log = logging.getLogger(__name__)
 
 
+def _reconcile_workspace_folders(
+    pushed: dict[str, str], remembered: dict[str, str], locked_paths: frozenset[str]
+) -> dict[str, str]:
+    """Merge a live ``workspace.folders`` push with what's already remembered.
+
+    Implements the per-folder lock rule: a *pushed* folder is always kept
+    (additions, and any folder still open, always win). A *remembered* folder
+    absent from *pushed* is dropped — unless its resolved path is in
+    *locked_paths* (it has earned a checkpoint commit at some point), in which
+    case it's kept under its remembered name (or a disambiguated variant, if
+    that name now collides with a pushed folder). Never mutates its inputs.
+    """
+    merged = dict(pushed)
+    pushed_paths = set(pushed.values())
+    for name, path in remembered.items():
+        if path in pushed_paths:
+            continue
+        resolved = str(Path(path).resolve())
+        if resolved not in locked_paths:
+            continue
+        key = name
+        suffix = 1
+        while key in merged:
+            suffix += 1
+            key = f"{name} ({suffix})"
+        merged[key] = path
+    return merged
+
+
 class WorkflowEngine(
     LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin, ResumeMixin, WatchdogMixin
 ):
@@ -398,6 +427,15 @@ class WorkflowEngine(
         from a different window — can reopen the same workspace before
         reconnecting (doc/WS_PROTOCOL.md's session-resume section).
 
+        The *persisted* folder map is reconciled against
+        ``TransientStore.workspace_locked_paths`` before it's written (see
+        :func:`_reconcile_workspace_folders`): a folder that has earned a
+        checkpoint commit can never be dropped from it again, even if this
+        push omits it. The *live* in-engine workspace (``self._session_workspace``,
+        below) is unaffected by this — it always reflects exactly what was
+        just pushed, since it drives what the running session can actually
+        operate on right now.
+
         Args:
             physical_root (str): The physical workspace root (informational —
                 the server is already launched against it).
@@ -413,9 +451,12 @@ class WorkflowEngine(
         self._session_workspace.set_code_workspace_file(
             Path(code_workspace_file) if code_workspace_file else None
         )
+        reconciled = _reconcile_workspace_folders(
+            folders, self._transient.workspace_folders, self._transient.workspace_locked_paths
+        )
         self._transient.update(
             workspace_physical_root=physical_root or None,
-            workspace_folders=folders,
+            workspace_folders=reconciled,
             workspace_code_file=code_workspace_file,
         )
         _log.info(

@@ -187,6 +187,7 @@ class TransientStore:
     __workspace_physical_root: str
     __workspace_folders: dict[str, str]
     __workspace_code_file: str | None
+    __workspace_locked_paths: frozenset[str]
 
     def __init__(self, kodo_dir: Path) -> None:
         """Initialise without attaching a session.
@@ -217,6 +218,7 @@ class TransientStore:
         self.__workspace_physical_root = ""
         self.__workspace_folders = {}
         self.__workspace_code_file = None
+        self.__workspace_locked_paths = frozenset()
 
     @property
     def session_id(self) -> str:
@@ -469,6 +471,20 @@ class TransientStore:
         reopening, with a fallback to the folder map if the file is missing.
         """
         return self.__workspace_code_file
+
+    @property
+    def workspace_locked_paths(self) -> frozenset[str]:
+        """Resolved paths of every workspace folder that has ever earned a
+        non-empty checkpoint commit. Once a path is in this set it can never
+        be dropped from :attr:`workspace_folders` again, even if a later
+        ``workspace.folders`` push omits it — see
+        :meth:`~kodo.runtime._engine._core.WorkflowEngine.handle_workspace_folders`
+        for the reconciliation this drives. Populated exclusively via
+        :meth:`lock_workspace_path`, called from
+        :class:`~kodo.runtime._engine._checkpointing.CheckpointCoordinator`
+        the moment a root's mirror actually commits something.
+        """
+        return self.__workspace_locked_paths
 
     @property
     def stage(self) -> str:
@@ -784,6 +800,26 @@ class TransientStore:
         if self.__paths is not None:
             self.__flush(self.__paths)
 
+    def lock_workspace_path(self, path: str) -> None:
+        """Permanently lock *path* into :attr:`workspace_folders`.
+
+        Called once per root the moment its checkpoint mirror produces its
+        first real (non-empty) commit. Additive only — there is no unlock —
+        and flushes immediately, mirroring :meth:`update`. *path* must already
+        be the resolved, absolute form used by the checkpoint mirrors
+        (``CheckpointRef.root``), not necessarily identical byte-for-byte to
+        the raw path kodo-vsix pushes; reconciliation resolves both sides
+        before comparing (see ``WorkflowEngine.handle_workspace_folders``).
+
+        Args:
+            path: The mirror root that just committed.
+        """
+        if path in self.__workspace_locked_paths:
+            return
+        self.__workspace_locked_paths = self.__workspace_locked_paths | {path}
+        if self.__paths is not None:
+            self.__flush(self.__paths)
+
     def append_message(
         self,
         role: str,
@@ -1076,6 +1112,12 @@ class TransientStore:
             self.__workspace_code_file = (
                 code_file if isinstance(code_file, str) and code_file else None
             )
+            raw_locked = data.get("workspace_locked_paths")
+            self.__workspace_locked_paths = (
+                frozenset(str(p) for p in raw_locked)
+                if isinstance(raw_locked, list)
+                else frozenset()
+            )
         except Exception:
             _log.warning("Could not parse transient.json — using defaults")
 
@@ -1143,5 +1185,6 @@ class TransientStore:
             "workspace_physical_root": self.__workspace_physical_root,
             "workspace_folders": self.__workspace_folders,
             "workspace_code_file": self.__workspace_code_file,
+            "workspace_locked_paths": sorted(self.__workspace_locked_paths),
         }
         paths.transient.write_text(json.dumps(data, indent=2), encoding="utf-8")

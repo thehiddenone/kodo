@@ -210,9 +210,14 @@ async def test_list_reports_problem_solving_session(manager_factory) -> None:  #
 
 
 @pytest.mark.asyncio
-async def test_list_reports_remembered_workspace_shape(
+async def test_list_reports_no_workspace_until_a_folder_is_locked(
     manager_factory, tmp_path: Path
 ) -> None:  # type: ignore[no-untyped-def]
+    """A session that only ever had `workspace.folders` pushed to it — no
+    commit, no lock — must stay unbound: this is the exploratory-session
+    case (every session in a window gets the live push, per
+    `WorkflowEngine.handle_workspace_folders`) that must NOT silently drag
+    the session back into a workspace it never earned after a restart."""
     mgr: SessionManager = manager_factory()
     session: Session = await mgr.create("windowA")
     await mgr.bind_connection(session, _conn())
@@ -225,10 +230,31 @@ async def test_list_reports_remembered_workspace_shape(
 
     listing = mgr.list_sessions()
     entry = next(s for s in listing if s["id"] == session.id)
+    assert entry["workspace"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_reports_remembered_workspace_shape_once_locked(
+    manager_factory, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    mgr: SessionManager = manager_factory()
+    session: Session = await mgr.create("windowA")
+    await mgr.bind_connection(session, _conn())
+
+    folder = tmp_path / "myproj"
+    folder.mkdir()
+    await session.engine.handle_workspace_folders(
+        str(tmp_path), {"myproj": str(folder)}, str(tmp_path / "dev.code-workspace")
+    )
+    session.engine._transient.lock_workspace_path(str(folder.resolve()))
+
+    listing = mgr.list_sessions()
+    entry = next(s for s in listing if s["id"] == session.id)
     assert entry["workspace"] == {
         "physical_root": str(tmp_path),
         "folders": {"myproj": str(folder)},
         "code_workspace_file": str(tmp_path / "dev.code-workspace"),
+        "locked": True,
     }
 
 

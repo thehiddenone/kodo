@@ -67,7 +67,8 @@ seamlessly across the change.
                          pending_prompt, pending_security_alert (SECURITY.md §7a),
                          active_subsession (the resume hook), and the session's
                          remembered VS Code workspace shape (workspace_physical_root,
-                         workspace_folders, workspace_code_file — WS_PROTOCOL.md §7.1b)
+                         workspace_folders, workspace_code_file, workspace_locked_paths
+                         — WS_PROTOCOL.md §7.1b, CHECKPOINTS.md §8)
     session.jsonl      — the MAIN session log (see below)
     subsessions/
         <subsession-id>.jsonl   — one per sub-agent run; the sub-agent's full,
@@ -101,6 +102,16 @@ the live in-memory `SessionWorkspace`. This is what lets a session resumed
 from a *different* window (`pickSession()`, WS_PROTOCOL.md §7.1b) have its
 remembered workspace reopened before it loads, instead of resuming into
 whatever happens to already be open.
+
+Since 2026-07-22 that reconciliation is no longer a verbatim overwrite: a
+folder in `workspace_locked_paths` (populated exclusively by
+`TransientStore.lock_workspace_path`, called the moment a root earns its
+first non-empty checkpoint commit — CHECKPOINTS.md §8) can never be dropped
+from `workspace_folders` again, even if a later push omits it. This is what
+makes the session ↔ folder link irreversible once Kōdo has actually done
+work there; resuming a session with any locked folder into a different
+workspace now asks for confirmation first instead of silently reopening
+(WS_PROTOCOL.md §7.1b).
 
 ### `session.jsonl` — the main log
 

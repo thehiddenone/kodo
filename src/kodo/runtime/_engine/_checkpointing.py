@@ -23,6 +23,7 @@ from typing import Protocol
 from kodo.common import Envelope, MessageSink
 from kodo.guided_state import append_new_revision, is_tracked
 from kodo.shellparser import parse_command
+from kodo.state import TransientStore
 from kodo.tools import PathResolver, RootPath
 from kodo.transport import EVT_CHECKPOINT_STATE
 
@@ -49,6 +50,7 @@ class CheckpointHost(Protocol):
     _session: SessionState
     _current_project: dict[str, str] | None
     _orch_session_id: str
+    _transient: TransientStore
 
     def _make_resolver(self, session_id: str) -> PathResolver: ...
 
@@ -112,13 +114,24 @@ class CheckpointCoordinator:
         Commits the root enclosing the primary path. ``run_command`` additionally
         sweeps every other already-initialised mirror (no-op when clean) so a
         command that wrote outside its cwd's root is still captured.
+
+        Every root that actually earns a non-empty commit here — the primary
+        one, plus any the ``run_command`` sweep catches — permanently locks
+        that folder into the session's remembered workspace shape (see
+        ``TransientStore.lock_workspace_path`` /
+        ``WorkflowEngine.handle_workspace_folders``). This is the sole place
+        that lock is ever set.
         """
         if not paths:
             return None
         label = self.label(tool_name, tool_input)
         ref = await self._mirrors.commit_for_path(paths[0], label)
+        if ref is not None:
+            self._host._transient.lock_workspace_path(ref.root)
         if tool_name == "run_command":
-            await self._mirrors.sweep_initialized(label)
+            swept_roots = await self._mirrors.sweep_initialized(label)
+            for root in swept_roots:
+                self._host._transient.lock_workspace_path(str(root))
         return ref
 
     def mutation_paths(self, tool_name: str, tool_input: dict[str, object]) -> list[Path]:

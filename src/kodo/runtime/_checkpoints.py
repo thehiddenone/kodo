@@ -374,7 +374,7 @@ class RootMirrorManager:
             await self._record(root, sha, parent, label, kind="tool_call")
         return CheckpointRef(root=str(root), sha=sha, parent=parent)
 
-    async def sweep_initialized(self, label: str) -> None:
+    async def sweep_initialized(self, label: str) -> list[Path]:
         """Commit every already-created mirror (no-op when clean).
 
         Catches writes a command made outside the cwd's root (any root that
@@ -383,13 +383,21 @@ class RootMirrorManager:
 
         Args:
             label: Commit message for any non-empty sweep.
+
+        Returns:
+            list[Path]: The roots that actually got a non-empty commit —
+            callers use this to lock those folders in (see
+            :meth:`~kodo.runtime._engine._checkpointing.CheckpointCoordinator.commit`).
         """
+        committed: list[Path] = []
         async with self.__lock:
             for root, mirror in self.__mirrors.items():
                 parent = await mirror.head_sha()
                 sha = await mirror.commit(label)
                 if sha != parent:
                     await self._record(root, sha, parent, label, kind="tool_call")
+                    committed.append(root)
+        return committed
 
     async def undo(self, root: str, sha: str, resolution: str | None = None) -> CheckpointState:
         """Undo checkpoint *sha* in *root*'s mirror; return the updated state.

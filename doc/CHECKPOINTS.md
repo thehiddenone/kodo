@@ -332,3 +332,29 @@ nothing happens until the modal resolves.
   `RootMirrorManager` (the same on-disk artifacts a real tool call would
   produce) so the test exercises the server/protocol layer without needing
   an LLM.
+
+## 8. A root's first commit also locks its workspace folder (added 2026-07-22)
+
+A root's *first non-empty* checkpoint commit has a side effect outside the
+checkpoint system itself: it permanently locks that folder into the owning
+session's remembered VS Code workspace shape, so the session can never lose
+its link to it — see doc/WS_PROTOCOL.md §7.1b for the full design (the
+per-folder reconciliation rule, the client-side resume/confirmation UX, and
+why `workspace_physical_root`/`workspace_code_file` are deliberately left
+unlocked).
+
+The hook lives entirely in `CheckpointCoordinator.commit()`
+(`kodo/runtime/_engine/_checkpointing.py`), not in `RootMirrorManager` itself
+— the mirror layer stays workspace-agnostic:
+
+- The primary path's root, when `commit_for_path` returns a real ref.
+- Every root the `run_command` sweep (`RootMirrorManager.sweep_initialized`,
+  which now *returns* the roots it actually committed instead of discarding
+  that information) also commits — a command that mutates a second,
+  already-initialized root must lock that root too, not just the one the
+  command's cwd happened to resolve to.
+
+Each locked root is recorded via `TransientStore.lock_workspace_path(path)` —
+additive only, no unlock, flushed to `transient.json` immediately
+(`workspace_locked_paths`). A no-op commit (nothing actually changed) locks
+nothing, same as it produces no `CheckpointRef`.

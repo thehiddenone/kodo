@@ -509,6 +509,35 @@ def test_workspace_physical_root_and_folders_default_empty(store: TransientStore
     assert store.workspace_code_file is None
 
 
+def test_workspace_locked_paths_default_empty(store: TransientStore) -> None:
+    assert store.workspace_locked_paths == frozenset()
+
+
+def test_lock_workspace_path_adds_and_persists(store: TransientStore) -> None:
+    store.lock_workspace_path("/home/dev/kodo")
+    assert store.workspace_locked_paths == frozenset({"/home/dev/kodo"})
+    data = json.loads((store.session_dir / "transient.json").read_text(encoding="utf-8"))
+    assert data["workspace_locked_paths"] == ["/home/dev/kodo"]
+
+
+def test_lock_workspace_path_is_additive_and_idempotent(store: TransientStore) -> None:
+    store.lock_workspace_path("/home/dev/kodo")
+    store.lock_workspace_path("/home/dev/kodo-vsix")
+    store.lock_workspace_path("/home/dev/kodo")
+    assert store.workspace_locked_paths == frozenset({"/home/dev/kodo", "/home/dev/kodo-vsix"})
+
+
+def test_resumed_session_restores_locked_paths(kodo_dir: Path) -> None:
+    session_id = "1748793111"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    first.lock_workspace_path("/home/dev/kodo")
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.workspace_locked_paths == frozenset({"/home/dev/kodo"})
+
+
 def test_update_with_no_kwargs_does_not_raise(store: TransientStore) -> None:
     store.update()
     assert store.stage == "IDLE"

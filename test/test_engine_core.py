@@ -289,9 +289,10 @@ async def test_handle_workspace_folders_persists_workspace_shape(tmp_path: Path)
     assert transient.workspace_physical_root == str(tmp_path)
     assert transient.workspace_folders == {"myproj": str(folder)}
     assert transient.workspace_code_file == "/home/dev/dev.code-workspace"
-    assert engine._session_workspace.code_workspace_file == Path(
-        "/home/dev/dev.code-workspace"
-    ).resolve()
+    assert (
+        engine._session_workspace.code_workspace_file
+        == Path("/home/dev/dev.code-workspace").resolve()
+    )
 
 
 async def test_handle_workspace_folders_defaults_code_file_to_none(tmp_path: Path) -> None:
@@ -299,6 +300,71 @@ async def test_handle_workspace_folders_defaults_code_file_to_none(tmp_path: Pat
     await engine.handle_workspace_folders(str(tmp_path), {})
     assert transient.workspace_code_file is None
     assert engine._session_workspace.code_workspace_file is None
+
+
+async def test_handle_workspace_folders_new_folder_is_always_accepted(tmp_path: Path) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+
+    await engine.handle_workspace_folders(str(tmp_path), {"a": str(a)})
+    await engine.handle_workspace_folders(str(tmp_path), {"a": str(a), "b": str(b)})
+
+    assert transient.workspace_folders == {"a": str(a), "b": str(b)}
+
+
+async def test_handle_workspace_folders_drops_unlocked_folder_on_removal(tmp_path: Path) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+
+    await engine.handle_workspace_folders(str(tmp_path), {"a": str(a), "b": str(b)})
+    # Neither folder was ever checkpointed — removing one from the live push
+    # drops it, exactly as pushed.
+    await engine.handle_workspace_folders(str(tmp_path), {"a": str(a)})
+
+    assert transient.workspace_folders == {"a": str(a)}
+
+
+async def test_handle_workspace_folders_keeps_locked_folder_after_removal(tmp_path: Path) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+
+    await engine.handle_workspace_folders(str(tmp_path), {"a": str(a), "b": str(b)})
+    transient.lock_workspace_path(str(b.resolve()))
+
+    # The user removes "b" from the live workspace — it must survive in the
+    # remembered folder map because it's locked.
+    await engine.handle_workspace_folders(str(tmp_path), {"a": str(a)})
+
+    assert transient.workspace_folders == {"a": str(a), "b": str(b)}
+
+
+async def test_handle_workspace_folders_locked_folder_name_collision_is_disambiguated(
+    tmp_path: Path,
+) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    old_b = tmp_path / "old_b"
+    new_b = tmp_path / "new_b"
+    old_b.mkdir()
+    new_b.mkdir()
+
+    await engine.handle_workspace_folders(str(tmp_path), {"b": str(old_b)})
+    transient.lock_workspace_path(str(old_b.resolve()))
+
+    # A different folder now claims the name "b" the locked folder used to
+    # have — the locked folder must still survive, under some other key.
+    await engine.handle_workspace_folders(str(tmp_path), {"b": str(new_b)})
+
+    assert transient.workspace_folders["b"] == str(new_b)
+    assert str(old_b) in transient.workspace_folders.values()
 
 
 # ---------------------------------------------------------------------------

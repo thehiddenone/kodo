@@ -14,6 +14,7 @@ from pathlib import Path
 from kodo.runtime._checkpoints import CheckpointRef
 from kodo.runtime._engine._checkpointing import CheckpointCoordinator
 from kodo.runtime._session import SessionState
+from kodo.state import TransientStore
 from kodo.tools import RootPath
 
 
@@ -39,6 +40,7 @@ class _FakeHost:
         self._session = SessionState(session_id="s1")
         self._current_project = current_project
         self._orch_session_id = "s1"
+        self._transient = TransientStore(root / ".kodo-transient")
 
     def _make_resolver(self, session_id: str) -> _FakeResolver:
         return _FakeResolver(self._root)
@@ -217,6 +219,39 @@ async def test_commit_run_command_sweeps_other_mirrors(tmp_path: Path) -> None:
     ref = await coordinator.commit("run_command", {"command": "touch a.txt"}, paths)
 
     assert ref is not None
+
+
+async def test_commit_locks_the_committed_root(tmp_path: Path) -> None:
+    coordinator, host, _sink = _make_coordinator(tmp_path)
+    assert host._transient.workspace_locked_paths == frozenset()
+
+    paths = await coordinator.prepare("edit_file", {"path": "a.txt"})
+    (tmp_path / "a.txt").write_text("hello\n")
+    ref = await coordinator.commit("edit_file", {"path": "a.txt"}, paths)
+
+    assert ref is not None
+    assert host._transient.workspace_locked_paths == frozenset({ref.root})
+
+
+async def test_commit_with_no_paths_does_not_lock_anything(tmp_path: Path) -> None:
+    coordinator, host, _sink = _make_coordinator(tmp_path)
+    await coordinator.commit("edit_file", {}, [])
+    assert host._transient.workspace_locked_paths == frozenset()
+
+
+async def test_noop_commit_does_not_lock_anything(tmp_path: Path) -> None:
+    coordinator, host, _sink = _make_coordinator(tmp_path)
+    paths = await coordinator.prepare("edit_file", {"path": "a.txt"})
+    (tmp_path / "a.txt").write_text("hello\n")
+    ref = await coordinator.commit("edit_file", {"path": "a.txt"}, paths)
+    assert ref is not None
+
+    # Same content again → no-op commit; the root is already locked from the
+    # first real commit above, so this just confirms nothing new is added.
+    paths = await coordinator.prepare("edit_file", {"path": "a.txt"})
+    ref2 = await coordinator.commit("edit_file", {"path": "a.txt"}, paths)
+    assert ref2 is None
+    assert host._transient.workspace_locked_paths == frozenset({ref.root})
 
 
 # ---------------------------------------------------------------------------

@@ -110,3 +110,36 @@ async def test_two_roots_map_to_independent_mirrors(tmp_path: Path) -> None:
     assert ref_b.root == str(root_b.resolve())
     assert (root_a / ".kodo" / "checkpoints").exists()
     assert (root_b / ".kodo" / "checkpoints").exists()
+
+
+async def test_sweep_initialized_returns_only_roots_that_actually_committed(
+    tmp_path: Path,
+) -> None:
+    root_a = tmp_path / "a"
+    root_b = tmp_path / "b"
+    root_a.mkdir()
+    root_b.mkdir()
+    mgr = RootMirrorManager([root_a, root_b])
+
+    await mgr.prepare(root_a / "f.txt")
+    (root_a / "f.txt").write_text("a\n")
+    assert await mgr.commit_for_path(root_a / "f.txt", "a") is not None
+
+    await mgr.prepare(root_b / "f.txt")
+    (root_b / "f.txt").write_text("b\n")
+    assert await mgr.commit_for_path(root_b / "f.txt", "b") is not None
+
+    # root_a is clean since its last commit; root_b picked up a further write
+    # that was never explicitly committed — the sweep should catch only it.
+    (root_b / "f.txt").write_text("b2\n")
+
+    committed = await mgr.sweep_initialized("sweep")
+    assert committed == [root_b.resolve()]
+
+
+async def test_sweep_initialized_returns_empty_when_clean(tmp_path: Path) -> None:
+    mgr = RootMirrorManager([tmp_path])
+    await mgr.prepare(tmp_path / "a.txt")
+    (tmp_path / "a.txt").write_text("one\n")
+    assert await mgr.commit_for_path(tmp_path / "a.txt", "create") is not None
+    assert await mgr.sweep_initialized("sweep") == []
