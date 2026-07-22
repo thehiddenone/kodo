@@ -77,9 +77,17 @@ MSG_PROMPT_SUBMIT = "prompt.submit"
 MSG_STOP = "stop"
 
 # Client → Server. List all persisted sessions for the picker. Server replies
-# with ``{sessions: [{id, name, project_root, taken}]}``. VSIX derives
-# openability (project loaded? taken?) from those fields; also used to
-# reconcile a window's remembered-open sessions after a reload the panel
+# with ``{sessions: [{id, name, project_root, taken, workspace}]}``.
+# ``workspace`` is ``{physical_root, folders: {name: path}, code_workspace_file}``
+# (mirroring ``workspace.folders``'s own payload shape) or ``null`` if the
+# session never had a workspace pushed to it (e.g. a Problem-Solving session
+# that was never connected to a VS Code window with folders open). VSIX uses
+# ``taken`` to gate cross-window opens, and ``workspace`` to reopen the
+# session's remembered workspace into the current window (replacing its
+# folder set) before resuming a session picked via `pickSession()` — see
+# WS_PROTOCOL.md's session-resume section; ``project_root`` alone no longer
+# gates openability now that ``workspace`` covers the general case. Also used
+# to reconcile a window's remembered-open sessions after a reload the panel
 # serializer couldn't restore (see kodo-vsix extension.ts).
 MSG_SESSION_LIST = "session.list"
 
@@ -179,7 +187,16 @@ MSG_THINKING_LEVEL_SET = "thinking_level.set"
 # Client → Server. Push the VS Code workspace folder map (logical name →
 # physical path) plus the physical root. Sent on connect and on every
 # workspace-folders change; the server rebuilds its WorkspaceLayout
-# logical-root map. Payload: ``{physical_root, folders: {name: path}}``.
+# logical-root map. Payload: ``{physical_root, folders: {name: path},
+# code_workspace_file?: str}`` — ``code_workspace_file`` is the absolute path
+# of the ``.code-workspace`` file the window was opened from, omitted/``null``
+# for a plain folder workspace (kodo-vsix never sends it for VS Code's own
+# in-memory ``untitled:`` multi-root workspace either — there is no file on
+# disk a future session could reopen). The server persists this whole shape
+# to the session's ``transient.json`` (doc/SESSIONS.md), not just the live
+# in-memory ``SessionWorkspace`` — see the session-resume section of
+# WS_PROTOCOL.md for how kodo-vsix uses it to reopen a session's remembered
+# workspace before resuming a *different* session picked via `session.list`.
 MSG_WORKSPACE_FOLDERS = "workspace.folders"
 
 # Client → Server. Bind the session's current project (Guided mode). Sent once,

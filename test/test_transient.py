@@ -477,6 +477,38 @@ def test_resumed_session_restores_thinking_level(kodo_dir: Path) -> None:
     assert second.thinking_level == "high"
 
 
+def test_resumed_session_restores_workspace_shape(kodo_dir: Path) -> None:
+    session_id = "1748792999"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    first.update(
+        workspace_physical_root="/home/dev",
+        workspace_folders={"kodo": "/home/dev/kodo", "kodo-vsix": "/home/dev/kodo-vsix"},
+        workspace_code_file="/home/dev/dev.code-workspace",
+    )
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.workspace_physical_root == "/home/dev"
+    assert second.workspace_folders == {
+        "kodo": "/home/dev/kodo",
+        "kodo-vsix": "/home/dev/kodo-vsix",
+    }
+    assert second.workspace_code_file == "/home/dev/dev.code-workspace"
+
+
+def test_workspace_code_file_can_be_cleared_back_to_none(store: TransientStore) -> None:
+    store.update(workspace_code_file="/home/dev/dev.code-workspace")
+    store.update(workspace_code_file=None)
+    assert store.workspace_code_file is None
+
+
+def test_workspace_physical_root_and_folders_default_empty(store: TransientStore) -> None:
+    assert store.workspace_physical_root == ""
+    assert store.workspace_folders == {}
+    assert store.workspace_code_file is None
+
+
 def test_update_with_no_kwargs_does_not_raise(store: TransientStore) -> None:
     store.update()
     assert store.stage == "IDLE"

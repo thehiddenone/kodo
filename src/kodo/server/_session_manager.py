@@ -236,10 +236,13 @@ class SessionManager:
 
         Returns:
             list[dict]: ``{id, name, created_at, last_modified, project_root,
-            taken}`` per session; ``taken`` is ``True`` while a live window holds
-            it.  ``project_root`` is the bound Guided project (``None`` ⇒
-            problem-solving-only, openable anywhere).  ``created_at`` /
-            ``last_modified`` are ISO-8601 strings (``""`` if unknown).
+            taken, workspace}`` per session; ``taken`` is ``True`` while a
+            live window holds it.  ``project_root`` is the bound Guided
+            project (``None`` ⇒ problem-solving-only, openable anywhere).
+            ``workspace`` is ``{physical_root, folders, code_workspace_file}``
+            (the session's remembered VS Code workspace shape) or ``None`` if
+            nothing was ever pushed. ``created_at`` / ``last_modified`` are
+            ISO-8601 strings (``""`` if unknown).
         """
         out: list[dict[str, object]] = []
         sessions_dir = self.__layout.sessions_dir
@@ -257,6 +260,7 @@ class SessionManager:
                     "last_modified": last_modified,
                     "project_root": _read_project_root(path),
                     "taken": path.name in self.__live_conn,
+                    "workspace": _read_workspace(path),
                 }
             )
         return out
@@ -369,3 +373,35 @@ def _read_project_root(session_dir: Path) -> str | None:
     if isinstance(project, dict) and project.get("root"):
         return str(project["root"])
     return None
+
+
+def _read_workspace(session_dir: Path) -> dict[str, object] | None:
+    """Read a session's remembered VS Code workspace shape for `session.list`.
+
+    Mirrors :func:`_read_project_root`'s read-only, defensive style. Returns
+    ``None`` when nothing was ever pushed (empty physical root and no
+    folders) so the client can tell "never had a workspace" apart from "had
+    one with zero folders" — the latter can't actually happen today (kodo-vsix
+    always sends at least the physical root once a workspace exists), but the
+    distinction costs nothing and keeps the contract honest.
+    """
+    transient = session_dir / "transient.json"
+    if not transient.exists():
+        return None
+    try:
+        data = json.loads(transient.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    physical_root = str(data.get("workspace_physical_root", ""))
+    raw_folders = data.get("workspace_folders")
+    folders = (
+        {str(k): str(v) for k, v in raw_folders.items()} if isinstance(raw_folders, dict) else {}
+    )
+    if not physical_root and not folders:
+        return None
+    code_file = data.get("workspace_code_file")
+    return {
+        "physical_root": physical_root,
+        "folders": folders,
+        "code_workspace_file": code_file if isinstance(code_file, str) and code_file else None,
+    }

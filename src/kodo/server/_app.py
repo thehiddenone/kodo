@@ -665,7 +665,11 @@ async def _handle_workspace_folders(req: Request) -> None:
     physical_root = str(req.env.payload.get("physical_root", ""))
     raw = req.env.payload.get("folders", {})
     folders = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
-    await session.engine.handle_workspace_folders(physical_root, folders)
+    raw_code_file = req.env.payload.get("code_workspace_file")
+    code_workspace_file = (
+        raw_code_file if isinstance(raw_code_file, str) and raw_code_file else None
+    )
+    await session.engine.handle_workspace_folders(physical_root, folders, code_workspace_file)
     await req.reply({"type": "workspace.folders.ack"})
 
 

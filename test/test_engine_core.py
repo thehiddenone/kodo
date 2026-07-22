@@ -277,6 +277,30 @@ async def test_handle_workspace_folders_blank_physical_root_leaves_it_unchanged(
     assert engine._session_workspace.physical_root == tmp_path.resolve()
 
 
+async def test_handle_workspace_folders_persists_workspace_shape(tmp_path: Path) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    folder = tmp_path / "myproj"
+    folder.mkdir()
+
+    await engine.handle_workspace_folders(
+        str(tmp_path), {"myproj": str(folder)}, "/home/dev/dev.code-workspace"
+    )
+
+    assert transient.workspace_physical_root == str(tmp_path)
+    assert transient.workspace_folders == {"myproj": str(folder)}
+    assert transient.workspace_code_file == "/home/dev/dev.code-workspace"
+    assert engine._session_workspace.code_workspace_file == Path(
+        "/home/dev/dev.code-workspace"
+    ).resolve()
+
+
+async def test_handle_workspace_folders_defaults_code_file_to_none(tmp_path: Path) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    await engine.handle_workspace_folders(str(tmp_path), {})
+    assert transient.workspace_code_file is None
+    assert engine._session_workspace.code_workspace_file is None
+
+
 # ---------------------------------------------------------------------------
 # bind_project / _bind_project
 # ---------------------------------------------------------------------------

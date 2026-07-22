@@ -156,12 +156,14 @@ class SessionWorkspace:
 
     __physical_root: Path | None
     __folders: dict[str, Path]
+    __code_workspace_file: Path | None
 
     def __init__(
         self, physical_root: Path | None = None, folders: dict[str, Path] | None = None
     ) -> None:
         self.__physical_root = physical_root.resolve() if physical_root is not None else None
         self.__folders = {name: Path(p).resolve() for name, p in (folders or {}).items()}
+        self.__code_workspace_file = None
 
     @property
     def physical_root(self) -> Path | None:
@@ -173,6 +175,19 @@ class SessionWorkspace:
         """Copy of the logical-root map (name → physical path)."""
         return dict(self.__folders)
 
+    @property
+    def code_workspace_file(self) -> Path | None:
+        """The ``.code-workspace`` file the window was opened from, if any.
+
+        ``None`` for a plain folder/multi-root-by-hand workspace, or when
+        kodo-vsix hasn't pushed one yet. Mirrors what
+        ``kodo.state.TransientStore.workspace_code_file`` persists — kept
+        here too so this object's own "mirrors this window's workspace
+        shape" invariant stays true for in-process consumers that only ever
+        see the live ``SessionWorkspace``, not the persisted store.
+        """
+        return self.__code_workspace_file
+
     def set_physical_root(self, root: Path) -> None:
         """Replace the physical root (pushed over the WS protocol, or resolved
         explicitly by a project-bootstrap flow)."""
@@ -181,6 +196,11 @@ class SessionWorkspace:
     def set_folders(self, folders: dict[str, Path]) -> None:
         """Replace the logical-root folder map (pushed over the WS protocol)."""
         self.__folders = {name: Path(p).resolve() for name, p in folders.items()}
+
+    def set_code_workspace_file(self, path: Path | None) -> None:
+        """Replace the remembered ``.code-workspace`` file (pushed over the
+        WS protocol), or clear it with ``None``."""
+        self.__code_workspace_file = path.resolve() if path is not None else None
 
 
 @dataclass(frozen=True)

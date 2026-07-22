@@ -387,18 +387,37 @@ class WorkflowEngine(
             self._resume_subsession_pending,
         )
 
-    async def handle_workspace_folders(self, physical_root: str, folders: dict[str, str]) -> None:
+    async def handle_workspace_folders(
+        self, physical_root: str, folders: dict[str, str], code_workspace_file: str | None = None
+    ) -> None:
         """Update the logical-root folder map (pushed over the WS protocol).
+
+        Also persists the window's whole workspace shape to ``transient.json``
+        (``TransientStore.workspace_physical_root``/``workspace_folders``/
+        ``workspace_code_file``) so a future resume of this session — possibly
+        from a different window — can reopen the same workspace before
+        reconnecting (doc/WS_PROTOCOL.md's session-resume section).
 
         Args:
             physical_root (str): The physical workspace root (informational —
                 the server is already launched against it).
             folders (dict[str, str]): Logical name → physical path for every
                 open VS Code workspace folder.
+            code_workspace_file (str | None): Absolute path of the
+                ``.code-workspace`` file the window was opened from, or
+                ``None`` for a plain folder workspace.
         """
         if physical_root:
             self._session_workspace.set_physical_root(Path(physical_root))
         self._session_workspace.set_folders({k: Path(v) for k, v in folders.items()})
+        self._session_workspace.set_code_workspace_file(
+            Path(code_workspace_file) if code_workspace_file else None
+        )
+        self._transient.update(
+            workspace_physical_root=physical_root or None,
+            workspace_folders=folders,
+            workspace_code_file=code_workspace_file,
+        )
         _log.info(
             "Workspace folder map updated (physical_root=%s): %s",
             physical_root,

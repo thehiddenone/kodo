@@ -8,7 +8,8 @@ use and reused across restarts when the session is resumed.  Layout::
         transient.json   — mutable runtime state (stage, prompt, autonomous,
                            active_subsession, security_rules,
                            security_path_rules, pending_security_alert,
-                           pending_edit_review)
+                           pending_edit_review, workspace_physical_root,
+                           workspace_folders, workspace_code_file)
         session.jsonl    — append-only MAIN session log: top-level LLM messages
                            (agent-agnostic — Guide and Problem Solver
                            share it) interleaved with ``subsession_start`` /
@@ -183,6 +184,9 @@ class TransientStore:
     __pending_edit_review: str | None
     __active_subsession: dict[str, object] | None
     __current_project: dict[str, str] | None
+    __workspace_physical_root: str
+    __workspace_folders: dict[str, str]
+    __workspace_code_file: str | None
 
     def __init__(self, kodo_dir: Path) -> None:
         """Initialise without attaching a session.
@@ -210,6 +214,9 @@ class TransientStore:
         self.__pending_edit_review = None
         self.__active_subsession = None
         self.__current_project = None
+        self.__workspace_physical_root = ""
+        self.__workspace_folders = {}
+        self.__workspace_code_file = None
 
     @property
     def session_id(self) -> str:
@@ -432,6 +439,36 @@ class TransientStore:
         same project and crash-resume of a Guided turn keeps working.
         """
         return self.__current_project
+
+    @property
+    def workspace_physical_root(self) -> str:
+        """The remembered VS Code window's physical root (see
+        ``kodo.project.SessionWorkspace``), persisted so a session picked
+        from a *different* window/workspace can be reopened into the right
+        place before it resumes. ``""`` if never pushed (e.g. a
+        Problem-Solving session that never had a workspace open).
+        """
+        return self.__workspace_physical_root
+
+    @property
+    def workspace_folders(self) -> dict[str, str]:
+        """The remembered logical-name → physical-path folder map, persisted
+        alongside :attr:`workspace_physical_root`. Insertion order matches
+        the VS Code window's own workspace-folder order at the time of the
+        last push — kodo-vsix relies on this to reconstruct which folder was
+        ``workspaceFolders[0]`` when reopening.
+        """
+        return dict(self.__workspace_folders)
+
+    @property
+    def workspace_code_file(self) -> str | None:
+        """Absolute path of the ``.code-workspace`` file the window was
+        opened from, if any (``None`` for a plain folder/multi-root-by-hand
+        workspace, or an in-memory ``untitled:`` workspace kodo-vsix never
+        reports here). Preferred over :attr:`workspace_folders` when
+        reopening, with a fallback to the folder map if the file is missing.
+        """
+        return self.__workspace_code_file
 
     @property
     def stage(self) -> str:
@@ -668,6 +705,9 @@ class TransientStore:
         pending_edit_review: str | None = _UNSET,  # type: ignore[assignment]
         active_subsession: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
         current_project: dict[str, str] | None = _UNSET,  # type: ignore[assignment]
+        workspace_physical_root: str | None = None,
+        workspace_folders: dict[str, str] | None = None,
+        workspace_code_file: str | None = _UNSET,  # type: ignore[assignment]
     ) -> None:
         """Update mutable fields and flush ``transient.json`` to disk.
 
@@ -696,6 +736,20 @@ class TransientStore:
                 (the main agent holds the turn again). Left unchanged if omitted.
             current_project (dict[str, str] | None): The session's locked
                 current project ``{root, name}``. Left unchanged if omitted.
+            workspace_physical_root (str | None): The VS Code window's
+                physical root to remember for reopening on a future resume
+                from a different window. Left unchanged if omitted (``None``)
+                — callers pass ``None`` rather than ``""`` when the pushed
+                value isn't yet known, mirroring
+                ``WorkflowEngine.handle_workspace_folders``'s own guard.
+            workspace_folders (dict[str, str] | None): The logical-name →
+                physical-path folder map to remember, in the VS Code
+                window's own order. Left unchanged if omitted; pass ``{}``
+                explicitly to remember "no folders open."
+            workspace_code_file (str | None): Absolute path of the
+                remembered ``.code-workspace`` file, or ``None`` to remember
+                "no workspace file" (a plain folder workspace). Left
+                unchanged if omitted.
         """
         if stage is not None:
             self.__stage = stage
@@ -721,6 +775,12 @@ class TransientStore:
             self.__active_subsession = active_subsession
         if current_project is not _UNSET:
             self.__current_project = current_project
+        if workspace_physical_root is not None:
+            self.__workspace_physical_root = workspace_physical_root
+        if workspace_folders is not None:
+            self.__workspace_folders = dict(workspace_folders)
+        if workspace_code_file is not _UNSET:
+            self.__workspace_code_file = workspace_code_file
         if self.__paths is not None:
             self.__flush(self.__paths)
 
@@ -1005,6 +1065,17 @@ class TransientStore:
                 if isinstance(project, dict) and project.get("root")
                 else None
             )
+            self.__workspace_physical_root = str(data.get("workspace_physical_root", ""))
+            raw_folders = data.get("workspace_folders")
+            self.__workspace_folders = (
+                {str(k): str(v) for k, v in raw_folders.items()}
+                if isinstance(raw_folders, dict)
+                else {}
+            )
+            code_file = data.get("workspace_code_file")
+            self.__workspace_code_file = (
+                code_file if isinstance(code_file, str) and code_file else None
+            )
         except Exception:
             _log.warning("Could not parse transient.json — using defaults")
 
@@ -1069,5 +1140,8 @@ class TransientStore:
             "pending_edit_review": self.__pending_edit_review,
             "active_subsession": self.__active_subsession,
             "current_project": self.__current_project,
+            "workspace_physical_root": self.__workspace_physical_root,
+            "workspace_folders": self.__workspace_folders,
+            "workspace_code_file": self.__workspace_code_file,
         }
         paths.transient.write_text(json.dumps(data, indent=2), encoding="utf-8")

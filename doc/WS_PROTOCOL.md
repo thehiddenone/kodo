@@ -24,7 +24,10 @@ share; everything else is internal.
 >   window, `hello.ack` carries `error:"session_in_use"` and the client opens a
 >   fresh session. (`workspace_root` was removed from `hello.ack`.)
 > - New client→server: **`session.list`** (→ `{sessions:[{id,name,project_root,
->   taken}]}` for the picker) and **`session.release`** (free this window's
+>   taken, workspace}]}` for the picker — `workspace` is the session's
+>   remembered VS Code workspace shape, `{physical_root, folders,
+>   code_workspace_file}` or `null`, added 2026-07-22 for session-resume
+>   workspace linkage, see §7.1b) and **`session.release`** (free this window's
 >   session immediately on graceful close).
 > - New server→client event: **`llm.waiting`** `{waiting, reason:"queued"|
 >   "throttled", retry_in_seconds?}` — emitted by the LLM gateway while a request
@@ -948,6 +951,25 @@ Because the write is a local `globalState.update` — no network round trip — 
 **`.code-workspace` files are covered too** (previously an accepted gap): `_resolveFutureWindowKeyForCodeWorkspace` parses the picked file's `folders[0].path` (resolved relative to the file's own directory, per the format) to predict the future derivation key before parsing was worth the trouble for a message-based hand-off. A malformed/unreadable file just skips arming continuity, falling back to the pre-existing (organic, no-prior-id) behavior.
 
 Scoped to the transition the extension itself initiates (`create_new_project`/`init_project`/the manual "Create Project" command adding a first folder or opening a `.code-workspace` file). A user manually dragging a folder into an empty window that happens to hold a live session still isn't covered — the extension gets no advance notice before VS Code tears down the old host for that case either, so there's no hook to arm continuity from.
+
+### 7.1b Session ↔ workspace linkage — reopening a session's remembered workspace on resume
+
+**Added 2026-07-22.** Every session now remembers the whole VS Code workspace shape it was last driven from — not just the Guided-mode project binding `current_project` already tracked. `workspace.folders` (§7, `MSG_WORKSPACE_FOLDERS`) gains an optional `code_workspace_file: str` field (absolute path of the `.code-workspace` file the window was opened from, omitted for a plain folder workspace — kodo-vsix's `_codeWorkspaceFile()` deliberately excludes VS Code's own in-memory `untitled:` scheme minted for a fresh multi-root workspace, since there is no file on disk a future session could reopen). The server persists the whole shape — `physical_root`, `folders`, `code_workspace_file` — to `transient.json` on every push (`WorkflowEngine.handle_workspace_folders` → `TransientStore.update(workspace_physical_root=..., workspace_folders=..., workspace_code_file=...)`; see doc/SESSIONS.md), not just the live in-memory `SessionWorkspace`, so it survives a server restart and outlives the connection that pushed it.
+
+`session.list` (§ above) exposes this per session as `workspace: {physical_root, folders, code_workspace_file} | null` — `null` only when nothing was ever pushed (a Problem-Solving session that never connected to a window with folders open).
+
+**Resuming a session picked via `pickSession()`** (the command-palette "Kōdo: Open Session" flow — the *only* path this covers; passive reconnect/activation is unaffected and assumes it's already sitting in the right workspace) now reopens that remembered workspace into the *current* window — reused, never a second window — before loading the session, so a resumed agent has every root it expects immediately. Decision logic lives in kodo-vsix's `workspace-resume-policy.ts` (`resumeTarget`/`resumeTargetMatchesCurrent`, pure/unit-tested):
+
+1. **Nothing remembered** (`workspace` is `null`, or an empty shape) → open the session directly, no reload — today's behavior, unchanged.
+2. **Remembered `code_workspace_file` exists on disk** → target is opening that file. **Missing/moved** → silently falls back to the folder list instead (explicit product decision — never errors the user into picking a replacement).
+3. **Otherwise** → target is the remembered folder set, **exact match**: reopening replaces the window's current folders with precisely that set (not additive — anything else open in that window is removed). This was a deliberate trade-off, not an oversight: the alternative (only ever adding folders) would let a window's folder set grow unboundedly across repeated session switches.
+4. If the current window's workspace already matches the target (by content, not reference — same file, or the same set of folder paths in any order), the session opens immediately with **no reload**.
+5. On a mismatch, `_resumeSessionIntoWorkspace` reuses the exact reload/continuity plumbing §7.1a and §6.6a already built rather than inventing a second mechanism: it arms `_armSerializerDead()` (unconditionally — a full folder-set replace is at least as disruptive as the `insertAt <= 1` cases `reloadWipesSerializerState` guards) and `_armWindowIdContinuity` (future key = the `.code-workspace` file via `_resolveFutureWindowKeyForCodeWorkspace`, or the first remembered folder's path for a plain folder-set target — folder-map insertion order is preserved end-to-end from the original push specifically so this "what will be `workspaceFolders[0]`" derivation is meaningful), then either calls `vscode.commands.executeCommand('vscode.openFolder', ..., {forceReuseWindow: true})` (file target) or `vscode.workspace.updateWorkspaceFolders(0, currentCount, ...targetEntries)` (folder-set target, a full splice, not an insert).
+6. Either reload-triggering call restarts the extension host, so "open the session" can't continue synchronously. A new `globalState` marker (`kodo.pendingResumeSessionId`, armed by `_armPendingResumeSession`) — the same recency-bound-not-window-id-scoped pattern as `kodo.pendingCreateProjectArmedAt` (§6.6a) — records which session to open; the next activation's control `hello.ack` handler calls `_resumePendingResumeSession()` (alongside the existing `_resumePendingCreateProjectPrompt()`) to finish the job once `hasWorkspace` is true again.
+
+A session already open as a live tab **in the current window** (`_findBySessionId` finds it) always short-circuits straight to `reveal()` regardless of what's remembered — there's a live connection to reuse, so no workspace comparison or reload is ever appropriate there. The picker itself no longer disables an item for a Guided-mode project not being loaded in the current workspace (the old `project_root`-keyed `disabledReason`) — that case is now subsumed by the general reopen flow (the project's folder is just one entry in the remembered folder set); only "opened in another live window" still disables an item outright. Instead, a mismatched item's `detail` gets a `will reopen this window's workspace` note so the user knows picking it triggers a reload.
+
+See the `project_kodo_workspace_session_linkage` memory for the full design-decision record (why reuse-the-window/exact-match/pickSession-only/silent-fallback were each chosen over the alternatives).
 
 ### 7.2 `stop` — global STOP
 

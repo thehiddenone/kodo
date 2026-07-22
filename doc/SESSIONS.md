@@ -65,7 +65,9 @@ seamlessly across the change.
                          last_modified (bumped on every persisted write below)
     transient.json     — mutable runtime state: stage, last prompt, autonomous,
                          pending_prompt, pending_security_alert (SECURITY.md §7a),
-                         and active_subsession (the resume hook)
+                         active_subsession (the resume hook), and the session's
+                         remembered VS Code workspace shape (workspace_physical_root,
+                         workspace_folders, workspace_code_file — WS_PROTOCOL.md §7.1b)
     session.jsonl      — the MAIN session log (see below)
     subsessions/
         <subsession-id>.jsonl   — one per sub-agent run; the sub-agent's full,
@@ -89,6 +91,16 @@ a collision gets `-1`, `-2`, ... appended. The titler's output is a
 deterministic function of the sanitized prompt, so two sessions started from
 similar or identical prompts would otherwise be indistinguishable in the tab
 strip and session picker.
+
+`transient.json` also remembers the session's whole VS Code workspace shape —
+`workspace_physical_root`, `workspace_folders` (logical name → physical path,
+in the window's own order), and `workspace_code_file` (the `.code-workspace`
+file the window was opened from, or `None`) — kept in sync with every
+`workspace.folders` push (`WorkflowEngine.handle_workspace_folders`), not just
+the live in-memory `SessionWorkspace`. This is what lets a session resumed
+from a *different* window (`pickSession()`, WS_PROTOCOL.md §7.1b) have its
+remembered workspace reopened before it loads, instead of resuming into
+whatever happens to already be open.
 
 ### `session.jsonl` — the main log
 
