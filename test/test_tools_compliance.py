@@ -242,9 +242,7 @@ def test_tool_result_succeeded_classification() -> None:
     # `error`/`exit_code`/`success` key, but is not a success either.
     assert tool_result_succeeded({"status": "rejected", "path": "a.txt"}) is False
     assert (
-        tool_result_succeeded(
-            {"status": "rejected_with_feedback", "path": "a.txt", "feedback": []}
-        )
+        tool_result_succeeded({"status": "rejected_with_feedback", "path": "a.txt", "feedback": []})
         is False
     )
 
@@ -421,6 +419,28 @@ async def test_get_root_paths_compliance(tmp_path: Path) -> None:
     # Degenerate (no roots synced) is still a compliant, empty result.
     empty = _make_dispatcher(tmp_path)
     _assert_compliant("get_root_paths", await _dispatch(empty, "get_root_paths", {}))
+
+
+@pytest.mark.asyncio
+async def test_get_root_paths_works_with_no_workspace_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``get_root_paths`` deliberately has no ``requires_project`` gate: with no
+    project/workspace bound yet it returns an empty ``roots`` list — itself the
+    signal to call ``create_new_project`` first — rather than the generic
+    ``NO_PROJECT_ERROR`` every other native tool returns in that state."""
+    scratch_root = tmp_path / "scratch"
+    monkeypatch.setattr(
+        "kodo.tools._get_root_paths.session_temp_dir", lambda session_id: scratch_root
+    )
+    d = _make_dispatcher(tmp_path, has_workspace=False)
+    parsed = _assert_compliant("get_root_paths", await _dispatch(d, "get_root_paths", {}))
+    assert parsed["roots"] == []
+    # `temporary: true` never needed a project either, before or after.
+    temp = _assert_compliant(
+        "get_root_paths", await _dispatch(d, "get_root_paths", {"temporary": True})
+    )
+    assert temp["roots"] == [{"name": "scratch", "path": str(scratch_root)}]
 
 
 @pytest.mark.asyncio

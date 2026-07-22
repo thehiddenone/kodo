@@ -285,8 +285,10 @@ class ToolDispatcher:
         # before dispatch rather than let each tool discover this itself,
         # unless the call is scoped to the private scratch directory
         # (`temporary: true`), which never needs a project.
-        if spec.requires_project and not self.__ctx.has_workspace and not tool_input.get(
-            "temporary"
+        if (
+            spec.requires_project
+            and not self.__ctx.has_workspace
+            and not tool_input.get("temporary")
         ):
             return json.dumps({"error": NO_PROJECT_ERROR})
         # Generic gate for content-mutating tools: a spec that requires `intent`
@@ -303,9 +305,16 @@ class ToolDispatcher:
                         )
                     }
                 )
-        denial = await self.__security_gate(tool_name, tool_input, tool_use_id, recovered)
-        if denial is not None:
-            return denial
+        # create_new_project's bootstrap fork (no workspace yet) has no
+        # agent-chosen location to judge — the engine or the user (via the
+        # folder-picker dialog) picks it, never the model — so there is
+        # nothing meaningful for the security layer to gate; skip it rather
+        # than make it reason about a call it was never designed to see.
+        bypass_security = tool_name == CREATE_NEW_PROJECT.name and not self.__ctx.has_workspace
+        if not bypass_security:
+            denial = await self.__security_gate(tool_name, tool_input, tool_use_id, recovered)
+            if denial is not None:
+                return denial
         if tool_name in (CREATE_FILE.name, EDIT_FILE.name):
             # Independent of and always evaluated after the security gate —
             # Command Control and Edit Control are orthogonal settings, so
@@ -353,12 +362,24 @@ class ToolDispatcher:
         decision_reason = ""
         parts: tuple[PermissionPartLike, ...] = ()
         if ctx.security is not None:
+            # `default_cwd` is only ever consulted for `run_command` (see
+            # SecurityLayer.__evaluate_run_command), and that tool's spec sets
+            # `requires_project=True` — the dispatch gate above already
+            # refuses it with no workspace bound. Every other tool can reach
+            # this point with no workspace at all (e.g. `create_new_project`'s
+            # own additional-project path, or `ask_user` on a homeless
+            # session), at which point a Problem-Solver `LogicalPathResolver`
+            # has no root to report yet — reading it unconditionally used to
+            # crash every such call (`default_cwd read before a
+            # workspace/project exists`). Read it lazily and only when there
+            # is one.
+            default_cwd = str(ctx.resolver.default_cwd) if ctx.has_workspace else ""
             decision = await ctx.security.evaluate(
                 tool_name=tool_name,
                 tool_input=tool_input,
                 command_control=ctx.session.command_control,
                 autonomous=ctx.session.effective_autonomous,
-                default_cwd=str(ctx.resolver.default_cwd),
+                default_cwd=default_cwd,
                 roots=tuple(rp.path for rp in ctx.root_paths),
                 session_rules=ctx.session.security_rules,
                 session_path_rules=ctx.session.security_path_rules,

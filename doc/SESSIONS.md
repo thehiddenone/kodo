@@ -69,9 +69,8 @@ seamlessly across the change.
     session.jsonl      — the MAIN session log (see below)
     subsessions/
         <subsession-id>.jsonl   — one per sub-agent run; the sub-agent's full,
-                                  isolated message history
-    agents/
-        <agent>.jsonl  — per-call usage stats (cost/tokens), unrelated to context
+                                  isolated message history (per-call usage
+                                  stats included, as its own `usage` markers)
     attachments/
         <attachment_id>__<basename>   — immutable copies of files the user attached
                                 to a prompt (one per accepted file), named after
@@ -81,6 +80,15 @@ seamlessly across the change.
 
 `<main-session-id>` is the guide session ID minted at bootstrap (a POSIX
 timestamp). `<subsession-id>` is a random hex ID minted per `run_subagent` call.
+
+`meta.json`'s `session_name` (set once by the titler — INTERNALS.md §10c) is
+disambiguated against every other session's persisted name before it's
+written (`TransientStore.set_session_name` → `__unique_name`, scanning
+sibling `sessions/*/meta.json` files, this session's own directory excluded):
+a collision gets `-1`, `-2`, ... appended. The titler's output is a
+deterministic function of the sanitized prompt, so two sessions started from
+similar or identical prompts would otherwise be indistinguishable in the tab
+strip and session picker.
 
 ### `session.jsonl` — the main log
 
@@ -117,12 +125,18 @@ order):
   `recoverable`). `security_rule_added` and `agent_stuck_critical` similarly
   durably record their live counterparts. `usage` records one LLM call's
   per-turn stats (`cumulative_usd`, `duration_seconds`, `last_call_tokens`,
-  `model`) — the persisted twin of the live `usage.update` event, added so the
-  WebView's "Kodo responded in..." row replays in its correct chronological
-  position on reload instead of being reconstructed from whatever had
-  accumulated in the live client's memory (which used to bunch every such row
-  into one trailing block after a reload — see `HistoryProjector._marker_to_entries`
-  and the WebView reducer's `session_history` case).
+  `model`, `usd_cost`, `stop_reason`, `agent`) — the persisted twin of the live
+  `usage.update` event, added so the WebView's "Kodo responded in..." row
+  replays in its correct chronological position on reload instead of being
+  reconstructed from whatever had accumulated in the live client's memory
+  (which used to bunch every such row into one trailing block after a reload
+  — see `HistoryProjector._marker_to_entries` and the WebView reducer's
+  `session_history` case). This is the *only* per-call audit record — there
+  used to be a separate, never-read-back `agents/<agent>.jsonl` log
+  (`TransientStore.write_agent_record`); it was removed in favor of folding
+  `usd_cost`/`stop_reason`/`agent` straight into this marker, so a call's
+  full audit trail lives in the one file (session or subsession) it actually
+  happened in, with nothing split out to a separate directory.
   All of these except `subsession_start`/`subsession_end` can equally appear
   inside a **subsession's own log** (below) — an error, a granted security
   rule, or the stuck watchdog can just as easily happen to a sub-agent's own
@@ -450,11 +464,36 @@ Display names come from the sub-agent's `display_name:` frontmatter field, or ar
 derived by title-casing the agent name (`narrative_author` → "Narrative Author")
 when not set. The Guide's display name is **"Kōdo"**.
 
-On reconnect, the client requests `session.history`; the server rebuilds the full
-feed by walking `session.jsonl` in order, emitting the dividers and **splicing
-each sub-agent's full inner transcript** (read back from its subsession log)
-between them, so a reconnecting user sees a faithful replay of who did what —
-including sub-agent work.
+On reconnect, the client requests `session.history`. **The server hydrates one
+file at a time, never merging them into a single flat array.**
+`HistoryProjector.history_entries()` (`kodo/runtime/_engine/_history.py`) walks
+`session.jsonl` alone, producing the main array with a takeover/hand-back
+divider for each `subsession_start`/`subsession_end` marker — the divider
+carries the subsession's id (`subsessionId`) but **not** its content.
+`HistoryProjector.subsession_entries(subsession_id)` separately rebuilds
+exactly one subsession's own inner transcript, from exactly its own
+`<id>.jsonl`, in isolation. `HistoryProjector.full_history()` runs the main
+walk, finds every `subsession_start` it emitted, and calls
+`subsession_entries()` once per id, returning
+`{"entries": [...main...], "subsessions": {id: [...]}}`. The client places
+each `subsessions[id]` block right after that subsession's start divider
+itself — a one-time, unambiguous splice keyed by id, not a guess based on
+what the client's live in-memory feed already happens to contain — so a
+reconnecting user still sees a faithful replay of who did what, including
+sub-agent work, without the server ever pre-flattening N files into one array
+or the client ever needing to reconcile a flat array against live state by
+tool-call id (see the superseded design note in git history / the
+`kodo-vsix` reducer's `session_history` case for why that used to be
+error-prone: any not-yet-flushed content briefly straddled both the "history"
+and "live" halves and had to be merged by guesswork).
+
+The one thing this restructuring deliberately leaves untouched is a
+**dangling tool call** — a `tool_call`/`ask_user` entry that has no
+persisted result yet because it is still genuinely in flight (e.g. inside
+the currently active subsession, which only flushes at turn boundaries).
+That can never appear in either file's hydrated content by construction, so
+the client keeps carrying it forward from its own live state exactly as
+before — see WS_PROTOCOL.md §5.11.
 
 ## Wire protocol
 
@@ -466,10 +505,14 @@ including sub-agent work.
 `task` is the rendered task brief; the client shows it as a `subagent_task` card
 right after the start divider.
 
-`session.history` entries gained three display-only types: `subsession_start` and
-`subsession_end` (each carrying `displayName` / `parentDisplayName`), and
-`subagent_task` (`{content}`) — the structured task a sub-agent was seeded with,
-reconstructed from the `kind="subagent_task"` seed message.
+`session.history`'s wire shape is `{"entries": [...], "subsessions": {id: [...]}}`
+(§5.11) — `entries` mirrors the main log alone; `subsession_start`/
+`subsession_end` entries there are display-only dividers (`displayName` /
+`parentDisplayName` / `subsessionId`) with no inline content. `subsessions`
+maps each referenced id to that subsession's own entries, in the same shapes
+`entries` uses (`user_message`, `assistant_response`, `tool_call`,
+`subagent_task`, etc. — the structured task a sub-agent was seeded with,
+reconstructed from the `kind="subagent_task"` seed message).
 
 ## Key code
 
@@ -480,7 +523,7 @@ reconstructed from the `kind="subagent_task"` seed message.
 | Subsession lifecycle + replay | `runtime/_engine/` (`_run_subagent`, `_spawn_subagent`, `_drive_subsession`, `_open_subsession`, `_close_subsession`, `_replay_next_subsession`) |
 | Spawn permission gate (per-caller `subagents:` allow-list) | `runtime/_engine/` (`_assert_can_spawn`), `subagents/_registry.py` (`allowed_subagents`), `subagents/_loader.py` (`SubAgent.subagents`) |
 | Crash resume | `runtime/_engine/` (`start`, `_has_dangling_tool_use`, `_resume_main_turn`, `_last_entry_agent`, `_build_replay_ledger`) |
-| History rebuild (full inner replay) | `runtime/_engine/` (`history_entries`, `HistoryProjector._message_to_entries`, `HistoryProjector._divider_entry`) |
+| History rebuild (one file at a time) | `runtime/_engine/_history.py` (`HistoryProjector.full_history`, `.history_entries`, `.subsession_entries`, `._message_to_entries`, `._divider_entry`) |
 | Orphan detection by subsession log | `kodo/runtime/_bootstrap.py` (`__is_orphan`) |
 | Display names | `kodo/subagents/_loader.py` (`SubAgent.display_name`) |
 | Client dividers | `kodo-vsix/src/extension.ts`, `kodo-vsix/src/webview/main.tsx` |

@@ -122,6 +122,7 @@ def test_divider_entry_shape() -> None:
         "display_name": "Investigator",
         "parent_display_name": "Guide",
         "failed": True,
+        "subsession_id": "sub1",
     }
     assert HistoryProjector._divider_entry("subsession_start", marker) == {
         "type": "subsession_start",
@@ -129,6 +130,7 @@ def test_divider_entry_shape() -> None:
         "displayName": "Investigator",
         "parentDisplayName": "Guide",
         "failed": True,
+        "subsessionId": "sub1",
     }
 
 
@@ -139,6 +141,7 @@ def test_divider_entry_defaults() -> None:
         "displayName": "",
         "parentDisplayName": "",
         "failed": False,
+        "subsessionId": "",
     }
 
 
@@ -516,7 +519,9 @@ async def test_history_entries_security_rule_added_marker(tmp_path: Path) -> Non
     ]
 
 
-async def test_history_entries_splices_subsession_transcript(tmp_path: Path) -> None:
+async def test_history_entries_does_not_splice_subsession_transcript(tmp_path: Path) -> None:
+    """history_entries() (main log only) emits dividers, never inline content —
+    that is now subsession_entries()'s job, read from its own file alone."""
     projector, transient, _c = _make_projector(tmp_path)
     transient._lines = [
         {
@@ -534,23 +539,31 @@ async def test_history_entries_splices_subsession_transcript(tmp_path: Path) -> 
 
     entries = await projector.history_entries()
 
-    assert entries[0]["type"] == "subsession_start"
-    assert entries[1] == {"type": "subagent_task", "content": "look into it"}
-    assert entries[2] == {"type": "assistant_response", "content": "found it"}
-    assert entries[3]["type"] == "subsession_end"
+    assert [e["type"] for e in entries] == ["subsession_start", "subsession_end"]
+    assert entries[0]["subsessionId"] == "sub1"
+    assert entries[1]["subsessionId"] == "sub1"
 
 
-async def test_history_entries_splices_subsession_usage_marker_in_position(
-    tmp_path: Path,
-) -> None:
+async def test_subsession_entries_reads_only_its_own_file(tmp_path: Path) -> None:
+    projector, transient, _c = _make_projector(tmp_path)
+    transient._subsessions["sub1"] = [
+        {"role": "user", "kind": "subagent_task", "content": "look into it"},
+        {"role": "assistant", "content": "found it"},
+    ]
+
+    entries = await projector.subsession_entries("sub1")
+
+    assert entries == [
+        {"type": "subagent_task", "content": "look into it"},
+        {"type": "assistant_response", "content": "found it"},
+    ]
+
+
+async def test_subsession_entries_usage_marker_in_position(tmp_path: Path) -> None:
     """A subsession's own ``usage`` marker (its "Kodo responded in..." row)
     must render *between* its two turns, not bunched up elsewhere — the
     original hydration-ordering bug this closes."""
     projector, transient, _c = _make_projector(tmp_path)
-    transient._lines = [
-        {"type": "subsession_start", "subsession_id": "sub1", "agent": "investigator"},
-        {"type": "subsession_end", "subsession_id": "sub1", "agent": "investigator"},
-    ]
     transient._subsessions["sub1"] = [
         {"role": "assistant", "content": "first turn"},
         {
@@ -561,16 +574,10 @@ async def test_history_entries_splices_subsession_usage_marker_in_position(
         {"role": "assistant", "content": "second turn"},
     ]
 
-    entries = await projector.history_entries()
+    entries = await projector.subsession_entries("sub1")
     types = [e["type"] for e in entries]
 
-    assert types == [
-        "subsession_start",
-        "assistant_response",
-        "status_response",
-        "assistant_response",
-        "subsession_end",
-    ]
+    assert types == ["assistant_response", "status_response", "assistant_response"]
     status_entry = entries[types.index("status_response")]
     assert status_entry["durationMs"] == 2000
     assert status_entry["inputTokens"] == 10
@@ -578,13 +585,10 @@ async def test_history_entries_splices_subsession_usage_marker_in_position(
     assert status_entry["contextTokens"] == 10
 
 
-async def test_history_entries_includes_subsession_tool_results_in_lookup(tmp_path: Path) -> None:
-    """A subsession's own tool_result blocks feed the shared results-by-id index."""
+async def test_subsession_entries_tool_results_scoped_to_its_own_file(tmp_path: Path) -> None:
+    """A subsession's own tool_result blocks feed its own results-by-id index,
+    never cross-referencing the main log or another subsession's file."""
     projector, transient, _c = _make_projector(tmp_path)
-    transient._lines = [
-        {"type": "subsession_start", "subsession_id": "sub1", "agent": "investigator"},
-        {"type": "subsession_end", "subsession_id": "sub1", "agent": "investigator"},
-    ]
     transient._subsessions["sub1"] = [
         {
             "role": "assistant",
@@ -598,10 +602,99 @@ async def test_history_entries_includes_subsession_tool_results_in_lookup(tmp_pa
         },
     ]
 
-    entries = await projector.history_entries()
+    entries = await projector.subsession_entries("sub1")
     tool_call_entries = [e for e in entries if e.get("type") == "tool_call"]
     assert len(tool_call_entries) == 1
     assert tool_call_entries[0]["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# full_history (one-file-at-a-time orchestration)
+# ---------------------------------------------------------------------------
+
+
+async def test_full_history_empty_session(tmp_path: Path) -> None:
+    projector, _t, _c = _make_projector(tmp_path)
+    assert await projector.full_history() == {"entries": [], "subsessions": {}}
+
+
+async def test_full_history_collects_every_referenced_subsession(tmp_path: Path) -> None:
+    projector, transient, _c = _make_projector(tmp_path)
+    transient._lines = [
+        {"role": "user", "content": "hi"},
+        {"type": "subsession_start", "subsession_id": "sub1", "agent": "investigator"},
+        {"type": "subsession_end", "subsession_id": "sub1", "agent": "investigator"},
+    ]
+    transient._subsessions["sub1"] = [{"role": "assistant", "content": "found it"}]
+
+    history = await projector.full_history()
+
+    assert [e["type"] for e in history["entries"]] == [
+        "user_message",
+        "subsession_start",
+        "subsession_end",
+    ]
+    assert history["subsessions"] == {
+        "sub1": [{"type": "assistant_response", "content": "found it"}]
+    }
+
+
+async def test_full_history_no_subsessions_when_none_referenced(tmp_path: Path) -> None:
+    projector, transient, _c = _make_projector(tmp_path)
+    transient._lines = [{"role": "user", "content": "hi"}]
+    history = await projector.full_history()
+    assert history == {
+        "entries": [{"type": "user_message", "content": "hi", "attachments": []}],
+        "subsessions": {},
+    }
+
+
+async def test_full_history_shares_checkpoint_cache_across_main_and_subsessions(
+    tmp_path: Path,
+) -> None:
+    """A checkpoint root touched by both the main log and a subsession is
+    only loaded once (the CheckpointState cache spans the whole rebuild)."""
+    entry = CheckpointEntry(sha="abc", parent=None, label="edit", kind="tool_call", undone=False)
+    state = CheckpointState(entries=[entry], current_index=0)
+    projector, transient, checkpoints = _make_projector(tmp_path, states={"root1": state})
+    transient._lines = [
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "tu_1", "name": "edit_file", "input": {}}],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu_1",
+                    "content": '{"checkpoint_sha": "abc", "checkpoint_root": "root1"}',
+                }
+            ],
+        },
+        {"type": "subsession_start", "subsession_id": "sub1", "agent": "investigator"},
+        {"type": "subsession_end", "subsession_id": "sub1", "agent": "investigator"},
+    ]
+    transient._subsessions["sub1"] = [
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "tu_2", "name": "edit_file", "input": {}}],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu_2",
+                    "content": '{"checkpoint_sha": "abc", "checkpoint_root": "root1"}',
+                }
+            ],
+        },
+    ]
+
+    await projector.full_history()
+
+    assert checkpoints.mirrors.requested == ["root1"]
 
 
 # ---------------------------------------------------------------------------

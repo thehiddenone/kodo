@@ -14,9 +14,8 @@
 > last window disconnects (and removes the discovery file) — unless a turn is
 > still mid-flight (any engine in phase `running`), in which case the reap is
 > deferred another grace period so a reloading window can reconnect and resume
-> the live turn. Per-window ownership,
-> the disconnect grace window, and the persisted `owner.json` are covered in
-> [SESSIONS.md](SESSIONS.md); cross-session LLM scheduling in
+> the live turn. Per-window ownership and the disconnect grace window are
+> covered in [SESSIONS.md](SESSIONS.md); cross-session LLM scheduling in
 > [LLM_GATEWAY.md](LLM_GATEWAY.md).
 
 This document covers how Kodo represents, persists, and recovers state across cold starts, interruptions, and normal operation. It assumes the file-native model from [CLAUDE.md](../CLAUDE.md) — sub-agents read and write the project's **real files** directly via `filesystem`/`edit_file`/`create_file`/`create_directory`/`read_file`; a per-file, append-only `.jsonl` evolution log (`kodo.guided_state`) tracks each document's revision/review history, with status always derived from the last line.

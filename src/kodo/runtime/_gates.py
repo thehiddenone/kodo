@@ -559,9 +559,7 @@ class GateOrchestrator:
         self.__transient.update(pending_edit_review=tool_call_id)
         try:
             await self.__app_state.send(Envelope(kind="request", id=req_id, payload=payload))
-            _log.info(
-                "Edit review fired: tool=%s mode=%s req_id=%s", tool_name, mode, req_id[:8]
-            )
+            _log.info("Edit review fired: tool=%s mode=%s req_id=%s", tool_name, mode, req_id[:8])
 
             response_payload = await future
             action = str(response_payload.get("action", "reject"))

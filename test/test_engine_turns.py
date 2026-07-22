@@ -56,7 +56,7 @@ class _FakeEmitters:
     def __init__(self) -> None:
         self.stream_events: list[tuple[object, str]] = []
         self.cost_total = 0.0
-        self.usage_calls: list[tuple[object, str, float]] = []
+        self.usage_calls: list[tuple[object, str, float, str]] = []
         self.context_stats_calls = 0
         self.state_emits = 0
         self.started: list[str] = []
@@ -73,8 +73,10 @@ class _FakeEmitters:
     def cumulative_usd(self) -> float:
         return self.cost_total
 
-    async def emit_usage(self, turn_end: object, model: str, duration: float) -> None:
-        self.usage_calls.append((turn_end, model, duration))
+    async def emit_usage(
+        self, turn_end: object, model: str, duration: float, agent_name: str
+    ) -> None:
+        self.usage_calls.append((turn_end, model, duration, agent_name))
 
     async def emit_context_stats(self) -> None:
         self.context_stats_calls += 1
@@ -95,7 +97,6 @@ class _FakeEmitters:
 class _FakeTransient:
     def __init__(self) -> None:
         self.appended: list[tuple[str, object, str | None, object]] = []
-        self.agent_records: list[tuple[str, dict[str, object]]] = []
         self.stored: dict[str, str] = {}
         self.tool_calls_written: list[tuple[str, str]] = []
         self.diffs_written: list[dict[str, object]] = []
@@ -105,9 +106,6 @@ class _FakeTransient:
         self, role, content, entry_agent=None, attachments=None, kind=None, detail=None
     ) -> None:
         self.appended.append((role, content, entry_agent, attachments))
-
-    async def write_agent_record(self, agent_name: str, record: dict[str, object]) -> None:
-        self.agent_records.append((agent_name, record))
 
     def store_attachment(self, display_name: str, content: str) -> tuple[str, str] | None:
         return self._store_result
@@ -364,7 +362,7 @@ async def test_run_agent_turn_no_tool_calls_text_only() -> None:
     assert messages[-1].content == "hello world"
     assert files == []
     assert engine._emitters.usage_calls[0][1] == "model-x"
-    assert len(engine._transient.agent_records) == 1
+    assert engine._emitters.usage_calls[0][3] == "guide"
 
 
 async def test_run_agent_turn_no_text_defaults_to_placeholder() -> None:

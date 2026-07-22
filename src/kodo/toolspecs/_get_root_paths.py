@@ -12,6 +12,14 @@ so the tool itself needs no live round-trip.
 native file tools resolve into with their own ``temporary: true`` (see
 :meth:`kodo.tools.Tool.resolve_path`), and that ``run_command`` accepts as an
 absolute ``working_dir`` (see :meth:`kodo.tools.ProjectPathResolver.resolve`).
+
+Unlike most other native tools this does *not* set ``requires_project``: with
+no project/workspace bound yet it simply returns an empty ``roots`` list
+(``GetRootPathsTool`` is a pure read of ``ToolContext.root_paths``, which is
+already ``()`` in that state) instead of the generic ``NO_PROJECT_ERROR`` —
+an empty list is itself a meaningful, non-error signal to the agent that
+``create_new_project`` needs calling first. ``temporary: true`` never needed
+a project to begin with (the scratch directory is keyed by session id alone).
 """
 
 from __future__ import annotations
@@ -94,6 +102,9 @@ GET_ROOT_PATHS: ToolSpec = ToolSpec(
         "Pass `temporary: true` to get the absolute path of your private "
         "scratch directory — e.g. to pass as `run_command`'s `working_dir` for "
         "throwaway work you don't want in the project itself.",
+        "To check whether a project/workspace exists yet at all — with no "
+        "workspace bound this returns an empty `roots` list rather than an "
+        "error, which is itself the signal that `create_new_project` is "
+        "needed first.",
     ),
-    requires_project=True,
 )

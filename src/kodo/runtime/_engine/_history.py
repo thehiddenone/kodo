@@ -2,10 +2,18 @@
 
 :class:`HistoryProjector` owns the two read paths over ``session.jsonl``:
 
-* :meth:`history_entries` — rebuild the full client-facing feed for a resumed
-  session (messages, tool-call cards, subsession dividers, compaction
-  markers), in the shape the VSIX webview's ``session.history`` handler
-  expects.
+* :meth:`full_history` — rebuild the full client-facing feed for a resumed
+  session, hydrating **one file at a time**: :meth:`history_entries` replays
+  only the main ``session.jsonl`` (messages, tool-call cards, takeover/
+  handback dividers, compaction markers), and :meth:`subsession_entries`
+  replays exactly one subsession's own ``<id>.jsonl`` in isolation. Nothing
+  ever splices a subsession's content into the main array server-side — the
+  two are returned as separate collections (``{"entries", "subsessions"}``)
+  and the client does the one-time, unambiguous placement (right after that
+  subsession's start divider) itself. This is what lets the client replace
+  its feed wholesale on every ``session.history`` delivery instead of having
+  to guess, by tool-call id, what's already been merged in — see
+  doc/SESSIONS.md.
 * :meth:`load_main_messages` — rebuild the live LLM context (honouring the
   latest ``compaction`` marker and re-injecting stored attachments).
 
@@ -62,29 +70,36 @@ class HistoryProjector:
         self._transient = transient
         self._checkpoints = checkpoints
 
-    async def history_entries(self) -> list[dict[str, object]]:
-        """Rebuild the full client-facing feed for a resumed session.
+    async def history_entries(
+        self, checkpoint_states: dict[str, CheckpointState] | None = None
+    ) -> list[dict[str, object]]:
+        """Rebuild the main session's client-facing feed from ``session.jsonl`` alone.
 
         Walks the main ``session.jsonl`` in order. Message lines become
         ``user_message`` / ``assistant_response`` / ``tool_call`` entries; a
-        ``subsession_start`` marker emits a takeover divider and splices the
-        sub-agent's full inner transcript — messages *and* markers alike, in
-        order — read from its own subsession log, and a ``subsession_end``
-        marker emits a hand-back divider. Every other marker kind (``usage``,
+        ``subsession_start``/``subsession_end`` marker becomes a takeover/
+        hand-back divider carrying that subsession's id (``subsessionId``) —
+        its inner transcript is deliberately **not** spliced in here (that
+        used to make this one array an ever-growing merge of N files, which
+        is what made the client's reconnect-time reconciliation so
+        error-prone). Fetch a subsession's own content separately, from its
+        own file, via :meth:`subsession_entries` — :meth:`full_history` is
+        the usual entry point that does both and hands the client one file's
+        worth of content at a time. Every other marker kind (``usage``,
         ``compaction``, ``error``, ``security_rule_added``,
-        ``agent_stuck_critical`` — see :meth:`_marker_to_entries`) can appear
-        either at the top level or inside a subsession's own log, and is
-        rendered identically either way, in its correct chronological
-        position — this is what lets a resumed session's feed be a single
-        ordered replay instead of needing any live-state patchwork
-        (previously true only of ``usage``/"Kodo responded in..." rows,
-        which had no persisted form at all; see the WebView reducer's
-        ``session_history`` case).
+        ``agent_stuck_critical`` — see :meth:`_marker_to_entries`) is
+        rendered in its correct chronological position.
 
         Each ``tool_call`` entry's ``checkpoint`` (root/sha/parent/index/undone)
         is reconstructed from the persisted ``checkpoint_sha``/``checkpoint_root``
         output fields plus that root's :class:`CheckpointState` — async because
         loading a root's state touches disk; see :meth:`_checkpoint_detail`.
+
+        Args:
+            checkpoint_states: Optional shared cache of already-loaded root
+                states, so a caller rebuilding several logs in one pass (see
+                :meth:`full_history`) never loads the same root twice. A
+                fresh, call-scoped cache is used when omitted.
 
         Returns:
             list[dict[str, object]]: Ordered entries in the shape expected by the
@@ -93,20 +108,11 @@ class HistoryProjector:
         tool_desc = {t.name: t.user_description for t in ALL_TOOLS}
         toolcalls_dir = self._transient.toolcalls_dir
         lines = self._transient.read_session_lines()
-
-        # Pass 1: index every tool_use_id → its (normalized) output, so the
-        # tool_call entries can be rebuilt with their detail rows and file link.
-        # Subsession transcripts carry their own tool calls, so include them.
-        all_messages: list[dict[str, object]] = [ln for ln in lines if "role" in ln]
-        for line in lines:
-            if line.get("type") == "subsession_start":
-                sid = str(line.get("subsession_id", ""))
-                all_messages.extend(self._transient.read_subsession_messages(sid))
-        results_by_id = self._tool_results_from_messages(all_messages)
+        results_by_id = self._tool_results_from_messages([ln for ln in lines if "role" in ln])
 
         session_dir = self._transient.session_dir
-        # Loaded at most once per root for this whole rebuild.
-        checkpoint_states: dict[str, CheckpointState] = {}
+        if checkpoint_states is None:
+            checkpoint_states = {}
         entries: list[dict[str, object]] = []
         for line in lines:
             if "role" in line:
@@ -122,31 +128,89 @@ class HistoryProjector:
                 )
                 continue
             kind = line.get("type")
-            if kind == "subsession_start":
-                entries.append(self._divider_entry("subsession_start", line))
-                sid = str(line.get("subsession_id", ""))
-                for sub in self._transient.read_subsession_lines(sid):
-                    if "role" in sub:
-                        entries.extend(
-                            await self._message_to_entries(
-                                sub,
-                                tool_desc,
-                                results_by_id,
-                                toolcalls_dir,
-                                session_dir,
-                                checkpoint_states,
-                            )
-                        )
-                    else:
-                        # Subsessions cannot nest, so the only marker kinds
-                        # that can appear here are the non-divider ones
-                        # _marker_to_entries handles.
-                        entries.extend(self._marker_to_entries(sub))
-            elif kind == "subsession_end":
-                entries.append(self._divider_entry("subsession_end", line))
+            if kind in ("subsession_start", "subsession_end"):
+                entries.append(self._divider_entry(kind, line))
             else:
                 entries.extend(self._marker_to_entries(line))
         return entries
+
+    async def subsession_entries(
+        self,
+        subsession_id: str,
+        checkpoint_states: dict[str, CheckpointState] | None = None,
+    ) -> list[dict[str, object]]:
+        """Rebuild one subsession's own inner transcript from its own file alone.
+
+        The subsession-scoped twin of :meth:`history_entries`: reads only
+        ``subsessions/<subsession_id>.jsonl`` and resolves that content's
+        tool-call results/checkpoints purely from within it — subsessions
+        cannot nest, so the only marker kinds that can appear are the
+        non-divider ones :meth:`_marker_to_entries` handles, and there is
+        never a need to cross-reference the main log or any other
+        subsession's file.
+
+        Args:
+            subsession_id: The subsession to rebuild.
+            checkpoint_states: Optional shared cache — see :meth:`history_entries`.
+
+        Returns:
+            list[dict[str, object]]: Ordered entries for this subsession alone.
+        """
+        tool_desc = {t.name: t.user_description for t in ALL_TOOLS}
+        toolcalls_dir = self._transient.toolcalls_dir
+        session_dir = self._transient.session_dir
+        lines = self._transient.read_subsession_lines(subsession_id)
+        results_by_id = self._tool_results_from_messages([ln for ln in lines if "role" in ln])
+        if checkpoint_states is None:
+            checkpoint_states = {}
+        entries: list[dict[str, object]] = []
+        for line in lines:
+            if "role" in line:
+                entries.extend(
+                    await self._message_to_entries(
+                        line,
+                        tool_desc,
+                        results_by_id,
+                        toolcalls_dir,
+                        session_dir,
+                        checkpoint_states,
+                    )
+                )
+            else:
+                entries.extend(self._marker_to_entries(line))
+        return entries
+
+    async def full_history(self) -> dict[str, object]:
+        """Rebuild the whole client-facing feed, hydrating one file at a time.
+
+        Returns ``{"entries": [...main...], "subsessions": {id: [...]}}`` —
+        the main array (dividers only, no inline splice) plus every
+        subsession referenced by one of those dividers, each sourced from
+        exactly its own file via :meth:`subsession_entries`. The client (the
+        VSIX webview reducer) does the one-time, unambiguous placement of
+        each ``subsessions[id]`` block right after that subsession's start
+        divider — see doc/SESSIONS.md — so the server never needs to
+        pre-flatten N files into one array, and the client never needs to
+        guess what's already merged in on a reconnect.
+
+        A single :class:`CheckpointState` cache is shared across the main
+        walk and every subsession so a root touched by tool calls in more
+        than one of them is only loaded once.
+
+        Returns:
+            dict[str, object]: ``{"entries", "subsessions"}`` as described above.
+        """
+        checkpoint_states: dict[str, CheckpointState] = {}
+        entries = await self.history_entries(checkpoint_states)
+        subsession_ids = [
+            str(e["subsessionId"])
+            for e in entries
+            if e.get("type") == "subsession_start" and e.get("subsessionId")
+        ]
+        subsessions = {
+            sid: await self.subsession_entries(sid, checkpoint_states) for sid in subsession_ids
+        }
+        return {"entries": entries, "subsessions": subsessions}
 
     @staticmethod
     def _marker_to_entries(line: dict[str, object]) -> list[dict[str, object]]:
@@ -249,6 +313,10 @@ class HistoryProjector:
             "displayName": str(marker.get("display_name", "")),
             "parentDisplayName": str(marker.get("parent_display_name", "")),
             "failed": marker.get("failed") is True,
+            # Keys :meth:`subsession_entries`'s output to this divider — read
+            # by the client to splice that subsession's content in right
+            # after a "start" divider (see :meth:`full_history`).
+            "subsessionId": str(marker.get("subsession_id", "")),
         }
 
     async def _message_to_entries(

@@ -66,7 +66,9 @@ class _FakeEmitters:
     def cumulative_usd(self) -> float:
         return self.cost_total
 
-    async def emit_usage(self, turn_end: object, model: str, duration: float) -> None:
+    async def emit_usage(
+        self, turn_end: object, model: str, duration: float, agent_name: str
+    ) -> None:
         pass
 
     async def emit_context_stats(self) -> None:
@@ -93,7 +95,6 @@ class _FakeTransient:
     def __init__(self) -> None:
         self.appended: list[_AppendedEntry] = []
         self.appended_sub: list[_AppendedSubEntry] = []
-        self.agent_records: list[tuple[str, dict[str, object]]] = []
 
     def append_message(
         self, role, content, entry_agent=None, attachments=None, kind=None, detail=None
@@ -104,9 +105,6 @@ class _FakeTransient:
         self, subsession_id, role, content, kind=None, detail=None
     ) -> None:
         self.appended_sub.append((subsession_id, role, content, kind, detail))
-
-    async def write_agent_record(self, agent_name: str, record: dict[str, object]) -> None:
-        self.agent_records.append((agent_name, record))
 
 
 class _FakeGate:
@@ -635,7 +633,7 @@ async def test_on_stall_entry_turn_streak_clears_on_a_genuine_response() -> None
 
 
 async def test_on_stall_entry_turn_streak_clears_on_a_successful_tool_call_round() -> None:
-    """"get stuck -> successful tool call -> get stuck" nudges both times too:
+    """ "get stuck -> successful tool call -> get stuck" nudges both times too:
     a productive round in between (no on_stall call at all — _run_agent_turn
     only invokes on_stall when a round has *no* tool calls) still needs to
     clear the streak via _make_progress_handler, or an unrelated later stall

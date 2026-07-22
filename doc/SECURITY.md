@@ -434,13 +434,17 @@ fully opaque strings at every hop, so a resolved absolute path in the
 
 ```
 ToolDispatcher.dispatch(tool, input, tool_use_id)          kodo/tools/_dispatch.py
+  ├─ requires_project gate (unchanged) → {"error": NO_PROJECT_ERROR} if no
+  │    workspace and spec.requires_project and not input["temporary"]
   ├─ intent presence check (unchanged)
+  ├─ create_new_project + no workspace bound? → __security_gate SKIPPED     ← 2026-07-21b
+  │    entirely (see below) — otherwise:
   ├─ __security_gate():
   │    decision = ctx.security.evaluate(                   kodo/security/_layer.py
   │        tool_name, tool_input,
   │        command_control = ctx.session.command_control,  ← live, never frozen
   │        autonomous      = ctx.session.effective_autonomous,
-  │        default_cwd     = ctx.resolver.default_cwd,
+  │        default_cwd     = ctx.resolver.default_cwd if ctx.has_workspace else "",  ← 2026-07-21b
   │        roots           = ctx.root_paths,
   │        session_rules   = ctx.session.security_rules,   ← merged with the global store inside
   │        session_path_rules = ctx.session.security_path_rules)  ← ditto, §3.2c
@@ -458,6 +462,23 @@ ToolDispatcher.dispatch(tool, input, tool_use_id)          kodo/tools/_dispatch.
   │                 any `remember` on a denial is ignored — see §3.2a)
   └─ tool_cls(ctx).handle(input)
 ```
+
+**Pre-workspace crash fix (2026-07-21b):** `default_cwd` is only ever consulted
+inside `SecurityLayer.__evaluate_run_command` — and `run_command` sets
+`requires_project=True`, so it can never reach `__security_gate` without a
+workspace bound. Every *other* tool can (`create_new_project`'s own bootstrap
+fork, `ask_user`, `wait`, ...), and `ToolContext.resolver` in Problem Solver
+mode is a `LogicalPathResolver` whose `default_cwd` **asserts** when no
+workspace exists (`kodo/tools/_paths.py`) — reading it unconditionally for
+every tool crashed the whole worker (`AssertionError: default_cwd read before
+a workspace/project exists`) the instant any non-`requires_project` tool was
+called before a project existed. Fixed by reading `default_cwd` only when
+`ctx.has_workspace` is true (harmless everywhere else, since no other branch
+of `evaluate()` looks at it) and by giving `create_new_project` a dedicated
+bypass of the whole security gate when there is no workspace yet — that call
+has no agent-chosen location for the gate to judge in the first place (the
+engine or a real user action picks it; see `_create_new_project.py` and
+WS_PROTOCOL.md §6.6).
 
 `add_security_rule` (`kodo.tools.EngineServices` protocol) reaches
 `WorkflowEngine.add_security_rule` (`kodo/runtime/_engine/_core.py`):

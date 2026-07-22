@@ -268,10 +268,11 @@ Per-tool-call checkpoint data travels two ways:
    fields on the five mutating tools (`filesystem`, `edit_file`, `create_file`,
    `create_directory`, `run_command` — see their `output_schema`s) and injected into the
    LLM-visible tool result at `_finalize_tool_result`. `history_entries()` /
-   `HistoryProjector._message_to_entries()` reconstruct the same `{root, sha, parent, index,
-   undone, current_index}` shape from those two fields plus a
-   per-`history_entries()`-call cache of each touched root's
-   `CheckpointState` (`HistoryProjector._checkpoint_detail`, loaded at most once per root).
+   `subsession_entries()` / `HistoryProjector._message_to_entries()` reconstruct the same
+   `{root, sha, parent, index, undone, current_index}` shape from those two fields plus a
+   `CheckpointState` cache (`HistoryProjector._checkpoint_detail`, loaded at most once per
+   root) shared across the whole `full_history()` rebuild — the main log and every
+   subsession it references, even though each is read from its own file in isolation.
    Before this feature, `checkpoint_sha` was persisted but `checkpoint_root`
    was not, and `HistoryProjector._message_to_entries` never reconstructed a `checkpoint`
    field at all — **undo/rollback controls silently vanished after every

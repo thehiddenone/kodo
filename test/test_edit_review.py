@@ -201,9 +201,7 @@ async def test_review_all_reject_blocks_write(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_review_all_reject_with_feedback(tmp_path: Path) -> None:
     feedback = (
-        EditReviewFeedbackEntry(
-            line_from=1, line_to=1, targeted_code="x = 1", feedback="rename x"
-        ),
+        EditReviewFeedbackEntry(line_from=1, line_to=1, targeted_code="x = 1", feedback="rename x"),
     )
     gate = _FakeEditReviewGate(action="reject", feedback=feedback)
     dispatcher = _make_dispatcher(gate, _FakeSession(edit_control="review_all"), tmp_path)
@@ -233,9 +231,7 @@ async def test_review_all_reject_with_general_feedback(tmp_path: Path) -> None:
     as null/placeholder values."""
     feedback = (
         EditReviewFeedbackEntry(feedback="add a module docstring", general_feedback=True),
-        EditReviewFeedbackEntry(
-            line_from=1, line_to=1, targeted_code="x = 1", feedback="rename x"
-        ),
+        EditReviewFeedbackEntry(line_from=1, line_to=1, targeted_code="x = 1", feedback="rename x"),
     )
     gate = _FakeEditReviewGate(action="reject", feedback=feedback)
     dispatcher = _make_dispatcher(gate, _FakeSession(edit_control="review_all"), tmp_path)

@@ -131,7 +131,6 @@ from kodo.transport import (
     MSG_STUCK_DETECTION_GET,
     MSG_STUCK_DETECTION_SET,
     MSG_THINKING_LEVEL_SET,
-    MSG_WINDOW_REBIND,
     MSG_WORKFLOW_SET,
     MSG_WORKSPACE_FOLDERS,
     Connection,
@@ -301,9 +300,9 @@ async def _handle_session_hello(
             {"session_id": session.id, "name": session.engine.session_name},
         )
     )
-    history = await session.engine.history_entries()
-    if history:
-        await session.channel.send(Envelope.make_event("session.history", {"entries": history}))
+    history = await session.engine.full_history()
+    if history["entries"]:
+        await session.channel.send(Envelope.make_event("session.history", history))
 
     # Only now replay anything buffered while this session was disconnected
     # (e.g. a mid-turn tool_call whose frame never reached the old socket),
@@ -468,19 +467,6 @@ def _llama_payload(settings: dict[str, object] | None = None) -> dict[str, objec
 
 async def _handle_session_list(req: Request) -> None:
     await req.reply({"type": "session.list.ack", "sessions": req.manager.list_sessions()})
-
-
-async def _handle_window_rebind(req: Request) -> None:
-    """``window.rebind {old_window_id, new_window_id}`` — see MSG_WINDOW_REBIND.
-
-    Control-connection message, not session-scoped: a window may own several
-    open session tabs, all of which need re-keying together.
-    """
-    old_window_id = str(req.env.payload.get("old_window_id", ""))
-    new_window_id = str(req.env.payload.get("new_window_id", ""))
-    if old_window_id and new_window_id:
-        req.manager.rebind_window(old_window_id, new_window_id)
-    await req.reply({"type": "window.rebind.ack"})
 
 
 async def _handle_session_release(req: Request) -> None:
@@ -1186,9 +1172,7 @@ async def _handle_local_llm_check_updates(req: Request) -> None:
     """
     raw_names = req.env.payload.get("names", [])
     names = (
-        [str(n).strip() for n in raw_names if str(n).strip()]
-        if isinstance(raw_names, list)
-        else []
+        [str(n).strip() for n in raw_names if str(n).strip()] if isinstance(raw_names, list) else []
     )
     if not names:
         return
@@ -1831,7 +1815,6 @@ def create_app(config: Config) -> web.Application:
 
     conn_registry.register_handler(MSG_HELLO, _make_hello_handler(config))
     conn_registry.register_handler(MSG_SESSION_LIST, _handle_session_list)
-    conn_registry.register_handler(MSG_WINDOW_REBIND, _handle_window_rebind)
     conn_registry.register_handler(MSG_SESSION_RELEASE, _handle_session_release)
     conn_registry.register_handler(MSG_SESSION_DELETE, _handle_session_delete)
     conn_registry.register_handler(MSG_SECURITY_RULES_LIST, _handle_security_rules_list)

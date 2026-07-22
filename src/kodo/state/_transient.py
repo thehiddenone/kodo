@@ -12,10 +12,11 @@ use and reused across restarts when the session is resumed.  Layout::
         session.jsonl    — append-only MAIN session log: top-level LLM messages
                            (agent-agnostic — Guide and Problem Solver
                            share it) interleaved with ``subsession_start`` /
-                           ``subsession_end`` marker lines
+                           ``subsession_end`` marker lines and per-call
+                           ``usage`` markers (tokens/cost/model/stop_reason)
         subsessions/     — one ``<subsession-id>.jsonl`` per sub-agent run,
-                           holding that sub-agent's full isolated message history
-        agents/          — per-sub-agent JSONL call logs (usage stats)
+                           holding that sub-agent's full isolated message
+                           history, its own ``usage`` markers included
         toolcalls/        — one ``<tool_use_id>.md`` per dispatched tool call;
                            a tool call that captured a before/after diff (see
                            ``write_diff_files``) additionally gets a sibling
@@ -36,7 +37,6 @@ See ``doc/SESSIONS.md`` for the full session/subsession model.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -149,10 +149,6 @@ class _SessionPaths:
         return self.root / "toolcalls"
 
     @property
-    def agents(self) -> Path:
-        return self.root / "agents"
-
-    @property
     def attachments(self) -> Path:
         return self.root / "attachments"
 
@@ -187,7 +183,6 @@ class TransientStore:
     __pending_edit_review: str | None
     __active_subsession: dict[str, object] | None
     __current_project: dict[str, str] | None
-    __lock: asyncio.Lock
 
     def __init__(self, kodo_dir: Path) -> None:
         """Initialise without attaching a session.
@@ -215,7 +210,6 @@ class TransientStore:
         self.__pending_edit_review = None
         self.__active_subsession = None
         self.__current_project = None
-        self.__lock = asyncio.Lock()
 
     @property
     def session_id(self) -> str:
@@ -600,7 +594,6 @@ class TransientStore:
             _log.info("Transient session resumed: %s (name=%r)", session_id, self.__session_name)
         else:
             paths.root.mkdir(parents=True, exist_ok=True)
-            paths.agents.mkdir(exist_ok=True)
             paths.subsessions.mkdir(exist_ok=True)
             paths.toolcalls.mkdir(exist_ok=True)
             self.__session_name = _DEFAULT_SESSION_NAME
@@ -613,14 +606,52 @@ class TransientStore:
     def set_session_name(self, name: str) -> None:
         """Set the session name and persist it to ``meta.json``.
 
+        *name* is disambiguated against every other session's persisted name
+        first (see :meth:`__unique_name`) — the titler is a deterministic
+        function of the prompt (sanitized to a narrow alnum/Title-Case
+        shape), so two sessions started from similar or identical prompts
+        would otherwise collide and be indistinguishable in the tab strip
+        and session picker.
+
         Other ``meta.json`` fields (e.g. ``created_at``) are preserved.
 
         Args:
             name (str): New human-readable session name.
         """
-        self.__session_name = name
+        self.__session_name = self.__unique_name(name)
         if self.__paths is not None:
             self.__write_meta(self.__paths)
+
+    def __unique_name(self, candidate: str) -> str:
+        """Disambiguate *candidate* against sibling sessions' persisted names.
+
+        Scans every other session directory's ``meta.json`` under
+        ``sessions/`` (this session's own directory excluded) and appends
+        ``-1``, ``-2``, ... until *candidate* is unique. Best-effort: a
+        missing/unreadable/malformed sibling ``meta.json`` is simply skipped
+        rather than failing the rename.
+        """
+        sessions_dir = self.__kodo_dir / "sessions"
+        if not sessions_dir.is_dir():
+            return candidate
+        taken: set[str] = set()
+        for path in sessions_dir.iterdir():
+            if not path.is_dir() or path.name == self.__session_id:
+                continue
+            meta = path / "meta.json"
+            if not meta.is_file():
+                continue
+            try:
+                data = json.loads(meta.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            taken.add(str(data.get("session_name", "")))
+        if candidate not in taken:
+            return candidate
+        suffix = 1
+        while f"{candidate}-{suffix}" in taken:
+            suffix += 1
+        return f"{candidate}-{suffix}"
 
     def update(
         self,
@@ -920,22 +951,6 @@ class TransientStore:
                 except json.JSONDecodeError:
                     _log.warning("Skipping malformed JSONL line in %s", path.name)
         return out
-
-    async def write_agent_record(self, agent_name: str, record: dict[str, object]) -> None:
-        """Append one JSON record to a sub-agent's JSONL log.
-
-        Args:
-            agent_name (str): Agent identifier (used as the filename stem).
-            record (dict[str, object]): Arbitrary JSON-serialisable data.
-        """
-        if self.__paths is None:
-            return
-        path = self.__paths.agents / f"{agent_name}.jsonl"
-        line = json.dumps(record, default=str) + "\n"
-        async with self.__lock:
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: path.open("a", encoding="utf-8").write(line)
-            )
 
     def __load_transient(self, paths: _SessionPaths) -> None:
         if not paths.transient.exists():

@@ -586,7 +586,9 @@ async def test_fire_edit_review_reject_carries_feedback() -> None:
     assert response.action == "reject"
     assert response.feedback == (
         EditReviewFeedbackEntry(
-            line_from=1, line_to=2, targeted_code="def foo():\n    return 1",
+            line_from=1,
+            line_to=2,
+            targeted_code="def foo():\n    return 1",
             feedback="use a dataclass instead",
         ),
     )
@@ -627,7 +629,9 @@ async def test_fire_edit_review_reject_carries_general_feedback() -> None:
     assert response.feedback == (
         EditReviewFeedbackEntry(feedback="also add a docstring", general_feedback=True),
         EditReviewFeedbackEntry(
-            line_from=1, line_to=2, targeted_code="def foo():\n    return 1",
+            line_from=1,
+            line_to=2,
+            targeted_code="def foo():\n    return 1",
             feedback="use a dataclass instead",
         ),
     )

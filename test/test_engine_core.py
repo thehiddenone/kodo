@@ -1154,20 +1154,26 @@ async def test_finalize_document_interactive_feedback_rejects(tmp_path: Path) ->
 
 
 # ---------------------------------------------------------------------------
-# history_entries
+# full_history
 # ---------------------------------------------------------------------------
 
 
-async def test_history_entries_forwards_to_projector(tmp_path: Path) -> None:
+async def test_full_history_forwards_to_projector(tmp_path: Path) -> None:
     engine, _t, _s, _g = _make_engine(tmp_path)
 
-    async def _fake_history_entries():
-        return [{"type": "user_message", "content": "hi", "attachments": []}]
+    async def _fake_full_history():
+        return {
+            "entries": [{"type": "user_message", "content": "hi", "attachments": []}],
+            "subsessions": {},
+        }
 
-    engine._history.history_entries = _fake_history_entries
+    engine._history.full_history = _fake_full_history
 
-    entries = await engine.history_entries()
-    assert entries == [{"type": "user_message", "content": "hi", "attachments": []}]
+    history = await engine.full_history()
+    assert history == {
+        "entries": [{"type": "user_message", "content": "hi", "attachments": []}],
+        "subsessions": {},
+    }
 
 
 # ---------------------------------------------------------------------------

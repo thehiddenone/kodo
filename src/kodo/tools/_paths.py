@@ -179,14 +179,20 @@ class LogicalPathResolver:
     def default_cwd(self) -> Path:
         """The workspace's physical root.
 
-        Only ever read once :meth:`~kodo.runtime._engine._core.EngineCore
-        ._has_workspace` is true (the ``requires_project`` dispatch gate
-        already refuses every tool that could reach here otherwise), at
-        which point the physical root is guaranteed set — see
-        :meth:`~kodo.runtime._engine._core.EngineCore._root_paths`. The
-        assert exists to fail loudly, not to handle an expected case: a
-        silent ``None`` here would otherwise flow into a real subprocess cwd
-        or security-rule path matching as the string ``"None"``.
+        Callers must guard this with :meth:`~kodo.runtime._engine._core.
+        EngineCore._has_workspace` (or the equivalent ``ToolContext.
+        has_workspace``) first — unlike ``root_paths``, this has no empty
+        state to fall back to. The ``requires_project`` dispatch gate already
+        refuses every ``requires_project`` tool with no workspace bound, but
+        a *non*-``requires_project`` tool (``create_new_project``, ``ask_user``,
+        ...) can legitimately dispatch with no workspace at all, so
+        :class:`~kodo.tools.ToolDispatcher`'s security gate reads this
+        property only when ``has_workspace`` is true (see
+        ``ToolDispatcher._ToolDispatcher__security_gate``) rather than
+        unconditionally. The assert exists to fail loudly on a missed guard,
+        not to handle an expected case: a silent ``None`` here would
+        otherwise flow into a real subprocess cwd or security-rule path
+        matching as the string ``"None"``.
         """
         root = self.__workspace.physical_root
         assert root is not None, "default_cwd read before a workspace/project exists"

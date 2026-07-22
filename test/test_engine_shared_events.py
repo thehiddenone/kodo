@@ -253,9 +253,9 @@ def test_engine_services_has_workspace_root_paths_project_root_are_live_reads() 
         add_security_rule=rec.make("add_security_rule"),
         add_security_path_rule=rec.make("add_security_path_rule"),
         has_workspace=lambda: bool(box["has_workspace"]),
-        root_paths=lambda: (RootPath(name="proj", path="/tmp/proj"),)
-        if box["has_workspace"]
-        else (),
+        root_paths=lambda: (
+            (RootPath(name="proj", path="/tmp/proj"),) if box["has_workspace"] else ()
+        ),
         project_root=lambda: box["project_root"],
     )
 
@@ -449,7 +449,7 @@ async def test_emit_usage_reports_tokens_and_running_cost() -> None:
     )
     turn_end = TurnEnd(usage=usage, stop_reason="end_turn")
 
-    await emitters.emit_usage(turn_end, "claude-x", 2.5)
+    await emitters.emit_usage(turn_end, "claude-x", 2.5, "guide")
 
     payload = sink.sent[0].payload
     assert payload["type"] == "usage.update"
@@ -462,6 +462,9 @@ async def test_emit_usage_reports_tokens_and_running_cost() -> None:
         "cache_read": 2,
     }
     assert payload["model"] == "claude-x"
+    assert payload["usd_cost"] == usage.usd_cost
+    assert payload["stop_reason"] == "end_turn"
+    assert payload["agent"] == "guide"
 
 
 @pytest.mark.asyncio
@@ -472,11 +475,12 @@ async def test_emit_usage_persists_marker_to_main_log_when_no_active_subsession(
     )
     turn_end = TurnEnd(usage=usage, stop_reason="end_turn")
 
-    await emitters.emit_usage(turn_end, "claude-x", 2.5)
+    await emitters.emit_usage(turn_end, "claude-x", 2.5, "guide")
 
     assert len(transient.markers) == 1
     assert transient.markers[0]["type"] == "usage"
     assert transient.markers[0]["duration_seconds"] == 2.5
+    assert transient.markers[0]["agent"] == "guide"
     assert transient.subsession_markers == []
 
 
@@ -489,13 +493,14 @@ async def test_emit_usage_persists_marker_to_active_subsession() -> None:
     )
     turn_end = TurnEnd(usage=usage, stop_reason="end_turn")
 
-    await emitters.emit_usage(turn_end, "claude-x", 2.5)
+    await emitters.emit_usage(turn_end, "claude-x", 2.5, "narrative_author")
 
     assert transient.markers == []
     assert len(transient.subsession_markers) == 1
     sid, marker = transient.subsession_markers[0]
     assert sid == "sub-1"
     assert marker["type"] == "usage"
+    assert marker["agent"] == "narrative_author"
 
 
 @pytest.mark.asyncio

@@ -401,7 +401,6 @@ class TurnLoopMixin:
 
         while True:
             call_start_dt = datetime.now(tz=UTC)
-            call_start = call_start_dt.isoformat()
             text_parts: list[str] = []
             thinking_parts: list[str] = []
             thinking_signature: str | None = None
@@ -473,22 +472,7 @@ class TurnLoopMixin:
                 self._emitters.add_cost(turn_end.usage.usd_cost)
                 call_end_dt = datetime.now(tz=UTC)
                 duration_seconds = (call_end_dt - call_start_dt).total_seconds()
-                await self._emitters.emit_usage(turn_end, model, duration_seconds)
-                await self._transient.write_agent_record(
-                    agent_name,
-                    {
-                        "call_start": call_start,
-                        "call_end": call_end_dt.isoformat(),
-                        "model": model,
-                        "input_tokens": turn_end.usage.input_tokens,
-                        "output_tokens": turn_end.usage.output_tokens,
-                        "cache_write_tokens": turn_end.usage.cache_write_tokens,
-                        "cache_read_tokens": turn_end.usage.cache_read_tokens,
-                        "usd_cost": turn_end.usage.usd_cost,
-                        "cumulative_usd": self._emitters.cumulative_usd,
-                        "stop_reason": turn_end.stop_reason,
-                    },
-                )
+                await self._emitters.emit_usage(turn_end, model, duration_seconds, agent_name)
                 if track_context:
                     usage = turn_end.usage
                     # The whole prompt that was sent (uncached input + both cache

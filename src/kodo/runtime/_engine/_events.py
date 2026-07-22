@@ -126,7 +126,9 @@ class EngineEmitters:
         """Bracket a compaction run so the client shows a "Compacting…" banner."""
         await self._sink.send(Envelope.make_event(EVT_CONTEXT_COMPACTING, {"active": active}))
 
-    async def emit_usage(self, turn_end: TurnEnd, model: str, duration_seconds: float) -> None:
+    async def emit_usage(
+        self, turn_end: TurnEnd, model: str, duration_seconds: float, agent_name: str
+    ) -> None:
         """Push a per-call usage record (tokens, model, running cost), and
         persist it as a ``usage`` marker.
 
@@ -136,6 +138,21 @@ class EngineEmitters:
         equivalent, so the WebView had to reconstruct it by keeping whatever
         had accumulated in memory and splicing it in after a fresh history
         load, which is what let entries drift out of order across a reload.
+
+        Also carries this one call's own ``usd_cost`` (as opposed to the
+        running ``cumulative_usd``), ``stop_reason``, and the ``agent_name``
+        that made the call — this used to be written to a separate,
+        never-read-back ``agents/<agent>.jsonl`` audit log
+        (:meth:`~kodo.state.TransientStore.write_agent_record`, now removed);
+        folding it into this marker keeps everything visible in the feed in
+        the one file (session or subsession) it actually belongs to.
+
+        Args:
+            turn_end (TurnEnd): The completed call's usage/stop-reason event.
+            model (str): Model identifier used for this call.
+            duration_seconds (float): Wall-clock duration of this call.
+            agent_name (str): The agent that made this call (main entry agent
+                or sub-agent) — audit/display only.
         """
         payload = {
             "cumulative_usd": round(self._cumulative_usd, 6),
@@ -148,6 +165,9 @@ class EngineEmitters:
             },
             "model": model,
             "breakdown": {},
+            "usd_cost": round(turn_end.usage.usd_cost, 6),
+            "stop_reason": turn_end.stop_reason,
+            "agent": agent_name,
         }
         self._append_marker({"type": "usage", **payload})
         await self._sink.send(Envelope.make_event(EVT_USAGE_UPDATE, payload))

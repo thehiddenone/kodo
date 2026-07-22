@@ -1,13 +1,22 @@
 """``create_new_project`` tool spec — scaffold a brand-new project folder.
 
 Dispatch lives in :mod:`kodo.tools`, which delegates to the engine
-(``EngineServices.create_project``): the engine slugifies the requested name
-into a filesystem-safe directory name, creates that directory under the session
-workspace root (auto-suffixing ``-2``/``-3``… on collision), lays out the
-standard ``specs/``, ``src/``, ``test/`` and ``.kodo/`` (with ``kodo.md``)
-structure via ``ProjectLayout.init`` and an initial git checkpoint mirror, and
-asks the VS Code extension to add the new directory to the open workspace so
-the agent can work inside it right away.
+(``EngineServices.create_project``/``bootstrap_project``): the engine slugifies
+the requested name into a filesystem-safe directory name, creates that
+directory under the workspace root (auto-suffixing ``-2``/``-3``… on
+collision), lays out the standard ``specs/``, ``src/``, ``test/`` and
+``.kodo/`` (with ``kodo.md``) structure via ``ProjectLayout.init`` and an
+initial git checkpoint mirror, and asks the VS Code extension to add the new
+directory to the open workspace so the agent can work inside it right away.
+
+The input shape deliberately has no ``path`` property: the agent never picks
+the on-disk location, only a human-readable ``name`` (or nothing at all, in
+the no-workspace bootstrap fork below) — an absolute filesystem path is
+supplied only by the engine itself or by a real user action (the native
+"Create Project" folder-picker dialog, wired straight to
+``EngineServices.create_project`` outside this tool). Keeping the LLM-facing
+schema name-only closes off a path-injection surface: nothing the model
+writes can ever place a project at an arbitrary location.
 """
 
 from __future__ import annotations
@@ -28,21 +37,20 @@ CREATE_NEW_PROJECT: ToolSpec = ToolSpec(
         "directory name from it (lowercased, spaces and unsafe characters turned "
         "into dashes) and creates that directory under the workspace root — if a "
         "directory of that name already exists, a numeric suffix (-2, -3, …) is "
-        "appended so an existing project is never touched. Pass an absolute "
-        "'path' instead to lay the project out in that exact directory "
-        "(supersedes 'name' — only use this when the user has specified a "
-        "concrete location). If no project/workspace exists yet in this "
-        "session, you may call this with neither 'name' nor 'path': in an "
-        "interactive session the user is asked to pick (or create) a folder "
-        "via a dialog; in an autonomous session a name is invented "
-        "automatically and the project is created under ~/kodo-project/ "
-        "without asking anyone. Otherwise either 'name' or 'path' must be "
-        "given. Inside the "
-        "new directory it lays out the standard `specs/`, `src/`, `test/` and "
-        "`.kodo/` (with `kodo.md`) structure and an initial git checkpoint "
-        "mirror, then adds the directory to the open VS Code workspace. Returns "
-        "the absolute 'path' of the created project and "
-        "its workspace 'name'. After calling this you can immediately read and "
+        "appended so an existing project is never touched. You cannot choose the "
+        "exact on-disk location yourself — there is no 'path' input; if the user "
+        "named a concrete folder, mention it to them but the directory is still "
+        "placed by 'name' under the workspace root (or, with no workspace yet, "
+        "by the bootstrap fork below). If no project/workspace exists yet in "
+        "this session, you may call this with no 'name' at all: in an "
+        "interactive session the user is asked to pick (or create) a folder via "
+        "a dialog; in an autonomous session a name is invented automatically "
+        "and the project is created under ~/kodo-projects/ without asking "
+        "anyone. Inside the new directory it lays out the standard `specs/`, "
+        "`src/`, `test/` and `.kodo/` (with `kodo.md`) structure and an initial "
+        "git checkpoint mirror, then adds the directory to the open VS Code "
+        "workspace. Returns the absolute 'path' of the created project and its "
+        "workspace 'name'. After calling this you can immediately read and "
         "write files inside the returned path (call `get_root_paths` to see it "
         "listed as a workspace root)."
     ),
@@ -54,18 +62,9 @@ CREATE_NEW_PROJECT: ToolSpec = ToolSpec(
                 "type": "string",
                 "description": (
                     "Human-readable name of the project to create (e.g. "
-                    "'My Todo App'). Used both as the workspace-folder label and, "
-                    "when 'path' is omitted, as the basis for the on-disk "
-                    "directory name."
-                ),
-            },
-            "path": {
-                "type": "string",
-                "description": (
-                    "Absolute directory to lay the project out in, superseding "
-                    "'name' for the on-disk location. The directory need not "
-                    "exist yet. Only set this when a concrete location was "
-                    "specified; otherwise omit it and use 'name'."
+                    "'My Todo App'). Used both as the workspace-folder label and "
+                    "as the basis for the on-disk directory name. May be omitted "
+                    "only when no project/workspace exists yet in this session."
                 ),
             },
         },
@@ -86,7 +85,7 @@ CREATE_NEW_PROJECT: ToolSpec = ToolSpec(
         "required": ["path", "name"],
     },
     security_impact=SecurityImpact.LOW,
-    input_visibility={"intent": "always", "name": "always", "path": "always"},
+    input_visibility={"intent": "always", "name": "always"},
     output_visibility={"path": "always", "name": "always"},
     when_to_use=(
         "When the work calls for a brand-new, self-contained project rather than "

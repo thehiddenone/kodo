@@ -83,22 +83,6 @@ MSG_STOP = "stop"
 # serializer couldn't restore (see kodo-vsix extension.ts).
 MSG_SESSION_LIST = "session.list"
 
-# Client → Server. Tells the server that this window's own stable id is about
-# to change from ``payload.old_window_id`` to ``payload.new_window_id`` —
-# sent and awaited *before* the client triggers the transition that causes
-# it (today: the extension adding the first workspace folder to a
-# previously folder-less window, which VS Code answers by restarting the
-# extension host under an id derived from the new folder path, discarding
-# the old randomly-persisted one). Re-keys every session this window
-# currently owns (SessionManager's in-memory owner map + each session's
-# owner.json) to the new id, so the reconnect that follows the transition
-# finds its sessions already under the id it will present, instead of
-# racing a derivation match that can never succeed for this transition (see
-# kodo-vsix extension.ts's ``_stableWindowId``). Server replies
-# ``{type: "window.rebind.ack"}`` unconditionally — rebinding a window with
-# no owned sessions is a harmless no-op.
-MSG_WINDOW_REBIND = "window.rebind"
-
 # Client → Server. Release the session named by ``payload.session_id`` from
 # this window's ownership immediately (graceful window close), so another
 # window can open it. Sent from a session tab's dispose handler, but skipped on

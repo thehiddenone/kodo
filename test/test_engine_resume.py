@@ -516,9 +516,7 @@ async def test_resume_main_turn_redispatches_call_matching_pending_edit_review(
     is provably still at the review gate (never dispatched), so it is
     redispatched for real instead of stubbed — same treatment as
     pending_security_alert."""
-    tool_uses = [
-        {"type": "tool_use", "id": "tu_1", "name": "edit_file", "input": {"path": "a.py"}}
-    ]
+    tool_uses = [{"type": "tool_use", "id": "tu_1", "name": "edit_file", "input": {"path": "a.py"}}]
     engine, _compactor, _sink, dispatch_calls = _resumable_engine(
         tool_uses=tool_uses,
         session_lines=[],

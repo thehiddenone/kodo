@@ -906,12 +906,12 @@ class WorkflowEngine(
     # History rebuild (forwarded to the projector)
     # ------------------------------------------------------------------
 
-    async def history_entries(self) -> list[dict[str, object]]:
+    async def full_history(self) -> dict[str, object]:
         """Rebuild the full client-facing feed for a resumed session.
 
-        See :meth:`~._history.HistoryProjector.history_entries`.
+        See :meth:`~._history.HistoryProjector.full_history`.
         """
-        return await self._history.history_entries()
+        return await self._history.full_history()
 
     # ------------------------------------------------------------------
     # Autonomous-mode kill switch + project creation

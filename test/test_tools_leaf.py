@@ -16,9 +16,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kodo.guided_state import read_status
+from kodo.project import SessionWorkspace
 from kodo.runtime import GateOrchestrator, SessionState
+from kodo.security import SecurityLayer
 from kodo.tools import (
     DISPATCHABLE_TOOLS_BY_NAME,
+    LogicalPathResolver,
     ProjectPathResolver,
     RootPath,
     ToolDispatcher,
@@ -1031,9 +1034,7 @@ class _BootstrapTrackingServices(_StubServices):
         return {"path": "/tmp/bootstrapped", "name": "Bootstrapped"}
 
 
-def _make_create_new_project_dispatcher(
-    tmp_path: Path, services: _StubServices
-) -> ToolDispatcher:
+def _make_create_new_project_dispatcher(tmp_path: Path, services: _StubServices) -> ToolDispatcher:
     session = SessionState()
     return _IntentDispatcher(
         resolver=ProjectPathResolver(tmp_path),
@@ -1086,6 +1087,73 @@ async def test_create_new_project_bootstraps_even_with_explicit_name_when_no_wor
     assert services.bootstrap_calls == 1
     assert services.bootstrap_names == ["My App"]
     assert result == {"path": "/tmp/bootstrapped", "name": "Bootstrapped"}
+
+
+# ---------------------------------------------------------------------------
+# Regression: security gate must not crash reading `default_cwd` before any
+# workspace/project exists (`AssertionError: default_cwd read before a
+# workspace/project exists`, kodo/tools/_paths.py `LogicalPathResolver
+# .default_cwd`). The unit tests above never reproduced this because
+# `_make_dispatcher`/`_make_create_new_project_dispatcher` both pass
+# `security=None` (disabling `__security_gate` entirely) and use
+# `ProjectPathResolver`, whose `default_cwd` never asserts. Production always
+# wires a real `SecurityLayer` and, in Problem Solver mode with no workspace
+# bound yet, a real `LogicalPathResolver` — the combination that crashed.
+# ---------------------------------------------------------------------------
+
+
+class _AssertNeverCalledSecurity:
+    """A ``SecurityLike`` that fails the test if ``evaluate`` is ever reached."""
+
+    async def evaluate(self, **kwargs: object) -> None:  # noqa: ANN401
+        raise AssertionError("security.evaluate should not be called")
+
+
+@pytest.mark.asyncio
+async def test_create_new_project_bypasses_security_gate_without_workspace() -> None:
+    """create_new_project's bootstrap fork has no agent-chosen location for the
+    security layer to judge — the gate must be skipped entirely, not merely
+    survive reading ``default_cwd`` (covered separately below)."""
+    services = _BootstrapTrackingServices(has_workspace=False)
+    dispatcher = _IntentDispatcher(
+        resolver=LogicalPathResolver(SessionWorkspace()),
+        gate=_make_gate(),
+        session=SessionState(),
+        services=services,
+        agent_name="test_agent",
+        session_id="sess-test",
+        security=_AssertNeverCalledSecurity(),  # type: ignore[arg-type]
+        mode="problem_solving",
+    )
+
+    result = json.loads(await dispatcher.dispatch("create_new_project", {}))
+
+    assert services.bootstrap_calls == 1
+    assert result == {"path": "/tmp/bootstrapped", "name": "Bootstrapped"}
+
+
+@pytest.mark.asyncio
+async def test_security_gate_default_cwd_read_guarded_without_workspace() -> None:
+    """Any non-``requires_project`` tool (not just ``create_new_project``) must
+    survive dispatch before a workspace exists: ``default_cwd`` is only ever
+    consulted for ``run_command`` (``requires_project=True``, so it can't
+    reach here workspace-less), but it used to be read unconditionally for
+    every tool, crashing on ``LogicalPathResolver``'s assert."""
+    services = _StubServices(has_workspace=False)
+    dispatcher = _IntentDispatcher(
+        resolver=LogicalPathResolver(SessionWorkspace()),
+        gate=_make_gate(),
+        session=SessionState(),
+        services=services,
+        agent_name="test_agent",
+        session_id="sess-test",
+        security=SecurityLayer(),
+        mode="problem_solving",
+    )
+
+    result = json.loads(await dispatcher.dispatch("disable_autonomous_mode", {"reason": "loop"}))
+
+    assert result == {"status": "disabled"}
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@
 
 Verifies that sessions are created under .kodo/sessions/, transient.json and
 meta.json are written correctly, state updates are persisted in place, resumed
-sessions load prior state, and agent/message logs are appended properly.
+sessions load prior state, and message logs are appended properly.
 """
 
 import json
@@ -161,9 +161,34 @@ def test_resumed_session_loads_existing_name(kodo_dir: Path) -> None:
     assert second.is_session_named is True
 
 
+def test_set_session_name_disambiguates_against_sibling_sessions(kodo_dir: Path) -> None:
+    first = TransientStore(kodo_dir)
+    first.attach_session("1748792600", resumed=False)
+    first.set_session_name("Search Pagination Fix")
+
+    # A second, different session titled from a similar/identical prompt
+    # would otherwise collide with the first — the titler is a deterministic
+    # function of the sanitized prompt text.
+    second = TransientStore(kodo_dir)
+    second.attach_session("1748792601", resumed=False)
+    second.set_session_name("Search Pagination Fix")
+    assert second.session_name == "Search Pagination Fix-1"
+
+    third = TransientStore(kodo_dir)
+    third.attach_session("1748792602", resumed=False)
+    third.set_session_name("Search Pagination Fix")
+    assert third.session_name == "Search Pagination Fix-2"
+
+    # Renaming a session back to its OWN already-persisted name is not a
+    # collision with itself.
+    first.set_session_name("Search Pagination Fix")
+    assert first.session_name == "Search Pagination Fix"
+
+
 def test_session_dir_layout_on_new_session(store: TransientStore) -> None:
     assert store.session_dir.is_dir()
-    assert (store.session_dir / "agents").is_dir()
+    assert (store.session_dir / "subsessions").is_dir()
+    assert (store.session_dir / "toolcalls").is_dir()
 
 
 def test_session_id_matches_attach_argument(store: TransientStore) -> None:
@@ -556,35 +581,3 @@ def test_append_message_with_content_blocks(store: TransientStore) -> None:
 
 def test_session_log_path_is_inside_session_dir(store: TransientStore) -> None:
     assert store.session_log_path == store.session_dir / "session.jsonl"
-
-
-# ---------------------------------------------------------------------------
-# Agent JSONL logs
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_agent_jsonl_is_written(store: TransientStore) -> None:
-    await store.write_agent_record("guide", {"prompt": "hello", "tokens": 10})
-    jsonl = store.session_dir / "agents" / "guide.jsonl"
-    assert jsonl.exists()
-    records = [json.loads(line) for line in jsonl.read_text(encoding="utf-8").splitlines()]
-    assert len(records) == 1
-    assert records[0]["prompt"] == "hello"
-
-
-@pytest.mark.asyncio
-async def test_multiple_records_append_to_same_agent_file(store: TransientStore) -> None:
-    for i in range(1, 4):
-        await store.write_agent_record("guide", {"n": i})
-    jsonl = store.session_dir / "agents" / "guide.jsonl"
-    records = [json.loads(line) for line in jsonl.read_text(encoding="utf-8").splitlines()]
-    assert [r["n"] for r in records] == [1, 2, 3]
-
-
-@pytest.mark.asyncio
-async def test_different_agents_get_separate_files(store: TransientStore) -> None:
-    await store.write_agent_record("narrative_author", {"x": 1})
-    await store.write_agent_record("architect", {"x": 2})
-    assert (store.session_dir / "agents" / "narrative_author.jsonl").exists()
-    assert (store.session_dir / "agents" / "architect.jsonl").exists()

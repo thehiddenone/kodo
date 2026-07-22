@@ -453,9 +453,7 @@ async def test_check_for_update_true_when_remote_etag_differs(
 
     # The repo published a new revision of the same file — same filename,
     # different ETag — without kodo re-downloading anything yet.
-    def fake_resolve_new_etag(
-        repo_id: str, filename: str, **_kwargs: object
-    ) -> ResolvedFile:
+    def fake_resolve_new_etag(repo_id: str, filename: str, **_kwargs: object) -> ResolvedFile:
         return ResolvedFile(
             filename=filename,
             url=f"{http_server}/{filename}",
