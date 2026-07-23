@@ -336,7 +336,14 @@ class HistoryProjector:
         session_dir: Path,
         checkpoint_states: dict[str, CheckpointState],
     ) -> list[dict[str, object]]:
-        """Convert one persisted ``{role, content}`` line to client feed entries."""
+        """Convert one persisted ``{role, content}`` line to client feed entries.
+
+        ``user_message``/``assistant_response``/``tool_call`` entries carry the
+        line's ``ts`` (ISO-8601 UTC, stamped by ``TransientStore.__append_line``
+        on every persisted line) straight through as ``"ts"`` — kodo-vsix's
+        opt-in timestamp display (doc/WS_PROTOCOL.md §5.11) is the only
+        consumer; every other entry kind still omits it.
+        """
         role = msg.get("role")
         content = msg.get("content")
         out: list[dict[str, object]] = []
@@ -389,9 +396,16 @@ class HistoryProjector:
             if role == "user":
                 atts = _history_attachment_links(msg.get("attachments"), session_dir)
                 if content or atts:
-                    out.append({"type": "user_message", "content": content, "attachments": atts})
+                    out.append(
+                        {
+                            "type": "user_message",
+                            "content": content,
+                            "attachments": atts,
+                            "ts": msg.get("ts"),
+                        }
+                    )
             elif role == "assistant" and content:
-                out.append({"type": "assistant_response", "content": content})
+                out.append({"type": "assistant_response", "content": content, "ts": msg.get("ts")})
             return out
         if not isinstance(content, list):
             return out
@@ -409,7 +423,7 @@ class HistoryProjector:
                 if isinstance(b, dict) and b.get("type") == "text"
             )
             if text:
-                out.append({"type": "assistant_response", "content": text})
+                out.append({"type": "assistant_response", "content": text, "ts": msg.get("ts")})
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
                     name = str(block.get("name", ""))
@@ -438,6 +452,7 @@ class HistoryProjector:
                         "toolName": name,
                         "description": tool_desc.get(name, ""),
                         "toolCallId": tool_use_id,
+                        "ts": msg.get("ts"),
                         "rows": rows,
                         "detailFile": str(doc) if doc.exists() else None,
                         "schemaCompliance": (
@@ -481,7 +496,14 @@ class HistoryProjector:
                 if isinstance(b, dict) and b.get("type") == "text"
             )
             if text:
-                out.append({"type": "user_message", "content": text, "attachments": []})
+                out.append(
+                    {
+                        "type": "user_message",
+                        "content": text,
+                        "attachments": [],
+                        "ts": msg.get("ts"),
+                    }
+                )
         return out
 
     @staticmethod

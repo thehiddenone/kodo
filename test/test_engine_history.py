@@ -304,7 +304,7 @@ async def test_message_to_entries_string_user_message_with_content() -> None:
     entries = await projector._message_to_entries(
         {"role": "user", "content": "hello"}, {}, {}, Path("."), Path("."), {}
     )
-    assert entries == [{"type": "user_message", "content": "hello", "attachments": []}]
+    assert entries == [{"type": "user_message", "content": "hello", "attachments": [], "ts": None}]
 
 
 async def test_message_to_entries_string_user_message_blank_no_attachments_is_dropped() -> None:
@@ -320,7 +320,7 @@ async def test_message_to_entries_string_assistant_message() -> None:
     entries = await projector._message_to_entries(
         {"role": "assistant", "content": "hi there"}, {}, {}, Path("."), Path("."), {}
     )
-    assert entries == [{"type": "assistant_response", "content": "hi there"}]
+    assert entries == [{"type": "assistant_response", "content": "hi there", "ts": None}]
 
 
 async def test_message_to_entries_string_assistant_blank_is_dropped() -> None:
@@ -350,7 +350,7 @@ async def test_message_to_entries_assistant_thinking_and_text() -> None:
     )
     assert entries == [
         {"type": "thinking_block", "content": "pondering..."},
-        {"type": "assistant_response", "content": "the answer"},
+        {"type": "assistant_response", "content": "the answer", "ts": None},
     ]
 
 
@@ -360,7 +360,9 @@ async def test_message_to_entries_user_list_content_text_only() -> None:
     entries = await projector._message_to_entries(
         {"role": "user", "content": content}, {}, {}, Path("."), Path("."), {}
     )
-    assert entries == [{"type": "user_message", "content": "user text", "attachments": []}]
+    assert entries == [
+        {"type": "user_message", "content": "user text", "attachments": [], "ts": None}
+    ]
 
 
 async def test_message_to_entries_user_list_content_no_text_returns_empty() -> None:
@@ -423,6 +425,7 @@ async def test_message_to_entries_tool_use_generic_card(tmp_path: Path) -> None:
     assert entry["success"] is True
     assert entry["checkpoint"] is None
     assert entry["webSearchNotes"] == []
+    assert entry["ts"] is None
 
 
 async def test_message_to_entries_tool_use_input_not_dict_defaults_empty(tmp_path: Path) -> None:
@@ -482,8 +485,8 @@ async def test_history_entries_walks_messages_and_markers(tmp_path: Path) -> Non
 
     entries = await projector.history_entries()
 
-    assert entries[0] == {"type": "user_message", "content": "hello", "attachments": []}
-    assert entries[1] == {"type": "assistant_response", "content": "hi!"}
+    assert entries[0] == {"type": "user_message", "content": "hello", "attachments": [], "ts": None}
+    assert entries[1] == {"type": "assistant_response", "content": "hi!", "ts": None}
     assert entries[2]["type"] == "context_compacted"
     assert entries[2]["tokensBefore"] == 100
     assert len(entries[2]["summaryExcerpt"]) == 280
@@ -555,7 +558,7 @@ async def test_subsession_entries_reads_only_its_own_file(tmp_path: Path) -> Non
 
     assert entries == [
         {"type": "subagent_task", "content": "look into it"},
-        {"type": "assistant_response", "content": "found it"},
+        {"type": "assistant_response", "content": "found it", "ts": None},
     ]
 
 
@@ -635,7 +638,7 @@ async def test_full_history_collects_every_referenced_subsession(tmp_path: Path)
         "subsession_end",
     ]
     assert history["subsessions"] == {
-        "sub1": [{"type": "assistant_response", "content": "found it"}]
+        "sub1": [{"type": "assistant_response", "content": "found it", "ts": None}]
     }
 
 
@@ -644,7 +647,7 @@ async def test_full_history_no_subsessions_when_none_referenced(tmp_path: Path) 
     transient._lines = [{"role": "user", "content": "hi"}]
     history = await projector.full_history()
     assert history == {
-        "entries": [{"type": "user_message", "content": "hi", "attachments": []}],
+        "entries": [{"type": "user_message", "content": "hi", "attachments": [], "ts": None}],
         "subsessions": {},
     }
 
