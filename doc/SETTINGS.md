@@ -86,13 +86,13 @@ Overrides the directory where downloaded GGUF files are cached (default `~/.kodo
 
 ### 2.6 `stuck_detection`
 
-Governs the stuck-agent watchdog (doc/STUCK_DETECTION.md) — detects a turn that ended without finishing its task (e.g. an empty final response, or one truncated by the output-length cap) and nudges the agent to continue. Exposed in the Kōdo Settings webview panel's "General" section via the `stuck_detection.get`/`.set` WS commands (WS_PROTOCOL.md §7.6d); this file is still the on-disk ground truth, and hand-editing it + sending `config.reload` still works.
+Governs the stuck-agent watchdog (doc/STUCK_DETECTION.md) — detects a turn that ended without finishing its task (e.g. an empty final response, or one truncated by the output-length cap) and nudges the agent to continue. This same block also gates the mid-stream cyclic-thinking detector (doc/STUCK_DETECTION.md §2.7), which catches a thinking block degenerating into a repetition loop *while it streams*, rather than after the fact — reused unchanged rather than exposing a second settings surface. Exposed in the Kōdo Settings webview panel's "General" section via the `stuck_detection.get`/`.set` WS commands (WS_PROTOCOL.md §7.6d); this file is still the on-disk ground truth, and hand-editing it + sending `config.reload` still works.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `stuck_detection.active` | `"off"` \| `"local_only"` \| `"local_and_cloud"` | `"local_only"` | Which model residence the watchdog runs for. Local LLMs are the primary target — this is a small/quantized-model failure mode cloud models rarely exhibit. |
-| `stuck_detection.scope` | `"top_level"` \| `"top_level_and_subagents"` | `"top_level"` | Whether only the main entry agent (Guide/Problem Solver) is watched, or sub-agents (`run_subagent`/`run_author_critic_iteration`) too. |
-| `stuck_detection.auto_unstuck_interactive` | `bool` | `false` | Outside autonomous mode, whether a detected stall is nudged automatically (`true`) or surfaced as a `prompt.stuck_alert` the user must confirm (`false`). Autonomous mode always nudges immediately, regardless of this flag. |
+| `stuck_detection.active` | `"off"` \| `"local_only"` \| `"local_and_cloud"` | `"local_only"` | Which model residence the watchdog (and the cyclic-thinking detector) runs for. Local LLMs are the primary target — both are small/quantized-model failure modes cloud models rarely exhibit. |
+| `stuck_detection.scope` | `"top_level"` \| `"top_level_and_subagents"` | `"top_level"` | Whether only the main entry agent (Guide/Problem Solver) is watched, or sub-agents (`run_subagent`/`run_author_critic_iteration`) too — applies to both detectors identically. |
+| `stuck_detection.auto_unstuck_interactive` | `bool` | `false` | Outside autonomous mode, whether a detected stall is nudged automatically (`true`) or surfaced as a `prompt.stuck_alert` the user must confirm (`false`). Autonomous mode always nudges immediately, regardless of this flag. **Ordinary stall remediation only** — the cyclic-thinking detector never consults this flag, since by the time it fires the stream is already dead and the repeated content already generated, so remediation there is always immediate. |
 
 ```json
 { "stuck_detection": { "active": "local_only", "scope": "top_level", "auto_unstuck_interactive": false } }

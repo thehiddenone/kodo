@@ -784,6 +784,29 @@ EVT_AGENT_UNSTUCK_NUDGE = "agent.unstuck_nudge"
 # replays on reload, mirroring ``EVT_ERROR``/``EngineEmitters.emit_error``.
 EVT_AGENT_STUCK_CRITICAL = "agent.stuck_critical"
 
+# Server → Client event. Fired when the mid-stream cyclic-thinking detector
+# (kodo.runtime._cyclic_thinking, doc/STUCK_DETECTION.md §2.7) catches a
+# thinking block degenerating into a repetition loop and aborts the stream
+# (the first such hit since the entry-agent's last real response, or a
+# sub-agent's Nth inline retry). ``{message}`` is the same first-person
+# course-correction text the agent reads back next round, single-sourced
+# (unlike the nudge's fixed client-side string) so the callout shows exactly
+# what the model was told. Also persisted as a ``cyclic_thinking_notice``-kind
+# message (not a bare marker — like the nudge, it must round-trip into the
+# live LLM context too) so it replays on reload the same way (see
+# ``HistoryProjector._message_to_entries``).
+EVT_AGENT_CYCLIC_THINKING_NOTICE = "agent.cyclic_thinking_notice"
+
+# Server → Client event. Fired when the entry-agent's thinking hits a
+# *second* detected cyclic-thinking loop since its last real response — the
+# first one already got the notice above, and looping again means it isn't
+# working. Ends the turn instead of retrying again: ``{message}`` is a
+# single user-facing sentence, client-only (never fed back to the LLM). Also
+# persisted as an ``agent_cyclic_thinking_critical`` marker so it replays on
+# reload, mirroring ``EVT_AGENT_STUCK_CRITICAL`` — kept as a distinct event
+# (not reusing that one) since the root cause and message are different.
+EVT_AGENT_CYCLIC_THINKING_CRITICAL = "agent.cyclic_thinking_critical"
+
 # Server → Client events. Drive the sidebar's llama.cpp/model controls only —
 # no workflow meaning. ``llamacpp.install.progress`` streams ``{percent,
 # message}`` for the llama.cpp binary install; ``percent == -1`` signals

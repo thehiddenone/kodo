@@ -23,6 +23,8 @@ from kodo.llms import (
 )
 from kodo.state import TransientStore
 from kodo.transport import (
+    EVT_AGENT_CYCLIC_THINKING_CRITICAL,
+    EVT_AGENT_CYCLIC_THINKING_NOTICE,
     EVT_AGENT_FINISHED,
     EVT_AGENT_STARTED,
     EVT_AGENT_STUCK_CRITICAL,
@@ -314,6 +316,43 @@ class EngineEmitters:
             }
         )
         await self._sink.send(Envelope.make_event(EVT_AGENT_STUCK_CRITICAL, {"message": message}))
+
+    async def emit_cyclic_thinking_notice(self, message: str) -> None:
+        """Push the client-only rendering hint for a just-persisted cyclic-thinking notice.
+
+        Fired right after the notice is persisted (doc/STUCK_DETECTION.md
+        §2.7, ``WatchdogMixin._persist_cyclic_thinking_notice``) — mirrors
+        :meth:`emit_agent_unstuck_nudge`: the notice's actual ``content`` is
+        a real LLM-facing turn, but the client never typed it and has no
+        local echo, so this event is what the feed renders in its place. No
+        marker append here — persistence is via the ``kind``-tagged message
+        itself, exactly like the ordinary nudge.
+        """
+        await self._sink.send(
+            Envelope.make_event(EVT_AGENT_CYCLIC_THINKING_NOTICE, {"message": message})
+        )
+
+    async def emit_cyclic_thinking_critical(self, message: str) -> None:
+        """Push+persist a client-only notice that a second cyclic-thinking loop ended the turn.
+
+        Fired when the entry-agent's thinking hits a *second* detected
+        repetition loop since its last real response
+        (doc/STUCK_DETECTION.md §2.7,
+        ``WatchdogMixin._persist_cyclic_thinking_critical``) — mirrors
+        :meth:`emit_agent_stuck_critical`'s shape (a marker so
+        :class:`~._history.HistoryProjector` replays it on reload) but is a
+        distinct event/marker type, since the root cause and message differ
+        from the ordinary stuck-agent critical notice.
+        """
+        self._append_marker(
+            {
+                "type": "agent_cyclic_thinking_critical",
+                "message": message,
+            }
+        )
+        await self._sink.send(
+            Envelope.make_event(EVT_AGENT_CYCLIC_THINKING_CRITICAL, {"message": message})
+        )
 
     async def emit_agent_started(self, agent_name: str) -> None:
         """Announce that *agent_name* took the floor."""

@@ -547,6 +547,26 @@ Fired when an entry-agent turn stalls a *second* consecutive time since its last
 
 `message` is a single ready-to-render sentence. Unlike the nudge, there is no LLM-facing turn behind this event — it is entirely client-only, mirroring `error` (§5.10) rather than `agent.unstuck_nudge`. Also persisted as a bare `agent_stuck_critical` marker (`{type: "agent_stuck_critical", message, ts}`, not a `kind`-tagged message) so it replays via `session.history` (§5.11).
 
+### 5.9g `agent.cyclic_thinking_notice` — the mid-stream cyclic-thinking detector aborted a runaway thinking block
+
+Fired when a thinking block degenerates into a repetition loop and the mid-stream cyclic-thinking detector (doc/STUCK_DETECTION.md §2.7) catches it — the stream is cancelled right then, before the model can burn through the rest of its thinking-token budget. This is the *first* such hit since the entry-agent's last real response (or a sub-agent's Nth inline retry, capped the same way ordinary sub-agent stalls are).
+
+```json
+{ "type": "agent.cyclic_thinking_notice", "message": "I noticed my own reasoning had fallen into a repetitive loop, generating the same thoughts over and over, and stopped it before it could burn through the rest of my thinking budget. I will not continue down that line of reasoning — let me reconsider a different approach to this task." }
+```
+
+`message` is the same first-person course-correction text the agent reads back as real context next round — single-sourced, unlike `agent.unstuck_nudge`'s separate `note`, so the callout shows exactly what the model was told. Also persisted as a `cyclic_thinking_notice`-*kind* message (`{role: "assistant", content: <message>, kind: "cyclic_thinking_notice"}`) — not a bare marker, since it must round-trip into the live LLM context on resume too — so it replays via `session.history` (§5.11) the same way.
+
+### 5.9h `agent.cyclic_thinking_critical` — a second cyclic-thinking loop ended the turn
+
+Fired when the entry-agent's thinking hits a *second* detected repetition loop since its last real response (doc/STUCK_DETECTION.md §2.7) — the notice above (§5.9g) did not stop it from looping again, so the turn ends instead of retrying a second time. Entry-agent scope only — a sub-agent hitting its retry cap ends silently, with no critical event at all.
+
+```json
+{ "type": "agent.cyclic_thinking_critical", "message": "Kōdo detected the Problem Solver's reasoning fall into a repetitive, hallucinated thinking loop a second time and stopped it again. Ending the turn instead of trying again — you may need to rephrase the prompt or step in." }
+```
+
+`message` is a single ready-to-render sentence. Like `agent.stuck_critical`, entirely client-only — no LLM-facing turn behind this event. Also persisted as a bare `agent_cyclic_thinking_critical` marker (`{type: "agent_cyclic_thinking_critical", message}`, not a `kind`-tagged message) so it replays via `session.history` (§5.11). Kept as a distinct event/marker type from `agent.stuck_critical` (not a reuse) since the root cause and message differ.
+
 ### 5.10 `error` — unsolicited server error
 
 For errors not tied to a specific request. Errors tied to a request are returned as `response` payloads with an `error` field (§2.2).
@@ -572,7 +592,7 @@ Pushed once after `hello.ack` when the resumed session has prior turns, so a fre
 
 **Hydration is one file at a time, never a server-side merge of several.** `entries` mirrors the main `session.jsonl` alone; `subsessions` maps every subsession referenced by an `entries` divider to that subsession's own entries, read from exactly its own `<id>.jsonl` (`HistoryProjector.full_history` — doc/SESSIONS.md). The client places each `subsessions[id]` array right after that subsession's `subsession_start` divider itself, in one deterministic pass — it never has to reconcile a flat, pre-merged array against whatever it already holds live by tool-call id (the source of several previous reconnect bugs — see doc/SESSIONS.md's "User experience (dividers)" section).
 
-Entries mirror the WebView's session model. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers, now also carrying `subsessionId`) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed, as is `agent_unstuck_nudge` (`{note, reasons, mode}` — reconstructed from its `kind="agent_unstuck_nudge"` message the same way, §5.9e) and `agent_stuck_critical` (`{message}` — reconstructed from its bare `agent_stuck_critical` marker, §5.9f). Other display-only entries (status) are still ephemeral and dropped on rehydrate.
+Entries mirror the WebView's session model. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers, now also carrying `subsessionId`) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed, as is `agent_unstuck_nudge` (`{note, reasons, mode}` — reconstructed from its `kind="agent_unstuck_nudge"` message the same way, §5.9e), `agent_stuck_critical` (`{message}` — reconstructed from its bare `agent_stuck_critical` marker, §5.9f), `cyclic_thinking_notice` (`{message}` — reconstructed from its `kind="cyclic_thinking_notice"` message, §5.9g), and `agent_cyclic_thinking_critical` (`{message}` — reconstructed from its bare `agent_cyclic_thinking_critical` marker, §5.9h). Other display-only entries (status) are still ephemeral and dropped on rehydrate.
 
 A `web_search` `tool_call` entry additionally carries `webSearchNotes: string[]` — its live narration (§5.5e), read back from the best-effort sidecar file rather than from `session.jsonl` (empty if the run was aborted before it flushed, or for every non-`web_search` tool call).
 

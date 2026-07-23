@@ -157,6 +157,7 @@ class WorkflowEngine(
     _entry_turn_seq: int
     _stuck_watchdog_task: asyncio.Task[None] | None
     _stuck_streak: bool
+    _cycle_streak: bool
 
     def __init__(
         self,
@@ -225,6 +226,11 @@ class WorkflowEngine(
         self._entry_turn_seq = 0
         self._stuck_watchdog_task = None
         self._stuck_streak = False
+        # Dedicated streak for the mid-stream cyclic-thinking detector
+        # (doc/STUCK_DETECTION.md) -- deliberately separate from
+        # _stuck_streak so an ordinary stall and a detected thinking loop
+        # don't combine to trip either escalation's two-strike cap.
+        self._cycle_streak = False
         # The security layer judging every tool call (doc/SECURITY.md) —
         # deterministic heuristic rules, no LLM involved.
         self._security = SecurityLayer()

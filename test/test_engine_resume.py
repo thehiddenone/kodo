@@ -295,11 +295,27 @@ def _resumable_engine(
     engine._sink = _FakeSink()
     engine._orch_session_id = "orch-1"
     engine._entry_turn_seq = 0
+    engine._cycle_streak = False
+    # _make_cyclic_thinking_handler (doc/STUCK_DETECTION.md §2.7) reads
+    # settings/routing.residence eagerly at construction time (unlike
+    # _make_stall_handler's lazy check); _run_agent_turn itself is faked out
+    # below, so no test here actually exercises the cyclic-thinking path.
+    engine._get_settings = lambda: {
+        "stuck_detection": {
+            "active": "local_only",
+            "scope": "top_level",
+            "auto_unstuck_interactive": False,
+        }
+    }
 
     async def _resolve_plugin(capability: str, force_model_key: str | None = None):
         from types import SimpleNamespace
 
-        return (SimpleNamespace(name="fake-plugin"), "model-x", SimpleNamespace())
+        return (
+            SimpleNamespace(name="fake-plugin"),
+            "model-x",
+            SimpleNamespace(residence="local"),
+        )
 
     engine._resolve_plugin = _resolve_plugin
     engine._resolve_model_key = lambda capability: f"key-{capability}"

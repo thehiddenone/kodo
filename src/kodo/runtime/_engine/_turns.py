@@ -53,6 +53,7 @@ from kodo.transport import (
 
 from .._attachments import MAX_ATTACHMENTS, AttachmentError, inject_attachments, load_attachment
 from .._checkpoints import CheckpointRef
+from .._cyclic_thinking import CyclicThinkingDetector
 from ._checkpointing import _GUIDED_STATE_TOOLS
 from ._proto import EngineHost
 from ._shared import (
@@ -239,6 +240,9 @@ class TurnLoopMixin:
                 agent_name=agent_name, routing=routing, is_entry_turn=True
             ),
             on_tool_calls=self._make_progress_handler(is_entry_turn=True),
+            on_cyclic_thinking=self._make_cyclic_thinking_handler(
+                agent_name=agent_name, routing=routing, is_entry_turn=True
+            ),
         )
         # Safety net for a final round that produced zero deltas of any kind
         # (e.g. an immediately empty response) — mirrors kodo-vsix's own
@@ -327,6 +331,7 @@ class TurnLoopMixin:
         track_context: bool = False,
         on_stall: Callable[[TurnSignal], Awaitable[StallDecision]] | None = None,
         on_tool_calls: Callable[[], None] | None = None,
+        on_cyclic_thinking: Callable[[str], Awaitable[StallDecision]] | None = None,
     ) -> tuple[list[Message], list[Path]]:
         """Run one LLM turn with tool-use loop until the model stops calling tools.
 
@@ -384,6 +389,14 @@ class TurnLoopMixin:
                 tool itself later succeeds or fails
                 (:meth:`~._watchdog.WatchdogMixin._make_progress_handler`
                 uses this to clear the entry-agent stuck streak).
+            on_cyclic_thinking: When provided, every streamed ``ThinkingDelta``
+                is fed to a fresh :class:`~.._cyclic_thinking.CyclicThinkingDetector`
+                for this round; the instant it flags a repetition loop, the
+                stream is cancelled early (:meth:`~kodo.llms.LLMPlugin.cancel`)
+                and this callback is awaited with the thinking text
+                accumulated so far, in place of ``on_stall`` (never both —
+                see doc/STUCK_DETECTION.md §2.7). Its
+                ``StallDecision`` is honored exactly like ``on_stall``'s.
 
         Returns:
             tuple[list[Message], list[Path]]: Updated messages and (unused) files.
@@ -399,6 +412,17 @@ class TurnLoopMixin:
                 persist(messages[persisted_upto:])
                 persisted_upto = len(messages)
 
+        def _mark_already_persisted() -> None:
+            """Advance ``persisted_upto`` without calling ``persist()``.
+
+            For a message a closure (e.g. ``WatchdogMixin._persist_nudge``)
+            already wrote directly via its own kind-tagged
+            ``TransientStore.append_message`` call — so the generic
+            ``_flush()`` never re-persists it a second time, untagged.
+            """
+            nonlocal persisted_upto
+            persisted_upto = len(messages)
+
         while True:
             call_start_dt = datetime.now(tz=UTC)
             text_parts: list[str] = []
@@ -406,6 +430,10 @@ class TurnLoopMixin:
             thinking_signature: str | None = None
             tool_calls: list[ToolCallEvent] = []
             turn_end: TurnEnd | None = None
+            # Fresh per round -- a repetition loop is scoped to one thinking
+            # block, never carried across rounds (doc/STUCK_DETECTION.md §2.7).
+            cyclic_detector = CyclicThinkingDetector() if on_cyclic_thinking is not None else None
+            cyclic_abort = False
 
             # Set before the send (not after) so a reconnect racing this exact
             # instant already sees the true state if it reads `self._session`
@@ -435,6 +463,15 @@ class TurnLoopMixin:
                         text_parts.append(event.text)
                     elif isinstance(event, ThinkingDelta):
                         thinking_parts.append(event.text)
+                        if cyclic_detector is not None and cyclic_detector.feed(event.text):
+                            # Abort right here rather than waiting out the
+                            # provider's "within 1 second" cancel() grace
+                            # period -- breaking this async-for triggers its
+                            # implicit aclose(), which both providers' own
+                            # try/finally cleanup already handles correctly.
+                            cyclic_abort = True
+                            await llm.cancel(stream_id)
+                            break
                     elif isinstance(event, ThinkingSignature):
                         thinking_signature = event.signature
                     elif isinstance(event, ToolCallEvent):
@@ -505,23 +542,41 @@ class TurnLoopMixin:
                         Message(role="assistant", content=turn_text or "(no text)")
                     ]
 
-                if on_stall is not None:
+                # Flush the round's own message now, before any on_stall
+                # closure runs. A closure that returns a retry message (e.g.
+                # WatchdogMixin._persist_nudge) already persists that message
+                # itself, directly and kind-tagged, so it must be marked
+                # already-durable below (_mark_already_persisted) rather than
+                # flushed a second time, untagged, by this generic _flush().
+                _flush()
+                if track_context:
+                    self._main_messages = messages
+
+                # A cyclic-thinking abort routes to its own escalation
+                # closure instead of on_stall/detect_red_flags -- the round
+                # was deliberately cut short because a loop was already
+                # found, so there is nothing useful left to (re-)detect from
+                # the truncated, repeated text.
+                decision: StallDecision | None
+                if cyclic_abort and on_cyclic_thinking is not None:
+                    decision = await on_cyclic_thinking(thinking_text)
+                elif on_stall is not None:
                     signal = TurnSignal(
                         text=turn_text,
                         thinking_text=thinking_text,
                         stop_reason=turn_end.stop_reason if turn_end is not None else "end_turn",
                     )
                     decision = await on_stall(signal)
-                    if decision.retry and decision.message is not None:
-                        messages = messages + [decision.message]
-                        _flush()
-                        if track_context:
-                            self._main_messages = messages
-                        continue
+                else:
+                    decision = None
 
-                _flush()
-                if track_context:
-                    self._main_messages = messages
+                if decision is not None and decision.retry and decision.message is not None:
+                    messages = messages + [decision.message]
+                    _mark_already_persisted()
+                    if track_context:
+                        self._main_messages = messages
+                    continue
+
                 break
 
             if on_tool_calls is not None:

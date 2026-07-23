@@ -87,8 +87,9 @@ class HistoryProjector:
         the usual entry point that does both and hands the client one file's
         worth of content at a time. Every other marker kind (``usage``,
         ``compaction``, ``error``, ``security_rule_added``,
-        ``agent_stuck_critical`` — see :meth:`_marker_to_entries`) is
-        rendered in its correct chronological position.
+        ``agent_stuck_critical``, ``agent_cyclic_thinking_critical`` — see
+        :meth:`_marker_to_entries`) is rendered in its correct chronological
+        position.
 
         Each ``tool_call`` entry's ``checkpoint`` (root/sha/parent/index/undone)
         is reconstructed from the persisted ``checkpoint_sha``/``checkpoint_root``
@@ -257,6 +258,13 @@ class HistoryProjector:
             ]
         if kind == "agent_stuck_critical":
             return [{"type": "agent_stuck_critical", "message": str(line.get("message", ""))}]
+        if kind == "agent_cyclic_thinking_critical":
+            return [
+                {
+                    "type": "agent_cyclic_thinking_critical",
+                    "message": str(line.get("message", "")),
+                }
+            ]
         if kind == "usage":
             tokens = line.get("last_call_tokens")
             tokens = tokens if isinstance(tokens, dict) else {}
@@ -360,6 +368,20 @@ class HistoryProjector:
                     "note": str(detail.get("note", "")),
                     "reasons": [str(r) for r in reasons] if isinstance(reasons, list) else [],
                     "mode": str(detail.get("mode", "")),
+                }
+            )
+            return out
+        # The mid-stream cyclic-thinking detector's strike-1 notice
+        # (doc/STUCK_DETECTION.md §2.7) — like the nudge above, a real,
+        # LLM-visible turn, replayed as a distinct feed entry. Unlike
+        # stopped_notice's fixed client-side string, the persisted content is
+        # passed straight through, so the wording stays single-sourced in
+        # WatchdogMixin._CYCLIC_THINKING_NOTICE rather than duplicated here.
+        if msg.get("kind") == "cyclic_thinking_notice":
+            out.append(
+                {
+                    "type": "cyclic_thinking_notice",
+                    "message": content if isinstance(content, str) else "",
                 }
             )
             return out

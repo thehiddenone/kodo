@@ -81,6 +81,7 @@ class EngineHost(Protocol):
     _entry_turn_seq: int
     _stuck_watchdog_task: asyncio.Task[None] | None
     _stuck_streak: bool
+    _cycle_streak: bool
 
     # -- core helpers (defined in _core) ---------------------------------------
     def _agent_available(self, name: str) -> bool: ...
@@ -198,6 +199,7 @@ class EngineHost(Protocol):
         track_context: bool = False,
         on_stall: Callable[[TurnSignal], Awaitable[StallDecision]] | None = None,
         on_tool_calls: Callable[[], None] | None = None,
+        on_cyclic_thinking: Callable[[str], Awaitable[StallDecision]] | None = None,
     ) -> tuple[list[Message], list[Path]]: ...
 
     @staticmethod
@@ -305,4 +307,22 @@ class EngineHost(Protocol):
 
     def _schedule_entry_turn_alarm(
         self, agent_name: str, display_name: str, flags: list[RedFlag]
+    ) -> None: ...
+
+    # -- mid-stream cyclic-thinking detector (defined in _watchdog) ------------------
+    def _make_cyclic_thinking_handler(
+        self,
+        *,
+        agent_name: str,
+        routing: LLMRouting,
+        is_entry_turn: bool,
+        subsession_id: str | None = None,
+    ) -> Callable[[str], Awaitable[StallDecision]] | None: ...
+
+    async def _persist_cyclic_thinking_notice(
+        self, *, agent_name: str, subsession_id: str | None, preview: str
+    ) -> Message: ...
+
+    async def _persist_cyclic_thinking_critical(
+        self, *, agent_name: str, display_name: str, preview: str
     ) -> None: ...

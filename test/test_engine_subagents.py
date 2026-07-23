@@ -15,6 +15,7 @@ import pytest
 
 from kodo.llms import Message
 from kodo.runtime import WorkflowEngine
+from kodo.runtime._engine._watchdog import _MAX_CONSECUTIVE_NUDGES
 from kodo.runtime._session import SessionState
 from kodo.subagents import AgentLoadError
 from kodo.toolspecs import SCHEMA_COMPLIANCE_KEY
@@ -70,6 +71,8 @@ class _FakeTransient:
 class _FakeEmitters:
     def __init__(self) -> None:
         self.events: list[tuple] = []
+        self.cyclic_notices: list[str] = []
+        self.cyclic_critical_messages: list[str] = []
 
     async def emit_state(self) -> None:
         self.events.append(("state",))
@@ -82,6 +85,12 @@ class _FakeEmitters:
 
     async def emit_web_search_note(self, tool_call_id: str, text: str) -> None:
         self.events.append(("note", tool_call_id, text))
+
+    async def emit_cyclic_thinking_notice(self, message: str) -> None:
+        self.cyclic_notices.append(message)
+
+    async def emit_cyclic_thinking_critical(self, message: str) -> None:
+        self.cyclic_critical_messages.append(message)
 
 
 class _FakeSink:
@@ -113,9 +122,27 @@ def _make_engine(
     engine._session = SessionState(session_id="s1")
     engine._emitters = _FakeEmitters()
     engine._sink = _FakeSink()
+    engine._cycle_streak = False
+    engine._orch_session_id = "s1"
+    # _make_cyclic_thinking_handler (doc/STUCK_DETECTION.md §2.7) reads
+    # settings/routing.residence eagerly at construction time (unlike
+    # _make_stall_handler's lazy check) so it can return None -- attach
+    # nothing -- for a disabled/out-of-scope turn; these fakes just need to
+    # exist, no test in this file feeds it any thinking deltas.
+    engine._get_settings = lambda: {
+        "stuck_detection": {
+            "active": "local_only",
+            "scope": "top_level",
+            "auto_unstuck_interactive": False,
+        }
+    }
 
     async def _resolve_plugin(capability: str, force_model_key: str | None = None):
-        return (SimpleNamespace(name="fake-plugin"), "model-x", SimpleNamespace())
+        return (
+            SimpleNamespace(name="fake-plugin"),
+            "model-x",
+            SimpleNamespace(residence="local"),
+        )
 
     engine._resolve_plugin = _resolve_plugin
 
@@ -393,6 +420,38 @@ async def test_drive_subsession_persist_callback_appends_subsession_messages() -
     await engine._drive_subsession("investigator", "sub1", [])
 
     assert engine._transient.subsession_messages["sub1"] == [("assistant", "partial", None)]
+
+
+async def test_drive_subsession_wires_on_cyclic_thinking_for_subagent_scope() -> None:
+    """_drive_subsession must pass on_cyclic_thinking through to
+    _run_agent_turn with is_entry_turn=False and the right subsession_id
+    (doc/STUCK_DETECTION.md §2.7), so a repeated thinking loop inside a
+    sub-agent gets the sub-agent (capped, silent) escalation path -- not the
+    entry-agent nudge-then-critical one."""
+    engine = _make_engine(dispatcher_output={"ok": True})
+    engine._get_settings = lambda: {
+        "stuck_detection": {
+            "active": "local_only",
+            "scope": "top_level_and_subagents",
+            "auto_unstuck_interactive": False,
+        }
+    }
+    engine._session.effective_autonomous = True
+
+    await engine._drive_subsession("investigator", "sub-1", [])
+
+    kwargs = engine.run_agent_turn_calls[0]
+    handler = kwargs["on_cyclic_thinking"]
+    assert handler is not None
+
+    decisions = [await handler(f"loop {i}") for i in range(_MAX_CONSECUTIVE_NUDGES + 1)]
+
+    assert [d.retry for d in decisions] == [True] * _MAX_CONSECUTIVE_NUDGES + [False]
+    persisted = engine._transient.subsession_messages["sub-1"]
+    assert len(persisted) == _MAX_CONSECUTIVE_NUDGES
+    assert all(kind == "cyclic_thinking_notice" for _, _, kind in persisted)
+    # Sub-agent scope never goes critical -- it just stops retrying silently.
+    assert engine._emitters.cyclic_critical_messages == []
 
 
 # ---------------------------------------------------------------------------

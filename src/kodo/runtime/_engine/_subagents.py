@@ -330,6 +330,12 @@ class SubagentMixin:
                 is_entry_turn=False,
                 subsession_id=subsession_id,
             ),
+            on_cyclic_thinking=self._make_cyclic_thinking_handler(
+                agent_name=name,
+                routing=routing,
+                is_entry_turn=False,
+                subsession_id=subsession_id,
+            ),
         )
 
         # Safety net for a final round with zero deltas — see the matching

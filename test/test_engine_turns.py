@@ -1019,9 +1019,21 @@ def _entry_agent_engine(*, gateway: _FakeGateway | None = None) -> WorkflowEngin
     engine._session = SessionState(session_id="s1")
     engine._session.effective_autonomous = False
     engine._main_messages = []
+    engine._cycle_streak = False
+    # _make_cyclic_thinking_handler (doc/STUCK_DETECTION.md §2.7) reads
+    # settings/routing.residence eagerly at construction time (unlike
+    # _make_stall_handler's lazy check); _run_agent_turn itself is faked out
+    # below, so no test here actually exercises the cyclic-thinking path.
+    engine._get_settings = lambda: {
+        "stuck_detection": {
+            "active": "local_only",
+            "scope": "top_level",
+            "auto_unstuck_interactive": False,
+        }
+    }
 
     async def _resolve_plugin(capability, force_model_key=None):
-        return (SimpleNamespace(name="fake"), "model-x", SimpleNamespace())
+        return (SimpleNamespace(name="fake"), "model-x", SimpleNamespace(residence="local"))
 
     engine._resolve_plugin = _resolve_plugin
     engine._resolve_model_key = lambda capability: f"key-{capability}"

@@ -21,7 +21,7 @@ import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 
-from kodo.llms import LLMRouting, Message, TokenDelta, TurnEnd, Usage
+from kodo.llms import LLMRouting, Message, ThinkingDelta, TokenDelta, TurnEnd, Usage
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._engine import _watchdog
 from kodo.runtime._engine._watchdog import (
@@ -42,18 +42,39 @@ class _FakeGateway:
     def __init__(self, batches: list[list[object]]) -> None:
         self._batches = list(batches)
         self.calls: list[dict[str, object]] = []
+        # How many scripted events were actually yielded per call -- lets a
+        # test prove an early `break` (cyclic-thinking abort) really stopped
+        # consuming the rest of a batch, not just that cancel() was called.
+        self.consumed: list[int] = []
 
     async def stream_query(self, **kwargs: object):
         self.calls.append(kwargs)
         batch = self._batches.pop(0) if self._batches else []
+        count = 0
+        self.consumed.append(count)
         for event in batch:
+            count += 1
+            self.consumed[-1] = count
             yield event
+
+
+class _FakeLLM:
+    """Minimal LLMPlugin double with a real, trackable cancel()."""
+
+    def __init__(self, name: str = "fake") -> None:
+        self.name = name
+        self.cancel_calls: list[str] = []
+
+    async def cancel(self, stream_id: str) -> None:
+        self.cancel_calls.append(stream_id)
 
 
 class _FakeEmitters:
     def __init__(self) -> None:
         self.nudges: list[tuple[str, list[str], str]] = []
         self.critical_messages: list[str] = []
+        self.cyclic_notices: list[str] = []
+        self.cyclic_critical_messages: list[str] = []
         self.cost_total = 0.0
 
     async def handle_stream_event(self, event: object, stream_id: str) -> None:
@@ -85,6 +106,12 @@ class _FakeEmitters:
 
     async def emit_agent_stuck_critical(self, message: str) -> None:
         self.critical_messages.append(message)
+
+    async def emit_cyclic_thinking_notice(self, message: str) -> None:
+        self.cyclic_notices.append(message)
+
+    async def emit_cyclic_thinking_critical(self, message: str) -> None:
+        self.cyclic_critical_messages.append(message)
 
 
 _AppendedEntry = tuple[str, object, str | None, str | None, "dict[str, object] | None"]
@@ -155,6 +182,7 @@ def _watchdog_engine(
     engine._entry_turn_seq = 0
     engine._stuck_watchdog_task = None
     engine._stuck_streak = False
+    engine._cycle_streak = False
     default_settings: dict[str, object] = {
         "stuck_detection": {
             "active": "local_only",
@@ -689,13 +717,185 @@ async def test_on_stall_subagent_stall_count_cap_gives_up_after_max_consecutive_
 
 
 # ---------------------------------------------------------------------------
+# _make_cyclic_thinking_handler — the on_cyclic_thinking closure (doc/STUCK_DETECTION.md §2.7)
+# ---------------------------------------------------------------------------
+
+
+def test_make_cyclic_thinking_handler_returns_none_when_settings_off() -> None:
+    engine = _watchdog_engine(settings={"stuck_detection": {"active": "off"}})
+    handler = engine._make_cyclic_thinking_handler(
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+    )
+    assert handler is None
+
+
+def test_make_cyclic_thinking_handler_returns_none_for_cloud_when_local_only() -> None:
+    engine = _watchdog_engine()  # default active="local_only"
+    handler = engine._make_cyclic_thinking_handler(
+        agent_name="problem_solver", routing=_CLOUD_ROUTING, is_entry_turn=True
+    )
+    assert handler is None
+
+
+def test_make_cyclic_thinking_handler_returns_none_for_subagent_excluded_by_default_scope() -> None:
+    engine = _watchdog_engine(autonomous=True)  # default scope="top_level"
+    handler = engine._make_cyclic_thinking_handler(
+        agent_name="investigator",
+        routing=_LOCAL_ROUTING,
+        is_entry_turn=False,
+        subsession_id="sub-1",
+    )
+    assert handler is None
+
+
+def test_make_cyclic_thinking_handler_returns_callable_when_enabled() -> None:
+    engine = _watchdog_engine(autonomous=True)
+    handler = engine._make_cyclic_thinking_handler(
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+    )
+    assert handler is not None
+
+
+async def test_cyclic_thinking_handler_entry_turn_strike_one_notices_and_sets_streak() -> None:
+    engine = _watchdog_engine(autonomous=True)
+    handler = engine._make_cyclic_thinking_handler(
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+    )
+    assert handler is not None
+
+    decision = await handler("some repeated thinking text")
+
+    assert decision.retry is True
+    assert decision.message is not None
+    assert decision.message.role == "assistant"
+    assert "repetitive" in decision.message.content.lower()
+    assert engine._cycle_streak is True
+    # Single artifact: the notice is both the LLM-visible retry message and
+    # the one thing persisted (kind-tagged, so it round-trips as a <kodo_crit>
+    # callout on replay -- doc/STUCK_DETECTION.md §2.7).
+    assert len(engine._transient.appended) == 1
+    role, content, entry_agent, kind, detail = engine._transient.appended[0]
+    assert (role, content, entry_agent, kind) == (
+        "assistant",
+        decision.message.content,
+        "problem_solver",
+        "cyclic_thinking_notice",
+    )
+    assert engine._emitters.cyclic_notices == [decision.message.content]
+    assert engine._emitters.cyclic_critical_messages == []
+
+
+async def test_cyclic_thinking_handler_entry_turn_strike_two_goes_critical() -> None:
+    engine = _watchdog_engine(autonomous=True)
+    handler = engine._make_cyclic_thinking_handler(
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+    )
+    assert handler is not None
+
+    first = await handler("loop take 1")
+    second = await handler("loop take 2")
+    third = await handler("loop take 3")
+
+    assert [first.retry, second.retry, third.retry] == [True, False, False]
+    assert len(engine._transient.appended) == 1  # exactly one notice ever persisted
+    # Stays critical on a third hit too -- only genuine progress clears the streak.
+    assert len(engine._emitters.cyclic_critical_messages) == 2
+    assert engine._cycle_streak is True
+
+
+async def test_cyclic_streak_is_dedicated_from_ordinary_stuck_streak() -> None:
+    """An ordinary stall and a cyclic-thinking hit must not combine to trip
+    either escalation's two-strike cap -- each gets its own streak."""
+    engine = _watchdog_engine(autonomous=True)
+    stall_handler = engine._make_stall_handler(
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+    )
+    cyclic_handler = engine._make_cyclic_thinking_handler(
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+    )
+    assert cyclic_handler is not None
+
+    stall_decision = await stall_handler(
+        TurnSignal(text="", thinking_text="", stop_reason="end_turn")
+    )
+    cyclic_decision = await cyclic_handler("loop text")
+
+    assert stall_decision.retry is True
+    assert cyclic_decision.retry is True  # not already critical -- separate streak
+    assert engine._stuck_streak is True
+    assert engine._cycle_streak is True
+    assert engine._emitters.critical_messages == []
+    assert engine._emitters.cyclic_critical_messages == []
+
+
+async def test_cyclic_streak_clears_on_a_genuine_response() -> None:
+    engine = _watchdog_engine(autonomous=True)
+    cyclic_handler = engine._make_cyclic_thinking_handler(
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+    )
+    stall_handler = engine._make_stall_handler(
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+    )
+    assert cyclic_handler is not None
+
+    await cyclic_handler("loop text")
+    assert engine._cycle_streak is True
+
+    healthy = TurnSignal(
+        text="all done, see summary above", thinking_text="", stop_reason="end_turn"
+    )
+    await stall_handler(healthy)
+
+    assert engine._cycle_streak is False
+
+
+async def test_cyclic_streak_clears_on_a_successful_tool_call_round() -> None:
+    engine = _watchdog_engine(autonomous=True)
+    cyclic_handler = engine._make_cyclic_thinking_handler(
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+    )
+    progress_handler = engine._make_progress_handler(is_entry_turn=True)
+    assert cyclic_handler is not None
+    assert progress_handler is not None
+
+    await cyclic_handler("loop text")
+    assert engine._cycle_streak is True
+
+    progress_handler()
+
+    assert engine._cycle_streak is False
+
+
+async def test_cyclic_thinking_handler_subagent_scope_capped_then_silent() -> None:
+    """Mirrors the ordinary stall's sub-agent path: capped local counter,
+    inline retry, silent end on the cap -- no critical banner at all."""
+    engine = _watchdog_engine(
+        autonomous=True,
+        settings={"stuck_detection": {"active": "local_only", "scope": "top_level_and_subagents"}},
+    )
+    handler = engine._make_cyclic_thinking_handler(
+        agent_name="investigator",
+        routing=_LOCAL_ROUTING,
+        is_entry_turn=False,
+        subsession_id="sub-1",
+    )
+    assert handler is not None
+
+    decisions = [await handler(f"loop {i}") for i in range(_MAX_CONSECUTIVE_NUDGES + 1)]
+
+    assert [d.retry for d in decisions] == [True] * _MAX_CONSECUTIVE_NUDGES + [False]
+    assert len(engine._transient.appended_sub) == _MAX_CONSECUTIVE_NUDGES
+    assert engine._emitters.cyclic_critical_messages == []
+
+
+# ---------------------------------------------------------------------------
 # End-to-end: a real _run_agent_turn loop that actually stalls, then recovers
 # ---------------------------------------------------------------------------
 
 
 def _agent_turn_kwargs(engine: WorkflowEngine, **overrides: object) -> dict[str, object]:
     base: dict[str, object] = dict(
-        llm=SimpleNamespace(name="fake"),
+        llm=_FakeLLM(),
         routing=_LOCAL_ROUTING,
         model="model-x",
         system_prompt="sys",
@@ -751,6 +951,44 @@ async def test_run_agent_turn_end_to_end_autonomous_recovers_from_a_stall() -> N
     )
     assert engine._transient.appended[0][3] == "agent_unstuck_nudge"
     assert engine._emitters.nudges[0][2] == "auto"
+
+
+async def test_run_agent_turn_end_to_end_nudge_is_not_flushed_twice() -> None:
+    """Regression test for a pre-existing double-persist bug: WatchdogMixin.
+    _persist_nudge already writes the nudge message directly (kind-tagged) via
+    TransientStore.append_message, bypassing `persisted_upto`. _run_agent_turn
+    used to then re-persist that same message a second time, untagged, via its
+    own generic `persist` callback (since `persisted_upto` never learned about
+    the closure's direct write) -- this test drives a *real* `persist=`
+    callback (every other end-to-end test in this file leaves it `None`,
+    which is exactly why this had no coverage) through the nudge-retry path
+    and asserts the nudge text appears exactly once, via the tagged direct
+    write only."""
+    stuck_round = [TurnEnd(usage=_usage(), stop_reason="end_turn")]
+    recovered_round = [
+        TokenDelta(text="Found it."),
+        TurnEnd(usage=_usage(), stop_reason="end_turn"),
+    ]
+    gateway = _FakeGateway([stuck_round, recovered_round])
+    engine = _watchdog_engine(autonomous=True, gateway=gateway)
+    persisted: list[Message] = []
+
+    async def tool_dispatch(*a, **k):
+        raise AssertionError
+
+    messages, _files = await engine._run_agent_turn(
+        **_agent_turn_kwargs(
+            engine, tool_dispatch=tool_dispatch, persist=lambda batch: persisted.extend(batch)
+        )
+    )
+
+    assert len(engine._transient.appended) == 1
+    assert engine._transient.appended[0][3] == "agent_unstuck_nudge"
+    nudge_text = engine._transient.appended[0][1]
+    assert [m for m in persisted if m.content == nudge_text] == []
+    # The round's own placeholder and the recovered final response still go
+    # through the generic path, exactly once each.
+    assert [m.content for m in persisted] == ["(no text)", "Found it."]
 
 
 async def test_run_agent_turn_end_to_end_healthy_completion_never_touches_watchdog() -> None:
@@ -826,3 +1064,129 @@ async def test_run_agent_turn_end_to_end_interactive_defers_and_ends_the_turn_id
     engine._stuck_watchdog_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await engine._stuck_watchdog_task
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: the mid-stream cyclic-thinking detector (doc/STUCK_DETECTION.md §2.7)
+# ---------------------------------------------------------------------------
+
+# Verified in test_cyclic_thinking.py to fire on the 3rd repeat -- reused here
+# rather than a fresh string, so this end-to-end test rides an already-proven
+# exact-repeat case instead of hoping a new one happens to clear the bar.
+_LOOP_BLOCK = "The reasoning loop keeps repeating here in exactly this way!\n"
+
+
+def _thinking_deltas(text: str, chunk_size: int = 20) -> list[object]:
+    """Split *text* into several ThinkingDelta events (mirrors real sub-token
+    streaming granularity -- detection must not depend on whole-line-sized
+    deltas)."""
+    return [ThinkingDelta(text=text[i : i + chunk_size]) for i in range(0, len(text), chunk_size)]
+
+
+async def test_run_agent_turn_end_to_end_cyclic_thinking_aborts_and_recovers() -> None:
+    """The concrete motivating case: a thinking block degenerates into the
+    same lines over and over. The abort must happen mid-stream (proven by
+    the trailing filler event never being consumed, not just by cancel()
+    being called), and the turn must actually go around again afterward."""
+    loop_text = _LOOP_BLOCK * 4
+    stuck_round = [
+        *_thinking_deltas(loop_text),
+        ThinkingDelta(text="this trailing content must never be consumed"),
+        TurnEnd(usage=_usage(), stop_reason="end_turn"),
+    ]
+    recovered_round = [
+        TokenDelta(text="Found a different approach — implementing it now."),
+        TurnEnd(usage=_usage(), stop_reason="end_turn"),
+    ]
+    gateway = _FakeGateway([stuck_round, recovered_round])
+    fake_llm = _FakeLLM()
+    engine = _watchdog_engine(autonomous=True, gateway=gateway)
+
+    async def tool_dispatch(*a, **k):
+        raise AssertionError("no tool call in either round")
+
+    messages, _files = await engine._run_agent_turn(
+        **_agent_turn_kwargs(
+            engine,
+            llm=fake_llm,
+            tool_dispatch=tool_dispatch,
+            on_cyclic_thinking=engine._make_cyclic_thinking_handler(
+                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+            ),
+        )
+    )
+
+    assert fake_llm.cancel_calls == ["stream-1"]
+    # Consumed strictly fewer scripted events than the batch holds -- proves
+    # the async-for actually broke early, not merely that cancel() fired.
+    assert gateway.consumed[0] < len(stuck_round)
+    assert len(gateway.calls) == 2  # round 2 (the recovery) actually happened
+    assert messages[-1].content == "Found a different approach — implementing it now."
+    assert engine._transient.appended[0][3] == "cyclic_thinking_notice"
+    assert engine._emitters.cyclic_notices != []
+    assert engine._emitters.critical_messages == []  # ordinary watchdog untouched
+    assert engine._cycle_streak is False  # cleared by the recovered round
+
+
+async def test_run_agent_turn_end_to_end_second_cyclic_hit_ends_turn_critical() -> None:
+    loop_text = _LOOP_BLOCK * 4
+    stuck_round = [*_thinking_deltas(loop_text), TurnEnd(usage=_usage(), stop_reason="end_turn")]
+    gateway = _FakeGateway([list(stuck_round), list(stuck_round)])
+    fake_llm = _FakeLLM()
+    engine = _watchdog_engine(autonomous=True, gateway=gateway)
+
+    async def tool_dispatch(*a, **k):
+        raise AssertionError
+
+    messages, _files = await engine._run_agent_turn(
+        **_agent_turn_kwargs(
+            engine,
+            llm=fake_llm,
+            tool_dispatch=tool_dispatch,
+            on_cyclic_thinking=engine._make_cyclic_thinking_handler(
+                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+            ),
+        )
+    )
+
+    assert len(gateway.calls) == 2  # ended after the second hit, no third round
+    assert fake_llm.cancel_calls == ["stream-1", "stream-1"]
+    assert len(engine._emitters.cyclic_critical_messages) == 1
+    assert engine._cycle_streak is True
+    # The round's own message-construction code is untouched by cyclic-abort
+    # routing: the repeated thinking content is still honestly recorded
+    # (as a thinking+text content-block list), same as any other round.
+    assert isinstance(messages[-1].content, list)
+
+
+async def test_run_agent_turn_ordinary_stall_unaffected_by_cyclic_thinking_wiring() -> None:
+    """An ordinary (non-cyclic) empty-final-turn stall must still route
+    through on_stall/detect_red_flags unaffected when on_cyclic_thinking is
+    also wired in -- the two mechanisms must not cross-contaminate."""
+    stuck_round = [TurnEnd(usage=_usage(), stop_reason="end_turn")]  # no thinking, no text
+    recovered_round = [
+        TokenDelta(text="Done, see the report."),
+        TurnEnd(usage=_usage(), stop_reason="end_turn"),
+    ]
+    gateway = _FakeGateway([stuck_round, recovered_round])
+    fake_llm = _FakeLLM()
+    engine = _watchdog_engine(autonomous=True, gateway=gateway)
+
+    async def tool_dispatch(*a, **k):
+        raise AssertionError
+
+    messages, _files = await engine._run_agent_turn(
+        **_agent_turn_kwargs(
+            engine,
+            llm=fake_llm,
+            tool_dispatch=tool_dispatch,
+            on_cyclic_thinking=engine._make_cyclic_thinking_handler(
+                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+            ),
+        )
+    )
+
+    assert fake_llm.cancel_calls == []  # never triggered -- not a cyclic-thinking round
+    assert engine._transient.appended[0][3] == "agent_unstuck_nudge"  # ordinary nudge path
+    assert engine._emitters.cyclic_notices == []
+    assert messages[-1].content == "Done, see the report."

@@ -287,6 +287,9 @@ class ResumeMixin:
                 agent_name=entry_agent, routing=routing, is_entry_turn=True
             ),
             on_tool_calls=self._make_progress_handler(is_entry_turn=True),
+            on_cyclic_thinking=self._make_cyclic_thinking_handler(
+                agent_name=entry_agent, routing=routing, is_entry_turn=True
+            ),
         )
         # Safety net for a final round with zero deltas — see the matching
         # comment in ``_turns.py``'s entry-turn caller.
