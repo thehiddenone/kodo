@@ -667,7 +667,10 @@ no change.
 ## Rules management UI — global scope (post-launch, 2026-07-17)
 
 Phase 3 item 2, global half only — session-scope listing/revoking is still
-future work, left for a session-webview surface.
+future work, left for a session-webview surface. **Superseded by the
+session-scope follow-up below (2026-07-22)** — it was instead built into the
+Kōdo Settings panel (control connection, arbitrary session id) rather than a
+per-session webview.
 
 kodo: `kodo.security._store` gained `remove_global_rule`/
 `remove_global_path_rule` (mirrors `add_global_rule`/`add_global_path_rule`;
@@ -718,3 +721,74 @@ sidebar icon of its own; reachable via the Command Palette).
   "outside-workspace asks never are [rule-eligible]" for that remaining set.
 - The `intent` field stays mandatory as permission-panel/feed metadata but is
   no longer a judgement input.
+
+## Rules management UI — session scope + Sessions list (post-launch, 2026-07-22)
+
+Closes Phase 3 item 2's session-scope gap, and delivers it alongside two
+session-management UX changes to the session picker and Kōdo Settings panel
+(kodo-vsix), not as a per-session webview surface as originally sketched
+above.
+
+kodo: `kodo.state.TransientStore` gained `remove_security_rule`/
+`remove_security_path_rule` (mirrors `add_security_rule`/
+`add_security_path_rule`; no-op, not an error, if the rule is already
+absent — same contract as the global store's removers). Unlike global rules
+(a standalone on-disk JSON store, read fresh every call), session rules only
+have an authoritative in-memory copy while the session is loaded
+(`SessionManager.__sessions`); `SessionManager` gained
+`list_session_security_rules`/`delete_session_security_rules`, which read/
+mutate the live `TransientStore` when the session is loaded (a mutation
+flushes itself immediately) and otherwise fall back to a direct
+`transient.json` read-modify-write (`_read_security_rules`/
+`_remove_security_rules_on_disk` in `server/_session_manager.py`, mirroring
+`_read_workspace`'s existing on-disk-fallback style) — this matters because a
+*live* session's next unrelated autosave would otherwise flush its stale
+in-memory rule set over a same-JSON-file disk edit and silently undo the
+deletion. No new T4 facade was needed here (unlike the global rules'
+`kodo.runtime._security_rules`) since session state is already owned
+directly by `SessionManager`, which `server` already depends on.
+
+New control-connection-only WS commands (doc/WS_PROTOCOL.md §7.6c):
+`session.security_rules.list` / `session.security_rules.delete` — same
+`{kind, executable, value}` shape and batch-delete-replies-with-post-state
+contract as the global pair, plus a `session_id` in the payload. Also new:
+`session.delete_by_id` — deletes an arbitrary session (live or not) from a
+management UI over any connection, replying with an ack/error instead of the
+existing `session.delete`'s "close the socket on success" contract (that
+contract only makes sense when the request arrives over *that session's own*
+tab connection, which `session.delete_by_id` deliberately doesn't require —
+it mirrors `session.release`'s "any connection, ack, no ownership required"
+shape instead).
+
+kodo-vsix:
+
+- **Session picker** (`extension.ts` `pickSession()`): dropped the "will
+  reopen…"/"will ask to reopen…" phrase from the quick-pick's second line
+  entirely. Every entry now has a third line (VS Code renders `\n` inside a
+  `QuickPickItem.detail` as an extra wrapped line) showing the session's
+  bound workspace root, or its `.code-workspace` file path if bound to one,
+  or `"Not bound to any workspace"` if `workspace` is `null` — all from data
+  `session.list` already returned, no new fetch needed.
+- **Kōdo Settings panel** (`kodo-settings-panel.ts`): new "Sessions" nav item
+  between "General" and "Global Allow-Rules". Lists every session
+  (`session.list`, same data as the picker) with gear (⚙) and trash (🗑)
+  icons per row. Trash prompts the same native `showWarningMessage({modal:
+  true})` confirmation text as the in-session delete button
+  (`session-controller.ts`'s `_confirmAndDelete`), then sends
+  `session.delete_by_id` — disabled (grayed, tooltip) for a session that's
+  `taken` (live in another window), mirroring the picker's existing
+  "Opened in another window" guard, since deleting a live session out from
+  under its own tab would orphan that webview. Gear opens a new **Session
+  Settings** modal (in-panel overlay `<div>`, hand-ported CSS from the
+  Preact webview's `modalOverlay`/`modalBox` pattern in
+  `webview/styles.ts` — `kodo-settings-panel.ts` has no Preact/React,
+  it's vanilla DOM) showing: the session's bound workspace root/
+  `.code-workspace` path (readonly, from the already-fetched `session.list`
+  data), its locked folders (readonly list, `workspace.folders`'s values —
+  "cannot be unbound" per `_read_workspace`'s locking contract, §2.4a /
+  the `project_kodo_workspace_session_linkage` memory), and its
+  session-scoped allow-rules — a byte-for-byte copy of the Global
+  Allow-Rules section's UI (checkbox rows, kind badge, `Select All`/`Clear
+  Selection`/`Delete Selected`/`Close`, `.section-divider` between list and
+  buttons), fetched/mutated via the two new `session.security_rules.*`
+  commands. `Close` dismisses the modal only, not the whole panel.

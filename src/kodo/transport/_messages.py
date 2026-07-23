@@ -105,8 +105,26 @@ MSG_SESSION_RELEASE = "session.release"
 # failure it replies ``{type: "session.delete.error", message}`` and leaves the
 # socket open (client hides its "Deleting…" progress notification and shows the
 # error). Client clears the webview feed (``session_cleared``) right after
-# sending this, ahead of the server's reply.
+# sending this, ahead of the server's reply.  Requires that this *connection*
+# is the one bound to that session's live engine (``req.session`` resolves it)
+# — sent only from a session tab's own socket. For deleting an arbitrary
+# session by id from a session-management UI (e.g. the Kōdo Settings panel's
+# "Sessions" list, which isn't bound to any one session), use
+# ``MSG_SESSION_DELETE_BY_ID`` instead.
 MSG_SESSION_DELETE = "session.delete"
+
+# Client → Server. Permanently delete the session named by ``payload.session_id``,
+# same effect as ``MSG_SESSION_DELETE`` (stop its engine, remove its directory),
+# but ack-based over *any* connection (typically the control connection) rather
+# than requiring that connection to own the session's live engine, and without
+# closing the socket on success — mirrors ``MSG_SESSION_RELEASE``'s "any
+# connection, ack, no session ownership required" shape. Replies
+# ``{type: "session.delete_by_id.ack", session_id}`` on success or
+# ``{type: "session.delete_by_id.error", message}`` on failure. Sent from
+# kodo-vsix's Kōdo Settings panel "Sessions" list (doc/SECURITY_RULES_PLAN.md
+# §Phase 3 item 2's session-scope follow-up) so a session can be deleted from
+# the list without first opening its tab.
+MSG_SESSION_DELETE_BY_ID = "session.delete_by_id"
 
 # Client → Server. Fetch the persisted CheckpointState ({current_index,
 # entries: [...]}) for ``payload.root`` — the same per-root shadow-mirror state
@@ -233,7 +251,7 @@ MSG_SECURITY_ADD_RULE = "security.add_rule"
 # merged into one list. No payload. Replies ``security.rules.list.ack``
 # ``{rules: [{kind: "command"|"path", executable, value}, ...]}`` — session
 # rules are not included (they live in per-session runtime state, not this
-# machine-wide store, and are managed from the session webview instead).
+# machine-wide store — see ``MSG_SESSION_SECURITY_RULES_LIST`` for those).
 MSG_SECURITY_RULES_LIST = "security.rules.list"
 
 # Client → Server. Control connection only. Revoke a batch of previously
@@ -245,6 +263,32 @@ MSG_SECURITY_RULES_LIST = "security.rules.list"
 # ``security.rules.list.ack``, reflecting the post-deletion state, so the
 # panel can refresh from the response alone.
 MSG_SECURITY_RULES_DELETE = "security.rules.delete"
+
+# Client → Server. Control connection only. List every "always allow" rule
+# granted for one session (doc/SECURITY_RULES_PLAN.md §2, §2.7's per-session
+# grants, layered separately from the global store above) — the session-scope
+# half of Phase 3 item 2's rules-management UI, deferred when the global half
+# shipped and now backing the Kōdo Settings panel's "Sessions" → "Session
+# Settings" modal (kodo-vsix ``kodo-settings-panel.ts``). Payload:
+# ``{session_id}``. Replies ``session.security_rules.list.ack`` ``{rules:
+# [{kind: "command"|"path", executable, value}, ...]}`` — same shape as
+# ``security.rules.list.ack``. Works whether or not the session is currently
+# live: reads the live ``TransientStore`` if loaded in memory, else
+# ``transient.json`` directly (``SessionManager.list_session_security_rules``).
+MSG_SESSION_SECURITY_RULES_LIST = "session.security_rules.list"
+
+# Client → Server. Control connection only. Revoke a batch of previously
+# granted rules for one session — the session-scope sibling of
+# ``MSG_SECURITY_RULES_DELETE``, backing the same "Delete Selected" button
+# inside the "Session Settings" modal's rules list. Payload: ``{session_id,
+# rules: [{kind, executable, value}, ...]}``. Unknown/already-removed entries
+# are silently no-ops. If the session is currently live, mutates its live
+# ``TransientStore`` (which flushes itself) rather than patching
+# ``transient.json`` directly, so a live session's own autosave can't clobber
+# the deletion with its stale in-memory copy. Replies
+# ``session.security_rules.delete.ack`` with the same ``rules`` shape as
+# ``session.security_rules.list.ack``, reflecting the post-deletion state.
+MSG_SESSION_SECURITY_RULES_DELETE = "session.security_rules.delete"
 
 # Client → Server. Control connection only. Read the ``stuck_detection``
 # settings block (doc/STUCK_DETECTION.md §2.2, doc/SETTINGS.md §2.6) — backs

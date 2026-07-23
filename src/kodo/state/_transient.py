@@ -554,6 +554,23 @@ class TransientStore:
             self.__flush(self.__paths)
         return self.__security_rules
 
+    def remove_security_rule(self, executable: str, subcommand: str) -> frozenset[tuple[str, str]]:
+        """Revoke a previously granted ``(executable, subcommand)`` rule and
+        persist the change to ``transient.json``.
+
+        A no-op (not an error) if the rule isn't present — mirrors
+        ``kodo.security``'s ``remove_global_rule`` so the "Session Settings"
+        management UI's "delete selected" can always just reflect the
+        returned set back, regardless of stale selections.
+
+        Returns:
+            frozenset[tuple[str, str]]: The updated rule set.
+        """
+        self.__security_rules = self.__security_rules - {(executable, subcommand)}
+        if self.__paths is not None:
+            self.__flush(self.__paths)
+        return self.__security_rules
+
     @property
     def security_path_rules(self) -> frozenset[tuple[str, str]]:
         """Persisted workspace-escape path grants for this session
@@ -574,6 +591,21 @@ class TransientStore:
             frozenset[tuple[str, str]]: The updated path-rule set.
         """
         self.__security_path_rules = self.__security_path_rules | {(executable, path)}
+        if self.__paths is not None:
+            self.__flush(self.__paths)
+        return self.__security_path_rules
+
+    def remove_security_path_rule(self, executable: str, path: str) -> frozenset[tuple[str, str]]:
+        """Revoke a previously granted ``(executable, resolved_absolute_path)``
+        rule and persist the change to ``transient.json``.
+
+        Same best-effort, no-op-if-absent semantics as
+        :meth:`remove_security_rule`.
+
+        Returns:
+            frozenset[tuple[str, str]]: The updated path-rule set.
+        """
+        self.__security_path_rules = self.__security_path_rules - {(executable, path)}
         if self.__paths is not None:
             self.__flush(self.__paths)
         return self.__security_path_rules

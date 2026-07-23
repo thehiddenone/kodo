@@ -125,8 +125,11 @@ from kodo.transport import (
     MSG_SECURITY_RULES_DELETE,
     MSG_SECURITY_RULES_LIST,
     MSG_SESSION_DELETE,
+    MSG_SESSION_DELETE_BY_ID,
     MSG_SESSION_LIST,
     MSG_SESSION_RELEASE,
+    MSG_SESSION_SECURITY_RULES_DELETE,
+    MSG_SESSION_SECURITY_RULES_LIST,
     MSG_STOP,
     MSG_STUCK_DETECTION_GET,
     MSG_STUCK_DETECTION_SET,
@@ -495,11 +498,37 @@ async def _handle_session_delete(req: Request) -> None:
     await req.connection.ws.close()
 
 
+async def _handle_session_delete_by_id(req: Request) -> None:
+    """Delete an arbitrary session by id from a management UI (e.g. the Kōdo
+    Settings panel's "Sessions" list), over any connection — typically the
+    control connection, not that session's own tab. Unlike
+    ``_handle_session_delete`` this replies with an ack/error and never
+    closes the request's socket, since that socket isn't dedicated to this
+    one session.
+    """
+    session_id = req.session_id
+    if not session_id:
+        await req.reply(
+            {
+                "type": "session.delete_by_id.error",
+                "message": "No session_id given.",
+            }
+        )
+        return
+    try:
+        await req.manager.delete(session_id)
+    except Exception as exc:  # noqa: BLE001 — any failure is reported to the client
+        _log.exception("Failed to delete session %s", session_id)
+        await req.reply({"type": "session.delete_by_id.error", "message": str(exc)})
+        return
+    await req.reply({"type": "session.delete_by_id.ack", "session_id": session_id})
+
+
 # ------------------------------------------------------------------
 # Global security rules (machine-wide, control connection) — Kōdo Settings
 # panel's "Global Allow-Rules" section (doc/SECURITY_RULES_PLAN.md §Phase 3
-# item 2). Session-scoped rules are not exposed here — they live in
-# per-session runtime state and are managed from the session webview instead.
+# item 2). Session-scoped rules are handled just below — they live in
+# per-session runtime state rather than this machine-wide store.
 # ------------------------------------------------------------------
 
 
@@ -512,6 +541,27 @@ async def _handle_security_rules_delete(req: Request) -> None:
     rules = [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
     updated = delete_global_security_rules(rules)
     await req.reply({"type": "security.rules.delete.ack", "rules": updated})
+
+
+# ------------------------------------------------------------------
+# Session-scoped security rules (control connection, arbitrary session_id) —
+# Kōdo Settings panel's "Sessions" → "Session Settings" modal
+# (doc/SECURITY_RULES_PLAN.md §Phase 3 item 2's session-scope follow-up).
+# ------------------------------------------------------------------
+
+
+async def _handle_session_security_rules_list(req: Request) -> None:
+    session_id = req.session_id
+    rules = req.manager.list_session_security_rules(session_id) if session_id else []
+    await req.reply({"type": "session.security_rules.list.ack", "rules": rules})
+
+
+async def _handle_session_security_rules_delete(req: Request) -> None:
+    session_id = req.session_id
+    raw = req.env.payload.get("rules", [])
+    rules = [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
+    updated = req.manager.delete_session_security_rules(session_id, rules) if session_id else []
+    await req.reply({"type": "session.security_rules.delete.ack", "rules": updated})
 
 
 # ------------------------------------------------------------------
@@ -1821,8 +1871,15 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_SESSION_LIST, _handle_session_list)
     conn_registry.register_handler(MSG_SESSION_RELEASE, _handle_session_release)
     conn_registry.register_handler(MSG_SESSION_DELETE, _handle_session_delete)
+    conn_registry.register_handler(MSG_SESSION_DELETE_BY_ID, _handle_session_delete_by_id)
     conn_registry.register_handler(MSG_SECURITY_RULES_LIST, _handle_security_rules_list)
     conn_registry.register_handler(MSG_SECURITY_RULES_DELETE, _handle_security_rules_delete)
+    conn_registry.register_handler(
+        MSG_SESSION_SECURITY_RULES_LIST, _handle_session_security_rules_list
+    )
+    conn_registry.register_handler(
+        MSG_SESSION_SECURITY_RULES_DELETE, _handle_session_security_rules_delete
+    )
     conn_registry.register_handler(
         MSG_STUCK_DETECTION_GET, _make_stuck_detection_get_handler(config)
     )

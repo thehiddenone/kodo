@@ -231,6 +231,61 @@ class SessionManager:
     # Listing
     # ------------------------------------------------------------------
 
+    def list_session_security_rules(self, session_id: str) -> list[dict[str, str]]:
+        """Every "always allow" rule granted for *session_id*, command- and
+        path-shape combined (doc/SECURITY_RULES_PLAN.md §2, §2.7).
+
+        Reads the live :class:`TransientStore` if the session is currently
+        loaded in memory (the authoritative copy — a mutation always flushes
+        to disk immediately, so this is never stale), else reads
+        ``transient.json`` directly, mirroring :func:`_read_workspace`'s
+        on-disk fallback for a session nobody has resumed this run.
+
+        Returns:
+            list[dict[str, str]]: ``[{"kind": "command"|"path", "executable",
+            "value"}, ...]``, sorted for a stable display order.
+        """
+        session = self.__sessions.get(session_id)
+        if session is not None:
+            rules = session.transient.security_rules
+            path_rules = session.transient.security_path_rules
+        else:
+            rules, path_rules = _read_security_rules(self.__layout.sessions_dir / session_id)
+        out = [{"kind": "command", "executable": e, "value": v} for e, v in sorted(rules)]
+        out += [{"kind": "path", "executable": e, "value": v} for e, v in sorted(path_rules)]
+        return out
+
+    def delete_session_security_rules(
+        self, session_id: str, rules: list[dict[str, str]]
+    ) -> list[dict[str, str]]:
+        """Revoke each ``{kind, executable, value}`` entry for *session_id*;
+        unknown ones are no-ops.
+
+        Mutates the live :class:`TransientStore` (which flushes itself) when
+        the session is loaded in memory, so a currently-open session's next
+        autosave can't clobber the deletion with its stale in-memory copy;
+        otherwise patches ``transient.json`` directly.
+
+        Returns:
+            list[dict[str, str]]: The resulting rule set, same shape as
+            :meth:`list_session_security_rules` — lets the caller refresh a
+            management UI from the response alone.
+        """
+        session = self.__sessions.get(session_id)
+        if session is not None:
+            for entry in rules:
+                executable = str(entry.get("executable", ""))
+                value = str(entry.get("value", ""))
+                if not executable or not value:
+                    continue
+                if entry.get("kind") == "path":
+                    session.transient.remove_security_path_rule(executable, value)
+                else:
+                    session.transient.remove_security_rule(executable, value)
+        else:
+            _remove_security_rules_on_disk(self.__layout.sessions_dir / session_id, rules)
+        return self.list_session_security_rules(session_id)
+
     def list_sessions(self) -> list[dict[str, object]]:
         """List every persisted session for the picker.
 
@@ -418,3 +473,79 @@ def _read_workspace(session_dir: Path) -> dict[str, object] | None:
         "code_workspace_file": code_file if isinstance(code_file, str) and code_file else None,
         "locked": True,
     }
+
+
+def _read_transient_json(session_dir: Path) -> dict[str, object]:
+    """Best-effort read of a session's raw ``transient.json``, ``{}`` if
+    absent/unreadable. Shared by the security-rules disk fallback below."""
+    transient = session_dir / "transient.json"
+    if not transient.exists():
+        return {}
+    try:
+        data = json.loads(transient.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _read_security_rules(
+    session_dir: Path,
+) -> tuple[frozenset[tuple[str, str]], frozenset[tuple[str, str]]]:
+    """Read a not-currently-loaded session's granted rules straight off disk.
+
+    Mirrors :func:`_read_workspace`'s read-only, defensive style. Used by
+    :meth:`SessionManager.list_session_security_rules` only when the session
+    isn't loaded in memory — a live session's :class:`TransientStore` is the
+    authoritative copy instead.
+
+    Returns:
+        tuple: ``(security_rules, security_path_rules)``, each a frozenset of
+        ``(executable, value)`` pairs.
+    """
+    data = _read_transient_json(session_dir)
+
+    def _parse(key: str) -> frozenset[tuple[str, str]]:
+        raw = data.get(key)
+        if not isinstance(raw, list):
+            return frozenset()
+        return frozenset(
+            (str(pair[0]), str(pair[1]))
+            for pair in raw
+            if isinstance(pair, list) and len(pair) == 2
+        )
+
+    return _parse("security_rules"), _parse("security_path_rules")
+
+
+def _remove_security_rules_on_disk(session_dir: Path, rules: list[dict[str, str]]) -> None:
+    """Patch a not-currently-loaded session's ``transient.json`` in place,
+    removing each ``{kind, executable, value}`` entry from the matching
+    ``security_rules``/``security_path_rules`` list.
+
+    A no-op if the session has no ``transient.json`` yet (nothing to
+    revoke) — mirrors the live-session path's no-op-if-absent semantics
+    (:meth:`kodo.state.TransientStore.remove_security_rule`). Patches only
+    the two rule keys, leaving every other field in the file untouched.
+    """
+    transient = session_dir / "transient.json"
+    if not transient.exists():
+        return
+    data = _read_transient_json(session_dir)
+    if not data:
+        return
+    command_rules, path_rules = _read_security_rules(session_dir)
+    for entry in rules:
+        executable = str(entry.get("executable", ""))
+        value = str(entry.get("value", ""))
+        if not executable or not value:
+            continue
+        if entry.get("kind") == "path":
+            path_rules = path_rules - {(executable, value)}
+        else:
+            command_rules = command_rules - {(executable, value)}
+    data["security_rules"] = sorted([list(rule) for rule in command_rules])
+    data["security_path_rules"] = sorted([list(rule) for rule in path_rules])
+    try:
+        transient.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError:
+        _log.exception("Failed to persist security-rule removal for %s", session_dir.name)

@@ -1423,9 +1423,8 @@ Control connection only (the sidebar/settings-panel connection, `hello`'s
 `payload.role == "control"`, §4.1) — backs the **Kōdo Settings** webview
 panel's "Global Allow-Rules" section (kodo-vsix `kodo-settings-panel.ts`),
 opened from a gear icon on the Kōdo sidebar view's title bar. Only *global*
-rules are exposed this way; session rules live in per-session runtime state
-and are left for a future session-webview management surface
-(SECURITY_RULES_PLAN.md Phase 3 item 2).
+rules are exposed this way; session-scoped rules use the separate
+`session.security_rules.*` pair instead (§7.6e).
 
 ```json
 { "type": "security.rules.list" }
@@ -1486,6 +1485,52 @@ stale/hand-edited settings.json. Unlike `llm.select`, `.set` requires no
 `config.reload` follow-up — `stuck_detection` is read fresh from disk on
 every stall check, so a live session picks up the new values on its very
 next check.
+
+### 7.6e `session.security_rules.list` / `session.security_rules.delete` — session rule management, and `session.delete_by_id`
+
+Control connection only, same framing as §7.6c — the session-scope sibling,
+backing the **Kōdo Settings** panel's "Sessions" → "Session Settings" modal
+(kodo-vsix `kodo-settings-panel.ts`).
+
+```json
+{ "type": "session.security_rules.list", "session_id": "1737..." }
+```
+
+→ `session.security_rules.list.ack` — same `rules` shape as
+`security.rules.list.ack` (§7.6c).
+
+```json
+{ "type": "session.security_rules.delete", "session_id": "1737...",
+  "rules": [ {"kind": "command", "executable": "git", "value": "status"} ] }
+```
+
+→ `session.security_rules.delete.ack` with the post-deletion `rules`, same
+refresh-from-response contract as `security.rules.delete.ack`.
+
+Works whether or not `session_id` is currently loaded in memory: if loaded,
+reads/mutates the live `TransientStore` directly (a mutation flushes itself
+immediately, so a live session's own autosave can't clobber the deletion
+with a stale in-memory copy); otherwise reads/patches `transient.json`
+on disk (`SessionManager.list_session_security_rules`/
+`delete_session_security_rules`, `server/_session_manager.py`).
+
+```json
+{ "type": "session.delete_by_id", "session_id": "1737..." }
+```
+
+→ `session.delete_by_id.ack` `{ "session_id": "1737..." }`, or
+`session.delete_by_id.error` `{ "message": "..." }`.
+
+The Sessions-list sibling of `session.delete` (§ above): same effect (stop
+the engine if loaded, remove the session's directory), but usable from *any*
+connection for *any* session id — unlike `session.delete`, which requires
+the request to arrive on that session's own live tab connection and signals
+success by closing that connection's socket (a contract that only makes
+sense when the socket is dedicated to that one session). `session.delete_by_id`
+never closes the request's socket; kodo-vsix disables the Sessions list's
+trash icon for a session that's currently `taken` (live in another window)
+rather than sending this while it's live, to avoid orphaning that session's
+open tab.
 
 ### 7.7 ⟪planned⟫ — standalone rules management, credential push
 
