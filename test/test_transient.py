@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from kodo.state import TransientStore
+from kodo.state import TransientStore, workspace_shape_compatible
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -536,6 +536,90 @@ def test_resumed_session_restores_locked_paths(kodo_dir: Path) -> None:
     second = TransientStore(kodo_dir)
     second.attach_session(session_id, resumed=True)
     assert second.workspace_locked_paths == frozenset({"/home/dev/kodo"})
+
+
+def test_workspace_shape_compatible_vacuously_true_when_unlocked() -> None:
+    assert workspace_shape_compatible(frozenset(), "", None, {}) is True
+    assert workspace_shape_compatible(frozenset(), "/anything", "/else", {"a": "/x"}) is True
+
+
+def test_workspace_shape_compatible_true_when_root_matches_and_bound_dirs_present(
+    tmp_path: Path,
+) -> None:
+    # `locked_paths` entries are documented as already-``.resolve()``d (as
+    # ``TransientStore.workspace_locked_paths`` always stores them) — resolve
+    # here too so the comparison isn't tripped up by e.g. macOS's `/home`
+    # automount rewriting an unresolved literal differently than a resolved one.
+    root = tmp_path
+    kodo_dir = root / "kodo"
+    kodo_dir.mkdir()
+    locked = frozenset({str(kodo_dir.resolve())})
+    assert (
+        workspace_shape_compatible(
+            locked,
+            str(root),
+            str(root),
+            {"kodo": str(kodo_dir), "extra": str(root / "extra")},
+        )
+        is True
+    )
+
+
+def test_workspace_shape_compatible_false_on_root_mismatch() -> None:
+    locked = frozenset({"/home/dev/kodo"})
+    assert (
+        workspace_shape_compatible(locked, "/home/dev", "/home/other", {"kodo": "/home/dev/kodo"})
+        is False
+    )
+
+
+def test_workspace_shape_compatible_false_when_bound_dir_missing() -> None:
+    locked = frozenset({"/home/dev/kodo", "/home/dev/kodo-vsix"})
+    assert (
+        workspace_shape_compatible(locked, "/home/dev", "/home/dev", {"kodo": "/home/dev/kodo"})
+        is False
+    )
+
+
+def test_workspace_shape_compatible_false_when_no_candidate_given() -> None:
+    locked = frozenset({"/home/dev/kodo"})
+    assert workspace_shape_compatible(locked, "/home/dev", None, {}) is False
+    assert workspace_shape_compatible(locked, "", "/home/dev", {"kodo": "/home/dev/kodo"}) is False
+
+
+def test_workspace_shape_compatible_resolves_symlinked_paths(tmp_path: Path) -> None:
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    project = real_root / "proj"
+    project.mkdir()
+    link_root = tmp_path / "link"
+    link_root.symlink_to(real_root)
+
+    locked = frozenset({str(project)})
+    assert (
+        workspace_shape_compatible(
+            locked, str(real_root), str(link_root), {"proj": str(link_root / "proj")}
+        )
+        is True
+    )
+
+
+def test_is_compatible_with_uses_stores_own_remembered_shape(
+    store: TransientStore, tmp_path: Path
+) -> None:
+    kodo_dir = tmp_path / "kodo"
+    kodo_dir.mkdir()
+    store.lock_workspace_path(str(kodo_dir.resolve()))
+    store.update(
+        workspace_physical_root=str(tmp_path), workspace_folders={"kodo": str(kodo_dir)}
+    )
+    assert store.is_compatible_with(str(tmp_path), {"kodo": str(kodo_dir)}) is True
+    assert store.is_compatible_with(str(tmp_path / "other"), {"kodo": str(kodo_dir)}) is False
+    assert store.is_compatible_with(str(tmp_path), {"other": str(tmp_path / "other")}) is False
+
+
+def test_is_compatible_with_true_when_unlocked(store: TransientStore) -> None:
+    assert store.is_compatible_with(None, {}) is True
 
 
 def test_update_with_no_kwargs_does_not_raise(store: TransientStore) -> None:

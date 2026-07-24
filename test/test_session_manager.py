@@ -248,6 +248,8 @@ async def test_list_reports_remembered_workspace_shape_once_locked(
     )
     session.engine._transient.lock_workspace_path(str(folder.resolve()))
 
+    # No candidate workspace passed in ⇒ nothing to compare against, so a
+    # locked session's `compatible` reports False by default.
     listing = mgr.list_sessions()
     entry = next(s for s in listing if s["id"] == session.id)
     assert entry["workspace"] == {
@@ -255,7 +257,20 @@ async def test_list_reports_remembered_workspace_shape_once_locked(
         "folders": {"myproj": str(folder)},
         "code_workspace_file": str(tmp_path / "dev.code-workspace"),
         "locked": True,
+        "compatible": False,
     }
+
+    # A candidate matching the remembered shape (root + the locked folder
+    # present) reports compatible.
+    matching = mgr.list_sessions(physical_root=str(tmp_path), folders={"myproj": str(folder)})
+    matching_entry = next(s for s in matching if s["id"] == session.id)
+    assert matching_entry["workspace"]["compatible"] is True
+
+    # A candidate with the right root but missing the locked folder does not.
+    other_folders = {"other": str(tmp_path / "other")}
+    mismatched = mgr.list_sessions(physical_root=str(tmp_path), folders=other_folders)
+    mismatched_entry = next(s for s in mismatched if s["id"] == session.id)
+    assert mismatched_entry["workspace"]["compatible"] is False
 
 
 # ---------------------------------------------------------------------------

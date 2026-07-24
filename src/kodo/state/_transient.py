@@ -46,7 +46,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-__all__ = ["TransientStore", "new_session_id", "read_diff_files", "read_web_search_notes"]
+__all__ = [
+    "TransientStore",
+    "new_session_id",
+    "read_diff_files",
+    "read_web_search_notes",
+    "workspace_shape_compatible",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -123,6 +129,45 @@ def read_diff_files(toolcalls_dir: Path, tool_call_id: str) -> dict[str, object]
     if not (prev_path.exists() and new_path.exists()):
         return None
     return {"label": label, "prev_path": str(prev_path), "new_path": str(new_path)}
+
+
+def workspace_shape_compatible(
+    locked_paths: frozenset[str] | set[str],
+    remembered_physical_root: str,
+    candidate_physical_root: str | None,
+    candidate_folders: dict[str, str],
+) -> bool:
+    """Whether a candidate workspace shape can host a session's bound directories.
+
+    Compatible iff (a) *candidate_physical_root* resolves to the same path as
+    *remembered_physical_root*, and (b) every path in *locked_paths* (already-
+    resolved absolute strings — :attr:`TransientStore.workspace_locked_paths`)
+    is present among *candidate_folders*'s resolved values. Vacuously ``True``
+    when *locked_paths* is empty: an unlocked session has nothing to be
+    compatible or incompatible about, so callers should read a ``False``
+    return here as exactly "locked and disconnected," nothing more.
+
+    Both physical roots are re-resolved (:meth:`Path.resolve`) before
+    comparing — the *persisted* ``TransientStore.workspace_physical_root`` is
+    stored verbatim from the client's push (see
+    :meth:`~kodo.runtime._engine._core.WorkflowEngine.handle_workspace_folders`),
+    so a raw string compare could spuriously disagree on a symlinked path.
+
+    Used both live, by the engine (:meth:`~kodo.runtime._engine._core.
+    WorkflowEngine._is_workspace_connected`, via :meth:`TransientStore.
+    is_compatible_with`), and from disk alone, by ``session.list`` (:func:`kodo.
+    server._session_manager._read_workspace`) — this free-function shape (no
+    live session/engine needed) is what makes the second case possible.
+    """
+    if not locked_paths:
+        return True
+    if not remembered_physical_root or not candidate_physical_root:
+        return False
+    remembered_resolved = str(Path(remembered_physical_root).resolve())
+    if remembered_resolved != str(Path(candidate_physical_root).resolve()):
+        return False
+    candidate_resolved = {str(Path(p).resolve()) for p in candidate_folders.values()}
+    return set(locked_paths).issubset(candidate_resolved)
 
 
 @dataclass
@@ -485,6 +530,16 @@ class TransientStore:
         the moment a root's mirror actually commits something.
         """
         return self.__workspace_locked_paths
+
+    def is_compatible_with(self, physical_root: str | None, folders: dict[str, str]) -> bool:
+        """Whether a candidate workspace shape can host this session's bound
+        directories — see :func:`workspace_shape_compatible`, built from this
+        store's own remembered :attr:`workspace_physical_root`/
+        :attr:`workspace_locked_paths` as the comparison baseline.
+        """
+        return workspace_shape_compatible(
+            self.__workspace_locked_paths, self.__workspace_physical_root, physical_root, folders
+        )
 
     @property
     def stage(self) -> str:

@@ -20,7 +20,7 @@ from pathlib import Path
 from kodo.llms import LLMGateway
 from kodo.project import SessionWorkspace, WorkspaceLayout
 from kodo.runtime import GateOrchestrator, WorkflowEngine
-from kodo.state import TransientStore, new_session_id
+from kodo.state import TransientStore, new_session_id, workspace_shape_compatible
 from kodo.subagents import AgentRegistry
 from kodo.transport import Connection, Outbox, SessionChannel
 
@@ -286,18 +286,33 @@ class SessionManager:
             _remove_security_rules_on_disk(self.__layout.sessions_dir / session_id, rules)
         return self.list_session_security_rules(session_id)
 
-    def list_sessions(self) -> list[dict[str, object]]:
+    def list_sessions(
+        self, *, physical_root: str = "", folders: dict[str, str] | None = None
+    ) -> list[dict[str, object]]:
         """List every persisted session for the picker.
+
+        Args:
+            physical_root: The requesting window's own current physical root,
+                if known — together with *folders*, the candidate workspace
+                shape each session's ``workspace.compatible`` is computed
+                against (:func:`~kodo.state.workspace_shape_compatible`).
+                Omit (default ``""``) when the caller has no current
+                workspace to compare against — every locked session then
+                reports ``compatible: False``.
+            folders: The requesting window's own current logical-name →
+                physical-path folder map, paired with *physical_root* above.
 
         Returns:
             list[dict]: ``{id, name, created_at, last_modified, project_root,
             taken, workspace}`` per session; ``taken`` is ``True`` while a
             live window holds it.  ``project_root`` is the bound Guided
             project (``None`` ⇒ problem-solving-only, openable anywhere).
-            ``workspace`` is ``{physical_root, folders, code_workspace_file}``
-            (the session's remembered VS Code workspace shape) or ``None`` if
-            nothing was ever pushed. ``created_at`` / ``last_modified`` are
-            ISO-8601 strings (``""`` if unknown).
+            ``workspace`` is ``{physical_root, folders, code_workspace_file,
+            locked, compatible}`` (the session's remembered VS Code workspace
+            shape, plus whether *physical_root*/*folders* above can host its
+            bound directories) or ``None`` if nothing was ever pushed.
+            ``created_at`` / ``last_modified`` are ISO-8601 strings (``""``
+            if unknown).
         """
         out: list[dict[str, object]] = []
         sessions_dir = self.__layout.sessions_dir
@@ -315,7 +330,7 @@ class SessionManager:
                     "last_modified": last_modified,
                     "project_root": _read_project_root(path),
                     "taken": path.name in self.__live_conn,
-                    "workspace": _read_workspace(path),
+                    "workspace": _read_workspace(path, physical_root, folders or {}),
                 }
             )
         return out
@@ -430,7 +445,11 @@ def _read_project_root(session_dir: Path) -> str | None:
     return None
 
 
-def _read_workspace(session_dir: Path) -> dict[str, object] | None:
+def _read_workspace(
+    session_dir: Path,
+    candidate_physical_root: str = "",
+    candidate_folders: dict[str, str] | None = None,
+) -> dict[str, object] | None:
     """Read a session's remembered VS Code workspace shape for `session.list`.
 
     Mirrors :func:`_read_project_root`'s read-only, defensive style. Returns
@@ -449,7 +468,12 @@ def _read_workspace(session_dir: Path) -> dict[str, object] | None:
     The returned ``locked`` flag is always ``True`` when the dict is
     returned at all — kodo-vsix additionally uses it to decide whether
     resuming this session into a *different current* workspace needs the
-    user's explicit confirmation first.
+    user's explicit confirmation first. ``compatible`` is computed purely
+    from this persisted shape (no live engine needed — the session may not
+    even be running) via :func:`~kodo.state.workspace_shape_compatible`,
+    against *candidate_physical_root*/*candidate_folders* — the requesting
+    window's own current workspace, threaded through from ``session.list``'s
+    optional request payload (``_handle_session_list``, WS_PROTOCOL.md §7.1b).
     """
     transient = session_dir / "transient.json"
     if not transient.exists():
@@ -461,17 +485,22 @@ def _read_workspace(session_dir: Path) -> dict[str, object] | None:
     locked_paths = data.get("workspace_locked_paths")
     if not locked_paths:
         return None
+    resolved_locked = {str(p) for p in locked_paths if isinstance(p, str)}
     physical_root = str(data.get("workspace_physical_root", ""))
     raw_folders = data.get("workspace_folders")
     folders = (
         {str(k): str(v) for k, v in raw_folders.items()} if isinstance(raw_folders, dict) else {}
     )
     code_file = data.get("workspace_code_file")
+    compatible = workspace_shape_compatible(
+        resolved_locked, physical_root, candidate_physical_root or None, candidate_folders or {}
+    )
     return {
         "physical_root": physical_root,
         "folders": folders,
         "code_workspace_file": code_file if isinstance(code_file, str) and code_file else None,
         "locked": True,
+        "compatible": compatible,
     }
 
 

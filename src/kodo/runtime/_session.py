@@ -100,6 +100,16 @@ class SessionState:
             flag is what lets a fresh `hello`/`state` snapshot reconstruct
             that spinner correctly instead of only ever setting it from the
             live (and reconnect-losable) `llm.turn_start` event.
+        workspace_connected: Whether this session's bound directories (if any)
+            are hosted by the live workspace currently pushed to this window —
+            mirrors :meth:`~kodo.runtime._engine._core.WorkflowEngine.
+            _is_workspace_connected`, mode-agnostic (unlike the
+            Problem-Solver-only ``get_root_paths`` disconnected fallback it
+            feeds alongside this field). Always ``True`` for a session that
+            has never locked a directory. Recomputed on session start and on
+            every ``workspace.folders`` push (``WorkflowEngine.
+            handle_workspace_folders``); drives kodo-vsix's reconnect-workspace
+            button (doc/SESSIONS.md, doc/WS_PROTOCOL.md §5.1).
     """
 
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -116,6 +126,7 @@ class SessionState:
     security_rules: frozenset[tuple[str, str]] = field(default_factory=frozenset)
     security_path_rules: frozenset[tuple[str, str]] = field(default_factory=frozenset)
     awaiting_first_chunk: bool = False
+    workspace_connected: bool = True
 
     def to_dict(self) -> dict[str, object]:
         """Serialise to a plain dict for wire-protocol events.
@@ -142,4 +153,5 @@ class SessionState:
             "command_control": self.command_control,
             "thinking_level": self.thinking_level,
             "awaiting_first_chunk": self.awaiting_first_chunk,
+            "workspace_connected": self.workspace_connected,
         }

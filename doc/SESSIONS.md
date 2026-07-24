@@ -113,6 +113,31 @@ work there; resuming a session with any locked folder into a different
 workspace now asks for confirmation first instead of silently reopening
 (WS_PROTOCOL.md §7.1b).
 
+As of 2026-07-23, a locked Problem-Solver session whose live pushed workspace
+is missing or no longer hosts every locked path operates in
+**disconnected/isolated mode**: `EngineCore._root_paths()`/`_has_workspace()`/
+`_make_resolver()` fall back to the bound directories (`workspace_folders`
+filtered to `workspace_locked_paths`) instead of the live `SessionWorkspace`,
+so file/shell tools — and `run_command`'s default cwd, and the security
+layer's escape analysis, which all resolve through the same path resolver —
+keep working against real, on-disk history even with no matching VS Code
+window open. The judgment call behind this — "can this candidate workspace
+shape host this session's bound directories" — is one function,
+`kodo.state.workspace_shape_compatible` (root must match, every locked path
+must be present), reused by `WorkflowEngine._is_workspace_connected()` (live,
+feeds the `state` event's `workspace_connected` field, WS_PROTOCOL.md §5.1)
+and by `session.list`'s `compatible` field (from disk alone, no live engine
+needed — WS_PROTOCOL.md §7.1b). This connection-state concept is
+**mode-agnostic** — a Guided session gets `workspace_connected` too, and
+`create_new_project`/`init_project` skip their `workspace.add_folder` push
+(but still scaffold and lock immediately) whenever disconnected, regardless
+of mode — even though the root-resolution fallback itself is Problem-Solver
+only: Guided mode's `current_project` binding never depended on the live
+push to begin with, so it was already disconnected-safe. New-project locking
+is now always immediate on creation (not gated on a first real commit like
+every other root), so a disconnected session's own fallback sees a
+freshly-created directory right away.
+
 ### `session.jsonl` — the main log
 
 `session.jsonl` is an append-only log that interleaves **two kinds of lines**,

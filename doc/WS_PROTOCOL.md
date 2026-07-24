@@ -26,15 +26,20 @@ share; everything else is internal.
 > - New client→server: **`session.list`** (→ `{sessions:[{id,name,project_root,
 >   taken, workspace}]}` for the picker — `workspace` is the session's
 >   remembered VS Code workspace shape, `{physical_root, folders,
->   code_workspace_file, locked}` or `null`, added 2026-07-22 for session-resume
->   workspace linkage, see §7.1b; `locked` (added 2026-07-22, same day) is true
->   once any remembered folder has earned a checkpoint commit and can never be
->   dropped from `folders` again — **as of 2026-07-22 round 2, `workspace` is
->   `null` for any session that isn't locked yet**, even if `workspace.folders`
->   was pushed to it: a session earns no binding to a workspace until it
->   actually commits something there, so `locked` is always `true` whenever
->   `workspace` is non-null) and **`session.release`** (free this window's
->   session immediately on graceful close).
+>   code_workspace_file, locked, compatible}` or `null`, added 2026-07-22 for
+>   session-resume workspace linkage, see §7.1b; `locked` (added 2026-07-22,
+>   same day) is true once any remembered folder has earned a checkpoint
+>   commit and can never be dropped from `folders` again — **as of 2026-07-22
+>   round 2, `workspace` is `null` for any session that isn't locked yet**,
+>   even if `workspace.folders` was pushed to it: a session earns no binding
+>   to a workspace until it actually commits something there, so `locked` is
+>   always `true` whenever `workspace` is non-null; **as of 2026-07-23,
+>   `session.list`'s request may optionally carry `{physical_root, folders}`**
+>   — the requesting window's own current workspace shape — and each locked
+>   session's `compatible` field reports whether that candidate can host its
+>   bound directories (§7.1b's disconnected/isolated-operation extension))
+>   and **`session.release`** (free this window's session immediately on
+>   graceful close).
 > - New server→client event: **`llm.waiting`** `{waiting, reason:"queued"|
 >   "throttled", retry_in_seconds?}` — emitted by the LLM gateway while a request
 >   is queued behind the serial local gate / a saturated cloud feed, or held back
@@ -225,7 +230,8 @@ Pushed on connect (also embedded in `hello.ack`), and whenever a field below cha
   "edit_control": "review_all" | "allow_all" | "smart",
   "command_control": "defensive" | "permissive" | "smart",
   "thinking_level": "unlimited" | "medium" | "" | "...",
-  "awaiting_first_chunk": false }
+  "awaiting_first_chunk": false,
+  "workspace_connected": true }
 ```
 
 `phase` semantics:
@@ -267,6 +273,8 @@ The header toggles split into **two frozen** and **three never-frozen**:
 > `last_checkpoint_sha` are **⟪planned⟫** additions; today cost arrives via
 > `usage.update` (§5.9) and pending prompts are re-surfaced by replaying the
 > original request frame on reconnect (§8).
+
+**Added 2026-07-23:** `workspace_connected` — whether this session's bound directories (if any) are hosted by the workspace currently open in this window, i.e. `WorkflowEngine._is_workspace_connected()` (§7.1b's disconnected/isolated-operation extension). Mode-agnostic (Guided and Problem Solver sessions both report it) and always `true` for a session that has never locked a directory. Recomputed — and this event re-pushed — on session start and on every `workspace.folders` push (§7.1b), so it tracks live connect/disconnect transitions within a turn, not just at session-open time. Drives kodo-vsix's reconnect-workspace button (webview footer, shown only while `false`).
 
 ### 5.2 `agent.started` / `agent.finished` — invocation boundaries
 
@@ -1004,6 +1012,15 @@ Scoped to the transition the extension itself initiates (`create_new_project`/`i
 A session already open as a live tab **in the current window** (`_findBySessionId` finds it) always short-circuits straight to `reveal()` regardless of what's remembered — there's a live connection to reuse, so no workspace comparison or reload is ever appropriate there. The picker itself no longer disables an item for a Guided-mode project not being loaded in the current workspace (the old `project_root`-keyed `disabledReason`) — that case is now subsumed by the general reopen flow (the project's folder is just one entry in the remembered folder set); only "opened in another live window" still disables an item outright. Instead, a mismatched item's `detail` gets a note so the user knows picking it triggers a reload: `will ask to reopen this window's workspace` (confirmation dialog first) — reachable only for locked sessions, per the above, since an unlocked session's `workspace` is always `null` and never reaches this mismatch check in the first place.
 
 See the `project_kodo_workspace_session_linkage` memory for the full design-decision record (why reuse-the-window/exact-match/pickSession-only/silent-fallback were each chosen over the alternatives).
+
+**Extended 2026-07-23: disconnected/isolated operation + reconnect.** A locked session no longer *requires* a live, matching workspace to keep working — the bound directories on disk are its real, durable state, and a Problem-Solver session now falls back to operating against them directly when the live push can't host them.
+
+- **Compatibility rule**, one function used everywhere: `kodo.state.workspace_shape_compatible(locked_paths, remembered_physical_root, candidate_physical_root, candidate_folders)` — `True` iff the candidate's physical root resolves to the same path as the remembered one **and** every locked path is present among the candidate's folder values (both sides `Path.resolve()`d first, so a symlinked path doesn't spuriously disagree). Vacuously `True` when `locked_paths` is empty — an unlocked session is never "incompatible," it just has nothing pushed. `TransientStore.is_compatible_with(physical_root, folders)` wraps it against a store's own remembered shape; `WorkflowEngine._is_workspace_connected()` (§5.1) calls that against the *live* `SessionWorkspace` on every access — mode-agnostic, the same value feeds both the Problem-Solver-only fallback below and the `state` event.
+- **`session.list`'s `compatible` field** (intro block, above) is the same rule computed **from disk alone** — `kodo/server/_session_manager.py`'s `_read_workspace` takes the request's optional `{physical_root, folders}` as the candidate and a session's persisted `workspace_physical_root`/`workspace_locked_paths` as the baseline, so it works even for a session with no live engine running yet (the picker's normal case). Omitting the request fields (or a session having no candidate to compare against) reports `compatible: false` for every locked session — never a crash, never a stale guess.
+- **Problem-Solver root resolution** (`EngineCore._root_paths()`/`_has_workspace()`/`_make_resolver()`, `kodo/runtime/_engine/_core.py`): when locked and *not* connected (`_is_workspace_connected()` is `false`), these fall back to the bound directories — `workspace_folders` name-filtered to `workspace_locked_paths`, in `workspace_folders`' own insertion order — instead of the live `SessionWorkspace`. `_has_workspace()` is `true` in this state (a locked session is never homeless). `_make_resolver()` builds its `LogicalPathResolver` over a *synthetic* `SessionWorkspace` snapshotting the bound dirs, so every path-resolving consumer — file/shell tool dispatch, `run_command`'s default cwd, the security layer's escape analysis, all of which resolve through it — confines itself to the bound directories too, not just `get_root_paths`. The synthetic workspace's physical root is the *first* bound directory, never the live `SessionWorkspace.physical_root` (which an empty `workspace.folders` push leaves stale — `handle_workspace_folders` only overwrites it on a non-empty push, unchanged by this extension). When connected, behavior is unchanged: the full live folder set is reported, not just the locked subset. **Guided mode is untouched** — its root resolution already keys off the immutable `current_project` binding, never the live push, so it was already "disconnected-safe" by construction.
+- **`create_new_project`/`init_project` while disconnected**: both still perform every on-disk side effect (scaffold, initialize the git mirror) and now **lock their target directory immediately and unconditionally** — not gated on its first real mutating-tool commit like every other root — so a disconnected session's own fallback above sees it right away, letting a background/autonomous agent keep making progress with no live window at all. What's gated on connection state is only the `workspace.add_folder` push (§5.9c): skipped when the session isn't connected to a live matching workspace (snapshotted before either method's own mutations, so a session's *own* newly-created, not-yet-pushed folder never spuriously flips the check), since pushing into a window that doesn't match this session would silently corrupt an unrelated window's folders. This guard is mode-agnostic (Guided sessions get it too), unlike the root-resolution fallback above.
+- **kodo-vsix's resume gate is now compatibility-based, not exact-match-based**: `requiresWorkspaceSwitchConfirmation(locked, compatible)` — a compatible-but-not-identical current workspace (e.g. it has extra folders beyond what's bound) is a **new third outcome** alongside "exact match" that skips the reload/confirmation entirely, per the rule above. **Declining the mismatch dialog now still opens the session** (disconnected) rather than doing nothing — the dialog keeps its single "Open" action; anything else (dismiss, Escape) means "open disconnected," not "cancel."
+- **Manual reconnect**: a locked-and-disconnected session's webview footer shows a reconnect-workspace button (left of send), visible only in that state (per its own `workspace_connected`, above) — clicking it confirms ("Do you want to load the workspace associated with the current Kōdo session?") and, on yes, reloads the window into that session's own remembered workspace using the same reload/continuity plumbing as §7.1b's mismatch path. The "Kōdo: Create Project" command gained the same check: if the active session is disconnected, it offers to reconnect first (a variant of the same confirmation) and, on yes, chains into the existing `_armPendingCreateProjectPrompt`/`_resumePendingCreateProjectPrompt` reload-and-resume flow (§6.6a) so the project-name prompt appears automatically once the window comes back.
 
 ### 7.2 `stop` — global STOP
 

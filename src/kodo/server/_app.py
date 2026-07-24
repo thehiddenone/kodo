@@ -469,7 +469,22 @@ def _llama_payload(settings: dict[str, object] | None = None) -> dict[str, objec
 
 
 async def _handle_session_list(req: Request) -> None:
-    await req.reply({"type": "session.list.ack", "sessions": req.manager.list_sessions()})
+    """``session.list`` (WS_PROTOCOL.md §7.1b). *physical_root*/*folders* are
+    optional — the requesting window's own current workspace shape, used to
+    compute each locked session's ``workspace.compatible`` flag
+    (:func:`~kodo.state.workspace_shape_compatible`). Parsing mirrors
+    ``_handle_workspace_folders``'s exact idiom below."""
+    physical_root = str(req.env.payload.get("physical_root", ""))
+    raw_folders = req.env.payload.get("folders", {})
+    folders = (
+        {str(k): str(v) for k, v in raw_folders.items()} if isinstance(raw_folders, dict) else {}
+    )
+    await req.reply(
+        {
+            "type": "session.list.ack",
+            "sessions": req.manager.list_sessions(physical_root=physical_root, folders=folders),
+        }
+    )
 
 
 async def _handle_session_release(req: Request) -> None:

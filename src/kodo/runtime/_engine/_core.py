@@ -411,6 +411,14 @@ class WorkflowEngine(
             )
             self._transient.update(thinking_level=self._session.thinking_level)
 
+        # Best-effort initial snapshot for the very first `hello.ack` — no
+        # `workspace.folders` push has landed yet this connection, so a
+        # locked session briefly reads as disconnected until the client's
+        # post-hello.ack push arrives and `handle_workspace_folders`
+        # recomputes + emits the corrected `state`. Always accurate for an
+        # unlocked session (vacuously connected).
+        self._session.workspace_connected = self._is_workspace_connected()
+
         self._worker = asyncio.create_task(self._run_worker(), name="kodo-worker")
         _log.info(
             "Runtime worker started (guide_session=%s resumed=%s messages=%d "
@@ -442,6 +450,10 @@ class WorkflowEngine(
         just pushed, since it drives what the running session can actually
         operate on right now.
 
+        Also recomputes :meth:`_is_workspace_connected` and pushes it as the
+        ``state`` event's ``workspace_connected`` field — every push is a
+        potential connect/disconnect transition (doc/SESSIONS.md).
+
         Args:
             physical_root (str): The physical workspace root (informational —
                 the server is already launched against it).
@@ -470,6 +482,8 @@ class WorkflowEngine(
             physical_root,
             sorted(folders),
         )
+        self._session.workspace_connected = self._is_workspace_connected()
+        await self._emitters.emit_state()
 
     async def bind_project(self, root: str, name: str) -> None:
         """Bind the session's current project for Guided mode (idempotent).
@@ -814,8 +828,13 @@ class WorkflowEngine(
         """Whether this run has any usable project/workspace right now.
 
         Guided mode: a project is bound. Problem Solver mode: at least one
-        workspace folder is open. Unlike :meth:`_root_paths`, this
-        deliberately does *not* fall back to the physical root — it is the
+        workspace folder is open, OR — since 2026-07-23 — the session is
+        locked (:attr:`~kodo.state.TransientStore.workspace_locked_paths`
+        non-empty) and disconnected from the live push (see
+        :meth:`_is_workspace_connected`), in which case its bound directories
+        stand in for the live folders (:meth:`_bound_root_paths`): a locked
+        session is never homeless, even disconnected. Unlike :meth:`_root_paths`,
+        this deliberately does *not* fall back to the physical root — it is the
         signal :class:`~kodo.tools.ToolDispatcher` uses to reject a call to a
         ``requires_project`` tool before dispatch, telling the agent to call
         ``create_new_project`` first instead of silently operating against
@@ -823,7 +842,49 @@ class WorkflowEngine(
         """
         if self._session.workflow_mode == "guided":
             return self._current_project is not None
+        if not self._is_workspace_connected():
+            return bool(self._bound_root_paths())
         return bool(self._session_workspace.folders)
+
+    def _is_workspace_connected(self) -> bool:
+        """Whether this session's bound directories (if any) are hosted by the
+        live pushed workspace right now.
+
+        Mode-agnostic — unlike the Problem-Solver-only root-resolution
+        fallback it feeds (:meth:`_root_paths`/:meth:`_has_workspace`/
+        :meth:`_make_resolver`), this also drives the ``state`` event's
+        ``workspace_connected`` field (surfaced to both Guided and
+        Problem-Solver session tabs, e.g. for kodo-vsix's reconnect-workspace
+        button) and the ``create_new_project``/``init_project`` push-guard
+        below. Always ``True`` for an unlocked session — see
+        :func:`~kodo.state.workspace_shape_compatible`'s vacuous-truth case.
+        """
+        root = self._session_workspace.physical_root
+        return self._transient.is_compatible_with(
+            str(root) if root is not None else None,
+            {name: str(p) for name, p in self._session_workspace.folders.items()},
+        )
+
+    def _bound_root_paths(self) -> tuple[RootPath, ...]:
+        """This session's locked/bound directories, as roots.
+
+        Name-filtered from the remembered
+        :attr:`~kodo.state.TransientStore.workspace_folders` (preserving its
+        insertion order — the same order the live VS Code workspace had them
+        in at the last push that included them), keeping only entries whose
+        resolved path is in :attr:`~kodo.state.TransientStore.workspace_locked_paths`
+        — every locked path is guaranteed an entry there by
+        :func:`_reconcile_workspace_folders`. Empty iff the session has never
+        locked a directory.
+        """
+        locked = self._transient.workspace_locked_paths
+        if not locked:
+            return ()
+        return tuple(
+            RootPath(name=name, path=path)
+            for name, path in self._transient.workspace_folders.items()
+            if str(Path(path).resolve()) in locked
+        )
 
     def _project_root(self) -> Path | None:
         """The bound Guided-mode project's root, or ``None``, read live.
@@ -840,8 +901,13 @@ class WorkflowEngine(
         Guided mode confines the agent to one project, so it reports just the
         bound project root. Problem Solver mode addresses the whole workspace, so
         it reports every open VS Code workspace folder (the map the extension
-        keeps synced via ``workspace.folders``). When no folders have been
-        pushed yet — no workspace open, nothing bootstrapped — this returns an
+        keeps synced via ``workspace.folders``) — unless the session is locked
+        and disconnected from that live push (:meth:`_is_workspace_connected`),
+        in which case it falls back to the bound directories
+        (:meth:`_bound_root_paths`) instead, so the agent keeps working against
+        real, on-disk history even with no matching VS Code window open
+        (doc/SESSIONS.md). When no folders have been pushed yet and nothing is
+        locked — no workspace open, nothing bootstrapped — this returns an
         **empty tuple**. It deliberately does not fall back to the physical
         root (which may itself be unset): a homeless session has no roots,
         full stop, matching :meth:`_has_workspace`. This is what keeps
@@ -851,6 +917,8 @@ class WorkflowEngine(
         if self._session.workflow_mode == "guided" and self._current_project is not None:
             cp = self._current_project
             return (RootPath(name=cp["name"], path=cp["root"]),)
+        if self._session.workflow_mode == "problem_solving" and not self._is_workspace_connected():
+            return self._bound_root_paths()
         folders = self._session_workspace.folders
         if folders:
             return tuple(RootPath(name=name, path=str(p)) for name, p in folders.items())
@@ -892,11 +960,32 @@ class WorkflowEngine(
         its own ``get_root_paths``/``temporary: true`` file-tool calls) uses.
         Problem Solver's logical resolver already allows any absolute path,
         so it needs no equivalent.
+
+        When Problem Solver is locked and disconnected from the live push
+        (:meth:`_is_workspace_connected`), the resolver is built over a
+        synthetic :class:`~kodo.project.SessionWorkspace` snapshotting the
+        bound directories (:meth:`_bound_root_paths`) instead of the live
+        ``self._session_workspace`` — this is what makes every path-resolving
+        consumer (file/shell tool dispatch, ``run_command``'s default cwd,
+        the security layer's escape analysis, all of which read through this
+        resolver) confine itself to the bound directories too, not just
+        ``get_root_paths``. The synthetic workspace's physical root is the
+        *first* bound directory (insertion order) — it deliberately never
+        reads ``self._session_workspace.physical_root``, which can be stale
+        (``handle_workspace_folders`` only overwrites it on a non-empty push).
         """
         if self._session.workflow_mode == "guided" and self._layout is not None:
             return ProjectPathResolver(
                 self._layout.root, extra_roots=(session_temp_dir(session_id),)
             )
+        if self._session.workflow_mode == "problem_solving" and not self._is_workspace_connected():
+            bound = self._bound_root_paths()
+            assert bound, "_is_workspace_connected() False but no bound directories are locked"
+            disconnected_workspace = SessionWorkspace(
+                physical_root=Path(bound[0].path),
+                folders={rp.name: Path(rp.path) for rp in bound},
+            )
+            return LogicalPathResolver(disconnected_workspace)
         return LogicalPathResolver(self._session_workspace)
 
     # ------------------------------------------------------------------
@@ -1024,12 +1113,22 @@ class WorkflowEngine(
         under the session workspace root (auto-suffixed on collision). Either
         way, ``specs/``, ``src/``, ``test/`` and ``.kodo/``/``kodo.md`` are laid
         out via :meth:`ProjectLayout.init`, the checkpoint mirror is initialised
-        (done by :meth:`RootMirrorManager.prepare`), the new folder is recorded
-        in the session's logical-root map so ``get_root_paths`` sees it
-        immediately, and ``EVT_WORKSPACE_ADD_FOLDER`` is pushed so the VS Code
-        extension adds the directory to the open workspace (its resulting
-        workspace-folders change re-pushes ``workspace.folders``, reconciling
-        the map).
+        (done by :meth:`RootMirrorManager.prepare`), and the new folder is
+        recorded in the session's logical-root map so ``get_root_paths`` sees
+        it immediately. The new directory is also locked
+        (:meth:`~kodo.state.TransientStore.lock_workspace_path`) unconditionally
+        and immediately — not gated on its first real mutating-tool commit,
+        unlike every other root — so a disconnected session's own
+        ``get_root_paths`` fallback (:meth:`_bound_root_paths`) sees it too.
+        ``EVT_WORKSPACE_ADD_FOLDER`` is pushed so the VS Code extension adds
+        the directory to the open workspace (its resulting workspace-folders
+        change re-pushes ``workspace.folders``, reconciling the map) — but
+        only when this session was already connected (:meth:`_is_workspace_connected`,
+        snapshotted before any of this method's mutations) before this call:
+        pushing into a window that doesn't match this session's workspace
+        would silently corrupt an unrelated window's folders, so a
+        disconnected caller (e.g. a background agent) still gets every
+        on-disk side effect, just without that push (doc/SESSIONS.md).
 
         Args:
             name: Human-readable project name. Used as the workspace-folder
@@ -1049,6 +1148,11 @@ class WorkflowEngine(
             ProjectLayoutError: *path*'s ``kodo.md`` already exists and
                 *force* is not set.
         """
+        # Snapshot before any mutation below — `set_folders` a few lines down
+        # updates the *live* in-process folder map immediately, which would
+        # otherwise make a genuinely disconnected session spuriously read as
+        # connected (its own new, not-yet-locked folder trivially "present").
+        connected = self._is_workspace_connected()
         name = name.strip()
         if path:
             project_dir = Path(path)
@@ -1076,11 +1180,20 @@ class WorkflowEngine(
 
         self._checkpoints.sync_roots()
         await self._checkpoints.mirrors.prepare(project_dir)
+        self._transient.lock_workspace_path(str(project_dir.resolve()))
 
-        await self._sink.send(
-            Envelope.make_event(EVT_WORKSPACE_ADD_FOLDER, {"path": str(project_dir), "name": label})
+        if connected:
+            await self._sink.send(
+                Envelope.make_event(
+                    EVT_WORKSPACE_ADD_FOLDER, {"path": str(project_dir), "name": label}
+                )
+            )
+        _log.info(
+            "create_new_project: scaffolded %s (label=%r, connected=%s)",
+            project_dir,
+            label,
+            connected,
         )
-        _log.info("create_new_project: scaffolded %s (label=%r)", project_dir, label)
         return {"path": str(project_dir), "name": label}
 
     @staticmethod
@@ -1100,10 +1213,14 @@ class WorkflowEngine(
         ``test/`` — a non-empty directory keeps its existing content untouched.
         Either way ``.kodo/``/``kodo.md`` and the checkpoint git mirror (with
         its mandatory baseline commit, via ``RootMirrorManager.prepare``) are
-        always created. Unlike :meth:`_create_project`, the workspace-folder
-        registration and ``EVT_WORKSPACE_ADD_FOLDER`` push are skipped when
-        *path* is already one of the session's registered folders — the
-        directory may already be open.
+        always created, and the directory is locked immediately and
+        unconditionally (see :meth:`_create_project`'s matching note). Unlike
+        :meth:`_create_project`, the workspace-folder registration and
+        ``EVT_WORKSPACE_ADD_FOLDER`` push are skipped when *path* is already
+        one of the session's registered folders — the directory may already
+        be open — and, per :meth:`_create_project`'s connected/disconnected
+        guard, also skipped when this session isn't currently connected to a
+        live matching workspace.
 
         Args:
             path: Absolute path of the existing directory to augment.
@@ -1116,6 +1233,7 @@ class WorkflowEngine(
             ProjectLayoutError: *path* does not exist, or its ``.kodo/``
                 already exists.
         """
+        connected = self._is_workspace_connected()
         project_dir = Path(path)
         scaffolded = await asyncio.to_thread(ProjectLayout(project_dir).init_existing)
         resolved_dir = project_dir.resolve()
@@ -1129,18 +1247,21 @@ class WorkflowEngine(
 
         self._checkpoints.sync_roots()
         await self._checkpoints.mirrors.prepare(project_dir)
+        self._transient.lock_workspace_path(str(resolved_dir))
 
-        if not already_present:
+        if not already_present and connected:
             await self._sink.send(
                 Envelope.make_event(
                     EVT_WORKSPACE_ADD_FOLDER, {"path": str(project_dir), "name": label}
                 )
             )
         _log.info(
-            "init_project: augmented %s (scaffolded=%s, already_present=%s, label=%r)",
+            "init_project: augmented %s (scaffolded=%s, already_present=%s, "
+            "connected=%s, label=%r)",
             project_dir,
             scaffolded,
             already_present,
+            connected,
             label,
         )
         return {"path": str(project_dir), "name": label, "scaffolded": scaffolded}

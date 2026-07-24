@@ -367,6 +367,75 @@ async def test_handle_workspace_folders_locked_folder_name_collision_is_disambig
     assert str(old_b) in transient.workspace_folders.values()
 
 
+async def test_handle_workspace_folders_emits_state_event(tmp_path: Path) -> None:
+    engine, _t, sink, _g = _make_engine(tmp_path)
+    folder = tmp_path / "myproj"
+    folder.mkdir()
+
+    await engine.handle_workspace_folders(str(tmp_path), {"myproj": str(folder)})
+
+    state_events = [e for e in sink.sent if e.payload.get("type") == "state"]
+    assert state_events
+    assert state_events[-1].payload["workspace_connected"] is True
+
+
+async def test_handle_workspace_folders_workspace_connected_true_when_unlocked(
+    tmp_path: Path,
+) -> None:
+    engine, _t, _s, _g = _make_engine(tmp_path)
+    # No folder ever locked — connected regardless of what's pushed (or not).
+    await engine.handle_workspace_folders("", {})
+    assert engine._session.workspace_connected is True
+
+
+async def test_handle_workspace_folders_workspace_connected_true_when_locked_folder_present(
+    tmp_path: Path,
+) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    folder = tmp_path / "myproj"
+    folder.mkdir()
+    await engine.handle_workspace_folders(str(tmp_path), {"myproj": str(folder)})
+    transient.lock_workspace_path(str(folder.resolve()))
+
+    # Re-push the identical, still-matching shape.
+    await engine.handle_workspace_folders(str(tmp_path), {"myproj": str(folder)})
+    assert engine._session.workspace_connected is True
+
+
+async def test_handle_workspace_folders_workspace_connected_false_when_locked_folder_missing(
+    tmp_path: Path,
+) -> None:
+    engine, transient, sink, _g = _make_engine(tmp_path)
+    folder = tmp_path / "myproj"
+    other = tmp_path / "other"
+    folder.mkdir()
+    other.mkdir()
+    await engine.handle_workspace_folders(str(tmp_path), {"myproj": str(folder)})
+    transient.lock_workspace_path(str(folder.resolve()))
+
+    # The window closes the locked folder and opens an unrelated one instead.
+    await engine.handle_workspace_folders(str(tmp_path), {"other": str(other)})
+
+    assert engine._session.workspace_connected is False
+    state_events = [e for e in sink.sent if e.payload.get("type") == "state"]
+    assert state_events[-1].payload["workspace_connected"] is False
+
+
+async def test_handle_workspace_folders_workspace_connected_false_when_no_folders_pushed(
+    tmp_path: Path,
+) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    folder = tmp_path / "myproj"
+    folder.mkdir()
+    await engine.handle_workspace_folders(str(tmp_path), {"myproj": str(folder)})
+    transient.lock_workspace_path(str(folder.resolve()))
+
+    # The window closes all folders.
+    await engine.handle_workspace_folders("", {})
+
+    assert engine._session.workspace_connected is False
+
+
 # ---------------------------------------------------------------------------
 # bind_project / _bind_project
 # ---------------------------------------------------------------------------
@@ -1031,6 +1100,66 @@ def test_root_paths_empty_when_no_folders(tmp_path: Path) -> None:
     assert paths == ()
 
 
+async def test_root_paths_problem_solving_falls_back_to_bound_dirs_when_no_folders_pushed(
+    tmp_path: Path,
+) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    engine._session.workflow_mode = "problem_solving"
+    folder = tmp_path / "a"
+    folder.mkdir()
+    await engine.handle_workspace_folders(str(tmp_path), {"a": str(folder)})
+    transient.lock_workspace_path(str(folder.resolve()))
+
+    # Window closes the folder entirely — disconnected, but locked.
+    await engine.handle_workspace_folders("", {})
+
+    paths = engine._root_paths()
+    assert len(paths) == 1
+    assert paths[0].name == "a"
+    assert paths[0].path == str(folder.resolve())
+
+
+async def test_root_paths_problem_solving_falls_back_to_bound_dirs_when_live_folders_incompatible(
+    tmp_path: Path,
+) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    engine._session.workflow_mode = "problem_solving"
+    folder = tmp_path / "a"
+    other = tmp_path / "other"
+    folder.mkdir()
+    other.mkdir()
+    await engine.handle_workspace_folders(str(tmp_path), {"a": str(folder)})
+    transient.lock_workspace_path(str(folder.resolve()))
+
+    # Window switches to an unrelated folder — live folders are non-empty but
+    # don't include the bound one.
+    await engine.handle_workspace_folders(str(tmp_path), {"other": str(other)})
+
+    paths = engine._root_paths()
+    assert len(paths) == 1
+    assert paths[0].name == "a"
+    assert paths[0].path == str(folder.resolve())
+
+
+async def test_root_paths_problem_solving_reports_full_live_set_when_connected_and_locked(
+    tmp_path: Path,
+) -> None:
+    """A *compatible* (not just exact-match) live workspace reports every
+    open folder, not just the locked subset — regression guard for normal
+    connected behaviour."""
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    engine._session.workflow_mode = "problem_solving"
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    await engine.handle_workspace_folders(str(tmp_path), {"a": str(a), "b": str(b)})
+    transient.lock_workspace_path(str(a.resolve()))
+
+    paths = engine._root_paths()
+    assert {p.name for p in paths} == {"a", "b"}
+
+
 # ---------------------------------------------------------------------------
 # _util_paths
 # ---------------------------------------------------------------------------
@@ -1117,6 +1246,50 @@ def test_make_resolver_logical_resolver_tracks_folders_added_after_construction(
     engine._session_workspace.set_folders({"proj": project_root})
 
     assert resolver.resolve("proj/foo.py") == (project_root / "foo.py").resolve()
+
+
+async def test_make_resolver_problem_solving_disconnected_confines_to_bound_dirs(
+    tmp_path: Path,
+) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    engine._session.workflow_mode = "problem_solving"
+    bound = tmp_path / "bound"
+    bound.mkdir()
+    await engine.handle_workspace_folders(str(tmp_path), {"bound": str(bound)})
+    transient.lock_workspace_path(str(bound.resolve()))
+    # Disconnect: window closes the folder.
+    await engine.handle_workspace_folders("", {})
+
+    resolver = engine._make_resolver("sess-1")
+    assert resolver.resolve("bound/foo.py") == (bound / "foo.py").resolve()
+    # A logical path under a name outside the bound-dirs map is rejected —
+    # Problem Solver's resolver only confines *relative* logical paths (an
+    # absolute path is always taken as-is, by existing, unrelated design).
+    with pytest.raises(PermissionError):
+        resolver.resolve("unbound-name/foo.py")
+
+
+async def test_make_resolver_problem_solving_disconnected_default_cwd_is_first_bound_dir(
+    tmp_path: Path,
+) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    engine._session.workflow_mode = "problem_solving"
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    await engine.handle_workspace_folders(str(tmp_path), {"a": str(a), "b": str(b)})
+    transient.lock_workspace_path(str(a.resolve()))
+    transient.lock_workspace_path(str(b.resolve()))
+    # Disconnect via an empty push.
+    await engine.handle_workspace_folders("", {})
+
+    resolver = engine._make_resolver("sess-1")
+    # First bound directory, in `workspace_folders`' insertion order — never
+    # the live `_session_workspace.physical_root`, which an empty push leaves
+    # unchanged (still `tmp_path`, not either bound directory).
+    assert resolver.default_cwd == a.resolve()
+    assert engine._session_workspace.physical_root == tmp_path.resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -1340,6 +1513,43 @@ def test_reserve_project_dir_creates_and_returns_unique_path(tmp_path: Path) -> 
     assert result.exists()
 
 
+async def test_create_project_locks_the_new_directory_immediately(tmp_path: Path) -> None:
+    """Unlike every other root, a freshly created project is locked at
+    creation time rather than waiting for its first real mutating-tool
+    commit — so a disconnected session's own ``get_root_paths`` fallback
+    sees it too."""
+    engine, transient, _s, _g = _make_engine(tmp_path, physical_root=tmp_path)
+
+    result = await engine._create_project("My Project")
+
+    assert str(Path(result["path"]).resolve()) in transient.workspace_locked_paths
+
+
+async def test_create_project_skips_workspace_add_event_when_disconnected(
+    tmp_path: Path,
+) -> None:
+    """A session already locked+disconnected from its live workspace must not
+    push `EVT_WORKSPACE_ADD_FOLDER` into a window that doesn't match it — the
+    new project still scaffolds and locks, just silently as far as the
+    (absent/mismatched) live window is concerned."""
+    engine, transient, sink, _g = _make_engine(tmp_path)
+    engine._session.workflow_mode = "problem_solving"
+    bound = tmp_path / "bound"
+    bound.mkdir()
+    await engine.handle_workspace_folders(str(tmp_path), {"bound": str(bound)})
+    transient.lock_workspace_path(str(bound.resolve()))
+    # Disconnect.
+    await engine.handle_workspace_folders("", {})
+    sink.sent.clear()
+
+    result = await engine.handle_project_create(name="", path=str(tmp_path / "new-proj"))
+
+    assert (Path(result["path"]) / ".kodo" / "kodo.md").exists()
+    assert str(Path(result["path"]).resolve()) in transient.workspace_locked_paths
+    add_folder_events = [e for e in sink.sent if e.payload.get("type") == "workspace.add_folder"]
+    assert add_folder_events == []
+
+
 # ---------------------------------------------------------------------------
 # _init_project
 # ---------------------------------------------------------------------------
@@ -1434,6 +1644,24 @@ def test_has_workspace_problem_solving_tracks_folders(tmp_path: Path) -> None:
     engine._session.workflow_mode = "problem_solving"
     assert engine._has_workspace() is False
     engine._session_workspace.set_folders({"proj": tmp_path})
+    assert engine._has_workspace() is True
+
+
+async def test_has_workspace_problem_solving_true_when_locked_and_disconnected(
+    tmp_path: Path,
+) -> None:
+    """A locked session is never homeless, even with no live folders pushed —
+    its bound directories stand in (unlike an unlocked session, which is
+    correctly homeless with nothing pushed)."""
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    engine._session.workflow_mode = "problem_solving"
+    folder = tmp_path / "a"
+    folder.mkdir()
+    await engine.handle_workspace_folders(str(tmp_path), {"a": str(folder)})
+    transient.lock_workspace_path(str(folder.resolve()))
+
+    await engine.handle_workspace_folders("", {})
+
     assert engine._has_workspace() is True
 
 
@@ -1560,3 +1788,34 @@ async def test_init_project_skips_workspace_add_when_already_present(tmp_path: P
     assert len(add_folder_events) == 0
     # No duplicate entry was created under a different label.
     assert list(engine._session_workspace.folders) == ["already-open"]
+
+
+async def test_init_project_locks_the_directory_immediately(tmp_path: Path) -> None:
+    engine, transient, _s, _g = _make_engine(tmp_path)
+    target = tmp_path / "existing-empty"
+    target.mkdir()
+
+    await engine._init_project(str(target))
+
+    assert str(target.resolve()) in transient.workspace_locked_paths
+
+
+async def test_init_project_skips_workspace_add_event_when_disconnected(tmp_path: Path) -> None:
+    engine, transient, sink, _g = _make_engine(tmp_path)
+    engine._session.workflow_mode = "problem_solving"
+    bound = tmp_path / "bound"
+    bound.mkdir()
+    await engine.handle_workspace_folders(str(tmp_path), {"bound": str(bound)})
+    transient.lock_workspace_path(str(bound.resolve()))
+    # Disconnect.
+    await engine.handle_workspace_folders("", {})
+    sink.sent.clear()
+
+    target = tmp_path / "new-existing-dir"
+    target.mkdir()
+    result = await engine._init_project(str(target))
+
+    assert (Path(result["path"]) / ".kodo" / "kodo.md").exists()
+    assert str(target.resolve()) in transient.workspace_locked_paths
+    add_folder_events = [e for e in sink.sent if e.payload.get("type") == "workspace.add_folder"]
+    assert add_folder_events == []
