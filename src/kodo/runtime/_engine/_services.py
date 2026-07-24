@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 
 from kodo.tools import RootPath
 
@@ -28,7 +27,7 @@ class _EngineServices:
         run_author_critic: Callable[
             [str, str, str, str, dict[str, str], str, bool], Awaitable[dict[str, object]]
         ],
-        rollback: Callable[[str], Awaitable[None]],
+        rollback: Callable[[str, str], Awaitable[None]],
         disable_autonomous: Callable[[], Awaitable[None]],
         create_project: Callable[[str, str | None, bool], Awaitable[dict[str, object]]],
         init_project: Callable[[str], Awaitable[dict[str, object]]],
@@ -38,7 +37,6 @@ class _EngineServices:
         add_security_path_rule: Callable[[str, str, str], Awaitable[None]],
         has_workspace: Callable[[], bool],
         root_paths: Callable[[], tuple[RootPath, ...]],
-        project_root: Callable[[], Path | None],
     ) -> None:
         self.__run_subagent = run_subagent
         self.__run_dependency_manager = run_dependency_manager
@@ -54,7 +52,6 @@ class _EngineServices:
         self.__add_security_path_rule = add_security_path_rule
         self.__has_workspace = has_workspace
         self.__root_paths = root_paths
-        self.__project_root = project_root
 
     async def run_subagent(
         self, caller: str, name: str, task_input: dict[str, object]
@@ -87,9 +84,9 @@ class _EngineServices:
             caller, author_name, critic_name, path, input_paths, instructions, for_revision
         )
 
-    async def rollback(self, target_sha: str) -> None:
+    async def rollback(self, root: str, target_sha: str) -> None:
         """Delegate to the engine's ``_run_rollback``."""
-        await self.__rollback(target_sha)
+        await self.__rollback(root, target_sha)
 
     async def disable_autonomous_mode(self) -> None:
         """Delegate to the engine's ``_disable_autonomous``."""
@@ -128,7 +125,3 @@ class _EngineServices:
     def root_paths(self) -> tuple[RootPath, ...]:
         """Delegate to the engine's ``_root_paths``, read live."""
         return self.__root_paths()
-
-    def project_root(self) -> Path | None:
-        """Delegate to the engine's ``_project_root``, read live."""
-        return self.__project_root()

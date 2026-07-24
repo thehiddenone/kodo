@@ -16,8 +16,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kodo.project import SessionWorkspace
 from kodo.runtime import SessionState
-from kodo.tools import ProjectPathResolver, ToolContext, WebSearchTool
+from kodo.tools import LogicalPathResolver, ToolContext, WebSearchTool
 from kodo.websearch import (
     SEARCH_ENGINES,
     TIME_MARK,
@@ -262,8 +263,10 @@ class _AgentServices:
 
 
 def _make_tool(tmp_path: Path, services: object) -> WebSearchTool:
+    # WebSearchTool never touches the resolver — it just needs to satisfy
+    # ToolContext's type.
     context = ToolContext(
-        resolver=ProjectPathResolver(tmp_path),
+        resolver=LogicalPathResolver(SessionWorkspace(physical_root=tmp_path, folders={})),
         gate=MagicMock(),
         session=SessionState(),
         services=services,  # type: ignore[arg-type]

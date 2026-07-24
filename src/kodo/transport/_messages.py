@@ -217,13 +217,6 @@ MSG_THINKING_LEVEL_SET = "thinking_level.set"
 # workspace before resuming a *different* session picked via `session.list`.
 MSG_WORKSPACE_FOLDERS = "workspace.folders"
 
-# Client → Server. Bind the session's current project (Guided mode). Sent once,
-# lazily, when the user first runs Guided after picking a project. Payload:
-# ``{root, name}``. Immutable for the session — a second, different value is
-# rejected with an EVT_ERROR; server side effect on the first bind is
-# EVT_PROJECT_BOUND.
-MSG_PROJECT_SET = "project.set"
-
 # Client → Server. Scaffold a new project directly (no LLM round-trip) — backs
 # the VS Code "Create Project" command. Payload: ``{path?, name?, force?}``
 # (at least one of ``path``/``name`` required). ``path`` alone: the client
@@ -875,10 +868,6 @@ EVT_SESSION_NAMING = "session.naming"
 # ("Narrative Author subagent took over from Kōdo" / "Kōdo resumed").
 EVT_SUBSESSION_STARTED = "subsession.started"
 EVT_SUBSESSION_ENDED = "subsession.ended"
-
-# The session's current project was bound (Guided). Payload: ``{root, name}``.
-# Lets the client display the locked project and stop re-prompting for it.
-EVT_PROJECT_BOUND = "project.bound"
 
 # An agent created a brand-new project (``create_new_project`` tool) and the
 # server has scaffolded it on disk; ask the VS Code extension to add the new

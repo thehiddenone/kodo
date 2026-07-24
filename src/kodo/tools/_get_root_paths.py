@@ -1,17 +1,18 @@
 """``get_root_paths`` tool — list the filesystem roots the agent works within.
 
-Returns the mode-aware root list the engine attached to this run's context: the
-single bound project root in Guided mode, or every open VS Code workspace folder
-in Problem Solver mode. The list is already synced from the extension over the
-WS protocol, so the tool is a pure read of context state.
+Returns every bound root attached to this run's context — one per open VS
+Code workspace folder or project created via ``create_new_project``/
+``init_project``, shared uniformly by both workflow modes. The list is
+already synced from the extension over the WS protocol, so the tool is a
+pure read of context state.
 
 ``temporary: true`` instead returns a single root for this run's private
 scratch directory (``kodo.project.session_temp_dir``) — the same directory the
 native file tools resolve into with their own ``temporary: true`` (see
 :meth:`~kodo.tools.Tool.resolve_path`) and that ``run_command`` accepts as an
-absolute ``working_dir`` (see ``kodo.tools.ProjectPathResolver``'s
-``extra_roots``). The directory is created eagerly here so it is guaranteed to
-exist before the agent uses the path.
+absolute ``working_dir`` (already unrestricted for ``LogicalPathResolver``,
+which allows any absolute path). The directory is created eagerly here so it
+is guaranteed to exist before the agent uses the path.
 """
 
 from __future__ import annotations

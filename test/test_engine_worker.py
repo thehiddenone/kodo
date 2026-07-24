@@ -68,16 +68,13 @@ class _FakeSink:
         self.sent.append(env)
 
 
-def _make_engine(
-    *, workflow_mode: str = "guided", layout: object | None = "bound"
-) -> WorkflowEngine:
+def _make_engine(*, workflow_mode: str = "guided") -> WorkflowEngine:
     engine = object.__new__(WorkflowEngine)
     engine._resume_subsession_pending = False
     engine._replay_subsessions = None
     engine._queue = asyncio.Queue()
     engine._session = SessionState(session_id="s1")
     engine._session.workflow_mode = workflow_mode
-    engine._layout = layout
     engine._emitters = _FakeEmitters()
     engine._compactor = _FakeCompactor()
     engine._titler = _FakeTitler()
@@ -226,18 +223,6 @@ async def test_guided_prompt_runs_guide_when_available() -> None:
 
     assert engine.calls == [("guide", "do the thing", ["a.png"])]
     assert engine._titler.titled == ["do the thing"]
-
-
-@pytest.mark.asyncio
-async def test_guided_prompt_without_layout_emits_error_and_no_agent_call() -> None:
-    engine = _make_engine(workflow_mode="guided", layout=None)
-    engine._queue.put_nowait({"text": "do the thing"})
-
-    await _drive(engine)
-
-    assert engine.calls == []
-    assert engine._emitters.errors == [("Select a project before running Guided mode.", True)]
-    assert engine._session.agent is None
 
 
 @pytest.mark.asyncio

@@ -47,7 +47,10 @@ DOCUMENT_FEEDBACK: ToolSpec = ToolSpec(
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Path of the file under review (delivered as task input).",
+                "description": (
+                    "Path of the file under review (delivered as task input), "
+                    "folder-prefixed with its project's name."
+                ),
             },
             "accept": {
                 "type": "boolean",

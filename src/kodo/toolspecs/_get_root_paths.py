@@ -1,8 +1,9 @@
 """``get_root_paths`` tool spec — list the workspace root directories.
 
-Dispatch lives in :mod:`kodo.tools` and simply returns the mode-aware root list
-the engine computed for the run (the bound project in Guided mode; every open
-VS Code workspace folder in Problem Solver mode). The list is sourced from the
+Dispatch lives in :mod:`kodo.tools` and simply returns the root list the
+engine computed for the run — one entry per bound root (a VS Code workspace
+folder, or a project created via ``create_new_project``/``init_project``),
+shared uniformly by both workflow modes. The list is sourced from the
 workspace state the VS Code extension keeps synced over the WS protocol
 (``workspace.folders``, pushed at startup and on every workspace-folder change),
 so the tool itself needs no live round-trip.
@@ -11,7 +12,9 @@ so the tool itself needs no live round-trip.
 (``kodo.project.session_temp_dir``) as the sole root — the same directory the
 native file tools resolve into with their own ``temporary: true`` (see
 :meth:`kodo.tools.Tool.resolve_path`), and that ``run_command`` accepts as an
-absolute ``working_dir`` (see :meth:`kodo.tools.ProjectPathResolver.resolve`).
+absolute ``working_dir`` (already unrestricted for
+:meth:`kodo.tools.LogicalPathResolver.resolve`, which allows any absolute
+path).
 
 Unlike most other native tools this does *not* set ``requires_project``: with
 no project/workspace bound yet it simply returns an empty ``roots`` list

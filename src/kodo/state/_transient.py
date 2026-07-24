@@ -228,7 +228,6 @@ class TransientStore:
     __pending_security_alert: str | None
     __pending_edit_review: str | None
     __active_subsession: dict[str, object] | None
-    __current_project: dict[str, str] | None
     __workspace_physical_root: str
     __workspace_folders: dict[str, str]
     __workspace_code_file: str | None
@@ -259,7 +258,6 @@ class TransientStore:
         self.__pending_security_alert = None
         self.__pending_edit_review = None
         self.__active_subsession = None
-        self.__current_project = None
         self.__workspace_physical_root = ""
         self.__workspace_folders = {}
         self.__workspace_code_file = None
@@ -477,15 +475,6 @@ class TransientStore:
         "parent_display_name"}``.
         """
         return self.__active_subsession
-
-    @property
-    def current_project(self) -> dict[str, str] | None:
-        """The session's locked current project ``{root, name}`` (Guided), if any.
-
-        Persisted in ``transient.json`` so that a server restart re-binds the
-        same project and crash-resume of a Guided turn keeps working.
-        """
-        return self.__current_project
 
     @property
     def workspace_physical_root(self) -> str:
@@ -807,7 +796,6 @@ class TransientStore:
         pending_security_alert: str | None = _UNSET,  # type: ignore[assignment]
         pending_edit_review: str | None = _UNSET,  # type: ignore[assignment]
         active_subsession: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
-        current_project: dict[str, str] | None = _UNSET,  # type: ignore[assignment]
         workspace_physical_root: str | None = None,
         workspace_folders: dict[str, str] | None = None,
         workspace_code_file: str | None = _UNSET,  # type: ignore[assignment]
@@ -837,8 +825,6 @@ class TransientStore:
             active_subsession (dict[str, object] | None): The in-flight
                 sub-agent subsession record to persist, or ``None`` to clear it
                 (the main agent holds the turn again). Left unchanged if omitted.
-            current_project (dict[str, str] | None): The session's locked
-                current project ``{root, name}``. Left unchanged if omitted.
             workspace_physical_root (str | None): The VS Code window's
                 physical root to remember for reopening on a future resume
                 from a different window. Left unchanged if omitted (``None``)
@@ -876,8 +862,6 @@ class TransientStore:
             self.__pending_edit_review = pending_edit_review
         if active_subsession is not _UNSET:
             self.__active_subsession = active_subsession
-        if current_project is not _UNSET:
-            self.__current_project = current_project
         if workspace_physical_root is not None:
             self.__workspace_physical_root = workspace_physical_root
         if workspace_folders is not None:
@@ -1182,12 +1166,6 @@ class TransientStore:
             self.__pending_edit_review = review if isinstance(review, str) and review else None
             active = data.get("active_subsession")
             self.__active_subsession = active if isinstance(active, dict) else None
-            project = data.get("current_project")
-            self.__current_project = (
-                {"root": str(project.get("root", "")), "name": str(project.get("name", ""))}
-                if isinstance(project, dict) and project.get("root")
-                else None
-            )
             self.__workspace_physical_root = str(data.get("workspace_physical_root", ""))
             raw_folders = data.get("workspace_folders")
             self.__workspace_folders = (
@@ -1268,7 +1246,6 @@ class TransientStore:
             "pending_security_alert": self.__pending_security_alert,
             "pending_edit_review": self.__pending_edit_review,
             "active_subsession": self.__active_subsession,
-            "current_project": self.__current_project,
             "workspace_physical_root": self.__workspace_physical_root,
             "workspace_folders": self.__workspace_folders,
             "workspace_code_file": self.__workspace_code_file,

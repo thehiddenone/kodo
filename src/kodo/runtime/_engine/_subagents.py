@@ -12,12 +12,13 @@ import asyncio
 import logging
 import time
 import uuid
+from pathlib import Path
 
 from kodo.common import Envelope
 from kodo.guided_state import read_status
 from kodo.llms import Message
 from kodo.subagents import AgentLoadError
-from kodo.tools import ProjectPathResolver, tools_for_agent
+from kodo.tools import root_for, tools_for_agent
 from kodo.toolspecs import SCHEMA_COMPLIANCE_KEY
 from kodo.transport import (
     EVT_REVIEW_STARTED,
@@ -544,9 +545,14 @@ class SubagentMixin:
         }
         await self._spawn_subagent(critic_name, critic_task)
 
-        project_root = self._require_layout().root
-        resolved = ProjectPathResolver(project_root).resolve(primary_path)
-        status_entry = await asyncio.to_thread(read_status, resolved, project_root)
+        resolved = self._make_resolver(self._orch_session_id).resolve(primary_path)
+        owning_root = root_for(self._root_paths(), resolved)
+        if owning_root is None:
+            _log.warning(
+                "run_author_critic_iteration: %r is not under any bound root", primary_path
+            )
+            return {"path": primary_path, "status": "pending_review", "concerns": []}
+        status_entry = await asyncio.to_thread(read_status, resolved, Path(owning_root.path))
         status = str(status_entry["status"]) if status_entry else "pending_review"
         concerns_raw = status_entry.get("concerns") if status_entry else None
         concerns = (

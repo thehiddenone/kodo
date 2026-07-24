@@ -55,10 +55,10 @@ class Scenario:
             present/downloaded but not otherwise invoked in phase 1.
             Mandatory: there is no meaningful default.
         roots: Simulated workspace folders (one = single-root VS Code window,
-            several = multi-root).
+            several = multi-root; for a ``guided`` workflow scenario these are
+            the bound project roots too — Guided mode has no separate binding
+            step, exactly like ``problem_solving``).
         modes: Session toggles pinned before the first prompt.
-        project_root: Root name to bind as the Guided-mode project
-            (required by the ``guided`` workflow, ignored otherwise).
         user: Simulated-user policy; the harness default when None. With a
             ``user_proxy_prompt`` this is the *base* policy — questions go to
             the validation LLM, everything else still lands here.
@@ -90,7 +90,6 @@ class Scenario:
     validation_llm: str = field(kw_only=True)
     roots: list[RootSpec] = field(default_factory=list)
     modes: Modes = field(default_factory=Modes)
-    project_root: str | None = None
     user: UserSimulator | None = None
     settings_overrides: dict[str, object] | None = None
     turn_timeout: float = 900.0
@@ -161,8 +160,6 @@ async def run_scenario(
     evaluation: EvaluationResult | None = None
     async with harness:
         await harness.apply_modes(scenario.modes)
-        if scenario.project_root is not None:
-            await harness.bind_project(scenario.project_root)
         for prompt in scenario.prompts:
             _log.info("[%s] prompt: %s", scenario.name, prompt[:80])
             turn = await harness.submit_prompt(prompt, turn_timeout=scenario.turn_timeout)

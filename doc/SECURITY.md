@@ -106,11 +106,14 @@ Six file tools — `create_file`, `create_directory`, `edit_file`,
 `filesystem`, `find_files`, `find_text_in_files` — accept an optional
 `temporary: true` input. When set, `kodo.tools.Tool.resolve_path` resolves
 every path the call touches under `~/.kodo/sessions/<session_id>/tmp`
-(`kodo.project.session_temp_dir`) instead of the project root/workspace
-folders — confined there the same way `resolve_within` confines Guided-mode
-paths to the project root (relative paths land inside it, absolute paths
-must already be inside it, or a `PermissionError` — not even an `ask` —
-comes back).
+(`kodo.project.session_temp_dir`) instead of the bound root(s)/workspace
+folders — via the standalone `kodo.tools._paths.resolve_within`, the only
+remaining consumer of that containment check (relative paths land inside it,
+absolute paths must already be inside it, or a `PermissionError` — not even
+an `ask` — comes back). This is unrelated to, and unaffected by, the ordinary
+(non-`temporary`) resolver — `LogicalPathResolver`, shared by both workflow
+modes — which has no containment check of its own for absolute paths at all
+(see below).
 
 This bypasses the posture/impact judgement above entirely: `SecurityLayer.
 evaluate` allows the call outright, in every posture, before the
@@ -128,14 +131,15 @@ Temporary Work" section for the agent-facing contract.
 without itself being a mutating call, so it is simply `NONE`-impact and
 always allowed like any other read.
 
-**`run_command`'s `working_dir` is a separate, narrower exemption.** It has
-no `temporary` field of its own — `_TEMP_ALLOWED_TOOLS` doesn't cover it — but
-in Guided mode `ProjectPathResolver` (`kodo.tools._paths`) now accepts an
-absolute `working_dir` under the *dispatching run's own* scratch directory as
-an `extra_roots` entry, alongside the project root, so the call reaches its
-handler instead of failing at dispatch with a `PermissionError` (Problem
-Solver's logical resolver already allowed any absolute path). This only
-widens where the resolver lets the command *run*; `command_may_mutate`/
+**`run_command`'s `working_dir` needs no special-case at all.** It has no
+`temporary` field of its own — `_TEMP_ALLOWED_TOOLS` doesn't cover it — but
+`LogicalPathResolver` (shared by both workflow modes since the 2026-07-24
+multi-project rework, `kodo.tools._paths`) already accepts any absolute
+`working_dir` unconditionally, including one under the dispatching run's own
+scratch directory, so the call reaches its handler with no `extra_roots`
+concept needed (the old Guided-only `ProjectPathResolver` this section used to
+describe an `extra_roots` carve-out for is gone entirely). This only
+affects where the resolver lets the command *run*; `command_may_mutate`/
 `analyze_command`'s static `outside_paths` check (§3.1) still treats the
 scratch directory as outside the workspace like any other non-root,
 non-OS-temp path — a command whose *arguments* (not just its `working_dir`)
@@ -507,14 +511,16 @@ needed, since every session already reads the global store live per call.
   just the security layer: `kodo.common.system_temp_roots()` (T0, no
   intra-kodo dependencies) is consumed by both `kodo.security._analysis`
   (the `run_command` workspace-escape check above) and
-  `kodo.tools._paths.resolve_within` (the `ProjectPathResolver` used in
-  Guided mode, which otherwise raises `PermissionError` — not even an
-  `ask` — for any file-tool path outside the locked project root, before the
-  security layer is ever consulted). Routing the shared fact through
-  `kodo.common` rather than a direct import keeps the `kodo.tools` /
-  `kodo.security` decoupling above intact. `LogicalPathResolver` (Problem
-  Solver mode) already took absolute paths as-is, so it needed no change —
-  the temp directory was already reachable there.
+  `kodo.tools._paths.resolve_within` (the standalone containment check backing
+  `Tool.resolve_path`'s `temporary=True` scratch-directory confinement — the
+  only place this check still runs; the Guided-only resolver it used to also
+  back, `ProjectPathResolver`, is gone, WS_PROTOCOL.md §7.1c). Routing the
+  shared fact through `kodo.common` rather than a direct import keeps the
+  `kodo.tools` / `kodo.security` decoupling above intact. `LogicalPathResolver`
+  (used uniformly by both workflow modes) already takes absolute paths as-is
+  with no containment check at all, so the ordinary (non-`temporary`) path
+  never needed this carve-out to begin with — the temp directory was already
+  reachable there.
 - **`SessionLike`** carries `command_control` and `security_rules` (both
   read live per call — a rule granted mid-session applies to the very next
   matching call, same as a `command_control` toggle).

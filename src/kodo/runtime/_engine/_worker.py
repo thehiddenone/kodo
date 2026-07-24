@@ -112,15 +112,6 @@ class WorkerMixin:
                         await self._run_judge_with_input(text, attachments)
                     else:
                         await self._handle_input_no_agent(_JUDGE_AGENT_NAME, text)
-                elif self._layout is None:
-                    # Guided mode requires a bound project. The extension forces
-                    # the picker before sending the first Guided prompt, so this
-                    # is a safety net for an out-of-band prompt.
-                    self._session.agent = None
-                    await self._emitters.emit_error(
-                        "Select a project before running Guided mode.", recoverable=True
-                    )
-                    await self._emitters.emit_state()
                 elif self._agent_available(_GUIDE_AGENT_NAME):
                     await self._run_guide_with_input(text, attachments, nudge_detail=nudge_detail)
                 else:

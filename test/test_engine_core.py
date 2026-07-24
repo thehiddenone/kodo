@@ -114,8 +114,6 @@ def test_init_wires_collaborators_and_defaults(tmp_path: Path) -> None:
     assert engine.session is engine._session
     assert engine.gate is gate
     assert engine.session_id == ""
-    assert engine.current_project is None
-    assert engine._layout is None
     assert engine._worker is None
     assert engine._main_messages == []
 
@@ -127,14 +125,8 @@ def test_session_name_reads_from_transient(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _require_layout / _agent_available
+# _agent_available
 # ---------------------------------------------------------------------------
-
-
-def test_require_layout_raises_when_unbound(tmp_path: Path) -> None:
-    engine, _t, _s, _g = _make_engine(tmp_path)
-    with pytest.raises(RuntimeError, match="No current project is bound"):
-        engine._require_layout()
 
 
 def test_agent_available_true_for_known_agent(tmp_path: Path) -> None:
@@ -188,27 +180,6 @@ async def test_start_resumed_session_restores_prefs_and_messages(tmp_path: Path)
         assert engine._session.edit_control == "allow_all"
         assert engine._session.command_control == "permissive"
         assert engine._compactor.context_tokens > 0
-    finally:
-        await _cancel_worker(engine)
-
-
-async def test_start_resumed_session_rebinds_persisted_project(tmp_path: Path) -> None:
-    from kodo.project import ProjectLayout
-
-    project_root = tmp_path / "proj"
-    ProjectLayout(project_root).init()
-
-    kodo_dir = tmp_path / "home"
-    seed_transient = TransientStore(kodo_dir)
-    seed_transient.attach_session("session-3", resumed=False)
-    seed_transient.update(current_project={"root": str(project_root), "name": "proj"})
-
-    engine, _transient, _s, _g = _make_engine(tmp_path)
-    try:
-        await engine.start("session-3", resumed=True)
-        assert engine.current_project is not None
-        assert engine.current_project["name"] == "proj"
-        assert engine._layout is not None
     finally:
         await _cancel_worker(engine)
 
@@ -437,7 +408,7 @@ async def test_handle_workspace_folders_workspace_connected_false_when_no_folder
 
 
 # ---------------------------------------------------------------------------
-# bind_project / _bind_project
+# Test helper: a validated Kodo project layout on disk
 # ---------------------------------------------------------------------------
 
 
@@ -445,74 +416,6 @@ def _make_project(root: Path) -> None:
     from kodo.project import ProjectLayout
 
     ProjectLayout(root).init()
-
-
-async def test_bind_project_success_emits_event_and_persists(tmp_path: Path) -> None:
-    project_root = tmp_path / "proj"
-    _make_project(project_root)
-    engine, transient, sink, _g = _make_engine(tmp_path)
-    transient.attach_session("s1", resumed=False)
-
-    await engine.bind_project(str(project_root), "proj")
-
-    assert engine.current_project == {"root": str(project_root.resolve()), "name": "proj"}
-    assert engine._layout is not None
-    bound_events = [e for e in sink.sent if e.payload.get("type") == "project.bound"]
-    assert len(bound_events) == 1
-    assert transient.current_project == {"root": str(project_root.resolve()), "name": "proj"}
-
-
-async def test_bind_project_invalid_layout_emits_error(tmp_path: Path) -> None:
-    bad_root = tmp_path / "not-a-project"
-    bad_root.mkdir()
-    engine, _transient, sink, _g = _make_engine(tmp_path)
-
-    await engine.bind_project(str(bad_root), "bad")
-
-    assert engine.current_project is None
-    assert engine._layout is None
-    error_events = [e for e in sink.sent if e.payload.get("type") == "error"]
-    assert len(error_events) == 1
-
-
-async def test_bind_project_idempotent_same_root_is_noop(tmp_path: Path) -> None:
-    project_root = tmp_path / "proj"
-    _make_project(project_root)
-    engine, _t, sink, _g = _make_engine(tmp_path)
-
-    await engine.bind_project(str(project_root), "proj")
-    sink.sent.clear()
-    await engine.bind_project(str(project_root), "proj")
-
-    assert sink.sent == []  # second bind is a silent no-op
-
-
-async def test_bind_project_different_root_rejected(tmp_path: Path) -> None:
-    project_root = tmp_path / "proj"
-    other_root = tmp_path / "other"
-    _make_project(project_root)
-    _make_project(other_root)
-    engine, _t, sink, _g = _make_engine(tmp_path)
-
-    await engine.bind_project(str(project_root), "proj")
-    sink.sent.clear()
-    await engine.bind_project(str(other_root), "other")
-
-    assert engine.current_project["root"] == str(project_root.resolve())
-    error_events = [e for e in sink.sent if e.payload.get("type") == "error"]
-    assert len(error_events) == 1
-    assert "fixed for this session" in error_events[0].payload["message"]
-
-
-async def test_bind_project_resume_skips_emit(tmp_path: Path) -> None:
-    project_root = tmp_path / "proj"
-    _make_project(project_root)
-    engine, transient, sink, _g = _make_engine(tmp_path)
-
-    await engine._bind_project(str(project_root), "proj", emit=False)
-
-    assert engine.current_project is not None
-    assert sink.sent == []
 
 
 # ---------------------------------------------------------------------------
@@ -1063,16 +966,21 @@ async def test_checkpoint_handlers_forward_to_coordinator(tmp_path: Path) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_root_paths_guided_mode_reports_bound_project(tmp_path: Path) -> None:
+def test_root_paths_guided_mode_reports_workspace_folders(tmp_path: Path) -> None:
+    """Mode-agnostic since the multi-project rework: Guided reads the same
+    live workspace-folder map Problem Solver always has, not a singular
+    bound-project field (which no longer exists)."""
+    folder = tmp_path / "a"
+    folder.mkdir()
     engine, _t, _s, _g = _make_engine(tmp_path)
     engine._session.workflow_mode = "guided"
-    engine._current_project = {"root": "/proj", "name": "proj"}
+    engine._session_workspace.set_folders({"a": folder})
 
     paths = engine._root_paths()
 
     assert len(paths) == 1
-    assert paths[0].name == "proj"
-    assert paths[0].path == "/proj"
+    assert paths[0].name == "a"
+    assert paths[0].path == str(folder.resolve())
 
 
 def test_root_paths_problem_solving_reports_workspace_folders(tmp_path: Path) -> None:
@@ -1188,26 +1096,12 @@ def test_util_paths_includes_found_utils(monkeypatch: pytest.MonkeyPatch) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_make_resolver_guided_mode_with_layout_uses_project_resolver(tmp_path: Path) -> None:
-    project_root = tmp_path / "proj"
-    _make_project(project_root)
+def test_make_resolver_guided_mode_uses_logical_resolver(tmp_path: Path) -> None:
+    """Mode-agnostic since the multi-project rework: Guided shares Problem
+    Solver's LogicalPathResolver — there is no separate project-confined
+    resolver anymore."""
     engine, _t, _s, _g = _make_engine(tmp_path)
     engine._session.workflow_mode = "guided"
-
-    from kodo.project import ProjectLayout
-
-    engine._layout = ProjectLayout(project_root)
-
-    resolver = engine._make_resolver("sess-1")
-    from kodo.tools import ProjectPathResolver
-
-    assert isinstance(resolver, ProjectPathResolver)
-
-
-def test_make_resolver_falls_back_to_logical_without_layout(tmp_path: Path) -> None:
-    engine, _t, _s, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "guided"
-    engine._layout = None
 
     resolver = engine._make_resolver("sess-1")
     from kodo.tools import LogicalPathResolver
@@ -1303,7 +1197,6 @@ async def test_run_rollback_resets_session_state(tmp_path: Path) -> None:
     project_root = tmp_path / "proj"
     _make_project(project_root)
     engine, _t, _s, _g = _make_engine(tmp_path)
-    await engine._bind_project(str(project_root), "proj", emit=False)
     engine._main_messages = [Message(role="user", content="stale")]
     engine._replay_subsessions = [{"subsession_id": "x"}]
 
@@ -1318,7 +1211,7 @@ async def test_run_rollback_resets_session_state(tmp_path: Path) -> None:
 
     engine._checkpoints._mirrors = _FakeMirrors()
 
-    await engine._run_rollback("deadbeef")
+    await engine._run_rollback(str(project_root.resolve()), "deadbeef")
 
     assert rollback_calls == [(str(project_root.resolve()), "deadbeef")]
     assert engine._main_messages == []
@@ -1330,19 +1223,15 @@ async def test_run_rollback_resets_session_state(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_finalize_document_unresolvable_path_is_noop(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # tmp_path lives under the OS temp dir, so an escape via ".." would land
-    # inside the (intentionally allowed) system-temp carve-out — blank it out
-    # to isolate the "escapes the project root" guard this test targets.
-    monkeypatch.setattr("kodo.tools._paths.system_temp_roots", lambda: ())
+async def test_finalize_document_unresolvable_path_is_noop(tmp_path: Path) -> None:
     project_root = tmp_path / "proj"
     _make_project(project_root)
     engine, _t, _s, _g = _make_engine(tmp_path)
-    await engine._bind_project(str(project_root), "proj", emit=False)
+    engine._session_workspace.set_folders({"proj": project_root})
 
-    await engine._finalize_document("../../etc/passwd")  # escapes the project root
+    # "../../etc/passwd" names no known bound root as its first segment, so
+    # LogicalPathResolver rejects it outright.
+    await engine._finalize_document("../../etc/passwd")
 
 
 def _seed_tracked_doc(project_root: Path, rel_path: str) -> Path:
@@ -1369,11 +1258,11 @@ async def test_finalize_document_autonomous_auto_accepts(tmp_path: Path) -> None
     project_root = tmp_path / "proj"
     _make_project(project_root)
     engine, _t, _s, gate = _make_engine(tmp_path)
-    await engine._bind_project(str(project_root), "proj", emit=False)
+    engine._session_workspace.set_folders({"proj": project_root})
     engine._session.effective_autonomous = True
     _seed_tracked_doc(project_root, "specs/a.md")
 
-    await engine._finalize_document("specs/a.md")
+    await engine._finalize_document("proj/specs/a.md")
 
     assert gate.calls == []
     history = read_history(project_root / "specs" / "a.md", project_root)
@@ -1387,11 +1276,11 @@ async def test_finalize_document_interactive_agree_accepts(tmp_path: Path) -> No
     _make_project(project_root)
     gate = _FakeGate(action="agree")
     engine, _t, _s, _g = _make_engine(tmp_path, gate=gate)
-    await engine._bind_project(str(project_root), "proj", emit=False)
+    engine._session_workspace.set_folders({"proj": project_root})
     engine._session.effective_autonomous = False
     _seed_tracked_doc(project_root, "specs/a.md")
 
-    await engine._finalize_document("specs/a.md")
+    await engine._finalize_document("proj/specs/a.md")
 
     assert len(gate.calls) == 1
     history = read_history(project_root / "specs" / "a.md", project_root)
@@ -1405,11 +1294,11 @@ async def test_finalize_document_interactive_feedback_rejects(tmp_path: Path) ->
     _make_project(project_root)
     gate = _FakeGate(action="feedback", feedback="needs work")
     engine, _t, _s, _g = _make_engine(tmp_path, gate=gate)
-    await engine._bind_project(str(project_root), "proj", emit=False)
+    engine._session_workspace.set_folders({"proj": project_root})
     engine._session.effective_autonomous = False
     _seed_tracked_doc(project_root, "specs/a.md")
 
-    await engine._finalize_document("specs/a.md")
+    await engine._finalize_document("proj/specs/a.md")
 
     history = read_history(project_root / "specs" / "a.md", project_root)
     assert [e["type"] for e in history] == ["new_revision", "review_result"]
@@ -1631,11 +1520,13 @@ async def test_init_project_fails_when_kodo_dir_already_exists(tmp_path: Path) -
 # ---------------------------------------------------------------------------
 
 
-def test_has_workspace_guided_false_until_project_bound(tmp_path: Path) -> None:
+def test_has_workspace_guided_tracks_folders(tmp_path: Path) -> None:
+    """Mode-agnostic since the multi-project rework: Guided tracks the same
+    live workspace-folder map Problem Solver always has."""
     engine, _t, _s, _g = _make_engine(tmp_path)
     engine._session.workflow_mode = "guided"
     assert engine._has_workspace() is False
-    engine._current_project = {"root": str(tmp_path), "name": "proj"}
+    engine._session_workspace.set_folders({"proj": tmp_path})
     assert engine._has_workspace() is True
 
 

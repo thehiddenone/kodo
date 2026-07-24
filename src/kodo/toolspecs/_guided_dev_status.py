@@ -16,13 +16,15 @@ GUIDED_DEV_STATUS: ToolSpec = ToolSpec(
     external_name="Guided Development Status",
     user_description="Check tracked documents' status",
     description=(
-        "Scan every tracked document under specs/, src/, and test/ and report "
-        "its current status, derived from the last entry of its evolution "
-        "log: `pending_review` (just written/revised, not yet reviewed), "
+        "Scan every tracked document under specs/, src/, and test/ in every bound "
+        "project and report its current status, derived from the last entry of its "
+        "evolution log: `pending_review` (just written/revised, not yet reviewed), "
         "`needs_revision` (rejected by a critic or the user), "
         "`pending_acceptance` (critic accepted, awaiting the engine's "
         "acceptance step), or `accepted` (done). A document absent from the "
-        "result has never been written. Only available in Guided mode."
+        "result has never been written. `path` is folder-prefixed with the "
+        "owning project's name (a get_root_paths entry), e.g. "
+        "'billing-service/specs/requirements/auth.md'. Only available in Guided mode."
     ),
     input_schema={"type": "object", "properties": {}, "required": []},
     output_schema={

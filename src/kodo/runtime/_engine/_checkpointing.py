@@ -48,7 +48,6 @@ class CheckpointHost(Protocol):
     """What the checkpoint coordinator needs back from the engine."""
 
     _session: SessionState
-    _current_project: dict[str, str] | None
     _orch_session_id: str
     _transient: TransientStore
 
@@ -195,18 +194,17 @@ class CheckpointCoordinator:
         """Append a ``new_revision`` jsonl entry for a tracked document's commit.
 
         Fires in *both* workflow modes whenever the touched path falls under
-        the bound project's ``specs``/``src``/``test`` (see
-        ``kodo.guided_state``) — independent of which mirror root the
-        checkpoint itself committed to. A Problem-Solver edit to a tracked
-        document is recorded too, tagged ``workflow: "problem_solving"``, so
-        the Guide can reconcile state once Guided mode resumes; no other
-        jsonl entry type is ever written outside Guided mode, since
-        ``document_feedback`` (the only producer of the other three) is never
-        granted to Problem Solver.
+        a bound root's ``specs``/``src``/``test`` (see ``kodo.guided_state``)
+        — ``checkpoint.root`` names exactly that root, already resolved by
+        :class:`~kodo.runtime._checkpoints.RootMirrorManager` when it
+        committed this same call, so no separate root lookup is needed here.
+        A Problem-Solver edit to a tracked document is recorded too, tagged
+        ``workflow: "problem_solving"``, so the Guide can reconcile state
+        once Guided mode resumes; no other jsonl entry type is ever written
+        outside Guided mode, since ``document_feedback`` (the only producer
+        of the other three) is never granted to Problem Solver.
         """
-        if self._host._current_project is None:
-            return
-        project_root = Path(self._host._current_project["root"])
+        project_root = Path(checkpoint.root)
         paths = self.mutation_paths(tool_name, tool_input)
         if not paths or not is_tracked(paths[0], project_root):
             return

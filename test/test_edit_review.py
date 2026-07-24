@@ -131,15 +131,27 @@ class _FakeWorkspaceServices:
     def root_paths(self) -> tuple[RootPath, ...]:
         return self._root_paths
 
-    def project_root(self) -> Path | None:
-        return None
+
+class _FakeResolver:
+    """Resolves paths under one fixed root, like the old ``ProjectPathResolver``."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+    def resolve(self, path: str) -> Path:
+        candidate = Path(path)
+        return candidate.resolve() if candidate.is_absolute() else (self._root / path).resolve()
+
+    @property
+    def default_cwd(self) -> Path:
+        return self._root
 
 
 def _make_dispatcher(gate: _FakeEditReviewGate, session: _FakeSession, tmp_path: Path):  # noqa: ANN201
-    from kodo.tools import ProjectPathResolver, ToolDispatcher
+    from kodo.tools import ToolDispatcher
 
     return ToolDispatcher(
-        resolver=ProjectPathResolver(tmp_path),
+        resolver=_FakeResolver(tmp_path),
         gate=gate,  # type: ignore[arg-type]
         security=SecurityLayer(),
         session=session,  # type: ignore[arg-type]
@@ -342,20 +354,36 @@ async def test_review_all_fires_for_edit_file_modification(tmp_path: Path) -> No
 
 @pytest.mark.asyncio
 async def test_review_all_skips_gate_for_out_of_workspace_path(tmp_path: Path) -> None:
-    """An out-of-workspace path hard-fails via PathResolver's PermissionError,
-    exactly like today — no gate, no prompt, from either gate."""
+    """A relative path naming no known bound root hard-fails via
+    LogicalPathResolver's PermissionError, exactly like today — no gate, no
+    prompt, from either gate."""
+    from kodo.project import SessionWorkspace
+    from kodo.tools import LogicalPathResolver, ToolDispatcher
+
     gate = _FakeEditReviewGate(action="approve")
-    dispatcher = _make_dispatcher(gate, _FakeSession(edit_control="review_all"), tmp_path)
+    dispatcher = ToolDispatcher(
+        resolver=LogicalPathResolver(
+            SessionWorkspace(physical_root=tmp_path, folders={"proj": tmp_path})
+        ),
+        gate=gate,  # type: ignore[arg-type]
+        security=SecurityLayer(),
+        session=_FakeSession(edit_control="review_all"),  # type: ignore[arg-type]
+        services=_FakeWorkspaceServices(
+            has_workspace=True, root_paths=(RootPath(name="proj", path=str(tmp_path)),)
+        ),  # type: ignore[arg-type]
+        agent_name="tester",
+        session_id="s1",
+    )
 
     result = json.loads(
         await dispatcher.dispatch(
             "create_file",
-            {"intent": "add", "path": "/definitely/outside/foo.py", "content": "x\n"},
+            {"intent": "add", "path": "nonexistent-root/foo.py", "content": "x\n"},
             "tu_1",
         )
     )
     assert "error" in result
-    assert "outside the project root" in result["error"]
+    assert "workspace-folder name" in result["error"]
     assert gate.fired == []
 
 

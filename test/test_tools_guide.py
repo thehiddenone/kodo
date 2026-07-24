@@ -40,23 +40,20 @@ class _StubServices:
 
     def __init__(
         self,
-        rollback: Callable[[str], Awaitable[None]] | None = None,
+        rollback: Callable[[str, str], Awaitable[None]] | None = None,
         *,
         has_workspace: bool = True,
-        project_root: Path | None = None,
+        root_paths: tuple[RootPath, ...] = (),
     ) -> None:
         self._rollback = rollback
         self._has_workspace = has_workspace
-        self._project_root = project_root
+        self._root_paths = root_paths
 
     def has_workspace(self) -> bool:
         return self._has_workspace
 
     def root_paths(self) -> tuple[RootPath, ...]:
-        return ()
-
-    def project_root(self) -> Path | None:
-        return self._project_root
+        return self._root_paths
 
     async def run_subagent(
         self, caller: str, name: str, task_input: dict[str, object]
@@ -89,9 +86,9 @@ class _StubServices:
             "concerns": [],
         }
 
-    async def rollback(self, target_sha: str) -> None:
+    async def rollback(self, root: str, target_sha: str) -> None:
         if self._rollback is not None:
-            await self._rollback(target_sha)
+            await self._rollback(root, target_sha)
 
     async def disable_autonomous_mode(self) -> None:
         return None
@@ -112,19 +109,20 @@ def _make_dispatcher(
     has_workspace: bool = True,
     autonomous: bool = False,
     session: SessionState | None = None,
-    rollback_fn: Callable[[str], Awaitable[None]] | None = None,
+    rollback_fn: Callable[[str, str], Awaitable[None]] | None = None,
 ) -> ToolDispatcher:
     if session is None:
         session = SessionState()
     session.autonomous = autonomous
     session.effective_autonomous = autonomous
 
+    root_paths = (RootPath(name="proj", path=str(project_root)),) if project_root else ()
     return ToolDispatcher(
         resolver=MagicMock(),
         gate=GateOrchestrator(_make_app_state(), MagicMock()),
         session=session,
         services=_StubServices(
-            rollback=rollback_fn, has_workspace=has_workspace, project_root=project_root
+            rollback=rollback_fn, has_workspace=has_workspace, root_paths=root_paths
         ),
         agent_name="guide",
         session_id="sess-test",
@@ -162,7 +160,7 @@ async def test_guided_dev_status_reports_status_from_last_entry(tmp_path: Path) 
     dispatcher = _make_dispatcher(project_root=tmp_path)
     result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
     assert len(result["files"]) == 1
-    assert result["files"][0]["path"] == "specs/architecture.md"
+    assert result["files"][0]["path"] == "proj/specs/architecture.md"
     assert result["files"][0]["status"] == "pending_review"
     assert result["files"][0]["last_event"]
 
@@ -317,19 +315,24 @@ async def test_rollback_requires_target_sha() -> None:
 
 @pytest.mark.asyncio
 async def test_rollback_calls_rollback_fn() -> None:
-    called_with: list[str] = []
+    called_with: list[tuple[str, str]] = []
 
-    async def _capture_rollback(sha: str) -> None:
-        called_with.append(sha)
+    async def _capture_rollback(root: str, sha: str) -> None:
+        called_with.append((root, sha))
 
     dispatcher = _make_dispatcher(rollback_fn=_capture_rollback)
     result = json.loads(
         await dispatcher.dispatch(
-            "rollback", {"intent": "restore the pre-refactor checkpoint", "target_sha": "abc123"}
+            "rollback",
+            {
+                "intent": "restore the pre-refactor checkpoint",
+                "root": "proj",
+                "target_sha": "abc123",
+            },
         )
     )
     assert result["status"] == "completed"
-    assert called_with == ["abc123"]
+    assert called_with[0][1] == "abc123"
 
 
 # ---------------------------------------------------------------------------

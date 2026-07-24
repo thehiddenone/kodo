@@ -120,7 +120,6 @@ from kodo.transport import (
     MSG_LOCAL_LLM_UPDATE_FLAVOR,
     MSG_MODE_SET,
     MSG_PROJECT_CREATE,
-    MSG_PROJECT_SET,
     MSG_PROMPT_SUBMIT,
     MSG_SECURITY_RULES_DELETE,
     MSG_SECURITY_RULES_LIST,
@@ -290,7 +289,6 @@ async def _handle_session_hello(
             "type": "hello.ack",
             "server_version": _SERVER_VERSION,
             "session_id": session.id,
-            "current_project": session.engine.current_project,
             "state": session.engine.session.to_dict(),
             **_llama_payload(config.reload_settings()),
         }
@@ -736,26 +734,6 @@ async def _handle_workspace_folders(req: Request) -> None:
     )
     await session.engine.handle_workspace_folders(physical_root, folders, code_workspace_file)
     await req.reply({"type": "workspace.folders.ack"})
-
-
-async def _handle_project_set(req: Request) -> None:
-    session = await _require_session(req)
-    if session is None:
-        return
-    root = str(req.env.payload.get("root", "")).strip()
-    name = str(req.env.payload.get("name", "")).strip()
-    if not root:
-        await req.reply(
-            {
-                "type": "error",
-                "code": "missing_project_root",
-                "message": "project.set requires a 'root'.",
-                "recoverable": True,
-            }
-        )
-        return
-    await session.engine.bind_project(root, name or root)
-    await req.reply({"type": "project.accepted"})
 
 
 async def _handle_project_create(req: Request) -> None:
@@ -1906,7 +1884,6 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_COMMAND_CONTROL_SET, _handle_command_control)
     conn_registry.register_handler(MSG_THINKING_LEVEL_SET, _handle_thinking_level)
     conn_registry.register_handler(MSG_WORKSPACE_FOLDERS, _handle_workspace_folders)
-    conn_registry.register_handler(MSG_PROJECT_SET, _handle_project_set)
     conn_registry.register_handler(MSG_PROJECT_CREATE, _handle_project_create)
     conn_registry.register_handler(MSG_STOP, _handle_stop)
     conn_registry.register_handler(MSG_COMPACT_NOW, _handle_compact)

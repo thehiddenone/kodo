@@ -12,7 +12,7 @@ READ_FILE: ToolSpec = ToolSpec(
     external_name="Read File",
     user_description="Read a file's content",
     description=(
-        "Read the content of a file inside the project root. By default "
+        "Read the content of a file. By default "
         "returns the whole file (like `cat`). Pass `ranges` to read one or "
         "more specific 1-based, inclusive line ranges instead of the whole "
         "file. Pass `pattern` to search the file's content with a regular "
@@ -26,7 +26,8 @@ READ_FILE: ToolSpec = ToolSpec(
             "path": {
                 "type": "string",
                 "description": (
-                    "Path to the file, relative to the project root (or absolute inside it)."
+                    "Path to the file: a logical path whose first segment is a bound "
+                    "root's name (see `get_root_paths`), or an absolute path."
                 ),
             },
             "ranges": {

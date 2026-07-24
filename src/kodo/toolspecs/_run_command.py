@@ -1,10 +1,10 @@
 """``run_command`` tool spec — native shell tool.
 
-Dispatch lives in :mod:`kodo.tools` (one handler module per tool),
-which resolves ``working_dir`` against the project root (or, in Guided mode,
-the session's private scratch directory — see ``kodo.tools.ProjectPathResolver``'s
-``extra_roots``, sourced from ``kodo.project.session_temp_dir``) and rejects
-anything else that would escape the project root, then runs the command via
+Dispatch lives in :mod:`kodo.tools` (one handler module per tool), which
+resolves ``working_dir`` through the run's active resolver — a bound root's
+name, resolved via ``LogicalPathResolver`` (any absolute path is also
+accepted unrestricted, including the session's private scratch directory,
+``kodo.project.session_temp_dir``) — then runs the command via
 :func:`asyncio.create_subprocess_shell`. Neither this spec nor the dispatcher
 impose any other restriction on the command itself — that is the security
 layer's job.

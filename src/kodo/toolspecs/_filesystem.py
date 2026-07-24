@@ -9,7 +9,9 @@ directory), or ``edit_file`` (the targeted, preferred way to change an
 existing file's contents), which are their own tools.
 
 Dispatch lives in :mod:`kodo.tools` (``_filesystem.py``), which resolves every
-path against the project root and rejects anything that would escape it.
+path via ``LogicalPathResolver``: a relative path's first segment must name a
+bound root (see ``get_root_paths``); an absolute path is taken as-is,
+unrestricted.
 """
 
 from __future__ import annotations
@@ -33,10 +35,10 @@ _OPERATIONS = (
 )
 
 _PATH_DESC = (
-    "Path relative to the project root (or an absolute path inside it). Paths "
-    "that resolve outside the project root are rejected — unless `temporary` "
-    "is true, in which case every path resolves under the session's scratch "
-    "directory instead."
+    "A logical path whose first segment is a bound root's name (see "
+    "`get_root_paths`) — the rest resolves under that root — or an absolute "
+    "path, used as-is. Unless `temporary` is true, in which case every path "
+    "resolves under the session's scratch directory instead."
 )
 
 
@@ -48,7 +50,8 @@ FILESYSTEM: ToolSpec = ToolSpec(
         "The single tool for filesystem operations on files AND directories: "
         "deleting, copying, moving, and renaming them. Pick the operation with "
         "the required `operation` field; the other arguments you must supply "
-        "depend on it. Every path must resolve inside the project root.\n\n"
+        "depend on it. Every path is a logical path (folder-prefixed with a "
+        "bound root's name) or an absolute path.\n\n"
         "Operations and their arguments:\n"
         "- `delete_file` — needs `path`. Permanently deletes a file. Fails if it "
         "does not exist or is a directory.\n"

@@ -662,7 +662,12 @@ home for `system_temp_roots()` specifically so `kodo.tools` and
 `kodo.security` don't need to import each other to agree on it — preserving
 the existing `kodo.tools` → `kodo.security` decoupling (§4). Problem Solver
 mode's `LogicalPathResolver` already took absolute paths as-is, so it needed
-no change.
+no change. (**Superseded 2026-07-24**: `ProjectPathResolver` and Guided mode's
+separate project-confined resolution are gone entirely — Guided now shares
+`LogicalPathResolver` with Problem Solver, WS_PROTOCOL.md §7.1c — but the
+`system_temp_roots()`/T0-sharing rationale in this paragraph still applies to
+`resolve_within`, which survives as the standalone resolver backing
+`Tool.resolve_path`'s `temporary=True` scratch-directory confinement.)
 
 ## Rules management UI — global scope (post-launch, 2026-07-17)
 

@@ -1,38 +1,44 @@
 """Path resolution for the native file-I/O and shell tools.
 
-Two resolvers, picked per agent run by the engine from the active workflow mode
-(see the ``project-kodo`` memory, WorkspaceLayout two-root model):
+One resolver, shared by both workflow modes: :class:`LogicalPathResolver`.
+Relative paths are *logical*: the first segment is a bound root's name — a
+VS Code workspace-folder name, or a project created via
+``create_new_project``/``init_project`` — that anchors the remainder to that
+root's real physical path (which may live anywhere on disk). Absolute paths
+are taken as-is, already unrestricted, so the OS temp directory and a
+session's private scratch directory (``kodo.project.session_temp_dir``) are
+reachable with no special-casing.
 
-* :class:`ProjectPathResolver` — **Guided** mode.  Relative paths resolve under
-  the locked current project's root; the result must stay inside that root —
-  except the OS temp directory (``kodo.common.system_temp_roots()``), always
-  reachable regardless of mode, and the session's private scratch directory
-  (``kodo.project.session_temp_dir``), passed in as ``extra_roots`` by the
-  engine (see :func:`resolve_within`).
-* :class:`LogicalPathResolver` — **Problem Solver** mode.  Relative paths are
-  *logical*: the first segment is a VS Code workspace-folder name that anchors
-  the remainder to that folder's real physical path (which may live anywhere on
-  disk).  Absolute paths are taken as-is — already unrestricted, so the temp
-  directory was already reachable here.
+Exposes a :pyattr:`~LogicalPathResolver.default_cwd` used by ``run_command``
+when the agent does not pass an explicit working directory, and
+:func:`root_for`, the "which bound root does this resolved path belong to"
+lookup shared by every ``kodo.guided_state`` caller now that a session may
+have more than one bound root.
 
-Both expose a :pyattr:`default_cwd` used by ``run_command`` when the agent does
-not pass an explicit working directory.
+Also exposes :func:`resolve_within`, a standalone containment resolver used
+by :meth:`~kodo.tools.Tool.resolve_path`'s ``temporary=True`` branch to
+confine a path under a session's private scratch directory
+(``kodo.project.session_temp_dir``) — unrelated to which workflow-mode
+resolver is active, since scratch-directory access is mode-agnostic.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from kodo.common import system_temp_roots
 from kodo.project import SessionWorkspace
 
+if TYPE_CHECKING:
+    from ._context import RootPath
+
 __all__ = [
     "LogicalPathResolver",
     "PathResolver",
-    "ProjectPathResolver",
     "resolve_logical",
     "resolve_within",
+    "root_for",
 ]
 
 
@@ -52,15 +58,14 @@ def resolve_within(root: Path, path: str, *, extra_roots: tuple[Path, ...] = ())
     Relative paths are resolved against *root*; absolute paths are taken
     as-is.  Either way the result must live inside *root*, under the OS
     temp directory (``kodo.common.system_temp_roots()`` — scratch files
-    there are expected agent territory, not a project escape), or under one
-    of *extra_roots* (e.g. the session's private scratch directory, see
-    :class:`ProjectPathResolver`), or a :class:`PermissionError` is raised
-    (path-traversal guard). Symlinks are resolved by ``Path.resolve()``
-    before either check, so a symlinked temp dir (macOS's ``/tmp`` ->
-    ``/private/tmp``) matches regardless of which spelling *path* uses.
+    there are expected agent territory, not an escape), or under one of
+    *extra_roots*, or a :class:`PermissionError` is raised (path-traversal
+    guard). Symlinks are resolved by ``Path.resolve()`` before either check,
+    so a symlinked temp dir (macOS's ``/tmp`` -> ``/private/tmp``) matches
+    regardless of which spelling *path* uses.
 
     Args:
-        root: The project root every tool path is confined to.
+        root: The directory every path is confined to.
         path: User/agent-supplied path (relative or absolute).
         extra_roots: Additional resolved roots an absolute *path* may also
             live under.
@@ -78,9 +83,7 @@ def resolve_within(root: Path, path: str, *, extra_roots: tuple[Path, ...] = ())
         resolved.relative_to(root)
     except ValueError:
         if not _within_system_temp(resolved) and not _within_roots(resolved, extra_roots):
-            raise PermissionError(
-                f"Path {path!r} is outside the project root {str(root)!r}"
-            ) from None
+            raise PermissionError(f"Path {path!r} is outside {str(root)!r}") from None
     return resolved
 
 
@@ -89,8 +92,8 @@ def resolve_logical(folders: dict[str, Path], path: str) -> Path:
 
     A relative logical path begins with a workspace-folder name (its first
     segment); that name is looked up in *folders* and the remainder resolves
-    beneath the folder's physical path.  Absolute paths are taken as-is so a
-    Problem Solver agent can still address anything on the real filesystem.
+    beneath the folder's physical path.  Absolute paths are taken as-is so an
+    agent can still address anything on the real filesystem.
 
     Args:
         folders: Logical name → physical path of every open workspace folder.
@@ -120,6 +123,37 @@ def resolve_logical(folders: dict[str, Path], path: str) -> Path:
     return (base / rest).resolve()
 
 
+def root_for(roots: tuple[RootPath, ...], path: Path) -> RootPath | None:
+    """The longest bound root that contains *path*, or ``None``.
+
+    Used by every ``kodo.guided_state`` caller (``document_feedback``,
+    ``guided_dev_status``, ``record_guided_revision``, document finalization,
+    ``run_author_critic_iteration``) to recover which of a session's N bound
+    roots an already-resolved absolute path falls under — the replacement for
+    the single implicit project root each of those used to read straight off
+    the old singular binding. *path* must already be resolved (as every
+    caller's is, via :class:`LogicalPathResolver`); this performs no
+    filesystem I/O itself beyond resolving each candidate root once.
+
+    Mirrors :meth:`~kodo.runtime._checkpoints.RootMirrorManager._root_for`'s
+    longest-prefix-match algorithm, but keyed on :class:`RootPath` (so callers
+    keep the root's ``name``, not just its path) rather than a bare
+    ``list[Path]`` — left as a separate, un-shared implementation since the
+    two operate on different input shapes and neither is a subset of the
+    other's callers.
+    """
+    best: RootPath | None = None
+    best_resolved: Path | None = None
+    for root in roots:
+        resolved_root = Path(root.path).resolve()
+        contains = path == resolved_root or resolved_root in path.parents
+        more_specific = best_resolved is None or len(str(resolved_root)) > len(str(best_resolved))
+        if contains and more_specific:
+            best = root
+            best_resolved = resolved_root
+    return best
+
+
 @runtime_checkable
 class PathResolver(Protocol):
     """Resolves an agent-supplied path and supplies a default working directory."""
@@ -134,30 +168,8 @@ class PathResolver(Protocol):
         ...
 
 
-class ProjectPathResolver:
-    """Guided-mode resolver: confine every path to one project root.
-
-    ``extra_roots`` additionally admits absolute paths under other specific
-    directories — used to let the session's private scratch directory
-    (``kodo.project.session_temp_dir``, reported by ``get_root_paths`` with
-    ``temporary: true``) through as a ``run_command`` working directory even
-    though it lives outside the project root.
-    """
-
-    def __init__(self, root: Path, *, extra_roots: tuple[Path, ...] = ()) -> None:
-        self.__root = root.resolve()
-        self.__extra_roots = tuple(r.resolve() for r in extra_roots)
-
-    def resolve(self, path: str) -> Path:
-        return resolve_within(self.__root, path, extra_roots=self.__extra_roots)
-
-    @property
-    def default_cwd(self) -> Path:
-        return self.__root
-
-
 class LogicalPathResolver:
-    """Problem-Solver-mode resolver: address every workspace folder by name.
+    """Address every bound root by name — shared by both workflow modes.
 
     Holds the live :class:`~kodo.project.SessionWorkspace` itself rather than
     a snapshot of its folder map: ``SessionWorkspace.folders`` reads the

@@ -1,8 +1,9 @@
 """``create_directory`` tool spec — native directory-creation tool.
 
 Dispatch lives in :mod:`kodo.tools` (one handler module per tool), which
-resolves the path against the project root and rejects anything that would
-escape it.
+resolves the path via ``LogicalPathResolver``: a relative path's first
+segment must name a bound root (see ``get_root_paths``); an absolute path is
+taken as-is, unrestricted.
 
 Split out of the former ``filesystem`` tool's ``create_dir`` operation so
 directory creation — a LOW-impact, purely additive action — no longer shares
@@ -29,8 +30,9 @@ CREATE_DIRECTORY: ToolSpec = ToolSpec(
         "To delete, copy, or move whole files or directories, use the "
         "`filesystem` tool instead; to create a brand-new file, use "
         "`create_file`.\n"
-        "The path must resolve inside the project root, unless `temporary` "
-        "is true (see below)."
+        "`path` is a logical path (folder-prefixed with a bound root's name, "
+        "e.g. `billing-service/specs/foo`) or an absolute path, unless "
+        "`temporary` is true (see below)."
     ),
     input_schema={
         "type": "object",
@@ -39,10 +41,11 @@ CREATE_DIRECTORY: ToolSpec = ToolSpec(
             "path": {
                 "type": "string",
                 "description": (
-                    "Path to the directory, relative to the project root (or an absolute "
-                    "path inside it). Paths that resolve outside the project root are "
-                    "rejected — unless `temporary` is true, in which case this resolves "
-                    "under the session's scratch directory instead."
+                    "Path to the directory: a logical path whose first segment is a "
+                    "bound root's name (see `get_root_paths`) — the rest resolves under "
+                    "that root — or an absolute path, used as-is. Unless `temporary` is "
+                    "true, in which case this resolves under the session's scratch "
+                    "directory instead."
                 ),
             },
             "temporary": {

@@ -156,11 +156,16 @@ simulated roots.
    `workflow.set` (guided / problem_solving), `edit_control.set`,
    `command_control.set`. They apply to the *next* prompt (frozen-toggle
    semantics, WS_PROTOCOL.md §5.1).
-3. `bind_project(root_name)` — `project.set`, required before Guided runs.
-4. `submit_prompt(text)` — `prompt.submit`, then block until the turn ends;
+3. `submit_prompt(text)` — `prompt.submit`, then block until the turn ends;
    returns a `TurnResult` (final phase, assistant text, tool calls with
    prep+detail merged, interactions, errors, raw entries).
-5. `shutdown()` — close WS, SIGTERM the server, close the transcript.
+4. `shutdown()` — close WS, SIGTERM the server, close the transcript.
+
+**No separate project-binding step.** As of 2026-07-24, Guided-mode scenarios
+no longer call a `bind_project`/`project.set` step — there isn't one any more
+(WS_PROTOCOL.md §7.1c). A `guided`-workflow scenario's bound projects are
+simply its `scenario.roots` (step 1's `workspace.folders` push), exactly like
+a `problem_solving` scenario's.
 
 **Turn-end detection.** A turn is over once the phase was seen `running` since
 submit and has settled back to a resting phase (`awaiting_user` / `done` /

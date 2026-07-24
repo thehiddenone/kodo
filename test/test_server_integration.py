@@ -3,7 +3,10 @@
 Fixtures start a real aiohttp server (in-process, random port) with ``HOME``
 redirected to a temp dir so the real ``~/.kodo`` is never touched.  Every frame
 except ``hello`` carries a ``session_id``; ``hello`` mints (or resumes) one.
-No LLM calls are made.
+No LLM calls are made — ``_temp_home`` stubs ``WorkflowEngine._resolve_plugin``
+to fail fast, since a queued prompt is processed by the background worker
+regardless of workflow mode (both entry agents share one code path) and would
+otherwise reach a real model resolution / API-key round-trip.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ import pytest
 from aiohttp.test_utils import TestServer
 
 from kodo.common import Envelope
+from kodo.runtime import WorkflowEngine
 from kodo.runtime._engine import _titling as _titling_module
 from kodo.server import Config, create_app
 from kodo.server import _app as _app_module
@@ -53,6 +57,23 @@ def _temp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         return None
 
     monkeypatch.setattr(_titling_module, "generate_title", _no_op_generate_title)
+
+    # A queued prompt.submit is processed by the background worker
+    # (kodo/runtime/_engine/_worker.py) regardless of workflow mode — since
+    # the 2026-07 multi-project rework, Guided mode no longer short-circuits
+    # before a bound project exists, so it reaches _resolve_plugin exactly
+    # like Problem Solver always has. With no local/cloud model configured in
+    # this temp HOME, that would fall through to KeyBroker.get_key, which
+    # blocks forever awaiting a client response this test harness never sends
+    # (kodo/server/_key_broker.py). Fail fast instead, preserving this
+    # module's "no LLM calls are made" invariant explicitly rather than by
+    # accident.
+    async def _no_op_resolve_plugin(
+        self: WorkflowEngine, capability: str, force_model_key: str | None = None
+    ) -> tuple[object, str, object]:
+        raise RuntimeError("no LLM configured in this offline integration test")
+
+    monkeypatch.setattr(WorkflowEngine, "_resolve_plugin", _no_op_resolve_plugin)
     return tmp_path
 
 
@@ -238,7 +259,7 @@ async def test_session_list_includes_open_session(ws: aiohttp.ClientWebSocketRes
     assert isinstance(sessions, list)
     entry = next(s for s in sessions if s["id"] == sid)
     assert entry["taken"] is True
-    assert entry["project_root"] is None  # problem-solving-only so far
+    assert entry["workflow_mode"] == "guided"  # a fresh session's default mode
 
 
 # ---------------------------------------------------------------------------

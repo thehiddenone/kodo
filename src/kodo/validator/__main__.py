@@ -180,12 +180,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Command Control posture (default: smart).",
     )
     parser.add_argument(
-        "--project-root",
-        default=None,
-        metavar="NAME",
-        help="Root to bind as the Guided-mode project (guided workflow only).",
-    )
-    parser.add_argument(
         "--turn-timeout",
         type=float,
         default=900.0,
@@ -248,7 +242,6 @@ def _resolve_scenarios(args: argparse.Namespace) -> list[Scenario]:
             validation_llm=str(args.validation_llm),
             roots=roots,
             modes=modes,
-            project_root=args.project_root,
             turn_timeout=float(args.turn_timeout),
             user_proxy_prompt=_read_prompt_file(args.upp_file),
             result_validation_prompt=_read_prompt_file(args.rvp_file),

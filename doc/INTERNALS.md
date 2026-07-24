@@ -193,7 +193,7 @@ only the principal lines are drawn above to keep the figure readable.)
 |---|---|---|
 | [_envelope.py](../src/kodo/common/_envelope.py) | `Envelope` (frozen dataclass), `MessageKind` (Literal) | The atomic WS frame `{kind, id, correlation_id?, payload}`. Factory classmethods: `make_response`, `make_event`, `make_stream_chunk`, `make_thinking_chunk`, `make_stream_end`; plus `to_json`/`from_json`. |
 | [_protocols.py](../src/kodo/common/_protocols.py) | `ApiKey` (frozen dataclass), `MessageSink` (Protocol), `ApiKeyProvider` (Protocol) | `MessageSink.send(env)` and `ApiKeyProvider.get_key(vendor)` are the two seams that decouple the engine from the transport and the key broker. |
-| [_tempdir.py](../src/kodo/common/_tempdir.py) | `system_temp_roots() -> tuple[str, ...]` | Candidate OS temp-directory roots — `tempfile.gettempdir()` and, on POSIX, the literal `/tmp` — each included both as-is and `realpath`-resolved (covers macOS's `/tmp` → `/private/tmp` symlink without dropping the literal spelling a command might use directly). The single source of truth for "is this path system-temp scratch space" — consumed by both `security._analysis` (the `run_command` workspace-escape check, purely lexical, needs the literal spelling) and `tools._paths` (`ProjectPathResolver`/`resolve_within`, compares against `Path.resolve()`'s already-symlink-resolved form) — so the two independently-gated codepaths agree without importing each other (doc/SECURITY_RULES_PLAN.md). |
+| [_tempdir.py](../src/kodo/common/_tempdir.py) | `system_temp_roots() -> tuple[str, ...]` | Candidate OS temp-directory roots — `tempfile.gettempdir()` and, on POSIX, the literal `/tmp` — each included both as-is and `realpath`-resolved (covers macOS's `/tmp` → `/private/tmp` symlink without dropping the literal spelling a command might use directly). The single source of truth for "is this path system-temp scratch space" — consumed by both `security._analysis` (the `run_command` workspace-escape check, purely lexical, needs the literal spelling) and `tools._paths` (`resolve_within`, compares against `Path.resolve()`'s already-symlink-resolved form) — so the two independently-gated codepaths agree without importing each other (doc/SECURITY_RULES_PLAN.md). |
 
 **Links:** `_protocols.py` imports `Envelope` from `_envelope.py`. Nothing in
 `common` imports anything else in `kodo`. `MessageSink`/`ApiKeyProvider` are
@@ -341,11 +341,11 @@ to the run's context).
 
 | Module | Defines | Role |
 |---|---|---|
-| [_context.py](../src/kodo/tools/_context.py) | `ToolContext`, `RootPath`, `GateLike`, `SessionLike`, `EngineServices`, `QuestionLike`, `ApprovalLike` | The injected per-run context (collaborators + mutable `stop_requested`/`returned_output`) and the structural Protocols runtime satisfies. `EngineServices` is one protocol covering every engine-side operation a tool can trigger (sub-agent launch, **dependency-manager launch** (`run_dependency_manager`, the ungated `toolchain_depsmgr` spawn behind `toolchain_deps`), author/critic iteration, rollback, mode disable, project creation). `runtime.GateOrchestrator`/`SessionState` and the engine's `_EngineServices` adapter match them by shape. The mode a tool honours is read live from `SessionLike.effective_autonomous` (frozen per prompt), never snapshotted onto the context. Also carries `mode: str` (`"guided"`/`"problem_solving"`/`"judge"`, frozen per prompt — gates `guided_dev_status` and tags `new_revision` jsonl entries; every non-`"guided"` value is treated alike, so `"judge"` needs no extra branching here) and `project_root: Path \| None` (the bound project's root, independent of mode, so a Problem-Solver edit to a tracked file is still recorded — see §7), plus `root_paths: tuple[RootPath, ...]` and `util_paths: dict[str, Path]` for the search tools. |
+| [_context.py](../src/kodo/tools/_context.py) | `ToolContext`, `RootPath`, `GateLike`, `SessionLike`, `EngineServices`, `QuestionLike`, `ApprovalLike` | The injected per-run context (collaborators + mutable `stop_requested`/`returned_output`) and the structural Protocols runtime satisfies. `EngineServices` is one protocol covering every engine-side operation a tool can trigger (sub-agent launch, **dependency-manager launch** (`run_dependency_manager`, the ungated `toolchain_depsmgr` spawn behind `toolchain_deps`), author/critic iteration, rollback, mode disable, project creation). `runtime.GateOrchestrator`/`SessionState` and the engine's `_EngineServices` adapter match them by shape. The mode a tool honours is read live from `SessionLike.effective_autonomous` (frozen per prompt), never snapshotted onto the context. Also carries `mode: str` (`"guided"`/`"problem_solving"`/`"judge"`, frozen per prompt — gates `guided_dev_status` and tags `new_revision` jsonl entries; every non-`"guided"` value is treated alike, so `"judge"` needs no extra branching here) and `root_paths: tuple[RootPath, ...]` (every bound root, mode-agnostic — there is no singular `project_root` any more; a caller that needs to know which bound root a specific resolved path falls under uses `kodo.tools.root_for(root_paths, path)`, see §7) plus `util_paths: dict[str, Path]` for the search tools. |
 | [_tool.py](../src/kodo/tools/_tool.py) | `Tool` (ABC) | Binds one run's `ToolContext` (read-only `context` property) and declares the abstract `handle(self, tool_input) -> str`. |
 | `_<tool_name>.py` (one module per dispatchable tool) | one `Tool` subclass each | e.g. `ReadFileTool`, `DocumentFeedbackTool`, `GetRootPathsTool`; implements `handle` reading `self.context`. Mirrors the `toolspecs` one-file-per-tool convention. |
 | [_dispatch.py](../src/kodo/tools/_dispatch.py) | `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME` | The `_TOOL_CLASSES` table pairs each dispatchable `ToolSpec` with its `Tool` subclass; `dispatch` instantiates the class bound to the run's context and calls `handle`; exposes per-run `stop_requested`/`returned_output`. `tools_for_agent(frozenset[str])` resolves an agent's declared names to specs (skipping spec-only placeholders — none today). |
-| [_paths.py](../src/kodo/tools/_paths.py) | `resolve_within`, `ProjectPathResolver`, `LogicalPathResolver` | Project-root / logical-workspace path guards shared by the file-I/O, shell, and search handlers. |
+| [_paths.py](../src/kodo/tools/_paths.py) | `resolve_within`, `resolve_logical`, `LogicalPathResolver`, `root_for` | Logical-workspace path resolution (`LogicalPathResolver`/`resolve_logical`, shared by both workflow modes since the 2026-07-24 multi-project rework — there is no separate project-confined resolver any more), the standalone `resolve_within` used only by `Tool.resolve_path`'s `temporary=True` scratch-directory confinement, and `root_for` (longest-matching-root lookup, "which bound root does this resolved path belong to"). |
 | [_search.py](../src/kodo/tools/_search.py) | `run_util`, `UtilTimeout` | Shared subprocess launcher for `find_files`/`find_text_in_files`/`read_file`'s pattern mode and `toolchain_build`'s script execution: runs the util with stdin closed under a bounded timeout, killing the whole process tree on POSIX. Holds no tool dispatch. |
 
 **Links:** `runtime/_engine/` builds one `ToolDispatcher` per agent run via
@@ -356,10 +356,10 @@ to the run's context).
 `autonomous` flag — tools read `SessionState.effective_autonomous`, which the
 worker freezes once per prompt, so a mid-prompt mode toggle never rebuilds the
 dispatcher or splits the prompt's mode. Autonomous filtering of `ask_user`
-happens once, in `subagents/_registry`. `_make_dispatcher` also passes `mode`
-and `project_root` (read live from `current_project`, independent of mode),
-`root_paths` (computed mode-aware from `current_project`/`SessionWorkspace.folders`
-— the latter synced by the extension's `workspace.folders` frames) and
+happens once, in `subagents/_registry`. `_make_dispatcher` also passes `mode`,
+`root_paths` (computed mode-agnostically from `SessionWorkspace.folders` — synced
+by the extension's `workspace.folders` frames — or, when locked and
+disconnected, the bound-directories fallback; see WS_PROTOCOL.md §7.1c) and
 `util_paths` (resolved from `binutils.find_util(kodo_user_dir(), "fd"/"ripgrep")`).
 
 **State:** Complete.
@@ -385,7 +385,14 @@ analogously). A path outside those three roots is untracked — no log applies.
 Because `.kodo/` is already excluded from the shadow-git mirror's tracked
 tree (§10b), these logs are **never committed** by the same mirror that
 commits the real document changes — exactly the "only the author's changes
-are tracked by git" split the design requires.
+are tracked by git" split the design requires. `<root>` here is always **one
+specific bound root**, never the workspace/session root — a session may have
+several bound projects (WS_PROTOCOL.md §7.1c), each with its own independent
+`.kodo/guided_dev_state/` tree; every caller resolves the agent-supplied
+folder-prefixed logical path down to a real absolute path and the specific
+bound root it falls under (`kodo.tools.root_for`) *before* calling into this
+package, which itself never changed — it always took an explicit `project_root`
+argument, one call per document, regardless of how many roots exist upstream.
 
 | Module | Defines | Role |
 |---|---|---|
@@ -777,9 +784,12 @@ registry: AgentRegistry      gateway: LLMGateway
 session_workspace: SessionWorkspace | None
 ```
 
-(The engine is workspace-scoped: the `ProjectLayout` is *not* injected — it is
-built lazily in `bind_project` when Guided mode selects a project, and stays
-`None` until then.)
+(The engine is workspace-scoped: there is no per-session `ProjectLayout`
+injected or bound at all — since the 2026-07-24 multi-project rework, Guided
+mode addresses its bound roots exactly the way Problem Solver always has, via
+`SessionWorkspace`/`root_paths()` (WS_PROTOCOL.md §7.1c). `ProjectLayout` itself is still used,
+just per-root and on demand — e.g. by `create_new_project`/`init_project` to
+lay a root out, or by the checkpoint mirror to compute a root's paths.)
 
 It **internally constructs**: a `SessionState`, one `_EngineServices` adapter,
 and a **`CheckpointCoordinator.mirrors: RootMirrorManager`** (§12.4/§10b — the *single*
@@ -803,7 +813,7 @@ narrow per-collaborator host protocols living next to each collaborator):
 
 | Module | Kind | Contents |
 | ------ | ---- | -------- |
-| [_core.py](../src/kodo/runtime/_engine/_core.py) | class | `WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin, ResumeMixin)` — constructor wiring, `start()`, every public `handle_*` WS entry point, project bind/create, `_run_rollback`, `_finalize_document`, `_disable_autonomous`. |
+| [_core.py](../src/kodo/runtime/_engine/_core.py) | class | `WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin, ResumeMixin)` — constructor wiring, `start()`, every public `handle_*` WS entry point, project create/init, `_root_paths`/`_has_workspace`/`_make_resolver`, `_run_rollback`, `_finalize_document`, `_disable_autonomous`. |
 | [_proto.py](../src/kodo/runtime/_engine/_proto.py) | protocol | `EngineHost` — the typed mixin seam. |
 | [_worker.py](../src/kodo/runtime/_engine/_worker.py) | mixin | `WorkerMixin` — `_run_worker` (the single queue-driven coroutine) + `_handle_input_no_agent`. |
 | [_llm.py](../src/kodo/runtime/_engine/_llm.py) | mixin | `LLMPlumbingMixin` — `_resolve_plugin`/`_resolve_model_key`, `_run_silent_return_turn`, `_run_silent_tool_loop_turn` (a silent, multi-round, non-subsession tool-calling turn for the `web_search` agent — deadline- and round-capped, doc/WEB_SEARCH.md), `_security_judge`. |
@@ -825,9 +835,11 @@ The package's public surface is unchanged by the split:
 **Composition / call graph:**
 
 - `start()` → `TransientStore.attach_session` → spawns `_run_worker` task. If
-  resumed, loads messages, re-binds the persisted current project (if any) via
-  `_bind_project`, and may re-fire a pending prompt. No index to rebuild —
-  `bind_project`/`_bind_project` now only validate the `ProjectLayout`.
+  resumed, loads messages and may re-fire a pending prompt; bound roots need no
+  re-binding step — they come from the next `workspace.folders` push (§14) and
+  the persisted `workspace_folders`/`workspace_locked_paths` fallback
+  (WS_PROTOCOL.md §7.1b/§7.1c) exactly like Problem Solver always worked. No
+  index to rebuild either way.
 - **Public client entry points** (registered as WS handlers in `_app`, §14):
   `handle_prompt_submit(text, request_id)` enqueues a prompt;
   `handle_mode_set(autonomous)` sets the **Autonomous/Interactive** mode
@@ -900,12 +912,17 @@ The package's public surface is unchanged by the split:
   materialize, since the document was already a real file.
 - `CheckpointCoordinator.record_guided_revision(...)` (also called from the post-dispatch hook) →
   after a `filesystem`/`edit_file`/`create_file`/`create_directory` checkpoint commit, if the affected path is
-  tracked under the bound project's `specs`/`src`/`test`, appends a
+  tracked under `specs`/`src`/`test` of the root the checkpoint landed in
+  (`checkpoint.root` — already resolved by `RootMirrorManager`, so no separate
+  lookup is needed even with N bound roots), appends a
   `new_revision` jsonl entry carrying that exact commit's sha — in **both**
   workflow modes (§7).
-- `_run_rollback` (exposed via `_EngineServices.rollback`) → delegates
-  directly to `RootMirrorManager.rollback` (the same primitive Problem Solver
-  uses) and resets the in-memory conversation. No index to rebuild.
+- `_run_rollback(root, target_sha)` (exposed via `_EngineServices.rollback`) →
+  *root* is a resolved absolute path (the `rollback` tool resolves the agent's
+  `root` input — a `get_root_paths` name — before calling here); delegates
+  directly to `RootMirrorManager.rollback` (the same primitive the checkpoint
+  UI's `checkpoint.rollback` uses) and resets the in-memory conversation. No
+  index to rebuild.
 - `_disable_autonomous` (exposed via
   `_EngineServices.disable_autonomous_mode`) backs the
   guide's `disable_autonomous_mode` tool.
@@ -916,8 +933,8 @@ The package's public surface is unchanged by the split:
   `EVT_WORKSPACE_ADD_FOLDER`. The logical-root map update is synchronous and
   in-process (`self._session_workspace.set_folders(...)`, before the
   WS round trip even starts), and `_EngineServices` also exposes
-  `has_workspace()`/`root_paths()`/`project_root()` as **live** reads of
-  `EngineHost._has_workspace`/`_root_paths`/`_project_root` — `ToolContext`
+  `has_workspace()`/`root_paths()` as **live** reads of
+  `EngineHost._has_workspace`/`_root_paths` — `ToolContext`
   calls them fresh on every access rather than caching a value from when the
   dispatcher was built, so a project created (or a folder added by the user
   directly in VS Code) partway through a turn is visible to that same turn's

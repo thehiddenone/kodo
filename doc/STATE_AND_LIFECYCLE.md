@@ -118,9 +118,11 @@ reimplemented to replace the old `requirement_ids`/`supersedes` bookkeeping.
 
 ## 3. Cold start — nothing to rebuild
 
-There is no bootstrap phase for project state. `bind_project` validates the
-`ProjectLayout` (checks `kodo.md` exists and has the right heading) and that is
-the entire "project-tier" startup cost. The shadow-git mirror
+There is no bootstrap phase for project state. There is no longer a
+project-binding step at all (WS_PROTOCOL.md §7.1c) — a bound root's
+`.kodo/kodo.md` is scaffolded lazily on first checkpoint commit, or laid out
+fully by `create_new_project`/`init_project`, same as Problem Solver always
+worked. The shadow-git mirror
 (`RootMirrorManager`) lazily scaffolds itself the first time a mutating tool
 touches a given root — not upfront, not for every root, and identically in
 both workflow modes.
@@ -147,7 +149,7 @@ Every sub-agent invocation runs inside a *session*. A session is a sequence of m
 **Guide session** — persisted as a directory at `<project>/.kodo/sessions/<posix-timestamp>/` containing:
 
 - `meta.json` — `session_name` and `created_at` (written once at session creation).
-- `transient.json` — mutable runtime state (`stage`, `last_prompt`, `autonomous`, `current_project`); overwritten in place on each state change.
+- `transient.json` — mutable runtime state (`stage`, `last_prompt`, `autonomous`, `workspace_folders`/`workspace_locked_paths`); overwritten in place on each state change.
 - `session.jsonl` — append-only LLM context: every message (`role`, `content`) exchanged with the entry agent, interleaved with subsession start/end markers.
 - `agents/` — one JSONL call log per sub-agent invocation.
 - `subsessions/` — one isolated JSONL transcript per sub-agent invocation (UUID-keyed); the sub-agent's own message history, separate from the main session log.
@@ -229,7 +231,7 @@ This is the happy path: user opens a project in VS Code with a previously initia
 
 1. VS Code activates the Kodo extension.
 2. Extension launches the Kodo server on a loopback port and opens the WebSocket connection.
-3. Server attaches the session: `locate_guide_session` resumes or creates the Guide session marker; if a project was previously bound for this session, `bind_project` re-validates its `ProjectLayout`. There is no index to construct — nothing else runs at this point.
+3. Server attaches the session: `locate_guide_session` resumes or creates the Guide session marker; bound roots need no re-validation step — they come from the next `workspace.folders` push and the persisted locked-directories fallback (WS_PROTOCOL.md §7.1b/§7.1c). There is no index to construct — nothing else runs at this point.
 4. Extension sends `hello`; server responds with `hello.ack` embedding the current state snapshot (WS_PROTOCOL.md §4.1).
 5. Extension renders the Kodo panel from the state snapshot.
 6. The engine drives whatever was found:

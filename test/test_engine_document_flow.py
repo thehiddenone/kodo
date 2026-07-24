@@ -49,19 +49,34 @@ class _FakeSink:
 
 
 def _bare_engine(*, project_root: Path, autonomous: bool, gate: _FakeGate) -> object:
-    """Construct a WorkflowEngine with only the attributes these methods read."""
+    """Construct a WorkflowEngine with only the attributes these methods read.
+
+    ``project_root`` is bound as the single root named ``"proj"`` — callers
+    must folder-prefix every path they pass in
+    (``"proj/specs/architecture.md"``), matching the logical-path convention
+    ``_make_resolver``'s ``LogicalPathResolver`` uses in production.
+    """
+    from kodo.project import SessionWorkspace
     from kodo.runtime import WorkflowEngine
+    from kodo.state import TransientStore
 
     engine = object.__new__(WorkflowEngine)
     session = SessionState()
     session.autonomous = autonomous
     session.effective_autonomous = autonomous
-    layout = ProjectLayout(project_root)
-    layout.init()
-    engine._layout = layout
+    ProjectLayout(project_root).init()
     engine._session = session
     engine._gate = gate
     engine._sink = _FakeSink()
+    engine._orch_session_id = "sess-test"
+    # Unattached — never touches disk; workspace_locked_paths defaults empty,
+    # which makes _is_workspace_connected() vacuously True (see
+    # kodo.state.workspace_shape_compatible), so _root_paths() just reads the
+    # live folder map below.
+    engine._transient = TransientStore(project_root / ".kodo-transient-unused")
+    engine._session_workspace = SessionWorkspace(
+        physical_root=project_root, folders={"proj": project_root}
+    )
     return engine
 
 
@@ -92,7 +107,7 @@ async def test_finalize_document_autonomous_mode_auto_accepts(tmp_path: Path) ->
     gate = _FakeGate()
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
 
-    await engine._finalize_document("specs/architecture.md")
+    await engine._finalize_document("proj/specs/architecture.md")
 
     assert gate.calls == []  # never consulted in autonomous mode
     history = read_history(doc, tmp_path)
@@ -108,7 +123,7 @@ async def test_finalize_document_interactive_agree_records_approval_then_accepte
     gate = _FakeGate(action="agree")
     engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
 
-    await engine._finalize_document("specs/architecture.md")
+    await engine._finalize_document("proj/specs/architecture.md")
 
     assert len(gate.calls) == 1
     history = read_history(doc, tmp_path)
@@ -125,7 +140,7 @@ async def test_finalize_document_interactive_feedback_records_rejection_only(
     gate = _FakeGate(action="feedback", feedback="needs a North Star")
     engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
 
-    await engine._finalize_document("specs/architecture.md")
+    await engine._finalize_document("proj/specs/architecture.md")
 
     history = read_history(doc, tmp_path)
     assert [e["type"] for e in history] == ["new_revision", "review_result"]
@@ -155,7 +170,10 @@ async def test_run_author_critic_iteration_uses_authors_reported_primary_path(
     async def _fake_spawn(name: str, task_input: dict[str, object]) -> dict[str, object]:
         calls.append((name, task_input))
         if name == "architect":
-            return {"primary_path": "specs/architecture.md", "paths": ["specs/architecture.md"]}
+            return {
+                "primary_path": "proj/specs/architecture.md",
+                "paths": ["proj/specs/architecture.md"],
+            }
         # critic round: accept the document it was asked to review.
         from kodo.guided_state import append_feedback
 
@@ -170,13 +188,13 @@ async def test_run_author_critic_iteration_uses_authors_reported_primary_path(
         "guide", "architect", "architect_critic", "", {}, "Produce the architecture.", False
     )
 
-    assert result["path"] == "specs/architecture.md"
+    assert result["path"] == "proj/specs/architecture.md"
     assert result["status"] == "pending_acceptance"
     assert calls[0][0] == "architect"
     assert calls[1][0] == "architect_critic"
     # The critic was told to review the author's reported path, not asked to
     # invent its own.
-    assert calls[1][1]["input_paths"] == {"target": "specs/architecture.md"}
+    assert calls[1][1]["input_paths"] == {"target": "proj/specs/architecture.md"}
 
 
 @pytest.mark.asyncio
@@ -193,7 +211,10 @@ async def test_run_author_critic_iteration_revision_round_passes_for_revision_pa
     async def _fake_spawn(name: str, task_input: dict[str, object]) -> dict[str, object]:
         calls.append((name, task_input))
         if name == "architect":
-            return {"primary_path": "specs/architecture.md", "paths": ["specs/architecture.md"]}
+            return {
+                "primary_path": "proj/specs/architecture.md",
+                "paths": ["proj/specs/architecture.md"],
+            }
         return {"verdict": "rejected", "concerns": [{"kind": "gap", "description": "x"}]}
 
     engine._spawn_subagent = _fake_spawn
@@ -202,14 +223,14 @@ async def test_run_author_critic_iteration_revision_round_passes_for_revision_pa
         "guide",
         "architect",
         "architect_critic",
-        "specs/architecture.md",
-        {"feedback": "specs/architecture.md"},
+        "proj/specs/architecture.md",
+        {"feedback": "proj/specs/architecture.md"},
         "Revise per the critic's concerns.",
         True,
     )
 
     author_task = calls[0][1]
-    assert author_task["for_revision_path"] == "specs/architecture.md"
+    assert author_task["for_revision_path"] == "proj/specs/architecture.md"
 
 
 # ---------------------------------------------------------------------------

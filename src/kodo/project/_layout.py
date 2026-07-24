@@ -256,32 +256,6 @@ class ProjectLayout:
         return self.kodo_dir / "checkpoints"
 
     # ------------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------------
-
-    def validate(self) -> None:
-        """Assert that this directory looks like a Kodo project.
-
-        Checks that ``kodo.md`` is present and contains the required
-        ``# Kodo Project`` heading.  Does *not* require ``specs/``, ``src/``,
-        ``test/``, or ``.kodo/`` to exist (they are created by :meth:`init`).
-
-        Raises:
-            ProjectLayoutError: ``kodo.md`` is absent or missing the marker
-                heading.
-        """
-        if not self.kodo_md.exists():
-            raise ProjectLayoutError(
-                f"Not a Kodo project — {self.kodo_md} not found. "
-                "Run 'Kōdo: Init Project' to initialise."
-            )
-        text = self.kodo_md.read_text(encoding="utf-8")
-        if "# Kodo Project" not in text:
-            raise ProjectLayoutError(
-                f"{self.kodo_md} exists but is missing the '# Kodo Project' heading."
-            )
-
-    # ------------------------------------------------------------------
     # Initialisation
     # ------------------------------------------------------------------
 

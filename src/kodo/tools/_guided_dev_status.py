@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from kodo.guided_state import scan_tracked_files
 
@@ -12,13 +13,17 @@ __all__ = ["GuidedDevStatusTool"]
 
 
 class GuidedDevStatusTool(Tool):
-    """Report every tracked document's current status."""
+    """Report every tracked document's current status, across every bound project."""
 
     async def handle(self, tool_input: dict[str, object]) -> str:
         ctx = self.context
         if ctx.mode != "guided":
             return json.dumps({"error": "guided_dev_status is only available in Guided mode."})
-        if ctx.project_root is None:
+        roots = ctx.root_paths
+        if not roots:
             return json.dumps({"error": "No project is bound."})
-        files = scan_tracked_files(ctx.project_root)
+        files: list[dict[str, object]] = []
+        for root in roots:
+            for entry in scan_tracked_files(Path(root.path)):
+                files.append({**entry, "path": f"{root.name}/{entry['path']}"})
         return json.dumps({"files": files})

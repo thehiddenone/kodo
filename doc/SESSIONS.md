@@ -16,10 +16,15 @@ crash or restart.
 >   it in `hello`. The old workspace-level guide-session **marker** and its
 >   auto-resume are gone (`GuideMarker`/`locate_guide_session`
 >   remain in the tree but are unused by the engine).
-> - **A session's nature is its `current_project`:** `None` ⇒ problem-solving
->   only (openable in any window); set ⇒ guided-associated, linked to that
->   `kodo.md` project and openable only where that project is loaded. The session
->   picker enforces this gate in the extension.
+> - **A session's bound roots are its `workspace.folders`** — the live VS Code
+>   workspace folders, or the locked/bound-directories fallback when
+>   disconnected (§ below, WS_PROTOCOL.md §7.1b/§7.1c) — the same mechanism for
+>   both workflow modes since the 2026-07-24 multi-project rework. There is no
+>   separate Guided-mode project binding any more (the old `current_project`
+>   field, immutable and singular, is gone): a Guided session may be bound to
+>   zero, one, or several projects, exactly like Problem Solver. `workflow_mode`
+>   (`session.list`'s display field) says which pipeline is driving, not which
+>   or how many directories are bound.
 > - **Crash-resume** of a mid-subagent turn is unchanged, and now runs when the
 >   `SessionManager` (re)loads that specific session.
 > - LLM scheduling across sessions is owned by the shared gateway — see
@@ -31,8 +36,10 @@ Kōdo's persisted state has exactly two levels:
 
 1. **The main session** — the top-level conversation between the user and
    whichever *entry agent* is currently driving (the **Guide** in Guided
-   Project Workflow, or the **Problem Solver** in Problem-Solving mode). There is
-   exactly one main session per project directory at a time.
+   Project Workflow, or the **Problem Solver** in Problem-Solving mode). A
+   session is owned by exactly one window at a time (above), but — since the
+   2026-07-24 multi-project rework — is not tied to a single project
+   directory: it may bind zero, one, or several roots, in either mode.
 
 2. **Subsessions** — each time the main agent spawns a sub-agent (e.g. a
    Narrative Author, an Architect, a Critic), that sub-agent runs in its own
@@ -113,7 +120,8 @@ work there; resuming a session with any locked folder into a different
 workspace now asks for confirmation first instead of silently reopening
 (WS_PROTOCOL.md §7.1b).
 
-As of 2026-07-23, a locked Problem-Solver session whose live pushed workspace
+As of 2026-07-23 (mode-agnostic since the 2026-07-24 multi-project rework — see
+below), a locked session whose live pushed workspace
 is missing or no longer hosts every locked path operates in
 **disconnected/isolated mode**: `EngineCore._root_paths()`/`_has_workspace()`/
 `_make_resolver()` fall back to the bound directories (`workspace_folders`
@@ -127,13 +135,14 @@ shape host this session's bound directories" — is one function,
 must be present), reused by `WorkflowEngine._is_workspace_connected()` (live,
 feeds the `state` event's `workspace_connected` field, WS_PROTOCOL.md §5.1)
 and by `session.list`'s `compatible` field (from disk alone, no live engine
-needed — WS_PROTOCOL.md §7.1b). This connection-state concept is
-**mode-agnostic** — a Guided session gets `workspace_connected` too, and
-`create_new_project`/`init_project` skip their `workspace.add_folder` push
-(but still scaffold and lock immediately) whenever disconnected, regardless
-of mode — even though the root-resolution fallback itself is Problem-Solver
-only: Guided mode's `current_project` binding never depended on the live
-push to begin with, so it was already disconnected-safe. New-project locking
+needed — WS_PROTOCOL.md §7.1b). This connection-state concept was already
+**mode-agnostic** before the root-resolution fallback itself was: a Guided
+session got `workspace_connected` too, and `create_new_project`/`init_project`
+already skipped their `workspace.add_folder` push (but still scaffolded and
+locked immediately) whenever disconnected, regardless of mode. As of
+2026-07-24 the root-resolution fallback is mode-agnostic too (WS_PROTOCOL.md
+§7.1c) — Guided mode no longer has its own singular `current_project` binding
+to be exempt via; it shares this exact fallback. New-project locking
 is now always immediate on creation (not gated on a first real commit like
 every other root), so a disconnected session's own fallback sees a
 freshly-created directory right away.

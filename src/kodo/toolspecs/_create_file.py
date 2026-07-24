@@ -1,8 +1,9 @@
 """``create_file`` tool spec — native file I/O tool (whole-file creation).
 
-Dispatch lives in :mod:`kodo.tools` (one handler module per tool),
-which resolves the path against the project root and rejects anything that
-would escape it.
+Dispatch lives in :mod:`kodo.tools` (one handler module per tool), which
+resolves the path via ``LogicalPathResolver``: a relative path's first
+segment must name a bound root (see ``get_root_paths``); an absolute path is
+taken as-is, unrestricted.
 
 This is the **preferred** way to create a brand-new file: it writes `content`
 verbatim at `path` and never touches an existing file. To change an existing
@@ -33,8 +34,9 @@ CREATE_FILE: ToolSpec = ToolSpec(
         "mode.\n"
         "To delete, copy, or move whole files or directories, use the "
         "`filesystem` tool instead.\n"
-        "The path must resolve inside the project root, unless `temporary` "
-        "is true (see below).\n\n"
+        "`path` is a logical path (folder-prefixed with a bound root's name, "
+        "e.g. `billing-service/specs/foo.md`) or an absolute path, unless "
+        "`temporary` is true (see below).\n\n"
         "The user may reject this call (Edit Control review). A `rejected` "
         "result means try a different approach or ask the user what they "
         "want instead. A `rejected_with_feedback` result includes a "
@@ -52,10 +54,11 @@ CREATE_FILE: ToolSpec = ToolSpec(
             "path": {
                 "type": "string",
                 "description": (
-                    "Path to the file, relative to the project root (or an absolute path "
-                    "inside it). Paths that resolve outside the project root are rejected "
-                    "— unless `temporary` is true, in which case this resolves under the "
-                    "session's scratch directory instead."
+                    "Path to the file: a logical path whose first segment is a bound "
+                    "root's name (see `get_root_paths`) — the rest resolves under that "
+                    "root — or an absolute path, used as-is. Unless `temporary` is true, "
+                    "in which case this resolves under the session's scratch directory "
+                    "instead."
                 ),
             },
             "content": {

@@ -349,15 +349,14 @@ the usual per-project root list it returns one `{"name": "scratch", "path":
 ...}` entry for `session_temp_dir(self.context.session_id)` (created eagerly
 via `mkdir(parents=True, exist_ok=True)` so the path is guaranteed to exist).
 This is how an agent gets the scratch directory's *absolute path* — e.g. to
-pass as `run_command`'s `working_dir`, which the Guided-mode resolver also
-special-cases: `ProjectPathResolver` accepts an `extra_roots` tuple
-(`kodo/tools/_paths.py`), and the engine's `_make_resolver(session_id)`
-(`kodo/runtime/_engine/_core.py`) passes `session_temp_dir(session_id)` as
-that run's one extra root — the *same* `session_id` its `ToolContext` (and
-thus its own `temporary: true` file-tool calls) uses, so a leaf sub-agent's
-`run_command` reaches its own subsession scratch directory, not the
-orchestrator's. Problem Solver's logical resolver already allows any absolute
-path, so it needed no equivalent change.
+pass as `run_command`'s `working_dir`. No resolver special-case is needed for
+this any more (as of the 2026-07-24 multi-project rework, WS_PROTOCOL.md
+§7.1c): `LogicalPathResolver` — now shared by both workflow modes, there is no
+separate Guided-mode resolver — already accepts any absolute path
+unconditionally, including the scratch directory, so a leaf sub-agent's
+`run_command` reaches its own subsession scratch directory (the path
+`get_root_paths temporary: true` reported for that same `session_id`) with no
+`extra_roots` plumbing involved.
 
 **`LogicalPathResolver` liveness.** `LogicalPathResolver`
 ([tools/_paths.py](../src/kodo/tools/_paths.py)) holds the live

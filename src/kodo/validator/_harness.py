@@ -32,7 +32,6 @@ from kodo.transport import (
     MSG_COMMAND_CONTROL_SET,
     MSG_EDIT_CONTROL_SET,
     MSG_MODE_SET,
-    MSG_PROJECT_SET,
     MSG_PROMPT_SUBMIT,
     MSG_STOP,
     MSG_WORKFLOW_SET,
@@ -364,16 +363,6 @@ class ValidationHarness:
         await client.request(MSG_EDIT_CONTROL_SET, edit_control=modes.edit_control)
         await client.request(MSG_COMMAND_CONTROL_SET, command_control=modes.command_control)
         self.__transcript.record("note", "lifecycle", {"event": "modes", **vars(modes)})
-
-    async def bind_project(self, root_name: str, *, project_name: str | None = None) -> None:
-        """Bind the session's project for Guided mode (``project.set``).
-
-        Args:
-            root_name (str): Name of a workspace root added via the workspace.
-            project_name (str | None): Display name; defaults to *root_name*.
-        """
-        root = self.__workspace.root_path(root_name)
-        await self.client.request(MSG_PROJECT_SET, root=str(root), name=project_name or root_name)
 
     # ------------------------------------------------------------------
     # Prompting

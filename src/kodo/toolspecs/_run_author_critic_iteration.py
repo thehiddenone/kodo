@@ -30,8 +30,9 @@ RUN_AUTHOR_CRITIC_ITERATION: ToolSpec = ToolSpec(
             "path": {
                 "type": "string",
                 "description": (
-                    "The file to revise. Required when `for_revision` is true; omit on a "
-                    "fresh round — the Author chooses the path and reports it back."
+                    "The file to revise, folder-prefixed with its project's name (a "
+                    "get_root_paths entry). Required when `for_revision` is true; omit "
+                    "on a fresh round — the Author chooses the path and reports it back."
                 ),
             },
             "input_paths": {
@@ -39,7 +40,8 @@ RUN_AUTHOR_CRITIC_ITERATION: ToolSpec = ToolSpec(
                 "additionalProperties": {"type": "string"},
                 "description": (
                     "Named collection (label -> path) of context files for the Author to "
-                    'read this round, e.g. {"requirements": "specs/requirements.md"}.'
+                    "read this round. Each path is folder-prefixed with its project's "
+                    'name, e.g. {"requirements": "billing-service/specs/requirements.md"}.'
                 ),
             },
             "instructions": {
@@ -58,7 +60,9 @@ RUN_AUTHOR_CRITIC_ITERATION: ToolSpec = ToolSpec(
         "properties": {
             "path": {
                 "type": "string",
-                "description": "The author's primary file path.",
+                "description": (
+                    "The author's primary file path, folder-prefixed with its project's name."
+                ),
             },
             "status": {
                 "type": "string",

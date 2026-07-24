@@ -24,8 +24,8 @@ safety flow, and the wire protocol.
 
 ## 1. The shadow-git mirror (`kodo.mirror.ShadowMirror`)
 
-Every root the agent may touch — a Problem-Solving-mode workspace folder, or
-the single bound project in Guided mode — gets its own git repository whose
+Every root the agent may touch — a workspace folder, in either workflow mode —
+gets its own git repository whose
 **git directory** lives apart from its **work tree**:
 
 ```

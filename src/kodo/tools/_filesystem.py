@@ -1,8 +1,8 @@
 """``filesystem`` tool — one handler for every file/directory operation.
 
 Dispatches on the ``operation`` field to delete, copy, or move a file or a
-directory. Every path is resolved against the project root and rejected if it
-would escape it. This handler replaces the former per-operation file tools
+directory. Every path is resolved via ``LogicalPathResolver`` (a bound root's
+name, or an absolute path). This handler replaces the former per-operation file tools
 (``delete_file`` / ``copy_file`` / ``move_file``) and adds their directory
 counterparts. Creating a brand-new file lives in the separate ``create_file``
 tool (:class:`~kodo.tools._create_file.CreateFileTool`); creating a directory

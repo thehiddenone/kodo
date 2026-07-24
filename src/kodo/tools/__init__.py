@@ -52,9 +52,9 @@ from ._init_project import InitProjectTool
 from ._paths import (
     LogicalPathResolver,
     PathResolver,
-    ProjectPathResolver,
     resolve_logical,
     resolve_within,
+    root_for,
 )
 from ._query_search_engine import QuerySearchEngineTool
 from ._read_attachment import ReadAttachmentTool
@@ -100,7 +100,6 @@ __all__ = [
     "PathResolver",
     "PermissionLike",
     "PermissionPartLike",
-    "ProjectPathResolver",
     "QuerySearchEngineTool",
     "ReadAttachmentTool",
     "ReadFileTool",
@@ -126,6 +125,7 @@ __all__ = [
     "compute_new_content",
     "resolve_logical",
     "resolve_within",
+    "root_for",
     "should_review_edit",
     "tools_for_agent",
 ]

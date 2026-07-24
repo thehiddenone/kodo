@@ -35,14 +35,3 @@ class Session:
     engine: WorkflowEngine
     transient: TransientStore
     session_workspace: SessionWorkspace
-
-    @property
-    def project_root(self) -> str | None:
-        """The bound Guided project root, or ``None`` for problem-solving-only.
-
-        This single value is the session's whole nature: ``None`` ⇒ the session
-        has only done problem-solving (openable anywhere); set ⇒ it has done
-        guided work and is linked to that project (openable only where loaded).
-        """
-        cp = self.engine.current_project
-        return cp["root"] if cp else None

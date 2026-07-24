@@ -24,7 +24,7 @@ import pytest
 from kodo.binutils import find_util
 from kodo.project import kodo_user_dir
 from kodo.runtime import ApprovalResponse, SessionState
-from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, ProjectPathResolver, RootPath, ToolDispatcher
+from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, RootPath, ToolDispatcher
 from kodo.toolspecs import (
     ALL_TOOLS,
     SCHEMA_COMPLIANCE_KEY,
@@ -39,6 +39,21 @@ from kodo.websearch import BrowserUnavailableError as WebsearchBrowserUnavailabl
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
+
+
+class _FakeResolver:
+    """Resolves paths under one fixed root, like the old ``ProjectPathResolver``."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+    def resolve(self, path: str) -> Path:
+        candidate = Path(path)
+        return candidate.resolve() if candidate.is_absolute() else (self._root / path).resolve()
+
+    @property
+    def default_cwd(self) -> Path:
+        return self._root
 
 
 class _FakeGate:
@@ -68,20 +83,15 @@ class _FakeServices:
         *,
         has_workspace: bool = True,
         root_paths: tuple[RootPath, ...] = (),
-        project_root: Path | None = None,
     ) -> None:
         self._has_workspace = has_workspace
         self._root_paths = root_paths
-        self._project_root = project_root
 
     def has_workspace(self) -> bool:
         return self._has_workspace
 
     def root_paths(self) -> tuple[RootPath, ...]:
         return self._root_paths
-
-    def project_root(self) -> Path | None:
-        return self._project_root
 
     async def run_subagent(
         self, caller: str, name: str, task_input: dict[str, object]
@@ -113,7 +123,7 @@ class _FakeServices:
     ) -> dict[str, object]:
         return {"path": path or "specs/ac.md", "status": "accepted", "concerns": []}
 
-    async def rollback(self, target_sha: str) -> None:
+    async def rollback(self, root: str, target_sha: str) -> None:
         return None
 
     async def disable_autonomous_mode(self) -> None:
@@ -137,7 +147,6 @@ def _make_dispatcher(
     agent_name: str = "test_agent",
     autonomous: bool = False,
     mode: str = "guided",
-    project_root: Path | None | object = ...,
     has_workspace: bool = True,
     root_paths: tuple[RootPath, ...] = (),
     util_paths: dict[str, Path] | None = None,
@@ -146,15 +155,13 @@ def _make_dispatcher(
     session = SessionState()
     session.autonomous = autonomous
     session.effective_autonomous = autonomous
-    resolved_project_root = tmp_path if project_root is ... else project_root
     return ToolDispatcher(
-        resolver=ProjectPathResolver(tmp_path),
+        resolver=_FakeResolver(tmp_path),
         gate=_FakeGate(),
         session=session,
         services=_FakeServices(
             has_workspace=has_workspace,
             root_paths=root_paths,
-            project_root=resolved_project_root,
         ),
         agent_name=agent_name,
         session_id="sess-test",
@@ -493,19 +500,21 @@ async def test_find_text_in_files_compliance(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_guided_dev_status_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, mode="guided")
+    roots = (RootPath(name="proj", path=str(tmp_path)),)
+    d = _make_dispatcher(tmp_path, mode="guided", root_paths=roots)
     _assert_compliant("guided_dev_status", await _dispatch(d, "guided_dev_status", {}))
     (tmp_path / "specs").mkdir()
     await _write_file(d, "specs/a.md", "x")
     _assert_compliant("guided_dev_status", await _dispatch(d, "guided_dev_status", {}))
     # Wrong mode → compliant error envelope, not an exception.
-    ps = _make_dispatcher(tmp_path, mode="problem_solving")
+    ps = _make_dispatcher(tmp_path, mode="problem_solving", root_paths=roots)
     _assert_compliant("guided_dev_status", await _dispatch(ps, "guided_dev_status", {}))
 
 
 @pytest.mark.asyncio
 async def test_document_feedback_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="architect_critic")
+    roots = (RootPath(name="proj", path=str(tmp_path)),)
+    d = _make_dispatcher(tmp_path, agent_name="architect_critic", root_paths=roots)
     (tmp_path / "specs").mkdir()
     await _write_file(d, "specs/a.md", "x")
     _assert_compliant(
@@ -597,10 +606,10 @@ class _NoDepsMdServices(_FakeServices):
 async def test_toolchain_deps_missing_dependencies_md_returns_remediation(tmp_path: Path) -> None:
     session = SessionState()
     d = ToolDispatcher(
-        resolver=ProjectPathResolver(tmp_path),
+        resolver=_FakeResolver(tmp_path),
         gate=_FakeGate(),
         session=session,
-        services=_NoDepsMdServices(project_root=tmp_path),
+        services=_NoDepsMdServices(),
         agent_name="coder",
         session_id="sess-test",
         mode="guided",
@@ -777,8 +786,14 @@ async def test_run_author_critic_iteration_compliance(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_rollback_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path, agent_name="guide")
+    _assert_compliant(
+        "rollback", await _dispatch(d, "rollback", {"root": "proj", "target_sha": "abc123"})
+    )
+    _assert_compliant(
+        "rollback", await _dispatch(d, "rollback", {"root": "proj", "target_sha": ""})
+    )
+    # Error: missing root.
     _assert_compliant("rollback", await _dispatch(d, "rollback", {"target_sha": "abc123"}))
-    _assert_compliant("rollback", await _dispatch(d, "rollback", {"target_sha": ""}))
 
 
 @pytest.mark.asyncio
@@ -853,10 +868,10 @@ async def test_web_search_compliance(tmp_path: Path) -> None:
     # compliant themes:[]/note result rather than raising.
     session = SessionState()
     failing = ToolDispatcher(
-        resolver=ProjectPathResolver(tmp_path),
+        resolver=_FakeResolver(tmp_path),
         gate=_FakeGate(),
         session=session,
-        services=_WebSearchAgentFailsServices(project_root=tmp_path),
+        services=_WebSearchAgentFailsServices(),
         agent_name="investigator",
         session_id="sess-test",
         mode="guided",

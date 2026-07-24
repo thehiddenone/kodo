@@ -104,7 +104,6 @@ def _make_services(rec: _Recorder) -> _EngineServices:
         add_security_path_rule=rec.make("add_security_path_rule"),
         has_workspace=lambda: True,
         root_paths=lambda: (),
-        project_root=lambda: None,
     )
 
 
@@ -164,9 +163,9 @@ async def test_engine_services_rollback_forwards_sha() -> None:
     rec = _Recorder()
     services = _make_services(rec)
 
-    await services.rollback("deadbeef")
+    await services.rollback("/tmp/proj", "deadbeef")
 
-    assert rec.calls == [("rollback", ("deadbeef",))]
+    assert rec.calls == [("rollback", ("/tmp/proj", "deadbeef"))]
 
 
 @pytest.mark.asyncio
@@ -231,14 +230,14 @@ async def test_engine_services_add_security_path_rule_forwards_args() -> None:
     assert rec.calls == [("add_security_path_rule", ("global", "cat", "/etc/hosts"))]
 
 
-def test_engine_services_has_workspace_root_paths_project_root_are_live_reads() -> None:
-    """These three are sync pass-throughs to the engine's own live queries
-    (``EngineCore._has_workspace``/``_root_paths``/``_project_root``) — unlike
-    every other ``_EngineServices`` method, they must never be memoized:
-    ``ToolContext`` calls them fresh on every access so a project bound
-    mid-turn is visible to the very next tool call."""
+def test_engine_services_has_workspace_root_paths_are_live_reads() -> None:
+    """These two are sync pass-throughs to the engine's own live queries
+    (``EngineCore._has_workspace``/``_root_paths``) — unlike every other
+    ``_EngineServices`` method, they must never be memoized: ``ToolContext``
+    calls them fresh on every access so a root bound mid-turn is visible to
+    the very next tool call."""
     rec = _Recorder()
-    box: dict[str, object] = {"has_workspace": False, "project_root": None}
+    box: dict[str, object] = {"has_workspace": False}
     services = _EngineServices(
         run_subagent=rec.make("run_subagent"),
         run_dependency_manager=rec.make("run_dependency_manager"),
@@ -256,22 +255,18 @@ def test_engine_services_has_workspace_root_paths_project_root_are_live_reads() 
         root_paths=lambda: (
             (RootPath(name="proj", path="/tmp/proj"),) if box["has_workspace"] else ()
         ),
-        project_root=lambda: box["project_root"],
     )
 
     assert services.has_workspace() is False
     assert services.root_paths() == ()
-    assert services.project_root() is None
 
     # Simulate create_new_project mutating the engine's live workspace state
     # mid-turn — no new _EngineServices/ToolDispatcher is built, exactly as
     # production reuses one dispatcher for a whole turn's tool-call loop.
     box["has_workspace"] = True
-    box["project_root"] = Path("/tmp/proj")
 
     assert services.has_workspace() is True
     assert services.root_paths() == (RootPath(name="proj", path="/tmp/proj"),)
-    assert services.project_root() == Path("/tmp/proj")
 
 
 # ---------------------------------------------------------------------------

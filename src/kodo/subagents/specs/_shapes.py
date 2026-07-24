@@ -11,7 +11,10 @@ The shapes mirror the contracts the agent prompts already describe:
   delegated to: free-form ``instructions`` plus the real file paths it should
   read (a named collection, since a single round often needs several distinct
   inputs — e.g. requirements *and* architecture) and (for authors revising
-  existing work) the path being revised.
+  existing work) the path being revised. Every path is folder-prefixed with
+  its owning project's name (a ``get_root_paths`` entry — the same logical-path
+  convention ``LogicalPathResolver`` uses everywhere else), since a Guided
+  session may have more than one bound project.
 - **Author/solo output** — the path(s) a producing sub-agent wrote, plus which
   one is primary (what a critic reviews / what the author-critic loop tracks).
 - **Critic output** — a ``verdict`` plus a list of structured ``concerns`` whose
@@ -55,7 +58,8 @@ _FOR_REVISION_PATH = {
     "type": ["string", "null"],
     "description": (
         "Path of the prior document to revise this round (authors only; "
-        "omitted/null on the first round)."
+        "omitted/null on the first round). Folder-prefixed with the owning "
+        "project's name, like every other path here — see input_paths."
     ),
 }
 
@@ -89,9 +93,11 @@ def pipeline_input(
             "additionalProperties": {"type": "string"},
             "description": (
                 f"{input_paths} A named collection (label -> path), so several "
-                "distinct inputs can be passed in one round, e.g. "
-                '{"requirements": "specs/requirements/auth.md", "architecture": '
-                '"specs/architecture/system.md"}.'
+                "distinct inputs can be passed in one round. Each path is "
+                "folder-prefixed with the owning project's name (a "
+                "get_root_paths entry), e.g. "
+                '{"requirements": "billing-service/specs/requirements/auth.md", '
+                '"architecture": "billing-service/specs/architecture/system.md"}.'
             ),
         },
         "for_revision_path": dict(_FOR_REVISION_PATH),
@@ -119,13 +125,18 @@ def author_output(
             "type": "string",
             "description": (
                 "The path a critic should review / the author-critic loop tracks. "
-                "Required even when only one file was touched."
+                "Required even when only one file was touched. Folder-prefixed "
+                "with the owning project's name, matching the convention "
+                "input_paths used (see pipeline_input)."
             ),
         },
         "paths": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Every path this agent created or edited this round.",
+            "description": (
+                "Every path this agent created or edited this round, "
+                "folder-prefixed like primary_path."
+            ),
         },
         "summary": {
             "type": "string",

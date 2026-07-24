@@ -30,7 +30,7 @@ from kodo.llms import (
     ToolCallLogger,
     ToolSpec,
 )
-from kodo.project import ProjectLayout, WorkspaceLayout
+from kodo.project import WorkspaceLayout
 from kodo.security import SecurityLayer
 from kodo.state import TransientStore
 from kodo.subagents import AgentRegistry, SubAgent
@@ -67,8 +67,6 @@ class EngineHost(Protocol):
     _checkpoints: CheckpointCoordinator
 
     # -- mutable session state -------------------------------------------------
-    _layout: ProjectLayout | None
-    _current_project: dict[str, str] | None
     _queue: asyncio.Queue[dict[str, object]]
     _session: SessionState
     _main_messages: list[Message]
@@ -85,8 +83,6 @@ class EngineHost(Protocol):
 
     # -- core helpers (defined in _core) ---------------------------------------
     def _agent_available(self, name: str) -> bool: ...
-
-    def _require_layout(self) -> ProjectLayout: ...
 
     def _freeze_effective_modes(self) -> None: ...
 

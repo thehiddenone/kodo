@@ -910,15 +910,14 @@ class TurnLoopMixin:
         """Build a per-run tool dispatcher for *agent_name*.
 
         ``mode`` is frozen for the whole prompt, mirroring
-        ``session.effective_workflow_mode``. ``project_root``/``has_workspace``/
-        ``root_paths`` are **not** snapshotted here — ``ToolContext`` reads
-        them live from ``self._services`` (``_EngineServices.project_root``/
-        ``.has_workspace``/``.root_paths``, backed by this same
-        ``_project_root``/``_has_workspace``/``_root_paths``) on every access,
-        so a project bound mid-turn — by ``create_new_project``/``init_project``,
-        or a genuine ``workspace.folders`` push from the user editing the VS
-        Code workspace directly — is visible to the very next tool call in
-        the same turn, not just the next one.
+        ``session.effective_workflow_mode``. ``has_workspace``/``root_paths``
+        are **not** snapshotted here — ``ToolContext`` reads them live from
+        ``self._services`` (``_EngineServices.has_workspace``/``.root_paths``,
+        backed by this same ``_has_workspace``/``_root_paths``) on every
+        access, so a root bound mid-turn — by ``create_new_project``/
+        ``init_project``, or a genuine ``workspace.folders`` push from the
+        user editing the VS Code workspace directly — is visible to the very
+        next tool call in the same turn, not just the next one.
 
         ``deadline`` is only ever passed for the ``web_search`` agent's
         silent tool-loop turn (see ``_run_silent_tool_loop_turn``); every

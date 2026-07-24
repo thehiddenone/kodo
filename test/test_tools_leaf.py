@@ -22,7 +22,6 @@ from kodo.security import SecurityLayer
 from kodo.tools import (
     DISPATCHABLE_TOOLS_BY_NAME,
     LogicalPathResolver,
-    ProjectPathResolver,
     RootPath,
     ToolDispatcher,
     tools_for_agent,
@@ -57,6 +56,21 @@ def _make_gate(answer: str = "") -> GateOrchestrator:
     return gate
 
 
+class _FakeResolver:
+    """Resolves paths under one fixed root, like the old ``ProjectPathResolver``."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+    def resolve(self, path: str) -> Path:
+        candidate = Path(path)
+        return candidate.resolve() if candidate.is_absolute() else (self._root / path).resolve()
+
+    @property
+    def default_cwd(self) -> Path:
+        return self._root
+
+
 class _StubServices:
     """Engine-side stub satisfying ``kodo.tools.EngineServices``.
 
@@ -68,19 +82,16 @@ class _StubServices:
         self,
         *,
         has_workspace: bool = True,
-        project_root: Path | None = None,
+        root_paths: tuple[RootPath, ...] = (),
     ) -> None:
         self._has_workspace = has_workspace
-        self._project_root = project_root
+        self._root_paths = root_paths
 
     def has_workspace(self) -> bool:
         return self._has_workspace
 
     def root_paths(self) -> tuple[RootPath, ...]:
-        return ()
-
-    def project_root(self) -> Path | None:
-        return self._project_root
+        return self._root_paths
 
     async def run_subagent(
         self, caller: str, name: str, task_input: dict[str, object]
@@ -105,7 +116,7 @@ class _StubServices:
     ) -> dict[str, object]:
         return {"path": path, "status": "accepted", "concerns": []}
 
-    async def rollback(self, target_sha: str) -> None:
+    async def rollback(self, root: str, target_sha: str) -> None:
         return None
 
     async def disable_autonomous_mode(self) -> None:
@@ -151,11 +162,12 @@ def _make_dispatcher(
     session.autonomous = autonomous
     session.effective_autonomous = autonomous
 
+    root_paths = (RootPath(name="proj", path=str(tmp_path)),) if has_workspace else ()
     return _IntentDispatcher(
-        resolver=ProjectPathResolver(tmp_path),
+        resolver=_FakeResolver(tmp_path),
         gate=_make_gate(answer),
         session=session,
-        services=_StubServices(has_workspace=has_workspace, project_root=tmp_path),
+        services=_StubServices(has_workspace=has_workspace, root_paths=root_paths),
         agent_name=agent_name,
         session_id="sess-test",
         mode=mode,
@@ -602,14 +614,22 @@ async def test_move_dir_relocates_tree(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_fileio_rejects_path_outside_project_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # tmp_path itself lives under the OS temp dir, so a plain ".." escape
-    # would land inside the (intentionally allowed) system-temp carve-out —
-    # blank it out here to isolate the traversal guard from that carve-out.
-    monkeypatch.setattr("kodo.tools._paths.system_temp_roots", lambda: ())
-    dispatcher = _make_dispatcher(tmp_path)
+async def test_fileio_rejects_path_outside_project_root(tmp_path: Path) -> None:
+    # Uses the real LogicalPathResolver (not the fixed-root _FakeResolver):
+    # a relative path's first segment must name a bound root, so "../escape.txt"
+    # is rejected outright — it names no known root — not via dot-dot-escape
+    # detection specifically (there is none; an *absolute* path is always
+    # unrestricted, by design).
+    workspace = SessionWorkspace(physical_root=tmp_path, folders={"proj": tmp_path})
+    dispatcher = _IntentDispatcher(
+        resolver=LogicalPathResolver(workspace),
+        gate=_make_gate(),
+        session=SessionState(),
+        services=_StubServices(root_paths=(RootPath(name="proj", path=str(tmp_path)),)),
+        agent_name="test_agent",
+        session_id="sess-test",
+        mode="guided",
+    )
     result = json.loads(
         await dispatcher.dispatch("create_file", {"path": "../escape.txt", "content": "nope"})
     )
@@ -786,13 +806,20 @@ async def test_run_command_returns_exit_code_and_output(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_command_rejects_working_dir_outside_project_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # See test_fileio_rejects_path_outside_project_root: tmp_path sits under
-    # the OS temp dir, so blank out the carve-out to isolate the guard.
-    monkeypatch.setattr("kodo.tools._paths.system_temp_roots", lambda: ())
-    dispatcher = _make_dispatcher(tmp_path)
+async def test_run_command_rejects_working_dir_outside_project_root(tmp_path: Path) -> None:
+    # See test_fileio_rejects_path_outside_project_root: uses the real
+    # LogicalPathResolver, which rejects ".." as `working_dir` because it
+    # names no known bound root — not via dot-dot-escape detection.
+    workspace = SessionWorkspace(physical_root=tmp_path, folders={"proj": tmp_path})
+    dispatcher = _IntentDispatcher(
+        resolver=LogicalPathResolver(workspace),
+        gate=_make_gate(),
+        session=SessionState(),
+        services=_StubServices(root_paths=(RootPath(name="proj", path=str(tmp_path)),)),
+        agent_name="test_agent",
+        session_id="sess-test",
+        mode="guided",
+    )
     result = json.loads(
         await dispatcher.dispatch(
             "run_command", {"command": "pwd", "working_dir": "..", "timeout": 10}
@@ -990,9 +1017,9 @@ async def test_requires_project_gate_reads_has_workspace_live_within_one_turn(
     regression test for the bug where ``has_workspace`` was snapshotted once
     at dispatcher-creation time and never revisited for the rest of the turn,
     even after a project genuinely came into existence."""
-    services = _StubServices(has_workspace=False, project_root=tmp_path)
+    services = _StubServices(has_workspace=False)
     dispatcher = _IntentDispatcher(
-        resolver=ProjectPathResolver(tmp_path),
+        resolver=_FakeResolver(tmp_path),
         gate=_make_gate(),
         session=SessionState(),
         services=services,
@@ -1024,7 +1051,7 @@ async def test_requires_project_gate_reads_has_workspace_live_within_one_turn(
 
 class _BootstrapTrackingServices(_StubServices):
     def __init__(self, *, has_workspace: bool = False) -> None:
-        super().__init__(has_workspace=has_workspace, project_root=None)
+        super().__init__(has_workspace=has_workspace)
         self.bootstrap_calls = 0
         self.bootstrap_names: list[str] = []
 
@@ -1037,7 +1064,7 @@ class _BootstrapTrackingServices(_StubServices):
 def _make_create_new_project_dispatcher(tmp_path: Path, services: _StubServices) -> ToolDispatcher:
     session = SessionState()
     return _IntentDispatcher(
-        resolver=ProjectPathResolver(tmp_path),
+        resolver=_FakeResolver(tmp_path),
         gate=_make_gate(),
         session=session,
         services=services,
@@ -1095,10 +1122,13 @@ async def test_create_new_project_bootstraps_even_with_explicit_name_when_no_wor
 # workspace/project exists`, kodo/tools/_paths.py `LogicalPathResolver
 # .default_cwd`). The unit tests above never reproduced this because
 # `_make_dispatcher`/`_make_create_new_project_dispatcher` both pass
-# `security=None` (disabling `__security_gate` entirely) and use
-# `ProjectPathResolver`, whose `default_cwd` never asserts. Production always
-# wires a real `SecurityLayer` and, in Problem Solver mode with no workspace
-# bound yet, a real `LogicalPathResolver` — the combination that crashed.
+# `security=None` (disabling `__security_gate` entirely) and use the fixed-root
+# `_FakeResolver`, whose `default_cwd` never asserts. Production always wires a
+# real `SecurityLayer` and a real `LogicalPathResolver` — the combination that
+# crashed. Originally reproduced only in Problem Solver mode with no workspace
+# bound yet; since the 2026-07 multi-project rework Guided mode shares the same
+# `LogicalPathResolver`, so the same crash class is now reachable there too
+# (covered by the `_guided` variant below).
 # ---------------------------------------------------------------------------
 
 
@@ -1149,6 +1179,29 @@ async def test_security_gate_default_cwd_read_guarded_without_workspace() -> Non
         session_id="sess-test",
         security=SecurityLayer(),
         mode="problem_solving",
+    )
+
+    result = json.loads(await dispatcher.dispatch("disable_autonomous_mode", {"reason": "loop"}))
+
+    assert result == {"status": "disabled"}
+
+
+@pytest.mark.asyncio
+async def test_security_gate_default_cwd_read_guarded_without_workspace_guided() -> None:
+    """Guided-mode analog of the test above — since the multi-project rework,
+    Guided mode also resolves through `LogicalPathResolver` (no separate
+    project-confined resolver), so a homeless Guided session can hit the same
+    `default_cwd` assert a homeless Problem Solver session could."""
+    services = _StubServices(has_workspace=False)
+    dispatcher = _IntentDispatcher(
+        resolver=LogicalPathResolver(SessionWorkspace()),
+        gate=_make_gate(),
+        session=SessionState(),
+        services=services,
+        agent_name="test_agent",
+        session_id="sess-test",
+        security=SecurityLayer(),
+        mode="guided",
     )
 
     result = json.loads(await dispatcher.dispatch("disable_autonomous_mode", {"reason": "loop"}))

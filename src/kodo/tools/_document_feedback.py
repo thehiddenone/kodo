@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 from kodo.guided_state import append_feedback
 
+from ._paths import root_for
 from ._tool import Tool
 
 __all__ = ["DocumentFeedbackTool"]
@@ -27,7 +29,7 @@ class DocumentFeedbackTool(Tool):
 
         if not accept and not concerns:
             return json.dumps({"error": "concerns must be non-empty when accept is false."})
-        if ctx.project_root is None:
+        if not ctx.has_workspace:
             return json.dumps(
                 {"error": "No project is bound; document_feedback requires an active project."}
             )
@@ -37,10 +39,14 @@ class DocumentFeedbackTool(Tool):
         except PermissionError as exc:
             return json.dumps({"error": str(exc)})
 
+        owning_root = root_for(ctx.root_paths, target)
+        if owning_root is None:
+            return json.dumps({"error": f"{path!r} is not under any bound project root."})
+
         try:
             append_feedback(
                 target,
-                ctx.project_root,
+                Path(owning_root.path),
                 reviewer=ctx.agent_name,
                 accept=accept,
                 concerns=concerns,

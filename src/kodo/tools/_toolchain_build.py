@@ -49,8 +49,8 @@ class ToolchainBuildTool(Tool):
             )
         # Absolute paths are taken as-is — any kodo project on disk is
         # buildable, bound or not. Relative paths get the run's normal
-        # resolution (project-relative in Guided, workspace-folder-anchored in
-        # Problem Solver) so agents that only know relative paths can build.
+        # logical (bound-root-name-anchored) resolution so agents that only
+        # know a project's name can build it.
         candidate = Path(raw_project_path)
         if candidate.is_absolute():
             project_root = candidate.resolve()

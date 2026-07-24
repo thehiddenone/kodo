@@ -58,8 +58,9 @@ TOOLCHAIN_BUILD: ToolSpec = ToolSpec(
                     "caller names the project (use `get_root_paths` or the "
                     "location of a `.kodo/` dir to determine it). An absolute "
                     "path is used as-is; a relative path resolves like any "
-                    "other tool path (against the current project root — pass "
-                    "'.' to build it — or a leading workspace-folder name)."
+                    "other tool path — a bound root's name (from "
+                    "`get_root_paths`) to build that root itself, or a "
+                    "name-prefixed path to build a project nested under one."
                 ),
             },
             "build": {

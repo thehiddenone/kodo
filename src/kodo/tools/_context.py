@@ -41,14 +41,15 @@ __all__ = [
 class RootPath:
     """One filesystem root the running agent may operate within.
 
-    In Guided mode there is exactly one — the bound project root.  In Problem
-    Solver mode there is one per open VS Code workspace folder.  ``get_root_paths``
-    returns these; ``find_files`` / ``find_text_in_files`` take an ``root``
-    matching one of the ``path`` values.
+    One per bound root — a VS Code workspace folder, or a project created via
+    ``create_new_project``/``init_project`` — shared uniformly by Guided and
+    Problem Solver mode. ``get_root_paths`` returns every bound root;
+    ``find_files`` / ``find_text_in_files`` take a ``root`` matching one of
+    the ``path`` values.
 
     Attributes:
-        name: Human/logical label (the project name in Guided, the workspace
-            folder's display name in Problem Solver).
+        name: Human/logical label (the workspace-folder's display name, or
+            the project name for one created via ``create_new_project``).
         path: Absolute path to the root directory.
     """
 
@@ -460,8 +461,15 @@ class EngineServices(Protocol):
         """
         ...
 
-    async def rollback(self, target_sha: str) -> None:
-        """Roll the project's checkpoint mirror back to ``target_sha``."""
+    async def rollback(self, root: str, target_sha: str) -> None:
+        """Roll one bound root's checkpoint mirror back to ``target_sha``.
+
+        ``root`` is a logical path (a bound root's name, resolved the same
+        way every other agent-supplied path is — see ``LogicalPathResolver``)
+        identifying which of the session's N bound roots to roll back; a
+        session with exactly one bound root still requires it, for the same
+        reason ``find_files``'s ``root`` isn't optional.
+        """
         ...
 
     async def disable_autonomous_mode(self) -> None:
@@ -516,13 +524,12 @@ class EngineServices(Protocol):
     def has_workspace(self) -> bool:
         """Whether this session has any usable project/workspace *right now*.
 
-        Read live on every dispatch (never snapshotted) so a project bound
+        Read live on every dispatch (never snapshotted) so a root bound
         mid-turn — by ``create_new_project``/``init_project``, or by the user
         adding a folder to the VS Code window directly — is picked up by the
         very next tool call in the same turn, not just the next turn.
-        Guided mode: a project is bound. Problem Solver mode: at least one
-        workspace folder is open (mirrors :meth:`~kodo.runtime.EngineCore
-        ._has_workspace`).
+        Mode-agnostic: at least one bound root exists (mirrors
+        :meth:`~kodo.runtime.EngineCore._has_workspace`).
         """
         ...
 
@@ -535,14 +542,6 @@ class EngineServices(Protocol):
         folder added mid-turn — whether by a tool call or by a genuine VS
         Code ``workspace.folders`` push from the user manually editing the
         workspace.
-        """
-        ...
-
-    def project_root(self) -> Path | None:
-        """The bound Guided-mode project's root, or ``None``, read live.
-
-        Mirrors ``has_workspace``/``root_paths``: never snapshotted, so a
-        project bound mid-turn is visible to the very next tool call.
         """
         ...
 
@@ -623,9 +622,8 @@ class ToolContext:
             ``session.effective_workflow_mode``. Used to gate Guided-only
             tools (``guided_dev_status``) and to tag ``new_revision`` jsonl
             entries with which workflow produced them.
-        resolver: Path resolver for the native file/shell tools — a
-            project-confined resolver in Guided mode, a logical (workspace-folder
-            keyed) resolver in Problem Solver mode.
+        resolver: Path resolver for the native file/shell tools — a logical
+            (bound-root-name keyed) resolver, shared by both workflow modes.
         gate: Approval/question gate (protocol).
         security: The security layer (protocol), consulted by the dispatcher
             before every dispatch; ``None`` disables gating (tests/legacy
@@ -634,9 +632,8 @@ class ToolContext:
             frozen mode for this prompt.
         services: Engine-side operations (protocol): sub-agent launch,
             author/critic iteration, rollback, mode disable, project creation,
-            and the live ``has_workspace``/``root_paths``/``project_root``
-            queries ``project_root``/``has_workspace``/``root_paths`` below
-            delegate to.
+            and the live ``has_workspace``/``root_paths`` queries
+            ``has_workspace``/``root_paths`` below delegate to.
         agent_name: Name of the running agent (used as the jsonl ``author``/
             ``reviewer`` field).
         session_id: Session ID for this run.
@@ -682,26 +679,19 @@ class ToolContext:
     deadline: float | None = None
 
     @property
-    def project_root(self) -> Path | None:
-        """The bound Guided-mode project's root, or ``None`` — read live via
-        :meth:`EngineServices.project_root` on every access, never cached, so
-        a project bound mid-turn is visible to the next tool call."""
-        return self.services.project_root()
-
-    @property
     def has_workspace(self) -> bool:
         """Whether this run has *any* usable project/workspace *right now* —
         read live via :meth:`EngineServices.has_workspace` on every access.
-        Unlike ``project_root``, this deliberately does *not* fall back to
-        the session's physical root — it is what
-        :class:`~kodo.tools.ToolDispatcher` checks before dispatching a
-        call to a tool whose spec sets ``requires_project=True``."""
+        This deliberately does *not* fall back to the session's physical
+        root — it is what :class:`~kodo.tools.ToolDispatcher` checks before
+        dispatching a call to a tool whose spec sets
+        ``requires_project=True``."""
         return self.services.has_workspace()
 
     @property
     def root_paths(self) -> tuple[RootPath, ...]:
         """Filesystem roots the agent may operate within, read live via
-        :meth:`EngineServices.root_paths` on every access (the bound project
-        in Guided; every open workspace folder in Problem Solver). Surfaced
-        by ``get_root_paths``."""
+        :meth:`EngineServices.root_paths` on every access (one entry per
+        bound root, in either workflow mode). Surfaced by
+        ``get_root_paths``."""
         return self.services.root_paths()

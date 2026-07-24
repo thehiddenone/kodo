@@ -45,20 +45,17 @@ from kodo.guided_state import append_accepted, append_review_result
 from kodo.llms import LLMGateway, Message
 from kodo.project import (
     ProjectLayout,
-    ProjectLayoutError,
     SessionWorkspace,
     WorkspaceLayout,
     kodo_user_dir,
-    session_temp_dir,
 )
 from kodo.security import SecurityLayer, add_global_path_rule, add_global_rule
 from kodo.state import TransientStore
 from kodo.subagents import AgentLoadError, AgentRegistry
 from kodo.titling import generate_project_name
-from kodo.tools import LogicalPathResolver, PathResolver, ProjectPathResolver, RootPath
+from kodo.tools import LogicalPathResolver, PathResolver, RootPath, root_for
 from kodo.transport import (
     EVT_AUTONOMOUS_CHANGED,
-    EVT_PROJECT_BOUND,
     EVT_WORKSPACE_ADD_FOLDER,
 )
 
@@ -135,7 +132,6 @@ class WorkflowEngine(
     _workspace_layout: WorkspaceLayout
     _session_workspace: SessionWorkspace
     _gateway: LLMGateway
-    _layout: ProjectLayout | None
     _registry: AgentRegistry
     _security: SecurityLayer
     _services: _EngineServices
@@ -144,7 +140,6 @@ class WorkflowEngine(
     _titler: SessionTitler
     _checkpoints: CheckpointCoordinator
     _history: HistoryProjector
-    _current_project: dict[str, str] | None
     _queue: asyncio.Queue[dict[str, object]]
     _session: SessionState
     _worker: asyncio.Task[None] | None
@@ -173,12 +168,13 @@ class WorkflowEngine(
     ) -> None:
         """Initialise the runtime engine.
 
-        The engine is workspace-scoped. The project-level collaborator (the
-        ``ProjectLayout``) is built lazily in :meth:`bind_project` when the
-        current project is selected for Guided mode; until then
-        ``self._layout`` is ``None`` and Guided-only tools (``guided_dev_status``,
-        ``document_feedback``, ``rollback``) are unreachable because no Guided
-        prompt can run without a bound project.
+        The engine is workspace-scoped: both Guided and Problem Solver mode
+        address the same logical-root folder map (:class:`SessionWorkspace`),
+        populated by ``workspace.folders`` pushes and by
+        ``create_new_project``/``init_project``. Guided-only tools
+        (``guided_dev_status``, ``document_feedback``, ``rollback``) are
+        unreachable until at least one root is bound, exactly like every
+        ``requires_project`` tool in Problem Solver mode.
 
         Args:
             sink (MessageSink): Sends outbound envelopes to the client.
@@ -200,8 +196,6 @@ class WorkflowEngine(
         self._session_workspace = session_workspace or SessionWorkspace()
         self._gateway = gateway
         self._registry = registry
-        self._layout = None
-        self._current_project = None
         self._queue = asyncio.Queue()
         self._session = SessionState()
         self._worker = None
@@ -274,7 +268,6 @@ class WorkflowEngine(
             add_security_path_rule=self.add_security_path_rule,
             has_workspace=self._has_workspace,
             root_paths=self._root_paths,
-            project_root=self._project_root,
         )
 
     @property
@@ -297,27 +290,6 @@ class WorkflowEngine(
         """Human-readable name of the active session (from ``meta.json``)."""
         return self._transient.session_name
 
-    @property
-    def current_project(self) -> dict[str, str] | None:
-        """The session's locked current project ``{root, name}``, or ``None``.
-
-        Bound once (lazily) for Guided mode and immutable for the session.
-        ``None`` while only Problem Solver has run.
-        """
-        return self._current_project
-
-    def _require_layout(self) -> ProjectLayout:
-        """Return the bound project layout, or raise if none is bound.
-
-        Guards the Guided-only code paths (rollback, document finalization)
-        that run only after :meth:`bind_project` has set ``self._layout``.
-        """
-        if self._layout is None:
-            raise RuntimeError(
-                "No current project is bound — Guided mode requires a project selection."
-            )
-        return self._layout
-
     def _agent_available(self, name: str) -> bool:
         try:
             self._registry.get(name)
@@ -336,10 +308,9 @@ class WorkflowEngine(
 
         The session id + resumed flag are supplied by the ``SessionManager``
         (client-driven: ``hello`` creates a new id or resumes an existing one).
-        The project is *not* bound here — that happens lazily in
-        :meth:`bind_project` when the user first runs Guided mode.  If the
-        resumed session already recorded a current project, it is re-bound now so
-        crash-resume of a mid-subagent Guided turn still works.
+        Bound roots are not attached here — they come from
+        ``handle_workspace_folders`` (the ``workspace.folders`` push) and
+        ``create_new_project``/``init_project``, exactly like Problem Solver.
 
         Args:
             session_id (str): Session identifier to attach.
@@ -379,17 +350,10 @@ class WorkflowEngine(
                 base_llm, prefer=self._transient.thinking_level
             )
             self._transient.update(thinking_level=self._session.thinking_level)
-            persisted = self._transient.current_project
-            if persisted is not None:
-                # Re-bind first so sub-agent-spawn replay and checkpointing have
-                # the project's layout; a dangling non-spawn tool call resumes
-                # fine without it.
-                await self._bind_project(persisted["root"], persisted["name"], emit=False)
             # A turn interrupted mid tool-dispatch leaves a dangling assistant
             # ``tool_use`` with no following ``tool_result``. It must always be
             # resolved — otherwise the next LLM call sees a malformed sequence —
-            # so resume is gated only on the dangling marker, not on a bound
-            # project (which only sub-agent-spawn replay actually needs).
+            # so resume is gated only on the dangling marker.
             if self._has_dangling_tool_use():
                 self._resume_subsession_pending = True
             if not self._resume_subsession_pending:
@@ -421,12 +385,10 @@ class WorkflowEngine(
 
         self._worker = asyncio.create_task(self._run_worker(), name="kodo-worker")
         _log.info(
-            "Runtime worker started (guide_session=%s resumed=%s messages=%d "
-            "project=%s resume_subsession=%s)",
+            "Runtime worker started (guide_session=%s resumed=%s messages=%d resume_subsession=%s)",
             self._orch_session_id,
             resumed,
             len(self._main_messages),
-            self._current_project["name"] if self._current_project else None,
             self._resume_subsession_pending,
         )
 
@@ -484,59 +446,6 @@ class WorkflowEngine(
         )
         self._session.workspace_connected = self._is_workspace_connected()
         await self._emitters.emit_state()
-
-    async def bind_project(self, root: str, name: str) -> None:
-        """Bind the session's current project for Guided mode (idempotent).
-
-        Immutable for the session: a request to bind a *different* project once
-        one is set is rejected with an error event.
-
-        Args:
-            root (str): Absolute path to the project root (contains ``kodo.md``).
-            name (str): Logical workspace-folder name for display.
-        """
-        if self._current_project is not None:
-            if self._current_project["root"] != str(Path(root).resolve()):
-                await self._emitters.emit_error(
-                    "The current project is fixed for this session and cannot be changed.",
-                    recoverable=True,
-                )
-            return
-        await self._bind_project(root, name, emit=True)
-
-    async def _bind_project(self, root: str, name: str, *, emit: bool) -> None:
-        """Validate and bind the project layout.
-
-        There is no index to rebuild and no separate checkpoint manager to
-        initialise: the checkpoint coordinator's mirrors (shared with Problem
-        Solver) lazily scaffold on the project root the first time a
-        mutating tool touches it, and a document's state lives entirely in
-        its own ``.jsonl`` evolution log — read on demand, never rebuilt.
-
-        Args:
-            root (str): Project root path.
-            name (str): Logical workspace-folder name.
-            emit (bool): Emit ``EVT_PROJECT_BOUND`` and persist the choice
-                (skipped when re-binding a resumed session, which already has it).
-        """
-        project_root = Path(root).resolve()
-        layout = ProjectLayout(project_root)
-        try:
-            layout.validate()
-        except ProjectLayoutError as exc:
-            _log.error("Cannot bind project %s: %s", project_root, exc)
-            await self._emitters.emit_error(str(exc), recoverable=True)
-            return
-
-        self._layout = layout
-        self._current_project = {"root": str(project_root), "name": name}
-
-        if emit:
-            self._transient.update(current_project=self._current_project)
-            await self._sink.send(
-                Envelope.make_event(EVT_PROJECT_BOUND, dict(self._current_project))
-            )
-        _log.info("Current project bound: %s (%s)", name, project_root)
 
     async def _resume_pending_prompt(self, pending: dict[str, object]) -> None:
         """Re-surface a ``prompt.approval`` lost to a server restart.
@@ -827,9 +736,10 @@ class WorkflowEngine(
     def _has_workspace(self) -> bool:
         """Whether this run has any usable project/workspace right now.
 
-        Guided mode: a project is bound. Problem Solver mode: at least one
-        workspace folder is open, OR — since 2026-07-23 — the session is
-        locked (:attr:`~kodo.state.TransientStore.workspace_locked_paths`
+        Mode-agnostic (Guided and Problem Solver share this since the
+        2026-07 multi-project rework — doc/WS_PROTOCOL.md §7.1b): at least
+        one workspace folder is open, OR the session is locked
+        (:attr:`~kodo.state.TransientStore.workspace_locked_paths`
         non-empty) and disconnected from the live push (see
         :meth:`_is_workspace_connected`), in which case its bound directories
         stand in for the live folders (:meth:`_bound_root_paths`): a locked
@@ -840,8 +750,6 @@ class WorkflowEngine(
         ``create_new_project`` first instead of silently operating against
         ``$HOME``.
         """
-        if self._session.workflow_mode == "guided":
-            return self._current_project is not None
         if not self._is_workspace_connected():
             return bool(self._bound_root_paths())
         return bool(self._session_workspace.folders)
@@ -886,38 +794,25 @@ class WorkflowEngine(
             if str(Path(path).resolve()) in locked
         )
 
-    def _project_root(self) -> Path | None:
-        """The bound Guided-mode project's root, or ``None``, read live.
-
-        Backs ``ToolContext.project_root`` via ``_EngineServices`` — called
-        fresh on every access rather than snapshotted at dispatcher-creation
-        time, so a project bound mid-turn is visible to the next tool call.
-        """
-        return Path(self._current_project["root"]) if self._current_project else None
-
     def _root_paths(self) -> tuple[RootPath, ...]:
-        """The filesystem roots the run may operate within, mode-aware.
+        """The filesystem roots the run may operate within.
 
-        Guided mode confines the agent to one project, so it reports just the
-        bound project root. Problem Solver mode addresses the whole workspace, so
-        it reports every open VS Code workspace folder (the map the extension
-        keeps synced via ``workspace.folders``) — unless the session is locked
-        and disconnected from that live push (:meth:`_is_workspace_connected`),
-        in which case it falls back to the bound directories
-        (:meth:`_bound_root_paths`) instead, so the agent keeps working against
-        real, on-disk history even with no matching VS Code window open
-        (doc/SESSIONS.md). When no folders have been pushed yet and nothing is
-        locked — no workspace open, nothing bootstrapped — this returns an
-        **empty tuple**. It deliberately does not fall back to the physical
-        root (which may itself be unset): a homeless session has no roots,
-        full stop, matching :meth:`_has_workspace`. This is what keeps
+        Mode-agnostic: one entry per open VS Code workspace folder (the map
+        the extension keeps synced via ``workspace.folders``) — unless the
+        session is locked and disconnected from that live push
+        (:meth:`_is_workspace_connected`), in which case it falls back to the
+        bound directories (:meth:`_bound_root_paths`) instead, so the agent
+        keeps working against real, on-disk history even with no matching
+        VS Code window open (doc/SESSIONS.md). When no folders have been
+        pushed yet and nothing is locked — no workspace open, nothing
+        bootstrapped — this returns an **empty tuple**. It deliberately does
+        not fall back to the physical root (which may itself be unset): a
+        homeless session has no roots, full stop, matching
+        :meth:`_has_workspace`. This is what keeps
         :class:`~kodo.runtime._checkpoints.RootMirrorManager` from ever being
         handed a root to mirror before one genuinely exists.
         """
-        if self._session.workflow_mode == "guided" and self._current_project is not None:
-            cp = self._current_project
-            return (RootPath(name=cp["name"], path=cp["root"]),)
-        if self._session.workflow_mode == "problem_solving" and not self._is_workspace_connected():
+        if not self._is_workspace_connected():
             return self._bound_root_paths()
         folders = self._session_workspace.folders
         if folders:
@@ -942,26 +837,21 @@ class WorkflowEngine(
         return paths
 
     def _make_resolver(self, session_id: str) -> PathResolver:
-        """Pick the path resolver for the active workflow mode.
+        """Build this run's path resolver — mode-agnostic.
 
-        Guided confines file/shell tools to the locked current project's root;
-        Problem Solver resolves *logical* paths (workspace-folder-keyed) so it
-        can address every project in the workspace.  In the degenerate case of a
-        Guided run with no project bound (the extension should prevent this), it
-        falls back to the logical resolver rather than crashing.
-
-        Guided mode's resolver also admits *session_id*'s private scratch
-        directory as an extra root — the same one ``get_root_paths`` reports
-        with ``temporary: true`` to the agent running under that session —
-        so it can pass it to ``run_command`` as a working directory.
-        ``session_id`` is the id of the run this resolver serves: the
+        Every relative path is *logical*: its first segment is a bound
+        root's name (a VS Code workspace-folder name, or a project created
+        via ``create_new_project``/``init_project``), anchoring the remainder
+        to that root's real physical path (which may live anywhere on disk).
+        Absolute paths are taken as-is. ``session_id`` is unused today
+        (``LogicalPathResolver`` already allows any absolute path, so a
+        session's private scratch directory needs no special extra-root
+        admission the way the old project-confined resolver required) but is
+        kept in the signature — the id of the run this resolver serves: the
         orchestrator's for the guide, a subsession id for a leaf sub-agent —
-        matching whichever id that run's ``ToolContext.session_id`` (and thus
-        its own ``get_root_paths``/``temporary: true`` file-tool calls) uses.
-        Problem Solver's logical resolver already allows any absolute path,
-        so it needs no equivalent.
+        for parity with every other per-run construction site.
 
-        When Problem Solver is locked and disconnected from the live push
+        When locked and disconnected from the live push
         (:meth:`_is_workspace_connected`), the resolver is built over a
         synthetic :class:`~kodo.project.SessionWorkspace` snapshotting the
         bound directories (:meth:`_bound_root_paths`) instead of the live
@@ -974,11 +864,7 @@ class WorkflowEngine(
         reads ``self._session_workspace.physical_root``, which can be stale
         (``handle_workspace_folders`` only overwrites it on a non-empty push).
         """
-        if self._session.workflow_mode == "guided" and self._layout is not None:
-            return ProjectPathResolver(
-                self._layout.root, extra_roots=(session_temp_dir(session_id),)
-            )
-        if self._session.workflow_mode == "problem_solving" and not self._is_workspace_connected():
+        if not self._is_workspace_connected():
             bound = self._bound_root_paths()
             assert bound, "_is_workspace_connected() False but no bound directories are locked"
             disconnected_workspace = SessionWorkspace(
@@ -992,26 +878,28 @@ class WorkflowEngine(
     # Rollback callback
     # ------------------------------------------------------------------
 
-    async def _run_rollback(self, target_sha: str) -> None:
-        """Roll the bound project's checkpoint mirror back and reset the session.
+    async def _run_rollback(self, root: str, target_sha: str) -> None:
+        """Roll one bound root's checkpoint mirror back and reset the session.
 
         Delegates to the same :meth:`RootMirrorManager.rollback` primitive
-        Problem Solver already uses — there is no separate index to rebuild;
-        every document's state is read on demand from whichever revision the
-        mirror's working tree now reflects.
+        the checkpoint-UI-driven :meth:`handle_checkpoint_rollback` uses —
+        there is no separate index to rebuild; every document's state is read
+        on demand from whichever revision the mirror's working tree now
+        reflects. *root* is already a resolved absolute path (the ``rollback``
+        tool resolves the agent's logical ``root`` input before calling here).
 
         Args:
+            root: Absolute path of the bound root to roll back.
             target_sha: Mirror commit SHA to roll back to.
         """
-        project_root = self._require_layout().root
-        _log.info("Rollback initiated: target_sha=%s", target_sha[:12])
+        _log.info("Rollback initiated: root=%s target_sha=%s", root, target_sha[:12])
         self._checkpoints.sync_roots()
-        await self._checkpoints.mirrors.rollback(str(project_root), target_sha)
+        await self._checkpoints.mirrors.rollback(root, target_sha)
         # Session identity is owned by the driving window and is unchanged; the
         # rollback only invalidates the in-memory conversation, so reset it.
         self._main_messages = []
         self._replay_subsessions = None
-        _log.info("Post-rollback: project %s restored to %s", project_root, target_sha[:12])
+        _log.info("Post-rollback: project %s restored to %s", root, target_sha[:12])
 
     # ------------------------------------------------------------------
     # Document finalization (accept/review flow)
@@ -1029,12 +917,16 @@ class WorkflowEngine(
         (reject) only, which the next ``run_author_critic_iteration`` round
         picks up as ``needs_revision``.
         """
-        project_root = self._require_layout().root
         try:
-            resolved = ProjectPathResolver(project_root).resolve(path)
+            resolved = self._make_resolver(self._orch_session_id).resolve(path)
         except PermissionError:
             _log.warning("finalize_document: cannot resolve path %r", path)
             return
+        project_root_entry = root_for(self._root_paths(), resolved)
+        if project_root_entry is None:
+            _log.warning("finalize_document: %r is not under any bound root", path)
+            return
+        project_root = Path(project_root_entry.path)
 
         if self._session.effective_autonomous:
             await asyncio.to_thread(append_accepted, resolved, project_root)

@@ -610,9 +610,7 @@ def test_is_compatible_with_uses_stores_own_remembered_shape(
     kodo_dir = tmp_path / "kodo"
     kodo_dir.mkdir()
     store.lock_workspace_path(str(kodo_dir.resolve()))
-    store.update(
-        workspace_physical_root=str(tmp_path), workspace_folders={"kodo": str(kodo_dir)}
-    )
+    store.update(workspace_physical_root=str(tmp_path), workspace_folders={"kodo": str(kodo_dir)})
     assert store.is_compatible_with(str(tmp_path), {"kodo": str(kodo_dir)}) is True
     assert store.is_compatible_with(str(tmp_path / "other"), {"kodo": str(kodo_dir)}) is False
     assert store.is_compatible_with(str(tmp_path), {"other": str(tmp_path / "other")}) is False

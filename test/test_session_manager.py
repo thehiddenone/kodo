@@ -202,7 +202,7 @@ async def test_list_reports_problem_solving_session(manager_factory) -> None:  #
     listing = mgr.list_sessions()
     entry = next(s for s in listing if s["id"] == session.id)
     assert entry["taken"] is True
-    assert entry["project_root"] is None  # no guided work ⇒ openable anywhere
+    assert entry["workflow_mode"] == "guided"  # a fresh session's default mode
     assert entry["workspace"] is None  # no workspace.folders ever pushed
     # A freshly created session reports timestamps, seeded equal at creation.
     assert entry["created_at"]
