@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "py-kodo"
-version = "0.1.5"
-description = "Kōdo (コード) — an open-source agentic harness"
+version = "0.1.7"
+description = "Kōdo (コード) — an open-source AI coding assistant"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
