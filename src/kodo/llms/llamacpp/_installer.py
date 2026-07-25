@@ -421,7 +421,7 @@ def install_llamacpp(
         _progress(75, "Extracting binary archive…")
         if asset_name.endswith(".tar.gz"):
             with tarfile.open(archive_path, "r:gz") as tf:
-                tf.extractall(install_dir)
+                tf.extractall(install_dir, filter="data")
         else:
             with zipfile.ZipFile(archive_path, "r") as zf:
                 zf.extractall(install_dir)

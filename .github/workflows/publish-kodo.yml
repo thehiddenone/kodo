@@ -1,0 +1,46 @@
+name: Publish Kodo Wheel to PyPI
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'build_number'
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    
+    # Required for secure OIDC token authentication with PyPI
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+    - name: Checkout code
+      id: checkout_code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      id: setup_python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install hatch
+      id: install_hatch
+      run: pipx install hatch
+
+    - name: Build wheel and source distribution
+      id: build
+      run: hatch build
+
+    - name: Upload build artifacts
+      id: upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: kodo-latest
+        path: dist/
+
+    - name: Publish package distributions to PyPI
+      id: publish
+      uses: pypa/gh-action-pypi-publish@release/v1

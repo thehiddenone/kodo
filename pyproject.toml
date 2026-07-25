@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "kodo"
-version = "0.1.0b2"
+name = "py-kodo"
+version = "0.1.5"
 description = "Kōdo (コード) — an open-source agentic harness"
 readme = "README.md"
 license = { file = "LICENSE" }

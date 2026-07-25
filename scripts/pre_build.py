@@ -35,7 +35,7 @@ def _base_from_toml() -> tuple[int, int, int]:
 def main() -> None:
     num = _read_build_num()
     base = _base_from_toml()
-    version = f"{base[0]}.{base[1]}.{base[2]}b{num}"
+    version = f"{base[0]}.{base[1]}.{num}"
 
     # Clean old artifacts
     dist = ROOT / "dist"
