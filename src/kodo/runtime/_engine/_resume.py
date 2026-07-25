@@ -7,7 +7,7 @@ a dangling call from :data:`_RESUME_REDISPATCH_TOOLS` — or the single
 dangling call, of any tool, that ``TransientStore.pending_security_alert``
 or ``TransientStore.pending_edit_review`` proves was still waiting at the
 security or edit-review gate and therefore never actually dispatched
-(doc/SECURITY.md §7, WS_PROTOCOL.md §6.5b). Any other dangling tool call is
+(doc/SECURITY.md §7, WS_PROTOCOL.md §6.9). Any other dangling tool call is
 reported back to the model as interrupted rather than re-executed, since
 re-running an arbitrary tool (a shell command, a file write, ...) could
 duplicate its side effects.
@@ -181,7 +181,7 @@ class ResumeMixin:
           — never handed to the tool — so re-dispatching it recomputes the
           proposed content fresh off the current on-disk state and, if the
           gate would still fire, re-asks the same ``prompt.edit_review``
-          instead of a stub. See WS_PROTOCOL.md §6.5b.
+          instead of a stub. See WS_PROTOCOL.md §6.9.
         * **Every other tool** (a shell command, a file write, ...) is *not*
           re-executed: its side effects may already have landed before the
           interruption, and there is no result ledger to dedupe against.

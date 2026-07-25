@@ -51,7 +51,7 @@ class SessionState:
             always exactly what the UI shows. **Enforced** for ``create_file``/
             ``edit_file`` only — read live per call by
             :class:`~kodo.tools.ToolDispatcher`'s edit-review gate
-            (``prompt.edit_review``, WS_PROTOCOL.md §6.5b), independent of and
+            (``prompt.edit_review``, WS_PROTOCOL.md §6.9), independent of and
             always evaluated after ``command_control``'s security gate; not
             part of the security layer itself.
         command_control: How much Kodo restricts potentially risky commands —

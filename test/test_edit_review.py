@@ -1,7 +1,7 @@
 """Tests for the create_file/edit_file review gate: the smart-mode heuristic
 (``kodo.tools._edit_review.should_review_edit``), the shared diff-preview
 helper (``kodo.tools._edit_file.compute_new_content``), and the dispatcher
-integration (``ToolDispatcher.__edit_review_gate``, WS_PROTOCOL.md §6.5b).
+integration (``ToolDispatcher.__edit_review_gate``, WS_PROTOCOL.md §6.9).
 """
 
 from __future__ import annotations

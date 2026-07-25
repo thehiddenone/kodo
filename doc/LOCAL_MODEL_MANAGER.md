@@ -275,18 +275,38 @@ just resumes "everything incomplete" on the record).
 
 `token: str | None` is a **per-call** parameter on every method that talks to
 HF (`download_model`, `resume_download`, `download_mmproj`) — this package
-never persists a token anywhere. This was a deliberate scope decision: the
-long-term plan is for kodo-vsix to own token storage in VS Code
-`SecretStorage`, resolved via a pull-protocol WS message mirroring the
-existing cloud-API-key flow (`api_key.request`/`api_key.revoke`, see
-[LLM_REGISTRY.md](LLM_REGISTRY.md) §6) — but that WS/UI wiring is explicit
-follow-up work (§9), not part of this package. Passing a plain `token`
-argument through keeps `LocalModelManager` decoupled from however a caller
-ends up resolving one.
+never persists a token anywhere. Passing a plain `token` argument through
+keeps `LocalModelManager` decoupled from however a caller resolves one.
+
+**The token is optional.** Public repos download without it; gated/private
+repos require a valid token. If no token is provided and the repo is gated,
+the `huggingface_hub` library raises `GatedRepoError`, which the server
+catches and converts to a `ShardResolutionError` with the message
+"is a gated repository — provide an HF access token with access to it".
+
+### 8a. How tokens are resolved
+
+The kodo-vsix extension owns HF token storage (VS Code `SecretStorage` +
+`~/.kodo/etc/hf_tokens.json`) and the management UI ("HuggingFace" tab in
+the Kōdo Settings panel). Before every download, the server sends an
+`hf_token.request` message on the control connection (WS_PROTOCOL.md §6.5);
+the extension responds with the active token's secret or an empty string
+if none is configured. The server passes the token to the manager's
+`download_model()`/`resume_download()` call.
+
+If a download fails because the token was rejected (401 on a gated repo),
+the server sends an `hf_token.revoke` event (WS_PROTOCOL.md §6.6), and the
+extension removes the active token and notifies the user.
+
+This pull-protocol mirrors the cloud API key flow (`api_key.request`/
+`api_key.revoke`, see [LLM_REGISTRY.md](LLM_REGISTRY.md) §6) but uses
+distinct message types (`hf_token.request` vs `api_key.request`) because
+HF tokens are single-purpose (no vendor concept) and operate on the control
+connection (not session connections).
 
 ---
 
-## 9. Integration with `kodo.llms.llamacpp` — and what's *not* wired yet
+## 9. Integration with `kodo.llms.llamacpp`
 
 There is no adapter module any more — `kodo.llms.llamacpp._downloader` (the
 thin glue that used to keep the old `download_model`/`delete_model`/
@@ -341,13 +361,13 @@ server's event loop (every other WS connection's requests) for its
 duration — only the byte transfer itself is native async.
 
 **pause/resume are now wired** (§11) — `local_llm.pause`/`local_llm.resume` WS
-messages reach `pause_download`/`resume_download` directly. **Still not wired
-up** (tracked as follow-up): no HF-token entry UI, no mmproj UI. `local-llm-
-index.json` — the old flat `{name: path}` index file the pre-
-`LocalModelManager` downloader used to maintain — is retired in favor of
-`manager-state.json`; nothing else read it. The manager's HF-token and mmproj
-capabilities are fully implemented and tested (see `test/test_llms_local.py`)
-but not yet reachable from kodo-vsix.
+messages reach `pause_download`/`resume_download` directly. **HF-token
+management is now wired** (§8a) — the extension stores tokens in VS Code
+SecretStorage + `~/.kodo/etc/hf_tokens.json`, and the server pulls the active
+token before every download via `hf_token.request` (WS_PROTOCOL.md §6.5).
+**Still not wired up**: no mmproj UI. `local-llm-index.json` — the old flat
+`{name: path}` index file the pre-`LocalModelManager` downloader used to
+maintain — is retired in favor of `manager-state.json`; nothing else read it.
 
 ---
 
@@ -649,5 +669,8 @@ comparing the ETag recorded at install time against a freshly-resolved one.
   fresh `check_updates` scan.
 
 - **HF tokens**: like `download_model`, `check_for_update` accepts a
-  per-call `token` but nothing in this feature passes one yet — gated repos
-  are out of scope here the same way they're out of scope for install (§8).
+  per-call `token` but the `local_llm.check_updates` handler doesn't pass
+  one yet — the ETag scan only needs to resolve public metadata. For
+  gated repos, the install/update handlers (`_handle_local_llm_install`,
+  `_handle_local_llm_update`) already request the token before download
+  (§8a, §12's `local_llm.update` path).

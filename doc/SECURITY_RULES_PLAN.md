@@ -250,7 +250,7 @@ not the concrete command — as the thing being granted:
 
 Store round-trip + resume tests; eligibility-matrix tests (each exclusion
 rule); protocol tests; SECURITY.md gains a "user rules" section;
-WS_PROTOCOL.md §6.5/§7.7 updated.
+WS_PROTOCOL.md §6.7/§7.7 updated.
 
 ### 2.4a Implementation notes (post-launch, 2026-07-15)
 
@@ -389,7 +389,7 @@ elementary command that still needs attention:
   ask before the segment loop ever runs (§1 step 2) — a failing nested
   command means the *whole* line is suspect, not just one part of it.
 
-Wire protocol (`prompt.permission`/`.response`, WS_PROTOCOL.md §6.5): the
+Wire protocol (`prompt.permission`/`.response`, WS_PROTOCOL.md §6.7): the
 singular `rule_offer`/`remember` fields become the plural, index-aligned
 `parts: [{reason, rule_offer}, ...]` and `remember: [scope, ...]`.
 `kodo.tools._dispatch.__security_gate` now calls `add_security_rule` once
@@ -549,7 +549,7 @@ has fewer than two entries — confirmed defensive-only: nothing in the wire
 protocol today ever restricts a `rule_offer` to a single scope, so that
 branch is currently unreachable, kept only so a future scope-restricted
 offer (none planned) degrades sensibly instead of rendering a meaningless
-one-option radio group. WS_PROTOCOL.md §6.5 updated to describe the radio
+one-option radio group. WS_PROTOCOL.md §6.7 updated to describe the radio
 pair instead of checkboxes.
 
 **A new `security.rule_added` event + `security_rule_added` session-entry

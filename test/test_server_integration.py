@@ -127,6 +127,63 @@ def _make_request(msg_type: str, *, session_id: str | None = None, **payload: ob
     return Envelope(kind="request", payload=body)
 
 
+def _make_response(correlation_id: str, **payload: object) -> Envelope:
+    body: dict[str, object] = payload
+    return Envelope(kind="response", id="", correlation_id=correlation_id, payload=body)
+
+
+async def _drain_hf_token_request(
+    ws: aiohttp.ClientWebSocketResponse, drain_timeout: float = 1.0
+) -> None:
+    """Auto-respond to ``hf_token.request`` frames from the server so tests
+    that don't simulate a full extension don't hang waiting for a response.
+
+    Drains the socket for *drain_timeout* seconds, responding to every
+    ``hf_token.request`` with an empty token. The first non-token-request
+    frame is buffered for the next ``_recv_with_drain`` call.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + drain_timeout
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        try:
+            msg = await asyncio.wait_for(ws.receive(), timeout=remaining)
+        except TimeoutError:
+            break
+        assert msg.type == aiohttp.WSMsgType.TEXT
+        env = Envelope.from_json(str(msg.data))
+        if env.kind == "request" and env.payload.get("type") == "hf_token.request":
+            resp = _make_response(env.id, hf_token="")
+            await ws.send_str(resp.to_json())
+            continue
+        # Not a token request — buffer for the caller
+        if not hasattr(ws, "_buffered_frame"):
+            ws._buffered_frame = []  # type: ignore[attr-defined]
+        ws._buffered_frame.append(env)  # type: ignore[attr-defined]
+        return
+
+
+async def _recv_with_drain(
+    ws: aiohttp.ClientWebSocketResponse, timeout: float = _RECV_TIMEOUT
+) -> Envelope:
+    """Like ``_recv`` but auto-responds to any ``hf_token.request`` frames
+    before returning the next expected frame."""
+    # Check for buffered frames first
+    if hasattr(ws, "_buffered_frame") and ws._buffered_frame:  # type: ignore[attr-defined]
+        return ws._buffered_frame.pop(0)  # type: ignore[attr-defined]
+
+    # Drain and auto-respond to token requests
+    await _drain_hf_token_request(ws)
+
+    # Check for buffered frames again
+    if hasattr(ws, "_buffered_frame") and ws._buffered_frame:  # type: ignore[attr-defined]
+        return ws._buffered_frame.pop(0)  # type: ignore[attr-defined]
+
+    return await _recv(ws, timeout=timeout)
+
+
 async def _hello(
     ws: aiohttp.ClientWebSocketResponse,
     *,
@@ -562,7 +619,7 @@ async def test_local_llm_install_pushes_registry_state_again_on_completion(
         filename="model.gguf",
     )
     await ws.send_str(req.to_json())
-    added = await _recv(ws)
+    added = await _recv_with_drain(ws)
     assert added.payload["type"] == "local_llm.registry_state"
     assert _local_entry(added.payload, "test-model")["installed"] is False
 
@@ -587,11 +644,11 @@ async def test_local_llm_install_pushes_registry_state_again_on_completion(
     req = _make_request("local_llm.install", name="test-model")
     await ws.send_str(req.to_json())
 
-    kickoff = await _recv(ws)
+    kickoff = await _recv_with_drain(ws)
     assert kickoff.payload["type"] == "local_llm.registry_state"
     assert _local_entry(kickoff.payload, "test-model")["installed"] is False
 
-    completed = await _recv(ws)
+    completed = await _recv_with_drain(ws)
     assert completed.payload["type"] == "local_llm.registry_state"
     completed_entry = _local_entry(completed.payload, "test-model")
     assert completed_entry["installed"] is True
@@ -611,7 +668,7 @@ async def test_local_llm_install_pushes_registry_state_after_failure_too(
         filename="model.gguf",
     )
     await ws.send_str(req.to_json())
-    await _recv(ws)  # kickoff-of-add registry_state, not under test here
+    await _recv_with_drain(ws)  # kickoff-of-add registry_state, not under test here
 
     async def _boom(self: object, *a: object, **k: object) -> None:
         raise LocalModelError("network is on fire")
@@ -621,14 +678,14 @@ async def test_local_llm_install_pushes_registry_state_after_failure_too(
     req = _make_request("local_llm.install", name="test-model")
     await ws.send_str(req.to_json())
 
-    await _recv(ws)  # kickoff registry_state
+    await _recv_with_drain(ws)  # kickoff registry_state
 
-    error_evt = await _recv(ws)
+    error_evt = await _recv_with_drain(ws)
     assert error_evt.payload["type"] == "error"
     assert error_evt.payload["code"] == "local_llm_error"
     assert "network is on fire" in error_evt.payload["message"]
 
-    completed = await _recv(ws)
+    completed = await _recv_with_drain(ws)
     assert completed.payload["type"] == "local_llm.registry_state"
     assert _local_entry(completed.payload, "test-model")["installed"] is False
 
@@ -652,7 +709,7 @@ async def test_local_llm_update_uninstalls_then_reinstalls(
         filename="model.gguf",
     )
     await ws.send_str(req.to_json())
-    await _recv(ws)  # add's own registry_state, not under test
+    await _recv_with_drain(ws)  # add's own registry_state, not under test
 
     installed = {"v": True}
     monkeypatch.setattr(
@@ -673,11 +730,11 @@ async def test_local_llm_update_uninstalls_then_reinstalls(
     req = _make_request("local_llm.update", name="test-model")
     await ws.send_str(req.to_json())
 
-    uninstalled = await _recv(ws)
+    uninstalled = await _recv_with_drain(ws)
     assert uninstalled.payload["type"] == "local_llm.registry_state"
     assert _local_entry(uninstalled.payload, "test-model")["installed"] is False
 
-    completed = await _recv(ws)
+    completed = await _recv_with_drain(ws)
     assert completed.payload["type"] == "local_llm.registry_state"
     completed_entry = _local_entry(completed.payload, "test-model")
     assert completed_entry["installed"] is True

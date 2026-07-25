@@ -266,8 +266,8 @@ The header toggles split into **two frozen** and **three never-frozen**:
 
 **Never-frozen toggles** (`edit_control`, `command_control`, `thinking_level`) carry a **single** value and **no `effective_*` twin** — a flip applies to the next LLM call, not the next prompt.
 
-- `edit_control` — how file edits are handled: `review_all` (pause for sign-off) / `allow_all` / `smart` (default). Set via `edit_control.set` (§7.4a). **Enforced** for `create_file`/`edit_file` only — the dispatcher reads it live per call and a review-worthy call fires `prompt.edit_review` (§6.5b); independent of and always evaluated after `command_control`'s security gate. **Client-owned**: the client keeps the user's selected posture and sends the **shown** value, which it forces to `allow_all` (and locks the toggle in the UI) while Autonomous mode is *in effect* — i.e. the frozen `effective_autonomous` during a turn, the live `autonomous` selection when idle — and restores the user's selection otherwise. The server simply mirrors whatever the client last sent, so its stored value is always exactly what the UI shows.
-- `command_control` — how much risky commands are restricted: `defensive` / `permissive` / `smart` (default). Set via `command_control.set` (§7.4b). **Enforced**: this is the security layer's posture — the dispatcher reads it live per tool call and an `ask` verdict fires `prompt.permission` (§6.5). See doc/SECURITY.md. **Client-owned**, same mirroring rule as `edit_control` (forced `permissive` under Autonomous).
+- `edit_control` — how file edits are handled: `review_all` (pause for sign-off) / `allow_all` / `smart` (default). Set via `edit_control.set` (§7.4a). **Enforced** for `create_file`/`edit_file` only — the dispatcher reads it live per call and a review-worthy call fires `prompt.edit_review` (§6.9); independent of and always evaluated after `command_control`'s security gate. **Client-owned**: the client keeps the user's selected posture and sends the **shown** value, which it forces to `allow_all` (and locks the toggle in the UI) while Autonomous mode is *in effect* — i.e. the frozen `effective_autonomous` during a turn, the live `autonomous` selection when idle — and restores the user's selection otherwise. The server simply mirrors whatever the client last sent, so its stored value is always exactly what the UI shows.
+- `command_control` — how much risky commands are restricted: `defensive` / `permissive` / `smart` (default). Set via `command_control.set` (§7.4b). **Enforced**: this is the security layer's posture — the dispatcher reads it live per tool call and an `ask` verdict fires `prompt.permission` (§6.7). See doc/SECURITY.md. **Client-owned**, same mirroring rule as `edit_control` (forced `permissive` under Autonomous).
 - `thinking_level` — the session's reasoning-tier slug for the currently active **local** model's thinking family (`kodo.llms.local_thinking_family`/`local_thinking_tiers`, doc/LLM_REGISTRY.md §4.5) — `""` on a cloud model or a local model with no thinking family. Set via `thinking_level.set` (§7.4e). **Server-owned**, unlike the two toggles above: the valid value set is model-dependent, so the engine validates every change against the active model rather than mirroring the client unconditionally, and re-derives it itself (no client request needed) whenever a brand-new session opens or the active model's thinking family changes mid-session (a `config.reload`-triggered model switch). doc/SESSIONS.md has the full session-lifecycle picture.
 
 > **Not yet on the snapshot:** `cumulative_usd`, `pending_prompts`, and
@@ -518,7 +518,7 @@ Formerly bracketed the security layer's silent SMART-mode intent-judge LLM call.
 
 ### 5.9c `workspace.add_folder` — register a freshly-scaffolded project
 
-Emitted when an agent calls the `create_new_project` tool and the server has scaffolded the new project on disk (its directory, `.kodo/`/`kodo.md` marker, and an initial checkpoint mirror), or when an agent calls `init_project` to augment an *existing* directory the same way (`init_project` skips this push if the directory is already one of the session's registered workspace folders). `create_new_project`'s bootstrap paths (§6.6) — the interactive folder-picker dialog and the autonomous `~/kodo-projects/<name>` directory — both funnel through the same scaffolding code (`EngineCore._create_project`'s no-`path` branch: a slug-named child reserved under whatever the session's physical root is), so this event fires identically for them and `path` is always the project's own directory, never its parent. Asks the extension to add the directory to the open workspace via `vscode.workspace.updateWorkspaceFolders` (no-op if already present).
+Emitted when an agent calls the `create_new_project` tool and the server has scaffolded the new project on disk (its directory, `.kodo/`/`kodo.md` marker, and an initial checkpoint mirror), or when an agent calls `init_project` to augment an *existing* directory the same way (`init_project` skips this push if the directory is already one of the session's registered workspace folders). `create_new_project`'s bootstrap paths (§6.10) — the interactive folder-picker dialog and the autonomous `~/kodo-projects/<name>` directory — both funnel through the same scaffolding code (`EngineCore._create_project`'s no-`path` branch: a slug-named child reserved under whatever the session's physical root is), so this event fires identically for them and `path` is always the project's own directory, never its parent. Asks the extension to add the directory to the open workspace via `vscode.workspace.updateWorkspaceFolders` (no-op if already present).
 
 If this is the window's *first* folder (no `workspaceFolders` open yet), the extension arms window-id continuity (§7.1a) **before** calling `updateWorkspaceFolders` — VS Code restarts the extension host for this specific transition, and `_stableWindowId` cannot derive a matching id across it on its own (see §7.1a for why). Either way, the extension's resulting `onDidChangeWorkspaceFolders` re-pushes `workspace.folders` (§7), reconciling the server's logical-root map. `path` is absolute; `name` is the workspace-folder label.
 
@@ -528,17 +528,17 @@ If this is the window's *first* folder (no `workspaceFolders` open yet), the ext
 
 ### 5.9d `security.rule_added` — a Phase 2 "always allow" rule was just granted
 
-Pushed right after a `prompt.permission` response grants a rule (§6.5) — the user's own record of what they chose, distinct from the gated tool call's own card. Also persisted as a `security_rule_added` marker (`{type: "security_rule_added", scope, executable, subcommand, ts}`) so it replays via `session.history` on reload (§5.11). Rendered as a non-context, informational feed entry (`exclude_from_context: true`) — never sent to the LLM.
+Pushed right after a `prompt.permission` response grants a rule (§6.7) — the user's own record of what they chose, distinct from the gated tool call's own card. Also persisted as a `security_rule_added` marker (`{type: "security_rule_added", scope, executable, subcommand, ts}`) so it replays via `session.history` on reload (§5.11). Rendered as a non-context, informational feed entry (`exclude_from_context: true`) — never sent to the LLM.
 
 ```json
 { "type": "security.rule_added", "scope": "session" | "global", "executable": "git", "subcommand": "push" }
 ```
 
-`scope`/`executable`/`subcommand` are exactly the granted shape — same fields and same "resolved absolute path in `subcommand`" convention for a workspace-escape/path rule as `rule_offer` on `prompt.permission` (§6.5). One event per granted part: a compound command whose response grants more than one part's rule fires this once per grant, in the order `add_security_rule`/`add_security_path_rule` are called.
+`scope`/`executable`/`subcommand` are exactly the granted shape — same fields and same "resolved absolute path in `subcommand`" convention for a workspace-escape/path rule as `rule_offer` on `prompt.permission` (§6.7). One event per granted part: a compound command whose response grants more than one part's rule fires this once per grant, in the order `add_security_rule`/`add_security_path_rule` are called.
 
 ### 5.9e `agent.unstuck_nudge` — the stuck-agent watchdog nudged an agent
 
-Fired right after the stuck-agent watchdog (doc/STUCK_DETECTION.md) injects its fixed continuation nudge into an agent's turn — either immediately (autonomous mode, or interactive mode with `stuck_detection.auto_unstuck_interactive`), or once the user answers "unstick" on a `prompt.stuck_alert` (§6.5a). The nudge itself is a real `user`-role turn the agent responds to (so the token stream that follows makes sense as a continuation), but the client never typed it and has no local echo, so this event — not the injected text — is what the feed renders in its place.
+Fired right after the stuck-agent watchdog (doc/STUCK_DETECTION.md) injects its fixed continuation nudge into an agent's turn — either immediately (autonomous mode, or interactive mode with `stuck_detection.auto_unstuck_interactive`), or once the user answers "unstick" on a `prompt.stuck_alert` (§6.8). The nudge itself is a real `user`-role turn the agent responds to (so the token stream that follows makes sense as a continuation), but the client never typed it and has no local echo, so this event — not the injected text — is what the feed renders in its place.
 
 ```json
 { "type": "agent.unstuck_nudge", "note": "Kōdo noticed the Problem Solver appeared to stop mid-task (its last turn ended with no tool call and no visible response) and continued it automatically.", "reasons": ["empty_final_turn"], "mode": "auto" }
@@ -784,7 +784,62 @@ A `kind=event` (no reply) telling the extension to delete a stored key, e.g. aft
 { "type": "api_key.revoke", "vendor": "anthropic" }
 ```
 
-### 6.5 `prompt.permission` — security-layer permission prompt
+### 6.5 `hf_token.request` — fetch an active HuggingFace token
+
+Sent (`kind=request`) on the **control connection** before every local model
+download (install, resume, or update). The extension answers with the currently
+active HuggingFace access token, or an empty string if none is configured. The
+token is **optional** — public repos download without it; it is only required
+for gated/private repositories.
+
+Request payload:
+
+```json
+{ "type": "hf_token.request" }
+```
+
+Response payload (token configured):
+
+```json
+{ "hf_token": "hf_abc123..." }
+```
+
+Response payload (no token / cancelled):
+
+```json
+{ "hf_token": "" }
+```
+
+The server sends this on the control connection (not a session connection)
+because model downloads are window-global, not session-scoped. The extension
+resolves the active token from its storage (`~/.kodo/etc/hf_tokens.json` +
+VS Code SecretStorage) and responds immediately. If no token is configured,
+it responds with an empty string — the download proceeds unauthenticated,
+which works for public repos but fails for gated ones (the server then sends
+`hf_token.revoke` if the failure was due to a bad token).
+
+The server may also push `hf_token.revoke` (§6.6) to clear a rejected token.
+
+Token management (add, remove, activate) is handled by the "HuggingFace"
+tab in the Kōdo Settings panel — see LOCAL_MODEL_MANAGER.md §8a and
+LLM_REGISTRY.md §6a.
+
+### 6.6 `hf_token.revoke` — discard a stored HF token
+
+A `kind=event` (no reply) telling the extension that its active HuggingFace
+access token was rejected during a download attempt (typically a 401 from
+HuggingFace Hub on a gated repository). The extension forgets the active
+token so the next download does not retry with the same rejected credential.
+
+```json
+{ "type": "hf_token.revoke" }
+```
+
+The extension shows a warning notification and updates the HuggingFace
+settings tab to reflect the removal. The user can then add a valid token
+through the same UI.
+
+### 6.7 `prompt.permission` — security-layer permission prompt
 
 Fired when the security layer's verdict on a tool call is `ask` (doc/SECURITY.md): the dispatcher blocks the gated call until the user decides. `tool_call_id` correlates the prompt with the gated call's feed entry; `risk` is the tool's `SecurityImpact` label; `reason` is the layer's one-sentence justification; `params` is the customer-visible parameter preview (input properties projected through the tool's `input_visibility` map — hidden properties never appear — values truncated at 400 chars). `recovered` (default `false`) is `true` only when the prompt is a **forced** confirmation of a *salvaged malformed tool call* (a local model that emitted a tool call as plain text — doc/SECURITY.md §9); the client then renders an extra warning banner. A recovered prompt is forced regardless of the security verdict, but only outside Autonomous mode.
 
@@ -820,7 +875,7 @@ Response payload:
 
 The panel is transient client-side (no session entry): the gated tool call's own card records the outcome. No `pending_prompt` is persisted — a server *process* crash mid-prompt resolves through the engine's dangling-tool-use resume path. Unlike the general case, though, this specific call is provably known to have never dispatched (`TransientStore.pending_security_alert`, doc/SECURITY.md §7a), so instead of the generic interrupted stand-in, resume re-judges it fresh and — if still `ask` — re-fires this exact prompt (new `id`, same `tool_call_id`) rather than giving up. A live disconnect/reconnect that never restarts the *process* doesn't even reach that path — see §8.
 
-### 6.5a `prompt.stuck_alert` — stuck-agent watchdog alarm
+### 6.8 `prompt.stuck_alert` — stuck-agent watchdog alarm
 
 Fired by the stuck-agent watchdog (doc/STUCK_DETECTION.md) when a turn ended without finishing its task and interactive mode is not configured to nudge automatically (`stuck_detection.auto_unstuck_interactive` is `false` — always effectively `true` in autonomous mode instead, which never fires this prompt). Two different firing shapes depending on scope:
 
@@ -843,11 +898,11 @@ Response payload:
 
 The panel is transient client-side, modeled on `prompt.permission`'s but with no rule-offer checkboxes (there is nothing here to "always allow") and distinct Unstick/Dismiss actions. No `pending_prompt`-style state is persisted server-side: unlike a gated tool call, nothing is left mid-dispatch if this wait is cut short by a crash — the alarm is simply dropped, and the next matching stall (if any) schedules a fresh one.
 
-### 6.5b `prompt.edit_review` — create_file/edit_file review gate
+### 6.9 `prompt.edit_review` — create_file/edit_file review gate
 
 Fired by `ToolDispatcher.__edit_review_gate` for a `create_file`/`edit_file` call the session's Edit Control setting (§7.4a) wants reviewed before it writes anything: always for `"review_all"`, never for `"allow_all"`, heuristically (by path — `should_review_edit`, `kodo.tools._edit_review`) for `"smart"`. `allow_all`, `temporary: true`, and a call that's going to fail regardless (file already exists for `create_file`; empty/no-op/ambiguous/missing `old_string`, or an unresolvable out-of-workspace path, for either) all skip the gate entirely — no prompt, `handle()` raises its own ordinary error same as today.
 
-Independent of, and always evaluated **after**, `prompt.permission` (§6.5): Command Control and Edit Control are orthogonal settings, so the same call may ask twice — security first, then review.
+Independent of, and always evaluated **after**, `prompt.permission` (§6.7): Command Control and Edit Control are orthogonal settings, so the same call may ask twice — security first, then review.
 
 ```json
 { "type": "prompt.edit_review",
@@ -880,11 +935,11 @@ The panel is transient client-side (no session entry): the gated tool call's own
 
 ---
 
-### 6.6 `prompt.choose_project_folder` — interactive project bootstrap
+### 6.10 `prompt.choose_project_folder` — interactive project bootstrap
 
 Fired by `GateOrchestrator.fire_choose_project_folder` (`EngineCore._bootstrap_project_interactive`) when the `create_new_project` tool is called and no project/workspace is bound yet in this session (`EngineCore._has_workspace()` is `False`) — regardless of whether the agent supplied a `name`, since a homeless session has nowhere to place *any* name until a workspace root is resolved — and the session is **not** autonomous. Autonomous sessions never reach this gate; they resolve a name (the agent's, else the titler's, else the generic fallback `"project"`) and create it under `~/kodo-projects/` instead, without asking anyone (`EngineCore._bootstrap_project_autonomous`).
 
-> Earlier revision of this section gated the bootstrap on "neither `name` nor `path` given" — that condition is never actually satisfied by a normal agent call (an agent almost always supplies `name`), so the interactive/autonomous paths below were effectively unreachable in practice. Fixed to gate on homelessness instead. The tool's `path` input was later removed entirely (2026-07-21b): the agent never chooses the on-disk location — only the engine (this bootstrap fork, or the autonomous `~/kodo-projects/<name>` fallback) or a genuine user action (the native "Create Project" folder-picker, §6.6a, which still feeds `path` straight into `EngineServices.create_project` — never through this tool) does.
+> Earlier revision of this section gated the bootstrap on "neither `name` nor `path` given" — that condition is never actually satisfied by a normal agent call (an agent almost always supplies `name`), so the interactive/autonomous paths below were effectively unreachable in practice. Fixed to gate on homelessness instead. The tool's `path` input was later removed entirely (2026-07-21b): the agent never chooses the on-disk location — only the engine (this bootstrap fork, or the autonomous `~/kodo-projects/<name>` fallback) or a genuine user action (the native "Create Project" folder-picker, §6.10a, which still feeds `path` straight into `EngineServices.create_project` — never through this tool) does.
 
 No VS Code folder needs to be open for a session to reach this point at all: `kodo-vsix` launches the local server and lets a session start regardless of `workspaceFolders`, and any tool whose `ToolSpec.requires_project` is set (`create_file`, `edit_file`, `rollback`, ...) rejects a call — before a project/workspace exists — with the fixed message `kodo.toolspecs._workspace.NO_PROJECT_ERROR`: "No project is open in this session. Call `create_new_project` to create one before making this tool call." (an ordinary `{"error": ...}` tool result, not a wire message of its own — see `ToolDispatcher.dispatch`). This is the trigger that leads an agent to call `create_new_project`, landing here. `get_root_paths` deliberately does **not** set `requires_project` (2026-07-21b) — with no workspace bound it just returns an empty `roots` list, itself a signal to the agent that it needs to call `create_new_project` first, rather than erroring.
 
@@ -892,7 +947,7 @@ No VS Code folder needs to be open for a session to reach this point at all: `ko
 { "type": "prompt.choose_project_folder" }
 ```
 
-No extra request fields. The client shows a native "open directory" dialog (`vscode.window.showOpenDialog`, `canSelectFiles: false, canSelectFolders: true` — the OS's own dialog already has a "New Folder" affordance, so no custom UI is needed; `extension.ts`'s `_pickWorkspaceHomeFolder`, shared with the manual "Create Project" command's own no-workspace path, §6.6a). No overwrite confirmation is needed here: the picked folder is a **workspace-home parent**, never the project directory itself, so the server always reserves a fresh, not-yet-existing, slug-named subdirectory under it — there is nothing at the picked path itself that could ever be overwritten.
+No extra request fields. The client shows a native "open directory" dialog (`vscode.window.showOpenDialog`, `canSelectFiles: false, canSelectFolders: true` — the OS's own dialog already has a "New Folder" affordance, so no custom UI is needed; `extension.ts`'s `_pickWorkspaceHomeFolder`, shared with the manual "Create Project" command's own no-workspace path, §6.10a). No overwrite confirmation is needed here: the picked folder is a **workspace-home parent**, never the project directory itself, so the server always reserves a fresh, not-yet-existing, slug-named subdirectory under it — there is nothing at the picked path itself that could ever be overwritten.
 
 Response payload:
 
@@ -908,15 +963,15 @@ or, if the user dismissed the dialog:
 
 On success the server sets `path` as the session's physical root (`SessionWorkspace.set_physical_root`) and delegates to `EngineCore._create_project(name)` — the same no-`path` placement logic every other project-creation path uses: a slug-named child directory reserved under the root (`/Users/me/projects/my-app`, never `/Users/me/projects` itself). This is deliberate: a second homeless project created later in the same session lands as a **sibling** under the same parent, never nested inside the first one — the parent is remembered because `physical_root` naturally becomes it once the extension re-pushes the `workspace.folders` message after the first project's folder is added (§5.9c). On `error` the tool call returns `{"error": "cancelled"}` to the agent, which should relay this to the user rather than silently falling back to the autonomous path.
 
-No `pending_prompt`-style state is persisted — same reasoning as `prompt.stuck_alert` (§6.5a): nothing is left mid-dispatch if this wait is cut short by a crash, so the tool call simply errors and the agent can retry.
+No `pending_prompt`-style state is persisted — same reasoning as `prompt.stuck_alert` (§6.8): nothing is left mid-dispatch if this wait is cut short by a crash, so the tool call simply errors and the agent can retry.
 
-### 6.6a The manual "Kōdo: Create Project" command's no-workspace path
+### 6.10a The manual "Kōdo: Create Project" command's no-workspace path
 
-Not a wire message of its own — client-side-only UX built on `project.create` (§7, `MSG_PROJECT_CREATE`) — documented here because it deliberately mirrors §6.6's has-workspace placement and reuses one of its pickers.
+Not a wire message of its own — client-side-only UX built on `project.create` (§7, `MSG_PROJECT_CREATE`) — documented here because it deliberately mirrors §6.10's has-workspace placement and reuses one of its pickers.
 
-A workspace already open (`hasWorkspace`): the command just asks for a project name (`vscode.window.showInputBox`) and sends `project.create` with **`{name}` alone, no `path`** — landing on the exact same `EngineCore._create_project(name)` sibling-under-`physical_root` placement §6.6 uses, so the new project always lands next to the existing workspace folder(s).
+A workspace already open (`hasWorkspace`): the command just asks for a project name (`vscode.window.showInputBox`) and sends `project.create` with **`{name}` alone, no `path`** — landing on the exact same `EngineCore._create_project(name)` sibling-under-`physical_root` placement §6.10 uses, so the new project always lands next to the existing workspace folder(s).
 
-No workspace open: a modal explains a workspace is needed and offers two ways to get one — "Select Folder for New Workspace…" (`_pickWorkspaceHomeFolder`, the same picker §6.6 uses, added as the window's first workspace folder via `addWorkspaceFolder`, which arms window-id continuity, §7.1a) or "Open .code-workspace File…" (a file picker filtered to `*.code-workspace`, opened via the `vscode.openFolder` command — which accepts a workspace-file URI directly and switches the whole window into it). Either choice reloads the window — VS Code has no live way to adopt a first folder or a different workspace file otherwise.
+No workspace open: a modal explains a workspace is needed and offers two ways to get one — "Select Folder for New Workspace…" (`_pickWorkspaceHomeFolder`, the same picker §6.10 uses, added as the window's first workspace folder via `addWorkspaceFolder`, which arms window-id continuity, §7.1a) or "Open .code-workspace File…" (a file picker filtered to `*.code-workspace`, opened via the `vscode.openFolder` command — which accepts a workspace-file URI directly and switches the whole window into it). Either choice reloads the window — VS Code has no live way to adopt a first folder or a different workspace file otherwise.
 
 Because the reload tears down the extension host mid-flow, "ask for a name" cannot continue synchronously — the command arms a `globalState` timestamp flag (`kodo.pendingCreateProjectArmedAt`) just before triggering the reload, and the next activation's `hello.ack` handler consumes it (`_resumePendingCreateProjectPrompt`) and resumes exactly at the has-workspace step above. This flag is deliberately a plain timestamp, not window-id-scoped — it resumes a UI prompt, not session ownership, so a coarse recency bound is enough — so a resuming window only honors a flag armed within the last 30s, bounding (not eliminating) the odds of a stale flag firing in an unrelated window whose own control connection happens to reconnect around the same time.
 
@@ -972,13 +1027,13 @@ After persisting, the server emits `user.attachments` (§5) carrying the stored 
 
 ### 7.1a Window-id continuity across the first-folder reload
 
-**This used to be a WS message** (`window.rebind` / `window.rebind.ack`, sent and awaited over the control connection, with a server-side `SessionManager.rebind_window` re-keying handler). It no longer is — the mechanism now lives entirely client-side, needs no server cooperation, and the server has nothing named `rebind` anymore. This section is kept at the same anchor because §5.9c and §6.6a still point here.
+**This used to be a WS message** (`window.rebind` / `window.rebind.ack`, sent and awaited over the control connection, with a server-side `SessionManager.rebind_window` re-keying handler). It no longer is — the mechanism now lives entirely client-side, needs no server cooperation, and the server has nothing named `rebind` anymore. This section is kept at the same anchor because §5.9c and §6.10a still point here.
 
 **Why continuity is needed at all.** `_stableWindowId` (`extension.ts`) derives a window's id from `workspaceFolders[0]`'s path once any folder is open, falling back to a `workspaceState`-persisted random id only while the window is genuinely folder-less. That fallback lives in storage scoped to the *current* workspace identity — and VS Code restarts the extension host the moment a folder-less window gains its first folder (its `rootPath` fundamentally changes), which is exactly the workspace-identity change that abandons that storage. The post-restart id, freshly derived from the new folder's path, can never match the pre-restart random one: there is no folder path to anchor to *before* the first folder exists, so this specific transition cannot be made stable by improving the derivation formula alone. Without continuity, `SessionManager.open` refuses to reopen a session for an id that differs from its recorded owner while that owner is still live/in-grace (§8) — the reconnect that follows the reload is rejected outright, not merely delayed, and (independently) `_reconcileOpenSessions` looks its remembered-open-sessions list up under the new id's `globalState` key and finds nothing, since the list was written under the old one.
 
 **How it's closed, locally.** The insight the old `window.rebind` message missed: the id string itself never needs to *change* across this transition — the server-side ownership map only goes stale if the client starts presenting a genuinely different value. So instead of migrating the server's records onto a freshly-derived id, the client now just recovers its *old* id post-reload instead of deriving a new one:
 
-1. **Before** triggering the reload (`addWorkspaceFolder`, when `insertAt === 0`; and the "Open .code-workspace File…" choice in §6.6a, via `_resolveFutureWindowKeyForCodeWorkspace`), `_armWindowIdContinuity(context, futureKey)` computes the id `_stableWindowId` will independently derive post-reload (`_deriveWindowIdFromKey(futureKey)`) and stashes the window's *current* id in `context.globalState` under a key built from that future id (`kodo.windowIdContinuity.<futureId>`). `globalState` — not `workspaceState` — because it's extension-scoped and survives the workspace-identity flip.
+1. **Before** triggering the reload (`addWorkspaceFolder`, when `insertAt === 0`; and the "Open .code-workspace File…" choice in §6.10a, via `_resolveFutureWindowKeyForCodeWorkspace`), `_armWindowIdContinuity(context, futureKey)` computes the id `_stableWindowId` will independently derive post-reload (`_deriveWindowIdFromKey(futureKey)`) and stashes the window's *current* id in `context.globalState` under a key built from that future id (`kodo.windowIdContinuity.<futureId>`). `globalState` — not `workspaceState` — because it's extension-scoped and survives the workspace-identity flip.
 2. **After** the reload, `_stableWindowId` computes the candidate id from the current folder/workspace-file path exactly as before, then calls `_recoverWindowIdContinuity(context, candidate)`: if a marker exists under that candidate's key, it returns the *preserved* (old) id instead of the freshly-derived candidate, and clears the marker (one-shot). No marker (e.g. a folder opened by means other than Kōdo's own bootstrap) → the candidate is used as-is, same as before this mechanism existed.
 
 Because the write is a local `globalState.update` — no network round trip — it cannot race the extension-host teardown the way an awaited WS request could: by the time the write's promise resolves, the marker is durable, and the very next line of code is free to trigger the reload. And because the id's *value* never actually changes, the server's `owner_window` map is never stale in the first place — there is nothing to tell it, so no message exists to tell it with.
@@ -1007,8 +1062,8 @@ Scoped to the transition the extension itself initiates (`create_new_project`/`i
 2. **Remembered `code_workspace_file` exists on disk** → target is opening that file. **Missing/moved** → silently falls back to the folder list instead (explicit product decision — never errors the user into picking a replacement).
 3. **Otherwise** → target is the remembered folder set, **exact match**: reopening replaces the window's current folders with precisely that set (not additive — anything else open in that window is removed). This was a deliberate trade-off, not an oversight: the alternative (only ever adding folders) would let a window's folder set grow unboundedly across repeated session switches.
 4. If the current window's workspace already matches the target (by content, not reference — same file, or the same set of folder paths in any order), the session opens immediately with **no reload**.
-5. On a mismatch, `_resumeSessionIntoWorkspace` reuses the exact reload/continuity plumbing §7.1a and §6.6a already built rather than inventing a second mechanism: it arms `_armSerializerDead()` (unconditionally — a full folder-set replace is at least as disruptive as the `insertAt <= 1` cases `reloadWipesSerializerState` guards) and `_armWindowIdContinuity` (future key = the `.code-workspace` file via `_resolveFutureWindowKeyForCodeWorkspace`, or the first remembered folder's path for a plain folder-set target — folder-map insertion order is preserved end-to-end from the original push specifically so this "what will be `workspaceFolders[0]`" derivation is meaningful), then either calls `vscode.commands.executeCommand('vscode.openFolder', ..., {forceReuseWindow: true})` (file target) or `vscode.workspace.updateWorkspaceFolders(0, currentCount, ...targetEntries)` (folder-set target, a full splice, not an insert).
-6. Either reload-triggering call restarts the extension host, so "open the session" can't continue synchronously. A new `globalState` marker (`kodo.pendingResumeSessionId`, armed by `_armPendingResumeSession`) — the same recency-bound-not-window-id-scoped pattern as `kodo.pendingCreateProjectArmedAt` (§6.6a) — records which session to open; the next activation's control `hello.ack` handler calls `_resumePendingResumeSession()` (alongside the existing `_resumePendingCreateProjectPrompt()`) to finish the job once `hasWorkspace` is true again.
+5. On a mismatch, `_resumeSessionIntoWorkspace` reuses the exact reload/continuity plumbing §7.1a and §6.10a already built rather than inventing a second mechanism: it arms `_armSerializerDead()` (unconditionally — a full folder-set replace is at least as disruptive as the `insertAt <= 1` cases `reloadWipesSerializerState` guards) and `_armWindowIdContinuity` (future key = the `.code-workspace` file via `_resolveFutureWindowKeyForCodeWorkspace`, or the first remembered folder's path for a plain folder-set target — folder-map insertion order is preserved end-to-end from the original push specifically so this "what will be `workspaceFolders[0]`" derivation is meaningful), then either calls `vscode.commands.executeCommand('vscode.openFolder', ..., {forceReuseWindow: true})` (file target) or `vscode.workspace.updateWorkspaceFolders(0, currentCount, ...targetEntries)` (folder-set target, a full splice, not an insert).
+6. Either reload-triggering call restarts the extension host, so "open the session" can't continue synchronously. A new `globalState` marker (`kodo.pendingResumeSessionId`, armed by `_armPendingResumeSession`) — the same recency-bound-not-window-id-scoped pattern as `kodo.pendingCreateProjectArmedAt` (§6.10a) — records which session to open; the next activation's control `hello.ack` handler calls `_resumePendingResumeSession()` (alongside the existing `_resumePendingCreateProjectPrompt()`) to finish the job once `hasWorkspace` is true again.
 
 A session already open as a live tab **in the current window** (`_findBySessionId` finds it) always short-circuits straight to `reveal()` regardless of what's remembered — there's a live connection to reuse, so no workspace comparison or reload is ever appropriate there. The picker itself no longer disables an item for a Guided-mode project not being loaded in the current workspace (the old `project_root`-keyed `disabledReason`) — that case is now subsumed by the general reopen flow (the project's folder is just one entry in the remembered folder set); only "opened in another live window" still disables an item outright. Instead, a mismatched item's `detail` gets a note so the user knows picking it triggers a reload: `will ask to reopen this window's workspace` (confirmation dialog first) — reachable only for locked sessions, per the above, since an unlocked session's `workspace` is always `null` and never reaches this mismatch check in the first place.
 
@@ -1021,7 +1076,7 @@ See the `project_kodo_workspace_session_linkage` memory for the full design-deci
 - **Root resolution, mode-agnostic since the 2026-07 multi-project rework** (`EngineCore._root_paths()`/`_has_workspace()`/`_make_resolver()`, `kodo/runtime/_engine/_core.py`): when locked and *not* connected (`_is_workspace_connected()` is `false`), these fall back to the bound directories — `workspace_folders` name-filtered to `workspace_locked_paths`, in `workspace_folders`' own insertion order — instead of the live `SessionWorkspace`. `_has_workspace()` is `true` in this state (a locked session is never homeless). `_make_resolver()` builds its `LogicalPathResolver` over a *synthetic* `SessionWorkspace` snapshotting the bound dirs, so every path-resolving consumer — file/shell tool dispatch, `run_command`'s default cwd, the security layer's escape analysis, all of which resolve through it — confines itself to the bound directories too, not just `get_root_paths`. The synthetic workspace's physical root is the *first* bound directory, never the live `SessionWorkspace.physical_root` (which an empty `workspace.folders` push leaves stale — `handle_workspace_folders` only overwrites it on a non-empty push, unchanged by this extension). When connected, behavior is unchanged: the full live folder set is reported, not just the locked subset. **Guided mode shares this mechanism exactly** — there is no longer a separate single-project `current_project` binding; a Guided session's bound roots are the same live/locked workspace-folder set Problem Solver has always used (§7.1c below), so it was already "disconnected-safe" the moment the merge landed, with no Guided-specific code.
 - **`create_new_project`/`init_project` while disconnected**: both still perform every on-disk side effect (scaffold, initialize the git mirror) and now **lock their target directory immediately and unconditionally** — not gated on its first real mutating-tool commit like every other root — so a disconnected session's own fallback above sees it right away, letting a background/autonomous agent keep making progress with no live window at all. What's gated on connection state is only the `workspace.add_folder` push (§5.9c): skipped when the session isn't connected to a live matching workspace (snapshotted before either method's own mutations, so a session's *own* newly-created, not-yet-pushed folder never spuriously flips the check), since pushing into a window that doesn't match this session would silently corrupt an unrelated window's folders. This guard is mode-agnostic (Guided sessions get it too), unlike the root-resolution fallback above.
 - **kodo-vsix's resume gate is now compatibility-based, not exact-match-based**: `requiresWorkspaceSwitchConfirmation(locked, compatible)` — a compatible-but-not-identical current workspace (e.g. it has extra folders beyond what's bound) is a **new third outcome** alongside "exact match" that skips the reload/confirmation entirely, per the rule above. *(2026-07-23's original two-choice dialog — "Open" vs. decline-meaning-"open disconnected" — was replaced 2026-07-24; see below.)*
-- **Manual reconnect**: a locked-and-disconnected session's webview footer shows a reconnect-workspace button (left of send), visible only in that state (per its own `workspace_connected`, above) — clicking it confirms ("Do you want to load the workspace associated with the current Kōdo session?") and, on yes, reloads the window into that session's own remembered workspace using the same reload/continuity plumbing as §7.1b's mismatch path. The "Kōdo: Create Project" command gained the same check: if the active session is disconnected, it offers to reconnect first (a variant of the same confirmation) and, on yes, chains into the existing `_armPendingCreateProjectPrompt`/`_resumePendingCreateProjectPrompt` reload-and-resume flow (§6.6a) so the project-name prompt appears automatically once the window comes back.
+- **Manual reconnect**: a locked-and-disconnected session's webview footer shows a reconnect-workspace button (left of send), visible only in that state (per its own `workspace_connected`, above) — clicking it confirms ("Do you want to load the workspace associated with the current Kōdo session?") and, on yes, reloads the window into that session's own remembered workspace using the same reload/continuity plumbing as §7.1b's mismatch path. The "Kōdo: Create Project" command gained the same check: if the active session is disconnected, it offers to reconnect first (a variant of the same confirmation) and, on yes, chains into the existing `_armPendingCreateProjectPrompt`/`_resumePendingCreateProjectPrompt` reload-and-resume flow (§6.10a) so the project-name prompt appears automatically once the window comes back.
 - **Extended 2026-07-24: the mismatch dialog became three-way, not two.** The original single-"Open"-action dialog was ambiguous — declining (dismiss/Escape) silently opened the session anyway, just disconnected, which read as "Cancel" to a user but wasn't. `_resumeSessionIntoWorkspace` now offers three explicit outcomes: **"Open session and workspace"** reloads the window into the remembered target as before; **"Open session only"** opens the session disconnected/isolated against its bound directories, leaving this window's workspace untouched; **Cancel** (explicit button, dismiss, or Escape) opens nothing at all — the session stays unopened and the window untouched, same as before any dialog existed. `requiresWorkspaceSwitchConfirmation` itself (the gating predicate) is unchanged; only what the extension does with each of the dialog's three results changed.
 
 ### 7.1c Guided mode joins Problem Solver's multi-root binding — `project.set`/`project.bound` removed
@@ -1101,7 +1156,7 @@ A `state` event with the updated `workflow_mode` follows.
 
 ### 7.4a `edit_control.set` — set the Edit Control posture
 
-Sets the Edit Control posture: `review_all` (pause for sign-off on every edit) / `allow_all` (apply without pausing) / `smart` (decide per edit; the default). Unknown values fall back to `smart`. Unlike `mode.set`/`workflow.set` this is **never frozen**: the client owns the value (forcing `allow_all` while Autonomous mode is in effect, restoring the user's pick otherwise) and the server mirrors whatever it last sent, so the stored value is always exactly what the UI shows. **Enforced** for `create_file`/`edit_file` only — the tool dispatcher reads the value live per call; a review-worthy call fires `prompt.edit_review` (§6.5b). Independent of and always evaluated after `command_control`'s security gate (§7.4b) — not part of the security layer.
+Sets the Edit Control posture: `review_all` (pause for sign-off on every edit) / `allow_all` (apply without pausing) / `smart` (decide per edit; the default). Unknown values fall back to `smart`. Unlike `mode.set`/`workflow.set` this is **never frozen**: the client owns the value (forcing `allow_all` while Autonomous mode is in effect, restoring the user's pick otherwise) and the server mirrors whatever it last sent, so the stored value is always exactly what the UI shows. **Enforced** for `create_file`/`edit_file` only — the tool dispatcher reads the value live per call; a review-worthy call fires `prompt.edit_review` (§6.9). Independent of and always evaluated after `command_control`'s security gate (§7.4b) — not part of the security layer.
 
 ```json
 { "type": "edit_control.set", "edit_control": "review_all" }
@@ -1117,7 +1172,7 @@ A `state` event with the updated `edit_control` field follows.
 
 ### 7.4b `command_control.set` — set the Command Control posture
 
-Sets the Command Control posture: `defensive` (ask on every Moderate-or-above tool call) / `permissive` (allow everything below Critical) / `smart` (judge per call; the default). Unknown values fall back to `smart`. Mirrored exactly like `edit_control.set` (the client forces `permissive` while Autonomous is in effect; the server also operates as permissive while Autonomous is in effect, as its own guard). **Enforced by the security layer** — the tool dispatcher reads the value live per tool call; an `ask` verdict fires `prompt.permission` (§6.5). Full decision logic in doc/SECURITY.md.
+Sets the Command Control posture: `defensive` (ask on every Moderate-or-above tool call) / `permissive` (allow everything below Critical) / `smart` (judge per call; the default). Unknown values fall back to `smart`. Mirrored exactly like `edit_control.set` (the client forces `permissive` while Autonomous is in effect; the server also operates as permissive while Autonomous is in effect, as its own guard). **Enforced by the security layer** — the tool dispatcher reads the value live per tool call; an `ask` verdict fires `prompt.permission` (§6.7). Full decision logic in doc/SECURITY.md.
 
 ```json
 { "type": "command_control.set", "command_control": "defensive" }
@@ -1589,7 +1644,7 @@ open tab.
 Persistent user-defined allow rules (FR-SEC-07) — generalized `(executable,
 subcommand)` shapes layered into the heuristic rule ladder — are
 **implemented**, but only as the *implicit* effect of `remember` on
-`prompt.permission.response` (§6.5): allowing a gated call with a checkbox
+`prompt.permission.response` (§6.7): allowing a gated call with a checkbox
 checked installs the rule; there is no separate request for it.
 Global-scope listing/revoking now exists (§7.6c). The following remain
 reserved for a **future session-webview rules panel**
@@ -1643,7 +1698,7 @@ These are anticipated and structured so adding them is purely additive — no ex
 
 - **Richer `state` snapshot** (§5.1): `cumulative_usd`, `last_checkpoint_sha`. (A `pending_prompts` field was previously anticipated here to let a reconnecting client discover an outstanding prompt; §8's request-replay mechanism solves that need directly — the client just receives the original `prompt.*`/`api_key.request` frame again — so it is no longer planned.)
 - **Checkpoint-browsing UI.** `checkpoint.list` (§7.4d) is already implemented server-side and returns the full per-root checkpoint list today; only a client-side UI that calls it is planned — the undo/redo/rollback/roll-forward commands (§7.4c) are already implemented and in use, in both workflow modes.
-- **Standalone rules management UI** (§7.7): `security.add_rule`/`security.rules.list`/`security.rules.delete`. (Granting a rule via `prompt.permission.response.remember`, §6.5, is implemented; there is no way to list or revoke one yet.)
+- **Standalone rules management UI** (§7.7): `security.add_rule`/`security.rules.list`/`security.rules.delete`. (Granting a rule via `prompt.permission.response.remember`, §6.7, is implemented; there is no way to list or revoke one yet.)
 - **Verbose review mode.** New event type(s) gated by a settings flag, carrying a document's real path and richer status detail (e.g. its full `.jsonl` history). The `review.*` events stay as the low-fi default.
 - **Streamed tool output.** A streamed form of `agent.tool_call_prep` for long-running shell commands; the single-event form remains valid for short calls.
 

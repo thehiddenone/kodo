@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import cast
 
 from aiohttp import web
+from huggingface_hub.errors import GatedRepoError
 
 from kodo.binutils import ensure_all_utils
 from kodo.llms import (
@@ -80,6 +81,7 @@ from kodo.subagents import AgentRegistry
 from kodo.titling import start_titling, stop_titling
 from kodo.transport import (
     EVT_ERROR,
+    EVT_HF_TOKEN_REVOKE,
     EVT_LLAMA_STATE,
     EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_LOCAL_LLM_REGISTRY_STATE,
@@ -135,6 +137,7 @@ from kodo.transport import (
     MSG_THINKING_LEVEL_SET,
     MSG_WORKFLOW_SET,
     MSG_WORKSPACE_FOLDERS,
+    SREQ_HF_TOKEN_REQUEST,
     Connection,
     Envelope,
 )
@@ -1067,6 +1070,66 @@ async def _handle_llamacpp_version_info(req: Request) -> None:
     )
 
 
+async def _request_hf_token(req: Request) -> str:
+    """Request the active HF access token from the connected extension.
+
+    Returns the token string, or empty string if no token is configured or
+    the connection is session-bound (responses can't be routed back on
+    session connections). The token is optional — downloads proceed without
+    it for public repos.
+    """
+    connection = req.connection
+    # On a session-bound connection the response can't be routed back
+    # (ConnectionRegistry dispatches responses to the session channel,
+    # not the connection). Bail out immediately — no token from this path.
+    # We check both the explicit session from the request payload AND whether
+    # the connection itself is bound to a session (the test harness sends
+    # control messages on a session connection without a session_id in the
+    # payload, so req.session alone is insufficient).
+    if req.session is not None:
+        return ""
+    bound_session = req.manager.session_for_connection(connection.id)
+    if bound_session is not None:
+        return ""
+
+    req_id = uuid.uuid4().hex
+    loop = asyncio.get_event_loop()
+    future = loop.create_future()
+    connection.register_response_future(req_id, future)
+
+    try:
+        await connection.send(
+            Envelope(
+                kind="request",
+                id=req_id,
+                payload={"type": SREQ_HF_TOKEN_REQUEST},
+            )
+        )
+
+        # Wait with a timeout — extension should respond quickly
+        try:
+            payload = await asyncio.wait_for(future, timeout=10.0)
+        except TimeoutError:
+            future.cancel()
+            return ""  # No token available — proceed without auth
+        except asyncio.CancelledError:
+            # Connection dropped mid-request (ConnectionRegistry.run_ws's
+            # finally cancels every pending future on disconnect) — proceed
+            # without a token rather than let this propagate out of the
+            # fire-and-forget background download task.
+            return ""
+
+        error = payload.get("error")
+        if error:
+            return ""  # User cancelled or no token
+
+        return str(payload.get("hf_token", ""))
+    finally:
+        # Clean up the future even if something went wrong (no-op if already
+        # resolved — resolve_response never raises).
+        connection.resolve_response(req_id, {})
+
+
 def _run_background_download(
     model_id: str, work: Callable[[], Coroutine[object, object, object]], connection: Connection
 ) -> None:
@@ -1103,6 +1166,19 @@ def _run_background_download(
             await work()
         except LocalModelError as exc:
             _log.exception("Background download failed for %r", model_id)
+            # A gated-repo rejection is a wrapped GatedRepoError (see
+            # kodo.llms.local._hf.resolve_file/list_repo_files, both of which
+            # `raise ShardResolutionError(...) from exc` to preserve it as
+            # __cause__) — checked by type, not by sniffing the message text,
+            # since substring-matching "gated" would also fire on unrelated
+            # failures whose message happens to contain e.g. "aggregated".
+            if isinstance(exc.__cause__, GatedRepoError):
+                await connection.send(
+                    Envelope.make_event(
+                        EVT_HF_TOKEN_REVOKE,
+                        {"message": "HF token was rejected for a gated repository"},
+                    )
+                )
             await connection.send(
                 Envelope.make_event(
                     EVT_ERROR,
@@ -1131,6 +1207,7 @@ async def _handle_local_llm_install(req: Request) -> None:
         await _reply_local_llm_error(req, f"Unknown or non-downloadable model: {name!r}")
         return
     manager = get_local_model_manager(kodo_dir)
+
     # Kickoff state must be *sent* (not just scheduled) before the background
     # task is created — otherwise the completion push racing the kickoff
     # send on independent await chains could land the two registry_state
@@ -1138,11 +1215,22 @@ async def _handle_local_llm_install(req: Request) -> None:
     # download in tests; a real multi-second HF transfer masks it, but
     # nothing guarantees that).
     await _send_registry_state(req)
-    _run_background_download(
-        name,
-        lambda: manager.download_model(entry.name, entry.repo_id, entry.filename),
-        req.connection,
-    )
+
+    async def _download() -> None:
+        # The HF token is requested from *inside* the background task, not
+        # before it: ConnectionRegistry.run_ws reads one frame at a time and
+        # awaits each handler in turn, so a synchronous await here (i.e.
+        # before _run_background_download hands this off as an independent
+        # task) would deadlock — the extension's response is itself the next
+        # frame on this same connection, which the read loop can't reach
+        # until this handler returns. Same reasoning applies to every other
+        # _download() below.
+        hf_token = await _request_hf_token(req)
+        await manager.download_model(
+            entry.name, entry.repo_id, entry.filename, token=hf_token or None
+        )
+
+    _run_background_download(name, _download, req.connection)
 
 
 async def _handle_local_llm_resume(req: Request) -> None:
@@ -1153,8 +1241,15 @@ async def _handle_local_llm_resume(req: Request) -> None:
     if manager.get_record(name) is None:
         await _reply_local_llm_error(req, f"No download record for {name!r} — nothing to resume")
         return
+
     await _send_registry_state(req)  # see the ordering note in _handle_local_llm_install
-    _run_background_download(name, lambda: manager.resume_download(name), req.connection)
+
+    async def _download() -> None:
+        # See _handle_local_llm_install for why the token is requested here.
+        hf_token = await _request_hf_token(req)
+        await manager.resume_download(name, token=hf_token or None)
+
+    _run_background_download(name, _download, req.connection)
 
 
 async def _handle_local_llm_pause(req: Request) -> None:
@@ -1196,17 +1291,22 @@ async def _handle_local_llm_update(req: Request) -> None:
     manager = get_local_model_manager(kodo_dir)
     await asyncio.to_thread(manager.uninstall, name)
     _log.info("Uninstalled model %r for update", name)
+
     # Reflects the now-uninstalled entry — the same state a plain
     # local_llm.uninstall would send, and (since the model is already not
     # installed at this point) also the correct "kickoff" state for the
     # install half below. Must be sent before the background task is created,
     # same ordering requirement as _handle_local_llm_install.
     await _send_registry_state(req)
-    _run_background_download(
-        name,
-        lambda: manager.download_model(entry.name, entry.repo_id, entry.filename),
-        req.connection,
-    )
+
+    async def _download() -> None:
+        # See _handle_local_llm_install for why the token is requested here.
+        hf_token = await _request_hf_token(req)
+        await manager.download_model(
+            entry.name, entry.repo_id, entry.filename, token=hf_token or None
+        )
+
+    _run_background_download(name, _download, req.connection)
 
 
 async def _handle_local_llm_check_updates(req: Request) -> None:

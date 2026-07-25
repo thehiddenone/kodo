@@ -575,7 +575,7 @@ class WorkflowEngine(
         sent, so the stored value is always exactly what the UI shows. Enforced
         for ``create_file``/``edit_file`` by
         :class:`~kodo.tools.ToolDispatcher`'s edit-review gate
-        (WS_PROTOCOL.md §6.5b), read live per call — not part of the security
+        (WS_PROTOCOL.md §6.9), read live per call — not part of the security
         layer.
 
         Args:

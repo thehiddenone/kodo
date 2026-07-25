@@ -9,13 +9,13 @@ client's reply is a ``kind=response`` correlated by ``id``.
   question batch (``prompt.question``, WS_PROTOCOL.md §6.1) and blocks
   until the user confirms answers to all of them.
 - :meth:`GateOrchestrator.fire_permission` — surfaces a security-layer
-  permission prompt (``prompt.permission``, WS_PROTOCOL.md §6.5) and blocks
+  permission prompt (``prompt.permission``, WS_PROTOCOL.md §6.7) and blocks
   until the user allows or denies the tool call.
 - :meth:`GateOrchestrator.fire_stuck_alert` — surfaces the stuck-agent
   watchdog's alarm (``prompt.stuck_alert``, doc/STUCK_DETECTION.md) and
   blocks until the user unsticks the agent or dismisses it.
 - :meth:`GateOrchestrator.fire_edit_review` — surfaces the Edit Control
-  review gate (``prompt.edit_review``, WS_PROTOCOL.md §6.5b) for a
+  review gate (``prompt.edit_review``, WS_PROTOCOL.md §6.9) for a
   ``create_file``/``edit_file`` call and blocks until the user approves or
   rejects it, optionally with line-anchored feedback.
 

@@ -46,10 +46,12 @@ class Connection:
 
     __ws: web.WebSocketResponse
     __id: str
+    __response_futures: dict[str, asyncio.Future[dict[str, object]]]
 
     def __init__(self, ws: web.WebSocketResponse) -> None:
         self.__ws = ws
         self.__id = uuid.uuid4().hex
+        self.__response_futures = {}
 
     @property
     def id(self) -> str:
@@ -70,6 +72,35 @@ class Connection:
         """Send an envelope on this socket (best-effort)."""
         if not self.__ws.closed:
             await self.__ws.send_str(env.to_json())
+
+    def register_response_future(
+        self, request_id: str, future: asyncio.Future[dict[str, object]]
+    ) -> None:
+        """Register a future resolved when the client answers *request_id*.
+
+        Unlike :meth:`SessionChannel.register_response_future` this is
+        connection-scoped — it does not survive a disconnect.  Used for
+        one-shot control-connection requests (e.g. HF token prompts).
+        """
+        self.__response_futures[request_id] = future
+
+    def resolve_response(self, correlation_id: str, payload: dict[str, object]) -> None:
+        """Resolve a pending response future by its correlation id."""
+        future = self.__response_futures.pop(correlation_id, None)
+        if future is not None and not future.done():
+            future.set_result(payload)
+        elif future is None:
+            _log.debug(
+                "kind=response on control connection with no pending future (correlation_id=%s)",
+                correlation_id,
+            )
+
+    def cancel_response_futures(self) -> None:
+        """Cancel every pending response future on this connection."""
+        for future in self.__response_futures.values():
+            if not future.done():
+                future.cancel()
+        self.__response_futures.clear()
 
 
 class SessionChannel:

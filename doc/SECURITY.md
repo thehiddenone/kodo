@@ -6,7 +6,7 @@ the `kodo.security` package through the tool dispatcher and the wire protocol
 into the VS Code extension's permission panel.
 
 Related docs: [TOOLS.md](TOOLS.md) (tool catalog, `intent` contract, impact
-levels), [WS_PROTOCOL.md](WS_PROTOCOL.md) (§6.5 `prompt.permission`, §7.4b
+levels), [WS_PROTOCOL.md](WS_PROTOCOL.md) (§6.7 `prompt.permission`, §7.4b
 `command_control.set`), [INTERNALS.md](INTERNALS.md) (package tiers),
 [SECURITY_RULES_PLAN.md](SECURITY_RULES_PLAN.md) (phased design/decision
 log for the `run_command` heuristic engine), and
@@ -76,7 +76,7 @@ Two overrides apply in every posture:
 The separate **Edit Control** toggle (`edit_control`) is a review-workflow
 control, not part of the security layer — enforced independently by
 `ToolDispatcher.__edit_review_gate` for `create_file`/`edit_file` only, always
-evaluated *after* this gate. See WS_PROTOCOL.md §6.5b/§7.4a for the exact
+evaluated *after* this gate. See WS_PROTOCOL.md §6.9/§7.4a for the exact
 rules (there is no Edit Control section in this document).
 
 ## 3. SMART mode
@@ -454,7 +454,7 @@ ToolDispatcher.dispatch(tool, input, tool_use_id)          kodo/tools/_dispatch.
   │        session_path_rules = ctx.session.security_path_rules)  ← ditto, §3.2c
   │    "allow" → proceed
   │    "ask"   → ctx.gate.fire_permission(..., parts=decision.parts)
-  │              → prompt.permission (kind=request)        WS_PROTOCOL.md §6.5
+  │              → prompt.permission (kind=request)        WS_PROTOCOL.md §6.7
   │              → user allows, remember=["session"/"global"/null, …]  ← parallel to parts
   │                 → for each (part, scope) in zip(parts, remember):
   │                      part.rule_offer is not None and scope set
@@ -482,7 +482,7 @@ of `evaluate()` looks at it) and by giving `create_new_project` a dedicated
 bypass of the whole security gate when there is no workspace yet — that call
 has no agent-chosen location for the gate to judge in the first place (the
 engine or a real user action picks it; see `_create_new_project.py` and
-WS_PROTOCOL.md §6.6).
+WS_PROTOCOL.md §6.10).
 
 `add_security_rule` (`kodo.tools.EngineServices` protocol) reaches
 `WorkflowEngine.add_security_rule` (`kodo/runtime/_engine/_core.py`):

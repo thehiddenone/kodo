@@ -19,7 +19,7 @@ session has nowhere to place *any* name until a workspace root is resolved —
 it delegates to ``EngineServices.bootstrap_project`` instead: an "open
 directory" folder-picker dialog in interactive sessions, an automatic
 ``~/kodo-projects/<name>`` directory in autonomous ones (doc/WS_PROTOCOL.md
-§6.6). If a workspace already exists, creating an *additional* project still
+§6.10). If a workspace already exists, creating an *additional* project still
 requires a non-empty ``name``.
 """
 

@@ -338,8 +338,11 @@ background transfer actually finishes (success or failure), so the
   entries.
 
 The manager also supports split-GGUF multi-file downloads, mmproj companion
-files, and per-call HF tokens — none of that is exercised from these WS
-commands yet (tracked as follow-up).
+files, and per-call HF tokens. Split-GGUF downloads and per-call HF tokens
+are exercised from the install/resume/update WS commands — the server
+requests the active HF token from the extension before each download
+(`hf_token.request`, WS_PROTOCOL.md §6.5). mmproj companion files are not
+yet reachable from the UI.
 
 A file left `DOWNLOADING` by a killed/crashed kodo-server is forced to
 `PAUSED` the next time `LocalModelManager` is constructed for that models
@@ -942,6 +945,46 @@ UUIDs, or how many keys exist, only the resolved secret.
   yet" behavior while adding proactive management on top).
 - Answering `api_key.revoke {vendor}`: forget whichever key is currently
   active for that vendor.
+
+### 6a. HuggingFace access token management (kodo-vsix only)
+
+HuggingFace tokens follow the same pull-protocol pattern as cloud API keys
+but are simpler: single-purpose (no vendor concept), single token active at a
+time, and optional (public repos don't need one). Managed in the "HuggingFace"
+tab of the Kōdo Settings panel.
+
+- `~/.kodo/etc/hf_tokens.json` (kodo-vsix-owned): a map of token UUIDs to
+  friendly names, plus which one is active:
+  ```json
+  { "tokens": { "3fa8...uuid": "work", "9c21...uuid": "personal" },
+    "active": "3fa8...uuid" }
+  ```
+- The actual secret lives in VS Code `SecretStorage`, keyed by the UUID.
+- **Adding a token** (via "Add new token" button in Kōdo Settings →
+  HuggingFace): prompt for a friendly name and the token secret, generate a
+  UUID, store the secret in SecretStorage, record `{uuid: name}` in
+  `hf_tokens.json`, mark it active.
+- **Removing a token** ("Remove this token"): delete the secret from
+  SecretStorage and its entry from `hf_tokens.json`; if it was active, pick
+  the first remaining token as the new active (or leave none if empty).
+- **Activating a token** ("Make active"): flips `active` in `hf_tokens.json`.
+- Answering `hf_token.request` (WS_PROTOCOL.md §6.5): look up `active` UUID,
+  `SecretStorage.get(uuid)`; if none configured, respond with empty string —
+  the download proceeds unauthenticated (works for public repos).
+- Answering `hf_token.revoke` (WS_PROTOCOL.md §6.6): remove the currently
+  active token entirely (same as the "Remove this token" action) and show a
+  warning notification to the user.
+
+The server sends `hf_token.request` on the **control connection** before
+every download (install, resume, or update) — not on session connections,
+because model downloads are window-global. The extension responds
+immediately with the active token or empty string.
+
+**Gated repos without a token:** if the user attempts to download a gated
+model without configuring a token, the download fails with a clear error
+message ("is a gated repository — provide an HF access token with access
+to it"). The user can then add a token through the HuggingFace settings tab
+and retry.
 
 Only one key per vendor may be active at a time; only Anthropic is wired up
 today (single-vendor cloud registry, §3), but the shape is per-vendor from

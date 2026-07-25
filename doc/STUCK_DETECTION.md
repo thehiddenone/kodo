@@ -1,6 +1,6 @@
 # Kodo — Stuck-Agent Detection & Remediation
 
-> Reference: [STATE_AND_LIFECYCLE.md](STATE_AND_LIFECYCLE.md) (turn/session lifecycle), [SETTINGS.md](SETTINGS.md) §2.6 (`stuck_detection`), [WS_PROTOCOL.md](WS_PROTOCOL.md) §5.9e/§6.5a, [SECURITY.md](SECURITY.md) (sibling `prompt.*` gate precedent).
+> Reference: [STATE_AND_LIFECYCLE.md](STATE_AND_LIFECYCLE.md) (turn/session lifecycle), [SETTINGS.md](SETTINGS.md) §2.6 (`stuck_detection`), [WS_PROTOCOL.md](WS_PROTOCOL.md) §5.9e/§6.8, [SECURITY.md](SECURITY.md) (sibling `prompt.*` gate precedent).
 
 ## 1. The failure this addresses
 
@@ -117,7 +117,7 @@ Both `_persist_nudge` and `_persist_stuck_critical` also emit a `_log.info`/`_lo
 
 ### 2.6 The alarm gate — `prompt.stuck_alert`
 
-A fourth `GateOrchestrator` request type (`fire_stuck_alert`, `kodo/runtime/_gates.py`), alongside `fire_approval`/`fire_questions`/`fire_permission` — same `kind=request`/Future/`register_response_future` mechanism, full spec in [WS_PROTOCOL.md](WS_PROTOCOL.md) §6.5a. Modeled visually on `PermissionPanel` per its sibling-gate precedent, but:
+A fourth `GateOrchestrator` request type (`fire_stuck_alert`, `kodo/runtime/_gates.py`), alongside `fire_approval`/`fire_questions`/`fire_permission` — same `kind=request`/Future/`register_response_future` mechanism, full spec in [WS_PROTOCOL.md](WS_PROTOCOL.md) §6.8. Modeled visually on `PermissionPanel` per its sibling-gate precedent, but:
 
 - info-blue rather than warning-amber (`StuckAlertPanel.tsx`, `styles.ts`'s `stuckAlertCard`) — this is a behavioral observation, not a security risk. (No badge in the header — removed; the title sentence plus the STUCK? tag already say enough.)
 - distinct **Unstick it** / **Dismiss** actions, no rule-offer checkboxes (there is nothing here to "always allow").

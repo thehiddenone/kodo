@@ -515,6 +515,16 @@ SREQ_API_KEY_REQUEST = "api_key.request"
 # next call re-prompts instead of retrying the same rejected key.
 EVT_API_KEY_REVOKE = "api_key.revoke"
 
+# Server → Client request. Sent when the download handler needs an HF access token
+# for a gated/private repo. Client resolves from its active HF token (or empty
+# string if none configured) and responds with {hf_token: "..."}.
+SREQ_HF_TOKEN_REQUEST = "hf_token.request"
+
+# Server → Client event (no reply). Sent when an HF download fails because the
+# active token was rejected (401 on a gated repo). Tells the extension to
+# deactivate the token so the next download re-prompts.
+EVT_HF_TOKEN_REVOKE = "hf_token.revoke"
+
 # ---------------------------------------------------------------------------
 # Server → Client request payload types — user prompts  (WS_PROTOCOL.md §6)
 #
@@ -580,7 +590,7 @@ SREQ_PROMPT_PERMISSION = "prompt.permission"
 SREQ_PROMPT_STUCK_ALERT = "prompt.stuck_alert"
 
 # Server → Client request. Fired by ``ToolDispatcher.__edit_review_gate``
-# (WS_PROTOCOL.md §6.5b) for a ``create_file``/``edit_file`` call the
+# (WS_PROTOCOL.md §6.9) for a ``create_file``/``edit_file`` call the
 # session's Edit Control setting wants reviewed before it writes anything —
 # always for ``review_all``, never for ``allow_all``, heuristically (by path)
 # for ``smart``. Independent of and always evaluated *after*
@@ -601,7 +611,7 @@ SREQ_PROMPT_EDIT_REVIEW = "prompt.edit_review"
 # Server → Client request. Fired by ``GateOrchestrator.fire_choose_project_folder``
 # when `create_new_project` bootstraps a project interactively (no project/
 # workspace bound yet, and the session is not autonomous — see
-# ``EngineCore._bootstrap_project_interactive``, WS_PROTOCOL.md §6.6). No
+# ``EngineCore._bootstrap_project_interactive``, WS_PROTOCOL.md §6.10). No
 # extra request fields. Client shows a native folder-picker dialog (with the
 # OS's own "New Folder" affordance) plus, if the picked folder already has a
 # `.kodo/kodo.md`, an overwrite confirmation. No ``pending_prompt`` is
@@ -750,7 +760,7 @@ EVT_ERROR = "error"
 # card. ``{scope: "session" | "global", executable, subcommand}`` — the exact
 # shape the permission prompt offered (``subcommand`` holds a resolved
 # absolute path for a workspace-escape/path rule, same as ``rule_offer`` on
-# ``prompt.permission``, §6.5). Also persisted as a ``security_rule_added``
+# ``prompt.permission``, §6.7). Also persisted as a ``security_rule_added``
 # marker so it replays on reload (see ``EngineEmitters.emit_security_rule_added``).
 EVT_SECURITY_RULE_ADDED = "security.rule_added"
 

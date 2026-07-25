@@ -119,6 +119,7 @@ class ConnectionRegistry:
             # genuine session teardown ends one, via its worker task being
             # cancelled.
             self.__manager.drop_connection(conn)
+            conn.cancel_response_futures()
             self.__active -= 1
             if self.__active <= 0:
                 self.__arm_idle()
@@ -168,10 +169,8 @@ class ConnectionRegistry:
                 if session is not None:
                     session.channel.resolve_response(env.correlation_id, env.payload)
                 else:
-                    _log.debug(
-                        "kind=response on a connection bound to no session (correlation_id=%s)",
-                        env.correlation_id,
-                    )
+                    # Control connection — resolve on the Connection itself
+                    conn.resolve_response(env.correlation_id, env.payload)
             return
 
         msg_type = str(env.payload.get("type", ""))

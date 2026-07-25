@@ -241,7 +241,7 @@ class GateLike(Protocol):
         """Surface a security permission prompt and block until the user decides.
 
         Emitted when the security layer's verdict on a tool call is ``ask``
-        (``prompt.permission``, WS_PROTOCOL.md §6.5). ``params`` is the
+        (``prompt.permission``, WS_PROTOCOL.md §6.7). ``params`` is the
         customer-visible parameter preview (``{"name", "value"}`` rows);
         ``risk`` is the tool's :class:`~kodo.toolspecs.SecurityImpact` label.
         ``recovered`` is ``True`` when the prompt is for a salvaged
@@ -270,7 +270,7 @@ class GateLike(Protocol):
         approves or rejects the proposed ``create_file``/``edit_file`` call.
 
         Emitted by :class:`~kodo.tools.ToolDispatcher`'s edit-review gate
-        (``prompt.edit_review``, WS_PROTOCOL.md §6.5b) — independent of, and
+        (``prompt.edit_review``, WS_PROTOCOL.md §6.9) — independent of, and
         always evaluated after, :meth:`fire_permission`. ``mode`` is
         ``'new_file'`` (``old_content`` always ``""``) or ``'modification'``
         (a genuine diff).

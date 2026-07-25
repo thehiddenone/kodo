@@ -1,5 +1,5 @@
 """Smart-mode heuristic for the create_file/edit_file review gate
-(WS_PROTOCOL.md §6.5b, ``ToolDispatcher.__edit_review_gate``).
+(WS_PROTOCOL.md §6.9, ``ToolDispatcher.__edit_review_gate``).
 
 Kept as one small, standalone, pure function — no state, no collaborators —
 so the policy is obviously swappable later without touching dispatch logic.
