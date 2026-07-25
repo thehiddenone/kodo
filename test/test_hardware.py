@@ -144,7 +144,15 @@ def test_detect_nvidia_vram_bytes_missing_module_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Missing pynvml in sys.modules returns None."""
+    import builtins
+    import_ori = builtins.__import__
+    def pynvml_missing(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "pynvml":
+            raise ModuleNotFoundError("Module not found: pynvml")
+        return import_ori(name, globals, locals, fromlist, level)
+
     monkeypatch.delitem(sys.modules, "pynvml", raising=False)
+    monkeypatch.setattr(builtins, "__import__", pynvml_missing)
 
     from kodo.llms._hardware import _detect_nvidia_vram_bytes
 
