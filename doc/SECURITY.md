@@ -484,6 +484,39 @@ has no agent-chosen location for the gate to judge in the first place (the
 engine or a real user action picks it; see `_create_new_project.py` and
 WS_PROTOCOL.md §6.10).
 
+**Checkpointing's own crash (2026-07-25), and the assert → `NoWorkspaceError`
+change:** the 2026-07-21b fix above only guarded the *security gate's* read of
+`default_cwd`. `CheckpointCoordinator.prepare` (`kodo/runtime/_engine/
+_checkpointing.py`) runs *before* `ToolDispatcher.dispatch` — including before
+its `requires_project` gate — for every tool in `_MUTATING_TOOLS` (`filesystem`,
+`edit_file`, `create_file`, `create_directory`, `run_command`), so a homeless
+session's `run_command` call (`requires_project=True`, but the gate above never
+got a chance to reject it) still crashed the worker on the same
+`default_cwd`/`LogicalPathResolver` read, via `mutation_paths`'s `run_command`
+branch. Two changes, together:
+
+1. `LogicalPathResolver.default_cwd`'s bare `assert` (`kodo/tools/_paths.py`)
+   is now `raise NoWorkspaceError(...)` — a real, catchable exception (exported
+   from `kodo.tools`) instead of an assertion a caller has no contract to
+   handle. The `has_workspace`-guard-first pattern above is still the primary
+   defense; `NoWorkspaceError` exists for the callers (like checkpointing) that
+   can't cheaply pre-check.
+2. `CheckpointCoordinator.prepare` now also skips outright when
+   `host._root_paths()` is empty (mirrors `EngineCore._has_workspace`'s
+   no-fallback semantics — see doc/CHECKPOINTS.md), and `mutation_paths`'s
+   `run_command` branch additionally catches `NoWorkspaceError` around its
+   `default_cwd` fallback as defense in depth (`mutation_paths` is also called
+   directly by `record_guided_revision`). Either way the call is silently not
+   tracked — no mirror commit, no lock, no crash — and dispatch proceeds to its
+   normal `requires_project` rejection (`{"error": NO_PROJECT_ERROR}`).
+
+No security-layer behavior changed here: `SecurityLayer.evaluate`'s
+`__evaluate_run_command`/`_analysis.py` path was already safe with
+`default_cwd=""`/`roots=()` (empty `roots` makes every resolved path count as
+"outside", which is the conservative/fail-safe direction) — it just could never
+be *reached* for a homeless session's `run_command` before checkpointing
+crashed first.
+
 `add_security_rule` (`kodo.tools.EngineServices` protocol) reaches
 `WorkflowEngine.add_security_rule` (`kodo/runtime/_engine/_core.py`):
 `"session"` updates `SessionState.security_rules` and

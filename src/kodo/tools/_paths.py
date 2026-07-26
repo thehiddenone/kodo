@@ -35,11 +35,21 @@ if TYPE_CHECKING:
 
 __all__ = [
     "LogicalPathResolver",
+    "NoWorkspaceError",
     "PathResolver",
     "resolve_logical",
     "resolve_within",
     "root_for",
 ]
+
+
+class NoWorkspaceError(Exception):
+    """Raised when :attr:`LogicalPathResolver.default_cwd` is read with no
+    workspace/project bound.
+
+    A caller that cannot guard with ``has_workspace`` first (or that wants a
+    single try/except instead of a pre-check) can catch this directly.
+    """
 
 
 def _within_roots(resolved: Path, roots: tuple[Path, ...]) -> bool:
@@ -191,7 +201,7 @@ class LogicalPathResolver:
     def default_cwd(self) -> Path:
         """The workspace's physical root.
 
-        Callers must guard this with :meth:`~kodo.runtime._engine._core.
+        Callers should guard this with :meth:`~kodo.runtime._engine._core.
         EngineCore._has_workspace` (or the equivalent ``ToolContext.
         has_workspace``) first — unlike ``root_paths``, this has no empty
         state to fall back to. The ``requires_project`` dispatch gate already
@@ -201,11 +211,18 @@ class LogicalPathResolver:
         :class:`~kodo.tools.ToolDispatcher`'s security gate reads this
         property only when ``has_workspace`` is true (see
         ``ToolDispatcher._ToolDispatcher__security_gate``) rather than
-        unconditionally. The assert exists to fail loudly on a missed guard,
-        not to handle an expected case: a silent ``None`` here would
-        otherwise flow into a real subprocess cwd or security-rule path
-        matching as the string ``"None"``.
+        unconditionally.
+
+        Raises:
+            NoWorkspaceError: No workspace/project is bound yet. A caller
+                that cannot pre-check ``has_workspace`` (e.g. because it
+                shares a code path with callers that pass an explicit
+                ``working_dir`` instead) should catch this rather than let it
+                propagate — a silent ``None`` here would otherwise flow into
+                a real subprocess cwd or security-rule path matching as the
+                string ``"None"``.
         """
         root = self.__workspace.physical_root
-        assert root is not None, "default_cwd read before a workspace/project exists"
+        if root is None:
+            raise NoWorkspaceError("default_cwd read before a workspace/project exists")
         return root

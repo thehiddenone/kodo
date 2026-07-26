@@ -24,7 +24,7 @@ from kodo.common import Envelope, MessageSink
 from kodo.guided_state import append_new_revision, is_tracked
 from kodo.shellparser import parse_command
 from kodo.state import TransientStore
-from kodo.tools import PathResolver, RootPath
+from kodo.tools import NoWorkspaceError, PathResolver, RootPath
 from kodo.transport import EVT_CHECKPOINT_STATE
 
 from .._checkpoints import CheckpointRef, CheckpointState, RootMirrorManager, command_may_mutate
@@ -91,12 +91,25 @@ class CheckpointCoordinator:
         Called *before* dispatch so each root's mirror baseline reflects the tree
         as it was before this call. Returns the affected paths (primary first) to
         hand to :meth:`commit`, or an empty list when nothing should be
-        checkpointed (wrong mode, non-mutating tool, a read-only command, or a
-        call scoped to the session's private ``temporary`` scratch directory —
-        see :func:`kodo.project.session_temp_dir` — which never enters a
-        project's mirror).
+        checkpointed (wrong mode, non-mutating tool, a read-only command, no
+        workspace/project bound yet, or a call scoped to the session's private
+        ``temporary`` scratch directory — see :func:`kodo.project.session_temp_dir`
+        — which never enters a project's mirror).
+
+        Runs *before* :class:`~kodo.tools.ToolDispatcher`'s ``requires_project``
+        gate (every one of ``_MUTATING_TOOLS`` sets it), so a homeless session
+        would otherwise reach :meth:`mutation_paths`' ``run_command`` branch and
+        its unguarded :attr:`~kodo.tools.LogicalPathResolver.default_cwd` read —
+        checked here via ``root_paths`` (empty exactly when
+        ``EngineCore._has_workspace`` is false) so that never happens; nothing
+        is tracked and the dispatch gate goes on to reject the call normally.
         """
-        if not self._enabled() or tool_name not in _MUTATING_TOOLS or tool_input.get("temporary"):
+        if (
+            not self._enabled()
+            or tool_name not in _MUTATING_TOOLS
+            or tool_input.get("temporary")
+            or not self._host._root_paths()
+        ):
             return []
         paths = self.mutation_paths(tool_name, tool_input)
         if paths:
@@ -167,9 +180,20 @@ class CheckpointCoordinator:
                 return []
             working_dir = tool_input.get("working_dir")
             try:
-                cwd = resolver.resolve(str(working_dir)) if working_dir else resolver.default_cwd
-            except (PermissionError, ValueError):
-                cwd = resolver.default_cwd
+                try:
+                    cwd = (
+                        resolver.resolve(str(working_dir)) if working_dir else resolver.default_cwd
+                    )
+                except (PermissionError, ValueError):
+                    cwd = resolver.default_cwd
+            except NoWorkspaceError:
+                # No workspace/project bound yet. `prepare` already skips this
+                # branch (it checks `root_paths` first), but `mutation_paths`
+                # is also called directly by `record_guided_revision` and is
+                # public enough that a future caller might reach it the same
+                # way — nothing to track either way, so stay silent rather
+                # than propagate.
+                return []
             return [cwd]
         return []
 

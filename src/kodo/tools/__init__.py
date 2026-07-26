@@ -51,6 +51,7 @@ from ._guided_dev_status import GuidedDevStatusTool
 from ._init_project import InitProjectTool
 from ._paths import (
     LogicalPathResolver,
+    NoWorkspaceError,
     PathResolver,
     resolve_logical,
     resolve_within,
@@ -97,6 +98,7 @@ __all__ = [
     "GuidedDevStatusTool",
     "InitProjectTool",
     "LogicalPathResolver",
+    "NoWorkspaceError",
     "PathResolver",
     "PermissionLike",
     "PermissionPartLike",

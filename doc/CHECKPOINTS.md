@@ -358,3 +358,39 @@ Each locked root is recorded via `TransientStore.lock_workspace_path(path)` —
 additive only, no unlock, flushed to `transient.json` immediately
 (`workspace_locked_paths`). A no-op commit (nothing actually changed) locks
 nothing, same as it produces no `CheckpointRef`.
+
+## 9. `prepare` before there's a workspace at all (added 2026-07-25)
+
+`CheckpointCoordinator.prepare(tool_name, tool_input)` (§2's per-tool-call
+snapshot step) runs *before* `ToolDispatcher.dispatch` — including before its
+`requires_project` gate — for every tool in `_MUTATING_TOOLS` (`filesystem`,
+`edit_file`, `create_file`, `create_directory`, `run_command`; see doc/
+SECURITY.md §4). A homeless session (no workspace/project bound yet) calling
+`run_command` used to crash the worker: `mutation_paths`'s `run_command`
+branch falls back to `resolver.default_cwd` whenever `working_dir` is absent
+or unresolvable, and `LogicalPathResolver.default_cwd` had no workspace to
+report (`AssertionError: default_cwd read before a workspace/project exists`,
+`kodo/tools/_paths.py`).
+
+Fixed two ways, together:
+
+- `prepare` now skips outright — before ever calling `mutation_paths` — when
+  `host._root_paths()` is empty, the same "no workspace" signal
+  `EngineCore._has_workspace` is built on (§1's "Never `$HOME` or `/`" note
+  covers the companion guard on the *root* side; this is the analogous guard
+  on the *read* side). Nothing is snapshotted, nothing is tracked, and
+  dispatch proceeds normally to its `requires_project` rejection
+  (`{"error": NO_PROJECT_ERROR}`).
+- `LogicalPathResolver.default_cwd`'s bare `assert` is now
+  `raise NoWorkspaceError(...)` (exported from `kodo.tools`) — a real,
+  catchable exception rather than an assertion with no handling contract.
+  `mutation_paths`'s `run_command` branch also catches it directly around the
+  `default_cwd` fallback, as defense in depth: `mutation_paths` is public
+  enough to be called outside `prepare` too (`record_guided_revision` calls it
+  directly, though only ever after a real commit already proved a workspace
+  exists).
+
+See doc/SECURITY.md §4 ("Checkpointing's own crash") for the companion note —
+this is a checkpointing-side gap the earlier 2026-07-21b security-gate fix
+didn't cover, since that fix only guarded `SecurityLayer.evaluate`'s read of
+`default_cwd`, not the checkpoint coordinator's.

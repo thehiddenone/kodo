@@ -15,7 +15,7 @@ from kodo.runtime._checkpoints import CheckpointRef
 from kodo.runtime._engine._checkpointing import CheckpointCoordinator
 from kodo.runtime._session import SessionState
 from kodo.state import TransientStore
-from kodo.tools import RootPath
+from kodo.tools import NoWorkspaceError, RootPath
 
 
 class _FakeResolver:
@@ -34,6 +34,18 @@ class _FakeResolver:
         return self._root
 
 
+class _NoWorkspaceResolver:
+    """Like ``LogicalPathResolver`` with no project bound: any ``default_cwd``
+    read raises, mirroring the real crash this fake reproduces in isolation."""
+
+    def resolve(self, path: str) -> Path:
+        raise PermissionError("no workspace bound")
+
+    @property
+    def default_cwd(self) -> Path:
+        raise NoWorkspaceError("default_cwd read before a workspace/project exists")
+
+
 class _FakeHost:
     def __init__(self, root: Path, *, current_project: dict[str, str] | None = None) -> None:
         self._root = root
@@ -49,6 +61,16 @@ class _FakeHost:
         return (RootPath(name="root", path=str(self._root)),)
 
 
+class _NoWorkspaceHost(_FakeHost):
+    """A session with no workspace/project bound: no roots, no resolvable cwd."""
+
+    def _make_resolver(self, session_id: str) -> _NoWorkspaceResolver:
+        return _NoWorkspaceResolver()
+
+    def _root_paths(self) -> tuple[RootPath, ...]:
+        return ()
+
+
 class _FakeSink:
     def __init__(self) -> None:
         self.sent: list[object] = []
@@ -59,6 +81,13 @@ class _FakeSink:
 
 def _make_coordinator(tmp_path: Path, *, current_project: dict[str, str] | None = None):
     host = _FakeHost(tmp_path, current_project=current_project)
+    sink = _FakeSink()
+    coordinator = CheckpointCoordinator(host, sink=sink)  # type: ignore[arg-type]
+    return coordinator, host, sink
+
+
+def _make_no_workspace_coordinator(tmp_path: Path):
+    host = _NoWorkspaceHost(tmp_path)
     sink = _FakeSink()
     coordinator = CheckpointCoordinator(host, sink=sink)  # type: ignore[arg-type]
     return coordinator, host, sink
@@ -139,6 +168,28 @@ def test_mutation_paths_unknown_tool_returns_empty(tmp_path: Path) -> None:
     assert coordinator.mutation_paths("some_other_tool", {}) == []
 
 
+def test_mutation_paths_run_command_no_workspace_returns_empty(tmp_path: Path) -> None:
+    # Regression test: a homeless session's mutating run_command call used to
+    # crash `default_cwd` (`LogicalPathResolver`'s bare assert, now
+    # `NoWorkspaceError`) since `mutation_paths` falls back to it when no
+    # `working_dir` is given. Nothing to checkpoint with no workspace bound,
+    # so this must come back empty instead of raising.
+    coordinator, _host, _sink = _make_no_workspace_coordinator(tmp_path)
+    assert coordinator.mutation_paths("run_command", {"command": "rm -rf x"}) == []
+
+
+def test_mutation_paths_run_command_no_workspace_bad_working_dir_returns_empty(
+    tmp_path: Path,
+) -> None:
+    # Same regression, via the `except (PermissionError, ValueError)` fallback
+    # branch: an unresolvable `working_dir` also lands on `default_cwd`.
+    coordinator, _host, _sink = _make_no_workspace_coordinator(tmp_path)
+    assert (
+        coordinator.mutation_paths("run_command", {"command": "rm -rf x", "working_dir": "BAD"})
+        == []
+    )
+
+
 # ---------------------------------------------------------------------------
 # label
 # ---------------------------------------------------------------------------
@@ -178,6 +229,18 @@ async def test_prepare_non_mutating_tool_returns_empty(tmp_path: Path) -> None:
 async def test_prepare_mutating_tool_with_no_resolvable_path_returns_empty(tmp_path: Path) -> None:
     coordinator, _host, _sink = _make_coordinator(tmp_path)
     assert await coordinator.prepare("edit_file", {}) == []
+
+
+async def test_prepare_skips_when_no_workspace_bound(tmp_path: Path) -> None:
+    # Regression test: `prepare` used to call `mutation_paths` unconditionally
+    # for every `_MUTATING_TOOLS` entry, ahead of `ToolDispatcher`'s
+    # `requires_project` gate — a homeless session's `run_command` call
+    # crashed on `LogicalPathResolver.default_cwd`'s assert before dispatch
+    # ever got a chance to reject it with `NO_PROJECT_ERROR`. `prepare` now
+    # checks `root_paths` first and skips tracking outright.
+    coordinator, _host, _sink = _make_no_workspace_coordinator(tmp_path)
+    assert await coordinator.prepare("run_command", {"command": "rm -rf x"}) == []
+    assert await coordinator.prepare("edit_file", {"path": "a.txt"}) == []
 
 
 async def test_prepare_skips_temporary_call(tmp_path: Path) -> None:
