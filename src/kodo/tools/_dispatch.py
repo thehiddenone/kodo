@@ -363,16 +363,16 @@ class ToolDispatcher:
         parts: tuple[PermissionPartLike, ...] = ()
         if ctx.security is not None:
             # `default_cwd` is only ever consulted for `run_command` (see
-            # SecurityLayer.__evaluate_run_command), and that tool's spec sets
-            # `requires_project=True` — the dispatch gate above already
-            # refuses it with no workspace bound. Every other tool can reach
-            # this point with no workspace at all (e.g. `create_new_project`'s
-            # own additional-project path, or `ask_user` on a homeless
-            # session), at which point a Problem-Solver `LogicalPathResolver`
-            # has no root to report yet — reading it unconditionally used to
-            # crash every such call (`default_cwd read before a
-            # workspace/project exists`). Read it lazily and only when there
-            # is one.
+            # SecurityLayer.__evaluate_run_command). Any tool can reach this
+            # point with no workspace at all — a `requires_project=True` spec
+            # is already refused by the dispatch gate above, but run_command
+            # itself is `requires_project=False`, and tools like
+            # `create_new_project`'s own additional-project path or
+            # `ask_user` on a homeless session get here too — at which point
+            # a Problem-Solver `LogicalPathResolver` has no root to report
+            # yet. Reading it unconditionally used to crash every such call
+            # (`default_cwd read before a workspace/project exists`). Read it
+            # lazily and only when there is one.
             default_cwd = str(ctx.resolver.default_cwd) if ctx.has_workspace else ""
             decision = await ctx.security.evaluate(
                 tool_name=tool_name,

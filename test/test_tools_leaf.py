@@ -8,6 +8,7 @@ file-I/O / shell tools — plus the shared ``tools_for_agent`` resolver.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -26,7 +27,13 @@ from kodo.tools import (
     ToolDispatcher,
     tools_for_agent,
 )
-from kodo.toolspecs import DOCUMENT_FEEDBACK, NO_PROJECT_ERROR, READ_FILE, requires_intent
+from kodo.toolspecs import (
+    CREATE_FILE,
+    DOCUMENT_FEEDBACK,
+    NO_PROJECT_ERROR,
+    READ_FILE,
+    requires_intent,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -973,21 +980,41 @@ def test_non_mutating_and_second_degree_tools_do_not_require_intent() -> None:
 # requires_project gate
 # ---------------------------------------------------------------------------
 
+# Driven by the spec registry rather than a hardcoded tool name, so this
+# keeps testing whichever tools actually declare requires_project=True as
+# specs evolve, instead of silently asserting stale behavior for a tool
+# whose spec has since changed (see e.g. create_file, which used to require
+# a project and no longer does).
+_REQUIRES_PROJECT_TOOLS = tuple(
+    sorted(name for name, spec in DISPATCHABLE_TOOLS_BY_NAME.items() if spec.requires_project)
+)
+
 
 @pytest.mark.asyncio
-async def test_requires_project_tool_rejected_without_workspace(tmp_path: Path) -> None:
+@pytest.mark.parametrize("tool_name", _REQUIRES_PROJECT_TOOLS)
+async def test_requires_project_tool_rejected_without_workspace(
+    tool_name: str, tmp_path: Path
+) -> None:
+    """Every requires_project=True tool must be turned away by the generic
+    gate before it ever reaches its own dispatch logic. The gate check runs
+    before arg/intent validation, so an empty payload is enough to prove it —
+    no need to construct a valid call for each tool."""
     dispatcher = _make_dispatcher(tmp_path, has_workspace=False)
-    result = json.loads(
-        await dispatcher.dispatch("create_file", {"path": "foo.py", "content": "x = 1\n"})
-    )
-    assert result == {"error": NO_PROJECT_ERROR}
-    assert not (tmp_path / "foo.py").exists()
+    result = json.loads(await dispatcher.dispatch(tool_name, {}))
+    assert result == {"error": NO_PROJECT_ERROR}, tool_name
 
 
 @pytest.mark.asyncio
 async def test_requires_project_tool_temporary_bypasses_gate_without_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """No shipped tool currently combines requires_project=True with
+    `temporary` support, so this forces create_file's registered spec into
+    that shape for the duration of the test — exercising the gate's bypass
+    branch directly instead of assuming some real tool has this combination."""
+    forced_spec = dataclasses.replace(CREATE_FILE, requires_project=True)
+    monkeypatch.setitem(DISPATCHABLE_TOOLS_BY_NAME, CREATE_FILE.name, forced_spec)
+
     scratch_root = tmp_path / "scratch"
     monkeypatch.setattr("kodo.tools._tool.session_temp_dir", lambda session_id: scratch_root)
     dispatcher = _make_dispatcher(tmp_path, has_workspace=False)
@@ -1001,11 +1028,17 @@ async def test_requires_project_tool_temporary_bypasses_gate_without_workspace(
 
 @pytest.mark.asyncio
 async def test_requires_project_tool_dispatches_normally_with_workspace(tmp_path: Path) -> None:
-    dispatcher = _make_dispatcher(tmp_path, has_workspace=True)
-    result = json.loads(
-        await dispatcher.dispatch("create_file", {"path": "foo.py", "content": "x = 1\n"})
+    assert DOCUMENT_FEEDBACK.requires_project, (
+        "this test's fixture assumes document_feedback requires a project; "
+        "update the test if that spec ever changes"
     )
-    assert result["status"] == "created"
+    (tmp_path / "specs").mkdir()
+    (tmp_path / "specs" / "a.md").write_text("x", encoding="utf-8")
+    dispatcher = _make_dispatcher(tmp_path, has_workspace=True, agent_name="architect_critic")
+    result = json.loads(
+        await dispatcher.dispatch("document_feedback", {"path": "specs/a.md", "accept": True})
+    )
+    assert result["status"] == "recorded"
 
 
 @pytest.mark.asyncio
@@ -1017,19 +1050,26 @@ async def test_requires_project_gate_reads_has_workspace_live_within_one_turn(
     regression test for the bug where ``has_workspace`` was snapshotted once
     at dispatcher-creation time and never revisited for the rest of the turn,
     even after a project genuinely came into existence."""
+    assert DOCUMENT_FEEDBACK.requires_project, (
+        "this test's fixture assumes document_feedback requires a project; "
+        "update the test if that spec ever changes"
+    )
+    (tmp_path / "specs").mkdir()
+    (tmp_path / "specs" / "a.md").write_text("x", encoding="utf-8")
+
     services = _StubServices(has_workspace=False)
     dispatcher = _IntentDispatcher(
         resolver=_FakeResolver(tmp_path),
         gate=_make_gate(),
         session=SessionState(),
         services=services,
-        agent_name="test_agent",
+        agent_name="architect_critic",
         session_id="sess-test",
         mode="guided",
     )
 
     rejected = json.loads(
-        await dispatcher.dispatch("create_file", {"path": "foo.py", "content": "x = 1\n"})
+        await dispatcher.dispatch("document_feedback", {"path": "specs/a.md", "accept": True})
     )
     assert rejected == {"error": NO_PROJECT_ERROR}
 
@@ -1037,11 +1077,12 @@ async def test_requires_project_gate_reads_has_workspace_live_within_one_turn(
     # mid-turn — no dispatcher reconstruction, exactly as production doesn't
     # rebuild ToolDispatcher between tool-call rounds within one turn.
     services._has_workspace = True
+    services._root_paths = (RootPath(name="proj", path=str(tmp_path)),)
 
     allowed = json.loads(
-        await dispatcher.dispatch("create_file", {"path": "foo.py", "content": "x = 1\n"})
+        await dispatcher.dispatch("document_feedback", {"path": "specs/a.md", "accept": True})
     )
-    assert allowed["status"] == "created"
+    assert allowed["status"] == "recorded"
 
 
 # ---------------------------------------------------------------------------

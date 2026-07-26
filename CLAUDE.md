@@ -158,6 +158,46 @@ Never build tests that rely on private methods or variables.
 
 Test private methods through behavoir of public methods.
 
+### Don't hardcode which tool/spec has a property — read it off the registry
+
+When a test asserts behavior that's conditional on a `ToolSpec` field (`requires_project`, `requires_intent`, `security_impact`, …), don't hardcode one specific tool name as "the" example and assume its current spec value. Derive the tool(s) to exercise from the live spec registry (`DISPATCHABLE_TOOLS_BY_NAME`) instead:
+
+```python
+# Bad — assumes create_file requires a project; breaks silently and confusingly
+# the day someone flips CREATE_FILE.requires_project to False for an unrelated reason.
+async def test_requires_project_tool_rejected_without_workspace(tmp_path):
+    dispatcher = _make_dispatcher(tmp_path, has_workspace=False)
+    result = json.loads(await dispatcher.dispatch("create_file", {...}))
+    assert result == {"error": NO_PROJECT_ERROR}
+
+# Good — parametrized off whatever specs currently declare the property, so the
+# test keeps exercising the right tools as specs evolve.
+_REQUIRES_PROJECT_TOOLS = tuple(
+    sorted(name for name, spec in DISPATCHABLE_TOOLS_BY_NAME.items() if spec.requires_project)
+)
+
+@pytest.mark.parametrize("tool_name", _REQUIRES_PROJECT_TOOLS)
+async def test_requires_project_tool_rejected_without_workspace(tool_name, tmp_path):
+    dispatcher = _make_dispatcher(tmp_path, has_workspace=False)
+    result = json.loads(await dispatcher.dispatch(tool_name, {}))
+    assert result == {"error": NO_PROJECT_ERROR}, tool_name
+```
+
+This generic gate check runs before arg/intent validation, so an empty `{}` payload is enough — no need to build a valid call per tool.
+
+When a test needs to actually complete a successful dispatch (not just hit the gate), a specific example tool is sometimes unavoidable because only a real call has valid args. In that case, pin the assumption with a loud, explicit assertion instead of a silent one:
+
+```python
+assert DOCUMENT_FEEDBACK.requires_project, (
+    "this test's fixture assumes document_feedback requires a project; "
+    "update the test if that spec ever changes"
+)
+```
+
+That way the next spec change that breaks the premise fails at that assertion with a clear message, instead of several lines of dispatch logic downstream with a confusing diff.
+
+If the scenario under test doesn't exist on any current real tool (e.g. `requires_project=True` combined with `temporary` bypass support — no shipped tool currently has both), don't stretch an unrelated tool's test to imply it does. Construct the scenario explicitly, e.g. `monkeypatch.setitem(DISPATCHABLE_TOOLS_BY_NAME, name, dataclasses.replace(spec, requires_project=True))` for the duration of the test, so the test states its own precondition instead of inheriting one from current production state.
+
 ## Prompts
 
 When user asks you to review, edit, or generate an LLM prompt, you MUST follow these rules.
