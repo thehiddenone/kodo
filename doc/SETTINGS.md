@@ -56,7 +56,7 @@ design (registries, effort levels, resolution order) is in
     "local": "llamacpp-qwen36-27b-q4-k-xl",
     "cloud": {
       "anthropic": { "low": "claude-haiku-4-5-20251001", "medium": "claude-sonnet-5",
-                      "high": "claude-opus-4-8", "max": "claude-fable-5" }
+                      "high": "claude-opus-5", "max": "claude-fable-5" }
     }
   }
 }
@@ -116,7 +116,7 @@ Governs the stuck-agent watchdog (doc/STUCK_DETECTION.md) — detects a turn tha
       "anthropic": {
         "low": "claude-haiku-4-5-20251001",
         "medium": "claude-sonnet-5",
-        "high": "claude-opus-4-8",
+        "high": "claude-opus-5",
         "max": "claude-fable-5"
       }
     }

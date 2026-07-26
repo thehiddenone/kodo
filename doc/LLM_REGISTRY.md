@@ -91,11 +91,12 @@ shared by every model from that vendor (unlike the old per-model `module`
 field). `_CLOUD_VENDOR_DISPLAY` holds the human-readable name shown in the UI
 ("Anthropic").
 
-Today's Anthropic entries (`claude-fable-5`, `claude-opus-4-8`/`4-7`/`4-6`,
-`claude-sonnet-5`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`) — seven
-models, defaulted one per effort tier (low→haiku, medium→sonnet-5,
-high→opus-4-8, max→fable-5) but all seven selectable in any of the four
-effort panels. Fable is listed first in `_ANTHROPIC_MODELS` — deliberately
+Today's Anthropic entries (`claude-fable-5`, `claude-opus-5`,
+`claude-opus-4-8`/`4-7`/`4-6`, `claude-sonnet-5`, `claude-sonnet-4-6`,
+`claude-haiku-4-5-20251001`) — eight models, defaulted one per effort tier
+(low→haiku, medium→sonnet-5, high→opus-5, max→fable-5) but all eight
+selectable in any of the four effort panels. Fable is listed first in
+`_ANTHROPIC_MODELS` — deliberately
 out of API-vintage order — so the Cloud AI Settings webview renders it as the
 top/first option in every effort panel; each entry's `recommendation` string
 is the one-line "when to pick this" blurb shown next to it there. Pricing
@@ -892,7 +893,7 @@ is the only live flavor-selection surface, per §4.6's kodo-vsix UI note —
     "local": "llamacpp-qwen36-27b-q4-k-xl",
     "cloud": {
       "anthropic": { "low": "claude-haiku-4-5-20251001", "medium": "claude-sonnet-5",
-                      "high": "claude-opus-4-8", "max": "claude-fable-5" }
+                      "high": "claude-opus-5", "max": "claude-fable-5" }
     }
   }
 }

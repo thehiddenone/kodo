@@ -67,19 +67,26 @@ _ANTHROPIC_MODELS: tuple[CloudLLMEntry, ...] = (
         "big architectural calls.",
     ),
     CloudLLMEntry(
+        name="Claude Opus 5",
+        model_id="claude-opus-5",
+        description="Anthropic Claude Opus 5",
+        context_window=1_000_000,
+        recommendation="Your best all-around heavyweight — thorough and careful, rarely wrong.",
+    ),
+    CloudLLMEntry(
         name="Claude Opus 4.8",
         model_id="claude-opus-4-8",
         description="Anthropic Claude Opus 4.8",
         context_window=1_000_000,
-        recommendation="Your best all-around heavyweight — thorough and careful, rarely wrong.",
+        recommendation="A proven heavyweight from the previous Opus generation — "
+        "still excellent for complex work.",
     ),
     CloudLLMEntry(
         name="Claude Opus 4.7",
         model_id="claude-opus-4-7",
         description="Anthropic Claude Opus 4.7",
         context_window=1_000_000,
-        recommendation="A proven heavyweight from the previous Opus generation — "
-        "still excellent for complex work.",
+        recommendation="An earlier Opus release — still solid for complex work.",
     ),
     CloudLLMEntry(
         name="Claude Opus 4.6",

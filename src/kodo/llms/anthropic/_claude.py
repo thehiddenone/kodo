@@ -51,6 +51,7 @@ _THINKING_BUDGET_TOKENS = 4096
 _ADAPTIVE_THINKING_MODELS = frozenset(
     {
         "claude-fable-5",
+        "claude-opus-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-sonnet-5",
@@ -92,7 +93,12 @@ class ClaudePlugin(LLMPlugin):
     @property
     def supported_models(self) -> list[str]:
         return [
+            "claude-fable-5",
+            "claude-opus-5",
+            "claude-opus-4-8",
             "claude-opus-4-7",
+            "claude-opus-4-6",
+            "claude-sonnet-5",
             "claude-sonnet-4-6",
             "claude-haiku-4-5-20251001",
         ]

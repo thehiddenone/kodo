@@ -59,6 +59,12 @@ def test_thinking_param_opus_4_8() -> None:
     assert result == {"type": "adaptive"}
 
 
+def test_thinking_param_opus_5() -> None:
+    """claude-opus-5 is adaptive."""
+    result = _thinking_param("claude-opus-5")
+    assert result == {"type": "adaptive"}
+
+
 def test_thinking_param_sonnet_5() -> None:
     """claude-sonnet-5 is adaptive."""
     result = _thinking_param("claude-sonnet-5")

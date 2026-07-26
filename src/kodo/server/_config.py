@@ -39,7 +39,7 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
             "anthropic": {
                 "low": "claude-haiku-4-5-20251001",
                 "medium": "claude-sonnet-5",
-                "high": "claude-opus-4-8",
+                "high": "claude-opus-5",
                 "max": "claude-fable-5",
             },
         },
