@@ -31,6 +31,19 @@ from kodo.shellparser import parse_command
         ("./build.sh", True),
         ("python script.py", True),
         ("", False),
+        # Stream-merge redirects touch no file — must not trigger a sweep on
+        # their own (only `command_may_mutate`'s executable-allowlist half
+        # decides these, same as a bare `cat foo`).
+        ("cat foo 2>&1", False),
+        ("cat foo >&2", False),
+        # But a real, stream-qualified file write must still be caught, now
+        # that the parser recognizes `2>`/`1>>` as proper redirections.
+        ("cat foo 2> err.log", True),
+        ("cat foo 1>> out.log", True),
+        # `<>` opens for reading AND writing — a write, same as `_checkpoints`
+        # always intended (this used to disagree with `kodo.security`'s own
+        # classification before both were unified on `redirection_writes_file`).
+        ("cat <> rw.txt", True),
     ],
 )
 def test_command_may_mutate(command: str, expected: bool) -> None:

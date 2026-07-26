@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from kodo.security import SecurityDecision, SecurityLayer, analyze_command
+from kodo.security import SecurityDecision, SecurityLayer, analyze_command, evaluate_command
 from kodo.shellparser import parse_powershell_command
 
 
@@ -158,6 +158,108 @@ def test_analysis_exposes_normalized_segments() -> None:
     a = analyze_command("git push origin main", cwd="/ws/proj", roots=_ROOTS, windows=False)
     assert a.segments[0].executable == "git"
     assert a.segments[0].subcommand == "push"
+
+
+# ----------------------------------------------------------------------
+# Stream-qualified redirects (`2>&1`, `2>/dev/null`) no longer corrupt args
+# ----------------------------------------------------------------------
+
+
+def test_analysis_fd_merge_and_devnull_together_not_outside() -> None:
+    a = analyze_command("make test 2>/dev/null 1>&2", cwd="/ws/proj", roots=_ROOTS, windows=False)
+    assert a.outside_paths == ()
+
+
+def test_rules_dual_mode_command_not_corrupted_by_fd_merge() -> None:
+    # Before the parser recognized `2>&1`/`N>` as real redirections, these
+    # left stray digit tokens in `segment.args`, which the dual-mode
+    # heuristics (`_DUAL_MODE`) mistook for a mutating positional value.
+    for command in ("hostname 2>&1", "date 2>/dev/null", "ulimit 2>&1"):
+        d = evaluate_command(command, cwd="/ws/proj", roots=_ROOTS)
+        assert d.action == "allow", f"{command!r} should be read-only, got: {d.reason}"
+
+
+def test_rules_dual_mode_command_still_asks_when_actually_mutating() -> None:
+    # The fix must not swallow genuine mutating positionals.
+    d = evaluate_command("hostname newname 2>&1", cwd="/ws/proj", roots=_ROOTS)
+    assert d.action == "ask"
+
+
+# ----------------------------------------------------------------------
+# PowerShell `$null` devnull-equivalent
+# ----------------------------------------------------------------------
+
+
+def test_analysis_powershell_null_not_outside() -> None:
+    a = analyze_command(
+        "Get-Content file.txt 2>$null", cwd="C:\\ws\\proj", roots=("C:\\ws\\proj",), windows=True
+    )
+    assert a.outside_paths == ()
+    assert "$null" not in a.unresolved
+
+
+def test_analysis_powershell_null_case_insensitive() -> None:
+    a = analyze_command(
+        "Get-Content file.txt *>$NULL", cwd="C:\\ws\\proj", roots=("C:\\ws\\proj",), windows=True
+    )
+    assert a.outside_paths == ()
+
+
+# ----------------------------------------------------------------------
+# No workspace loaded: every path (argument or redirect) breaches the jail,
+# except the OS temp directory
+# ----------------------------------------------------------------------
+
+
+def test_analysis_no_workspace_flags_relative_argument() -> None:
+    a = analyze_command("cat file.txt", cwd="", roots=(), windows=False)
+    assert a.outside_paths == ("file.txt",)
+
+
+def test_analysis_no_workspace_flags_relative_redirect_target() -> None:
+    a = analyze_command("echo hi > out.txt", cwd="", roots=(), windows=False)
+    assert "out.txt" in a.outside_paths
+
+
+def test_analysis_no_workspace_still_exempts_system_temp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("kodo.security._analysis.system_temp_roots", lambda: ("/tmp",))
+    a = analyze_command("echo hi > /tmp/out.txt", cwd="", roots=(), windows=False)
+    assert "/tmp/out.txt" not in a.outside_paths
+
+
+def test_analysis_no_workspace_dotdot_escape_from_temp_still_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `/tmp/a/../../etc/passwd` normalizes to `/etc/passwd` — outside temp —
+    # before the containment check runs, so the `..` can't be used to slip
+    # out of the one exemption that survives having no workspace.
+    monkeypatch.setattr("kodo.security._analysis.system_temp_roots", lambda: ("/tmp",))
+    a = analyze_command("echo hi > /tmp/a/../../etc/passwd", cwd="", roots=(), windows=False)
+    assert "/etc/passwd" in a.outside_paths
+
+
+def test_analysis_with_workspace_relative_argument_still_exempt() -> None:
+    # Sanity check: the no-workspace behavior above must not leak into the
+    # ordinary, workspace-loaded case.
+    a = analyze_command("cat file.txt", cwd="/ws/proj", roots=_ROOTS, windows=False)
+    assert a.outside_paths == ()
+
+
+def test_rules_no_workspace_ask_has_no_rule_offer() -> None:
+    # A "resolved" path with no real cwd/roots to anchor it isn't a safe,
+    # reusable key for a permanent allow-rule.
+    d = evaluate_command("cd /etc", cwd="", roots=())
+    assert d.action == "ask"
+    assert d.rule_offer is None
+    assert "No workspace is loaded" in d.reason
+
+
+def test_rules_with_workspace_equivalent_ask_still_offers_a_rule() -> None:
+    d = evaluate_command("cd /etc", cwd="/ws/proj", roots=_ROOTS)
+    assert d.action == "ask"
+    assert d.rule_offer == ("cd", "/etc")
 
 
 # ----------------------------------------------------------------------

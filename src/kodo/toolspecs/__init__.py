@@ -62,7 +62,20 @@ from ._update_web_search_state import UPDATE_WEB_SEARCH_STATE
 from ._visibility import build_detail_rows, stringify_value
 from ._wait import WAIT
 from ._web_search import WEB_SEARCH
-from ._workspace import NO_PROJECT_ERROR
+
+"""The shared "no project bound" error every ``requires_project`` tool returns.
+
+Mirrors :mod:`kodo.toolspecs._intent`'s shape: the message is defined once
+here so it can never drift between call sites. :class:`~kodo.tools.ToolDispatcher`
+returns it verbatim (wrapped as ``{"error": NO_PROJECT_ERROR}``) instead of
+dispatching, for any tool whose spec sets ``requires_project=True`` when no
+project is bound and the call isn't scoped to the private scratch directory
+(``temporary: true``).
+"""
+NO_PROJECT_ERROR = (
+    "No project is open in this session. Call `create_new_project` to create "
+    "one before making this tool call."
+)
 
 __all__ = [
     "ALL_TOOLS",

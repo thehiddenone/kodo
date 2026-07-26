@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from kodo.shellparser import ParsedCommand, Redirection, Segment
+from kodo.shellparser import ParsedCommand, Redirection, Segment, redirection_writes_file
 
 __all__ = ["NormalizedSegment", "SUB_MARK", "leaf_name", "normalize_segments"]
 
@@ -177,10 +177,7 @@ def normalize_segments(parsed: ParsedCommand, *, windows: bool) -> tuple[Normali
 def _normalize(segment: Segment, *, windows: bool, piped_input: bool) -> NormalizedSegment:
     tokens = [segment.executable, *segment.args] if segment.executable else list(segment.args)
     has_sub = any(SUB_MARK in t for t in tokens)
-    writes = any(
-        not r.operator.startswith("<") and not re.match(r"^&\d+$", r.target)
-        for r in segment.redirections
-    )
+    writes = any(redirection_writes_file(r) for r in segment.redirections)
     if any(SUB_MARK in r.target for r in segment.redirections):
         has_sub = True
 

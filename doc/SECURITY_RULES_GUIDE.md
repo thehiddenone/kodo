@@ -36,6 +36,15 @@ never by looking at the command string itself. A `ParsedCommand` carries
 `.segments` (one per pipeline stage) and `.operators` (the separators
 between them — `|`, `||`, `&&`, `;`, verbatim). Each `Segment` carries its
 own `.args` and `.redirections` (each a `{operator, target, heredoc_body}`).
+A stream-qualified redirect (`2>`, `1>>`) and an fd-duplication target
+(`>&1`, `2>&1`) both parse as a proper `Redirection` in *both* dialects —
+`parse_command()` needed a dedicated pre-`shlex` protection pass to get
+there (fixed 2026-07-26; `shlex` can't otherwise tell `cmd 1 > file` from
+`cmd 1>file`), `parse_powershell_command()` always handled it natively.
+`kodo.shellparser.is_fd_merge_target`/`redirection_writes_file` are the
+two shared, reusable facts every downstream consumer (this rule engine,
+the checkpoint mutation heuristic) derives from a `Redirection` — never
+reimplemented locally.
 
 **2. Substitutions are masked *before* tokenizing, not after.** A `$(...)`,
 backtick, `${VAR}`, `$VAR`, `$env:VAR`, or `%VAR%` snippet is found by regex
@@ -103,6 +112,23 @@ can never produce an outside-path finding**, which is exactly why the
 read-only fast path (§4) needs its own explicit AND-gate rather than being
 able to trust "no outside-path finding" as automatic for every read-only
 command.
+
+**…except when there's no workspace to be confined to.** That assumption
+requires a real, resolver-confined `cwd` — which only exists when a
+workspace is loaded (`roots` non-empty). With zero bound roots (a homeless
+session; `run_command` can still dispatch here, its spec sets
+`requires_project=False`), `cwd` is itself `""`, so the free pass is
+withdrawn: *every* non-flag token is resolved regardless of whether it
+contains `..`, argument or redirect target alike. Since `roots` is empty,
+every one of them fails the containment check and becomes an outside-path
+finding — the **only** survivor is the OS temp directory carve-out (the
+"outside every workspace root *and* outside the OS temp directory" question
+above), which applies unconditionally either way. The ask's reason text
+reflects this ("No workspace is loaded, so '…' cannot be verified as safe."
+instead of "outside the workspace"), and — unlike the ordinary case below —
+it is never offer-eligible (§2.7's path-offer machinery requires a stable,
+reusable resolved path to key a rule on; one resolved against an empty
+`cwd` isn't one).
 
 **Per-segment attribution, not whole-line.** Each segment's own arguments
 and redirection targets are classified into *that segment's own* list

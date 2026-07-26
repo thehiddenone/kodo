@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from kodo.shellparser import parse_command, parse_powershell_command
+from kodo.shellparser import (
+    Redirection,
+    is_fd_merge_target,
+    parse_command,
+    parse_powershell_command,
+    redirection_writes_file,
+)
 
 
 def test_simple_command() -> None:
@@ -168,6 +174,77 @@ def test_grouped_redirection_still_captured() -> None:
 
 
 # ----------------------------------------------------------------------
+# POSIX stream-number prefixes (`2>`) and fd-duplication targets (`>&1`)
+# ----------------------------------------------------------------------
+
+
+def test_posix_fd_merge_target_recognized() -> None:
+    p = parse_command("cmd 2>&1")
+    assert p.segments[0].executable == "cmd"
+    assert p.segments[0].args == ()
+    assert [(r.operator, r.target) for r in p.segments[0].redirections] == [("2>", "&1")]
+
+
+def test_posix_bare_fd_dup_without_number_prefix() -> None:
+    p = parse_command("echo hi >&2")
+    assert p.segments[0].args == ("hi",)
+    assert [(r.operator, r.target) for r in p.segments[0].redirections] == [(">", "&2")]
+
+
+def test_posix_stream_number_prefix_with_glued_target() -> None:
+    # No space between the operator and its target — the common
+    # `2>/dev/null` spelling — must not leave a stray "2" in args.
+    p = parse_command("cmd 2>/dev/null")
+    assert p.segments[0].args == ()
+    assert [(r.operator, r.target) for r in p.segments[0].redirections] == [("2>", "/dev/null")]
+
+
+def test_posix_stream_number_prefix_with_spaced_target() -> None:
+    p = parse_command("cmd 1> file.txt")
+    assert p.segments[0].args == ()
+    assert [(r.operator, r.target) for r in p.segments[0].redirections] == [("1>", "file.txt")]
+
+
+def test_posix_devnull_and_fd_merge_together() -> None:
+    p = parse_command("make test > /dev/null 2>&1")
+    assert p.segments[0].args == ("test",)
+    assert [(r.operator, r.target) for r in p.segments[0].redirections] == [
+        (">", "/dev/null"),
+        ("2>", "&1"),
+    ]
+
+
+def test_posix_standalone_digit_before_redirect_stays_a_real_arg() -> None:
+    # A space between the digit and the operator means "1" is a genuine
+    # positional argument, not an IO_NUMBER — real bash grammar requires the
+    # digit to touch the operator with no whitespace to bind as a stream
+    # number.
+    p = parse_command("cmd 1 > file")
+    assert p.segments[0].args == ("1",)
+    assert [(r.operator, r.target) for r in p.segments[0].redirections] == [(">", "file")]
+
+
+def test_posix_word_ending_in_digit_not_mistaken_for_io_number() -> None:
+    p = parse_command("echo file2>x")
+    assert p.segments[0].args == ("file2",)
+    assert [(r.operator, r.target) for r in p.segments[0].redirections] == [(">", "x")]
+
+
+def test_posix_literal_fd_merge_text_inside_quotes_is_not_a_redirect() -> None:
+    p = parse_command('echo "literal 2>&1 inside quotes"')
+    assert p.segments[0].args == ("literal 2>&1 inside quotes",)
+    assert p.segments[0].redirections == ()
+
+
+def test_posix_chained_fd_redirects_with_no_spaces() -> None:
+    p = parse_command("cmd 2>&1>out.log")
+    assert [(r.operator, r.target) for r in p.segments[0].redirections] == [
+        ("2>", "&1"),
+        (">", "out.log"),
+    ]
+
+
+# ----------------------------------------------------------------------
 # Bare subshell `(...)` / script-block `{...}` flattening (PowerShell)
 # ----------------------------------------------------------------------
 
@@ -193,3 +270,35 @@ def test_powershell_grouped_redirection_still_captured() -> None:
     p = parse_powershell_command("(rm -rf x)>out.txt")
     assert p.segments[0].executable == "rm"
     assert [(r.operator, r.target) for r in p.segments[0].redirections] == [(">", "out.txt")]
+
+
+# ----------------------------------------------------------------------
+# `is_fd_merge_target` / `redirection_writes_file` — shared structural
+# classification used by both kodo.security and kodo.runtime._checkpoints
+# ----------------------------------------------------------------------
+
+
+def test_is_fd_merge_target() -> None:
+    assert is_fd_merge_target("&1")
+    assert is_fd_merge_target("&12")
+    assert not is_fd_merge_target("/dev/null")
+    assert not is_fd_merge_target("")
+
+
+def test_redirection_writes_file_output_forms() -> None:
+    for operator in (">", ">>", ">|", "&>", "&>>", "2>", "1>>", "*>", "*>>"):
+        assert redirection_writes_file(Redirection(operator=operator, target="out.txt"))
+
+
+def test_redirection_writes_file_input_forms_do_not_write() -> None:
+    for operator in ("<", "<<", "<<<", "2<"):
+        assert not redirection_writes_file(Redirection(operator=operator, target="in.txt"))
+
+
+def test_redirection_writes_file_read_write_form() -> None:
+    assert redirection_writes_file(Redirection(operator="<>", target="rw.txt"))
+
+
+def test_redirection_writes_file_fd_merge_is_not_a_write() -> None:
+    assert not redirection_writes_file(Redirection(operator="2>", target="&1"))
+    assert not redirection_writes_file(Redirection(operator=">", target="&2"))

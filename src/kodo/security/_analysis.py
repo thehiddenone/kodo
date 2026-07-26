@@ -29,7 +29,12 @@ import re
 from dataclasses import dataclass
 
 from kodo.common import system_temp_roots
-from kodo.shellparser import ParsedCommand, parse_command, parse_powershell_command
+from kodo.shellparser import (
+    ParsedCommand,
+    is_fd_merge_target,
+    parse_command,
+    parse_powershell_command,
+)
 
 from ._classify import SUB_MARK, NormalizedSegment, normalize_segments
 
@@ -39,6 +44,23 @@ __all__ = ["CommandAnalysis", "analyze_command"]
 _DEVICE_PATHS = frozenset(
     {"/dev/null", "/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/tty", "nul"}
 )
+
+# PowerShell's null-device *variable* (not a filesystem path — `Get-Content
+# x 2>$null` is the idiomatic devnull-equivalent on that dialect). Checked
+# by literal (case-insensitive) text, alongside `is_fd_merge_target`, before a
+# redirection target ever reaches `_resolve`/`_DEVICE_PATHS`: `$null` doesn't
+# look like a path (no `/`, no drive letter), so it would otherwise fall
+# through `_resolve`'s relative-token branch untouched anyway — this makes
+# the exemption explicit and intentional instead of an accident of that
+# branch, and (via `_mask_unless_ps_null` below) keeps it out of `unresolved`.
+_PS_NULL_RE = re.compile(r"^\$null$", re.IGNORECASE)
+
+
+def _mask_unless_ps_null(match: re.Match[str]) -> str:
+    """Substitution callback: mask everything except a literal ``$null``."""
+    snippet = match.group()
+    return snippet if _PS_NULL_RE.match(snippet) else _SUB_MARK
+
 
 # Substitution/expansion markers that defeat static resolution. One regex per
 # family so findings can quote the exact snippet. The first two families are
@@ -139,9 +161,6 @@ _READONLY_CMDLETS = frozenset(
     }
 )
 
-# Redirection targets like `&1` / `&2` merge streams; they are not files.
-_FD_MERGE_RE = re.compile(r"^&\d+$")
-
 # Substitutions are masked out of the command BEFORE parsing (see
 # analyze_command): shlex would otherwise split `$(pwd)/y` into fragments and
 # a bare `/y` would masquerade as an absolute path. Any token carrying the
@@ -216,18 +235,28 @@ def analyze_command(
     win = os.name == "nt" if windows is None else windows
 
     # Collect substitution snippets, then mask them so the tokenizer keeps
-    # each affected token in one (marked, skipped) piece.
+    # each affected token in one (marked, skipped) piece. `$null` is PowerShell's
+    # devnull-equivalent (a variable, not a path) — masking it here would still
+    # leave it harmless (`_classify` already skips `_SUB_MARK`-carrying tokens),
+    # but recognizing it explicitly, like `is_fd_merge_target` below, keeps it out of
+    # `unresolved` and documents the exemption as intentional rather than
+    # incidental.
     unresolved: list[str] = []
     command_subs: list[str] = []
     masked = command
     for pattern in _SUBSTITUTION_RES:
         for match in pattern.finditer(masked):
             snippet = match.group()
+            if win and _PS_NULL_RE.match(snippet):
+                continue
             if snippet not in unresolved:
                 unresolved.append(snippet)
                 if pattern in _COMMAND_SUB_RES:
                     command_subs.append(snippet)
-        masked = pattern.sub(_SUB_MARK, masked)
+        if win:
+            masked = pattern.sub(_mask_unless_ps_null, masked)
+        else:
+            masked = pattern.sub(_SUB_MARK, masked)
 
     parsed: ParsedCommand = parse_powershell_command(masked) if win else parse_command(masked)
 
@@ -242,7 +271,7 @@ def analyze_command(
             _classify(arg, cwd, roots, win, per_segment[i])
         for redir in segment.redirections:
             target = redir.target
-            if not target or _FD_MERGE_RE.match(target):
+            if not target or is_fd_merge_target(target) or (win and _PS_NULL_RE.match(target)):
                 continue
             _classify(target, cwd, roots, win, per_segment[i], force_path=True)
 
@@ -306,9 +335,14 @@ def _classify(
     and the OS temp directory.
 
     Skips option flags (checking any ``=``-attached value), substitution-laden
-    tokens (statically unresolvable — reported separately), plain relative
-    tokens (confined by *cwd*), and device sinks.  ``force_path`` marks tokens
-    that are definitely paths (redirection targets), bypassing the flag check.
+    tokens (statically unresolvable — reported separately), and device sinks.
+    A plain relative token is normally skipped too (confined by *cwd*) — but
+    only when *roots* is non-empty (a workspace is loaded). With no workspace
+    there is no confined *cwd* to trust, so every non-flag token, relative or
+    not, is resolved and checked (doc/SECURITY_RULES_PLAN.md §2.7a): the only
+    thing that still passes is the OS temp directory. ``force_path`` marks
+    tokens that are definitely paths (redirection targets), bypassing the
+    flag check.
     """
     if not token:
         return
@@ -320,7 +354,7 @@ def _classify(
             _classify(value, cwd, roots, windows, outside, force_path=True)
         return
 
-    resolved = _resolve(token, cwd, windows)
+    resolved = _resolve(token, cwd, windows, confined=bool(roots))
     if resolved is None:
         return
     if resolved.replace("\\", "/").lower() in _DEVICE_PATHS:
@@ -334,10 +368,24 @@ def _classify(
     outside.append(resolved)
 
 
-def _resolve(token: str, cwd: str, windows: bool) -> str | None:
+def _resolve(token: str, cwd: str, windows: bool, *, confined: bool = True) -> str | None:
     """Normalize *token* to an absolute path, or ``None`` when it cannot
     reference anything outside *cwd*'s subtree (plain relative / an option
-    switch)."""
+    switch).
+
+    Args:
+        confined: Whether a workspace is loaded (``roots`` non-empty). When
+            ``True`` (the ordinary case), a plain relative token — no ``..``
+            — is trusted to stay under the already-confined *cwd* and is
+            never resolved at all (returns ``None``). When ``False`` there is
+            no confined *cwd* to trust (``cwd`` is itself ``""`` in this
+            state — see ``SecurityLayer.__evaluate_run_command``), so every
+            relative token is resolved the same way an absolute one would be,
+            anchoring it against ``cwd``/`` (join with `` "" `` is a no-op,
+            so it normalizes on its own text) — the empty *roots* then makes
+            ``_within_any_root`` reject it unconditionally in ``_classify``,
+            same as any other unproven path, short of the OS temp carve-out.
+    """
     mod = ntpath if windows else posixpath
     text = token
 
@@ -358,9 +406,12 @@ def _resolve(token: str, cwd: str, windows: bool) -> str | None:
     if is_abs:
         return str(mod.normpath(text))
 
-    # Relative: only worth resolving when `..` could climb out of cwd.
+    # Relative: with a confined cwd, only worth resolving when `..` could
+    # climb out of it — a plain relative token can't otherwise escape. With
+    # no confined cwd (`confined=False`), that guarantee doesn't hold, so
+    # every relative token is resolved instead of skipped.
     parts = re.split(r"[\\/]", text)
-    if ".." not in parts:
+    if confined and ".." not in parts:
         return None
     return str(mod.normpath(mod.join(cwd, text)))
 

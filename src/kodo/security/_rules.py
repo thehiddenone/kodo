@@ -386,7 +386,14 @@ def evaluate_command(
             # or produce a spurious redundant ask on a segment like
             # `cat /etc/hosts > /etc/hosts2` once only the read side is
             # granted.
-            eligible = _is_path_offer_eligible(segment)
+            # With no workspace loaded (`roots` empty), a "resolved" relative
+            # token is anchored to nothing real (`cwd` is itself `""` in this
+            # state — see `_analysis._resolve`'s `confined` parameter) — never
+            # a stable, reusable filesystem location, so no rule is ever
+            # offered for it, and the reason text doesn't claim the path is
+            # merely "outside the workspace" (there isn't one to be outside
+            # of).
+            eligible = _is_path_offer_eligible(segment) and bool(roots)
             for path in dict.fromkeys(outside_here):  # already deduped per-segment; defensive
                 # `match_path` (case/slash-folded on Windows) is what gets
                 # offered, deduped, and checked against `known_path_rules` —
@@ -405,9 +412,14 @@ def evaluate_command(
                     sensitive_roots=sensitive_roots,
                     windows=win,
                 )
+                reason = (
+                    f"No workspace is loaded, so '{path}' cannot be verified as safe."
+                    if not roots
+                    else f"The command targets a path outside the workspace: {path}."
+                )
                 asks.append(
                     _ask(
-                        f"The command targets a path outside the workspace: {path}.",
+                        reason,
                         "workspace",
                         source="workspace",
                         rule_offer=offer,

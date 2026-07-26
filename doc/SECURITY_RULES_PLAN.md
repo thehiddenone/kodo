@@ -797,3 +797,56 @@ kodo-vsix:
   Selection`/`Delete Selected`/`Close`, `.section-divider` between list and
   buttons), fetched/mutated via the two new `session.security_rules.*`
   commands. `Close` dismisses the modal only, not the whole panel.
+
+## IO redirect handling: parser fix, `$null`, and no-workspace jail (post-launch, 2026-07-26)
+
+kodo-only (no kodo-vsix changes — the new asks ride the existing
+`AskPart`/`rule_offer` wire shape unchanged). Full detail in
+[SECURITY.md](SECURITY.md) §3.1 point 1, §3.2c, and §5; summary here for the
+chronological record.
+
+1. **POSIX parser bug fix** (`kodo.shellparser._parser`): `shlex` can't tell
+   `cmd 1 > file` (word `"1"` then a redirect) apart from `cmd 1>file` (fd 1
+   redirected) — both tokenize identically, since `shlex` only tracks
+   character-class transitions, not whitespace. `parse_command()` never
+   recognized a POSIX IO_NUMBER prefix (`2>`) or an `&N` fd-duplication
+   suffix (`>&1`) at all — `2>&1` degraded into three stray tokens (`2`,
+   `>&`, `1`) dumped into `segment.args`. Harmless for path analysis (not
+   path-shaped), but it *did* corrupt the dual-mode mutation heuristics
+   (§3.2 step 4): `hostname 2>&1` / `date 2>/dev/null` / `ulimit 2>&1`
+   could misread the leftover digit as a real positional value and ask as
+   if the command mutated something. Fixed with a new pre-`shlex` pass,
+   `_protect_stream_redirects`, that regex-scans the raw (quote-aware) text
+   for these glued forms and protects them as opaque placeholders before
+   tokenizing, decoded back into a proper `Redirection` afterward — bringing
+   `parse_command()` to parity with `parse_powershell_command()`, which
+   already handled this correctly (it never used `shlex`, so it never had
+   the ambiguity).
+2. **Shared redirect classification, deduplicated**: two new
+   `kodo.shellparser` functions — `is_fd_merge_target(target)` and
+   `redirection_writes_file(redirection)` — replace three independent,
+   *slightly disagreeing* copies of the same judgement:
+   `kodo.security._analysis._FD_MERGE_RE`, `kodo.security._classify`'s
+   inline `not operator.startswith("<")` write check, and
+   `kodo.runtime._checkpoints._OUTPUT_REDIRECTS`. The disagreement was real:
+   `_checkpoints` already treated `<>` (read+write) as a write,
+   `_classify` didn't, because each had reimplemented the same rule
+   independently. Both now call the shared helpers.
+3. **PowerShell `$null`**: recognized explicitly as a device sink (like
+   `/dev/null`/`NUL`) instead of only accidentally avoiding a false-flag by
+   falling through the generic `$VAR`-substitution mask.
+4. **No-workspace jail**: with no workspace loaded (`roots` empty — a
+   homeless session with zero bound directories; `run_command` can dispatch
+   in this state, `requires_project=False`), the "a plain relative token
+   can't escape the confined cwd" free pass no longer applies — there is no
+   confined cwd to trust (`cwd` is itself `""` in this state). Every
+   non-flag token, argument or redirect target, relative or absolute, is
+   now resolved and checked; since `roots` is empty, every one of them is
+   "outside" by construction. The **only** surviving exemption is the OS
+   temp directory (`kodo.common.system_temp_roots()`, already
+   platform-correct — `%TEMP%` on Windows) — every resolution normalizes
+   `..` first, so `/tmp/a/../../etc/passwd` can't launder itself through
+   that one exemption. The resulting ask never offers a permanent rule
+   (§3.2c) and uses a distinct reason ("No workspace is loaded, so '…'
+   cannot be verified as safe.") instead of "outside the workspace" — there
+   isn't one to be outside of.

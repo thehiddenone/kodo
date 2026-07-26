@@ -160,18 +160,36 @@ from `kodo.shellparser` (the POSIX parser, or the PowerShell/Windows parser on
    directory**. Only tokens that *can* escape are resolved: absolute paths,
    `~`, Windows drive/UNC forms, and relatives containing `..` (joined
    lexically against the call's working directory). Plain relative tokens
-   can't escape the resolver-confined cwd and are skipped — which also keeps
-   subcommand words (`install`, `build`) from being misread as files.
+   can't escape the resolver-confined cwd and are skipped **when a workspace
+   is loaded** (`roots` non-empty) — which also keeps subcommand words
+   (`install`, `build`) from being misread as files. **With no workspace
+   loaded** (`roots` empty — a homeless session with zero bound directories;
+   `run_command`'s `default_cwd` is itself `""` in this state, see
+   `SecurityLayer.__evaluate_run_command`), that free pass is withdrawn: every
+   non-flag token, relative or not, redirect target or plain argument, is
+   resolved and checked the same way, since there is no confined cwd left to
+   trust it against — the empty `roots` then makes every one of them "outside"
+   by construction, short of the OS temp carve-out below. The resulting ask's
+   reason text says so explicitly ("No workspace is loaded, so '…' cannot be
+   verified as safe.") instead of the ordinary "outside the workspace"
+   wording, and never offers a permanent rule (§3.2c) — a path resolved
+   against an empty cwd isn't a stable, reusable key to pin one to.
    Executables are exempt (running `/usr/bin/python` is normal; the program
-   is not a *target*). Device sinks (`/dev/null`, `NUL`, …) and fd-merges
-   (`2>&1`) are exempt. `--flag=value` values are checked. A path under
-   `kodo.common.system_temp_roots()` (`tempfile.gettempdir()`, plus the
-   literal `/tmp` on POSIX even when `gettempdir()` resolves elsewhere, e.g.
-   macOS's per-user `TMPDIR`) is never counted as outside — scratch files
-   there are expected agent territory, not a workspace escape. The same
-   helper gates `kodo.tools._paths.resolve_within` (the Guided-mode file-tool
-   resolver), so `create_file` / `edit_file` / `filesystem` / `read_file`
-   can address the temp directory too, not just `run_command` (§4).
+   is not a *target*). Device sinks (`/dev/null`, `NUL`, PowerShell's `$null`
+   variable, …) and fd-merges/duplications (`2>&1`, `>&2`, …) are exempt —
+   see §5 for how these are recognized structurally. `--flag=value` values
+   are checked. A path under `kodo.common.system_temp_roots()`
+   (`tempfile.gettempdir()`, plus the literal `/tmp` on POSIX even when
+   `gettempdir()` resolves elsewhere, e.g. macOS's per-user `TMPDIR`) is never
+   counted as outside — scratch files there are expected agent territory, not
+   a workspace escape — and this is the **one exemption that survives having
+   no workspace at all**. Every resolution normalizes `..` lexically
+   (`os.path.normpath`) before the containment check runs, so `/tmp/a/../
+   ../etc/passwd` is compared as `/etc/passwd`, not as a `/tmp`-prefixed
+   string. The same helper gates `kodo.tools._paths.resolve_within` (the
+   Guided-mode file-tool resolver), so `create_file` / `edit_file` /
+   `filesystem` / `read_file` can address the temp directory too, not just
+   `run_command` (§4).
 2. **`unresolved`** — substitution snippets (`$(...)`, backticks, `${VAR}`,
    `$VAR`/`$env:VAR`, `%VAR%`) that defeat static resolution. Substitutions
    are **masked before parsing** so `$(pwd)/y` stays one (skipped) token
@@ -409,6 +427,10 @@ hit the same granted rule.
   `~/.kube`, `~/.docker`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`,
   `~/.config/gcloud`) is never offer-eligible even for an otherwise-eligible
   command — the ask still happens, just with no checkbox for that path.
+- **Never offer-eligible with no workspace loaded either** (`roots` empty,
+  §3.1 point 1) — same "the ask still happens, just with no checkbox" shape
+  as the sensitive-path denylist, for the same reason: a path resolved
+  against an empty cwd has nothing stable to pin a rule to.
 - **Nested/substituted contexts stay non-offerable for free** — the existing
   command-substitution/nested-shell wrapping (§3.2 steps 2/4) already
   discards a recursive `evaluate_command()` call's `.parts`/`.rule_offer`
@@ -570,7 +592,27 @@ needed, since every session already reads the global store live per call.
 heuristic and the security layer each apply their own classification over the
 same structural view):
 
-- `parse_command()` — the pre-existing POSIX/`shlex` tokenizer.
+- `parse_command()` — the POSIX/`shlex` tokenizer. `shlex` (even with
+  `punctuation_chars` set) only tracks character-class transitions, not
+  whitespace, so it can't by itself tell `cmd 1 > file` (the plain word `"1"`
+  then a redirect) apart from `cmd 1>file` (fd 1 redirected, no separate
+  word) — both tokenize to the same `['cmd', '1', '>', 'file']`. Before
+  `_tokenize` ever runs, `_protect_stream_redirects` regex-scans the raw
+  (heredoc-reduced, quote-aware) text for a POSIX IO_NUMBER prefix and/or
+  `&N` fd-duplication suffix glued directly onto `>`/`>>`/`>|`/`<>`/`<` with
+  *no* intervening whitespace (`2>`, `1>>`, `>&2`, `2>&1`, …) and replaces
+  each one with an opaque, space-padded placeholder that survives
+  tokenization as a single word; `parse_command()`'s segment-building loop
+  then decodes it back into a proper `Redirection` (operator `"2>"`, target
+  `"&1"`, …) — exactly the same shape `parse_powershell_command()` already
+  produces for its own dialect. A bare operator with neither a digit prefix
+  nor an `&N` suffix (the overwhelming majority of redirects) is left
+  completely untouched. Before this, `2>&1`/`2>/dev/null`/`>&2` degraded
+  into stray digit/punctuation tokens in `segment.args` — invisible to path
+  analysis (not path-shaped) but capable of corrupting the dual-mode
+  mutation heuristics (§3.2 step 4): `hostname 2>&1` or `date 2>/dev/null`
+  could misread the leftover `"2"` as a real positional value and ask as if
+  the command were setting the hostname/clock.
 - `parse_powershell_command()` — a hand-rolled PowerShell/Windows
   tokenizer producing the same `ParsedCommand`/`Segment`/`Redirection`
   dataclasses. Understands `;` `|` `||` `&&` `&` separators (a lone `&` at
@@ -578,7 +620,30 @@ same structural view):
   with `''`/`""`/backtick escapes, backtick escaping outside quotes, and
   stream-qualified redirections (`2>`, `*>>`, `3>&1`, …; merge targets like
   `&1` are kept verbatim for callers to recognise). It never raises and
-  covers `cmd.exe` syntax by overlap.
+  covers `cmd.exe` syntax by overlap. It already tracked character
+  positions directly (no `shlex` involved), so it never had the POSIX
+  parser's IO_NUMBER ambiguity.
+
+`kodo.shellparser.is_fd_merge_target(target)` (`&1`/`&2`/… — not a filename)
+and `kodo.shellparser.redirection_writes_file(redirection)` (true for any
+output-direction operator — `>`, `>>`, `>|`, `&>`, `&>>`, PowerShell's
+`*>`/`*>>`, their POSIX stream-qualified forms, and `<>`; false for a pure
+input redirection or an fd-merge target) are the two structural facts every
+downstream consumer needs. Both `kodo.security._classify` (the
+`writes_file` flag driving §3.1 point 3's read-only fast path) and
+`kodo.runtime._checkpoints.command_may_mutate` (the checkpoint-sweep
+heuristic) call these instead of keeping their own redirect-operator
+lists — before this they disagreed on `<>` (open for reading *and*
+writing): `_checkpoints` already treated it as a write, `_classify` didn't,
+because each had reimplemented the same judgement independently instead of
+sharing it.
+
+PowerShell's null-device *variable* `$null` (not a filesystem path — the
+idiomatic devnull-equivalent for that dialect, e.g. `Get-Content x
+2>$null`) is recognized explicitly by `kodo.security._analysis` as a device
+sink, alongside `/dev/null`/`NUL` (§3.1 point 1) — case-insensitively, and
+excluded from the substitution-masking pass so it never gets folded into
+`unresolved` as if it were an ordinary unresolvable `$VAR`.
 
 Both parsers also flatten **bare subshell/brace grouping** — POSIX `(...)`
 and `{ ...; }`, PowerShell `(...)` and `{...}` (including the `& { cmd }`

@@ -11,13 +11,22 @@ checkpoint hook and the security layer each apply their own checks over the
 same structural parse.
 """
 
-from ._parser import ParsedCommand, Redirection, Segment, parse_command
+from ._parser import (
+    ParsedCommand,
+    Redirection,
+    Segment,
+    is_fd_merge_target,
+    parse_command,
+    redirection_writes_file,
+)
 from ._powershell import parse_powershell_command
 
 __all__ = [
     "ParsedCommand",
     "Redirection",
     "Segment",
+    "is_fd_merge_target",
     "parse_command",
     "parse_powershell_command",
+    "redirection_writes_file",
 ]

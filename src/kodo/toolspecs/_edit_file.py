@@ -194,5 +194,5 @@ EDIT_FILE: ToolSpec = ToolSpec(
         "directory instead of the project — for throwaway work you don't want "
         "checkpointed, reviewed, or left in the project tree.",
     ),
-    requires_project=True,
+    requires_project=False,
 )

@@ -32,7 +32,7 @@ from pathlib import Path
 
 from kodo.mirror import ShadowMirror
 from kodo.project import ProjectLayout
-from kodo.shellparser import ParsedCommand
+from kodo.shellparser import ParsedCommand, redirection_writes_file
 
 __all__ = [
     "CheckpointEntry",
@@ -67,9 +67,6 @@ _KODO_EXCLUDES: tuple[str, ...] = (
     "*.egg-info/",
     ".DS_Store",
 )
-
-# Output redirections write a file; input ones (`<`, `<<`, `<<<`) do not.
-_OUTPUT_REDIRECTS = frozenset({">", ">>", ">|", "&>", "&>>", "<>"})
 
 # Commands known to be read-only. Anything not listed is treated as possibly
 # mutating (default-to-True): a needless commit is just a no-op, while a missed
@@ -132,11 +129,15 @@ _READONLY_COMMANDS = frozenset(
 def command_may_mutate(parsed: ParsedCommand) -> bool:
     """Heuristic: could this command modify the filesystem?
 
-    Returns ``True`` for any output redirection or any executable not on the
-    read-only allow-list (default-to-mutating when uncertain). Used only to skip
-    pointless ``git add -A`` sweeps after plainly read-only commands; git's own
-    change detection remains the source of truth, so a false negative at worst
-    folds the change into the next mutating call's checkpoint.
+    Returns ``True`` for any redirection that writes a file
+    (:func:`kodo.shellparser.redirection_writes_file` — the same structural
+    judgement :mod:`kodo.security` uses for its own read-only/write
+    classification, so the two layers can't drift apart on what counts as a
+    write) or any executable not on the read-only allow-list (default-to-
+    mutating when uncertain). Used only to skip pointless ``git add -A``
+    sweeps after plainly read-only commands; git's own change detection
+    remains the source of truth, so a false negative at worst folds the
+    change into the next mutating call's checkpoint.
 
     Args:
         parsed: The structural parse of the command line.
@@ -144,7 +145,7 @@ def command_may_mutate(parsed: ParsedCommand) -> bool:
     Returns:
         bool: ``True`` if the command might have written to disk.
     """
-    if any(r.operator in _OUTPUT_REDIRECTS for r in parsed.redirections):
+    if any(redirection_writes_file(r) for r in parsed.redirections):
         return True
     execs = parsed.executables
     if not execs:

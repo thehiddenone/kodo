@@ -14,13 +14,26 @@ import shlex
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
-__all__ = ["ParsedCommand", "Redirection", "Segment", "parse_command"]
+__all__ = [
+    "ParsedCommand",
+    "Redirection",
+    "Segment",
+    "is_fd_merge_target",
+    "parse_command",
+    "redirection_writes_file",
+]
 
 # Tokens that separate one pipeline segment from the next.
 _SEGMENT_SEPARATORS = frozenset({"|", "|&", "||", "&&", ";", "&"})
 # Redirection operators that stay *inside* a segment; the following token (if
 # any) is the redirection target (a filename, or a here-doc/here-string word).
 _REDIRECTION_OPS = frozenset({">", ">>", ">|", "<", "<<", "<<<", "<>", "&>", "&>>"})
+
+# A redirection target like `&1` / `&2` merges/duplicates a stream; it never
+# names a file. Shared by `redirection_writes_file` below and by
+# `kodo.security._analysis` (which also needs to recognize a merge target on
+# its own, before deciding whether to resolve it as a path at all).
+_FD_MERGE_RE = re.compile(r"^&\d+$")
 
 # Characters `shlex` (with `punctuation_chars=True`) treats as operator
 # punctuation — a token built entirely from these is a pure operator/grouping
@@ -37,6 +50,35 @@ _GROUPING_RE = re.compile(r"([()])")
 # irrelevant here since the body is only ever discarded or recursed into
 # verbatim, never re-emitted).
 _HEREDOC_START_RE = re.compile(r"(?<!<)<<(?!<)(-)?\s*(?:'([^']*)'|\"([^\"]*)\"|(\S+))")
+
+# A stream-number prefix (`2>`) and/or fd-duplication suffix (`>&1`) glued
+# directly onto `>`, `>>`, `>|`, `<>`, or `<` — POSIX IO_NUMBER grammar, which
+# only applies when the digit touches the operator with no intervening
+# whitespace (`cmd 1 > file` is the plain word "1" then a redirect; `cmd
+# 1>file` is fd 1 redirected). `shlex` (see `_tokenize`) can't tell those two
+# apart — it only tracks character-class transitions, not whitespace — so
+# this match happens on the raw (heredoc-reduced) text, before tokenization,
+# exactly like `_extract_heredocs` above. The digit group's negative
+# lookbehind keeps a word that merely *ends* in digits (`file2>x`) from being
+# misread as an IO_NUMBER: `shlex` already keeps "file2" intact on its own
+# (it only splits at word/punctuation-class boundaries), so this regex only
+# needs to reject a digit run that isn't its own token. `<<`/`<<<` are
+# deliberately excluded — heredoc bodies are already extracted above, and a
+# stream-numbered heredoc (`2<<EOF`) is not a supported form.
+_STREAM_REDIR_RE = re.compile(r"(?:(?<![\w])([0-9]{1,3}))?(>>|>\||<>|>|<)(?:(&[0-9]{1,3}))?")
+
+# A single- or double-quoted span (best-effort — mirrors the rest of this
+# parser's non-raising, non-exhaustive quoting support), used to keep
+# `_protect_stream_redirects` from rewriting literal `>`/`<`/digits inside a
+# quoted string.
+_QUOTE_SPAN_RE = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
+
+# Placeholder wrapping a `_STREAM_REDIR_RE` match that actually carries an
+# IO_NUMBER and/or fd-duplication target (a bare `>`/`<` with neither is left
+# untouched — see `_protect_stream_redirects`). `\x00` never appears in a
+# real command and isn't one of `shlex`'s punctuation/whitespace characters,
+# so the placeholder survives `_tokenize` as a single opaque word.
+_REDIR_PLACEHOLDER_RE = re.compile(r"\x00RDR(\d+)\x00")
 
 
 @dataclass(frozen=True)
@@ -59,6 +101,40 @@ class Redirection:
     operator: str
     target: str
     heredoc_body: str | None = None
+
+
+def is_fd_merge_target(target: str) -> bool:
+    """Whether *target* is a stream merge/duplication (``&1``, ``&2``, …)
+    rather than a filename — the target half of a redirection like ``2>&1``
+    or PowerShell's ``2>&1``/``*>&1``.
+    """
+    return bool(_FD_MERGE_RE.match(target))
+
+
+def redirection_writes_file(redirection: Redirection) -> bool:
+    """Whether *redirection* opens a real file for writing.
+
+    True for any output-direction operator — ``>``, ``>>``, ``>|``, ``&>``,
+    ``&>>``, PowerShell's ``*>``/``*>>``, and their POSIX stream-qualified
+    forms (``2>``, ``1>>``, …) — and for ``<>`` (opens for reading *and*
+    writing). False for a pure input redirection (``<``, ``<<``, ``<<<``,
+    stream-qualified ``N<``) and for any operator whose target is a stream
+    merge/duplication (:func:`is_fd_merge_target`) rather than a file —
+    ``2>&1`` doesn't write anywhere, it just merges stderr into stdout.
+
+    Judged purely on operator shape, shared by every caller that needs to
+    know "does this redirection touch a file on disk" —
+    :mod:`kodo.security` (workspace-escape/read-only classification) and
+    :mod:`kodo.runtime` (the checkpoint mutation heuristic) — so the two
+    layers can't quietly drift apart on what counts as a write.
+    """
+    if is_fd_merge_target(redirection.target):
+        return False
+    # Strip a POSIX IO_NUMBER prefix (`2>` -> `>`) — irrelevant to direction.
+    op = redirection.operator.lstrip("0123456789")
+    if op == "<>":
+        return True
+    return not op.startswith("<")
 
 
 @dataclass(frozen=True)
@@ -125,7 +201,8 @@ def parse_command(command: str) -> ParsedCommand:
     """
     raw = command
     reduced, bodies = _extract_heredocs(command)
-    tokens = _strip_grouping(_tokenize(reduced))
+    protected, stream_redirs = _protect_stream_redirects(reduced)
+    tokens = _strip_grouping(_tokenize(protected))
     if not tokens:
         return ParsedCommand(raw=raw)
 
@@ -137,17 +214,32 @@ def parse_command(command: str) -> ParsedCommand:
     i = 0
     while i < len(tokens):
         tok = tokens[i]
+        placeholder = _REDIR_PLACEHOLDER_RE.fullmatch(tok)
         if tok in _SEGMENT_SEPARATORS:
             segments.append(_make_segment(words, redirs))
             operators.append(tok)
             words, redirs = [], []
-        elif tok in _REDIRECTION_OPS:
-            target = tokens[i + 1] if i + 1 < len(tokens) else ""
-            if target and target not in _SEGMENT_SEPARATORS and target not in _REDIRECTION_OPS:
-                redirs.append(Redirection(operator=tok, target=target))
-                i += 1
+        elif tok in _REDIRECTION_OPS or placeholder is not None:
+            if placeholder is not None:
+                io_number, base_op, fd_target = stream_redirs[int(placeholder.group(1))]
+                operator = f"{io_number}{base_op}" if io_number else base_op
             else:
-                redirs.append(Redirection(operator=tok, target=""))
+                operator, fd_target = tok, None
+            if fd_target is not None:
+                redirs.append(Redirection(operator=operator, target=fd_target))
+            else:
+                target = tokens[i + 1] if i + 1 < len(tokens) else ""
+                valid_target = (
+                    target
+                    and target not in _SEGMENT_SEPARATORS
+                    and target not in _REDIRECTION_OPS
+                    and _REDIR_PLACEHOLDER_RE.fullmatch(target) is None
+                )
+                if valid_target:
+                    redirs.append(Redirection(operator=operator, target=target))
+                    i += 1
+                else:
+                    redirs.append(Redirection(operator=operator, target=""))
         else:
             words.append(tok)
         i += 1
@@ -172,6 +264,56 @@ def _attach_heredoc_bodies(segment: Segment, bodies: Iterator[str]) -> Segment:
             for r in segment.redirections
         ),
     )
+
+
+def _protect_stream_redirects(text: str) -> tuple[str, list[tuple[str | None, str, str | None]]]:
+    """Replace every IO_NUMBER/fd-duplication redirect in *text* with an
+    opaque placeholder, so it survives ``shlex`` tokenization as one word
+    instead of shattering into stray digit/punctuation tokens.
+
+    A bare operator with neither a digit prefix nor an ``&N`` suffix (the
+    overwhelming majority of redirects) is left completely untouched — this
+    only touches the forms `_REDIRECTION_OPS`/plain ``shlex`` tokenizing
+    can't already handle correctly. Quoted spans are matched and passed
+    through verbatim (via `_QUOTE_SPAN_RE`) so a literal ``"2>&1"`` inside a
+    string is never mistaken for a redirect.
+
+    The placeholder is always padded with a leading and trailing space,
+    regardless of the original spacing — a real target is very often glued
+    directly onto the operator with no space at all (``2>/dev/null``,
+    ``1>file``), and without a synthetic space there `shlex` would fuse the
+    placeholder onto that adjacent text into one unrecognizable word (same
+    risk on the left: ``foo>&2`` would otherwise fuse "foo" onto the
+    placeholder). The padding only ever *adds* a token boundary — `shlex`
+    collapses whitespace runs, so it can't merge or drop anything that was
+    a real token already — which lets :func:`parse_command` fall back to its
+    ordinary "target is the following token" handling for the glued-target
+    case (``fd_target is None`` in the registry entry) exactly as it already
+    does for a space-separated redirect.
+
+    Returns:
+        tuple[str, list[tuple[str | None, str, str | None]]]: The rewritten
+        text, and a registry of ``(io_number, base_operator, fd_target)`` —
+        indexed by the placeholder's embedded integer — for
+        :func:`parse_command` to decode back into a :class:`Redirection`.
+    """
+    registry: list[tuple[str | None, str, str | None]] = []
+
+    def replace(match: re.Match[str]) -> str:
+        io_number, base_op, fd_target = match.group(1), match.group(2), match.group(3)
+        if io_number is None and fd_target is None:
+            return match.group(0)
+        registry.append((io_number, base_op, fd_target))
+        return f" \x00RDR{len(registry) - 1}\x00 "
+
+    out: list[str] = []
+    cursor = 0
+    for qm in _QUOTE_SPAN_RE.finditer(text):
+        out.append(_STREAM_REDIR_RE.sub(replace, text[cursor : qm.start()]))
+        out.append(qm.group())
+        cursor = qm.end()
+    out.append(_STREAM_REDIR_RE.sub(replace, text[cursor:]))
+    return "".join(out), registry
 
 
 def _extract_heredocs(command: str) -> tuple[str, list[str]]:
