@@ -1,5 +1,7 @@
 # Kōdo
 
+[![Kodo CI](https://github.com/thehiddenone/kodo/actions/workflows/ci.yml/badge.svg)](https://github.com/thehiddenone/kodo/actions/workflows/ci.yml)
+
 **Kōdo** (コード) is a build system that converts natural language into working code through a multi-agent LLM workflow — designed from the ground up to run on your own hardware, model included. That's the pitch. How much of it actually holds up today, versus how much is still a plan with code attached, is spelled out plainly in [Status](#status) at the bottom — read that before you get your hopes up.
 
 ## Concept
@@ -113,10 +115,22 @@ The version scheme is `major.minor.build` (e.g. `0.1.7`) — there's no separate
 slot, the build number *is* the third component. It lives in the `build_number` file,
 gets stamped into `pyproject.toml` and `__init__.py` at build time, and is
 auto-incremented after a successful `hatch run build`. Pushing that incremented
-`build_number` to `main` is what actually ships a release: a GitHub Actions workflow
-watches that one file, builds the wheel, and publishes it to PyPI. There's no separate
-manual "now go publish" step — bumping the file *is* the trigger, which is a little
-unsettling if you think about it too hard, so it's best not to.
+`build_number` to `main` is what actually ships a release, via two chained GitHub
+Actions workflows:
+
+1. [`ci.yml`](.github/workflows/ci.yml) runs `hatch run check` on every push and PR to
+   `main` — this is the badge at the top of this README. A second job in the same
+   workflow, gated on that check passing, diffs the push against its previous commit;
+   only if `build_number` changed does it `hatch build` the wheel and upload it as an
+   artifact. One check per push either way — a plain push and a release push both run
+   `hatch run check` exactly once.
+2. [`publish-kodo.yml`](.github/workflows/publish-kodo.yml) triggers on completion of
+   `ci.yml`. If that run failed, or succeeded without producing an artifact (i.e. it
+   wasn't a `build_number` push), there is nothing to publish and it's a no-op.
+   Otherwise it downloads the artifact and publishes it to PyPI.
+
+There's no separate manual "now go publish" step — bumping the file *is* the trigger,
+which is a little unsettling if you think about it too hard, so it's best not to.
 
 ### Development cycle
 
@@ -140,6 +154,11 @@ Commit your changes *before* running `hatch run build` — this way the committe
 the build number recorded in the repository. `hatch run build` is intended to be the final step
 once code changes are done, tests are green, and everything is committed. It produces a numbered
 wheel, then advances `build_number` so the repository is already pointing at the next iteration.
+
+If a `kodo-vsix` checkout sits alongside this repo (`../kodo-vsix`), `scripts/post_build.py` also
+pins its `package.json` `version` to the `py-kodo` version just built — `kodo-vsix` installs
+`py-kodo` from PyPI pinned to its own extension version (see `kodo-vsix/src/uv-setup.ts`), so the
+two must always move together. No-op if that checkout isn't present.
 
 ## Status
 

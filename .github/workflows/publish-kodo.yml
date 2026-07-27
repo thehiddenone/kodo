@@ -1,47 +1,53 @@
 name: Publish Kodo Wheel to PyPI
 
 on:
-  push:
+  workflow_run:
+    workflows: [ "Kodo CI" ]
+    types: [ completed ]
     branches: [ "main" ]
-    paths:
-      - 'build_number'
 
 jobs:
-  build-and-publish:
+  publish:
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     environment: pypi
 
-    # Required for secure OIDC token authentication with PyPI
+    # Required for secure OIDC token authentication with PyPI, and to fetch
+    # the artifact (if any) uploaded by the triggering "Kodo CI" run.
     permissions:
       id-token: write
       contents: read
+      actions: read
 
     steps:
-    - name: Checkout code
-      id: checkout_code
-      uses: actions/checkout@v4
-
-    - name: Set up Python
-      id: setup_python
-      uses: actions/setup-python@v5
+    # "Kodo CI" runs on every push to main, but its build job only uploads a
+    # "kodo-latest" artifact when that push changed build_number. Most runs
+    # of this workflow therefore have nothing to publish - check first rather
+    # than letting the download step fail for those.
+    - name: Check for a build artifact
+      id: check
+      uses: actions/github-script@v7
       with:
-        python-version: '3.12'
+        script: |
+          const { data } = await github.rest.actions.listWorkflowRunArtifacts({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            run_id: context.payload.workflow_run.id,
+          });
+          const found = data.artifacts.some((a) => a.name === 'kodo-latest');
+          core.setOutput('found', found);
 
-    - name: Install hatch
-      id: install_hatch
-      run: pipx install hatch
-
-    - name: Build wheel and source distribution
-      id: build
-      run: hatch build
-
-    - name: Upload build artifacts
-      id: upload
-      uses: actions/upload-artifact@v4
+    - name: Download build artifacts
+      if: steps.check.outputs.found == 'true'
+      id: download
+      uses: actions/download-artifact@v4
       with:
         name: kodo-latest
         path: dist/
+        run-id: ${{ github.event.workflow_run.id }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Publish package distributions to PyPI
+      if: steps.check.outputs.found == 'true'
       id: publish
       uses: pypa/gh-action-pypi-publish@release/v1
