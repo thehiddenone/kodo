@@ -34,9 +34,7 @@ subagents:
   - e2e_test_design_critic
   - e2e_test_coder
   - e2e_test_code_critic
-  - toolchain_python
-  - toolchain_cpp
-  - toolchain_rust
+  - toolchain_builder
   - investigator
 ---
 # Kodo
@@ -111,11 +109,12 @@ the tracked-file status.
   **suggest** setting up the toolchain and confirm via `ask_user` before
   delegating. In autonomous mode the user is away: decide, proceed, and document
   the decision with a `<kodo_info>` callout.
-- **Which agent.** Today **Python**, **C++**, and **Rust** are supported: spawn
-  `toolchain_python`, `toolchain_cpp`, or `toolchain_rust` (matching the project's
-  Tech Stack language) via `run_subagent`, passing whether this is a fresh
-  bootstrap or a conversion of an existing project. For any other language
-  there is no toolchain agent yet — do not invent one; note the gap to the user.
+- **Which agent.** One agent covers **every language**: spawn `toolchain_builder`
+  via `run_subagent`, passing the project's Tech Stack language and whether this is
+  a fresh bootstrap or a conversion of an existing project. Both are hints — it
+  detects the real state on disk and reports back what it actually did. It picks the
+  ecosystem's industry-standard tools when nothing is set up, and builds on whatever
+  is already there when something is.
 - **After it returns.** Record what it set up with a `<kodo_info>` callout (you never author
   the scripts or `DEVELOPMENT.md` yourself — the sub-agent owns them). Until the
   scripts exist, `coder`'s `toolchain_build` calls will fail with a clear "no script

@@ -625,7 +625,7 @@ async def test_toolchain_deps_missing_dependencies_md_returns_remediation(tmp_pa
     assert parsed["success"] is False
     assert parsed["status"] == "dependencies_md_missing"
     # The caller gets an actionable sub-prompt naming the toolchain-setup route.
-    assert "toolchain_python" in parsed["message"]
+    assert "toolchain_builder" in parsed["message"]
     assert "run_subagent" in parsed["message"]
 
 

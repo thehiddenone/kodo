@@ -48,11 +48,11 @@ def test_completed_subsession_preserves_structured_dict_result() -> None:
     }
     lines: list[dict[str, object]] = [
         {"role": "assistant", "content": [{"type": "tool_use", "id": "x", "name": "run_subagent"}]},
-        {"type": "subsession_start", "subsession_id": "s1", "agent": "toolchain_python"},
+        {"type": "subsession_start", "subsession_id": "s1", "agent": "toolchain_builder"},
         {
             "type": "subsession_end",
             "subsession_id": "s1",
-            "agent": "toolchain_python",
+            "agent": "toolchain_builder",
             "failed": False,
             "result": result,
         },
@@ -84,7 +84,7 @@ def test_active_unclosed_subsession_is_incomplete_with_no_result() -> None:
     """An unpaired start (the in-flight subsession at crash) is driven live, not reused."""
     lines: list[dict[str, object]] = [
         {"role": "assistant", "content": [{"type": "tool_use", "id": "x", "name": "run_subagent"}]},
-        {"type": "subsession_start", "subsession_id": "s1", "agent": "toolchain_python"},
+        {"type": "subsession_start", "subsession_id": "s1", "agent": "toolchain_builder"},
     ]
     ledger = _ledger_for(lines)
     assert len(ledger) == 1
@@ -98,11 +98,11 @@ def test_only_markers_after_last_assistant_count() -> None:
         {"type": "subsession_start", "subsession_id": "old", "agent": "coder"},
         {"type": "subsession_end", "subsession_id": "old", "agent": "coder", "result": {"a": 1}},
         {"role": "assistant", "content": [{"type": "tool_use", "id": "x", "name": "run_subagent"}]},
-        {"type": "subsession_start", "subsession_id": "new", "agent": "toolchain_python"},
+        {"type": "subsession_start", "subsession_id": "new", "agent": "toolchain_builder"},
         {
             "type": "subsession_end",
             "subsession_id": "new",
-            "agent": "toolchain_python",
+            "agent": "toolchain_builder",
             "result": {"summary": "fresh", "schema_compliance": True},
         },
     ]

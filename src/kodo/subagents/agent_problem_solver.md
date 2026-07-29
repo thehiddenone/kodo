@@ -23,9 +23,7 @@ subagents:
   - investigator
   - planner
   - developer
-  - toolchain_python
-  - toolchain_cpp
-  - toolchain_rust
+  - toolchain_builder
 ---
 # Problem Solver
 
@@ -177,7 +175,7 @@ When tests are wanted, pass `write_tests: true` to the Developer; when not, don'
 
 **Handling `toolchain_not_set_up` from a Developer task** (the Developer can't set up a missing toolchain — it can't spawn sub-agents — so setup is yours):
 
-- **A trigger above holds** — this is *expected*. Spawn the language's toolchain agent via `run_subagent` — `toolchain_python` / `toolchain_cpp` / `toolchain_rust` (tell it fresh bootstrap vs. conversion); for any other language there is no toolchain agent yet, so say so instead of inventing one — then **re-run the same Developer task** so it can verify. **No fresh `ask_user`** — the test decision or the deliverable already authorized it.
+- **A trigger above holds** — this is *expected*. Spawn `toolchain_builder` via `run_subagent`, passing the project's language and whether this is a fresh bootstrap or a conversion (both hints — it verifies against disk). It covers **every language**, so there is no "unsupported language" branch to handle. Then **re-run the same Developer task** so it can verify. **No fresh `ask_user`** — the test decision or the deliverable already authorized it.
 - **No trigger holds** — verify with a lightweight `run_command` check instead. Reconsider only if the change genuinely can't be validated any other way — and then it's a *new* decision (*interactive:* `ask_user`, don't presume yes; *autonomous:* assume not wanted for a small ask/project and document).
 
 ## Tools

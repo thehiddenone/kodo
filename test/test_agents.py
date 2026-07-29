@@ -387,8 +387,8 @@ def test_load_agent_parses_author_critic(tmp_path: Path) -> None:
 def test_load_agent_parses_standalone_flag(tmp_path: Path) -> None:
     path = _write_agent(
         tmp_path,
-        "toolchain_python",
-        "name: toolchain_python\nsolo: true\nstandalone: true\n",
+        "toolchain_builder",
+        "name: toolchain_builder\nsolo: true\nstandalone: true\n",
         "## Purpose\n\nSets up the toolchain on demand.\n",
     )
     agent = load_agent(path)
@@ -600,11 +600,11 @@ def test_real_problem_solver_renders_subagent_roster() -> None:
     assert "| `run_subagent` | `investigator` | — | standalone |" in prompt
     assert "| `run_subagent` | `planner` | — | standalone |" in prompt
     assert "| `run_subagent` | `developer` | — | standalone |" in prompt
-    assert "| `run_subagent` | `toolchain_python` | — | standalone |" in prompt
+    assert "| `run_subagent` | `toolchain_builder` | — | standalone |" in prompt
     assert "### Investigator (`investigator`)" in prompt
     assert "### Planner (`planner`)" in prompt
     assert "### Developer (`developer`)" in prompt
-    assert "### Python Toolchain (`toolchain_python`)" in prompt
+    assert "### Toolchain Builder (`toolchain_builder`)" in prompt
 
 
 def test_real_guide_roster_reproduces_pipeline_pairs() -> None:
@@ -631,5 +631,20 @@ def test_real_guide_roster_reproduces_pipeline_pairs() -> None:
     )
     # The toolchain agent and the shared investigator are the standalone
     # (adjunct) entries in the guide roster.
-    assert "| `run_subagent` | `toolchain_python` | — | standalone |" in section
+    assert "| `run_subagent` | `toolchain_builder` | — | standalone |" in section
     assert "| `run_subagent` | `investigator` | — | standalone |" in section
+
+
+def test_real_judge_has_scoped_toolchain_build_tool() -> None:
+    """Judge is almost entirely read-only, but carries one scoped exception.
+
+    ``toolchain_build`` lets an RVP ask the judge for real, executed build/test
+    evidence (doc/VALIDATOR.md §9.2) without granting general command
+    execution, editing, or sub-agent capability.
+    """
+    registry = AgentRegistry(_REAL_AGENTS_DIR)
+    agent = registry.get("judge")
+    assert agent.tools == frozenset(
+        {"read_file", "find_files", "find_text_in_files", "toolchain_build", "submit_evaluation"}
+    )
+    assert "### Build & Test Project (`toolchain_build`)" in agent.system_prompt

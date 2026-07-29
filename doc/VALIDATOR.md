@@ -313,6 +313,19 @@ whether the assistant should ask before building, the *same* shared `_rvp` grade
 both — the judge reads the process expectation from the task, not the rubric
 (§9.2).
 
+A prompt can also carry a `{placeholder}` a scenario file fills in with
+`str.format()` before handing it to `Scenario.prompts` — the variation doesn't
+always need a second `_task` file. The `ornith10-35b/` family (12 files,
+`tictactoe_python.py` … `tictactoe_swift.py`) does this: all twelve pull the
+same `tictactoe_toolchain/task` and format in a different `language`, and all
+share one `tictactoe_toolchain/upp` and `tictactoe_toolchain/rvp`. This family
+exercises **Problem Solver's toolchain triggers** (an explicit "write tests" +
+"set up the toolchain" ask), so a clean run spawns `toolchain_builder` for the
+named language; its `_rvp` is also the first to lean on the judge's
+`toolchain_build` capability (§9.2) to get real build/test evidence rather than
+inferring from a read-only pass, and explicitly excludes the computer
+opponent's playing strength/algorithm from scoring — only its legality.
+
 ## 9. Phase 2 — the validation LLM in the loop
 
 Phase 2 puts the **validation LLM** (VLLM) on both sides of the run: it plays
@@ -422,17 +435,26 @@ not masquerade as a low-scoring run), `run_scenario` calls
    `EvaluationError`.
 
 **The `judge` workflow** (`workflow.set` mode `"judge"`, `kodo.subagents.agent_judge.md`)
-is a **dedicated, validator-only entry agent** — read-only tools only
+is a **dedicated, validator-only entry agent** — almost entirely read-only
 (`read_file`, `find_files`, `find_text_in_files`, `submit_evaluation`), no
-editing, no command execution, no sub-agents, no `ask_user`. Earlier the judge
-turn ran as a `problem_solving` session, i.e. through the full `problem_solver`
-agent (read/write/execute/sub-agent-spawning tools, none of which judging
-needs) — a single-responsibility violation kept only for lack of a narrower
-entry point. `judge` is a third `workflow_mode` value alongside `guided` and
-`problem_solving` (WS_PROTOCOL.md §5.1/§7.4); it is wired **only** in the
-engine and the validator harness — kodo-vsix's workflow picker still offers
-just `guided`/`problem_solving` and never sends `judge`, so it stays entirely
-invisible to and unreachable from the extension.
+editing, no general command execution, no sub-agents, no `ask_user`. It also
+carries one narrow, scoped exception: `toolchain_build`, the same tool
+Problem Solver/`toolchain_builder` runs use to execute a project's generated
+`scripts/<step>.{sh,ps1}` build/format/static-analysis/test pair. This lets a
+scenario whose RVP asks for it get *real, executed* evidence — actual build
+and test-suite output — instead of the judge only inferring correctness by
+reading scripts, without granting it any broader command-execution or editing
+capability. `agent_judge.md`'s own prose gates the tool to RVP-directed use:
+don't invoke it against a project whose rubric never asked for a toolchain
+check. Earlier the judge turn ran as a `problem_solving` session, i.e.
+through the full `problem_solver` agent (read/write/execute/sub-agent-spawning
+tools, none of which judging needs) — a single-responsibility violation kept
+only for lack of a narrower entry point. `judge` is a third `workflow_mode`
+value alongside `guided` and `problem_solving` (WS_PROTOCOL.md §5.1/§7.4); it
+is wired **only** in the engine and the validator harness — kodo-vsix's
+workflow picker still offers just `guided`/`problem_solving` and never sends
+`judge`, so it stays entirely invisible to and unreachable from the
+extension.
 
 **Scope of the verdict.** The judge scores the **whole delivery**, not just
 code correctness: the built artifacts, any **written deliverables** the task

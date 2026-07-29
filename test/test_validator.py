@@ -964,6 +964,64 @@ def test_shipped_scenarios_share_prompts_via_registry() -> None:
     assert detailed.prompts != sparse.prompts
 
 
+_ORNITH_LANGUAGES = {
+    "c": "C",
+    "cpp": "C++",
+    "csharp": "C#",
+    "go": "Go",
+    "java": "Java",
+    "javascript": "JavaScript",
+    "kotlin": "Kotlin",
+    "python": "Python",
+    "ruby": "Ruby",
+    "rust": "Rust",
+    "swift": "Swift",
+    "typescript": "TypeScript",
+}
+
+
+def test_resolve_selectors_ornith_toolchain_family() -> None:
+    """The 12-language tictactoe_toolchain family resolves as one submodule."""
+    from kodo.validator import scenarios as scn
+
+    expected_ids = {f"ornith10-35b.tictactoe_{slug}" for slug in _ORNITH_LANGUAGES}
+    assert expected_ids <= set(scn.scenario_ids())
+
+    resolved = dict(scn.resolve_selectors(["ornith10-35b"]))
+    assert set(resolved) == expected_ids
+    for scenario in resolved.values():
+        assert scenario.llm_under_test == "deepreinforce-ornith10-35b-bf16"
+        assert scenario.validation_llm == "unsloth-qwen36-27b-q8-k-xl"
+    # Every scenario name and workspace root is distinct across the family.
+    assert len({s.name for s in resolved.values()}) == len(resolved)
+    assert len({r.name for s in resolved.values() for r in s.roots}) == len(resolved)
+
+
+def test_ornith_toolchain_scenarios_share_prompts_and_vary_by_language() -> None:
+    """All 12 share one UPP/RVP and differ only by the formatted task language."""
+    from kodo.validator import scenarios as scn
+    from kodo.validator.prompts import PROMPTS
+
+    resolved = dict(scn.resolve_selectors(["ornith10-35b"]))
+    rvp = PROMPTS.get("tictactoe_toolchain/rvp")
+    upp = PROMPTS.get("tictactoe_toolchain/upp")
+    task_template = PROMPTS.get("tictactoe_toolchain/task")
+
+    tasks: dict[str, str] = {}
+    for dotted_id, scenario in resolved.items():
+        assert scenario.result_validation_prompt == rvp
+        assert scenario.user_proxy_prompt == upp
+        assert len(scenario.prompts) == 1
+        task = scenario.prompts[0]
+        assert "{language}" not in task  # the placeholder was actually filled
+        assert task != task_template  # not just the raw, unformatted template
+        slug = dotted_id.rsplit(".tictactoe_", 1)[1]
+        assert f"using **{_ORNITH_LANGUAGES[slug]}**" in task
+        tasks[dotted_id] = task
+    # Twelve distinct, language-specific task prompts.
+    assert len(set(tasks.values())) == len(resolved)
+
+
 def test_prompt_registry_resolution_and_guards() -> None:
     from kodo.validator.prompts import PROMPTS, PromptNotFoundError
 
@@ -974,6 +1032,9 @@ def test_prompt_registry_resolution_and_guards() -> None:
         "tictactoe/sparse_task",
         "tictactoe/upp",
         "tictactoe/rvp",
+        "tictactoe_toolchain/task",
+        "tictactoe_toolchain/upp",
+        "tictactoe_toolchain/rvp",
     }
     # A missing prompt raises, and the message lists what is available.
     with pytest.raises(PromptNotFoundError, match="Available:"):

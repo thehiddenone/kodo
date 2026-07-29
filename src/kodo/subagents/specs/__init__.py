@@ -37,10 +37,8 @@ from ._requirements_critic import REQUIREMENTS_CRITIC
 from ._test_coder import TEST_CODER
 from ._test_design_critic import TEST_DESIGN_CRITIC
 from ._test_designer import TEST_DESIGNER
-from ._toolchain_cpp import TOOLCHAIN_CPP
+from ._toolchain_builder import TOOLCHAIN_BUILDER
 from ._toolchain_depsmgr import TOOLCHAIN_DEPSMGR
-from ._toolchain_python import TOOLCHAIN_PYTHON
-from ._toolchain_rust import TOOLCHAIN_RUST
 from ._web_search_agent import WEB_SEARCH_AGENT
 
 __all__ = [
@@ -65,10 +63,8 @@ __all__ = [
     "TEST_CODER",
     "TEST_DESIGNER",
     "TEST_DESIGN_CRITIC",
-    "TOOLCHAIN_CPP",
+    "TOOLCHAIN_BUILDER",
     "TOOLCHAIN_DEPSMGR",
-    "TOOLCHAIN_PYTHON",
-    "TOOLCHAIN_RUST",
     "WEB_SEARCH_AGENT",
     "SubAgentSpec",
 ]
@@ -96,9 +92,7 @@ ALL_SUBAGENTS: tuple[SubAgentSpec, ...] = (
     INVESTIGATOR,
     PLANNER,
     DEVELOPER,
-    TOOLCHAIN_PYTHON,
-    TOOLCHAIN_CPP,
-    TOOLCHAIN_RUST,
+    TOOLCHAIN_BUILDER,
     TOOLCHAIN_DEPSMGR,
     COMPACTOR,
     WEB_SEARCH_AGENT,
