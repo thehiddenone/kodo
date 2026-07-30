@@ -30,7 +30,11 @@ UPDATE_WEB_SEARCH_STATE: ToolSpec = ToolSpec(
         "values to remember WHAT happened (e.g. `key='google_status', "
         "value='blocked: captcha wall'`). Keep keys short and stable per engine "
         "(e.g. `<engine>_last_query`, `<engine>_status`) so you can look them up "
-        "consistently."
+        "consistently.\n\n"
+        "When to use: right before querying a search engine, to time-mark it; "
+        "immediately after an engine serves a wall/captcha, to record the block "
+        "so you don't repeat the same query against it this session; or to delete "
+        "a stale note that no longer applies (empty-string value)."
     ),
     input_schema={
         "type": "object",
@@ -59,11 +63,4 @@ UPDATE_WEB_SEARCH_STATE: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.NONE,
     input_visibility={"key": "visible", "value": "visible"},
     output_visibility={"status": "visible"},
-    when_to_use=(
-        "Right before querying a search engine, to time-mark that you're about to "
-        "query it — so a later call can tell how recently it was hit.",
-        "Immediately after an engine serves a wall/captcha, to record that block so "
-        "you don't repeat the same query against it this session.",
-        "To delete a stale note that no longer applies (empty-string value).",
-    ),
 )

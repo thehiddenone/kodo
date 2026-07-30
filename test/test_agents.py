@@ -284,42 +284,42 @@ def test_registry_empty_preamble_raises(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tools section rendering
+# Granted tools: validation and the autonomous filter
+#
+# Tools are NOT described in an agent's prompt — they reach the model through
+# the LLM tool-definition `tools` argument (see kodo.toolspecs.tool_description).
+# The registry only validates the names and applies the autonomous filter.
 # ---------------------------------------------------------------------------
 
 
-def test_registry_renders_tools_section_for_agent_tools(tmp_path: Path) -> None:
+def test_registry_never_describes_tools_in_the_prompt(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
     _write_agent(
         tmp_path,
         "agent_a",
         "name: agent_a\ntools:\n  - filesystem\n  - read_file\n",
-        "Prompt A.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
+        "Prompt A.\n\n## What to Avoid\n",
     )
     registry = AgentRegistry(tmp_path)
-    prompt = registry.get("agent_a").system_prompt
-    assert "{PLACEHOLDER:TOOLS}" not in prompt
-    assert "### Filesystem (`filesystem`)" in prompt
-    assert "### Read File (`read_file`)" in prompt
-    assert "- **When to use:**" in prompt
-    assert "- **External name:**" not in prompt
-    assert "- **Description:**" not in prompt
-    # Tools are rendered in a stable, sorted order.
-    assert prompt.index("Filesystem") < prompt.index("Read File")
+    agent = registry.get("agent_a")
+    # The grant is on the tool set...
+    assert agent.tools == frozenset(["filesystem", "read_file"])
+    # ...but nothing about the tools is rendered into the system prompt.
+    for leaked in ("### Filesystem", "### Read File", "**When to use:**", "**Security impact:**"):
+        assert leaked not in agent.system_prompt
 
 
-def test_registry_renders_empty_tools_section_for_agent_with_no_tools(tmp_path: Path) -> None:
+def test_registry_leaves_a_tools_placeholder_untouched(tmp_path: Path) -> None:
+    """The TOOLS placeholder is gone: a stray one is inert, not substituted."""
     _write_preamble(tmp_path)
     _write_agent(
         tmp_path,
         "agent_a",
-        "name: agent_a\n",
-        "Prompt A.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
+        "name: agent_a\ntools:\n  - read_file\n",
+        "Prompt A.\n\n{PLACEHOLDER:TOOLS}\n",
     )
     registry = AgentRegistry(tmp_path)
-    prompt = registry.get("agent_a").system_prompt
-    assert "{PLACEHOLDER:TOOLS}" not in prompt
-    assert "## Tools\n\n\n\n## What to Avoid" in prompt
+    assert "{PLACEHOLDER:TOOLS}" in registry.get("agent_a").system_prompt
 
 
 def test_registry_unknown_tool_raises(tmp_path: Path) -> None:
@@ -328,7 +328,7 @@ def test_registry_unknown_tool_raises(tmp_path: Path) -> None:
         tmp_path,
         "agent_a",
         "name: agent_a\ntools:\n  - nonexistent_tool\n",
-        "Prompt A.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
+        "Prompt A.\n\n## What to Avoid\n",
     )
     with pytest.raises(AgentLoadError, match="nonexistent_tool"):
         AgentRegistry(tmp_path)
@@ -340,13 +340,11 @@ def test_registry_ask_user_unavailable_in_autonomous_mode(tmp_path: Path) -> Non
         tmp_path,
         "agent_a",
         "name: agent_a\ntools:\n  - ask_user\n  - read_file\n",
-        "Prompt A.\n\n## Tools\n\n{PLACEHOLDER:TOOLS}\n\n## What to Avoid\n",
+        "Prompt A.\n\n## What to Avoid\n",
     )
     registry = AgentRegistry(tmp_path)
-    agent = registry.get("agent_a", autonomous=True)
-    assert agent.tools == frozenset(["read_file"])
-    assert "ask_user" not in agent.system_prompt
-    assert "### Read File" in agent.system_prompt
+    assert registry.get("agent_a", autonomous=True).tools == frozenset(["read_file"])
+    assert registry.get("agent_a").tools == frozenset(["ask_user", "read_file"])
 
 
 # ---------------------------------------------------------------------------
@@ -647,4 +645,7 @@ def test_real_judge_has_scoped_toolchain_build_tool() -> None:
     assert agent.tools == frozenset(
         {"read_file", "find_files", "find_text_in_files", "toolchain_build", "submit_evaluation"}
     )
-    assert "### Build & Test Project (`toolchain_build`)" in agent.system_prompt
+    # The grant is the tool set alone. The judge's own role instructions discuss
+    # `toolchain_build` in prose, but no *rendered* spec block is injected — tool
+    # descriptions reach the model via the LLM `tools` argument instead.
+    assert "### Build & Test Project" not in agent.system_prompt

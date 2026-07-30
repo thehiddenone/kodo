@@ -18,7 +18,12 @@ READ_FILE: ToolSpec = ToolSpec(
         "file. Pass `pattern` to search the file's content with a regular "
         "expression (like ripgrep) and get back each match with "
         "`context_before`/`context_after` lines of surrounding context — "
-        "`ranges` and `pattern` are mutually exclusive."
+        "`ranges` and `pattern` are mutually exclusive.\n\n"
+        "When to use: reading a file's full content before editing it or to "
+        "understand existing context; `ranges` when the file is large and you "
+        "already know roughly where the relevant content is; `pattern` to find "
+        "something specific (a prior finding's excerpt, a function definition) "
+        "with surrounding context instead of reading the whole file."
     ),
     input_schema={
         "type": "object",
@@ -143,12 +148,5 @@ READ_FILE: ToolSpec = ToolSpec(
         "matches": "visible",
         "truncated": "always",
     },
-    when_to_use=(
-        "Reading a file's full content before editing it, or to understand existing context.",
-        "Reading only specific line ranges of a large file, when you already know roughly "
-        "where the relevant content is.",
-        "Searching a single file's content for a pattern (e.g. a prior finding's excerpt, a "
-        "function definition) with surrounding context, instead of reading the whole file.",
-    ),
     requires_project=False,
 )

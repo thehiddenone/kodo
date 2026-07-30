@@ -108,10 +108,6 @@ One document:
 
 You act only through tool calls — no free-form text.
 
-## Tools
-
-{PLACEHOLDER:TOOLS}
-
 ## What to Avoid
 
 - No free-form output to the user or other sub-agents — your only path to the user is `escalate_blocker`.

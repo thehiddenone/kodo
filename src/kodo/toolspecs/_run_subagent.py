@@ -19,7 +19,11 @@ RUN_SUBAGENT: ToolSpec = ToolSpec(
         "completes.  `task_input` is a structured object that MUST conform to the "
         "named sub-agent's input schema (see its entry in `## Subagents`); the "
         "engine validates it.  Returns the structured result the sub-agent "
-        "produced via `return_result` (its output schema)."
+        "produced via `return_result` (its output schema).\n\n"
+        "When to use: kicking off a solo stage that doesn't participate in an "
+        "author/critic loop — either to produce an initial set of artifacts, or "
+        "to produce artifacts from an already-accepted upstream artifact (e.g. "
+        "generating stubs and tests from an accepted test plan)."
     ),
     input_schema={
         "type": "object",
@@ -51,12 +55,5 @@ RUN_SUBAGENT: ToolSpec = ToolSpec(
     # The result is the sub-agent's own dynamic output schema, so there are no
     # fixed output properties to assign per-key visibility to.
     output_visibility={},
-    when_to_use=(
-        "Kicking off a solo agent's stage that doesn't participate in an "
-        "author/critic loop, to produce an initial set of artifacts.",
-        "Invoking a solo stage that produces artifacts from an "
-        "already-accepted upstream artifact (e.g., generating stubs and "
-        "tests from an accepted test plan).",
-    ),
     requires_project=True,
 )

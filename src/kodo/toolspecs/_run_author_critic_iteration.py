@@ -19,8 +19,12 @@ RUN_AUTHOR_CRITIC_ITERATION: ToolSpec = ToolSpec(
         "Spawns the Author (passing `for_revision: true` and `path` when revising a "
         "prior round — omit `path` on a fresh round, since the Author chooses it), "
         "then spawns the Critic against the Author's reported primary file.  "
-        "Returns the file's path, status, and concerns.  "
-        "Call again to iterate; the Guide decides when to stop."
+        "Call again to iterate; the Guide decides when to stop.\n\n"
+        "When to use: any stage with an author/critic pairing, to run one "
+        "author→critic round. Call it repeatedly within a per-loop iteration "
+        "budget (a sensible default is up to 5 rounds), stopping early when "
+        "findings converge — or when findings stop decreasing, which counts as "
+        "non-convergence."
     ),
     input_schema={
         "type": "object",
@@ -86,12 +90,5 @@ RUN_AUTHOR_CRITIC_ITERATION: ToolSpec = ToolSpec(
         "for_revision": "visible",
     },
     output_visibility={"path": "always", "status": "always", "concerns": "visible"},
-    when_to_use=(
-        "Any stage with an author/critic pairing, to run one author→critic round.",
-        "Called repeatedly within a per-loop iteration budget (a sensible "
-        "default is up to 5 rounds), stopping early when findings converge "
-        "or when findings stop decreasing (treating the latter as "
-        "non-convergence).",
-    ),
     requires_project=True,
 )

@@ -34,7 +34,10 @@ RUN_COMMAND: ToolSpec = ToolSpec(
         "code with a 'timed out' note on stderr. Choose a value that comfortably "
         "covers the expected runtime — e.g. ~10s for a quick CLI check, ~120s "
         "for a build, more for a long test suite — but small enough that a hung "
-        "command fails fast instead of stalling the agent."
+        "command fails fast instead of stalling the agent.\n\n"
+        "When to use: running a command the toolchain tools "
+        "(`toolchain_build` / `toolchain_deps`) don't cover — e.g. a one-off CLI "
+        "invocation needed to scaffold or inspect the project."
     ),
     input_schema={
         "type": "object",
@@ -102,11 +105,5 @@ RUN_COMMAND: ToolSpec = ToolSpec(
         "working_dir": "visible",
     },
     output_visibility={"exit_code": "always", "stdout": "visible", "stderr": "visible"},
-    when_to_use=(
-        "Running a command the toolchain tools "
-        "(`toolchain_build`/`toolchain_deps`) don't cover "
-        "— e.g., a one-off CLI invocation needed to scaffold or inspect the "
-        "project.",
-    ),
     requires_project=False,
 )

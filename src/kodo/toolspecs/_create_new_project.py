@@ -49,10 +49,16 @@ CREATE_NEW_PROJECT: ToolSpec = ToolSpec(
         "anyone. Inside the new directory it lays out the standard `specs/`, "
         "`src/`, `test/` and `.kodo/` (with `kodo.md`) structure and an initial "
         "git checkpoint mirror, then adds the directory to the open VS Code "
-        "workspace. Returns the absolute 'path' of the created project and its "
-        "workspace 'name'. After calling this you can immediately read and "
+        "workspace. After calling this you can immediately read and "
         "write files inside the returned path (call `get_root_paths` to see it "
-        "listed as a workspace root)."
+        "listed as a workspace root).\n\n"
+        "When to use: the work calls for a brand-new, self-contained project "
+        "rather than changes to an existing one — e.g. the user asks to build a "
+        "new application or library from scratch and there is no suitable "
+        "project directory yet, or you need a fresh checkpoint-tracked "
+        "directory in the workspace so subsequent file edits and commands have "
+        "somewhere to live. For an existing directory that already holds code, "
+        "use `init_project` instead."
     ),
     input_schema={
         "type": "object",
@@ -87,13 +93,4 @@ CREATE_NEW_PROJECT: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.LOW,
     input_visibility={"intent": "always", "name": "always"},
     output_visibility={"path": "always", "name": "always"},
-    when_to_use=(
-        "When the work calls for a brand-new, self-contained project rather than "
-        "changes to an existing one — e.g. the user asks to build a new "
-        "application or library from scratch and there is no suitable project "
-        "directory yet.",
-        "To obtain a fresh, checkpoint-tracked directory that is already part of "
-        "the workspace, so subsequent file edits and commands have somewhere to "
-        "live.",
-    ),
 )

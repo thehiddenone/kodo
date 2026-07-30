@@ -32,7 +32,11 @@ FIND_TEXT_IN_FILES: ToolSpec = ToolSpec(
         "multi-project workspace, call it once per root. Hidden files and "
         "anything ignored by .gitignore are skipped unless you opt in. Each "
         "match reports the file (relative to `root`), 1-based line number, and "
-        "the line text; results are capped (see `truncated`)."
+        "the line text; results are capped (see `truncated`).\n\n"
+        "When to use: finding where a symbol, string, or pattern appears across "
+        "a project's files — e.g. tracing a function's call sites or locating a "
+        "config key before editing. Pass `temporary: true` to search the "
+        "session's private scratch directory instead of a project root."
     ),
     input_schema={
         "type": "object",
@@ -149,12 +153,5 @@ FIND_TEXT_IN_FILES: ToolSpec = ToolSpec(
         "count": "always",
         "truncated": "always",
     },
-    when_to_use=(
-        "Finding where a symbol, string, or pattern appears across a project's "
-        "files within one root — e.g. tracing a function's call sites or locating "
-        "a config key before editing.",
-        "Pass `temporary: true` to search the session's private scratch "
-        "directory instead of a project root.",
-    ),
     requires_project=False,
 )

@@ -36,7 +36,10 @@ QUERY_SEARCH_ENGINE: ToolSpec = ToolSpec(
         "engine/browser', not 'nothing found'. `browser` picks the fetch backend, same "
         "choices as `read_webpage` (default `firefox`; `curl` impersonates a browser's "
         "TLS fingerprint with no browser process, often the fastest and least-detected "
-        "choice for `bing`/`duckduckgo`/`wikipedia`, which are static HTML)."
+        "choice for `bing`/`duckduckgo`/`wikipedia`, which are static HTML).\n\n"
+        "When to use: discovering candidate pages for a topic from a specific "
+        "engine, as part of a broader web-research loop that then reads the "
+        "promising links in full."
     ),
     input_schema={
         "type": "object",
@@ -96,8 +99,4 @@ QUERY_SEARCH_ENGINE: ToolSpec = ToolSpec(
     output_visibility={
         "hits": "visible",
     },
-    when_to_use=(
-        "Discovering candidate pages for a topic from a specific engine, as part of a "
-        "broader web-research loop that then reads the promising links in full.",
-    ),
 )

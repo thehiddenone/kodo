@@ -23,6 +23,7 @@ from ._compliance import (
 from ._create_directory import CREATE_DIRECTORY
 from ._create_file import CREATE_FILE
 from ._create_new_project import CREATE_NEW_PROJECT
+from ._describe import dense_output_schema, optional_output_paths, tool_description
 from ._disable_autonomous_mode import DISABLE_AUTONOMOUS_MODE
 from ._document_feedback import DOCUMENT_FEEDBACK
 from ._edit_file import EDIT_FILE
@@ -124,14 +125,17 @@ __all__ = [
     "ToolSpec",
     "augment_output_schema",
     "build_detail_rows",
+    "dense_output_schema",
     "normalize_output",
+    "optional_output_paths",
     "requires_intent",
     "stringify_value",
+    "tool_description",
     "tool_result_succeeded",
 ]
 
-# Every tool spec in the catalog. Used by kodo.subagents._registry to render
-# the `## Tools` section of each agent prompt.
+# Every tool spec in the catalog. Agents' granted tools are validated against it
+# at load time by kodo.subagents._registry.
 ALL_TOOLS: tuple[ToolSpec, ...] = (
     ASK_USER,
     CREATE_DIRECTORY,

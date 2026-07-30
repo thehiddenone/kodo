@@ -24,7 +24,12 @@ REMAINING_TIME: ToolSpec = ToolSpec(
         "salvage, which is always worse than a report you finished deliberately. As "
         "a guideline, once remaining_time drops below roughly a fifth of what you "
         "started with (or below ~20-30 seconds, whichever is larger), stop "
-        "gathering new sources and synthesize the report from what you already have."
+        "gathering new sources and synthesize the report from what you already "
+        "have.\n\n"
+        "When to use: periodically during a research loop, to decide whether "
+        "there is time for another engine query or page read; and before a "
+        "`wait` call, so the pause itself doesn't eat the time you need to "
+        "synthesize the final report."
     ),
     input_schema={"type": "object", "properties": {}},
     output_schema={
@@ -40,10 +45,4 @@ REMAINING_TIME: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.NONE,
     input_visibility={},
     output_visibility={"remaining_seconds": "always"},
-    when_to_use=(
-        "Periodically during a research loop, to decide whether there's time for "
-        "another engine query / page read or whether it's time to wrap up.",
-        "Before starting a `wait` call, to make sure the pause itself won't eat into "
-        "time needed to synthesize the final report.",
-    ),
 )

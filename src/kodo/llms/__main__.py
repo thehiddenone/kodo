@@ -2,42 +2,40 @@
 
 ``--system-prompt LLM_ID AGENT`` prints the exact system prompt kodo would
 send for that ``(model, agent)`` pair, by calling the real runtime code
-rather than reimplementing it:
+rather than reimplementing it: :meth:`~kodo.subagents.AgentRegistry.get`
+renders the agent's body — preambles, bases, sub-agent roster, task contract —
+exactly as ``kodo/server/_app.py`` does for a live session.
 
-* :meth:`~kodo.subagents.AgentRegistry.get` renders the agent's body —
-  preambles, tool/subagent placeholders, task contract — exactly as
-  ``kodo/server/_app.py`` does for a live session.
-* For a local (llama.cpp) ``LLM_ID``, :func:`~kodo.llms.llamacpp.resolve_chat_template`
-  resolves the model's chat template (from the sidecar-backed cache, see
-  doc/LOCAL_INFERENCE.md §6.7) and
-  :func:`~kodo.llms.toolformat.render_tool_call_examples` appends the
-  ``## Tool Call Format``/``## Tool Arguments`` section — the same two calls
-  ``LlamaPlugin.__with_tool_call_examples`` makes per turn.
-* For a cloud (Anthropic) ``LLM_ID``, nothing is appended — the real
-  ``AnthropicPlugin`` path sends the agent's system prompt as-is, with no
-  local-only section.
+An agent's granted tools are deliberately **not** part of that prompt; they
+reach the model through the LLM tool-definition ``tools`` argument, described by
+:func:`kodo.toolspecs.tool_description` (see doc/TOOLS.md §7). So what this
+prints is the whole system prompt, not an excerpt of it.
+
+Only the interactive-mode prompt is rendered (``autonomous=False``). There is
+deliberately no ``--autonomous`` flag.
 
 ``LLM_ID`` is looked up in the local registry first, then by ``model_id``
-across every cloud vendor.
+across every cloud vendor. Today it only has to *resolve* — the rendered prompt
+is identical for every model, because no plugin appends anything model-specific
+(``LlamaPlugin`` and ``AnthropicPlugin`` both send the agent's system prompt
+as-is). The argument is kept because per-LLM prompt variation is planned: when
+model-specific text is added to work around individual models' quirks, this is
+where it will show up, and the invocation will not have to change.
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
+import os
 import sys
 from pathlib import Path
 
 import kodo.subagents as _subagents_pkg
 from kodo.llms import CloudLLMEntry, get_cloud_registry, get_local_registry
-from kodo.llms.llamacpp import resolve_chat_template
-from kodo.llms.toolformat import render_tool_call_examples
 from kodo.project import kodo_user_dir
 from kodo.subagents import AgentLoadError, AgentRegistry
-from kodo.toolspecs import ALL_TOOLS, ToolSpec
 
 _AGENTS_DIR = Path(_subagents_pkg.__file__).parent
-_TOOL_SPECS_BY_NAME: dict[str, ToolSpec] = {t.name: t for t in ALL_TOOLS}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,7 +48,16 @@ def main(argv: list[str] | None = None) -> int:
         int: Process exit code (0 = success).
     """
     args = _parse_args(argv)
-    return _run_system_prompt(args.llm_id, args.agent)
+    try:
+        return _run_system_prompt(args.llm_id, args.agent)
+    except BrokenPipeError:
+        # A downstream reader closed the pipe (`| head`, quitting a pager). The
+        # prompts this prints run to ~100 KB, so piping is the normal way to use
+        # the command — not a failure worth a traceback. Point stdout at devnull
+        # so the interpreter's shutdown flush cannot raise a second time and
+        # print one anyway (the recipe from the Python docs' note on SIGPIPE).
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -72,9 +79,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         metavar=("LLM_ID", "AGENT"),
         dest="system_prompt",
         required=True,
-        help="Print AGENT's fully-rendered system prompt for LLM_ID — local registry "
-        "name or cloud model_id — including the local-only tool-call-format section "
-        "when LLM_ID is a llama.cpp model.",
+        help="Print AGENT's fully-rendered system prompt for LLM_ID — a local "
+        "registry name or a cloud model_id. Both are accepted and must resolve; "
+        "the prompt itself is currently the same for every model.",
     )
     parsed = parser.parse_args(argv)
     parsed.llm_id, parsed.agent = parsed.system_prompt
@@ -101,7 +108,8 @@ def _run_system_prompt(llm_id: str, agent_name: str) -> int:
     """Resolve *llm_id* + *agent_name* and print the rendered system prompt.
 
     Args:
-        llm_id (str): Local registry name or cloud ``model_id``.
+        llm_id (str): Local registry name or cloud ``model_id``. Validated but
+            not otherwise used — see this module's docstring.
         agent_name (str): Agent/subagent frontmatter ``name`` (not the
             filename) — e.g. ``"guide"``, ``"problem_solver"``, ``"architect"``.
 
@@ -116,25 +124,14 @@ def _run_system_prompt(llm_id: str, agent_name: str) -> int:
         return 2
 
     kodo_dir = kodo_user_dir()
-    local_entry = get_local_registry(kodo_dir).get(llm_id)
-    if local_entry is None and _find_cloud_entry(llm_id) is None:
+    if get_local_registry(kodo_dir).get(llm_id) is None and _find_cloud_entry(llm_id) is None:
         print(
             f"Error: unknown LLM id {llm_id!r} — not in the local or cloud registry",
             file=sys.stderr,
         )
         return 2
 
-    system_prompt = agent.system_prompt
-    if local_entry is not None:
-        tools = [_TOOL_SPECS_BY_NAME[name] for name in sorted(agent.tools)]
-        template = asyncio.run(resolve_chat_template(local_entry, kodo_dir))
-        section = render_tool_call_examples(tools, chat_template=template)
-        if section:
-            system_prompt = f"{system_prompt}\n\n{section}"
-    # A cloud LLM_ID gets no section appended — AnthropicPlugin sends the
-    # agent's system prompt unmodified (see this module's docstring).
-
-    print(system_prompt)
+    print(agent.system_prompt)
     return 0
 
 

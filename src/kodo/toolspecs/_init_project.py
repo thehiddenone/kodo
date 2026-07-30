@@ -40,9 +40,12 @@ INIT_PROJECT: ToolSpec = ToolSpec(
         "workspace it is added, same as `create_new_project`; if it's "
         "already open, the workspace is left as-is. Fails if the directory "
         "does not exist, or if it already has a `.kodo/` (it is already a "
-        "Kodo project — there is nothing to initialise). Returns the "
-        "absolute 'path', its workspace 'name', and whether the standard "
-        "layout was 'scaffolded'."
+        "Kodo project — there is nothing to initialise).\n\n"
+        "When to use: an existing, not-yet-tracked directory needs to come under "
+        "Kodo's checkpoint mirror — e.g. the user points at a project that "
+        "already has code and just wants Kodo's git-mirror checkpointing on top "
+        "of it. Unlike `create_new_project` (for a brand-new, empty project), "
+        "this never risks any of the directory's existing files."
     ),
     input_schema={
         "type": "object",
@@ -84,13 +87,4 @@ INIT_PROJECT: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.LOW,
     input_visibility={"intent": "always", "path": "always"},
     output_visibility={"path": "always", "name": "always", "scaffolded": "always"},
-    when_to_use=(
-        "When the work calls for bringing an existing, not-yet-tracked "
-        "directory under Kodo's checkpoint mirror — e.g. the user points at "
-        "a project that already has code and just wants Kodo's git-mirror "
-        "checkpointing on top of it.",
-        "To obtain a checkpoint-tracked directory that is already part of "
-        "the workspace without risking any of its existing files — unlike "
-        "`create_new_project`, which is for a brand-new, empty project.",
-    ),
 )

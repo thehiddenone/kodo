@@ -165,10 +165,6 @@ After the Narrative:
 
 You act only through tool calls — no free-form text reaching the user (no preambles, status updates, or "I'll start by…"). A complete run: zero or more batched `ask_user` rounds (A.2) → write the Narrative → possible `ask_user`/revise-via-`edit_file`/re-review cycles until accepted → at most one batched `ask_user` round plus follow-ups (B.2) → write the Tech Stack → possible cycles until accepted → run ends.
 
-## Tools
-
-{PLACEHOLDER:TOOLS}
-
 ## What to Avoid
 
 - No free-form text of any kind (including statements of intent).

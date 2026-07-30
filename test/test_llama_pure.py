@@ -59,7 +59,6 @@ def _make_tool(name: str = "test_tool", **overrides: Any) -> ToolSpec:
         security_impact=MagicMock(),
         input_visibility={},
         output_visibility={},
-        when_to_use=(),
     )
     defaults.update(overrides)
     return ToolSpec(**defaults)
@@ -1413,7 +1412,6 @@ async def test_llama_plugin_raw_stream_salvage_malformed_tool_call(
             security_impact=MagicMock(),
             input_visibility={},
             output_visibility={},
-            when_to_use=(),
         ),
     ]
 

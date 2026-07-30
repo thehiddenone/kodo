@@ -52,8 +52,4 @@ RETURN_RESULT: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.NONE,
     input_visibility={"result": "visible"},
     output_visibility={"status": "always"},
-    when_to_use=(
-        "As the final action of a sub-agent run, to return the result the caller expects.",
-        "Exactly once per run; the run ends immediately after the call.",
-    ),
 )

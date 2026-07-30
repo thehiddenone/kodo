@@ -50,7 +50,9 @@ READ_WEBPAGE: ToolSpec = ToolSpec(
         "`error` explaining what happened. There is no cooldown like "
         "`query_search_engine` has for engines — do not keep retrying the same URL "
         "with the same browser; a retry will fail the same way (though a different "
-        "`browser` choice may succeed where another was walled)."
+        "`browser` choice may succeed where another was walled).\n\n"
+        "When to use: reading one known page in full — an API reference page, a "
+        "changelog, a README — rather than surveying multiple sources."
     ),
     input_schema={
         "type": "object",
@@ -114,11 +116,4 @@ READ_WEBPAGE: ToolSpec = ToolSpec(
     output_visibility={
         "content": "visible",
     },
-    when_to_use=(
-        "You already have a specific URL — from query_search_engine results, "
-        "documentation links, or the user — and need its actual content rather than "
-        "a search-engine snippet.",
-        "Reading one known page in full, e.g. an API reference page, a changelog, or a "
-        "README, rather than surveying multiple sources.",
-    ),
 )

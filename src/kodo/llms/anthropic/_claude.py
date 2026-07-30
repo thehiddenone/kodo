@@ -30,6 +30,7 @@ from kodo.llms._interface import (
     TurnEnd,
     Usage,
 )
+from kodo.toolspecs import tool_description
 
 from ._cache import build_message_params, build_system_blocks
 from ._retry import UnrecoverableError, with_retry_iter
@@ -193,7 +194,10 @@ class ClaudePlugin(LLMPlugin):
         tool_defs: list[dict[str, object]] = [
             {
                 "name": t.name,
-                "description": t.description,
+                # The spec's prose plus its dense output-schema sketch: the API
+                # tool definition has no output-schema field, so the result shape
+                # only reaches the model through the description.
+                "description": tool_description(t),
                 "input_schema": t.input_schema,
             }
             for t in tools

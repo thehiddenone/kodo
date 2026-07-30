@@ -39,6 +39,7 @@ from kodo.llms import (
     local_thinking_tiers,
     strip_kodo_callouts,
 )
+from kodo.toolspecs import tool_description
 from kodo.transport import EVT_LLAMA_STATE
 
 from ._llama_server import LlamaServer
@@ -677,7 +678,8 @@ class LlamaPlugin(LLMPlugin):
                 "type": "function",
                 "function": {
                     "name": t.name,
-                    "description": t.description,
+                    # Prose + dense output-schema sketch; see tool_description.
+                    "description": tool_description(t),
                     "parameters": t.input_schema,
                 },
             }

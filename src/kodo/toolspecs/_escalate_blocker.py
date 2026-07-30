@@ -23,7 +23,22 @@ ESCALATE_BLOCKER: ToolSpec = ToolSpec(
         "resolution: it triages procedurally, decides itself in autonomous "
         "mode, or surfaces the matter to the user via ask_user in interactive "
         "mode. The resolution arrives as the agent's next input. For an input "
-        "or clarification the agent can act on itself, use ask_user instead."
+        "or clarification the agent can act on itself, use ask_user instead.\n\n"
+        "When to use, with the `reason` each case calls for:\n"
+        "- Inputs are too under-specified to make a defensible call — no "
+        "reasonable basis for a required decision, an unambiguous requirement "
+        "cannot be written, or a behavioral test cannot be derived.\n"
+        "- An author/critic or reviewer loop ends without convergence and the "
+        "critic is still rejecting (`critic_iteration_cap` / "
+        "`reviewer_iteration_cap`).\n"
+        "- User feedback at a review gate contradicts upstream artifacts or "
+        "itself in a way that cannot be resolved (`feedback_contradiction`).\n"
+        "- A red/green implementation loop stops converging "
+        "(`test_iteration_cap`), or a planned test cannot be implemented as "
+        "observable behavior (`non_behavioral_test_in_plan`).\n"
+        "- Validation against a dependency graph fails "
+        "(`dag_validation_failed`), or a reopen cascade exceeds its bound "
+        "(`reopen_cascade`)."
     ),
     input_schema={
         "type": "object",
@@ -87,23 +102,4 @@ ESCALATE_BLOCKER: ToolSpec = ToolSpec(
         "options": "visible",
     },
     output_visibility={"status": "always", "reason": "always", "user_response": "visible"},
-    when_to_use=(
-        "Inputs are too under-specified to make a defensible call — there "
-        "is no reasonable basis for a required decision, an unambiguous "
-        "requirement cannot be written, or a behavioral test cannot be "
-        "derived.",
-        "An author/critic or reviewer loop ends without convergence and the "
-        'critic is still rejecting (`reason: "critic_iteration_cap"` / '
-        '`"reviewer_iteration_cap"`).',
-        "User feedback at a review gate contradicts upstream artifacts or "
-        "itself in a way that cannot be resolved "
-        '(`reason: "feedback_contradiction"`).',
-        "A red/green implementation loop stops converging "
-        '(`reason: "test_iteration_cap"`), or a planned test cannot be '
-        "implemented as observable behavior "
-        '(`reason: "non_behavioral_test_in_plan"`).',
-        "Validation against a dependency graph fails "
-        '(`reason: "dag_validation_failed"`), or a reopen cascade exceeds '
-        'its bound (`reason: "reopen_cascade"`).',
-    ),
 )

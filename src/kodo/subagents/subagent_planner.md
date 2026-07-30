@@ -46,10 +46,6 @@ Order matters: put a step that produces something a later step needs first. If u
 4. **If plan:** write the ordered `tasks` (each with `title`, `subagent`, `instructions`), set `plan_warranted: true`, and give a `reason` naming the independent steps you saw.
 5. **Return** via `return_result`.
 
-## Tools
-
-{PLACEHOLDER:TOOLS}
-
 ## What to avoid
 
 - Inventing steps to force a plan — a single-step task returns `plan_warranted: false`.

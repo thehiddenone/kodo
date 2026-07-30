@@ -44,6 +44,12 @@ EDIT_FILE: ToolSpec = ToolSpec(
         "`path` is a logical path (folder-prefixed with a bound root's name, "
         "e.g. `billing-service/specs/foo.md`) or an absolute path, unless "
         "`temporary` is true (see below).\n\n"
+        "When to use: changing an existing file — this is the default way to do "
+        "it, and it keeps the diff minimal. To create, delete, copy, or move "
+        "whole files or directories, use the `filesystem` tool. Pass "
+        "`temporary: true` to edit a file in the session's private scratch "
+        "directory instead of the project, for throwaway work you don't want "
+        "checkpointed, reviewed, or left in the project tree.\n\n"
         "The user may reject this call (Edit Control review). A `rejected` "
         "result means try a different approach or ask the user what they "
         "want instead. A `rejected_with_feedback` result includes a "
@@ -185,14 +191,5 @@ EDIT_FILE: ToolSpec = ToolSpec(
         "temporary": "visible",
     },
     output_visibility={"status": "always", "path": "always", "feedback": "visible"},
-    when_to_use=(
-        "Making a localized change to an existing file — the default, preferred "
-        "way to edit. Replaces just the snippet you target and preserves "
-        "everything else, keeping the diff minimal. To create, delete, copy, or "
-        "move whole files or directories, use the `filesystem` tool.",
-        "Pass `temporary: true` to edit a file in the session's private scratch "
-        "directory instead of the project — for throwaway work you don't want "
-        "checkpointed, reviewed, or left in the project tree.",
-    ),
     requires_project=False,
 )

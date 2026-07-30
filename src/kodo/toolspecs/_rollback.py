@@ -21,7 +21,10 @@ ROLLBACK: ToolSpec = ToolSpec(
         "its specs/, src/, and test/ to that point in history, and resets the session.  "
         "In interactive mode the Guide MUST confirm with the user via ask_user "
         "before calling this.  In autonomous mode it decides and documents via a "
-        "<kodo_info> callout; there is no user to confirm with."
+        "<kodo_info> callout; there is no user to confirm with.\n\n"
+        "When to use: rework-in-place would be worse than starting a stage over "
+        "— typically after a root-cause resolution invalidates a large frontier "
+        "and a checkpoint predates the contaminated work."
     ),
     input_schema={
         "type": "object",
@@ -48,10 +51,5 @@ ROLLBACK: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.HIGH,
     input_visibility={"intent": "always", "root": "always", "target_sha": "always"},
     output_visibility={"status": "always"},
-    when_to_use=(
-        "Rework-in-place would be worse than starting a stage over — "
-        "typically after a root-cause resolution invalidates a large "
-        "frontier and a checkpoint predates the contaminated work.",
-    ),
     requires_project=True,
 )

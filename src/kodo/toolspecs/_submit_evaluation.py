@@ -71,8 +71,4 @@ SUBMIT_EVALUATION: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.NONE,
     input_visibility={"score": "always", "report": "visible"},
     output_visibility={"status": "always", "score": "always", "report": "visible"},
-    when_to_use=(
-        "As the final action of a validation judge run, to report the score and report.",
-        "Exactly once per run; the run ends immediately after the call.",
-    ),
 )

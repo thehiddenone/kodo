@@ -88,10 +88,6 @@ Your prior findings stay in context; do not contradict yourself. If you flagged 
 
 Strict but disciplined. A finding must be actionable (writable concrete proposal) and grounded in a category — subjective preferences, alternative phrasings, or hypotheticals are not findings. Apply the right rule set (don't apply a production rule to test code or vice versa). For Naming, the test is whether the name misleads or is too vague; for Documentation, whether it's missing where it would help. Style preferences in either are not findings.
 
-## Tools
-
-{PLACEHOLDER:TOOLS}
-
 ## What to Avoid
 
 - No free-form text; one `document_feedback` call per reviewed file — do not bundle concerns spanning multiple reviewed files. Call no tool other than `read_file` and `document_feedback`.

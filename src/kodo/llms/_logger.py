@@ -19,6 +19,8 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 
+from kodo.toolspecs import tool_description
+
 from ._interface import (
     LLMPlugin,
     Message,
@@ -99,8 +101,10 @@ class LoggingLLMPlugin(LLMPlugin):
             "model": model,
             "system": system,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
+            # Mirror what the providers actually send (tool_description, not the
+            # raw spec prose), so the log is a faithful record of the request.
             "tools": [
-                {"name": t.name, "description": t.description, "input_schema": t.input_schema}
+                {"name": t.name, "description": tool_description(t), "input_schema": t.input_schema}
                 for t in tools
             ],
             "cache_breakpoints": cache_breakpoints,

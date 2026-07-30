@@ -258,21 +258,38 @@ dispatch logic lives here (that is in `tools/`, §6A).
 
 ```python
 name, external_name, user_description, description,
-input_schema, when_to_use: tuple[str, ...], autonomous_mode: str | None = None
+input_schema, output_schema, security_impact,
+input_visibility, output_visibility, autonomous_mode: str | None = None,
+requires_project: bool = False
 ```
 
-`when_to_use` and `autonomous_mode` are rendered into each agent prompt's
-`## Tools` section by `AgentRegistry` (§11). `autonomous_mode` containing
-`"unavailable"` drives per-mode tool filtering.
+Only `name`, `description`, and `input_schema` are visible to the model — an LLM
+tool definition has no other fields. `description` is therefore the single prose
+channel and must also carry the tool's **when-to-use** guidance;
+`tool_description()` (below) appends the dense `output_schema` sketch to it.
+`external_name` and `security_impact` are UI/engine-facing only, and
+`autonomous_mode` containing `"unavailable"` drives per-mode tool filtering.
 
 [\_\_init\_\_.py](../src/kodo/toolspecs/__init__.py) exposes one catalog:
 
 - **`ALL_TOOLS: tuple[ToolSpec, ...]`** — all specs (tool names are unique),
   including the terminal `return_result` every sub-agent uses to return its
   typed result (§11).
-  Consumed by `subagents/_registry` to render prompts. (Which of these specs are
+  Consumed by `subagents/_registry` to *validate* each agent's `tools:`
+  frontmatter at load time. (Which of these specs are
   actually *dispatchable* is a `tools/` concern — see
   `tools.DISPATCHABLE_TOOLS_BY_NAME`, §6A.)
+- **`tool_description(spec) -> str`** ([_describe.py](../src/kodo/toolspecs/_describe.py))
+  — the description actually sent to the model: the spec's prose plus
+  `Returns: {…}`, a **dense** rendering of `output_schema` in which every
+  property collapses to its `description` string (no `type`/`properties`/
+  `required` scaffolding), followed by a one-line note naming the fields that
+  may be absent. Types are omitted deliberately — they are self-evident in the
+  returned data — and the engine-owned `schema_compliance` field is excluded, so
+  its long explanation is not repeated under all ~30 tools. Called by
+  `ClaudePlugin`, `LlamaPlugin`, and `LoggingLLMPlugin` so all three send and log
+  byte-identical tool definitions. `dense_output_schema()` /
+  `optional_output_paths()` are exposed for tests and tooling.
 
 [_ask_user.py](../src/kodo/toolspecs/_ask_user.py) (`ASK_USER`) carries
 `autonomous_mode="unavailable …"`. It takes a **question batch** — `questions:
@@ -462,6 +479,7 @@ Dependency management remains deliberately unimplemented.
 
 | Module | Defines | Links |
 |---|---|---|
+| [__main__.py](../src/kodo/llms/__main__.py) | `main()` — `python -m kodo.llms --system-prompt LLM_ID AGENT` | Diagnostic-only CLI: prints the exact system prompt kodo would send for a `(model, agent)` pair, by calling `AgentRegistry.get(agent, autonomous=False)` — the real render path, not a reimplementation — so preambles/bases/roster/contract are all substituted. `LLM_ID` (local registry `name` or cloud `model_id`, checked in that order) must resolve but changes nothing today: no plugin appends model-specific text, and tools are *not* in the prompt at all (TOOLS.md §7). The argument exists for planned per-LLM prompt variation. Unknown agent or LLM id → exit 2; the agent is resolved first. No `--autonomous` flag by design. Tests: `test/test_llms_main.py`. |
 | [_interface.py](../src/kodo/llms/_interface.py) | `LLMPlugin` (ABC); `Message`, `Usage`, `StreamEvent` + subclasses `ThinkingDelta`/`ThinkingSignature`/`TokenDelta`/`ToolCallEvent`/`TurnEnd`; re-exports `ToolSpec` | `Usage.usd_cost` lazily imports `anthropic._usage.compute_cost`. Stream contract: yields token/thinking deltas, an optional `ThinkingSignature` once a thinking block closes, then `ToolCallEvent`s, then one `TurnEnd`. See SESSIONS.md "Thinking blocks". |
 | [_cloud_registry.py](../src/kodo/llms/_cloud_registry.py) | `CloudLLMEntry` (frozen), `get_cloud_registry()`, `get_cloud_entry()`, `get_cloud_vendor_module()` | Hardcoded two-tier vendor→model tree (Anthropic today). See LLM_REGISTRY.md §3. |
 | [_local_registry.py](../src/kodo/llms/_local_registry.py) | `LocalLLMEntry` (frozen), `get_local_registry()`, `add_local_entry()`, `remove_local_entry()`, llama-server override getters/setters | Hardcoded GGUFs merged with the external `~/.kodo/etc/local-llm-registry.json` collection (4 entry kinds — see LLM_REGISTRY.md §4). No `residence` field; every entry here is local. |
@@ -679,11 +697,11 @@ any first prompt over 8 words — §12, WS_PROTOCOL.md §5.9a/§5.9b) and by
 |---|---|---|
 | [_loader.py](../src/kodo/subagents/_loader.py) | `SubAgent` (frozen: `name`, `tools: frozenset[str]`, `system_prompt`, `source_path`, `capability`, `display_name`, `subagents`, **`bases: tuple[str, ...]`**, **`subagent_order: tuple[str, ...]`**, **`purpose`**, **`solo: bool`**, **`critic`**, **`standalone: bool`**), `AgentLoadError`, `load_agent()` | Parses `subagent_<name>.md` frontmatter + body. Extracts the **`## Purpose`** body section (caller-agnostic "what this agent does / when to call it"); reads the `solo`/`critic`/`standalone` frontmatter that drives a caller's roster; keeps the `subagents:` allow-list in declaration order as `subagent_order`. |
 | [_subagentspec.py](../src/kodo/subagents/_subagentspec.py) + [specs/](../src/kodo/subagents/specs/) | `SubAgentSpec` (frozen: `name`, `description`, `input_schema`, `output_schema`) + one literal per agent in `specs/_<name>.py`, aggregated as `ALL_SUBAGENTS` | The typed input/output contract of a sub-agent — "a tool with agentic behavior". Every sub-agent **except** the entry agents (`guide`, `problem_solver`) has one. `specs/_shapes.py` holds declarative schema builders (`pipeline_input`/`author_output`/`critic_output`). |
-| [_registry.py](../src/kodo/subagents/_registry.py) | `AgentRegistry` | Loads all `subagent_*.md`, the two mandatory preambles `preamble_security.md` and `preamble_performance.md`, **and any `base_*.md` shared snippets**. **Renders the `## Tools` section from `ToolSpec` data** (one `_SPECS_BY_NAME` map over `ALL_TOOLS`), filtering `autonomous_mode == "unavailable"` tools when `autonomous=True`. **Renders the `## Subagents` roster from `{PLACEHOLDER:SUBAGENTS}`** (`render_subagents_section()`, public), now including each callee's input/output schema. For an agent with a `SubAgentSpec` (`SUBAGENT_SPECS_BY_NAME`, `spec_for()`), **auto-grants `return_result`** and **injects a `## Your Task Contract` section** (its own input + augmented output schema). Prepends the preambles (security, then performance), then the agent's referenced bases, then the contract. |
+| [_registry.py](../src/kodo/subagents/_registry.py) | `AgentRegistry` | Loads all `subagent_*.md`, the two mandatory preambles `preamble_security.md` and `preamble_performance.md`, **and any `base_*.md` shared snippets**. **Validates** each agent's `tools:` frontmatter against `ALL_TOOLS` at load time (one `_SPECS_BY_NAME` map) and filters `autonomous_mode == "unavailable"` tools out of the returned tool set when `autonomous=True` — it does **not** describe tools in the prompt (that is the `tools` argument's job, §6). **Renders the `## Subagents` roster from `{PLACEHOLDER:SUBAGENTS}`** (`render_subagents_section()`, public), now including each callee's input/output schema. For an agent with a `SubAgentSpec` (`SUBAGENT_SPECS_BY_NAME`, `spec_for()`), **auto-grants `return_result`** and **injects a `## Your Task Contract` section** (its own input + augmented output schema). Prepends the preambles (security, then performance), then the agent's referenced bases, then the contract. |
 
 **Links:** `_registry` imports `ALL_TOOLS` from `toolspecs`. `get(name,
-autonomous)` returns a `SubAgent` with `{PLACEHOLDER:TOOLS}` replaced and the
-prompt composed as **preamble (security, then performance) → bases → agent body**.
+autonomous)` returns a `SubAgent` whose prompt is composed as
+**preamble (security, then performance) → bases → contract → agent body**.
 Because the system prompt is rebuilt on every turn, the preambles (and bases) are
 always present regardless of context compaction (compaction rewrites only the
 message history). Consumed only by `WorkflowEngine`.

@@ -79,17 +79,24 @@ dataclass. Using `finalize_project` as the example:
 ```python
 FINALIZE_PROJECT: ToolSpec = ToolSpec(
     name="finalize_project",              # the model calls the tool by this name
-    external_name="Finalize Project",     # human label for prompt heading + UI
+    external_name="Finalize Project",     # human label for the UI only
     user_description="Mark the project as done",   # short UI label for tool-call events
     description=(                          # what the MODEL reads to decide to call it
         "Terminal call: the project is complete.  "
-        "Transitions state.phase to 'done' and ends the Guide session."
+        "Transitions state.phase to 'done' and ends the Guide session.\n\n"
+        # When-to-use guidance lives HERE — `description` is the only prose
+        # channel to the model. There is no separate `when_to_use` field.
+        "When to use: all product-level stages have completed and the workspace "
+        "has nothing left in flight — the project is done."
     ),
     input_schema={"type": "object", "properties": {}, "required": []},  # JSON Schema
-    when_to_use=(                          # rendered into the agent's `## Tools` prompt
-        "All product-level stages have completed and no tracked document is "
-        "left pending — the project is done.",
-    ),
+    output_schema={                        # reaches the model as a dense sketch (§7)
+        "type": "object",
+        "properties": {"status": {"type": "string", "description": "Always 'done'."}},
+        "required": ["status"],
+    },
+    security_impact=SecurityImpact.LOW,    # engine-side gating only (§8)
+    input_visibility={}, output_visibility={"status": "always"},
     autonomous_mode=None,                  # per-mode behavior (see §8)
 )
 ```
@@ -97,11 +104,19 @@ FINALIZE_PROJECT: ToolSpec = ToolSpec(
 Crucially, **not all fields reach the LLM the same way:**
 
 - `name`, `description`, `input_schema` → sent to the model **as a tool
-  definition** (the API `tools` parameter — see §6).
-- `external_name`, `when_to_use`, `autonomous_mode` → rendered into the
-  **system prompt's `## Tools` section** by the agent registry (see §7).
-- `user_description` → used only for **UI events** (`agent.tool_call`), never
-  seen by the model.
+  definition** (the API `tools` parameter — see §6). These are the *only* fields
+  the model ever sees.
+- `output_schema` → reaches the model **only** through `description`, as the
+  dense sketch `tool_description()` appends (see §7). An LLM tool definition has
+  no output-schema field.
+- `external_name`, `security_impact`, `autonomous_mode`, `user_description` →
+  never seen by the model. `external_name`/`user_description` label **UI events**
+  (`agent.tool_call`); `security_impact` drives engine-side gating;
+  `autonomous_mode` drives per-mode tool filtering.
+
+Because `description` is the single prose channel, it must carry everything the
+model needs to *route* to this tool over a neighbouring one — that is why the
+when-to-use guidance is written into it rather than a field of its own.
 
 ---
 
@@ -381,15 +396,22 @@ each `ToolSpec` is converted to an Anthropic tool definition:
 
 ```python
 tool_defs = [
-    {"name": t.name, "description": t.description, "input_schema": t.input_schema}
+    {"name": t.name, "description": tool_description(t), "input_schema": t.input_schema}
     for t in tools
 ]
 ...
 self.__client.messages.stream(model=..., system=..., messages=..., tools=tool_defs)
 ```
 
-Only **three** spec fields cross the wire to the model: `name`, `description`,
-`input_schema`. When the model decides to use a tool, it emits a `tool_use`
+Only **three** fields cross the wire to the model: `name`, `description`,
+`input_schema` — and this is the model's *only* source of tool knowledge, since
+agent prompts describe no tools (§7). The description is built by
+[`tool_description(spec)`](../src/kodo/toolspecs/_describe.py) rather than read
+off `spec.description` directly, so the `output_schema` — which the API has no
+field for — travels along as a dense sketch (§3). The llama.cpp plugin and the
+request logger call the same helper, so all three agree byte for byte.
+
+When the model decides to use a tool, it emits a `tool_use`
 content block, which the plugin assembles into a provider-agnostic
 [`ToolCallEvent`](../src/kodo/llms/_interface.py):
 
@@ -419,14 +441,38 @@ def tools_for_agent(tool_names: frozenset[str]) -> list[ToolSpec]:
 ```
 
 It takes **tool names** (`frozenset[str]`), not a `SubAgent` — that would be an
-upward import into T3. Names with no handler are skipped.
+upward import into T3. Names with no handler are skipped. Each surviving spec is
+serialized by `tool_description()` (§3) into the API `tools` parameter.
 
-**(b) The prompt `## Tools` section.** Independently,
-[subagents/_registry.py](../src/kodo/subagents/_registry.py) renders each
-declared tool's `external_name` + `when_to_use` + `autonomous_mode` into the
-agent's system prompt (replacing a `{PLACEHOLDER:TOOLS}` token), from
-`ALL_TOOLS`. The model thus reads *narrative guidance* in the system prompt and
-*callable schemas* via the API `tools` parameter — two views of the same spec.
+**(b) Load-time validation.** Independently,
+[subagents/_registry.py](../src/kodo/subagents/_registry.py) checks every
+declared name against `ALL_TOOLS` when the registry is built, so a typo in
+`tools:` fails fast rather than at first dispatch.
+
+> **There is exactly one channel to the model.** Agent prompts do **not** contain
+> a `## Tools` section — it was removed, along with the `{PLACEHOLDER:TOOLS}`
+> token that filled it. Describing tools in both places duplicated
+> `description`/`input_schema` for no benefit and cost 15–53% of every system
+> prompt. The four things that section carried and the `tools` argument did not
+> were resolved instead of dropped: `when_to_use` was merged into each spec's
+> `description`; `output_schema` reaches the model as the dense sketch
+> `tool_description()` appends; `security_impact` and `autonomous_mode` are
+> engine-side concerns the model was never required to reason about. Net effect:
+> agent system prompts shrank ~16.6% overall with no loss of routing guidance.
+> **Do not reintroduce a prompt-side tool section** — put the guidance in
+> `description`, where it reaches every agent granted the tool automatically.
+
+To see for yourself what an agent's prompt does and does not contain, print the
+real thing:
+
+```bash
+python -m kodo.llms --system-prompt claude-opus-5 guide
+```
+
+That CLI ([llms/__main__.py](../src/kodo/llms/__main__.py), INTERNALS.md §9)
+renders through `AgentRegistry.get` — the same call the engine makes — so its
+output is the prompt byte for byte. `test/test_llms_main.py` runs it over every
+packaged agent and asserts none of them grew a `## Tools` section.
 
 ---
 
@@ -434,10 +480,11 @@ agent's system prompt (replacing a `{PLACEHOLDER:TOOLS}` token), from
 
 Filtering for autonomous mode happens **once**, in the agent registry — not in
 the tool layer. A spec whose `autonomous_mode` contains `"unavailable"` (today
-only `ask_user`) is dropped from both the agent's `.tools` set **and** its
-rendered `## Tools` section when `registry.get(name, autonomous=True)` is called.
-Because the engine builds the LLM tool list from the *already-filtered*
-`agent.tools`, the withheld tool simply never reaches the model.
+only `ask_user`) is dropped from the agent's `.tools` set when
+`registry.get(name, autonomous=True)` is called. Because the engine builds the
+LLM tool list from the *already-filtered* `agent.tools`, the withheld tool simply
+never reaches the model — there is no prompt-side tool list that could
+contradict it.
 
 A tool can also declare `autonomous_mode="auto-accepted …"` for a spec whose
 *handler* short-circuits on `ctx.session.effective_autonomous` and synthesizes
@@ -638,8 +685,10 @@ free-text-only question (`options: []`).
 ## 12. Adding a new tool — checklist
 
 1. **Spec** — create `src/kodo/toolspecs/_<tool_name>.py` exporting one
-   `ToolSpec` (with `input_schema`, a model-facing `description`, generic
-   `when_to_use` bullets, optional `autonomous_mode`). Add it to
+   `ToolSpec` (with `input_schema`, `output_schema`, `security_impact`, and a
+   model-facing `description` that **ends with a `When to use: …` paragraph** —
+   there is no `when_to_use` field, and `description` is the only prose the model
+   sees; optional `autonomous_mode`). Add it to
    `toolspecs/__init__.py` imports / `__all__` / `ALL_TOOLS`. If the tool
    mutates content directly (a first-degree mutator, §8A), embed
    `INTENT_PROPERTY` from `toolspecs/_intent.py` as the **first**
@@ -678,7 +727,8 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [tools/_dispatch.py](../src/kodo/tools/_dispatch.py) | `_TOOL_CLASSES` table, `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME`. |
 | [tools/_paths.py](../src/kodo/tools/_paths.py) | `resolve_within` path guard (file-I/O + shell). |
 | [project/_layout.py](../src/kodo/project/_layout.py) | `session_temp_dir(session_id)` — `~/.kodo/sessions/<id>/tmp`, the `temporary` scratch root (§5a). |
-| [subagents/_registry.py](../src/kodo/subagents/_registry.py) | Renders each agent's `## Tools` prompt section from spec metadata; autonomous filtering. |
+| [subagents/_registry.py](../src/kodo/subagents/_registry.py) | Validates each agent's `tools:` frontmatter against `ALL_TOOLS`; autonomous filtering. Renders no tool text into the prompt. |
+| [toolspecs/_describe.py](../src/kodo/toolspecs/_describe.py) | `tool_description()` — prose + dense `output_schema` sketch; the only tool text the model reads. |
 | [llms/anthropic/_claude.py](../src/kodo/llms/anthropic/_claude.py) | Converts `ToolSpec` → API `tools` param; parses `tool_use` → `ToolCallEvent`. |
 | [llms/_interface.py](../src/kodo/llms/_interface.py) | `Message`, `ToolCallEvent`, `TurnEnd`, the `stream_query` contract. |
 | [runtime/_engine/](../src/kodo/runtime/_engine/) | `_make_dispatcher`, `_run_agent_turn` (the tool loop), the `_EngineServices` adapter. |

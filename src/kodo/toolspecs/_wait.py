@@ -32,7 +32,10 @@ WAIT: ToolSpec = ToolSpec(
         "looks wrong yet; wait longer (call `wait` more than once, or with a larger "
         "`seconds`) after any engine shows signs of suspicion; never rely on wait "
         "alone to fix a wall an engine already served — check "
-        "get_web_search_state and back off that engine entirely instead."
+        "get_web_search_state and back off that engine entirely instead.\n\n"
+        "When to use: between independent search-engine queries, and after any "
+        "sign of anti-bot suspicion (a slow response, a partial wall) before "
+        "trying anything else against that engine."
     ),
     input_schema={
         "type": "object",
@@ -54,10 +57,4 @@ WAIT: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.NONE,
     input_visibility={"seconds": "visible"},
     output_visibility={},
-    when_to_use=(
-        "Between independent search-engine queries, to avoid a burst of requests "
-        "that could trip a volume-based anti-bot wall.",
-        "After any sign of anti-bot suspicion (a slow response, a partial wall), "
-        "before trying anything else against that engine.",
-    ),
 )

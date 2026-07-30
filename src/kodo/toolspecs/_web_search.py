@@ -46,7 +46,12 @@ WEB_SEARCH: ToolSpec = ToolSpec(
         "warrant a longer timeout. Best-effort: `note` reports what was searched, "
         "what was skipped or blocked, and any degradation — an empty `themes` with "
         "an explanatory `note` means the search could not be completed, not that the "
-        "web has no answer."
+        "web has no answer.\n\n"
+        "When to use: looking up external information a codebase can't answer on "
+        "its own — third-party library/API documentation, the meaning of an error "
+        "message, or a known solution to a general programming problem. Also for "
+        "surveying a problem's option space, since the themed report groups the "
+        "web's answers into distinct approaches to choose between."
     ),
     input_schema={
         "type": "object",
@@ -125,11 +130,4 @@ WEB_SEARCH: ToolSpec = ToolSpec(
         "themes": "visible",
         "note": "always",
     },
-    when_to_use=(
-        "Looking up external information a codebase can't answer on its own — "
-        "third-party library/API documentation, the meaning of an error message, "
-        "or a known solution to a general programming problem.",
-        "Surveying the option space of a problem: the themed report groups the "
-        "web's answers into distinct approaches to choose between.",
-    ),
 )

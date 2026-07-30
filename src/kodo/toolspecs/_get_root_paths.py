@@ -45,7 +45,14 @@ GET_ROOT_PATHS: ToolSpec = ToolSpec(
         "ONE root, so to cover a multi-project workspace you call them once per "
         "root returned here.\n\n"
         "Pass `temporary: true` instead to get a single root pointing at your "
-        "private scratch directory (see below)."
+        "private scratch directory (see below) — e.g. to pass as `run_command`'s "
+        "`working_dir` for throwaway work you don't want in the project "
+        "itself.\n\n"
+        "When to use: before searching the codebase, to discover the root(s) to "
+        "pass to `find_files` / `find_text_in_files`. Also the way to check "
+        "whether a project/workspace exists yet at all — with no workspace "
+        "bound this returns an empty `roots` list rather than an error, which is "
+        "itself the signal that `create_new_project` is needed first."
     ),
     input_schema={
         "type": "object",
@@ -98,16 +105,4 @@ GET_ROOT_PATHS: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.NONE,
     input_visibility={"temporary": "visible"},
     output_visibility={"roots": "always"},
-    when_to_use=(
-        "Before searching the codebase, to discover the project root(s) to pass "
-        "as the `root` of `find_files` / `find_text_in_files` — especially in a "
-        "multi-project workspace where each search covers only one root.",
-        "Pass `temporary: true` to get the absolute path of your private "
-        "scratch directory — e.g. to pass as `run_command`'s `working_dir` for "
-        "throwaway work you don't want in the project itself.",
-        "To check whether a project/workspace exists yet at all — with no "
-        "workspace bound this returns an empty `roots` list rather than an "
-        "error, which is itself the signal that `create_new_project` is "
-        "needed first.",
-    ),
 )

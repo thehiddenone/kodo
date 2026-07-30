@@ -31,6 +31,9 @@ ASK_USER: ToolSpec = ToolSpec(
         "document, or escalate_blocker, instead. Distinct from "
         "request_user_review_artifact, which is a sign-off on a finished "
         "artifact rather than a question."
+        "\n\nWhen to use: information about the current topic of work is "
+        "uncovered or only partially covered, or user-supplied input "
+        "contradicts itself and must be reconciled before you incorporate it."
     ),
     input_schema={
         "type": "object",
@@ -111,13 +114,6 @@ ASK_USER: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.NONE,
     input_visibility={"questions": "always"},
     output_visibility={"answers": "always"},
-    when_to_use=(
-        "Eliciting every uncovered or partially-covered piece of information "
-        "about the current topic of work in one batch, or resolving "
-        "contradictions in user-supplied input before incorporating it — all "
-        "open questions in one call, each with your derived candidate "
-        "answers.",
-    ),
     autonomous_mode=(
         "Unavailable — there is no answer to synthesize when the user is "
         "away, so this tool is withheld entirely. An agent that would have "

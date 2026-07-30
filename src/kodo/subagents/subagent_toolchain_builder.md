@@ -171,6 +171,3 @@ When re-invoked to change an existing setup, treat it as a **targeted edit, not 
 - Do **not** put dependency-management instructions in `DEVELOPMENT.md`, or build instructions in `DEPENDENCIES.md`.
 - Keep the text you emit between tool calls terse; the harness ignores it. Your result is the report.
 
-## Tools
-
-{PLACEHOLDER:TOOLS}

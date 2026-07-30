@@ -37,11 +37,15 @@ TOOLCHAIN_DEPS: ToolSpec = ToolSpec(
         "`version` (constraint; omit for latest), optional `kind` (which "
         "dependency category — `runtime` (default), `dev`, `test`, `optional`, or "
         "`build`), and optional `extra` (the extras group, for `kind: optional`).\n\n"
-        "Returns `success`, a `status`, and a `message`. A `status` of "
-        "`dependencies_md_missing` means the project has no `DEPENDENCIES.md` yet: "
-        "nothing was changed, and `message` explains how to get one generated "
-        "(run the toolchain-setup sub-agent to bootstrap/convert the project) "
-        "before retrying."
+        "A `status` of `dependencies_md_missing` means the project has no "
+        "`DEPENDENCIES.md` yet: nothing was changed, and `message` explains how "
+        "to get one generated (run the toolchain-setup sub-agent to "
+        "bootstrap/convert the project) before retrying.\n\n"
+        "When to use: a new library (database driver, HTTP client, message queue "
+        "client, parser, etc.) is needed before referencing it in an "
+        "implementation; a dependency is no longer needed and should be removed; "
+        "or an existing dependency needs a version bump the implementation "
+        "requires."
     ),
     input_schema={
         "type": "object",
@@ -130,12 +134,4 @@ TOOLCHAIN_DEPS: ToolSpec = ToolSpec(
         "commands_run": "visible",
         "files_changed": "visible",
     },
-    when_to_use=(
-        "A new library (database driver, HTTP client, message queue "
-        "client, parser, etc.) is needed before referencing it in an "
-        "implementation.",
-        "A dependency is no longer needed and should be removed, or an "
-        "existing dependency needs a version bump required by the "
-        "implementation.",
-    ),
 )

@@ -194,10 +194,6 @@ what order to proceed in) are yours and need no research, and the root-cause
 break-glass (Forward Progress, Layer 2) concerns the user's intent, which cannot
 be researched away.
 
-## Tools
-
-{PLACEHOLDER:TOOLS}
-
 ## Subagents
 
 These are the sub-agents you delegate to. Each row's `name` / `critic_name` are the exact strings to pass to `run_subagent` / `run_author_critic_iteration`; the **Kind** column marks whether the agent is part of the ordered pipeline (`workflow`) or an on-demand specialist (`standalone` — the toolchain-setup agent and the Investigator; see *Project Toolchain Setup* and *Research via the Investigator*). The pipeline order is set by the stages above and the Design Plan, not by this roster.

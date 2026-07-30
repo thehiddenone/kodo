@@ -24,8 +24,9 @@ A new sub-agent named `foo` needs **all** of these, or the registry raises
      `standalone: true`. A **pure critic** declares none of those three.
    - Body **must** contain a `## Purpose` section (caller-agnostic, third person)
      — the registry renders it into every caller's `{PLACEHOLDER:SUBAGENTS}`
-     roster and **fails fast if it's missing**. Include a `## Tools` section with
-     the `{PLACEHOLDER:TOOLS}` token.
+     roster and **fails fast if it's missing**. Do **not** write a `## Tools`
+     section: granted tools are never described in the prompt, only in the LLM
+     `tools` argument (see [TOOLS.md](TOOLS.md) §7).
 2. **Spec** — `src/kodo/subagents/specs/_foo.py`
    - One module-level `SubAgentSpec` constant (e.g. `FOO`), mirroring the
      one-literal-per-file `toolspecs` convention.
@@ -81,10 +82,25 @@ From `kodo` (deps `aiohttp` etc. may be absent in some envs — the agent/spec
 tests don't need them):
 
 ```bash
-PYTHONPATH=src python3 -m pytest test/test_agents.py test/test_subagentspecs.py -q
+PYTHONPATH=src python3 -m pytest test/test_agents.py test/test_subagentspecs.py test/test_llms_main.py -q
 PYTHONPATH=src python3 -c "from pathlib import Path; from kodo.subagents import AgentRegistry; AgentRegistry(Path('src/kodo/subagents'))"
 ruff check src/kodo/subagents/specs/
 ```
+
+Then **read the prompt your agent will actually receive** — the rendered article,
+with the preambles, any `bases:` snippets, the `{PLACEHOLDER:SUBAGENTS}` roster
+and the task contract all substituted:
+
+```bash
+PYTHONPATH=src python3 -m kodo.llms --system-prompt claude-opus-5 foo
+```
+
+This is the fastest way to catch a placeholder that never got filled, a roster
+row that reads wrong, or a contract that doesn't match your `SubAgentSpec`. It
+calls `AgentRegistry.get` itself, so what it prints is what the engine sends
+(see [INTERNALS.md](INTERNALS.md) §9). The `LLM_ID` only has to resolve — every
+model gets the same prompt today. `test/test_llms_main.py` sweeps *every*
+packaged agent through it, so a new agent that fails to render fails there too.
 
 On Windows the canonical check is `mise exec node -- npm run check-types && ...`
 in `kodo-vsix` for the front-end; the Python side is pytest + ruff as above.

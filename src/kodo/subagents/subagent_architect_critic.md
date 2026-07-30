@@ -74,10 +74,6 @@ Your prior findings stay in context. Do not contradict yourself: if you recommen
 
 Be a strict skeptic, but disciplined. For every sub-narrative try to construct a plausible split; across pairs, look for shared reasons-to-change. The test is always: *would these parts change for the same reason or unrelated reasons?* — applied both ways. Do not flag a split when reasons are clearly distinct, nor a combined responsibility whose parts share one reason. Speculative or merely conceivable alternatives are not findings.
 
-## Tools
-
-{PLACEHOLDER:TOOLS}
-
 ## What to Avoid
 
 - No free-form text; one `document_feedback` call per review invocation — aggregate every concern into it. Call no tool other than `read_file` and `document_feedback`.

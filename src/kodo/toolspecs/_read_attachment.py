@@ -19,7 +19,11 @@ READ_ATTACHMENT: ToolSpec = ToolSpec(
         "Call this tool with that tag's `attachment_id` to read the file. Always "
         "check the end of the user's message for these tags and read any "
         "attachment that is relevant to the request — do not assume you already "
-        "know its content."
+        "know its content.\n\n"
+        "When to use: the user's prompt (or an earlier message in this "
+        "conversation) ends with such a tag and the request depends on that "
+        "file's content. Call it before answering a question about an attached "
+        "file or acting on it — the tag alone gives you only the filename."
     ),
     input_schema={
         "type": "object",
@@ -50,11 +54,4 @@ READ_ATTACHMENT: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.MINIMAL,
     input_visibility={"attachment_id": "always"},
     output_visibility={"filename": "always", "content": "visible"},
-    when_to_use=(
-        "The user's prompt (or an earlier message in this conversation) ends with one or more "
-        '<ATTACHMENT ID="..." filename="..."/> tags and the request depends on that '
-        "file's content.",
-        "Before answering a question about an attached file, or acting on its content — the tag "
-        "alone only gives you the filename, not the content.",
-    ),
 )

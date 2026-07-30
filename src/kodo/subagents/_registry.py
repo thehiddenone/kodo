@@ -8,20 +8,14 @@ rebuilt fresh on every turn, both preambles are always present regardless of
 context compaction (compaction only rewrites the conversation history, never the
 system prompt).
 
-Each subagent's ``## Tools`` section is rendered lazily by replacing the
-``{PLACEHOLDER:TOOLS}`` token with one block per tool listed in its frontmatter
-``tools:``. Every part of that block — the heading (``external_name``), the
-``Autonomous mode`` line, and the ``When to use`` bullets — comes from that
-tool's :class:`~kodo.toolspecs.ToolSpec`; no separate prompt file is involved.
-``when_to_use`` bullets are written generically (they describe a situation, not
-which agent is in it), since the same spec may be rendered into multiple
-agents' prompts.
-
-Rendering is performed lazily by :meth:`AgentRegistry.get` so it can honour the
-current ``autonomous`` flag: tools whose :class:`~kodo.toolspecs.ToolSpec`
-marks ``autonomous_mode`` as ``unavailable`` are excluded — from both the
-rendered ``## Tools`` section and the returned :attr:`SubAgent.tools` set —
-when ``autonomous=True``.
+An agent's granted tools are **not** described in its prompt. They reach the
+model through the LLM tool-definition ``tools`` argument, whose description is
+built from the spec by :func:`kodo.toolspecs.tool_description`. The registry's
+only concern with ``tools:`` frontmatter is therefore validation (every declared
+name must resolve to a :class:`~kodo.toolspecs.ToolSpec`, checked at load time)
+and the autonomous filter: tools whose spec marks ``autonomous_mode`` as
+``unavailable`` are dropped from the :attr:`SubAgent.tools` set returned by
+:meth:`AgentRegistry.get` when ``autonomous=True``, so they are never offered.
 
 A caller agent (one with a ``subagents:`` allow-list) may also embed a
 ``{PLACEHOLDER:SUBAGENTS}`` token. It is replaced with a **sub-agent roster**:
@@ -54,7 +48,6 @@ from .specs import ALL_SUBAGENTS
 
 _SECURITY_PREAMBLE_FILENAME = "preamble_security.md"
 _PERFORMANCE_PREAMBLE_FILENAME = "preamble_performance.md"
-_TOOLS_PLACEHOLDER = "{PLACEHOLDER:TOOLS}"
 _SUBAGENTS_PLACEHOLDER = "{PLACEHOLDER:SUBAGENTS}"
 
 # The terminal tool every schema-bearing sub-agent is auto-granted (so it can
@@ -96,9 +89,9 @@ class AgentRegistry:
     """Index of all loaded subagents, looked up by name.
 
     Every agent returned by :meth:`get` has the security and performance
-    preambles prepended (in that order) and its ``## Tools`` placeholder
-    replaced with descriptions for its allowed tools, filtered for the
-    requested mode.
+    preambles prepended (in that order), its ``{PLACEHOLDER:SUBAGENTS}`` roster
+    filled in (when it embeds one), and its tool set filtered for the requested
+    mode.
 
     Args:
         agents_dir: Directory containing ``preamble_security.md``,
@@ -140,8 +133,8 @@ class AgentRegistry:
         for path in agent_paths:
             agent = load_agent(path)
             # Validate every declared tool resolves now, at load time, so a bad
-            # frontmatter reference fails fast rather than at first render.
-            self.__render_tools_section(agent.tools, path)
+            # frontmatter reference fails fast rather than at first dispatch.
+            self.__validate_tools(agent.tools, path)
             # Validate every declared base exists, for the same fail-fast reason.
             for base in agent.bases:
                 if base not in self.__bases:
@@ -168,25 +161,15 @@ class AgentRegistry:
         return preamble
 
     @staticmethod
-    def __render_tools_section(agent_tools: frozenset[str], path: Path) -> str:
-        blocks: list[str] = []
+    def __validate_tools(agent_tools: frozenset[str], path: Path) -> None:
+        """Fail fast when an agent's frontmatter names an unknown tool.
+
+        Run at load time (not first render) so a typo in ``tools:`` surfaces when
+        the registry is built rather than mid-session.
+        """
         for name in sorted(agent_tools):
-            spec = _SPECS_BY_NAME.get(name)
-            if spec is None:
+            if name not in _SPECS_BY_NAME:
                 raise AgentLoadError(f"{path}: tool {name!r} has no ToolSpec in kodo.toolspecs")
-            lines = []
-            if spec.autonomous_mode:
-                lines.append(f"- **Autonomous mode:** {spec.autonomous_mode}")
-            lines.append(f"- **Security impact:** {spec.security_impact.label}")
-            lines.append("- **When to use:**")
-            lines.extend(f"  - {bullet}" for bullet in spec.when_to_use)
-            # Output schema is visible to the agent (augmented in-flight with the
-            # engine-owned `schema_compliance` flag the agent should consult).
-            output_schema = json.dumps(augment_output_schema(spec.output_schema), indent=2)
-            lines.append("- **Output schema:**")
-            lines.append(f"  ```json\n{output_schema}\n  ```")
-            blocks.append(f"### {spec.external_name} (`{name}`)\n\n" + "\n".join(lines))
-        return "\n\n".join(blocks)
 
     @staticmethod
     def __render_contract_section(spec: SubAgentSpec) -> str:
@@ -305,9 +288,8 @@ class AgentRegistry:
     def __finalize(self, agent: SubAgent, autonomous: bool) -> SubAgent:
         """Render *agent* for the requested mode.
 
-        Filters autonomous-disabled tools from both the effective tool set and
-        the rendered ``## Tools`` section, then prepends the shared base snippets
-        (if any) and the global preamble.
+        Filters autonomous-disabled tools out of the effective tool set, then
+        prepends the shared base snippets (if any) and the global preamble.
         """
         spec = SUBAGENT_SPECS_BY_NAME.get(agent.name)
         effective_tools = agent.tools
@@ -317,8 +299,7 @@ class AgentRegistry:
             effective_tools = effective_tools | {_RETURN_RESULT_TOOL}
         if autonomous and _AUTONOMOUS_DISABLED:
             effective_tools = frozenset(t for t in effective_tools if t not in _AUTONOMOUS_DISABLED)
-        tools_section = self.__render_tools_section(effective_tools, agent.source_path)
-        system_prompt = agent.system_prompt.replace(_TOOLS_PLACEHOLDER, tools_section)
+        system_prompt = agent.system_prompt
         if _SUBAGENTS_PLACEHOLDER in system_prompt:
             system_prompt = system_prompt.replace(
                 _SUBAGENTS_PLACEHOLDER, self.__render_subagents_section(agent)
@@ -343,8 +324,7 @@ class AgentRegistry:
         Args:
             name: Subagent name (e.g. ``'narrative_author'``).
             autonomous: When ``True``, tools whose ``ToolSpec.autonomous_mode``
-                is ``unavailable`` are excluded from the agent's tool set and
-                its rendered ``## Tools`` section.
+                is ``unavailable`` are excluded from the agent's tool set.
 
         Returns:
             SubAgent: The matching subagent definition.

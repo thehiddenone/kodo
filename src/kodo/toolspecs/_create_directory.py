@@ -32,7 +32,12 @@ CREATE_DIRECTORY: ToolSpec = ToolSpec(
         "`create_file`.\n"
         "`path` is a logical path (folder-prefixed with a bound root's name, "
         "e.g. `billing-service/specs/foo`) or an absolute path, unless "
-        "`temporary` is true (see below)."
+        "`temporary` is true (see below).\n\n"
+        "When to use: a directory has to exist on disk — e.g. scaffolding a "
+        "non-artifact project directory a toolchain expects. Pass "
+        "`temporary: true` to create it in the session's private scratch "
+        "directory instead of the project, for throwaway work you don't want "
+        "checkpointed, reviewed, or left in the project tree."
     ),
     input_schema={
         "type": "object",
@@ -88,15 +93,5 @@ CREATE_DIRECTORY: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.LOW,
     input_visibility={"intent": "always", "path": "always", "temporary": "visible"},
     output_visibility={"status": "always", "path": "always"},
-    when_to_use=(
-        "Creating a directory, including any missing parents — e.g. scaffolding "
-        "a non-artifact project directory a toolchain expects on disk. Succeeds "
-        "even if the directory already exists. To delete, copy, or move whole "
-        "files or directories, use the `filesystem` tool; to create a "
-        "brand-new file, use `create_file`.",
-        "Pass `temporary: true` to create it in the session's private scratch "
-        "directory instead of the project — for throwaway work you don't want "
-        "checkpointed, reviewed, or left in the project tree.",
-    ),
     requires_project=False,
 )

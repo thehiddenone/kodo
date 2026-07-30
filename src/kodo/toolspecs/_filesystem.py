@@ -72,7 +72,12 @@ FILESYSTEM: ToolSpec = ToolSpec(
         "removes/relocates whole files and directories.\n\n"
         "Set `temporary: true` to operate entirely within the session's "
         "private scratch directory instead of the project (see `temporary` "
-        "below)."
+        "below) — for throwaway work you don't want checkpointed, reviewed, or "
+        "left in the project tree. That also lifts the `delete_dir` permission "
+        "prompt, since nothing there is tracked.\n\n"
+        "When to use: anything on disk needs deleting, copying, moving, or "
+        "renaming — e.g. removing stale files or whole directories, or "
+        "relocating them."
     ),
     input_schema={
         "type": "object",
@@ -182,20 +187,5 @@ FILESYSTEM: ToolSpec = ToolSpec(
         "source": "always",
         "destination": "always",
     },
-    when_to_use=(
-        "Any time you need to delete, copy, move, or rename a file or a "
-        "directory on disk — this one tool covers all of those. Set "
-        "`operation` to the action you want (e.g. `delete_dir`, `copy_dir`, "
-        "`move_file`).",
-        "Removing stale files or whole directories, or relocating/renaming them.",
-        "Use `create_directory` instead to create a directory, `create_file` "
-        "to create a brand-new file, or `edit_file` to change the CONTENTS of "
-        "an existing file — this tool does not create directories or edit "
-        "file contents.",
-        "Pass `temporary: true` to operate in the session's private scratch "
-        "directory instead of the project — for throwaway work you don't want "
-        "checkpointed, reviewed, or left in the project tree; this also lifts "
-        "the `delete_dir` permission prompt, since nothing there is tracked.",
-    ),
     requires_project=False,
 )

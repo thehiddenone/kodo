@@ -81,10 +81,6 @@ Re-read the code and tests together; confirm they agree and the behavior matches
 
 Call `return_result` once: `primary_path`, every `path` touched, `tests_written`, a `verification` line (build/test outcome or why it couldn't run), and a one-line `summary`.
 
-## Tools
-
-{PLACEHOLDER:TOOLS}
-
 ## What to avoid
 
 - Writing code before you've worked out what it should do — establish the target behavior first.

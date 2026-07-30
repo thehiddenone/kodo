@@ -57,10 +57,6 @@ Where evidence is needed, prefer primary evidence: the code itself over assumpti
    - Some questions seek **opinions or approaches** rather than a single fact — how practitioners weigh a trade-off, which of several designs the field favors. For those, lay out the distinct positions with their reasoning and sources instead of collapsing them into one winner; choosing is the caller's job.
 5. **Return.** Call `return_result` once: `answers` (qa) or `report` (report), the `sources` list (knowledge-based answers contribute none — empty is fine when knowledge settled everything), and a one-line `summary` of what you established.
 
-## Tools
-
-{PLACEHOLDER:TOOLS}
-
 ## What to avoid
 
 - Changing anything — you are strictly read-only. No writing files, no side-effecting commands. If a question needs an action, report that; don't take it.

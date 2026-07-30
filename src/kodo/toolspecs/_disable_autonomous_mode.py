@@ -13,7 +13,13 @@ DISABLE_AUTONOMOUS_MODE: ToolSpec = ToolSpec(
     user_description="Disable autonomous mode",
     description=(
         "Break-glass tool. Forces the pipeline into interactive mode. Once pulled, "
-        "autonomous mode stays off until the user explicitly re-enables it."
+        "autonomous mode stays off until the user explicitly re-enables it.\n\n"
+        "When to use: only for diagnosed pipeline-level non-convergence — the "
+        "same artifact (or pair of artifacts) reworked repeatedly (as a "
+        "guideline, 3+ rework cycles without net progress) with a root cause "
+        "that requires the user's intent to resolve. Never for ordinary, "
+        "single-loop escalations — those are triaged normally (procedurally or "
+        "substantively) without pulling the break-glass."
     ),
     input_schema={
         "type": "object",
@@ -35,13 +41,4 @@ DISABLE_AUTONOMOUS_MODE: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.HIGH,
     input_visibility={"reason": "always"},
     output_visibility={"status": "always"},
-    when_to_use=(
-        "Only for diagnosed pipeline-level non-convergence — the same "
-        "artifact (or pair of artifacts) reworked repeatedly (as a "
-        "guideline, 3+ rework cycles without net progress) with a root "
-        "cause that requires the user's intent to resolve.",
-        "Never for ordinary, single-loop escalations — those are triaged "
-        "normally (procedurally or substantively) without pulling the "
-        "break-glass.",
-    ),
 )

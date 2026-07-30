@@ -98,6 +98,3 @@ guessing at a root or falling back to some other path.
 - **Never operate outside `project_root_path`.** It is the one project you were
   handed; do not touch, search, or run commands in any other directory.
 
-## Tools
-
-{PLACEHOLDER:TOOLS}

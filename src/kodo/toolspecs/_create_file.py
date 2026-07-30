@@ -37,6 +37,11 @@ CREATE_FILE: ToolSpec = ToolSpec(
         "`path` is a logical path (folder-prefixed with a bound root's name, "
         "e.g. `billing-service/specs/foo.md`) or an absolute path, unless "
         "`temporary` is true (see below).\n\n"
+        "When to use: adding a file that does not exist yet — this is the "
+        "default way to do it. Pass `temporary: true` to write into the "
+        "session's private scratch directory instead of the project, for "
+        "throwaway files you don't want checkpointed, reviewed, or left in the "
+        "project tree.\n\n"
         "The user may reject this call (Edit Control review). A `rejected` "
         "result means try a different approach or ask the user what they "
         "want instead. A `rejected_with_feedback` result includes a "
@@ -168,15 +173,5 @@ CREATE_FILE: ToolSpec = ToolSpec(
         "temporary": "visible",
     },
     output_visibility={"status": "always", "path": "always", "feedback": "visible"},
-    when_to_use=(
-        "Creating a brand-new file — the default, preferred way to add one. "
-        "Fails loudly instead of overwriting if the file already exists, so "
-        "the model cannot silently clobber existing content. To change an "
-        "existing file's contents, use `edit_file`; to delete, copy, or move "
-        "whole files or directories, use the `filesystem` tool.",
-        "Pass `temporary: true` to write into the session's private scratch "
-        "directory instead of the project — for throwaway files you don't "
-        "want checkpointed, reviewed, or left in the project tree.",
-    ),
     requires_project=False,
 )

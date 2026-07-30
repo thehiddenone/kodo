@@ -40,7 +40,9 @@ DOCUMENT_FEEDBACK: ToolSpec = ToolSpec(
         "critic produces per review — it never edits the file itself, and it "
         "never decides what happens next: when `accept` is true, the engine "
         "alone handles presenting the file to the user (if interactive) and "
-        "recording acceptance."
+        "recording acceptance.\n\n"
+        "When to use: after reviewing a file you were asked to review — exactly "
+        "one call per review, aggregating every concern you found."
     ),
     input_schema={
         "type": "object",
@@ -86,11 +88,5 @@ DOCUMENT_FEEDBACK: ToolSpec = ToolSpec(
         "summary": "visible",
     },
     output_visibility={"status": "always", "path": "always"},
-    when_to_use=(
-        "After reviewing a file a critic was asked to review — exactly one call per review, "
-        "aggregating every concern.",
-        "To accept a file (`accept: true`, empty concerns) once it has no remaining concerns.",
-        "To reject a file (`accept: false`, one or more concerns) so its author revises it.",
-    ),
     requires_project=True,
 )

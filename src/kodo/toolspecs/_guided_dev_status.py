@@ -24,7 +24,14 @@ GUIDED_DEV_STATUS: ToolSpec = ToolSpec(
         "acceptance step), or `accepted` (done). A document absent from the "
         "result has never been written. `path` is folder-prefixed with the "
         "owning project's name (a get_root_paths entry), e.g. "
-        "'billing-service/specs/requirements/auth.md'. Only available in Guided mode."
+        "'billing-service/specs/requirements/auth.md'. Only available in Guided "
+        "mode.\n\n"
+        "When to use: before every scheduling decision — the first step of the "
+        "core loop, every time, including after invalidation cascades or when "
+        "pre-existing documents are brought into the project. It tells you the "
+        "furthest stage each codename can advance to, which documents are still "
+        "pending review/revision, and whether an invalidation cascade correctly "
+        "marked downstream documents as needing rework."
     ),
     input_schema={"type": "object", "properties": {}, "required": []},
     output_schema={
@@ -60,13 +67,5 @@ GUIDED_DEV_STATUS: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.NONE,
     input_visibility={},
     output_visibility={"files": "always"},
-    when_to_use=(
-        "Before every scheduling decision — the first step of the core loop, every time, "
-        "including after invalidation cascades or when pre-existing documents are brought "
-        "into the project.",
-        "To determine the furthest stage each codename can advance to, to discover documents "
-        "still pending review/revision, and to confirm an invalidation cascade correctly "
-        "marked downstream documents as needing rework.",
-    ),
     requires_project=True,
 )

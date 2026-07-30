@@ -27,7 +27,10 @@ GET_WEB_SEARCH_STATE: ToolSpec = ToolSpec(
         "recorded it, recomputed fresh on every call — not the raw timestamp. Use "
         "that to judge how long ago you last did something (e.g. last queried an "
         "engine). Call this before querying an engine you've used before, so you "
-        "know whether it's flagged blocked and how recently you hit it."
+        "know whether it's flagged blocked and how recently you hit it.\n\n"
+        "When to use: before querying a search engine you've already used this "
+        "session, and periodically during a research loop, so pacing decisions "
+        "stay grounded in what you actually recorded rather than guesswork."
     ),
     input_schema={"type": "object", "properties": {}},
     output_schema={
@@ -47,10 +50,4 @@ GET_WEB_SEARCH_STATE: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.NONE,
     input_visibility={},
     output_visibility={"state": "visible"},
-    when_to_use=(
-        "Before querying a search engine you've used before this session, to check "
-        "whether it's flagged blocked or how recently you queried it.",
-        "Periodically during a research loop, to keep pacing decisions grounded in "
-        "what you've actually recorded rather than guesswork.",
-    ),
 )

@@ -43,8 +43,17 @@ TOOLCHAIN_BUILD: ToolSpec = ToolSpec(
         "disable `build` and `static_analysis`. Use `test_selector` to run a "
         "single test or suite in isolation — it is passed through to the `test` "
         "script's selector argument; omit it to run the whole suite.\n\n"
-        "Returns overall success plus, per step that ran, its success and output "
-        "log (build errors, lint findings, test failures and stack traces)."
+        "Works on any kodo project, not just a bound one — pass the project root "
+        "(the directory holding its `.kodo/` dir) as `project_path`.\n\n"
+        "When to use:\n"
+        "- After publishing new or superseding `code` artifacts, to confirm the "
+        "project builds, passes static analysis, and passes its tests.\n"
+        "- After a refactor, to confirm the build still succeeds and tests remain "
+        "green (run with the default steps).\n"
+        "- To run just the tests — e.g. to diagnose failures (implementation bug "
+        "vs. test bug vs. spec ambiguity), or after addressing review/user "
+        "feedback that touches code. Detecting that feedback breaks tests "
+        'triggers `escalate_blocker` with `reason: "feedback_breaks_tests"`.'
     ),
     input_schema={
         "type": "object",
@@ -145,18 +154,4 @@ TOOLCHAIN_BUILD: ToolSpec = ToolSpec(
         "test_selector": "always",
     },
     output_visibility={"success": "always", "steps": "visible"},
-    when_to_use=(
-        "After publishing new or superseding `code` artifacts, to confirm the "
-        "project builds, passes static analysis, and passes its tests.",
-        "After a refactor change, to confirm the build still succeeds and tests "
-        "remain green (run with the default steps).",
-        "To run just the tests — enable `test`, disable `build` and "
-        "`static_analysis` — e.g. to diagnose failures (implementation bug vs. "
-        "test bug vs. spec ambiguity), or after addressing review/user feedback "
-        "that touches code (detecting that feedback breaks tests triggers "
-        '`escalate_blocker` with `reason: "feedback_breaks_tests"`).',
-        "To run a single test or suite in isolation, pass `test_selector`.",
-        "Works on any kodo project, not just a bound one — pass the project "
-        "root (the directory holding its `.kodo/` dir) as `project_path`.",
-    ),
 )

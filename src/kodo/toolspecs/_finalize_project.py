@@ -16,7 +16,9 @@ FINALIZE_PROJECT: ToolSpec = ToolSpec(
     user_description="Mark the project as done",
     description=(
         "Terminal call: the project is complete.  "
-        "Transitions state.phase to 'done' and ends the Guide session."
+        "Transitions state.phase to 'done' and ends the Guide session.\n\n"
+        "When to use: all product-level stages have completed and the workspace "
+        "has nothing left in flight — the project is done."
     ),
     input_schema={"type": "object", "properties": {}, "required": []},
     output_schema={
@@ -29,9 +31,5 @@ FINALIZE_PROJECT: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.LOW,
     input_visibility={},
     output_visibility={"status": "always"},
-    when_to_use=(
-        "All product-level stages have completed and the workspace has "
-        "nothing left in flight — the project is done.",
-    ),
     requires_project=True,
 )

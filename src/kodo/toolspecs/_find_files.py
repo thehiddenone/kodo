@@ -32,7 +32,11 @@ FIND_FILES: ToolSpec = ToolSpec(
         "searches ONE root — to cover a multi-project workspace, call it once "
         "per root. Hidden files and anything ignored by .gitignore are skipped "
         "unless you opt in. Results are paths relative to `root` and are capped "
-        "(see `truncated`)."
+        "(see `truncated`).\n\n"
+        "When to use: locating a file or directory by name — e.g. finding where "
+        "a module, config, or test lives before reading it. Pass "
+        "`temporary: true` to search the session's private scratch directory "
+        "instead of a project root."
     ),
     input_schema={
         "type": "object",
@@ -127,11 +131,5 @@ FIND_FILES: ToolSpec = ToolSpec(
         "count": "always",
         "truncated": "always",
     },
-    when_to_use=(
-        "Locating files or directories by name within one project root — e.g. "
-        "finding where a module, config, or test lives before reading it.",
-        "Pass `temporary: true` to search the session's private scratch "
-        "directory instead of a project root.",
-    ),
     requires_project=False,
 )
