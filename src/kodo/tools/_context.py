@@ -42,14 +42,14 @@ class RootPath:
     """One filesystem root the running agent may operate within.
 
     One per bound root — a VS Code workspace folder, or a project created via
-    ``create_new_project``/``init_project`` — shared uniformly by Guided and
+    ``scaffold_new_project`` — shared uniformly by Guided and
     Problem Solver mode. ``get_root_paths`` returns every bound root;
     ``find_files`` / ``find_text_in_files`` take a ``root`` matching one of
     the ``path`` values.
 
     Attributes:
         name: Human/logical label (the workspace-folder's display name, or
-            the project name for one created via ``create_new_project``).
+            the project name for one created via ``scaffold_new_project``).
         path: Absolute path to the root directory.
     """
 
@@ -505,7 +505,7 @@ class EngineServices(Protocol):
     async def bootstrap_project(self, name: str = "") -> dict[str, object]:
         """Create a project when no workspace exists yet, mode-appropriately.
 
-        Backs ``create_new_project`` when the agent calls it with no ``path``
+        Backs ``scaffold_new_project`` when the agent calls it with no ``path``
         and :meth:`has_workspace` is ``False`` — regardless of whether
         ``name`` was given, since a homeless session has nowhere to place
         *any* name yet (see :mod:`kodo.toolspecs._workspace`). Autonomous
@@ -525,7 +525,7 @@ class EngineServices(Protocol):
         """Whether this session has any usable project/workspace *right now*.
 
         Read live on every dispatch (never snapshotted) so a root bound
-        mid-turn — by ``create_new_project``/``init_project``, or by the user
+        mid-turn — by ``scaffold_new_project``, or by the user
         adding a folder to the VS Code window directly — is picked up by the
         very next tool call in the same turn, not just the next turn.
         Mode-agnostic: at least one bound root exists (mirrors
@@ -551,18 +551,20 @@ class EngineServices(Protocol):
         Unlike :meth:`create_project`, ``path`` must already exist. The
         engine judges the directory empty when it holds no entries besides
         dotfiles/dot-directories (``.git/``, ``.gitignore``, ...); only then
-        are ``specs/``, ``src/``, ``test/`` created. Either way ``.kodo/``
-        (with ``kodo.md``) and the checkpoint git mirror — with its mandatory
-        baseline commit — are always created, and the directory is added to
-        the open VS Code workspace unless it is already one of the session's
-        registered folders.
+        are ``specs/``, ``src/``, ``test/`` created. If ``path`` already has
+        a ``.kodo/`` (already a Kodo project), this is a no-op success —
+        nothing on disk is touched. Otherwise ``.kodo/`` (with ``kodo.md``)
+        and the checkpoint git mirror — with its mandatory baseline commit —
+        are created. Either way the directory is added to the open VS Code
+        workspace unless it is already one of the session's registered
+        folders.
 
         Returns ``{"path": ..., "name": <workspace label>, "scaffolded":
-        <bool>}``.
+        <bool>, "already_scaffolded": <bool>}``.
 
         Raises:
-            ProjectLayoutError: ``path`` does not exist, or its ``.kodo/``
-                already exists.
+            ProjectLayoutError: ``path`` does not exist or is not a
+                directory.
         """
         ...
 

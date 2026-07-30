@@ -260,7 +260,7 @@ def test_engine_services_has_workspace_root_paths_are_live_reads() -> None:
     assert services.has_workspace() is False
     assert services.root_paths() == ()
 
-    # Simulate create_new_project mutating the engine's live workspace state
+    # Simulate scaffold_new_project mutating the engine's live workspace state
     # mid-turn — no new _EngineServices/ToolDispatcher is built, exactly as
     # production reuses one dispatcher for a whole turn's tool-call loop.
     box["has_workspace"] = True

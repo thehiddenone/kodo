@@ -20,7 +20,6 @@ from kodo.toolspecs import (
     ASK_USER,
     CREATE_DIRECTORY,
     CREATE_FILE,
-    CREATE_NEW_PROJECT,
     DISABLE_AUTONOMOUS_MODE,
     DOCUMENT_FEEDBACK,
     EDIT_FILE,
@@ -32,7 +31,6 @@ from kodo.toolspecs import (
     GET_ROOT_PATHS,
     GET_WEB_SEARCH_STATE,
     GUIDED_DEV_STATUS,
-    INIT_PROJECT,
     INTENT_KEY,
     NO_PROJECT_ERROR,
     QUERY_SEARCH_ENGINE,
@@ -45,6 +43,7 @@ from kodo.toolspecs import (
     RUN_AUTHOR_CRITIC_ITERATION,
     RUN_COMMAND,
     RUN_SUBAGENT,
+    SCAFFOLD_NEW_PROJECT,
     SUBMIT_EVALUATION,
     TOOLCHAIN_BUILD,
     TOOLCHAIN_DEPS,
@@ -66,7 +65,6 @@ from ._context import (
 )
 from ._create_directory import CreateDirectoryTool
 from ._create_file import CreateFileTool
-from ._create_new_project import CreateNewProjectTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
 from ._document_feedback import DocumentFeedbackTool
 from ._edit_file import EditFileTool, compute_new_content
@@ -79,7 +77,6 @@ from ._find_text_in_files import FindTextInFilesTool
 from ._get_root_paths import GetRootPathsTool
 from ._get_web_search_state import GetWebSearchStateTool
 from ._guided_dev_status import GuidedDevStatusTool
-from ._init_project import InitProjectTool
 from ._paths import PathResolver
 from ._query_search_engine import QuerySearchEngineTool
 from ._read_attachment import ReadAttachmentTool
@@ -91,6 +88,7 @@ from ._rollback import RollbackTool
 from ._run_author_critic_iteration import RunAuthorCriticIterationTool
 from ._run_command import RunCommandTool
 from ._run_subagent import RunSubagentTool
+from ._scaffold_new_project import ScaffoldNewProjectTool
 from ._submit_evaluation import SubmitEvaluationTool
 from ._tool import Tool
 from ._toolchain_build import ToolchainBuildTool
@@ -128,8 +126,7 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (ROLLBACK, RollbackTool),
     (FINALIZE_PROJECT, FinalizeProjectTool),
     (DISABLE_AUTONOMOUS_MODE, DisableAutonomousModeTool),
-    (CREATE_NEW_PROJECT, CreateNewProjectTool),
-    (INIT_PROJECT, InitProjectTool),
+    (SCAFFOLD_NEW_PROJECT, ScaffoldNewProjectTool),
     (TOOLCHAIN_BUILD, ToolchainBuildTool),
     (TOOLCHAIN_DEPS, ToolchainDepsTool),
     (WEB_SEARCH, WebSearchTool),
@@ -305,12 +302,19 @@ class ToolDispatcher:
                         )
                     }
                 )
-        # create_new_project's bootstrap fork (no workspace yet) has no
-        # agent-chosen location to judge — the engine or the user (via the
-        # folder-picker dialog) picks it, never the model — so there is
-        # nothing meaningful for the security layer to gate; skip it rather
-        # than make it reason about a call it was never designed to see.
-        bypass_security = tool_name == CREATE_NEW_PROJECT.name and not self.__ctx.has_workspace
+        # scaffold_new_project's bootstrap fork (no `path`, no workspace yet)
+        # has no agent-chosen location to judge — the engine or the user
+        # (via the folder-picker dialog) picks it, never the model — so
+        # there is nothing meaningful for the security layer to gate; skip
+        # it rather than make it reason about a call it was never designed
+        # to see. A `path`-driven call (existing-directory branch) DOES have
+        # an agent-chosen location and goes through the gate normally, even
+        # with no workspace bound.
+        bypass_security = (
+            tool_name == SCAFFOLD_NEW_PROJECT.name
+            and not tool_input.get("path")
+            and not self.__ctx.has_workspace
+        )
         if not bypass_security:
             denial = await self.__security_gate(tool_name, tool_input, tool_use_id, recovered)
             if denial is not None:
@@ -367,7 +371,7 @@ class ToolDispatcher:
             # point with no workspace at all — a `requires_project=True` spec
             # is already refused by the dispatch gate above, but run_command
             # itself is `requires_project=False`, and tools like
-            # `create_new_project`'s own additional-project path or
+            # `scaffold_new_project`'s own additional-project path or
             # `ask_user` on a homeless session get here too — at which point
             # a Problem-Solver `LogicalPathResolver` has no root to report
             # yet. Reading it unconditionally used to crash every such call

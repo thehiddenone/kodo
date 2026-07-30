@@ -234,15 +234,17 @@ they are properties that call `self.services.project_root()`/`.has_workspace()`/
 `.root_paths()` fresh on every access. One `ToolDispatcher` (and the one
 `ToolContext` it owns) serves an entire agent turn's multi-round tool-call
 loop, not just a single call — so if these were snapshotted once at
-dispatcher-creation time, a project bound *mid-turn* (`create_new_project`/
-`init_project` succeeding partway through the same turn, or the user adding a
+dispatcher-creation time, a project bound *mid-turn* (`scaffold_new_project`
+succeeding partway through the same turn, or the user adding a
 folder to the VS Code window by hand) would stay invisible to every other
 tool call in that turn, even though the engine's own workspace state had
-already moved on. That was a real bug (fixed 2026-07-21): `create_new_project`
+already moved on. That was a real bug (fixed 2026-07-21, when the tool was
+still named `create_new_project` — since merged into `scaffold_new_project`'s
+no-`path` branch): the call
 would scaffold the directory and genuinely register it in
 `SessionWorkspace.folders`, but every subsequent `requires_project` tool call
 in the same turn still saw the stale `has_workspace=False` snapshot and
-rejected with `NO_PROJECT_ERROR` — including retries of `create_new_project`
+rejected with `NO_PROJECT_ERROR` — including retries of the call
 itself, which kept "succeeding" (each creating a new sibling directory) while
 nothing else could ever run. Reading live closes that gap for both the
 gate check in `ToolDispatcher.dispatch` and the resolver (see the
@@ -270,7 +272,7 @@ Protocols**, also defined in `_context.py`:
   `run_author_critic_iteration(caller, ...,
   path, input_paths, instructions,
   for_revision)`, `rollback(...)`, `disable_autonomous_mode(...)`,
-  `create_project(name)`, `init_project(path)`, and the three **live
+  `create_project(name)`, `init_project(path)`, `bootstrap_project(name)`, and the three **live
   workspace-state reads** `has_workspace()`, `root_paths()`, `project_root()`
   — synchronous, called fresh on every access (never memoized) by
   `ToolContext`'s same-named properties, backing the `EngineHost.
@@ -282,22 +284,28 @@ Protocols**, also defined in `_context.py`:
   style method: the accept/review flow (`_finalize_document`) is purely
   engine-internal, triggered from a post-dispatch hook after a
   `document_feedback` call — never through a tool or a protocol indirection.
-  `create_project` is what backs the `create_new_project` tool: the engine
-  slugifies the requested name, makes a fresh directory under the session
-  workspace root (auto-suffixing on collision), scaffolds its `.kodo/`+mirror
-  via `RootMirrorManager.prepare`, and pushes `EVT_WORKSPACE_ADD_FOLDER` so
-  the extension adds it to the open VS Code workspace. `init_project` backs
-  the `init_project` tool, the "augment an existing directory" counterpart:
-  *path* must already exist (`ProjectLayout.init_existing` raises
-  `ProjectLayoutError` otherwise, or if `.kodo/` is already there); the
+  All three back the single `scaffold_new_project` tool, dispatched on which
+  input the agent gave: no `path` and no workspace yet → `bootstrap_project`
+  (resolves a workspace-home folder — interactively or, in autonomous mode,
+  under `~/kodo-projects/` — then delegates to `create_project`); no `path`
+  with a workspace already bound → `create_project`, requiring a non-empty
+  `name`; `path` given → `init_project`. `create_project` slugifies the
+  requested name, makes a fresh directory under the session workspace root
+  (auto-suffixing on collision), scaffolds its `.kodo/`+mirror via
+  `RootMirrorManager.prepare`, and pushes `EVT_WORKSPACE_ADD_FOLDER` so the
+  extension adds it to the open VS Code workspace. `init_project` is the
+  "augment an existing directory" counterpart: *path* must already exist
+  (`ProjectLayout.init_existing` raises `ProjectLayoutError` otherwise); if
+  `.kodo/` is already there — already a Kodo project — it's a no-op success
+  (`already_scaffolded: true` in the tool's output), never an error. The
   directory is judged empty when it holds no entries besides
   dotfiles/dot-directories (`.git/`, `.gitignore`, ...), in which case — and
   only then — `specs/`/`src/`/`test/` are laid out, exactly like
   `create_project`; a non-empty directory keeps its content untouched. Either
-  way `.kodo/`+mirror are scaffolded via the same `RootMirrorManager.prepare`
-  (with its mandatory baseline commit), and `EVT_WORKSPACE_ADD_FOLDER` is only
-  pushed when *path* isn't already one of the session's registered workspace
-  folders.
+  way (including the already-scaffolded no-op) `.kodo/`+mirror are scaffolded
+  via the same `RootMirrorManager.prepare` (with its mandatory baseline
+  commit), and `EVT_WORKSPACE_ADD_FOLDER` is only pushed when *path* isn't
+  already one of the session's registered workspace folders.
 
 This is the dependency inversion that lets the tool layer sit *below* the engine
 while still calling back into it. `runtime` constructs the concrete objects and
@@ -508,7 +516,7 @@ needs it.
 
 Every **first-degree mutator** — a tool whose own dispatch changes content on
 disk: `filesystem`, `edit_file`, `create_file`, `create_directory`,
-`run_command`, `create_new_project`, `init_project`, `rollback` — declares a
+`run_command`, `scaffold_new_project`, `rollback` — declares a
 mandatory `intent` string as the **first** property of its `input_schema`: one sentence
 stating what this specific call changes and why. The property (and the generic "how to state
 your intent" guidance the model reads) is defined **once**, in

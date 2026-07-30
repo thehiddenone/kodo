@@ -472,7 +472,7 @@ class GateOrchestrator:
         until the user picks a folder or cancels.
 
         Fired by :meth:`~kodo.runtime._engine._core.EngineCore
-        ._bootstrap_project_interactive` when the ``create_new_project`` tool
+        ._bootstrap_project_interactive` when the ``scaffold_new_project`` tool
         is called with no project bound yet and the session is not
         autonomous. No ``pending_prompt``-style state is persisted — same
         reasoning as :meth:`fire_stuck_alert`: nothing is left mid-dispatch if

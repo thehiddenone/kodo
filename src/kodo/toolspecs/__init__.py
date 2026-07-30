@@ -22,7 +22,6 @@ from ._compliance import (
 )
 from ._create_directory import CREATE_DIRECTORY
 from ._create_file import CREATE_FILE
-from ._create_new_project import CREATE_NEW_PROJECT
 from ._describe import dense_output_schema, optional_output_paths, tool_description
 from ._disable_autonomous_mode import DISABLE_AUTONOMOUS_MODE
 from ._document_feedback import DOCUMENT_FEEDBACK
@@ -35,7 +34,6 @@ from ._find_text_in_files import FIND_TEXT_IN_FILES
 from ._get_root_paths import GET_ROOT_PATHS
 from ._get_web_search_state import GET_WEB_SEARCH_STATE
 from ._guided_dev_status import GUIDED_DEV_STATUS
-from ._init_project import INIT_PROJECT
 from ._intent import INTENT_KEY, INTENT_PROPERTY, requires_intent
 from ._query_search_engine import QUERY_SEARCH_ENGINE
 from ._read_attachment import READ_ATTACHMENT
@@ -47,6 +45,7 @@ from ._rollback import ROLLBACK
 from ._run_author_critic_iteration import RUN_AUTHOR_CRITIC_ITERATION
 from ._run_command import RUN_COMMAND
 from ._run_subagent import RUN_SUBAGENT
+from ._scaffold_new_project import SCAFFOLD_NEW_PROJECT
 from ._spec import (
     OUTPUT_VISIBILITY_DEFAULT,
     VISIBILITY_ALWAYS,
@@ -74,7 +73,7 @@ project is bound and the call isn't scoped to the private scratch directory
 (``temporary: true``).
 """
 NO_PROJECT_ERROR = (
-    "No project is open in this session. Call `create_new_project` to create "
+    "No project is open in this session. Call `scaffold_new_project` to create "
     "one before making this tool call."
 )
 
@@ -83,7 +82,6 @@ __all__ = [
     "ASK_USER",
     "CREATE_DIRECTORY",
     "CREATE_FILE",
-    "CREATE_NEW_PROJECT",
     "DISABLE_AUTONOMOUS_MODE",
     "DOCUMENT_FEEDBACK",
     "EDIT_FILE",
@@ -95,7 +93,6 @@ __all__ = [
     "GET_ROOT_PATHS",
     "GET_WEB_SEARCH_STATE",
     "GUIDED_DEV_STATUS",
-    "INIT_PROJECT",
     "INTENT_KEY",
     "INTENT_PROPERTY",
     "NO_PROJECT_ERROR",
@@ -110,6 +107,7 @@ __all__ = [
     "RUN_AUTHOR_CRITIC_ITERATION",
     "RUN_COMMAND",
     "RUN_SUBAGENT",
+    "SCAFFOLD_NEW_PROJECT",
     "SCHEMA_COMPLIANCE_KEY",
     "SUBMIT_EVALUATION",
     "TOOLCHAIN_BUILD",
@@ -140,7 +138,6 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     ASK_USER,
     CREATE_DIRECTORY,
     CREATE_FILE,
-    CREATE_NEW_PROJECT,
     DISABLE_AUTONOMOUS_MODE,
     DOCUMENT_FEEDBACK,
     EDIT_FILE,
@@ -152,7 +149,6 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     FIND_TEXT_IN_FILES,
     GET_WEB_SEARCH_STATE,
     GUIDED_DEV_STATUS,
-    INIT_PROJECT,
     QUERY_SEARCH_ENGINE,
     READ_ATTACHMENT,
     READ_FILE,
@@ -163,6 +159,7 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     RUN_AUTHOR_CRITIC_ITERATION,
     RUN_COMMAND,
     RUN_SUBAGENT,
+    SCAFFOLD_NEW_PROJECT,
     SUBMIT_EVALUATION,
     TOOLCHAIN_BUILD,
     TOOLCHAIN_DEPS,

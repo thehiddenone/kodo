@@ -134,6 +134,9 @@ class _StubServices:
     ) -> dict[str, object]:
         return {"path": path or f"/tmp/{name}", "name": name}
 
+    async def init_project(self, path: str) -> dict[str, object]:
+        return {"path": path, "name": path.rsplit("/", 1)[-1], "scaffolded": True}
+
     async def notify_tool_call_in_progress(self, tool_call_id: str) -> None:
         return None
 
@@ -952,8 +955,7 @@ _INTENT_TOOLS = (
     "create_file",
     "create_directory",
     "run_command",
-    "create_new_project",
-    "init_project",
+    "scaffold_new_project",
     "rollback",
 )
 
@@ -1045,7 +1047,7 @@ async def test_requires_project_tool_dispatches_normally_with_workspace(tmp_path
 async def test_requires_project_gate_reads_has_workspace_live_within_one_turn(
     tmp_path: Path,
 ) -> None:
-    """A project bound mid-turn (e.g. by ``create_new_project``) must unblock
+    """A project bound mid-turn (e.g. by ``scaffold_new_project``) must unblock
     every later ``requires_project`` call in the *same* dispatcher instance —
     regression test for the bug where ``has_workspace`` was snapshotted once
     at dispatcher-creation time and never revisited for the rest of the turn,
@@ -1073,7 +1075,7 @@ async def test_requires_project_gate_reads_has_workspace_live_within_one_turn(
     )
     assert rejected == {"error": NO_PROJECT_ERROR}
 
-    # Simulate create_new_project flipping the session's live workspace state
+    # Simulate scaffold_new_project flipping the session's live workspace state
     # mid-turn — no dispatcher reconstruction, exactly as production doesn't
     # rebuild ToolDispatcher between tool-call rounds within one turn.
     services._has_workspace = True
@@ -1086,7 +1088,7 @@ async def test_requires_project_gate_reads_has_workspace_live_within_one_turn(
 
 
 # ---------------------------------------------------------------------------
-# create_new_project bootstrap fork
+# scaffold_new_project: no-`path` (create/bootstrap) branch
 # ---------------------------------------------------------------------------
 
 
@@ -1102,7 +1104,9 @@ class _BootstrapTrackingServices(_StubServices):
         return {"path": "/tmp/bootstrapped", "name": "Bootstrapped"}
 
 
-def _make_create_new_project_dispatcher(tmp_path: Path, services: _StubServices) -> ToolDispatcher:
+def _make_scaffold_new_project_dispatcher(
+    tmp_path: Path, services: _StubServices
+) -> ToolDispatcher:
     session = SessionState()
     return _IntentDispatcher(
         resolver=_FakeResolver(tmp_path),
@@ -1116,31 +1120,38 @@ def _make_create_new_project_dispatcher(tmp_path: Path, services: _StubServices)
 
 
 @pytest.mark.asyncio
-async def test_create_new_project_bootstraps_when_no_workspace(tmp_path: Path) -> None:
+async def test_scaffold_new_project_bootstraps_when_no_workspace_and_no_path(
+    tmp_path: Path,
+) -> None:
     services = _BootstrapTrackingServices(has_workspace=False)
-    dispatcher = _make_create_new_project_dispatcher(tmp_path, services)
+    dispatcher = _make_scaffold_new_project_dispatcher(tmp_path, services)
 
-    result = json.loads(await dispatcher.dispatch("create_new_project", {}))
+    result = json.loads(await dispatcher.dispatch("scaffold_new_project", {}))
 
     assert services.bootstrap_calls == 1
-    assert result == {"path": "/tmp/bootstrapped", "name": "Bootstrapped"}
+    assert result == {
+        "path": "/tmp/bootstrapped",
+        "name": "Bootstrapped",
+        "scaffolded": True,
+        "already_scaffolded": False,
+    }
 
 
 @pytest.mark.asyncio
-async def test_create_new_project_still_requires_name_or_path_when_workspace_exists(
+async def test_scaffold_new_project_still_requires_name_or_path_when_workspace_exists(
     tmp_path: Path,
 ) -> None:
     services = _BootstrapTrackingServices(has_workspace=True)
-    dispatcher = _make_create_new_project_dispatcher(tmp_path, services)
+    dispatcher = _make_scaffold_new_project_dispatcher(tmp_path, services)
 
-    result = json.loads(await dispatcher.dispatch("create_new_project", {}))
+    result = json.loads(await dispatcher.dispatch("scaffold_new_project", {}))
 
     assert services.bootstrap_calls == 0
     assert "requires a non-empty" in result["error"]
 
 
 @pytest.mark.asyncio
-async def test_create_new_project_bootstraps_even_with_explicit_name_when_no_workspace(
+async def test_scaffold_new_project_bootstraps_even_with_explicit_name_when_no_workspace(
     tmp_path: Path,
 ) -> None:
     """A homeless session bootstraps regardless of whether the agent supplied
@@ -1148,13 +1159,64 @@ async def test_create_new_project_bootstraps_even_with_explicit_name_when_no_wor
     project until a workspace root is resolved (the checkpoint jail-escape
     fix: no silent fallback to a default parent directory)."""
     services = _BootstrapTrackingServices(has_workspace=False)
-    dispatcher = _make_create_new_project_dispatcher(tmp_path, services)
+    dispatcher = _make_scaffold_new_project_dispatcher(tmp_path, services)
 
-    result = json.loads(await dispatcher.dispatch("create_new_project", {"name": "My App"}))
+    result = json.loads(await dispatcher.dispatch("scaffold_new_project", {"name": "My App"}))
 
     assert services.bootstrap_calls == 1
     assert services.bootstrap_names == ["My App"]
-    assert result == {"path": "/tmp/bootstrapped", "name": "Bootstrapped"}
+    assert result == {
+        "path": "/tmp/bootstrapped",
+        "name": "Bootstrapped",
+        "scaffolded": True,
+        "already_scaffolded": False,
+    }
+
+
+# ---------------------------------------------------------------------------
+# scaffold_new_project: `path`-given (existing-directory) branch
+# ---------------------------------------------------------------------------
+
+
+class _InitTrackingServices(_StubServices):
+    def __init__(self, *, has_workspace: bool = False) -> None:
+        super().__init__(has_workspace=has_workspace)
+        self.init_calls = 0
+        self.init_paths: list[str] = []
+
+    async def init_project(self, path: str) -> dict[str, object]:
+        self.init_calls += 1
+        self.init_paths.append(path)
+        return {
+            "path": path,
+            "name": "Existing",
+            "scaffolded": False,
+            "already_scaffolded": True,
+        }
+
+
+@pytest.mark.asyncio
+async def test_scaffold_new_project_with_path_calls_init_project_even_without_workspace(
+    tmp_path: Path,
+) -> None:
+    """Unlike the no-`path` bootstrap fork, a `path`-given call never needs a
+    bound workspace — `EngineServices.init_project` works on a standalone
+    directory — and it goes through `init_project`, not `create_project`/
+    `bootstrap_project`."""
+    services = _InitTrackingServices(has_workspace=False)
+    dispatcher = _make_scaffold_new_project_dispatcher(tmp_path, services)
+    target = tmp_path / "existing-project"
+
+    result = json.loads(await dispatcher.dispatch("scaffold_new_project", {"path": str(target)}))
+
+    assert services.init_calls == 1
+    assert services.init_paths == [str(target)]
+    assert result == {
+        "path": str(target),
+        "name": "Existing",
+        "scaffolded": False,
+        "already_scaffolded": True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1162,7 +1224,7 @@ async def test_create_new_project_bootstraps_even_with_explicit_name_when_no_wor
 # workspace/project exists (`AssertionError: default_cwd read before a
 # workspace/project exists`, kodo/tools/_paths.py `LogicalPathResolver
 # .default_cwd`). The unit tests above never reproduced this because
-# `_make_dispatcher`/`_make_create_new_project_dispatcher` both pass
+# `_make_dispatcher`/`_make_scaffold_new_project_dispatcher` both pass
 # `security=None` (disabling `__security_gate` entirely) and use the fixed-root
 # `_FakeResolver`, whose `default_cwd` never asserts. Production always wires a
 # real `SecurityLayer` and a real `LogicalPathResolver` — the combination that
@@ -1181,10 +1243,11 @@ class _AssertNeverCalledSecurity:
 
 
 @pytest.mark.asyncio
-async def test_create_new_project_bypasses_security_gate_without_workspace() -> None:
-    """create_new_project's bootstrap fork has no agent-chosen location for the
-    security layer to judge — the gate must be skipped entirely, not merely
-    survive reading ``default_cwd`` (covered separately below)."""
+async def test_scaffold_new_project_bypasses_security_gate_without_workspace_and_no_path() -> None:
+    """scaffold_new_project's no-`path` bootstrap fork has no agent-chosen
+    location for the security layer to judge — the gate must be skipped
+    entirely, not merely survive reading ``default_cwd`` (covered separately
+    below)."""
     services = _BootstrapTrackingServices(has_workspace=False)
     dispatcher = _IntentDispatcher(
         resolver=LogicalPathResolver(SessionWorkspace()),
@@ -1197,15 +1260,67 @@ async def test_create_new_project_bypasses_security_gate_without_workspace() -> 
         mode="problem_solving",
     )
 
-    result = json.loads(await dispatcher.dispatch("create_new_project", {}))
+    result = json.loads(await dispatcher.dispatch("scaffold_new_project", {}))
 
     assert services.bootstrap_calls == 1
-    assert result == {"path": "/tmp/bootstrapped", "name": "Bootstrapped"}
+    assert result == {
+        "path": "/tmp/bootstrapped",
+        "name": "Bootstrapped",
+        "scaffolded": True,
+        "already_scaffolded": False,
+    }
+
+
+class _AlwaysAllowSecurity:
+    """A ``SecurityLike`` whose ``evaluate`` is reached and always allows —
+    used to prove the gate runs (as opposed to ``_AssertNeverCalledSecurity``,
+    which proves it doesn't)."""
+
+    def __init__(self) -> None:
+        self.evaluate_calls = 0
+
+    async def evaluate(self, **kwargs: object) -> object:  # noqa: ANN401
+        self.evaluate_calls += 1
+
+        class _Decision:
+            action = "allow"
+            reason = ""
+            parts: tuple[object, ...] = ()
+
+        return _Decision()
+
+
+@pytest.mark.asyncio
+async def test_scaffold_new_project_with_path_does_not_bypass_security_gate_without_workspace(
+    tmp_path: Path,
+) -> None:
+    """Unlike the no-`path` bootstrap fork, a `path`-given call DOES have an
+    agent-chosen location, so the security gate must still run even with no
+    workspace bound — the bypass in `ToolDispatcher.dispatch` is conditioned
+    on `not tool_input.get("path")`, not just `not has_workspace`."""
+    services = _InitTrackingServices(has_workspace=False)
+    security = _AlwaysAllowSecurity()
+    dispatcher = _IntentDispatcher(
+        resolver=LogicalPathResolver(SessionWorkspace()),
+        gate=_make_gate(),
+        session=SessionState(),
+        services=services,
+        agent_name="test_agent",
+        session_id="sess-test",
+        security=security,  # type: ignore[arg-type]
+        mode="problem_solving",
+    )
+    target = tmp_path / "existing-project"
+
+    await dispatcher.dispatch("scaffold_new_project", {"path": str(target)})
+
+    assert security.evaluate_calls == 1
+    assert services.init_calls == 1
 
 
 @pytest.mark.asyncio
 async def test_security_gate_default_cwd_read_guarded_without_workspace() -> None:
-    """Any non-``requires_project`` tool (not just ``create_new_project``) must
+    """Any non-``requires_project`` tool (not just ``scaffold_new_project``) must
     survive dispatch before a workspace exists: ``default_cwd`` is only ever
     consulted for ``run_command`` (``requires_project=True``, so it can't
     reach here workspace-less), but it used to be read unconditionally for

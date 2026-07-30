@@ -121,7 +121,7 @@ reimplemented to replace the old `requirement_ids`/`supersedes` bookkeeping.
 There is no bootstrap phase for project state. There is no longer a
 project-binding step at all (WS_PROTOCOL.md §7.1c) — a bound root's
 `.kodo/kodo.md` is scaffolded lazily on first checkpoint commit, or laid out
-fully by `create_new_project`/`init_project`, same as Problem Solver always
+fully by `scaffold_new_project`, same as Problem Solver always
 worked. The shadow-git mirror
 (`RootMirrorManager`) lazily scaffolds itself the first time a mutating tool
 touches a given root — not upfront, not for every root, and identically in
@@ -166,7 +166,7 @@ The engine appends to the session log *before* it acts on the message it just re
 4. Engine writes each tool result to the session log.
 5. Engine sends the next API call (with the appended messages).
 
-Step 2 is flushed to disk **before every tool dispatch** (not only sub-agent spawns): `_run_agent_turn`'s `_flush()` runs once before the tool batch and again after the results land. So the persisted transcript never trails an in-flight tool call, and even a tool whose *own* side effect interrupts the process — e.g. `create_new_project` firing `workspace.add_folder`, which reloads the VS Code window into a multi-root workspace — has its `tool_use` already on disk when the client reconnects (previously the reload could race ahead of the flush and the whole in-flight turn was lost from the replayed history). The added latency is negligible next to the LLM round-trip the flush is nested inside.
+Step 2 is flushed to disk **before every tool dispatch** (not only sub-agent spawns): `_run_agent_turn`'s `_flush()` runs once before the tool batch and again after the results land. So the persisted transcript never trails an in-flight tool call, and even a tool whose *own* side effect interrupts the process — e.g. `scaffold_new_project` firing `workspace.add_folder`, which reloads the VS Code window into a multi-root workspace — has its `tool_use` already on disk when the client reconnects (previously the reload could race ahead of the flush and the whole in-flight turn was lost from the replayed history). The added latency is negligible next to the LLM round-trip the flush is nested inside.
 
 A crash at any point between steps 1 and 5 therefore leaves the session log either at step 2 (model response logged, tool result missing) or at step 4 (both logged, next call not yet issued). Both states are recoverable: resume reads the log, and either resolves the partial-tool-call state (§4.4) or sends the next API call directly.
 

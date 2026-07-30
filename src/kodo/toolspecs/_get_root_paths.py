@@ -2,7 +2,7 @@
 
 Dispatch lives in :mod:`kodo.tools` and simply returns the root list the
 engine computed for the run — one entry per bound root (a VS Code workspace
-folder, or a project created via ``create_new_project``/``init_project``),
+folder, or a project created via ``scaffold_new_project``),
 shared uniformly by both workflow modes. The list is sourced from the
 workspace state the VS Code extension keeps synced over the WS protocol
 (``workspace.folders``, pushed at startup and on every workspace-folder change),
@@ -21,7 +21,7 @@ no project/workspace bound yet it simply returns an empty ``roots`` list
 (``GetRootPathsTool`` is a pure read of ``ToolContext.root_paths``, which is
 already ``()`` in that state) instead of the generic ``NO_PROJECT_ERROR`` —
 an empty list is itself a meaningful, non-error signal to the agent that
-``create_new_project`` needs calling first. ``temporary: true`` never needed
+``scaffold_new_project`` needs calling first. ``temporary: true`` never needed
 a project to begin with (the scratch directory is keyed by session id alone).
 """
 
@@ -52,7 +52,7 @@ GET_ROOT_PATHS: ToolSpec = ToolSpec(
         "pass to `find_files` / `find_text_in_files`. Also the way to check "
         "whether a project/workspace exists yet at all — with no workspace "
         "bound this returns an empty `roots` list rather than an error, which is "
-        "itself the signal that `create_new_project` is needed first."
+        "itself the signal that `scaffold_new_project` is needed first."
     ),
     input_schema={
         "type": "object",

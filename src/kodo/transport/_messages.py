@@ -224,8 +224,8 @@ MSG_WORKSPACE_FOLDERS = "workspace.folders"
 # project root as-is. ``name`` alone (no workspace-selecting dialog — the
 # command already has a workspace open): the server reserves a fresh sibling
 # directory under the session's ``physical_root``, identical to
-# ``CreateNewProjectTool``'s has-workspace placement. Shares
-# ``WorkflowEngine._create_project`` with the ``create_new_project`` tool, so
+# ``ScaffoldNewProjectTool``'s has-workspace, no-``path`` placement. Shares
+# ``WorkflowEngine._create_project`` with the ``scaffold_new_project`` tool, so
 # the server also pushes EVT_WORKSPACE_ADD_FOLDER on success. Replies
 # ``project.create.done`` ``{path, name}`` on success or ``project.create.error``
 # ``{message}`` if ``path``'s ``kodo.md`` already exists and ``force`` wasn't set.
@@ -609,7 +609,7 @@ SREQ_PROMPT_STUCK_ALERT = "prompt.stuck_alert"
 SREQ_PROMPT_EDIT_REVIEW = "prompt.edit_review"
 
 # Server → Client request. Fired by ``GateOrchestrator.fire_choose_project_folder``
-# when `create_new_project` bootstraps a project interactively (no project/
+# when `scaffold_new_project` bootstraps a project interactively (no project/
 # workspace bound yet, and the session is not autonomous — see
 # ``EngineCore._bootstrap_project_interactive``, WS_PROTOCOL.md §6.10). No
 # extra request fields. Client shows a native folder-picker dialog (with the
@@ -879,9 +879,10 @@ EVT_SESSION_NAMING = "session.naming"
 EVT_SUBSESSION_STARTED = "subsession.started"
 EVT_SUBSESSION_ENDED = "subsession.ended"
 
-# An agent created a brand-new project (``create_new_project`` tool) and the
-# server has scaffolded it on disk; ask the VS Code extension to add the new
-# directory to the open workspace (``vscode.workspace.updateWorkspaceFolders``).
+# An agent set up a project directory (``scaffold_new_project`` tool,
+# creation or existing-directory branch) and the server has scaffolded it on
+# disk; ask the VS Code extension to add the new directory to the open
+# workspace (``vscode.workspace.updateWorkspaceFolders``).
 # Payload: ``{path, name}`` (``path`` absolute). The extension's resulting
 # ``onDidChangeWorkspaceFolders`` re-pushes ``workspace.folders``, reconciling
 # the server's folder map.

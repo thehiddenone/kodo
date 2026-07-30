@@ -3,7 +3,7 @@
 One resolver, shared by both workflow modes: :class:`LogicalPathResolver`.
 Relative paths are *logical*: the first segment is a bound root's name — a
 VS Code workspace-folder name, or a project created via
-``create_new_project``/``init_project`` — that anchors the remainder to that
+``scaffold_new_project`` — that anchors the remainder to that
 root's real physical path (which may live anywhere on disk). Absolute paths
 are taken as-is, already unrestricted, so the OS temp directory and a
 session's private scratch directory (``kodo.project.session_temp_dir``) are
@@ -184,7 +184,7 @@ class LogicalPathResolver:
     Holds the live :class:`~kodo.project.SessionWorkspace` itself rather than
     a snapshot of its folder map: ``SessionWorkspace.folders`` reads the
     engine's current state on every access (updated in-process the instant
-    ``create_new_project``/``init_project`` scaffold a directory, and again
+    ``scaffold_new_project`` scaffolds a directory, and again
     whenever the extension pushes a real ``workspace.folders`` change — e.g.
     the user adding a folder to the VS Code window by hand). Resolving a
     logical path against a resolver built earlier in the same turn therefore
@@ -206,7 +206,7 @@ class LogicalPathResolver:
         has_workspace``) first — unlike ``root_paths``, this has no empty
         state to fall back to. The ``requires_project`` dispatch gate already
         refuses every ``requires_project`` tool with no workspace bound, but
-        a *non*-``requires_project`` tool (``create_new_project``, ``ask_user``,
+        a *non*-``requires_project`` tool (``scaffold_new_project``, ``ask_user``,
         ...) can legitimately dispatch with no workspace at all, so
         :class:`~kodo.tools.ToolDispatcher`'s security gate reads this
         property only when ``has_workspace`` is true (see

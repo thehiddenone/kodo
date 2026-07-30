@@ -357,8 +357,8 @@ class TurnLoopMixin:
                 message carrying the ``tool_use`` — *before* dispatching any
                 tool, so the persisted transcript is never behind an in-flight
                 tool call. This makes the main turn resilient to a crash or a
-                client-visible side effect (e.g. ``create_new_project`` firing a
-                workspace-folder reload) a tool triggers mid-dispatch; resume
+                client-visible side effect (e.g. ``scaffold_new_project`` firing
+                a workspace-folder reload) a tool triggers mid-dispatch; resume
                 (:meth:`~._resume.ResumeMixin._resume_main_turn`) then
                 re-dispatches a dangling spawn via the replay ledger and stubs
                 any other dangling call as interrupted. Left ``False`` for
@@ -914,8 +914,8 @@ class TurnLoopMixin:
         are **not** snapshotted here — ``ToolContext`` reads them live from
         ``self._services`` (``_EngineServices.has_workspace``/``.root_paths``,
         backed by this same ``_has_workspace``/``_root_paths``) on every
-        access, so a root bound mid-turn — by ``create_new_project``/
-        ``init_project``, or a genuine ``workspace.folders`` push from the
+        access, so a root bound mid-turn — by ``scaffold_new_project``,
+        or a genuine ``workspace.folders`` push from the
         user editing the VS Code workspace directly — is visible to the very
         next tool call in the same turn, not just the next one.
 

@@ -171,7 +171,7 @@ class WorkflowEngine(
         The engine is workspace-scoped: both Guided and Problem Solver mode
         address the same logical-root folder map (:class:`SessionWorkspace`),
         populated by ``workspace.folders`` pushes and by
-        ``create_new_project``/``init_project``. Guided-only tools
+        ``scaffold_new_project``. Guided-only tools
         (``guided_dev_status``, ``document_feedback``, ``rollback``) are
         unreachable until at least one root is bound, exactly like every
         ``requires_project`` tool in Problem Solver mode.
@@ -310,7 +310,7 @@ class WorkflowEngine(
         (client-driven: ``hello`` creates a new id or resumes an existing one).
         Bound roots are not attached here — they come from
         ``handle_workspace_folders`` (the ``workspace.folders`` push) and
-        ``create_new_project``/``init_project``, exactly like Problem Solver.
+        ``scaffold_new_project``, exactly like Problem Solver.
 
         Args:
             session_id (str): Session identifier to attach.
@@ -747,7 +747,7 @@ class WorkflowEngine(
         this deliberately does *not* fall back to the physical root — it is the
         signal :class:`~kodo.tools.ToolDispatcher` uses to reject a call to a
         ``requires_project`` tool before dispatch, telling the agent to call
-        ``create_new_project`` first instead of silently operating against
+        ``scaffold_new_project`` first instead of silently operating against
         ``$HOME``.
         """
         if not self._is_workspace_connected():
@@ -763,7 +763,7 @@ class WorkflowEngine(
         :meth:`_make_resolver`), this also drives the ``state`` event's
         ``workspace_connected`` field (surfaced to both Guided and
         Problem-Solver session tabs, e.g. for kodo-vsix's reconnect-workspace
-        button) and the ``create_new_project``/``init_project`` push-guard
+        button) and the ``scaffold_new_project`` push-guard
         below. Always ``True`` for an unlocked session — see
         :func:`~kodo.state.workspace_shape_compatible`'s vacuous-truth case.
         """
@@ -841,7 +841,7 @@ class WorkflowEngine(
 
         Every relative path is *logical*: its first segment is a bound
         root's name (a VS Code workspace-folder name, or a project created
-        via ``create_new_project``/``init_project``), anchoring the remainder
+        via ``scaffold_new_project``), anchoring the remainder
         to that root's real physical path (which may live anywhere on disk).
         Absolute paths are taken as-is. ``session_id`` is unused today
         (``LogicalPathResolver`` already allows any absolute path, so a
@@ -985,7 +985,8 @@ class WorkflowEngine(
         Used by the VS Code "Create Project" command, which already has a
         concrete folder from its own picker dialog and so always supplies
         *path*; shares :meth:`_create_project` with the LLM-facing
-        ``create_new_project`` tool. May raise :class:`ProjectLayoutError` if
+        ``scaffold_new_project`` tool's no-``path`` (creation) branch. May
+        raise :class:`ProjectLayoutError` if
         *path*'s ``kodo.md`` already exists and *force* is not set — the
         caller should ask the user to confirm overwrite and retry with
         ``force=True``.
@@ -997,8 +998,9 @@ class WorkflowEngine(
     ) -> dict[str, object]:
         """Scaffold a new project directory and add it to the workspace.
 
-        Backs the ``create_new_project`` tool and the ``project.create``
-        message (the VS Code "Create Project" command, which always supplies
+        Backs the ``scaffold_new_project`` tool's no-``path`` (creation) branch
+        and the ``project.create`` message (the VS Code "Create Project"
+        command, which always supplies
         *path* from its own folder picker). When *path* is given it supersedes
         *name*: the project is laid out in that exact directory instead of a
         slug derived from *name*. Otherwise a slug-named directory is created
@@ -1081,7 +1083,7 @@ class WorkflowEngine(
                 )
             )
         _log.info(
-            "create_new_project: scaffolded %s (label=%r, connected=%s)",
+            "scaffold_new_project: created %s (label=%r, connected=%s)",
             project_dir,
             label,
             connected,
@@ -1098,36 +1100,49 @@ class WorkflowEngine(
     async def _init_project(self, path: str) -> dict[str, object]:
         """Augment an existing directory with Kodo's project layout and git mirror.
 
-        Backs the ``init_project`` tool. Unlike :meth:`_create_project`, *path*
-        must already exist: :meth:`ProjectLayout.init_existing` judges it empty
+        Backs the ``scaffold_new_project`` tool's "existing directory" branch
+        (called with a ``path``). Unlike :meth:`_create_project`, *path* must
+        already exist: :meth:`ProjectLayout.init_existing` judges it empty
         when it holds no entries besides dotfiles/dot-directories (``.git/``,
         ``.gitignore``, ...), and only then lays out ``specs/``, ``src/`` and
-        ``test/`` — a non-empty directory keeps its existing content untouched.
-        Either way ``.kodo/``/``kodo.md`` and the checkpoint git mirror (with
-        its mandatory baseline commit, via ``RootMirrorManager.prepare``) are
-        always created, and the directory is locked immediately and
-        unconditionally (see :meth:`_create_project`'s matching note). Unlike
-        :meth:`_create_project`, the workspace-folder registration and
-        ``EVT_WORKSPACE_ADD_FOLDER`` push are skipped when *path* is already
-        one of the session's registered folders — the directory may already
-        be open — and, per :meth:`_create_project`'s connected/disconnected
-        guard, also skipped when this session isn't currently connected to a
-        live matching workspace.
+        ``test/`` — a non-empty directory keeps its existing content
+        untouched. When *path* already has a ``.kodo/`` (already a Kodo
+        project), this is a no-op success: nothing on disk is touched, and
+        the returned ``already_scaffolded`` flag tells the caller to report
+        that scaffolding was already in place rather than treat it as an
+        error. Otherwise ``.kodo/``/``kodo.md`` and the checkpoint git mirror
+        (with its mandatory baseline commit, via
+        ``RootMirrorManager.prepare``) are created. Either way — including
+        the already-scaffolded no-op case, since both are idempotent — the
+        directory is locked immediately and unconditionally (see
+        :meth:`_create_project`'s matching note) and the workspace-folder
+        registration / ``RootMirrorManager.prepare`` calls still run so an
+        already-scaffolded directory that isn't yet part of the open
+        workspace still gets added to it. Unlike :meth:`_create_project`,
+        the workspace-folder registration and ``EVT_WORKSPACE_ADD_FOLDER``
+        push are skipped when *path* is already one of the session's
+        registered folders — the directory may already be open — and, per
+        :meth:`_create_project`'s connected/disconnected guard, also skipped
+        when this session isn't currently connected to a live matching
+        workspace.
 
         Args:
             path: Absolute path of the existing directory to augment.
 
         Returns:
             ``{"path": <absolute project dir>, "name": <workspace label>,
-            "scaffolded": <bool, whether specs/src/test were created>}``.
+            "scaffolded": <bool, whether specs/src/test were created>,
+            "already_scaffolded": <bool, whether path already had .kodo/ and
+            nothing was done>}``.
 
         Raises:
-            ProjectLayoutError: *path* does not exist, or its ``.kodo/``
-                already exists.
+            ProjectLayoutError: *path* does not exist or is not a directory.
         """
         connected = self._is_workspace_connected()
         project_dir = Path(path)
-        scaffolded = await asyncio.to_thread(ProjectLayout(project_dir).init_existing)
+        scaffolded, already_scaffolded = await asyncio.to_thread(
+            ProjectLayout(project_dir).init_existing
+        )
         resolved_dir = project_dir.resolve()
 
         folders = self._session_workspace.folders
@@ -1148,21 +1163,27 @@ class WorkflowEngine(
                 )
             )
         _log.info(
-            "init_project: augmented %s (scaffolded=%s, already_present=%s, "
-            "connected=%s, label=%r)",
+            "scaffold_new_project: augmented %s (scaffolded=%s, already_scaffolded=%s, "
+            "already_present=%s, connected=%s, label=%r)",
             project_dir,
             scaffolded,
+            already_scaffolded,
             already_present,
             connected,
             label,
         )
-        return {"path": str(project_dir), "name": label, "scaffolded": scaffolded}
+        return {
+            "path": str(project_dir),
+            "name": label,
+            "scaffolded": scaffolded,
+            "already_scaffolded": already_scaffolded,
+        }
 
     async def _bootstrap_project(self, name: str = "") -> dict[str, object]:
         """Create a project when no workspace exists yet, mode-appropriately.
 
         Backs ``EngineServices.bootstrap_project`` (called by the
-        ``create_new_project`` tool when the agent supplies no ``path`` and
+        ``scaffold_new_project`` tool when the agent supplies no ``path`` and
         :meth:`_has_workspace` is ``False`` — regardless of whether ``name``
         was given). Autonomous sessions never prompt anyone; interactive
         sessions ask the user to pick a workspace-home folder.

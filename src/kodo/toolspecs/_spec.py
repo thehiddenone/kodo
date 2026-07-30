@@ -98,7 +98,7 @@ class ToolSpec:
         requires_project: Whether this tool needs a bound project/workspace
             to run. :class:`~kodo.tools.ToolDispatcher` rejects a call to such
             a tool before dispatch (with a message to call
-            ``create_new_project`` first) when no project is bound and the
+            ``scaffold_new_project`` first) when no project is bound and the
             call doesn't carry ``temporary: true`` — see
             :mod:`kodo.toolspecs._workspace`.
     """

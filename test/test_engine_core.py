@@ -1123,7 +1123,7 @@ def test_make_resolver_logical_resolver_tracks_folders_added_after_construction(
     tmp_path: Path,
 ) -> None:
     """A resolver built at the start of a turn must still see a project bound
-    *after* it was constructed — e.g. by ``create_new_project`` mid-turn, or
+    *after* it was constructed — e.g. by ``scaffold_new_project`` mid-turn, or
     by the user adding a folder to the VS Code window directly (both funnel
     into ``SessionWorkspace.set_folders``). Regression test: the resolver used
     to snapshot the folder map at construction time, so a project bound later
@@ -1451,7 +1451,12 @@ async def test_init_project_scaffolds_empty_directory(tmp_path: Path) -> None:
 
     result = await engine._init_project(str(target))
 
-    assert result == {"path": str(target), "name": "existing-empty", "scaffolded": True}
+    assert result == {
+        "path": str(target),
+        "name": "existing-empty",
+        "scaffolded": True,
+        "already_scaffolded": False,
+    }
     assert (target / "specs").is_dir()
     assert (target / "src").is_dir()
     assert (target / "test").is_dir()
@@ -1473,6 +1478,7 @@ async def test_init_project_treats_dotfiles_only_as_empty(tmp_path: Path) -> Non
     result = await engine._init_project(str(target))
 
     assert result["scaffolded"] is True
+    assert result["already_scaffolded"] is False
     assert (target / "specs").is_dir()
     assert (target / "src").is_dir()
     assert (target / "test").is_dir()
@@ -1487,6 +1493,7 @@ async def test_init_project_preserves_existing_content(tmp_path: Path) -> None:
     result = await engine._init_project(str(target))
 
     assert result["scaffolded"] is False
+    assert result["already_scaffolded"] is False
     assert not (target / "specs").exists()
     assert not (target / "src").exists()
     assert not (target / "test").exists()
@@ -1504,15 +1511,22 @@ async def test_init_project_requires_existing_directory(tmp_path: Path) -> None:
         await engine._init_project(str(missing))
 
 
-async def test_init_project_fails_when_kodo_dir_already_exists(tmp_path: Path) -> None:
-    from kodo.project import ProjectLayoutError
-
+async def test_init_project_is_a_noop_when_kodo_dir_already_exists(tmp_path: Path) -> None:
+    """Pointing scaffold_new_project's ``path`` branch at an already-scaffolded
+    directory is a no-op success, not an error — the tool reports
+    ``already_scaffolded`` instead of raising."""
     engine, _t, _s, _g = _make_engine(tmp_path)
     target = tmp_path / "already-a-project"
     (target / ".kodo").mkdir(parents=True)
 
-    with pytest.raises(ProjectLayoutError, match="already exists"):
-        await engine._init_project(str(target))
+    result = await engine._init_project(str(target))
+
+    assert result["scaffolded"] is False
+    assert result["already_scaffolded"] is True
+    # Nothing else was created — pre-existing .kodo/ untouched, no specs/src/test.
+    assert not (target / "specs").exists()
+    assert not (target / "src").exists()
+    assert not (target / "test").exists()
 
 
 # ---------------------------------------------------------------------------

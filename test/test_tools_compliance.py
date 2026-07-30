@@ -135,7 +135,12 @@ class _FakeServices:
         return {"path": path or "/tmp/new-project", "name": name}
 
     async def init_project(self, path: str) -> dict[str, object]:
-        return {"path": path, "name": Path(path).name, "scaffolded": True}
+        return {
+            "path": path,
+            "name": Path(path).name,
+            "scaffolded": True,
+            "already_scaffolded": False,
+        }
 
     async def notify_tool_call_in_progress(self, tool_call_id: str) -> None:
         return None
@@ -434,7 +439,7 @@ async def test_get_root_paths_works_with_no_workspace_bound(
 ) -> None:
     """``get_root_paths`` deliberately has no ``requires_project`` gate: with no
     project/workspace bound yet it returns an empty ``roots`` list — itself the
-    signal to call ``create_new_project`` first — rather than the generic
+    signal to call ``scaffold_new_project`` first — rather than the generic
     ``NO_PROJECT_ERROR`` every other native tool returns in that state."""
     scratch_root = tmp_path / "scratch"
     monkeypatch.setattr(
@@ -812,31 +817,28 @@ async def test_disable_autonomous_mode_compliance(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_new_project_compliance(tmp_path: Path) -> None:
+async def test_scaffold_new_project_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path, agent_name="guide")
+    # No `path`: the create-new-project (name-based) branch.
     _assert_compliant(
-        "create_new_project",
-        await _dispatch(d, "create_new_project", {"name": "My Todo App"}),
+        "scaffold_new_project",
+        await _dispatch(d, "scaffold_new_project", {"name": "My Todo App"}),
     )
-    # Empty name is rejected with the universal error envelope.
+    # Empty name and no path is rejected with the universal error envelope.
     _assert_compliant(
-        "create_new_project",
-        await _dispatch(d, "create_new_project", {"name": "   "}),
+        "scaffold_new_project",
+        await _dispatch(d, "scaffold_new_project", {"name": "   "}),
     )
-
-
-@pytest.mark.asyncio
-async def test_init_project_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="guide")
+    # `path` given: the existing-directory (init) branch.
     target = tmp_path / "existing-project"
     _assert_compliant(
-        "init_project",
-        await _dispatch(d, "init_project", {"path": str(target)}),
+        "scaffold_new_project",
+        await _dispatch(d, "scaffold_new_project", {"path": str(target)}),
     )
-    # Blank path is rejected with the universal error envelope.
+    # Blank path falls through to the no-path branch, which then requires name.
     _assert_compliant(
-        "init_project",
-        await _dispatch(d, "init_project", {"path": "   "}),
+        "scaffold_new_project",
+        await _dispatch(d, "scaffold_new_project", {"path": "   "}),
     )
 
 
@@ -1052,8 +1054,7 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "rollback",
         "finalize_project",
         "disable_autonomous_mode",
-        "create_new_project",
-        "init_project",
+        "scaffold_new_project",
         "web_search",
         "read_webpage",
         "query_search_engine",

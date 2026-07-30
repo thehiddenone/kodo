@@ -34,7 +34,6 @@ from ._context import (
 )
 from ._create_directory import CreateDirectoryTool
 from ._create_file import CreateFileTool
-from ._create_new_project import CreateNewProjectTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
 from ._dispatch import DISPATCHABLE_TOOLS_BY_NAME, ToolDispatcher, tools_for_agent
 from ._document_feedback import DocumentFeedbackTool
@@ -48,7 +47,6 @@ from ._find_text_in_files import FindTextInFilesTool
 from ._get_root_paths import GetRootPathsTool
 from ._get_web_search_state import GetWebSearchStateTool
 from ._guided_dev_status import GuidedDevStatusTool
-from ._init_project import InitProjectTool
 from ._paths import (
     LogicalPathResolver,
     NoWorkspaceError,
@@ -67,6 +65,7 @@ from ._rollback import RollbackTool
 from ._run_author_critic_iteration import RunAuthorCriticIterationTool
 from ._run_command import RunCommandTool
 from ._run_subagent import RunSubagentTool
+from ._scaffold_new_project import ScaffoldNewProjectTool
 from ._tool import Tool
 from ._toolchain_build import ToolchainBuildTool
 from ._toolchain_deps import ToolchainDepsTool
@@ -80,7 +79,6 @@ __all__ = [
     "AskUserTool",
     "CreateDirectoryTool",
     "CreateFileTool",
-    "CreateNewProjectTool",
     "DisableAutonomousModeTool",
     "DocumentFeedbackTool",
     "EditFileTool",
@@ -96,7 +94,6 @@ __all__ = [
     "GetRootPathsTool",
     "GetWebSearchStateTool",
     "GuidedDevStatusTool",
-    "InitProjectTool",
     "LogicalPathResolver",
     "NoWorkspaceError",
     "PathResolver",
@@ -113,6 +110,7 @@ __all__ = [
     "RunAuthorCriticIterationTool",
     "RunCommandTool",
     "RunSubagentTool",
+    "ScaffoldNewProjectTool",
     "SecurityDecisionLike",
     "SecurityLike",
     "SessionLike",

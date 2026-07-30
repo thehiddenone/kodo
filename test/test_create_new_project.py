@@ -1,8 +1,9 @@
-"""Unit tests for the ``create_new_project`` directory-naming helpers.
+"""Unit tests for the ``scaffold_new_project`` directory-naming helpers.
 
-These cover the two behaviours chosen for the tool: slugifying a human project
-name into a filesystem-safe directory name, and auto-suffixing (``-2``, ``-3``…)
-so an existing project directory is never reused or overwritten.
+These cover the two behaviours chosen for the tool's no-``path`` (creation)
+branch: slugifying a human project name into a filesystem-safe directory
+name, and auto-suffixing (``-2``, ``-3``…) so an existing project directory
+is never reused or overwritten.
 """
 
 from __future__ import annotations

@@ -137,8 +137,8 @@ feeds the `state` event's `workspace_connected` field, WS_PROTOCOL.md §5.1)
 and by `session.list`'s `compatible` field (from disk alone, no live engine
 needed — WS_PROTOCOL.md §7.1b). This connection-state concept was already
 **mode-agnostic** before the root-resolution fallback itself was: a Guided
-session got `workspace_connected` too, and `create_new_project`/`init_project`
-already skipped their `workspace.add_folder` push (but still scaffolded and
+session got `workspace_connected` too, and `scaffold_new_project`
+already skipped its `workspace.add_folder` push (but still scaffolded and
 locked immediately) whenever disconnected, regardless of mode. As of
 2026-07-24 the root-resolution fallback is mode-agnostic too (WS_PROTOCOL.md
 §7.1c) — Guided mode no longer has its own singular `current_project` binding
@@ -274,7 +274,7 @@ never behind an in-flight tool call. The added latency is negligible next to the
 LLM round-trip the flush is nested inside.
 
 This is what makes resume possible: if the process dies (or a tool's *own* side
-effect reloads the client — e.g. `create_new_project` firing
+effect reloads the client — e.g. `scaffold_new_project` firing
 `workspace.add_folder`, which reloads the VS Code window into a multi-root
 workspace) mid-dispatch, the main log ends with a dangling assistant `tool_use`
 that has **no** following `tool_result`. That dangling `tool_use` is the signal

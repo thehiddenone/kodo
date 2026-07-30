@@ -1,8 +1,8 @@
 """``get_root_paths`` tool — list the filesystem roots the agent works within.
 
 Returns every bound root attached to this run's context — one per open VS
-Code workspace folder or project created via ``create_new_project``/
-``init_project``, shared uniformly by both workflow modes. The list is
+Code workspace folder or project created via ``scaffold_new_project``,
+shared uniformly by both workflow modes. The list is
 already synced from the extension over the WS protocol, so the tool is a
 pure read of context state.
 

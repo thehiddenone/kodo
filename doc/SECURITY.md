@@ -463,8 +463,8 @@ ToolDispatcher.dispatch(tool, input, tool_use_id)          kodo/tools/_dispatch.
   ├─ requires_project gate (unchanged) → {"error": NO_PROJECT_ERROR} if no
   │    workspace and spec.requires_project and not input["temporary"]
   ├─ intent presence check (unchanged)
-  ├─ create_new_project + no workspace bound? → __security_gate SKIPPED     ← 2026-07-21b
-  │    entirely (see below) — otherwise:
+  ├─ scaffold_new_project + no `path` + no workspace bound? → __security_gate
+  │    SKIPPED entirely (see below) — otherwise:
   ├─ __security_gate():
   │    decision = ctx.security.evaluate(                   kodo/security/_layer.py
   │        tool_name, tool_input,
@@ -492,19 +492,22 @@ ToolDispatcher.dispatch(tool, input, tool_use_id)          kodo/tools/_dispatch.
 **Pre-workspace crash fix (2026-07-21b):** `default_cwd` is only ever consulted
 inside `SecurityLayer.__evaluate_run_command` — and `run_command` sets
 `requires_project=True`, so it can never reach `__security_gate` without a
-workspace bound. Every *other* tool can (`create_new_project`'s own bootstrap
-fork, `ask_user`, `wait`, ...), and `ToolContext.resolver` in Problem Solver
-mode is a `LogicalPathResolver` whose `default_cwd` **asserts** when no
-workspace exists (`kodo/tools/_paths.py`) — reading it unconditionally for
-every tool crashed the whole worker (`AssertionError: default_cwd read before
-a workspace/project exists`) the instant any non-`requires_project` tool was
-called before a project existed. Fixed by reading `default_cwd` only when
-`ctx.has_workspace` is true (harmless everywhere else, since no other branch
-of `evaluate()` looks at it) and by giving `create_new_project` a dedicated
-bypass of the whole security gate when there is no workspace yet — that call
+workspace bound. Every *other* tool can (`scaffold_new_project`'s own
+no-`path` bootstrap fork, `ask_user`, `wait`, ...), and `ToolContext.resolver`
+in Problem Solver mode is a `LogicalPathResolver` whose `default_cwd`
+**asserts** when no workspace exists (`kodo/tools/_paths.py`) — reading it
+unconditionally for every tool crashed the whole worker (`AssertionError:
+default_cwd read before a workspace/project exists`) the instant any
+non-`requires_project` tool was called before a project existed. Fixed by
+reading `default_cwd` only when `ctx.has_workspace` is true (harmless
+everywhere else, since no other branch of `evaluate()` looks at it) and by
+giving `scaffold_new_project` a dedicated bypass of the whole security gate
+when it's called with no `path` *and* no workspace yet — that specific call
 has no agent-chosen location for the gate to judge in the first place (the
-engine or a real user action picks it; see `_create_new_project.py` and
-WS_PROTOCOL.md §6.10).
+engine or a real user action picks it). A `path`-driven call (pointing at an
+existing directory) is always agent-chosen, so it goes through the gate
+normally even with no workspace bound — only the no-`path` bootstrap fork is
+exempt; see `_scaffold_new_project.py` and WS_PROTOCOL.md §6.10.
 
 **Checkpointing's own crash (2026-07-25), and the assert → `NoWorkspaceError`
 change:** the 2026-07-21b fix above only guarded the *security gate's* read of

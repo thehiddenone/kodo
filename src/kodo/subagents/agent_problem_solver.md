@@ -17,8 +17,7 @@ tools:
   - toolchain_deps
   - run_subagent
   - ask_user
-  - create_new_project
-  - init_project
+  - scaffold_new_project
 subagents:
   - investigator
   - planner
