@@ -119,17 +119,18 @@ with the preambles, any `bases:` snippets, the `{PLACEHOLDER:SUBAGENTS}` roster
 and the task contract all substituted:
 
 ```bash
-PYTHONPATH=src python3 -m kodo --system-prompt claude-opus-5 foo
+PYTHONPATH=src python3 -m kodo --system-prompt foo --model claude-opus-5
 ```
 
 This is the fastest way to catch a placeholder that never got filled, a roster
 row that reads wrong, or a contract that doesn't match your `SubAgentSpec`. It
 calls `AgentRegistry.get` itself, so what it prints is what the engine sends
-(see [INTERNALS.md](INTERNALS.md) §9a). The `LLM_ID` only has to resolve — every
-model gets the same prompt today. `test/test_main.py` sweeps *every*
+(see [INTERNALS.md](INTERNALS.md) §9a). `--model`/`-m` only has to resolve —
+every model gets the same prompt today — and can be omitted to use the first
+installed model in the local registry. `test/test_main.py` sweeps *every*
 packaged agent through it, so a new agent that fails to render fails there too.
-The same CLI's `--tools claude-opus-5 foo` prints the agent's granted tools in
-the exact OpenAI wire shape, if you need to check that side too.
+The same CLI's `--tools foo --model claude-opus-5` prints the agent's granted
+tools in the exact OpenAI wire shape, if you need to check that side too.
 
 On Windows the canonical check is `mise exec node -- npm run check-types && ...`
 in `kodo-vsix` for the front-end; the Python side is pytest + ruff as above.

@@ -22,6 +22,13 @@ TOOLCHAIN_BUILDER: SubAgentSpec = SubAgentSpec(
                 "type": "string",
                 "description": "What to set up or change.",
             },
+            "project_path": {
+                "type": "string",
+                "description": (
+                    "Path to the project root directory. Relative to the current "
+                    "workspace, or absolute if the project lives outside the workspace."
+                ),
+            },
             "mode": {
                 "type": "string",
                 "enum": ["bootstrap", "convert"],
@@ -44,7 +51,7 @@ TOOLCHAIN_BUILDER: SubAgentSpec = SubAgentSpec(
                 "description": "PROJECTCODE for context (optional).",
             },
         },
-        "required": ["instructions"],
+        "required": ["instructions", "project_path"],
     },
     output_schema={
         "type": "object",

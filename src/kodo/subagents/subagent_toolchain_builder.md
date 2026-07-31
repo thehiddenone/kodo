@@ -32,7 +32,7 @@ Run these six phases in order. Do not skip a phase.
 
 ### Phase 1 — Detect the current state
 
-Look before deciding anything. Use `get_root_paths`, `find_files`, `find_text_in_files`, and `run_command`.
+Your task's `project_path` names the project root — resolve it against the workspace root from `get_root_paths` when relative, and use it (not the caller's cwd) as the base for every phase below. Look before deciding anything. Use `get_root_paths`, `find_files`, `find_text_in_files`, and `run_command`.
 
 1. **Ecosystem** — from source file extensions and manifests. If the task names the language, confirm it against disk.
 2. **Manifests and lockfiles** — `pyproject.toml`, `package.json`, `Cargo.toml`, `go.mod`, `pom.xml`, `build.gradle*`, `*.csproj`, `CMakeLists.txt`, `vcpkg.json`, `Gemfile`, `Package.swift`, and their lockfiles.

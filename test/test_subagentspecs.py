@@ -55,6 +55,13 @@ def test_schemas_are_well_formed(spec: SubAgentSpec) -> None:
         assert out.get("type") == "object"
 
 
+def test_toolchain_builder_requires_project_path() -> None:
+    """``project_path`` must be required so the agent never falls back to caller cwd."""
+    spec = _SPECS_BY_NAME["toolchain_builder"]
+    assert "project_path" in spec.input_schema["properties"]
+    assert "project_path" in spec.input_schema["required"]
+
+
 def _critic_names() -> list[str]:
     """Names of every agent that declares ``role: critic``, read off the registry.
 
@@ -89,9 +96,7 @@ def _escalation_capable_names() -> set[str]:
     """
     registry = AgentRegistry(_AGENTS_DIR)
     return {
-        name
-        for name in _agent_names() - _ENTRY_AGENTS
-        if "escalation" in registry.get(name).bases
+        name for name in _agent_names() - _ENTRY_AGENTS if "escalation" in registry.get(name).bases
     }
 
 

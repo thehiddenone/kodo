@@ -625,7 +625,7 @@ To see for yourself what an agent's prompt does and does not contain, print the
 real thing:
 
 ```bash
-python -m kodo --system-prompt claude-opus-5 guide
+python -m kodo --system-prompt guide --model claude-opus-5
 ```
 
 That CLI ([__main__.py](../src/kodo/__main__.py), INTERNALS.md §9a) renders

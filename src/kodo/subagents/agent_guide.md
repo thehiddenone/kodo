@@ -108,11 +108,12 @@ the tracked-file status.
   delegating. In autonomous mode the user is away: decide, proceed, and document
   the decision with a `<kodo_info>` callout.
 - **Which agent.** One agent covers **every language**: spawn `toolchain_builder`
-  via `run_subagent_toolchain_builder`, passing the project's Tech Stack language and whether this is
-  a fresh bootstrap or a conversion of an existing project. Both are hints — it
-  detects the real state on disk and reports back what it actually did. It picks the
-  ecosystem's industry-standard tools when nothing is set up, and builds on whatever
-  is already there when something is.
+  via `run_subagent_toolchain_builder`, passing the project's root directory as
+  `project_path` (required) along with the Tech Stack language and whether this is
+  a fresh bootstrap or a conversion of an existing project. The language and mode
+  are hints — it detects the real state on disk and reports back what it actually
+  did. It picks the ecosystem's industry-standard tools when nothing is set up, and
+  builds on whatever is already there when something is.
 - **After it returns.** Record what it set up with a `<kodo_info>` callout (you never author
   the scripts or `DEVELOPMENT.md` yourself — the sub-agent owns them). Until the
   scripts exist, `coder`'s `toolchain_build` calls will fail with a clear "no script

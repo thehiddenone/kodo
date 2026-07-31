@@ -115,7 +115,7 @@ def test_module_targets_the_packaged_agents() -> None:
 def test_prints_the_rendered_prompt_for_a_local_id(
     kodo_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    code, out, err = _run(capsys, "--system-prompt", _local_id(kodo_home), _PINNED_AGENT)
+    code, out, err = _run(capsys, "--system-prompt", _PINNED_AGENT, "--model", _local_id(kodo_home))
     assert code == 0
     assert err == ""
     assert out == f"{_rendered(_PINNED_AGENT)}\n"
@@ -124,7 +124,7 @@ def test_prints_the_rendered_prompt_for_a_local_id(
 def test_prints_the_rendered_prompt_for_a_cloud_model_id(
     kodo_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    code, out, err = _run(capsys, "--system-prompt", _cloud_id(), _PINNED_AGENT)
+    code, out, err = _run(capsys, "-p", _PINNED_AGENT, "-m", _cloud_id())
     assert code == 0
     assert err == ""
     assert out == f"{_rendered(_PINNED_AGENT)}\n"
@@ -135,7 +135,7 @@ def test_every_packaged_agent_renders(
     agent_name: str, kodo_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A newly added agent whose prompt fails to render must fail here."""
-    code, out, _ = _run(capsys, "--system-prompt", _cloud_id(), agent_name)
+    code, out, _ = _run(capsys, "--system-prompt", agent_name, "--model", _cloud_id())
     assert code == 0
     assert out == f"{_rendered(agent_name)}\n"
 
@@ -145,13 +145,14 @@ def test_local_and_cloud_ids_render_the_same_prompt(
 ) -> None:
     """Today's invariant: no plugin appends anything model-specific.
 
-    ``LLM_ID`` is validated but does not change a byte of the output. Per-LLM
+    ``--model`` is validated but does not change a byte of the output. Per-LLM
     prompt variation is planned (see the module docstring) — when it lands, this
     test is the one that must be *replaced* with per-model expectations, not
     quietly deleted.
     """
-    _, local_out, _ = _run(capsys, "--system-prompt", _local_id(kodo_home), _PINNED_AGENT)
-    _, cloud_out, _ = _run(capsys, "--system-prompt", _cloud_id(), _PINNED_AGENT)
+    local_id = _local_id(kodo_home)
+    _, local_out, _ = _run(capsys, "--system-prompt", _PINNED_AGENT, "--model", local_id)
+    _, cloud_out, _ = _run(capsys, "--system-prompt", _PINNED_AGENT, "--model", _cloud_id())
     assert local_out == cloud_out
 
 
@@ -159,7 +160,7 @@ def test_output_is_the_fully_rendered_prompt_not_a_raw_file(
     kodo_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Preambles prepended, every placeholder substituted."""
-    _, out, _ = _run(capsys, "--system-prompt", _cloud_id(), _PINNED_AGENT)
+    _, out, _ = _run(capsys, "--system-prompt", _PINNED_AGENT, "--model", _cloud_id())
     security = (_REAL_AGENTS_DIR / "preamble_security.md").read_text(encoding="utf-8")
     performance = (_REAL_AGENTS_DIR / "preamble_performance.md").read_text(encoding="utf-8")
     assert security in out
@@ -176,14 +177,14 @@ def test_prompt_never_describes_the_agents_tools(
     Guards the ``## Tools`` prompt section from being reintroduced — the CLI is
     the cheapest place to notice if it comes back (see doc/TOOLS.md §7).
     """
-    _, out, _ = _run(capsys, "--system-prompt", _cloud_id(), agent_name)
+    _, out, _ = _run(capsys, "--system-prompt", agent_name, "--model", _cloud_id())
     assert "## Tools" not in out
 
 
 def test_a_user_added_custom_entry_resolves(
     kodo_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """``LLM_ID`` goes through the live registry, not a hardcoded name list."""
+    """``--model`` goes through the live registry, not a hardcoded name list."""
     add_local_entry(
         kodo_home,
         LocalLLMEntry(
@@ -193,10 +194,45 @@ def test_a_user_added_custom_entry_resolves(
             url="http://192.168.1.50:8042",
         ),
     )
-    code, out, err = _run(capsys, "--system-prompt", "my-own-box", _PINNED_AGENT)
+    code, out, err = _run(capsys, "--system-prompt", _PINNED_AGENT, "--model", "my-own-box")
     assert code == 0
     assert err == ""
     assert out == f"{_rendered(_PINNED_AGENT)}\n"
+
+
+def test_a_user_added_custom_server_url_entry_is_the_default_model(
+    kodo_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--model`` omitted falls back to the first installed local entry.
+
+    A freshly created ``kodo_home`` has no hardcoded GGUF installed (nothing
+    was ever downloaded into it), so a ``custom_server_url`` entry — always
+    considered installed — is the only thing that can satisfy the default
+    here without a real download.
+    """
+    add_local_entry(
+        kodo_home,
+        LocalLLMEntry(
+            name="my-own-box",
+            kind="custom_server_url",
+            description="An externally managed llama-server.",
+            url="http://192.168.1.50:8042",
+        ),
+    )
+    code, out, err = _run(capsys, "--system-prompt", _PINNED_AGENT)
+    assert code == 0
+    assert err == ""
+    assert out == f"{_rendered(_PINNED_AGENT)}\n"
+
+
+def test_no_model_given_and_none_installed_exits_2(
+    kodo_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A pristine local registry (nothing downloaded, no custom entries) has no default."""
+    code, out, err = _run(capsys, "--system-prompt", _PINNED_AGENT)
+    assert code == 2
+    assert out == ""
+    assert "--model" in err
 
 
 # ---------------------------------------------------------------------------
@@ -205,14 +241,14 @@ def test_a_user_added_custom_entry_resolves(
 
 
 def test_unknown_llm_id_exits_2(kodo_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    code, out, err = _run(capsys, "--system-prompt", "no-such-model", _PINNED_AGENT)
+    code, out, err = _run(capsys, "--system-prompt", _PINNED_AGENT, "--model", "no-such-model")
     assert code == 2
     assert out == ""
     assert "no-such-model" in err
 
 
 def test_unknown_agent_exits_2(kodo_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    code, out, err = _run(capsys, "--system-prompt", _cloud_id(), "no-such-agent")
+    code, out, err = _run(capsys, "--system-prompt", "no-such-agent", "--model", _cloud_id())
     assert code == 2
     assert out == ""
     assert "no-such-agent" in err
@@ -222,10 +258,19 @@ def test_the_agent_is_resolved_before_the_llm_id(
     kodo_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Both wrong reports the agent — the check order the CLI documents."""
-    code, _, err = _run(capsys, "--system-prompt", "no-such-model", "no-such-agent")
+    code, _, err = _run(capsys, "--system-prompt", "no-such-agent", "--model", "no-such-model")
     assert code == 2
     assert "no-such-agent" in err
     assert "no-such-model" not in err
+
+
+def test_the_agent_is_resolved_before_the_missing_default_model(
+    kodo_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unknown agent plus no ``--model`` (and nothing installed) still reports the agent."""
+    code, _, err = _run(capsys, "--system-prompt", "no-such-agent")
+    assert code == 2
+    assert "no-such-agent" in err
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +281,7 @@ def test_the_agent_is_resolved_before_the_llm_id(
 def test_tools_prints_the_openai_payload_for_a_local_id(
     kodo_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    code, out, err = _run(capsys, "--tools", _local_id(kodo_home), _PINNED_AGENT)
+    code, out, err = _run(capsys, "--tools", _PINNED_AGENT, "--model", _local_id(kodo_home))
     assert code == 0
     assert err == ""
     assert json.loads(out) == _oai_tools(_PINNED_AGENT)
@@ -245,7 +290,7 @@ def test_tools_prints_the_openai_payload_for_a_local_id(
 def test_tools_prints_the_openai_payload_for_a_cloud_model_id(
     kodo_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    code, out, err = _run(capsys, "--tools", _cloud_id(), _PINNED_AGENT)
+    code, out, err = _run(capsys, "--tools", _PINNED_AGENT, "--model", _cloud_id())
     assert code == 0
     assert err == ""
     assert json.loads(out) == _oai_tools(_PINNED_AGENT)
@@ -256,7 +301,7 @@ def test_tools_every_packaged_agent_renders(
     agent_name: str, kodo_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A newly added agent whose tools fail to resolve must fail here."""
-    code, out, _ = _run(capsys, "--tools", _cloud_id(), agent_name)
+    code, out, _ = _run(capsys, "--tools", agent_name, "--model", _cloud_id())
     assert code == 0
     assert json.loads(out) == _oai_tools(agent_name)
 
@@ -273,13 +318,13 @@ def test_tools_payload_uses_the_openai_function_wrapper() -> None:
 def test_tools_local_and_cloud_ids_render_the_same_payload(
     kodo_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Today's invariant: the OpenAI tools shape doesn't vary by LLM_ID.
+    """Today's invariant: the OpenAI tools shape doesn't vary by ``--model``.
 
-    ``LLM_ID`` is validated but does not change a byte of the output — see the
-    module docstring for why the argument is kept anyway.
+    ``--model`` is validated but does not change a byte of the output — see
+    the module docstring for why the argument is kept anyway.
     """
-    _, local_out, _ = _run(capsys, "--tools", _local_id(kodo_home), _PINNED_AGENT)
-    _, cloud_out, _ = _run(capsys, "--tools", _cloud_id(), _PINNED_AGENT)
+    _, local_out, _ = _run(capsys, "--tools", _PINNED_AGENT, "--model", _local_id(kodo_home))
+    _, cloud_out, _ = _run(capsys, "--tools", _PINNED_AGENT, "--model", _cloud_id())
     assert local_out == cloud_out
 
 
@@ -289,14 +334,14 @@ def test_tools_local_and_cloud_ids_render_the_same_payload(
 
 
 def test_tools_unknown_llm_id_exits_2(kodo_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    code, out, err = _run(capsys, "--tools", "no-such-model", _PINNED_AGENT)
+    code, out, err = _run(capsys, "--tools", _PINNED_AGENT, "--model", "no-such-model")
     assert code == 2
     assert out == ""
     assert "no-such-model" in err
 
 
 def test_tools_unknown_agent_exits_2(kodo_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    code, out, err = _run(capsys, "--tools", _cloud_id(), "no-such-agent")
+    code, out, err = _run(capsys, "--tools", "no-such-agent", "--model", _cloud_id())
     assert code == 2
     assert out == ""
     assert "no-such-agent" in err
@@ -306,7 +351,7 @@ def test_tools_the_agent_is_resolved_before_the_llm_id(
     kodo_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Both wrong reports the agent — the check order the CLI documents."""
-    code, _, err = _run(capsys, "--tools", "no-such-model", "no-such-agent")
+    code, _, err = _run(capsys, "--tools", "no-such-agent", "--model", "no-such-model")
     assert code == 2
     assert "no-such-agent" in err
     assert "no-such-model" not in err
@@ -321,15 +366,16 @@ def test_tools_the_agent_is_resolved_before_the_llm_id(
     "argv",
     [
         pytest.param([], id="no-flag"),
-        pytest.param(["--system-prompt"], id="no-values"),
-        pytest.param(["--system-prompt", "claude-opus-5"], id="one-value"),
-        pytest.param(["--tools"], id="tools-no-values"),
-        pytest.param(["--tools", "claude-opus-5"], id="tools-one-value"),
+        pytest.param(["--system-prompt"], id="no-value"),
+        pytest.param(["-p"], id="no-value-short"),
+        pytest.param(["--tools"], id="tools-no-value"),
         pytest.param(
-            ["--system-prompt", "claude-opus-5", "guide", "--tools", "claude-opus-5", "guide"],
+            ["--system-prompt", "guide", "--tools", "guide"],
             id="both-flags",
         ),
         pytest.param(["--bogus", "a", "b"], id="unknown-flag"),
+        pytest.param(["--model", "claude-opus-5"], id="model-without-a-command"),
+        pytest.param(["--system-prompt", "guide", "--model"], id="model-no-value"),
     ],
 )
 def test_bad_invocation_exits_via_argparse(argv: list[str]) -> None:
@@ -338,16 +384,27 @@ def test_bad_invocation_exits_via_argparse(argv: list[str]) -> None:
     assert excinfo.value.code == 2
 
 
-def test_parse_args_splits_the_pair_into_llm_id_and_agent() -> None:
-    parsed = main_mod._parse_args(["--system-prompt", "some-model", "some-agent"])
-    assert parsed.llm_id == "some-model"
+def test_parse_args_captures_the_agent_and_model() -> None:
+    parsed = main_mod._parse_args(["--system-prompt", "some-agent", "--model", "some-model"])
     assert parsed.agent == "some-agent"
+    assert parsed.model == "some-model"
 
 
-def test_parse_args_splits_the_tools_pair_into_llm_id_and_agent() -> None:
-    parsed = main_mod._parse_args(["--tools", "some-model", "some-agent"])
-    assert parsed.llm_id == "some-model"
+def test_parse_args_accepts_the_short_flags() -> None:
+    parsed = main_mod._parse_args(["-p", "some-agent", "-m", "some-model"])
     assert parsed.agent == "some-agent"
+    assert parsed.model == "some-model"
+
+
+def test_parse_args_tools_captures_the_agent_and_model() -> None:
+    parsed = main_mod._parse_args(["--tools", "some-agent", "--model", "some-model"])
+    assert parsed.agent == "some-agent"
+    assert parsed.model == "some-model"
+
+
+def test_parse_args_model_defaults_to_none() -> None:
+    parsed = main_mod._parse_args(["--system-prompt", "some-agent"])
+    assert parsed.model is None
 
 
 # ---------------------------------------------------------------------------
@@ -370,8 +427,8 @@ def test_piping_into_head_does_not_print_a_traceback(tmp_path: Path) -> None:
         "HOME": str(tmp_path),
     }
     head = subprocess.run(
-        f"{shlex.quote(sys.executable)} -m kodo "
-        f"--system-prompt {shlex.quote(_cloud_id())} {_PINNED_AGENT} | head -1",
+        f"{shlex.quote(sys.executable)} -m kodo --system-prompt {shlex.quote(_PINNED_AGENT)} "
+        f"--model {shlex.quote(_cloud_id())} | head -1",
         shell=True,
         capture_output=True,
         text=True,
