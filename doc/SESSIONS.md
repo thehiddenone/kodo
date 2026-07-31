@@ -54,7 +54,7 @@ seamlessly across the change.
 
 > Sub-agent spawning is **not** wired to the Guide. Any agent may spawn
 > sub-agents if (a) its frontmatter grants a spawning tool
-> (`run_subagent`/`run_author_critic_iteration`) and (b) its frontmatter
+> (a `run_subagent_<name>` tool) and (b) its frontmatter
 > declares a `subagents:` allow-list naming the sub-agents it may call. The
 > engine gates every spawn against the **calling** agent's allow-list
 > (`AgentRegistry.allowed_subagents` → `_assert_can_spawn`), so the permission
@@ -364,19 +364,21 @@ roster also renders every callee's schemas.
   agent never called `return_result`, a bare `{schema_compliance: false}`
   fallback is synthesized — there is no artifact index to recover a partial
   result from anymore. `run_subagent` returns this structured result verbatim.
-- **Author/critic.** `run_author_critic_iteration` spawns the author with
-  `{instructions, input_paths, for_revision_path}` (the last set only when
-  revising), reads the author's `output_schema.primary_path` from its
-  `return_result`, then spawns the critic against that same path. The
-  **verdict itself is never read from the critic's `return_result`** — once the
-  critic subsession ends, the engine reads
-  `kodo.guided_state.read_status(primary_path)`, because `document_feedback`
-  (the critic's only reporting tool) writes straight to that file's `.jsonl`
-  evolution log; the jsonl is the single source of truth for status, not
-  anything the LLM returns structurally. There is no `previous_artifact_id`/
-  `for_revision_artifact_ids` plumbing — `for_revision_path` is a single
-  path, since the author/critic loop now always concerns exactly one file
-  per iteration.
+- **Author/critic.** When the spawned sub-agent declares a `critic:`, that same
+  `run_subagent_<name>` call runs the *whole* loop (`_run_review_loop`; see
+  doc/TOOLS.md §5A). Each round spawns the author with
+  `{instructions, input_paths, for_revision_path}` (the last two set by the
+  engine from the previous round), reads the author's
+  `output_schema.primary_path` from its `return_result`, then spawns the critic
+  against that same path. The critic's own `return_result` **is** its verdict
+  (`{path, accept, concerns, summary}`), which the engine appends to that file's
+  `.jsonl` evolution log; but the **status the loop acts on is read back from
+  the log**, not from that payload, because the user's own review decision lands
+  there too (and can turn an accepted file back into one needing revision). The
+  jsonl remains the single source of truth for status. There is no
+  `previous_artifact_id`/`for_revision_artifact_ids` plumbing —
+  `for_revision_path` is a single path, since the loop always concerns exactly
+  one file per round.
 - **Engine-driven agents.** `compactor` carries a spec and returns through
   `return_result` (`{summary}`); the silent `_run_silent_return_turn` grants
   it the tool and captures the payload, with raw text as a fallback. Session
@@ -472,7 +474,7 @@ startup. Then:
      `subsession_end` is *completed* (its stored `result` is reused); an unpaired
      start is the single *active* subsession.
   2. For each dangling `tool_use`:
-     - a **sub-agent spawn** (`run_subagent` / `run_author_critic_iteration`) is
+     - a **sub-agent spawn** (`run_subagent`, in any `run_subagent_<name>` form) is
        re-dispatched through the normal dispatcher, where it consumes the next
        ledger entry instead of starting fresh: a **completed** subsession returns
        its stored result immediately (whatever it wrote to real files is already
@@ -480,10 +482,10 @@ startup. Then:
        the **active** subsession is rehydrated from its `subsessions/<id>.jsonl`
        log and driven to completion **live**, then closed (`subsession_end`
        marker + `subsession.ended`).
-     - **`ask_user` / `escalate_blocker`** are re-dispatched for real: their
-       only "side effect" is asking the present user, so the question batch is
-       simply re-fired (`prompt.question`) and the user answers the whole set
-       again from scratch — partial answers are never persisted anywhere.
+     - **`ask_user`** is re-dispatched for real: its only "side effect" is
+       asking the present user, so the question batch is simply re-fired
+       (`prompt.question`) and the user answers the whole set again from
+       scratch — partial answers are never persisted anywhere.
      - **the one call `TransientStore.pending_security_alert` names**, if any
        (at most one — dispatch is strictly sequential) is also re-dispatched
        for real: that field is proof the call was still blocked inside
@@ -523,7 +525,7 @@ Documents survive a crash for the same reason any other file write does: a
 its checkpoint commit has actually landed (STATE_AND_LIFECYCLE.md §1.1), so a
 crash mid-write never leaves a half-recorded revision. There is no
 producing-subsession union step on resume — a rehydrated sub-agent simply
-keeps writing real files and calling `document_feedback`; nothing needs to be
+keeps writing real files and returning verdicts the engine logs; nothing needs to be
 merged back into a shared index, because there is no shared index.
 
 ### Resume boundaries (what is *not* auto-resumed)

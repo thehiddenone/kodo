@@ -93,7 +93,6 @@ def _make_services(rec: _Recorder) -> _EngineServices:
         run_subagent=rec.make("run_subagent", {"ok": True}),
         run_dependency_manager=rec.make("run_dependency_manager", {"ok": True}),
         run_web_search_agent=rec.make("run_web_search_agent", {"ok": True}),
-        run_author_critic=rec.make("run_author_critic", {"ok": True}),
         rollback=rec.make("rollback"),
         disable_autonomous=rec.make("disable_autonomous"),
         create_project=rec.make("create_project", {"root": "/tmp/proj"}),
@@ -112,10 +111,23 @@ async def test_engine_services_run_subagent_forwards_args() -> None:
     rec = _Recorder()
     services = _make_services(rec)
 
-    result = await services.run_subagent("guide", "investigator", {"task": "look"})
+    result = await services.run_subagent("guide", "investigator", {"task": "look"}, 3)
 
     assert result == {"ok": True}
-    assert rec.calls == [("run_subagent", ("guide", "investigator", {"task": "look"}))]
+    assert rec.calls == [("run_subagent", ("guide", "investigator", {"task": "look"}, 3))]
+
+
+@pytest.mark.asyncio
+async def test_engine_services_run_subagent_defaults_max_rounds_to_none() -> None:
+    """The engine, not the caller, owns the round budget's default: a caller
+    that omits ``max_rounds`` forwards ``None`` rather than a number, so the
+    default lives in one place (``_DEFAULT_MAX_REVIEW_ROUNDS``)."""
+    rec = _Recorder()
+    services = _make_services(rec)
+
+    await services.run_subagent("guide", "coder", {"task": "build"})
+
+    assert rec.calls == [("run_subagent", ("guide", "coder", {"task": "build"}, None))]
 
 
 @pytest.mark.asyncio
@@ -138,24 +150,6 @@ async def test_engine_services_run_web_search_agent_forwards_args() -> None:
 
     assert result == {"ok": True}
     assert rec.calls == [("run_web_search_agent", ({"query": "x"}, "tc_1"))]
-
-
-@pytest.mark.asyncio
-async def test_engine_services_run_author_critic_iteration_forwards_args() -> None:
-    rec = _Recorder()
-    services = _make_services(rec)
-
-    result = await services.run_author_critic_iteration(
-        "guide", "author", "critic", "doc.md", {"spec": "spec.md"}, "polish it", True
-    )
-
-    assert result == {"ok": True}
-    assert rec.calls == [
-        (
-            "run_author_critic",
-            ("guide", "author", "critic", "doc.md", {"spec": "spec.md"}, "polish it", True),
-        )
-    ]
 
 
 @pytest.mark.asyncio
@@ -242,7 +236,6 @@ def test_engine_services_has_workspace_root_paths_are_live_reads() -> None:
         run_subagent=rec.make("run_subagent"),
         run_dependency_manager=rec.make("run_dependency_manager"),
         run_web_search_agent=rec.make("run_web_search_agent"),
-        run_author_critic=rec.make("run_author_critic"),
         rollback=rec.make("rollback"),
         disable_autonomous=rec.make("disable_autonomous"),
         create_project=rec.make("create_project"),

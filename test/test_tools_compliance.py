@@ -94,7 +94,11 @@ class _FakeServices:
         return self._root_paths
 
     async def run_subagent(
-        self, caller: str, name: str, task_input: dict[str, object]
+        self,
+        caller: str,
+        name: str,
+        task_input: dict[str, object],
+        max_rounds: int | None = None,
     ) -> dict[str, object]:
         return {"primary_path": "specs/sub.md", "paths": ["specs/sub.md"], "summary": "done"}
 
@@ -110,18 +114,6 @@ class _FakeServices:
         self, task_input: dict[str, object], tool_call_id: str
     ) -> dict[str, object]:
         return {"themes": [], "note": "stub"}
-
-    async def run_author_critic_iteration(
-        self,
-        caller: str,
-        author_name: str,
-        critic_name: str,
-        path: str,
-        input_paths: dict[str, str],
-        instructions: str,
-        for_revision: bool,
-    ) -> dict[str, object]:
-        return {"path": path or "specs/ac.md", "status": "accepted", "concerns": []}
 
     async def rollback(self, root: str, target_sha: str) -> None:
         return None
@@ -517,35 +509,6 @@ async def test_guided_dev_status_compliance(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_document_feedback_compliance(tmp_path: Path) -> None:
-    roots = (RootPath(name="proj", path=str(tmp_path)),)
-    d = _make_dispatcher(tmp_path, agent_name="architect_critic", root_paths=roots)
-    (tmp_path / "specs").mkdir()
-    await _write_file(d, "specs/a.md", "x")
-    _assert_compliant(
-        "document_feedback",
-        await _dispatch(d, "document_feedback", {"path": "specs/a.md", "accept": True}),
-    )
-    _assert_compliant(
-        "document_feedback",
-        await _dispatch(
-            d,
-            "document_feedback",
-            {
-                "path": "specs/a.md",
-                "accept": False,
-                "concerns": [{"kind": "gap", "description": "x"}],
-            },
-        ),
-    )
-    # Error: rejected with no concerns.
-    _assert_compliant(
-        "document_feedback",
-        await _dispatch(d, "document_feedback", {"path": "specs/a.md", "accept": False}),
-    )
-
-
-@pytest.mark.asyncio
 async def test_toolchain_build_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path)
     steps = {"build": True, "static_analysis": False, "test": False}
@@ -635,23 +598,8 @@ async def test_toolchain_deps_missing_dependencies_md_returns_remediation(tmp_pa
 
 
 # ---------------------------------------------------------------------------
-# Control / escalation tools
+# Control tools
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_escalate_blocker_compliance(tmp_path: Path) -> None:
-    auto = _make_dispatcher(tmp_path, autonomous=True)
-    _assert_compliant(
-        "escalate_blocker",
-        await _dispatch(auto, "escalate_blocker", {"reason": "cap", "summary": "stuck"}),
-    )
-    inter = _make_dispatcher(tmp_path, autonomous=False)
-    res = _assert_compliant(
-        "escalate_blocker",
-        await _dispatch(inter, "escalate_blocker", {"reason": "cap", "summary": "stuck"}),
-    )
-    assert "user_response" in res
 
 
 @pytest.mark.asyncio
@@ -764,28 +712,6 @@ async def test_return_result_captures_normalized_output_and_stops(tmp_path: Path
     assert out["verdict"] == "rejected"
     assert "stray" not in out  # undeclared field dropped by normalize_output
     assert out["schema_compliance"] is False  # because a field was dropped
-
-
-@pytest.mark.asyncio
-async def test_run_author_critic_iteration_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="guide")
-    _assert_compliant(
-        "run_author_critic_iteration",
-        await _dispatch(
-            d,
-            "run_author_critic_iteration",
-            {"author_name": "a", "critic_name": "c", "instructions": "go"},
-        ),
-    )
-    # for_revision without a path → compliant error envelope.
-    _assert_compliant(
-        "run_author_critic_iteration",
-        await _dispatch(
-            d,
-            "run_author_critic_iteration",
-            {"author_name": "a", "critic_name": "c", "instructions": "go", "for_revision": True},
-        ),
-    )
 
 
 @pytest.mark.asyncio
@@ -1042,14 +968,11 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "find_files",
         "find_text_in_files",
         "guided_dev_status",
-        "document_feedback",
         "toolchain_build",
         "toolchain_deps",
-        "escalate_blocker",
         "ask_user",
         "submit_evaluation",
         "run_subagent",
-        "run_author_critic_iteration",
         "return_result",
         "rollback",
         "finalize_project",

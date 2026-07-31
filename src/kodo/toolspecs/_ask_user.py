@@ -28,7 +28,7 @@ ASK_USER: ToolSpec = ToolSpec(
         "text' option yourself. See the 'Asking the User Questions' preamble "
         "section for the full discipline. Unavailable in autonomous mode "
         "(there is no answer to synthesize when the user is away); assume and "
-        "document, or escalate_blocker, instead. Distinct from "
+        "document, or escalate (return a `reason`), instead. Distinct from "
         "request_user_review_artifact, which is a sign-off on a finished "
         "artifact rather than a question."
         "\n\nWhen to use: information about the current topic of work is "
@@ -117,7 +117,7 @@ ASK_USER: ToolSpec = ToolSpec(
     autonomous_mode=(
         "Unavailable — there is no answer to synthesize when the user is "
         "away, so this tool is withheld entirely. An agent that would have "
-        "asked must instead assume-and-document or, if blocked, "
-        "`escalate_blocker`."
+        "asked must instead assume-and-document or, if blocked, escalate by "
+        "returning a `reason` on its result."
     ),
 )

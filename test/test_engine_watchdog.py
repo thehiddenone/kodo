@@ -155,6 +155,12 @@ class _FakeRegistry:
     def get(self, name: str, autonomous: bool = False):
         return SimpleNamespace(display_name=name.replace("_", " ").title())
 
+    def run_subagent_specs(self, caller: str) -> list[object]:
+        return []
+
+    def return_result_specs(self, name: str) -> list[object]:
+        return []
+
 
 def _usage() -> Usage:
     return Usage(

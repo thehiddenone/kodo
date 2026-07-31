@@ -35,8 +35,9 @@ from kodo.llms.anthropic import ClaudePlugin
 from kodo.llms.llamacpp import LlamaPlugin
 from kodo.project import kodo_user_dir
 from kodo.subagents import SubAgent
-from kodo.tools import ToolDispatcher, tools_for_agent
+from kodo.tools import ToolDispatcher
 
+from .._agenttools import agent_tool_specs
 from ._proto import EngineHost
 from ._shared import _GUIDE_AGENT_NAME, _JUDGE_AGENT_NAME, _PROBLEM_SOLVER_AGENT_NAME
 
@@ -319,7 +320,7 @@ class LLMPlumbingMixin:
             model=model_id,
             system=agent.system_prompt,
             messages=messages,
-            tools=tools_for_agent(agent.tools),
+            tools=agent_tool_specs(self._registry, agent),
             cache_breakpoints=default_cache_breakpoints(messages),
             **self._thinking_kwargs(routing),
         ):
@@ -394,7 +395,7 @@ class LLMPlumbingMixin:
             by the ``return_result`` tool), or ``None`` if it never produced
             one even after the final forced turn.
         """
-        tools = tools_for_agent(agent.tools)
+        tools = agent_tool_specs(self._registry, agent)
 
         for _round in range(max_rounds):
             text_parts: list[str] = []

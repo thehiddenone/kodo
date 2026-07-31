@@ -24,9 +24,7 @@ from ._create_directory import CREATE_DIRECTORY
 from ._create_file import CREATE_FILE
 from ._describe import dense_output_schema, optional_output_paths, tool_description
 from ._disable_autonomous_mode import DISABLE_AUTONOMOUS_MODE
-from ._document_feedback import DOCUMENT_FEEDBACK
 from ._edit_file import EDIT_FILE
-from ._escalate_blocker import ESCALATE_BLOCKER
 from ._filesystem import FILESYSTEM
 from ._finalize_project import FINALIZE_PROJECT
 from ._find_files import FIND_FILES
@@ -40,11 +38,18 @@ from ._read_attachment import READ_ATTACHMENT
 from ._read_file import READ_FILE
 from ._read_webpage import READ_WEBPAGE
 from ._remaining_time import REMAINING_TIME
-from ._return_result import RETURN_RESULT
+from ._return_result import RETURN_RESULT, build_return_result_spec
 from ._rollback import ROLLBACK
-from ._run_author_critic_iteration import RUN_AUTHOR_CRITIC_ITERATION
 from ._run_command import RUN_COMMAND
-from ._run_subagent import RUN_SUBAGENT
+from ._run_subagent import (
+    MAX_ROUNDS_DEFAULT,
+    MAX_ROUNDS_KEY,
+    RUN_SUBAGENT,
+    RUN_SUBAGENT_PREFIX,
+    build_run_subagent_spec,
+    run_subagent_tool_name,
+    subagent_from_tool_name,
+)
 from ._scaffold_new_project import SCAFFOLD_NEW_PROJECT
 from ._spec import (
     OUTPUT_VISIBILITY_DEFAULT,
@@ -83,9 +88,7 @@ __all__ = [
     "CREATE_DIRECTORY",
     "CREATE_FILE",
     "DISABLE_AUTONOMOUS_MODE",
-    "DOCUMENT_FEEDBACK",
     "EDIT_FILE",
-    "ESCALATE_BLOCKER",
     "FILESYSTEM",
     "FINALIZE_PROJECT",
     "FIND_FILES",
@@ -95,6 +98,8 @@ __all__ = [
     "GUIDED_DEV_STATUS",
     "INTENT_KEY",
     "INTENT_PROPERTY",
+    "MAX_ROUNDS_DEFAULT",
+    "MAX_ROUNDS_KEY",
     "NO_PROJECT_ERROR",
     "OUTPUT_VISIBILITY_DEFAULT",
     "QUERY_SEARCH_ENGINE",
@@ -104,9 +109,9 @@ __all__ = [
     "REMAINING_TIME",
     "RETURN_RESULT",
     "ROLLBACK",
-    "RUN_AUTHOR_CRITIC_ITERATION",
     "RUN_COMMAND",
     "RUN_SUBAGENT",
+    "RUN_SUBAGENT_PREFIX",
     "SCAFFOLD_NEW_PROJECT",
     "SCHEMA_COMPLIANCE_KEY",
     "SUBMIT_EVALUATION",
@@ -123,10 +128,14 @@ __all__ = [
     "ToolSpec",
     "augment_output_schema",
     "build_detail_rows",
+    "build_return_result_spec",
+    "build_run_subagent_spec",
     "dense_output_schema",
     "normalize_output",
     "optional_output_paths",
     "requires_intent",
+    "run_subagent_tool_name",
+    "subagent_from_tool_name",
     "stringify_value",
     "tool_description",
     "tool_result_succeeded",
@@ -139,9 +148,7 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     CREATE_DIRECTORY,
     CREATE_FILE,
     DISABLE_AUTONOMOUS_MODE,
-    DOCUMENT_FEEDBACK,
     EDIT_FILE,
-    ESCALATE_BLOCKER,
     FILESYSTEM,
     FINALIZE_PROJECT,
     GET_ROOT_PATHS,
@@ -156,7 +163,6 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     REMAINING_TIME,
     RETURN_RESULT,
     ROLLBACK,
-    RUN_AUTHOR_CRITIC_ITERATION,
     RUN_COMMAND,
     RUN_SUBAGENT,
     SCAFFOLD_NEW_PROJECT,

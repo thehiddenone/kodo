@@ -182,7 +182,7 @@ so phase 2 can score how the agent used the user:
 
 | Request | Default `ScriptedUser` reply |
 |---|---|
-| `prompt.question` (ask_user / escalate_blocker) | scripted per-batch answers if provided, else first option / free-text fallback |
+| `prompt.question` (ask_user) | scripted per-batch answers if provided, else first option / free-text fallback |
 | `prompt.approval` (document review gate) | `agree` (configurable `feedback` + text) |
 | `prompt.permission` (security gate) | `allow` (configurable `deny` + feedback) |
 | `api_key.request` | explicit `api_keys` map → `KODO_VALIDATOR_API_KEY_<VENDOR>` → `<VENDOR>_API_KEY` env; none ⇒ `{"error":"cancelled"}` |

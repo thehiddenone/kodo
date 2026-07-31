@@ -150,37 +150,6 @@ def test_divider_entry_defaults() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_ask_user_entry_escalate_blocker_no_summary_returns_none() -> None:
-    assert HistoryProjector._ask_user_entry("escalate_blocker", "tu_1", {}, None) is None
-
-
-def test_ask_user_entry_escalate_blocker_pending() -> None:
-    entry = HistoryProjector._ask_user_entry(
-        "escalate_blocker", "tu_1", {"summary": "need help"}, None
-    )
-    assert entry == {
-        "type": "ask_user",
-        "toolCallId": "tu_1",
-        "questions": [{"question": "need help", "kind": "single_choice", "options": []}],
-        "answers": None,
-    }
-
-
-def test_ask_user_entry_escalate_blocker_answered() -> None:
-    entry = HistoryProjector._ask_user_entry(
-        "escalate_blocker", "tu_1", {"summary": "need help"}, {"user_response": "sure"}
-    )
-    assert entry is not None
-    assert entry["answers"] == [{"selected": [], "free_text": "sure"}]
-
-
-def test_ask_user_entry_escalate_blocker_bad_output_returns_none() -> None:
-    entry = HistoryProjector._ask_user_entry(
-        "escalate_blocker", "tu_1", {"summary": "need help"}, {"user_response": 42}
-    )
-    assert entry is None
-
-
 def test_ask_user_entry_non_ask_tool_returns_none() -> None:
     assert HistoryProjector._ask_user_entry("run_command", "tu_1", {}, None) is None
 
@@ -435,28 +404,6 @@ async def test_message_to_entries_tool_use_input_not_dict_defaults_empty(tmp_pat
         {"role": "assistant", "content": content}, {}, {}, tmp_path, tmp_path, {}
     )
     assert entries[0]["toolName"] == "run_command"
-
-
-async def test_message_to_entries_escalate_blocker_appends_question_panel_after_card(
-    tmp_path: Path,
-) -> None:
-    projector = HistoryProjector(_FakeTransient(tmp_path), _FakeCheckpoints())
-    content = [
-        {
-            "type": "tool_use",
-            "id": "tu_1",
-            "name": "escalate_blocker",
-            "input": {"summary": "need a decision"},
-        }
-    ]
-    results_by_id = {"tu_1": {"user_response": "go ahead"}}
-    entries = await projector._message_to_entries(
-        {"role": "assistant", "content": content}, {}, results_by_id, tmp_path, tmp_path, {}
-    )
-    assert len(entries) == 2
-    assert entries[0]["type"] == "tool_call"
-    assert entries[1]["type"] == "ask_user"
-    assert entries[1]["answers"] == [{"selected": [], "free_text": "go ahead"}]
 
 
 # ---------------------------------------------------------------------------

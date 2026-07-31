@@ -136,9 +136,9 @@ def resolve_logical(folders: dict[str, Path], path: str) -> Path:
 def root_for(roots: tuple[RootPath, ...], path: Path) -> RootPath | None:
     """The longest bound root that contains *path*, or ``None``.
 
-    Used by every ``kodo.guided_state`` caller (``document_feedback``,
-    ``guided_dev_status``, ``record_guided_revision``, document finalization,
-    ``run_author_critic_iteration``) to recover which of a session's N bound
+    Used by every ``kodo.guided_state`` caller (``guided_dev_status``,
+    ``record_guided_revision``, the engine's critic-verdict recording, and
+    document finalization) to recover which of a session's N bound
     roots an already-resolved absolute path falls under — the replacement for
     the single implicit project root each of those used to read straight off
     the old singular binding. *path* must already be resolved (as every

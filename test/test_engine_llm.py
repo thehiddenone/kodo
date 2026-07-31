@@ -87,6 +87,12 @@ def _make_engine(
     engine._gateway = gateway or _FakeGateway([])
     engine._emitters = _FakeEmitters()
     engine._session = SessionState(session_id="s1")
+    # Enough registry surface for ``agent_tool_specs`` (the only thing these
+    # turns need it for); tests that exercise the registry itself override it.
+    engine._registry = SimpleNamespace(
+        run_subagent_specs=lambda name: [],
+        return_result_specs=lambda name: [],
+    )
     return engine
 
 
@@ -363,7 +369,7 @@ async def test_run_silent_return_turn_captures_text_and_result() -> None:
     ]
     gateway = _FakeGateway([events])
     engine = _make_engine(gateway=gateway)
-    agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
+    agent = SimpleNamespace(name="stub", system_prompt="sys", tools=frozenset())
 
     result, text = await engine._run_silent_return_turn(
         _ROUTING, SimpleNamespace(), "model-x", agent, [Message(role="user", content="hi")]
@@ -380,7 +386,7 @@ async def test_run_silent_return_turn_ignores_non_return_result_tool_calls() -> 
         TurnEnd(usage=_usage(), stop_reason="tool_use"),
     ]
     engine = _make_engine(gateway=_FakeGateway([events]))
-    agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
+    agent = SimpleNamespace(name="stub", system_prompt="sys", tools=frozenset())
 
     result, text = await engine._run_silent_return_turn(
         _ROUTING, SimpleNamespace(), "model-x", agent, []
@@ -397,7 +403,7 @@ async def test_run_silent_return_turn_ignores_non_dict_result_payload() -> None:
         ),
     ]
     engine = _make_engine(gateway=_FakeGateway([events]))
-    agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
+    agent = SimpleNamespace(name="stub", system_prompt="sys", tools=frozenset())
 
     result, _text = await engine._run_silent_return_turn(
         _ROUTING, SimpleNamespace(), "model-x", agent, []
@@ -407,7 +413,7 @@ async def test_run_silent_return_turn_ignores_non_dict_result_payload() -> None:
 
 async def test_run_silent_return_turn_no_turn_end_skips_cost() -> None:
     engine = _make_engine(gateway=_FakeGateway([[TokenDelta(text="hi")]]))
-    agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
+    agent = SimpleNamespace(name="stub", system_prompt="sys", tools=frozenset())
 
     await engine._run_silent_return_turn(_ROUTING, SimpleNamespace(), "model-x", agent, [])
 
@@ -447,7 +453,7 @@ async def test_silent_tool_loop_turn_stops_when_dispatcher_flags_stop() -> None:
     ]
     gateway = _FakeGateway([events])
     engine = _make_engine(gateway=gateway)
-    agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
+    agent = SimpleNamespace(name="stub", system_prompt="sys", tools=frozenset())
     dispatcher = _FakeToolDispatcher(stop_after=1, returned_output={"themes": ["a"]})
 
     result = await engine._run_silent_tool_loop_turn(
@@ -476,7 +482,7 @@ async def test_silent_tool_loop_turn_no_tool_calls_nudges_and_calls_on_round_tex
     ]
     gateway = _FakeGateway(events)
     engine = _make_engine(gateway=gateway)
-    agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
+    agent = SimpleNamespace(name="stub", system_prompt="sys", tools=frozenset())
     dispatcher = _FakeToolDispatcher(stop_after=1)
 
     narrated: list[str] = []
@@ -502,7 +508,7 @@ async def test_silent_tool_loop_turn_no_tool_calls_nudges_and_calls_on_round_tex
 async def test_silent_tool_loop_turn_breaks_on_deadline_when_no_tool_calls() -> None:
     events = [[TokenDelta(text="stalling")]]
     engine = _make_engine(gateway=_FakeGateway(events))
-    agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
+    agent = SimpleNamespace(name="stub", system_prompt="sys", tools=frozenset())
     dispatcher = _FakeToolDispatcher(returned_output=None)
 
     result = await engine._run_silent_tool_loop_turn(
@@ -536,7 +542,7 @@ async def test_silent_tool_loop_turn_exhausts_max_rounds() -> None:
 
     events = [_round_events(i) for i in range(3)] + [[]]  # 3 rounds + final forced turn
     engine = _make_engine(gateway=_FakeGateway(events))
-    agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
+    agent = SimpleNamespace(name="stub", system_prompt="sys", tools=frozenset())
     dispatcher = _FakeToolDispatcher(returned_output=None)
 
     result = await engine._run_silent_tool_loop_turn(
@@ -565,7 +571,7 @@ async def test_silent_tool_loop_turn_final_forced_turn_dispatches_return_result_
     ]
     gateway = _FakeGateway([[TokenDelta(text="x")], final_events])
     engine = _make_engine(gateway=gateway)
-    agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
+    agent = SimpleNamespace(name="stub", system_prompt="sys", tools=frozenset())
     dispatcher = _FakeToolDispatcher(returned_output=None)
 
     result = await engine._run_silent_tool_loop_turn(
@@ -581,7 +587,7 @@ async def test_silent_tool_loop_turn_max_rounds_zero_returns_immediately_if_alre
     None
 ):
     engine = _make_engine(gateway=_FakeGateway([]))
-    agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
+    agent = SimpleNamespace(name="stub", system_prompt="sys", tools=frozenset())
     dispatcher = _FakeToolDispatcher(returned_output={"already": "done"})
     dispatcher.stop_requested = True
 
@@ -609,7 +615,7 @@ async def test_silent_tool_loop_turn_breaks_on_deadline_after_tool_dispatch_with
         [],  # final forced turn
     ]
     engine = _make_engine(gateway=_FakeGateway(events))
-    agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
+    agent = SimpleNamespace(name="stub", system_prompt="sys", tools=frozenset())
     dispatcher = _FakeToolDispatcher(returned_output=None)  # never sets stop_requested
 
     result = await engine._run_silent_tool_loop_turn(
@@ -630,7 +636,7 @@ async def test_silent_tool_loop_turn_round_with_text_and_tool_calls_appends_text
         ]
     ]
     engine = _make_engine(gateway=_FakeGateway(events))
-    agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
+    agent = SimpleNamespace(name="stub", system_prompt="sys", tools=frozenset())
     dispatcher = _FakeToolDispatcher(stop_after=1, returned_output={"ok": True})
 
     narrated: list[str] = []
@@ -671,7 +677,7 @@ async def test_silent_tool_loop_turn_carries_thinking_signature_into_assistant_b
         ]
     ]
     engine = _make_engine(gateway=_FakeGateway(events))
-    agent = SimpleNamespace(system_prompt="sys", tools=frozenset())
+    agent = SimpleNamespace(name="stub", system_prompt="sys", tools=frozenset())
     dispatcher = _FakeToolDispatcher(stop_after=1)
 
     result = await engine._run_silent_tool_loop_turn(

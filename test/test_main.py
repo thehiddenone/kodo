@@ -1,12 +1,13 @@
-"""Behavior tests for :mod:`kodo.llms.__main__` — the ``python -m kodo.llms`` CLI.
+"""Behavior tests for :mod:`kodo.__main__` — the ``python -m kodo`` CLI.
 
 Nothing is stubbed out except ``kodo_user_dir``: the CLI is driven through its
 real ``main(argv)`` against the **packaged** agent files and the **live** local
-and cloud registries, so these tests fail if a shipped agent stops rendering or
-a registry lookup regresses. Redirecting ``kodo_user_dir`` at a ``tmp_path``
-keeps the local-registry half hermetic — the developer's own
-``~/.kodo/etc/local-llm-registry.json`` must not decide which ``LLM_ID``\\ s
-resolve here.
+and cloud registries, so these tests fail if a shipped agent stops rendering, a
+registry lookup regresses, or the OpenAI tools payload drifts from what
+:class:`~kodo.llms.llamacpp.LlamaPlugin` actually sends. Redirecting
+``kodo_user_dir`` at a ``tmp_path`` keeps the local-registry half hermetic —
+the developer's own ``~/.kodo/etc/local-llm-registry.json`` must not decide
+which ``LLM_ID``\\ s resolve here.
 
 Model ids and agent names are read off the live registries rather than
 hardcoded (see the repo's spec-driven-tests rule); the few structural
@@ -16,6 +17,7 @@ assumptions that cannot be derived are pinned by a loud ``assert`` in
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
@@ -24,9 +26,11 @@ from pathlib import Path
 
 import pytest
 
-import kodo.llms.__main__ as llms_main
+import kodo.__main__ as main_mod
 import kodo.subagents as subagents_pkg
 from kodo.llms import LocalLLMEntry, add_local_entry, get_cloud_registry, get_local_registry
+from kodo.llms.llamacpp import build_openai_tools
+from kodo.runtime import agent_tool_specs
 from kodo.subagents import AgentRegistry
 
 _REAL_AGENTS_DIR = Path(subagents_pkg.__file__).parent
@@ -45,7 +49,7 @@ def kodo_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point the CLI's ``kodo_user_dir()`` at an empty ``tmp_path``."""
     home = tmp_path / "kodo-home"
     home.mkdir()
-    monkeypatch.setattr(llms_main, "kodo_user_dir", lambda: home)
+    monkeypatch.setattr(main_mod, "kodo_user_dir", lambda: home)
     return home
 
 
@@ -69,9 +73,22 @@ def _rendered(agent_name: str) -> str:
     return AgentRegistry(_REAL_AGENTS_DIR).get(agent_name, autonomous=False).system_prompt
 
 
+def _oai_tools(agent_name: str) -> list[dict[str, object]]:
+    """The tools payload the CLI must reproduce, straight from production plumbing.
+
+    Goes through ``agent_tool_specs`` — the same join the engine uses — so the
+    per-agent expansions (one ``run_subagent_<name>`` per invocable sub-agent, a
+    ``return_result`` bound to this agent's output schema) are covered too, not
+    just the static catalog lookups.
+    """
+    registry = AgentRegistry(_REAL_AGENTS_DIR)
+    agent = registry.get(agent_name, autonomous=False)
+    return build_openai_tools(agent_tool_specs(registry, agent))
+
+
 def _run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
     """Invoke ``main(argv)`` and return ``(exit_code, stdout, stderr)``."""
-    code = llms_main.main(list(argv))
+    code = main_mod.main(list(argv))
     captured = capsys.readouterr()
     return code, captured.out, captured.err
 
@@ -87,7 +104,7 @@ def _pin_assumptions() -> None:
 def test_module_targets_the_packaged_agents() -> None:
     """The CLI must read the installed agent files, not a copy or a fixture."""
     _pin_assumptions()
-    assert llms_main._AGENTS_DIR == _REAL_AGENTS_DIR
+    assert main_mod._AGENTS_DIR == _REAL_AGENTS_DIR
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +229,90 @@ def test_the_agent_is_resolved_before_the_llm_id(
 
 
 # ---------------------------------------------------------------------------
+# --tools: the happy path
+# ---------------------------------------------------------------------------
+
+
+def test_tools_prints_the_openai_payload_for_a_local_id(
+    kodo_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out, err = _run(capsys, "--tools", _local_id(kodo_home), _PINNED_AGENT)
+    assert code == 0
+    assert err == ""
+    assert json.loads(out) == _oai_tools(_PINNED_AGENT)
+
+
+def test_tools_prints_the_openai_payload_for_a_cloud_model_id(
+    kodo_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out, err = _run(capsys, "--tools", _cloud_id(), _PINNED_AGENT)
+    assert code == 0
+    assert err == ""
+    assert json.loads(out) == _oai_tools(_PINNED_AGENT)
+
+
+@pytest.mark.parametrize("agent_name", _agent_names())
+def test_tools_every_packaged_agent_renders(
+    agent_name: str, kodo_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A newly added agent whose tools fail to resolve must fail here."""
+    code, out, _ = _run(capsys, "--tools", _cloud_id(), agent_name)
+    assert code == 0
+    assert json.loads(out) == _oai_tools(agent_name)
+
+
+def test_tools_payload_uses_the_openai_function_wrapper() -> None:
+    """Every entry must carry the wire shape the OpenAI client expects."""
+    for entry in _oai_tools(_PINNED_AGENT):
+        assert entry["type"] == "function"
+        function = entry["function"]
+        assert isinstance(function, dict)
+        assert set(function) == {"name", "description", "parameters"}
+
+
+def test_tools_local_and_cloud_ids_render_the_same_payload(
+    kodo_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Today's invariant: the OpenAI tools shape doesn't vary by LLM_ID.
+
+    ``LLM_ID`` is validated but does not change a byte of the output — see the
+    module docstring for why the argument is kept anyway.
+    """
+    _, local_out, _ = _run(capsys, "--tools", _local_id(kodo_home), _PINNED_AGENT)
+    _, cloud_out, _ = _run(capsys, "--tools", _cloud_id(), _PINNED_AGENT)
+    assert local_out == cloud_out
+
+
+# ---------------------------------------------------------------------------
+# --tools: resolution errors
+# ---------------------------------------------------------------------------
+
+
+def test_tools_unknown_llm_id_exits_2(kodo_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    code, out, err = _run(capsys, "--tools", "no-such-model", _PINNED_AGENT)
+    assert code == 2
+    assert out == ""
+    assert "no-such-model" in err
+
+
+def test_tools_unknown_agent_exits_2(kodo_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    code, out, err = _run(capsys, "--tools", _cloud_id(), "no-such-agent")
+    assert code == 2
+    assert out == ""
+    assert "no-such-agent" in err
+
+
+def test_tools_the_agent_is_resolved_before_the_llm_id(
+    kodo_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both wrong reports the agent — the check order the CLI documents."""
+    code, _, err = _run(capsys, "--tools", "no-such-model", "no-such-agent")
+    assert code == 2
+    assert "no-such-agent" in err
+    assert "no-such-model" not in err
+
+
+# ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 
@@ -222,17 +323,29 @@ def test_the_agent_is_resolved_before_the_llm_id(
         pytest.param([], id="no-flag"),
         pytest.param(["--system-prompt"], id="no-values"),
         pytest.param(["--system-prompt", "claude-opus-5"], id="one-value"),
+        pytest.param(["--tools"], id="tools-no-values"),
+        pytest.param(["--tools", "claude-opus-5"], id="tools-one-value"),
+        pytest.param(
+            ["--system-prompt", "claude-opus-5", "guide", "--tools", "claude-opus-5", "guide"],
+            id="both-flags",
+        ),
         pytest.param(["--bogus", "a", "b"], id="unknown-flag"),
     ],
 )
 def test_bad_invocation_exits_via_argparse(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as excinfo:
-        llms_main.main(argv)
+        main_mod.main(argv)
     assert excinfo.value.code == 2
 
 
 def test_parse_args_splits_the_pair_into_llm_id_and_agent() -> None:
-    parsed = llms_main._parse_args(["--system-prompt", "some-model", "some-agent"])
+    parsed = main_mod._parse_args(["--system-prompt", "some-model", "some-agent"])
+    assert parsed.llm_id == "some-model"
+    assert parsed.agent == "some-agent"
+
+
+def test_parse_args_splits_the_tools_pair_into_llm_id_and_agent() -> None:
+    parsed = main_mod._parse_args(["--tools", "some-model", "some-agent"])
     assert parsed.llm_id == "some-model"
     assert parsed.agent == "some-agent"
 
@@ -257,7 +370,7 @@ def test_piping_into_head_does_not_print_a_traceback(tmp_path: Path) -> None:
         "HOME": str(tmp_path),
     }
     head = subprocess.run(
-        f"{shlex.quote(sys.executable)} -m kodo.llms "
+        f"{shlex.quote(sys.executable)} -m kodo "
         f"--system-prompt {shlex.quote(_cloud_id())} {_PINNED_AGENT} | head -1",
         shell=True,
         capture_output=True,
@@ -280,17 +393,17 @@ def test_find_cloud_entry_searches_across_vendors() -> None:
     """There is no flat cloud key, so every vendor's tuple must be scanned."""
     for models in get_cloud_registry().values():
         for entry in models:
-            assert llms_main._find_cloud_entry(entry.model_id) is entry
+            assert main_mod._find_cloud_entry(entry.model_id) is entry
 
 
 def test_find_cloud_entry_returns_none_for_an_unknown_model_id() -> None:
-    assert llms_main._find_cloud_entry("definitely-not-a-model") is None
+    assert main_mod._find_cloud_entry("definitely-not-a-model") is None
 
 
 def test_find_cloud_entry_does_not_match_on_the_display_name() -> None:
     """Lookup is by ``model_id`` — a vendor key or display name must not match."""
     for vendor, models in get_cloud_registry().items():
-        assert llms_main._find_cloud_entry(vendor) is None
+        assert main_mod._find_cloud_entry(vendor) is None
         for entry in models:
             if entry.name != entry.model_id:
-                assert llms_main._find_cloud_entry(entry.name) is None
+                assert main_mod._find_cloud_entry(entry.name) is None

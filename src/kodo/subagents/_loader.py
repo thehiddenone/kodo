@@ -9,10 +9,11 @@ Each agent file is a Markdown document with YAML frontmatter:
     ---
     <system prompt body>
 
-The filename stem must be ``subagent_<name>`` for sub-agents (everything driven
-by ``run_subagent`` / ``run_author_critic_iteration``) or ``agent_<name>`` for
-the user-facing entry agents (``guide``, ``problem_solver``) that drive a
-session directly rather than being spawned by one.
+The filename stem must be ``subagent_<name>`` for sub-agents (everything spawned
+through a ``run_subagent_<name>`` tool, plus the critics the engine spawns on
+their behalf) or ``agent_<name>`` for the user-facing entry agents (``guide``,
+``problem_solver``) that drive a session directly rather than being spawned by
+one.
 """
 
 from __future__ import annotations
@@ -21,7 +22,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-__all__ = ["SubAgent", "AgentLoadError", "load_agent"]
+__all__ = ["ROLE_CRITIC", "SubAgent", "AgentLoadError", "load_agent"]
+
+# The one recognized ``role:`` value. See ``SubAgent.role``.
+ROLE_CRITIC = "critic"
+_ROLES: frozenset[str] = frozenset({"", ROLE_CRITIC})
 
 _FRONT_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 
@@ -41,8 +46,8 @@ class SubAgent:
     Attributes:
         name: Subagent name from frontmatter (e.g. ``'narrative_author'``).
         tools: MCP tool names this subagent may invoke.
-        subagents: Names of sub-agents this agent is permitted to spawn (via
-            ``run_subagent`` / ``run_author_critic_iteration``). Empty by default,
+        subagents: Names of sub-agents this agent is permitted to spawn (via a
+            ``run_subagent_<name>`` tool). Empty by default,
             so an agent can spawn nothing unless its frontmatter opts in. There is
             no built-in "only the guide spawns" assumption — any agent that
             declares both a spawning tool and a ``subagents`` allow-list can drive
@@ -69,13 +74,20 @@ class SubAgent:
             description of what the agent does and when to call it. Empty when the
             file has no ``## Purpose`` section. The registry renders it into a
             caller's roster when filling ``{PLACEHOLDER:SUBAGENTS}``.
-        solo: ``True`` when this agent is invoked on its own via ``run_subagent``
-            (frontmatter ``solo: true``). Gives it a ``run_subagent`` row in a
-            caller's roster table. Mutually informative with :attr:`critic`.
+        role: The agent's structural role, from frontmatter ``role:``. Only
+            ``"critic"`` is recognized today; everything else (the default ``""``)
+            is an ordinary sub-agent. A critic is **not** invocable by a caller —
+            it gets no ``run_subagent_<name>`` tool — and its result is a review
+            verdict the engine records in the reviewed document's ``.jsonl``
+            evolution log (see :mod:`kodo.guided_state`) rather than a value it
+            hands back to whoever spawned it. Declared explicitly rather than
+            inferred from "is named as someone's ``critic:``" so the engine never
+            bakes in a blanket assumption about which agents behave this way.
         critic: Name of the critic this agent is paired with (frontmatter
-            ``critic:``). A non-empty value marks the agent an **author**, driven
-            via ``run_author_critic_iteration``; it gets one roster row naming the
-            critic. Empty for solos and for critics themselves.
+            ``critic:``). A non-empty value marks the agent an **author**: its
+            ``run_subagent_<name>`` tool runs the whole author→critic loop in one
+            call rather than a single pass. Empty for unreviewed agents and for
+            critics themselves.
         standalone: ``True`` when this agent is **not** part of the ordered
             pipeline (frontmatter ``standalone: true``) — a specialist invoked on
             demand whenever the need arises, with no upstream dependency on any
@@ -95,9 +107,14 @@ class SubAgent:
     bases: tuple[str, ...] = ()
     subagent_order: tuple[str, ...] = ()
     purpose: str = ""
-    solo: bool = False
+    role: str = ""
     critic: str = ""
     standalone: bool = False
+
+    @property
+    def is_critic(self) -> bool:
+        """Whether this agent is a critic (frontmatter ``role: critic``)."""
+        return self.role == ROLE_CRITIC
 
 
 def load_agent(path: Path) -> SubAgent:
@@ -167,8 +184,15 @@ def load_agent(path: Path) -> SubAgent:
         else _default_display_name(name)
     )
 
-    solo = _scalar(fm_dict.get("solo")).lower() in ("true", "yes", "1")
+    role = _scalar(fm_dict.get("role")).lower()
+    if role not in _ROLES:
+        raise AgentLoadError(
+            f"{path}: unknown role {role!r} in frontmatter; expected one of "
+            f"{sorted(r for r in _ROLES if r)} or no 'role:' at all"
+        )
     critic = _scalar(fm_dict.get("critic"))
+    if role == ROLE_CRITIC and critic:
+        raise AgentLoadError(f"{path}: a 'role: critic' agent cannot itself declare a 'critic:'")
     standalone = _scalar(fm_dict.get("standalone")).lower() in ("true", "yes", "1")
     purpose = _extract_purpose(body)
 
@@ -183,7 +207,7 @@ def load_agent(path: Path) -> SubAgent:
         bases=bases,
         subagent_order=subagent_order,
         purpose=purpose,
-        solo=solo,
+        role=role,
         critic=critic,
         standalone=standalone,
     )

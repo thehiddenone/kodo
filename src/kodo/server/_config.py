@@ -57,7 +57,7 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
         "active": "local_only",
         # "top_level" | "top_level_and_subagents" — whether only the main
         # entry agent (Guide/Problem Solver) is watched, or sub-agents
-        # (run_subagent/run_author_critic_iteration) too.
+        # (run_subagent_<name>) too.
         "scope": "top_level",
         # In interactive mode, whether a detected stall is nudged
         # automatically (True) or surfaced as a prompt.stuck_alert the user

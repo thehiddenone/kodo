@@ -388,13 +388,25 @@ class EngineServices(Protocol):
     """
 
     async def run_subagent(
-        self, caller: str, name: str, task_input: dict[str, object]
+        self,
+        caller: str,
+        name: str,
+        task_input: dict[str, object],
+        max_rounds: int | None = None,
     ) -> dict[str, object]:
-        """Run a leaf sub-agent and return its structured result.
+        """Run a sub-agent and return its structured result.
 
         ``task_input`` is the structured task validated against the sub-agent's
         ``input_schema``; the return is the structured output the sub-agent
         produced via ``return_result`` (its ``output_schema``).
+
+        When the named sub-agent declares a ``critic:``, this runs the **whole**
+        author→critic loop rather than a single pass — the engine spawns the
+        author, hands its primary file to the critic, and re-runs the author with
+        the critic's concerns until the critic accepts or the budget is spent —
+        and the result carries an extra ``review`` block reporting how the loop
+        ended. ``max_rounds`` caps that budget (the engine applies its own
+        default when ``None``); it is ignored for a sub-agent with no critic.
 
         ``caller`` is the name of the agent making the call (the running agent —
         not necessarily the guide). The engine gates the spawn against
@@ -438,26 +450,6 @@ class EngineServices(Protocol):
         correlates the agent's live narration (``web_search.note``) and its
         persisted notes sidecar file with that call's card — see
         doc/WEB_SEARCH.md §6.
-        """
-        ...
-
-    async def run_author_critic_iteration(
-        self,
-        caller: str,
-        author_name: str,
-        critic_name: str,
-        path: str,
-        input_paths: dict[str, str],
-        instructions: str,
-        for_revision: bool,
-    ) -> dict[str, object]:
-        """Run one Author/Critic round over a real file; return ``{path, status, concerns}``.
-
-        ``path`` is the file the Author writes/revises and the Critic reviews;
-        ``for_revision`` is ``True`` when ``path`` already exists and this round
-        revises it. ``caller`` is the agent making the call; the engine gates
-        both ``author_name`` and ``critic_name`` against that caller's
-        allow-list and raises ``PermissionError`` when either is not permitted.
         """
         ...
 
@@ -654,7 +646,8 @@ class ToolContext:
             with its own persisted tool call (``ask_user`` forwards it on the
             ``prompt.question`` request). Empty for legacy callers that
             dispatch without an id.
-        stop_requested: Set ``True`` by ``escalate_blocker`` to end the run.
+        stop_requested: Set ``True`` by a terminal tool (``return_result``,
+            ``submit_evaluation``) to end the run.
         returned_output: The normalized result the sub-agent passed to
             ``return_result`` (with the engine-owned ``schema_compliance`` field),
             or ``None`` until it calls it. Read back by the engine after the run.

@@ -6,7 +6,8 @@ black box, the local mock servers standing in for external dependencies, the
 configuration injection through the declared seams, and the behavioral
 assertions per scenario. It runs the suite via ``toolchain_build`` and iterates
 to a clean state before the critic sees it; a genuine system-behavior mismatch
-is surfaced to the guide via ``escalate_blocker`` rather than papered over.
+is surfaced to the guide as an escalation (a ``reason`` on its ``return_result``)
+rather than papered over.
 """
 
 from __future__ import annotations

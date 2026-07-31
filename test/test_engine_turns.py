@@ -935,47 +935,6 @@ async def test_finalize_tool_result_records_guided_revision_for_guided_state_too
     assert engine._checkpoints.guided_revisions[0][3] == "architect"
 
 
-async def test_finalize_tool_result_document_feedback_accept_finalizes_document() -> None:
-    import json
-
-    engine = _base_engine()
-    finalized: list[str] = []
-
-    async def _finalize_document(path: str) -> None:
-        finalized.append(path)
-
-    engine._finalize_document = _finalize_document
-    output = {"status": "recorded", "path": "specs/a.md"}
-
-    await engine._finalize_tool_result(
-        "tu_1", "document_feedback", {"path": "specs/a.md", "accept": True}, json.dumps(output)
-    )
-
-    assert finalized == ["specs/a.md"]
-
-
-async def test_finalize_tool_result_document_feedback_reject_does_not_finalize() -> None:
-    import json
-
-    engine = _base_engine()
-    finalized: list[str] = []
-
-    async def _finalize_document(path: str) -> None:
-        finalized.append(path)
-
-    engine._finalize_document = _finalize_document
-    output = {"status": "recorded", "path": "specs/a.md"}
-
-    await engine._finalize_tool_result(
-        "tu_1",
-        "document_feedback",
-        {"path": "specs/a.md", "accept": False, "concerns": [{"kind": "x", "description": "y"}]},
-        json.dumps(output),
-    )
-
-    assert finalized == []
-
-
 async def test_finalize_tool_result_noncompliant_output_emits_incompliant_event() -> None:
     import json
 
@@ -1050,7 +1009,9 @@ def _entry_agent_engine(*, gateway: _FakeGateway | None = None) -> WorkflowEngin
     engine._registry = SimpleNamespace(
         get=lambda name, autonomous=False: SimpleNamespace(
             name=name, capability="medium", tools=frozenset(), system_prompt="sys"
-        )
+        ),
+        run_subagent_specs=lambda caller: [],
+        return_result_specs=lambda name: [],
     )
     engine._session = SessionState(session_id="s1")
     engine._session.effective_autonomous = False

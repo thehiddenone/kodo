@@ -17,16 +17,5 @@ REQUIREMENTS_CRITIC: SubAgentSpec = SubAgentSpec(
             "and decomposition decisions."
         ),
     ),
-    output_schema=critic_output(
-        [
-            "ambiguity",
-            "compound",
-            "missing_field",
-            "contradiction",
-            "uncaptured_assumption",
-            "gap",
-            "scope_creep",
-            "north_star_misalignment",
-        ]
-    ),
+    output_schema=critic_output(),
 )

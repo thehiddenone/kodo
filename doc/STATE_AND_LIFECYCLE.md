@@ -72,7 +72,7 @@ There is no artifact type → directory mapping anymore, and no toolchain-driven
 **The four jsonl entry types** (one append-only line each; full schemas in `kodo.guided_state._records`):
 
 1. **`new_revision`** — engine-written, immediately after a `filesystem`/`edit_file`/`create_file`/`create_directory` call's checkpoint commit lands under a tracked root. Carries `commit_hash`, `author` (the agent name), `tool`, and `workflow: "guided"|"problem_solving"`. Fired in **both** workflow modes whenever the touched path is tracked under the *bound* project — a Problem-Solver edit of a tracked file is recorded too, so the Guide can reconcile state once Guided mode resumes. This is the only entry type Problem Solver ever produces.
-2. **`feedback`** — written by the `document_feedback` tool (critics only): `reviewer`, `accept: bool`, `concerns` (the same shape every critic already uses), `summary`.
+2. **`feedback`** — written by the engine when a critic sub-agent returns its verdict (`_record_review_verdict`; critics only, gated on the callee's `role: critic`): `reviewer`, `accept: bool`, `concerns`, `summary` — exactly the critic's own `return_result` payload.
 3. **`review_result`** — engine-written only, never via a dispatched tool: the user's `decision: "approve"|"reject"` from the interactive document-review gate, plus `comment`.
 4. **`accepted`** — engine-written only: the final marker. `commit_hash` is **copied from the immediately preceding `new_revision`** — acceptance never produces a new commit.
 
@@ -95,7 +95,7 @@ No file outside those four entry types ever has a status query answered — `rea
 
 There is **no `ProjectIndex`, no in-memory catalog, and nothing reconstructed at
 bootstrap.** Every query about a document's state — `guided_dev_status` (the
-Guide's tool), `run_author_critic_iteration`'s verdict read, the interactive
+Guide's tool), the author/critic loop's verdict read, the interactive
 review gate — reads that one document's `.jsonl` log fresh, every time. This
 replaced the artifact system's `Workspace`/`ProjectIndex` entirely; there is no
 successor class hierarchy to learn, just the plain functions in
@@ -180,8 +180,8 @@ The model receives the same context it had before the crash. From its perspectiv
 
 Because every tool now flushes its `tool_use` before dispatch, a dangling call on resume may be *any* tool, not just a sub-agent spawn. The engine resolves each pending call by kind (`_resume_main_turn`):
 
-- **Sub-agent spawns** (`run_subagent`, `run_author_critic_iteration`) are re-dispatched through the replay ledger (§4.3). This is safe because the ledger returns a completed subsession's stored result rather than re-running it, and only the single active subsession is driven live.
-- **`ask_user` / `escalate_blocker`** are re-dispatched for real: their only "side effect" is asking the present user, so the question batch is re-fired and answered from scratch. Nothing the user had entered before the crash is stored anywhere, so there is nothing to restore — this is the designed behaviour, not a gap.
+- **Sub-agent spawns** (`run_subagent`, in any `run_subagent_<name>` form) are re-dispatched through the replay ledger (§4.3). This is safe because the ledger returns a completed subsession's stored result rather than re-running it, and only the single active subsession is driven live.
+- **`ask_user`** is re-dispatched for real: its only "side effect" is asking the present user, so the question batch is re-fired and answered from scratch. Nothing the user had entered before the crash is stored anywhere, so there is nothing to restore — this is the designed behaviour, not a gap.
 - **Every other tool** (`filesystem`, `edit_file`, `create_file`, `create_directory`, `run_command`, read-only tools, …) is **not** re-executed. Its side effects may already have landed before the interruption and there is no per-tool dedup ledger to reconcile against, so re-running could duplicate a shell command or a file write. Instead the engine synthesizes a stand-in `tool_result` — an `error` envelope keyed to the original `tool_use_id` (`_interrupted_tool_result`) — telling the model the call did not complete and was not retried, so the transcript stays well-formed and the model can decide whether to re-issue it. The failure envelope reads back as a failure via `tool_result_succeeded` and renders with a failure badge.
 
 Resume fires whenever a dangling `tool_use` is present, independent of whether a project is bound (the project bind still happens first when one was persisted, since sub-agent-spawn replay and checkpointing need its layout).
@@ -237,7 +237,7 @@ This is the happy path: user opens a project in VS Code with a previously initia
 4. Extension sends `hello`; server responds with `hello.ack` embedding the current state snapshot (WS_PROTOCOL.md §4.1).
 5. Extension renders the Kodo panel from the state snapshot.
 6. The engine drives whatever was found:
-   - **Session existed and was resumed** — the engine loads `transient.json` and replays `session.jsonl` to restore the message history (§4.1), then resumes the next turn, resolving any pending tool call per §4.4 (a spawn is replayed; an `ask_user`/`escalate_blocker` question batch is re-asked from scratch; any other in-flight tool is stubbed as interrupted). The Guide's next turn happens automatically; the user sees its `agent.tokens` stream and whichever side effect it produces (a sub-agent spawning, a prompt appearing, a file landing).
+   - **Session existed and was resumed** — the engine loads `transient.json` and replays `session.jsonl` to restore the message history (§4.1), then resumes the next turn, resolving any pending tool call per §4.4 (a spawn is replayed; an `ask_user` question batch is re-asked from scratch; any other in-flight tool is stubbed as interrupted). The Guide's next turn happens automatically; the user sees its `agent.tokens` stream and whichever side effect it produces (a sub-agent spawning, a prompt appearing, a file landing).
    - **Session was freshly created** — the engine issues its first turn with a "cold start" event. The Guide decides what to do: most commonly, no Narrative document present → drive intake by sending a `prompt.question` asking the user to describe what to build (WS_PROTOCOL.md §6.1, §7.1).
 
 No engine-level branch table selects "what to do next" — that table lives in the Guide's prompt. The engine's job at startup is just to put the Guide in a position to decide (now backed by `guided_dev_status` instead of an index summary).
@@ -278,16 +278,16 @@ There is no orphan-artifact case anymore — a document is just a file, and a fi
 
 ## 8. Document acceptance — no promotion step
 
-Acceptance fires per document, after a critic calls `document_feedback(path, accept=True, concerns=[])`. There is **no promotion** — the document was already a real file the moment its author wrote it; there is nothing to materialize, no toolchain to consult for a target path, no sidecar to write.
+Acceptance fires per document, after a critic sub-agent returns `{path, accept: true, concerns: []}` and the engine records it. There is **no promotion** — the document was already a real file the moment its author wrote it; there is nothing to materialize, no toolchain to consult for a target path, no sidecar to write.
 
 ### 8.1 Mechanism
 
-The engine's post-dispatch hook (right where `checkpoint_sha` is already injected into a tool's result, see INTERNALS.md §12.1) watches for a successful `document_feedback` call with `accept: true` and calls `_finalize_document(path)`:
+`_record_review_verdict` — which `_drive_subsession` calls for every agent declaring `role: critic`, right after its `return_result` payload is normalized — appends the `feedback` entry and then, on `accept: true`, calls `_finalize_document(path)`:
 
 1. **Autonomous mode** — immediately append an `accepted` entry to the document's `.jsonl` log, reusing the most recent `new_revision`'s `commit_hash`.
-2. **Interactive mode** — fire the same approval gate the old `request_user_review_artifact` tool used to, now driven by the engine directly (no tool indirection). On agreement: append `review_result` (`decision: "approve"`) then `accepted`. On feedback: append `review_result` (`decision: "reject"`, the user's comment) — no `accepted` entry; the next `run_author_critic_iteration` round on that path picks this up as `needs_revision`.
+2. **Interactive mode** — fire the same approval gate the old `request_user_review_artifact` tool used to, now driven by the engine directly (no tool indirection). On agreement: append `review_result` (`decision: "approve"`) then `accepted`. On feedback: append `review_result` (`decision: "reject"`, the user's comment) — no `accepted` entry; the enclosing author/critic loop re-reads the log, sees `needs_revision`, and spends another round on it.
 
-A critic never decides what happens after `accept: true` — it has no further obligation once it calls `document_feedback`.
+A critic never decides what happens after `accept: true` — it has no further obligation once it returns. It holds no tool that writes to the log; the engine owns that side of the contract entirely.
 
 ### 8.2 The unified checkpoint mirror
 
@@ -312,11 +312,11 @@ The user's VCS sees a large file-change set and decides how to record it. Kodo d
 | Concern | Owner | Notes |
 |---|---|---|
 | Deciding what runs next | Guide sub-agent | Drives every sub-agent invocation via its tool surface. |
-| Hosting the Guide's tool surface | `kodo.tools` (dispatch) + `kodo.runtime._engine` (services) | `guided_dev_status`, `run_subagent`, `run_author_critic_iteration`, `ask_user`, `rollback`, `finalize_project`. `ask_user` is dropped from the surface in autonomous mode. |
+| Hosting the Guide's tool surface | `kodo.tools` (dispatch) + `kodo.runtime._engine` (services) | `guided_dev_status`, one `run_subagent_<name>` per invocable sub-agent, `ask_user`, `rollback`, `finalize_project`. `ask_user` is dropped from the surface in autonomous mode. |
 | Author/Critic iteration cap and bail logic | Guide's system prompt | Cap (5) and judgment rules live in the prompt, not the engine. |
 | Per-document evolution log | `kodo.guided_state` | Pure functions: append/read each document's `.jsonl` log; status always derived from the last line. No in-memory index. |
 | Checkpoint mirror (both workflow modes) | `kodo.mirror.ShadowMirror` + `runtime._checkpoints.RootMirrorManager` | Real `GIT_DIR`/`GIT_WORK_TREE` split over the actual project tree; commits after every mutating tool call. |
-| Document acceptance / review gate | Engine (`_finalize_document`, `runtime._engine`) | Triggered from the post-dispatch hook after `document_feedback(accept: true)`; no tool fires this — autonomous mode auto-accepts, interactive mode drives the approval gate directly. |
+| Document acceptance / review gate | Engine (`_finalize_document`, `runtime._engine`) | Triggered by `_record_review_verdict` when a critic returns `accept: true`; no tool fires this — autonomous mode auto-accepts, interactive mode drives the approval gate directly. |
 | Session log append (Guide and sub-agents) | Engine (LLM call wrapper) | Append-before-respond invariant (§4.2). |
 | Session rehydration | Engine | Reads session log, computes resume point, resolves pending tool call (spawn replayed, `ask_user` re-asked from scratch, other tools stubbed). |
 | Context compaction | Runtime (`runtime/_engine/`, `compactor` sub-agent) | Auto-triggers at 90% of the current model's context window (or manual `compact.now`, or a switch to a smaller-window model); summarises in place via a `compaction` marker; surfaces `context.stats` / `context.compacting` / `context.compacted` (§4.5). |

@@ -172,7 +172,7 @@ class WorkflowEngine(
         address the same logical-root folder map (:class:`SessionWorkspace`),
         populated by ``workspace.folders`` pushes and by
         ``scaffold_new_project``. Guided-only tools
-        (``guided_dev_status``, ``document_feedback``, ``rollback``) are
+        (``guided_dev_status``, ``rollback``) are
         unreachable until at least one root is bound, exactly like every
         ``requires_project`` tool in Problem Solver mode.
 
@@ -257,7 +257,6 @@ class WorkflowEngine(
             run_subagent=self._run_subagent,
             run_dependency_manager=self._run_dependency_manager,
             run_web_search_agent=self._run_web_search_agent,
-            run_author_critic=self._run_author_critic_iteration,
             rollback=self._run_rollback,
             disable_autonomous=self._disable_autonomous,
             create_project=self._create_project,
@@ -925,14 +924,15 @@ class WorkflowEngine(
     async def _finalize_document(self, path: str) -> None:
         """Drive the post-accept flow for a document a critic just approved.
 
-        Called only after ``document_feedback(accept=True)``. Autonomous mode
+        Called only after a critic returned ``accept: true`` (see
+        ``_record_review_verdict``). Autonomous mode
         auto-accepts immediately (mirroring every other gate when the user is
         away). Interactive mode fires the same approval gate
         ``request_user_review_artifact`` used to — now engine-driven — and
         records the user's decision: agreement writes ``review_result``
         (approve) then ``accepted``; feedback writes ``review_result``
-        (reject) only, which the next ``run_author_critic_iteration`` round
-        picks up as ``needs_revision``.
+        (reject) only, which the enclosing author/critic loop picks up as
+        ``needs_revision`` and spends another round on.
         """
         try:
             resolved = self._make_resolver(self._orch_session_id).resolve(path)

@@ -67,6 +67,12 @@ class _FakeRegistry:
     def spec_for(self, name: str):
         return None
 
+    def run_subagent_specs(self, caller: str) -> list[object]:
+        return []
+
+    def return_result_specs(self, name: str) -> list[object]:
+        return []
+
 
 def _make_engine(
     tmp_path: Path,

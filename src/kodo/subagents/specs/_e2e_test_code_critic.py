@@ -27,20 +27,5 @@ E2E_TEST_CODE_CRITIC: SubAgentSpec = SubAgentSpec(
             "injection, scenario tests), plus the accepted End-to-End Test Plan and the Tech Stack."
         ),
     ),
-    output_schema=critic_output(
-        [
-            "white_box_assertion",
-            "seam_bypass",
-            "over_mocked_system",
-            "non_behavioral_assertion",
-            "scenario_fidelity",
-            "flakiness",
-            "cleanup",
-            "security",
-            "anti_pattern",
-            "dead_code",
-            "naming",
-            "test_documentation",
-        ]
-    ),
+    output_schema=critic_output(),
 )

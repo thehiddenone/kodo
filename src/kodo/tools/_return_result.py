@@ -3,8 +3,12 @@
 Validates the ``result`` payload against the running sub-agent's
 ``output_schema`` (injected on the :class:`~kodo.tools.ToolContext`), stashes the
 normalized result on the context for the engine to read back, and ends the run by
-setting ``stop_requested`` (joining the same stop mechanism as
-``escalate_blocker``).
+setting ``stop_requested``.
+
+It is a sub-agent's **only** way out, so it carries both terminal outcomes: a
+normal result and — for an author whose schema declares the escalation fields —
+a blocker handed to whoever delegated the work (a non-empty ``reason``; see
+:mod:`kodo.subagents.specs._shapes`).
 """
 
 from __future__ import annotations

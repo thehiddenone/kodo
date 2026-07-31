@@ -1,7 +1,6 @@
 ---
 name: narrative_author
 display_name: Narrative Author
-solo: true
 capability: high
 tools:
   - filesystem

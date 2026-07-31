@@ -17,21 +17,5 @@ CODE_CRITIC: SubAgentSpec = SubAgentSpec(
             "peer code."
         ),
     ),
-    output_schema=critic_output(
-        [
-            "security",
-            "anti_pattern",
-            "dead_code",
-            "naming",
-            "error_handling",
-            "resource_leak",
-            "concurrency",
-            "logging",
-            "documentation",
-            "test_quality",
-            "over_mocking",
-            "test_documentation",
-            "cleanup",
-        ]
-    ),
+    output_schema=critic_output(),
 )

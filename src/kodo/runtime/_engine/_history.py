@@ -481,14 +481,6 @@ class HistoryProjector:
                         ),
                     }
                     out.append(entry)
-                    # escalate_blocker rides the question gate with the user's
-                    # free-text response in interactive mode; replay it as a
-                    # question panel *after* its card, matching the live order
-                    # (card at dispatch, panel when the gate fires).
-                    if name == "escalate_blocker":
-                        esc_entry = self._ask_user_entry(name, tool_use_id, tool_input, output)
-                        if esc_entry is not None:
-                            out.append(esc_entry)
         elif role == "user":
             text = "".join(
                 str(b.get("text", ""))
@@ -522,31 +514,10 @@ class HistoryProjector:
         still dangling (crash-resume re-drives it and the client re-attaches
         the live request by ``toolCallId``).
 
-        ``escalate_blocker`` also rides the question gate (one free-text-only
-        question carrying its summary); its panel is synthesized from the
-        persisted ``summary`` input and ``user_response`` output and rendered
-        *alongside* its generic card, not instead of it.
-
         Returns ``None`` when this block is not a renderable question panel
-        (malformed input, an error result, or an autonomous-mode escalation
-        that never asked) so the caller falls back to the card alone.
+        (malformed input or an error result) so the caller falls back to the
+        card alone.
         """
-        if name == "escalate_blocker":
-            summary = str(tool_input.get("summary", ""))
-            if not summary:
-                return None
-            if output is not None and not isinstance(output.get("user_response"), str):
-                return None
-            return {
-                "type": "ask_user",
-                "toolCallId": tool_use_id,
-                "questions": [{"question": summary, "kind": "single_choice", "options": []}],
-                "answers": (
-                    [{"selected": [], "free_text": output.get("user_response") or None}]
-                    if output is not None
-                    else None
-                ),
-            }
         if name != "ask_user":
             return None
         questions = tool_input.get("questions")

@@ -24,10 +24,10 @@ ARCHITECT: SubAgentSpec = SubAgentSpec(
                 "enum": ["applicable", "excluded"],
                 "description": (
                     "The Architect's end-to-end testability determination (Part 3 of the "
-                    "architecture document). The Guide reads the stage-8 gate from this value."
+                    "architecture document). The Guide reads the stage-8 gate from this value. "
+                    "Required unless you are escalating (see `reason`)."
                 ),
             },
         },
-        extra_required=["end_to_end_testable"],
     ),
 )

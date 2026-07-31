@@ -59,7 +59,7 @@ When you hold the `ask_user` tool, it is your only channel for questions, and it
 - **Never add a free-text option.** The UI automatically appends a free-text field as the last option of every question. Adding your own "Other", "free text", or "none of the above" option duplicates it.
 - **Pick the right kind.** `single_choice` when the answers are mutually exclusive (the user picks exactly one — an option or their free text); `multi_choice` when several can apply (they pick one or more).
 - **Act on the full set.** The user answers all questions at once and confirms; every answer echoes the chosen option texts and/or their free text. Incorporate the whole batch before proceeding. A follow-up `ask_user` call is justified only for questions the earlier answers *newly opened* — never to re-ask something an earlier answer already covered, even indirectly.
-- In autonomous mode the tool is withheld entirely: make the assumption you would have offered as the top choice, document it, or `escalate_blocker` if truly blocked.
+- In autonomous mode the tool is withheld entirely: make the assumption you would have offered as the top choice and document it — or, if your result schema declares a `reason` field, escalate the blocker through it rather than guessing.
 
 ## Drawing the User's Attention
 

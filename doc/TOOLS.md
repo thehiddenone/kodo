@@ -214,7 +214,7 @@ class ToolContext:
     agent_name: str               # the running agent (jsonl author/reviewer field)
     session_id: str
     mode: str = "problem_solving" # "guided" | "problem_solving" — frozen per prompt
-    stop_requested: bool = False                             # set by escalate_blocker
+    stop_requested: bool = False                             # set by return_result
     returned_output: dict[str, object] | None = None         # set by return_result
 
     @property
@@ -264,14 +264,14 @@ Protocols**, also defined in `_context.py`:
 - **`SessionLike`** — a settable `phase: str` plus a read `effective_autonomous:
   bool`. Runtime's `SessionState` matches.
 - **`EngineServices`** — **one** protocol covering *every* engine-side operation
-  a tool can delegate upward: `run_subagent(caller, ...)`,
+  a tool can delegate upward: `run_subagent(caller, name, task_input, max_rounds)`
+  (one pass, or the whole author/critic loop when the named sub-agent declares
+  a `critic:` — §5A),
   `run_dependency_manager(task_input)` (ungated `toolchain_depsmgr` spawn for
   `toolchain_deps`), `run_web_search_agent(task_input)` (ungated *silent,
   multi-round tool-calling* `web_search` agent turn — no subsession, since
   `web_search` is typically called from a sub-agent; doc/WEB_SEARCH.md),
-  `run_author_critic_iteration(caller, ...,
-  path, input_paths, instructions,
-  for_revision)`, `rollback(...)`, `disable_autonomous_mode(...)`,
+  `rollback(...)`, `disable_autonomous_mode(...)`,
   `create_project(name)`, `init_project(path)`, `bootstrap_project(name)`, and the three **live
   workspace-state reads** `has_workspace()`, `root_paths()`, `project_root()`
   — synchronous, called fresh on every access (never memoized) by
@@ -282,8 +282,9 @@ Protocols**, also defined in `_context.py`:
   `_create_project` / `_init_project` / `_has_workspace` / `_root_paths` /
   `_project_root` methods. There is deliberately **no** `complete_artifact`-
   style method: the accept/review flow (`_finalize_document`) is purely
-  engine-internal, triggered from a post-dispatch hook after a
-  `document_feedback` call — never through a tool or a protocol indirection.
+  engine-internal, triggered by the engine when a critic sub-agent returns an
+  accepting verdict (`_record_review_verdict`) — never through a tool or a
+  protocol indirection.
   All three back the single `scaffold_new_project` tool, dispatched on which
   input the agent gave: no `path` and no workspace yet → `bootstrap_project`
   (resolves a workspace-home folder — interactively or, in autonomous mode,
@@ -396,6 +397,135 @@ is the resolver-side half of the `has_workspace` liveness fix described in §5.
 
 ---
 
+## 5A. Sub-agents as tools: `run_subagent_<name>` and `return_result`
+
+A sub-agent is "a tool with agentic behavior": its
+[`SubAgentSpec`](../src/kodo/subagents/_subagentspec.py) declares an
+`input_schema` (what the caller supplies) and an `output_schema` (what it
+returns via `return_result`), exactly as a `ToolSpec` does. Both of those
+schemas reach the model as **real JSON Schema on a real tool definition** —
+never as prose a prompt has to restate.
+
+### One tool per sub-agent
+
+A caller does not get a generic `run_subagent(name, task_input)` with an opaque
+`task_input: {"type": "object"}`. It gets one tool per sub-agent it may invoke,
+each declaring that sub-agent's own fields, flattened to the top level:
+
+```
+run_subagent_coder(instructions, input_paths, responsibility_code,
+                   project_code, for_revision_path, max_rounds)
+```
+
+`AgentRegistry.run_subagent_specs(caller)` mints them from the caller's
+`subagents:` allow-list. A **critic** (`role: critic`) is skipped: no caller
+ever spawns one, so no tool is minted for it.
+
+### The canonical form
+
+`RUN_SUBAGENT` still exists in the catalog, but is never offered to a model. It
+is what every variant call is folded back to by
+[`canonical_tool_call`](../src/kodo/tools/_dispatch.py), once, at the top of
+`_dispatch_tool_calls`:
+
+```
+("run_subagent_coder", {"instructions": "...", "max_rounds": 3})
+  → ("run_subagent", {"name": "coder",
+                      "task_input": {"instructions": "..."},
+                      "max_rounds": 3})
+```
+
+Everything downstream of that line — the security gate, checkpoint
+prepare/commit, the tool-call logger, the tool-call card and its detail rows,
+result normalization, and crash-resume's re-dispatch ledger — stays keyed on
+the single catalog entry, so adding a sub-agent adds no work anywhere else.
+`max_rounds` is lifted *out* of the flattened input: it is the engine's loop
+budget, not part of the sub-agent's task.
+
+### A call may be a whole review loop
+
+Whether one call is one pass or a full author/critic loop is decided by the
+**callee's** frontmatter, never by the caller. A sub-agent that declares
+`critic: <name>` gets the loop contract: its tool takes an optional
+`max_rounds` (default 5, hard cap 10) and its declared output carries a
+`review` block. `_run_review_loop` then spawns the author, hands its
+`primary_path` to the critic, and re-runs the author with the concerns rendered
+into its `instructions` and `for_revision_path` set — until:
+
+| `review.outcome` | Meaning |
+| --- | --- |
+| `accepted` | the log says `accepted`/`pending_acceptance`; the file is settled |
+| `max_rounds` | budget spent with concerns outstanding |
+| `escalated` | the author returned a non-empty `reason`: a blocker no revision fixes. The critic is not spawned and no further round is spent (see *An author's escalation* below) |
+| `not_converging` | a round's concern count failed to drop, so the engine stopped early rather than orbit to the cap |
+| `not_reviewed` | the author reported no `primary_path` to review |
+
+The **evolution log is authoritative**, not the critic's return value: the
+user's own review decision lands there too (see §5A below on verdicts) and can
+turn an accepted file back into one needing revision, which the loop then
+spends another round on.
+
+### An author's escalation
+
+`return_result` is a sub-agent's **only** way out, so it carries both terminal
+outcomes. An author blocked on something it cannot defensibly resolve — inputs
+that leave a required decision undetermined, two documents that contradict each
+other, an exhausted iteration cap — returns an **escalation** instead of a
+normal result: a non-empty `reason` (a short identifier of the blocker), the
+blocking `summary` in place of the usual "what I produced" line, and `options`
+when the decision is between discrete alternatives.
+
+The fields are built by
+[`author_output()`](../src/kodo/subagents/specs/_shapes.py) and reach the model
+on `return_result`'s `result` parameter like everything else. The prompt half is
+the shared `base_escalation.md` snippet, opted into per agent through
+`bases: escalation` — the two must ship together, and a test asserts they do.
+Only `summary` is *schema*-required for such an author: one blocked before it
+wrote anything has no `primary_path`, and a backfilled required field would mark
+the escalation `schema_compliance: false` — the engine's "this sub-agent failed"
+signal, which an escalation is not.
+
+Nothing dispatches: the escalation *is* the sub-agent's return, so it reaches
+the caller as that `run_subagent_<name>` call's result. `_run_review_loop`
+checks it via `_escalation_reason()` (non-empty `reason` — emptiness is the
+test, since `normalize_output` backfills with `""`) and stops on the spot with
+`review.outcome: "escalated"`. Resolving it belongs to the **caller**, not the
+engine: the Guide puts it to the user with `ask_user` in interactive mode,
+decides it itself in autonomous mode, and either way sends the resolution back
+by re-running the stage with it written into `instructions`.
+
+> This replaces the retired `escalate_blocker` tool, which set `stop_requested`
+> without ever setting a result — so a blocked sub-agent handed its caller
+> nothing but a `{schema_compliance: false}` failure, and its interactive
+> question gate asked the user directly from inside a subsession the caller
+> could not see.
+
+### A critic's verdict
+
+`return_result` is specialized per agent — `result` is bound to that agent's
+`output_schema` — so a critic's terminal call *is* its verdict:
+`{path, accept, concerns, summary}`. There is no separate reporting tool; the
+retired `document_feedback` declared this exact shape, and having a critic
+report the same review twice was the redundancy this replaced.
+
+The engine records it in `_drive_subsession`, gated on the callee's explicit
+`role: critic` (never inferred from the result's shape), by calling
+`_record_review_verdict`: append the `feedback` entry to the reviewed file's
+`.jsonl` log, then — on `accept: true` — drive `_finalize_document`, which
+auto-accepts in autonomous mode and otherwise fires the user's sign-off gate.
+Recording it at subsession end rather than mid-run covers both a fresh spawn
+and one resumed after a crash, while a *completed* subsession replayed from the
+ledger returns its stored result without re-running and so cannot double-write.
+
+Each critic's **concern vocabulary is prose** in its own prompt
+(`### Concern vocabulary`), not a schema `enum`: the catalogue needs per-kind
+explanations and routing rules a bare enum cannot carry, and nothing ever
+enforced the enum anyway (`normalize_output` validates declared keys and
+required fields, never value constraints). The `kind` field's description
+points at that section.
+
+---
+
 ## 6. How tools reach the LLM, and how a call comes back
 
 Tools are passed to the model **as a separate API parameter**, never embedded in
@@ -441,16 +571,37 @@ agent (the guide included) is granted exactly the tools its frontmatter
 `tools:` list declares. Two consumers turn that list into reality:
 
 **(a) The LLM-facing tool list.** The engine calls
-[`tools_for_agent(agent.tools)`](../src/kodo/tools/_dispatch.py):
+[`agent_tool_specs(registry, agent)`](../src/kodo/runtime/_agenttools.py), which
+resolves the declared names through
+[`tools_for_agent`](../src/kodo/tools/_dispatch.py):
 
 ```python
-def tools_for_agent(tool_names: frozenset[str]) -> list[ToolSpec]:
-    return [DISPATCHABLE_TOOLS_BY_NAME[n] for n in tool_names if n in DISPATCHABLE_TOOLS_BY_NAME]
+def tools_for_agent(
+    tool_names: frozenset[str],
+    replacements: Mapping[str, Sequence[ToolSpec]] | None = None,
+) -> list[ToolSpec]:
+    ...  # a name in `replacements` expands to those specs; otherwise catalog lookup
 ```
 
 It takes **tool names** (`frozenset[str]`), not a `SubAgent` — that would be an
 upward import into T3. Names with no handler are skipped. Each surviving spec is
 serialized by `tool_description()` (§3) into the API `tools` parameter.
+
+Two names never resolve from the catalog, because their real schema is only
+knowable once you know *which* agent is running (§5A):
+
+| Declared name | Expands to |
+| --- | --- |
+| `run_subagent` | one `run_subagent_<name>` tool per sub-agent this agent may invoke, each declaring **that sub-agent's** `input_schema` inline |
+| `return_result` | the same tool with `result` bound to **this agent's** `output_schema` |
+
+Both expansions come from `AgentRegistry` (`run_subagent_specs` /
+`return_result_specs`), which lives in `kodo.subagents` — a *sibling* of
+`kodo.tools` at T3, so neither may import the other. `agent_tool_specs` is the
+join, one tier up in `runtime`, and it is the **only** place any caller builds a
+tool payload: the live turn loop, crash-resume, sub-agent subsessions, the
+silent engine-driven turns, and `kodo --tools` all go through it, so the surface
+a model sees cannot differ by code path.
 
 **(b) Load-time validation.** Independently,
 [subagents/_registry.py](../src/kodo/subagents/_registry.py) checks every
@@ -474,13 +625,16 @@ To see for yourself what an agent's prompt does and does not contain, print the
 real thing:
 
 ```bash
-python -m kodo.llms --system-prompt claude-opus-5 guide
+python -m kodo --system-prompt claude-opus-5 guide
 ```
 
-That CLI ([llms/__main__.py](../src/kodo/llms/__main__.py), INTERNALS.md §9)
-renders through `AgentRegistry.get` — the same call the engine makes — so its
-output is the prompt byte for byte. `test/test_llms_main.py` runs it over every
-packaged agent and asserts none of them grew a `## Tools` section.
+That CLI ([__main__.py](../src/kodo/__main__.py), INTERNALS.md §9a) renders
+through `AgentRegistry.get` — the same call the engine makes — so its output is
+the prompt byte for byte. `test/test_main.py` runs it over every packaged agent
+and asserts none of them grew a `## Tools` section. The same CLI's `--tools`
+command prints the other half — the agent's `tools=[...]` payload exactly as
+submitted to the OpenAI-compatible client — via the same production plumbing
+(`kodo.llms.llamacpp.build_openai_tools`).
 
 ---
 
@@ -498,9 +652,9 @@ A tool can also declare `autonomous_mode="auto-accepted …"` for a spec whose
 *handler* short-circuits on `ctx.session.effective_autonomous` and synthesizes
 its response instead of blocking on the gate — no tool does today, since the
 one example (the former `request_user_review_artifact`) moved into the
-engine: `_finalize_document` (triggered after `document_feedback`, not a
-dispatched tool) checks `effective_autonomous` itself and either auto-accepts
-or fires the gate. The mechanism remains available for a future tool that
+engine: `_finalize_document` (triggered by `_record_review_verdict` when a
+critic returns `accept: true`, not by a dispatched tool) checks
+`effective_autonomous` itself and either auto-accepts or fires the gate. The mechanism remains available for a future tool that
 needs it.
 
 > **Where `effective_autonomous` comes from.** The user-facing toggle sets
@@ -525,7 +679,7 @@ and embedded by each mutating spec, so the instructions can never drift
 between tools.
 
 - **Exempt:** tools that mutate only *through other agents* —
-  `run_subagent`, `run_author_critic_iteration`, `toolchain_deps` — because
+  `run_subagent` (in any of its `run_subagent_<name>` forms), `toolchain_deps` — because
   the spawned agent's own first-degree calls carry their own intents;
   `toolchain_build` (it only executes the project's generated build scripts);
   and everything read-only or session-state-only.
@@ -619,7 +773,7 @@ Inside the loop:
 │       collect {"type":"tool_result","tool_use_id":id,"content":result} │
 │   append one user message carrying all tool_result blocks to messages  │
 │                                                                        │
-│   if stop_after_tools():  BREAK     ← e.g. escalate_blocker fired       │
+│   if stop_after_tools():  BREAK     ← e.g. return_result fired          │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -666,8 +820,8 @@ author that writes a file:
    │  …reasons, calls next tool…
 ```
 
-The gate-backed tools (`ask_user`, `escalate_blocker`) follow the same path
-but their handler `await`s `ctx.gate.fire_*`, which sends a `kind=request`
+The gate-backed tool `ask_user` follows the same path
+but its handler `await`s `ctx.gate.fire_*`, which sends a `kind=request`
 frame to the VS Code client and
 blocks on a future until the user responds — see
 [INTERNALS.md §15 "User gate"](INTERNALS.md).
@@ -684,9 +838,7 @@ the user navigates the boxes, revises selections freely, and answers land
 only on *Confirm and Send*. The confirmed panel freezes read-only and is
 rebuilt after a reload purely from the persisted `tool_use` (questions) +
 `tool_result` (answers) — only the tool call and its result ever reach LLM
-context. A crash mid-answer re-drives the whole batch (SESSIONS.md);
-`escalate_blocker`'s interactive prompt rides the same gate as a single
-free-text-only question (`options: []`).
+context. A crash mid-answer re-drives the whole batch (SESSIONS.md).
 
 ---
 

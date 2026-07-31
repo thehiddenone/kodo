@@ -3,8 +3,9 @@
 Replaces the old artifact-promotion integration test. Exercises
 ``WorkflowEngine._finalize_document`` (the autonomous-auto-accept vs.
 interactive-gate behavior that replaced ``__complete_artifact``) and
-``WorkflowEngine._run_author_critic_iteration`` (retargeted to operate on a
-real file path instead of an artifact ID) directly, the same
+``WorkflowEngine._run_review_loop`` / ``._record_review_verdict`` (the
+engine-driven author/critic loop and the verdict recording that replaced the
+``document_feedback`` tool) directly, the same
 ``object.__new__(WorkflowEngine)`` + minimal-stub pattern already used by
 ``test_resume_ledger.py`` — these are private engine methods with no public
 surface, so driving them directly is the only way to cover this logic without
@@ -17,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from kodo.guided_state import append_new_revision, read_history, read_status
+from kodo.guided_state import append_feedback, append_new_revision, read_history, read_status
 from kodo.project import ProjectLayout
 from kodo.runtime import ApprovalResponse, SessionState
 from kodo.runtime._checkpoints import RootMirrorManager
@@ -156,13 +157,9 @@ async def test_finalize_document_interactive_feedback_records_rejection_only(
 
 
 @pytest.mark.asyncio
-async def test_run_author_critic_iteration_uses_authors_reported_primary_path(
-    tmp_path: Path,
-) -> None:
+async def test_review_loop_uses_authors_reported_primary_path(tmp_path: Path) -> None:
     gate = _FakeGate()
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
-    engine._assert_can_spawn = lambda *a, **k: None
-
     doc = _seed_revision(tmp_path, "specs/architecture.md", sha="sha-3")
 
     calls: list[tuple[str, dict[str, object]]] = []
@@ -174,22 +171,20 @@ async def test_run_author_critic_iteration_uses_authors_reported_primary_path(
                 "primary_path": "proj/specs/architecture.md",
                 "paths": ["proj/specs/architecture.md"],
             }
-        # critic round: accept the document it was asked to review.
-        from kodo.guided_state import append_feedback
-
         append_feedback(
             doc, tmp_path, reviewer="architect_critic", accept=True, concerns=[], summary="ok"
         )
-        return {"verdict": "accepted", "concerns": []}
+        return {"path": "proj/specs/architecture.md", "accept": True, "concerns": []}
 
     engine._spawn_subagent = _fake_spawn
 
-    result = await engine._run_author_critic_iteration(
-        "guide", "architect", "architect_critic", "", {}, "Produce the architecture.", False
+    result = await engine._run_review_loop(
+        "architect", "architect_critic", {"instructions": "Produce the architecture."}, None
     )
 
-    assert result["path"] == "proj/specs/architecture.md"
-    assert result["status"] == "pending_acceptance"
+    assert result["primary_path"] == "proj/specs/architecture.md"
+    assert result["review"]["outcome"] == "accepted"
+    assert result["review"]["rounds"] == 1
     assert calls[0][0] == "architect"
     assert calls[1][0] == "architect_critic"
     # The critic was told to review the author's reported path, not asked to
@@ -198,15 +193,16 @@ async def test_run_author_critic_iteration_uses_authors_reported_primary_path(
 
 
 @pytest.mark.asyncio
-async def test_run_author_critic_iteration_revision_round_passes_for_revision_path(
-    tmp_path: Path,
-) -> None:
+async def test_review_loop_folds_concerns_into_next_rounds_instructions(tmp_path: Path) -> None:
+    """The caller writes its instructions once; the engine — not the caller —
+    appends each round's outstanding concerns and points ``for_revision_path``
+    at the file, which is the contract every author's input schema describes."""
     gate = _FakeGate()
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
-    engine._assert_can_spawn = lambda *a, **k: None
-    _seed_revision(tmp_path, "specs/architecture.md")
+    doc = _seed_revision(tmp_path, "specs/architecture.md")
 
     calls: list[tuple[str, dict[str, object]]] = []
+    concern_counts = iter([3, 2, 0])
 
     async def _fake_spawn(name: str, task_input: dict[str, object]) -> dict[str, object]:
         calls.append((name, task_input))
@@ -215,22 +211,263 @@ async def test_run_author_critic_iteration_revision_round_passes_for_revision_pa
                 "primary_path": "proj/specs/architecture.md",
                 "paths": ["proj/specs/architecture.md"],
             }
-        return {"verdict": "rejected", "concerns": [{"kind": "gap", "description": "x"}]}
+        n = next(concern_counts)
+        concerns = [
+            {"kind": "gap", "description": f"missing {i}", "first_line": i, "last_line": i}
+            for i in range(n)
+        ]
+        append_feedback(
+            doc,
+            tmp_path,
+            reviewer="architect_critic",
+            accept=not concerns,
+            concerns=concerns,
+            summary="",
+        )
+        return {
+            "path": "proj/specs/architecture.md",
+            "accept": not concerns,
+            "concerns": concerns,
+        }
 
     engine._spawn_subagent = _fake_spawn
 
-    await engine._run_author_critic_iteration(
-        "guide",
-        "architect",
-        "architect_critic",
-        "proj/specs/architecture.md",
-        {"feedback": "proj/specs/architecture.md"},
-        "Revise per the critic's concerns.",
-        True,
+    result = await engine._run_review_loop(
+        "architect", "architect_critic", {"instructions": "Produce the architecture."}, None
     )
 
-    author_task = calls[0][1]
-    assert author_task["for_revision_path"] == "proj/specs/architecture.md"
+    assert result["review"]["outcome"] == "accepted"
+    assert result["review"]["rounds"] == 3
+
+    author_rounds = [task for name, task in calls if name == "architect"]
+    # Round 1 gets the caller's brief untouched, with no revision target.
+    assert author_rounds[0]["instructions"] == "Produce the architecture."
+    assert "for_revision_path" not in author_rounds[0]
+    # Round 2 keeps the brief and adds the concerns plus the file to revise.
+    assert author_rounds[1]["instructions"].startswith("Produce the architecture.")
+    assert "## Concerns from review" in author_rounds[1]["instructions"]
+    assert "missing 0" in author_rounds[1]["instructions"]
+    assert author_rounds[1]["for_revision_path"] == "proj/specs/architecture.md"
+
+
+@pytest.mark.asyncio
+async def test_review_loop_stops_when_concerns_stop_decreasing(tmp_path: Path) -> None:
+    """Rounds that stop reducing findings are the signal to stop spending
+    budget, so the loop reports ``not_converging`` well short of ``max_rounds``
+    rather than orbiting until the cap."""
+    gate = _FakeGate()
+    engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
+    doc = _seed_revision(tmp_path, "specs/architecture.md")
+
+    async def _fake_spawn(name: str, task_input: dict[str, object]) -> dict[str, object]:
+        if name == "architect":
+            return {
+                "primary_path": "proj/specs/architecture.md",
+                "paths": ["proj/specs/architecture.md"],
+            }
+        concerns = [{"kind": "gap", "description": "same finding, every round"}]
+        append_feedback(
+            doc,
+            tmp_path,
+            reviewer="architect_critic",
+            accept=False,
+            concerns=concerns,
+            summary="",
+        )
+        return {"path": "proj/specs/architecture.md", "accept": False, "concerns": concerns}
+
+    engine._spawn_subagent = _fake_spawn
+
+    result = await engine._run_review_loop(
+        "architect", "architect_critic", {"instructions": "Produce it."}, 5
+    )
+
+    assert result["review"]["outcome"] == "not_converging"
+    assert result["review"]["rounds"] == 2  # stopped as soon as the count failed to drop
+    assert result["review"]["status"] == "needs_revision"
+
+
+@pytest.mark.asyncio
+async def test_review_loop_reports_max_rounds_when_budget_runs_out(tmp_path: Path) -> None:
+    gate = _FakeGate()
+    engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
+    doc = _seed_revision(tmp_path, "specs/architecture.md")
+    counts = iter([4, 3, 2, 1, 0])
+
+    async def _fake_spawn(name: str, task_input: dict[str, object]) -> dict[str, object]:
+        if name == "architect":
+            return {
+                "primary_path": "proj/specs/architecture.md",
+                "paths": ["proj/specs/architecture.md"],
+            }
+        concerns = [{"kind": "gap", "description": f"c{i}"} for i in range(next(counts))]
+        append_feedback(
+            doc,
+            tmp_path,
+            reviewer="architect_critic",
+            accept=False,
+            concerns=concerns,
+            summary="",
+        )
+        return {"path": "proj/specs/architecture.md", "accept": False, "concerns": concerns}
+
+    engine._spawn_subagent = _fake_spawn
+
+    # Concerns shrink every round, so only the caller's budget stops the loop.
+    result = await engine._run_review_loop(
+        "architect", "architect_critic", {"instructions": "Produce it."}, 2
+    )
+
+    assert result["review"]["outcome"] == "max_rounds"
+    assert result["review"]["rounds"] == 2
+
+
+@pytest.mark.asyncio
+async def test_review_loop_reports_not_reviewed_when_author_names_no_file(
+    tmp_path: Path,
+) -> None:
+    gate = _FakeGate()
+    engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
+    spawned: list[str] = []
+
+    async def _fake_spawn(name: str, task_input: dict[str, object]) -> dict[str, object]:
+        spawned.append(name)
+        return {"paths": [], "summary": "nothing written"}
+
+    engine._spawn_subagent = _fake_spawn
+
+    result = await engine._run_review_loop(
+        "architect", "architect_critic", {"instructions": "Produce it."}, None
+    )
+
+    assert result["review"]["outcome"] == "not_reviewed"
+    assert spawned == ["architect"]  # the critic is never spawned against nothing
+
+
+@pytest.mark.asyncio
+async def test_review_loop_stops_on_an_escalation_without_spawning_the_critic(
+    tmp_path: Path,
+) -> None:
+    """An author that returns a non-empty ``reason`` is blocked on something no
+    revision fixes, so the loop ends there: the critic is never spawned, no
+    further round is spent, and the escalation rides back on the result."""
+    gate = _FakeGate()
+    engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
+    spawned: list[str] = []
+
+    async def _fake_spawn(name: str, task_input: dict[str, object]) -> dict[str, object]:
+        spawned.append(name)
+        return {
+            "summary": "The Narrative does not say which system owns settlement.",
+            "reason": "insufficient_narrative_for_decomposition",
+            "options": ["Fold it into LEDGER", "Give it its own codename"],
+        }
+
+    engine._spawn_subagent = _fake_spawn
+
+    result = await engine._run_review_loop(
+        "architect", "architect_critic", {"instructions": "Produce it."}, 5
+    )
+
+    assert result["review"]["outcome"] == "escalated"
+    assert result["review"]["rounds"] == 1
+    assert spawned == ["architect"]
+    # The caller reads reason/summary/options straight off the result.
+    assert result["reason"] == "insufficient_narrative_for_decomposition"
+    assert result["options"] == ["Fold it into LEDGER", "Give it its own codename"]
+
+
+@pytest.mark.asyncio
+async def test_review_loop_treats_an_empty_reason_as_a_normal_result(tmp_path: Path) -> None:
+    """``reason`` is optional, and ``normalize_output`` backfills a missing
+    required field with ``""`` — so emptiness, not presence, is what marks a
+    result as *not* an escalation."""
+    gate = _FakeGate()
+    engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
+    doc = _seed_revision(tmp_path, "specs/architecture.md")
+    spawned: list[str] = []
+
+    async def _fake_spawn(name: str, task_input: dict[str, object]) -> dict[str, object]:
+        spawned.append(name)
+        if name == "architect":
+            return {
+                "primary_path": "proj/specs/architecture.md",
+                "paths": ["proj/specs/architecture.md"],
+                "reason": "   ",
+            }
+        append_feedback(
+            doc, tmp_path, reviewer="architect_critic", accept=True, concerns=[], summary="ok"
+        )
+        return {"path": "proj/specs/architecture.md", "accept": True, "concerns": []}
+
+    engine._spawn_subagent = _fake_spawn
+
+    result = await engine._run_review_loop(
+        "architect", "architect_critic", {"instructions": "Produce it."}, None
+    )
+
+    assert result["review"]["outcome"] == "accepted"
+    assert spawned == ["architect", "architect_critic"]
+
+
+# ---------------------------------------------------------------------------
+# _record_review_verdict — the engine-side replacement for document_feedback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_review_verdict_writes_feedback_entry(tmp_path: Path) -> None:
+    gate = _FakeGate()
+    engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
+    _seed_revision(tmp_path, "specs/architecture.md")
+
+    await engine._record_review_verdict(
+        "architect_critic",
+        {
+            "path": "proj/specs/architecture.md",
+            "accept": False,
+            "concerns": [{"kind": "gap", "description": "missing section"}],
+            "summary": "1 concern",
+        },
+    )
+
+    status = read_status(tmp_path / "specs" / "architecture.md", tmp_path)
+    assert status is not None
+    assert status["status"] == "needs_revision"
+    assert status["reviewer"] == "architect_critic"
+    assert status["concerns"] == [{"kind": "gap", "description": "missing section"}]
+
+
+@pytest.mark.asyncio
+async def test_record_review_verdict_accept_drives_the_acceptance_flow(tmp_path: Path) -> None:
+    """An accepting verdict must reach ``_finalize_document`` — the half of the
+    retired ``document_feedback`` tool that ran in ``_finalize_tool_result``."""
+    gate = _FakeGate()
+    engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
+    _seed_revision(tmp_path, "specs/architecture.md")
+
+    await engine._record_review_verdict(
+        "architect_critic",
+        {"path": "proj/specs/architecture.md", "accept": True, "concerns": [], "summary": "ok"},
+    )
+
+    # Autonomous mode auto-accepts, so the log ends on the acceptance marker.
+    history = read_history(tmp_path / "specs" / "architecture.md", tmp_path)
+    assert [e["type"] for e in history] == ["new_revision", "feedback", "accepted"]
+
+
+@pytest.mark.asyncio
+async def test_record_review_verdict_ignores_a_verdict_with_no_path(tmp_path: Path) -> None:
+    """A malformed verdict is dropped, not raised: the loop reads the file's log
+    for the real status, and an unrecorded verdict simply leaves it unsettled."""
+    gate = _FakeGate()
+    engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
+    _seed_revision(tmp_path, "specs/architecture.md")
+
+    await engine._record_review_verdict("architect_critic", {"accept": True, "concerns": []})
+
+    history = read_history(tmp_path / "specs" / "architecture.md", tmp_path)
+    assert [e["type"] for e in history] == ["new_revision"]
 
 
 # ---------------------------------------------------------------------------

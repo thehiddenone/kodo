@@ -15,11 +15,11 @@ import uuid
 from pathlib import Path
 
 from kodo.common import Envelope
-from kodo.guided_state import read_status
+from kodo.guided_state import append_feedback, read_status
 from kodo.llms import Message
 from kodo.subagents import AgentLoadError
-from kodo.tools import root_for, tools_for_agent
-from kodo.toolspecs import SCHEMA_COMPLIANCE_KEY
+from kodo.tools import root_for
+from kodo.toolspecs import MAX_ROUNDS_DEFAULT, SCHEMA_COMPLIANCE_KEY
 from kodo.transport import (
     EVT_REVIEW_STARTED,
     EVT_REVIEW_VERDICT,
@@ -27,6 +27,7 @@ from kodo.transport import (
     EVT_SUBSESSION_STARTED,
 )
 
+from .._agenttools import agent_tool_specs
 from ._proto import EngineHost
 from ._shared import (
     _DEPSMGR_AGENT_NAME,
@@ -40,7 +41,59 @@ from ._shared import (
 _DEFAULT_WEB_SEARCH_TIMEOUT_S = 180.0
 _MAX_WEB_SEARCH_TIMEOUT_S = 600.0
 
+# Author/critic rounds one ``run_subagent_<author>`` call may spend. The default
+# is what the Guide's prompt used to tell it to budget by hand; the hard cap
+# bounds a caller that asks for an absurd number, so a single tool call can never
+# turn into an unbounded spend. A loop that is not converging usually stops well
+# before either (see ``_run_review_loop``'s ``not_converging`` branch).
+_DEFAULT_MAX_REVIEW_ROUNDS = MAX_ROUNDS_DEFAULT
+_MAX_REVIEW_ROUNDS = 10
+
 _log = logging.getLogger(__name__)
+
+
+def _escalation_reason(output: dict[str, object]) -> str:
+    """The blocker a sub-agent escalated in *output*, or ``""`` when it did not.
+
+    A sub-agent escalates through its own ``return_result`` (there is no
+    ``escalate_blocker`` tool any more — see ``specs/_shapes.py``), and the
+    signal is a **non-empty ``reason``**: the field is optional and nullable, so
+    a normal result simply omits it. Emptiness is what's tested, not presence —
+    ``normalize_output`` backfills missing fields with ``""``, and a model that
+    volunteers ``reason: ""`` on a good result is not escalating either.
+    """
+    reason = output.get("reason")
+    return reason.strip() if isinstance(reason, str) else ""
+
+
+def _revision_instructions(base: str, concerns: list[dict[str, object]]) -> str:
+    """Render round N+1's ``instructions``: the original task, plus the concerns.
+
+    The caller writes its instructions once; the engine — not the caller — folds
+    each round's outstanding concerns in underneath, so an author revising its
+    work reads the same brief it started from *and* exactly what the critic
+    objected to, without the caller having to re-issue either.
+
+    Line references are included when the critic gave them, so the author can go
+    straight to the span rather than re-derive it.
+    """
+    lines = [
+        "## Concerns from review",
+        "",
+        "The reviewer rejected your previous revision. Address every concern below "
+        "in the file named as `for_revision_path`. Do not start over — revise.",
+        "",
+    ]
+    for concern in concerns:
+        kind = str(concern.get("kind", "concern"))
+        description = str(concern.get("description", "")).strip()
+        first, last = concern.get("first_line"), concern.get("last_line")
+        where = ""
+        if isinstance(first, int):
+            single = last is None or last == first
+            where = f" (line {first})" if single else f" (lines {first}-{last})"
+        lines.append(f"- **{kind}**{where} — {description}")
+    return f"{base}\n\n" + "\n".join(lines) if base else "\n".join(lines)
 
 
 class SubagentMixin:
@@ -82,9 +135,19 @@ class SubagentMixin:
                 )
 
     async def _run_subagent(
-        self: EngineHost, caller: str, name: str, task_input: dict[str, object]
+        self: EngineHost,
+        caller: str,
+        name: str,
+        task_input: dict[str, object],
+        max_rounds: int | None = None,
     ) -> dict[str, object]:
-        """Gate a caller's sub-agent spawn, then run it.
+        """Gate a caller's sub-agent spawn, then run it — with its critic, if any.
+
+        Two shapes, chosen by the *callee's* own frontmatter, never by the
+        caller: a sub-agent with no ``critic:`` runs once and returns its
+        result; a sub-agent that declares one runs the entire author→critic
+        loop (:meth:`_run_review_loop`) and returns its result plus a ``review``
+        block. The caller never names a critic and never iterates by hand.
 
         Args:
             caller: Agent making the call (the running agent — not assumed to be
@@ -92,15 +155,259 @@ class SubagentMixin:
             name: Sub-agent name from the registry.
             task_input: Structured task, conforming to the sub-agent's
                 ``input_schema``.
+            max_rounds: Caller's cap on author/critic rounds, or ``None`` for
+                :data:`_DEFAULT_MAX_REVIEW_ROUNDS`. Ignored when the sub-agent
+                has no critic.
 
         Returns:
-            dict: The sub-agent's structured result (its ``output_schema``).
+            dict: The sub-agent's structured result (its ``output_schema``),
+            plus ``review`` when a critic loop ran.
 
         Raises:
-            PermissionError: ``caller`` is not permitted to spawn ``name``.
+            PermissionError: ``caller`` is not permitted to spawn ``name`` (or,
+                for a reviewed sub-agent, its critic).
         """
         self._assert_can_spawn(caller, name)
-        return await self._spawn_subagent(name, task_input)
+        critic = self._critic_for(name)
+        if not critic:
+            return await self._spawn_subagent(name, task_input)
+        # The critic is spawned by the engine, but on this caller's behalf, so
+        # it is gated against the same allow-list — a caller may not reach a
+        # sub-agent it was never granted just because an author points at it.
+        self._assert_can_spawn(caller, critic)
+        return await self._run_review_loop(name, critic, task_input, max_rounds)
+
+    def _critic_for(self: EngineHost, name: str) -> str:
+        """The critic paired with sub-agent *name*, or ``""`` when it has none."""
+        try:
+            return self._registry.get(name).critic
+        except AgentLoadError:
+            return ""
+
+    async def _run_review_loop(
+        self: EngineHost,
+        author_name: str,
+        critic_name: str,
+        task_input: dict[str, object],
+        max_rounds: int | None,
+    ) -> dict[str, object]:
+        """Drive author→critic rounds until the file is settled or the budget ends.
+
+        One round is: spawn the author, hand its ``primary_path`` to the critic,
+        let the engine record the critic's verdict (:meth:`_record_review_verdict`,
+        which also fires the user's acceptance gate on an accept), then read the
+        file's evolution log — the *log* is authoritative, not the critic's
+        return value, because the user's own review decision lands there too and
+        can turn an accepted file back into one needing revision.
+
+        The loop stops on any of four things, reported as ``review.outcome``:
+
+        - ``accepted`` — the log says ``accepted``/``pending_acceptance``: the
+          critic accepted and (interactively) the user agreed.
+        - ``escalated`` — the author returned a non-empty ``reason``: it hit a
+          blocker it cannot defensibly resolve. The critic is **not** spawned
+          and no further round is spent — no amount of revision fixes a blocker
+          whose resolution lives outside the author (an unreconcilable
+          contradiction, insufficient inputs, an exhausted cap). The escalation
+          rides back on the result for the caller to act on.
+        - ``max_rounds`` — the budget ran out with concerns outstanding.
+        - ``not_converging`` — a round's concern count did not drop below the
+          previous round's. Rounds that stop reducing findings are the
+          documented signal to stop spending budget and surface the matter,
+          rather than orbit until the cap.
+
+        Each subsequent round re-sends the caller's original ``instructions``
+        with the outstanding concerns rendered underneath and
+        ``for_revision_path`` pointing at the file, which is exactly the
+        "revise the prior one per the listed concerns" branch every author's
+        input schema already describes.
+
+        Returns:
+            dict: The last round's author output, plus the ``review`` block
+            declared by ``run_subagent_<author>``'s output schema.
+        """
+        budget = max_rounds if isinstance(max_rounds, int) and max_rounds > 0 else None
+        budget = min(budget or _DEFAULT_MAX_REVIEW_ROUNDS, _MAX_REVIEW_ROUNDS)
+        base_instructions = str(task_input.get("instructions", ""))
+        path = str(task_input.get("for_revision_path") or "")
+
+        author_output: dict[str, object] = {}
+        concerns: list[dict[str, object]] = []
+        status = "pending_review"
+        outcome = "not_reviewed"
+        rounds = 0
+        previous_count: int | None = None
+
+        for _round in range(budget):
+            rounds += 1
+            round_task = dict(task_input)
+            if concerns:
+                round_task["instructions"] = _revision_instructions(base_instructions, concerns)
+                round_task["for_revision_path"] = path
+            author_output = await self._spawn_subagent(author_name, round_task)
+
+            # An escalation ends the loop where it stands: the author is telling
+            # its caller the blocker is not one more revision away, so sending it
+            # to the critic would only spend a round producing concerns nobody
+            # can act on. The result carries reason/summary/options straight back.
+            if _escalation_reason(author_output):
+                outcome = "escalated"
+                break
+
+            primary_raw = author_output.get("primary_path")
+            path = str(primary_raw) if isinstance(primary_raw, str) and primary_raw else path
+            if not path:
+                _log.warning("run_subagent: %s produced no primary_path", author_name)
+                outcome = "not_reviewed"
+                break
+
+            status, concerns = await self._run_review_round(critic_name, path)
+
+            if status in ("accepted", "pending_acceptance"):
+                outcome = "accepted"
+                break
+            # Findings that stop shrinking are the signal to stop spending
+            # rounds: another pass is unlikely to converge, and the caller can
+            # act on the outstanding concerns now rather than in five rounds.
+            if previous_count is not None and len(concerns) >= previous_count:
+                outcome = "not_converging"
+                break
+            previous_count = len(concerns)
+            outcome = "max_rounds"
+
+        _log.info(
+            "review loop finished: author=%s critic=%s rounds=%d outcome=%s status=%s concerns=%d",
+            author_name,
+            critic_name,
+            rounds,
+            outcome,
+            status,
+            len(concerns),
+        )
+        return {
+            **author_output,
+            "review": {
+                "status": status,
+                "outcome": outcome,
+                "rounds": rounds,
+                "concerns": concerns,
+            },
+        }
+
+    async def _run_review_round(
+        self: EngineHost, critic_name: str, path: str
+    ) -> tuple[str, list[dict[str, object]]]:
+        """Spawn *critic_name* against *path*; return its ``(status, concerns)``.
+
+        Both are read back from the file's ``.jsonl`` evolution log rather than
+        from the critic's own return value: :meth:`_record_review_verdict` has
+        already written the critic's verdict there, and on an accept it also ran
+        the user's acceptance gate, whose decision is the *later* entry and
+        therefore the real current state of the file.
+        """
+        await self._sink.send(
+            Envelope.make_event(
+                EVT_REVIEW_STARTED,
+                {
+                    "reviewer_name": critic_name,
+                    "target_filename": path,
+                    "target_type": "document",
+                },
+            )
+        )
+        await self._spawn_subagent(
+            critic_name, {"instructions": f"Review {path}.", "input_paths": {"target": path}}
+        )
+
+        status, concerns = "pending_review", []
+        resolved = self._make_resolver(self._orch_session_id).resolve(path)
+        owning_root = root_for(self._root_paths(), resolved)
+        if owning_root is None:
+            _log.warning("review round: %r is not under any bound root", path)
+        else:
+            entry = await asyncio.to_thread(read_status, resolved, Path(owning_root.path))
+            if entry:
+                status = str(entry["status"])
+                raw = entry.get("concerns")
+                concerns = [c for c in raw if isinstance(c, dict)] if isinstance(raw, list) else []
+
+        await self._sink.send(
+            Envelope.make_event(
+                EVT_REVIEW_VERDICT,
+                {
+                    "reviewer_name": critic_name,
+                    "target_filename": path,
+                    "verdict": status,
+                    "concern_count": len(concerns),
+                },
+            )
+        )
+        return status, concerns
+
+    async def _record_review_verdict(
+        self: EngineHost, reviewer: str, output: dict[str, object]
+    ) -> None:
+        """Write a finished critic's verdict to the reviewed file's evolution log.
+
+        The engine-side half of what the retired ``document_feedback`` tool used
+        to do from inside the critic's own run: append the ``feedback`` entry,
+        then — when the critic accepted — drive the acceptance flow
+        (:meth:`~._core.EngineCore._finalize_document`), which auto-accepts in
+        autonomous mode and otherwise asks the user to sign off.
+
+        Called from :meth:`_drive_subsession` for every agent whose frontmatter
+        declares ``role: critic``, so it applies to a critic reached through a
+        review loop *and* to one resumed mid-flight after a crash, but never to
+        a completed subsession being replayed from the ledger (that one returns
+        its stored result without re-running, and its entry is already on disk).
+
+        A malformed or empty verdict is logged and dropped rather than raised:
+        the loop reads the log for the real status, and a critic that failed to
+        report leaves the file ``pending_review``, which the loop already treats
+        as "not settled".
+        """
+        path = str(output.get("path", ""))
+        if not path:
+            _log.warning("critic %s returned no path; nothing recorded", reviewer)
+            return
+        accept = bool(output.get("accept", False))
+        raw = output.get("concerns")
+        concerns = [c for c in raw if isinstance(c, dict)] if isinstance(raw, list) else []
+        summary = str(output.get("summary", ""))
+        if not accept and not concerns:
+            _log.warning("critic %s rejected %r with no concerns", reviewer, path)
+
+        try:
+            resolved = self._make_resolver(self._orch_session_id).resolve(path)
+        except PermissionError as exc:
+            _log.warning("critic %s reported an unresolvable path %r: %s", reviewer, path, exc)
+            return
+        owning_root = root_for(self._root_paths(), resolved)
+        if owning_root is None:
+            _log.warning("critic %s reported %r, not under any bound root", reviewer, path)
+            return
+        try:
+            await asyncio.to_thread(
+                append_feedback,
+                resolved,
+                Path(owning_root.path),
+                reviewer=reviewer,
+                accept=accept,
+                concerns=concerns,  # type: ignore[arg-type]
+                summary=summary,
+            )
+        except ValueError as exc:
+            _log.info("critic %s verdict on %r not recorded: %s", reviewer, path, exc)
+            return
+        _log.info(
+            "critic %s recorded verdict on %s: accept=%s concerns=%d",
+            reviewer,
+            path,
+            accept,
+            len(concerns),
+        )
+        if accept:
+            await self._finalize_document(path)
 
     async def _run_dependency_manager(
         self: EngineHost, task_input: dict[str, object]
@@ -246,7 +553,7 @@ class SubagentMixin:
 
         The ungated spawn primitive: callers that have already passed the
         permission gate (:meth:`_run_subagent`, or
-        :meth:`_run_author_critic_iteration` which gates both names up front)
+        :meth:`_run_review_loop`, whose names were gated up front)
         drive a subsession through here.
 
         Args:
@@ -294,13 +601,13 @@ class SubagentMixin:
         (validated against its output schema); if it never called it, a bare
         ``{schema_compliance: False}`` fallback is synthesized — there is no
         artifact index to recover a partial result from, so the caller (e.g.
-        ``_run_author_critic_iteration``) just sees an empty result and treats
+        ``_run_review_loop``) just sees an empty result and treats
         it as if nothing happened.
         """
         agent = self._registry.get(name, self._session.effective_autonomous)
         plugin, model_id, routing = await self._resolve_plugin(agent.capability)
         dispatcher = self._make_dispatcher(name, subsession_id)
-        leaf_tools = tools_for_agent(agent.tools)
+        leaf_tools = agent_tool_specs(self._registry, agent)
 
         self._session.phase = "running"
         self._session.agent = name
@@ -359,6 +666,15 @@ class SubagentMixin:
             subsession_id,
             sorted(output.keys()),
         )
+        # A critic's result is not a value handed back to whoever spawned it —
+        # it is a verdict on a file, and the file's evolution log is where it
+        # belongs. Recording it here (rather than in the critic's own toolset,
+        # as the retired ``document_feedback`` did) keeps every spawn path
+        # covered: a review loop, and a critic subsession resumed mid-flight
+        # after a crash. Gated on the callee's explicit ``role: critic``, never
+        # inferred from the result's shape.
+        if agent.is_critic:
+            await self._record_review_verdict(name, output)
         return output
 
     async def _open_subsession(
@@ -541,102 +857,3 @@ class SubagentMixin:
             return self._registry.get(agent_name).display_name or agent_name
         except AgentLoadError:
             return agent_name
-
-    # ------------------------------------------------------------------
-    # Author/Critic iteration
-    # ------------------------------------------------------------------
-
-    async def _run_author_critic_iteration(
-        self: EngineHost,
-        caller: str,
-        author_name: str,
-        critic_name: str,
-        path: str,
-        input_paths: dict[str, str],
-        instructions: str,
-        for_revision: bool,
-    ) -> dict[str, object]:
-        """Execute one Author/Critic round over a real file.
-
-        Args:
-            caller: Agent making the call. Its frontmatter allow-list must permit
-                spawning both ``author_name`` and ``critic_name``; both are gated
-                up front so the inner spawns can use the ungated primitive.
-            author_name: Author sub-agent name.
-            critic_name: Critic sub-agent name.
-            path: The file to revise (required when ``for_revision``); ignored on
-                a fresh round, where the Author chooses its own path.
-            input_paths: Named collection of context files for the Author.
-            instructions: What the Author should do this round.
-            for_revision: True when ``path`` already exists and this round
-                revises it.
-
-        Returns:
-            dict: ``{path, status, concerns}`` — read from the target file's
-            jsonl evolution log after the Critic's ``document_feedback`` call.
-            The jsonl, not the Critic's ``return_result``, is authoritative
-            (the current state of a file is its log's last entry).
-
-        Raises:
-            PermissionError: ``caller`` may not spawn the author or the critic.
-        """
-        self._assert_can_spawn(caller, author_name, critic_name)
-        author_task: dict[str, object] = {
-            "instructions": instructions,
-            "input_paths": input_paths,
-            "for_revision_path": path if for_revision else None,
-        }
-        author_output = await self._spawn_subagent(author_name, author_task)
-        primary_raw = author_output.get("primary_path")
-        primary_path = str(primary_raw) if isinstance(primary_raw, str) and primary_raw else path
-
-        if not primary_path:
-            _log.warning("run_author_critic_iteration: %s produced no primary_path", author_name)
-            return {"path": "", "status": "pending_review", "concerns": []}
-
-        await self._sink.send(
-            Envelope.make_event(
-                EVT_REVIEW_STARTED,
-                {
-                    "reviewer_name": critic_name,
-                    "target_filename": primary_path,
-                    "target_type": "document",
-                },
-            )
-        )
-
-        critic_task: dict[str, object] = {
-            "instructions": f"Review {primary_path}.",
-            "input_paths": {"target": primary_path},
-        }
-        await self._spawn_subagent(critic_name, critic_task)
-
-        resolved = self._make_resolver(self._orch_session_id).resolve(primary_path)
-        owning_root = root_for(self._root_paths(), resolved)
-        if owning_root is None:
-            _log.warning(
-                "run_author_critic_iteration: %r is not under any bound root", primary_path
-            )
-            return {"path": primary_path, "status": "pending_review", "concerns": []}
-        status_entry = await asyncio.to_thread(read_status, resolved, Path(owning_root.path))
-        status = str(status_entry["status"]) if status_entry else "pending_review"
-        concerns_raw = status_entry.get("concerns") if status_entry else None
-        concerns = (
-            [c for c in concerns_raw if isinstance(c, dict)]
-            if isinstance(concerns_raw, list)
-            else []
-        )
-
-        await self._sink.send(
-            Envelope.make_event(
-                EVT_REVIEW_VERDICT,
-                {
-                    "reviewer_name": critic_name,
-                    "target_filename": primary_path,
-                    "verdict": status,
-                    "concern_count": len(concerns),
-                },
-            )
-        )
-
-        return {"path": primary_path, "status": status, "concerns": concerns}

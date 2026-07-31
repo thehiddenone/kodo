@@ -7,13 +7,24 @@ tool call — whoever makes it — is routed through a single
 
 :func:`tools_for_agent` resolves an agent's declared tool *names* to the
 ``ToolSpec`` objects passed to the LLM, skipping any name that has no tool
-class here (forward-compatibility with spec-only placeholders).
+class here (forward-compatibility with spec-only placeholders). Two names are
+resolved *dynamically* instead — ``run_subagent`` expands into one
+``run_subagent_<name>`` tool per invocable sub-agent, and ``return_result`` is
+bound to the running agent's own output schema — so callers pass those in
+through the ``replacements`` map; :func:`kodo.runtime.agent_tool_specs` is the
+one place that builds it.
+
+:func:`canonical_tool_call` is the inverse: it maps a ``run_subagent_<name>``
+call back to the canonical ``run_subagent`` shape before anything else in the
+engine sees it, so gating, checkpointing, logging, tool-call cards, and
+crash-resume all keep working against one stable tool name.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from kodo.toolspecs import (
@@ -21,9 +32,7 @@ from kodo.toolspecs import (
     CREATE_DIRECTORY,
     CREATE_FILE,
     DISABLE_AUTONOMOUS_MODE,
-    DOCUMENT_FEEDBACK,
     EDIT_FILE,
-    ESCALATE_BLOCKER,
     FILESYSTEM,
     FINALIZE_PROJECT,
     FIND_FILES,
@@ -32,6 +41,7 @@ from kodo.toolspecs import (
     GET_WEB_SEARCH_STATE,
     GUIDED_DEV_STATUS,
     INTENT_KEY,
+    MAX_ROUNDS_KEY,
     NO_PROJECT_ERROR,
     QUERY_SEARCH_ENGINE,
     READ_ATTACHMENT,
@@ -40,7 +50,6 @@ from kodo.toolspecs import (
     REMAINING_TIME,
     RETURN_RESULT,
     ROLLBACK,
-    RUN_AUTHOR_CRITIC_ITERATION,
     RUN_COMMAND,
     RUN_SUBAGENT,
     SCAFFOLD_NEW_PROJECT,
@@ -52,6 +61,7 @@ from kodo.toolspecs import (
     WEB_SEARCH,
     ToolSpec,
     requires_intent,
+    subagent_from_tool_name,
 )
 
 from ._ask_user import AskUserTool
@@ -66,10 +76,8 @@ from ._context import (
 from ._create_directory import CreateDirectoryTool
 from ._create_file import CreateFileTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
-from ._document_feedback import DocumentFeedbackTool
 from ._edit_file import EditFileTool, compute_new_content
 from ._edit_review import should_review_edit
-from ._escalate_blocker import EscalateBlockerTool
 from ._filesystem import FilesystemTool
 from ._finalize_project import FinalizeProjectTool
 from ._find_files import FindFilesTool
@@ -85,7 +93,6 @@ from ._read_webpage import ReadWebpageTool
 from ._remaining_time import RemainingTimeTool
 from ._return_result import ReturnResultTool
 from ._rollback import RollbackTool
-from ._run_author_critic_iteration import RunAuthorCriticIterationTool
 from ._run_command import RunCommandTool
 from ._run_subagent import RunSubagentTool
 from ._scaffold_new_project import ScaffoldNewProjectTool
@@ -97,7 +104,12 @@ from ._update_web_search_state import UpdateWebSearchStateTool
 from ._wait import WaitTool
 from ._web_search import WebSearchTool
 
-__all__ = ["DISPATCHABLE_TOOLS_BY_NAME", "ToolDispatcher", "tools_for_agent"]
+__all__ = [
+    "DISPATCHABLE_TOOLS_BY_NAME",
+    "ToolDispatcher",
+    "canonical_tool_call",
+    "tools_for_agent",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -108,8 +120,6 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (READ_ATTACHMENT, ReadAttachmentTool),
     (READ_WEBPAGE, ReadWebpageTool),
     (QUERY_SEARCH_ENGINE, QuerySearchEngineTool),
-    (DOCUMENT_FEEDBACK, DocumentFeedbackTool),
-    (ESCALATE_BLOCKER, EscalateBlockerTool),
     (ASK_USER, AskUserTool),
     (FILESYSTEM, FilesystemTool),
     (EDIT_FILE, EditFileTool),
@@ -121,7 +131,6 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (FIND_TEXT_IN_FILES, FindTextInFilesTool),
     (GUIDED_DEV_STATUS, GuidedDevStatusTool),
     (RUN_SUBAGENT, RunSubagentTool),
-    (RUN_AUTHOR_CRITIC_ITERATION, RunAuthorCriticIterationTool),
     (RETURN_RESULT, ReturnResultTool),
     (ROLLBACK, RollbackTool),
     (FINALIZE_PROJECT, FinalizeProjectTool),
@@ -144,23 +153,77 @@ _CLASSES_BY_NAME: dict[str, type[Tool]] = {spec.name: cls for spec, cls in _TOOL
 DISPATCHABLE_TOOLS_BY_NAME: dict[str, ToolSpec] = {spec.name: spec for spec, _ in _TOOL_CLASSES}
 
 
-def tools_for_agent(tool_names: frozenset[str]) -> list[ToolSpec]:
-    """Resolve an agent's declared tool names to dispatchable ``ToolSpec``s.
+def tools_for_agent(
+    tool_names: frozenset[str],
+    replacements: Mapping[str, Sequence[ToolSpec]] | None = None,
+) -> list[ToolSpec]:
+    """Resolve an agent's declared tool names to the ``ToolSpec``s the LLM sees.
 
     Names with no tool class (spec-only placeholders) are silently skipped,
     matching the prompt/surface contract.
 
     Args:
         tool_names: The agent's frontmatter ``tools:`` set (e.g. ``agent.tools``).
+        replacements: Declared name → the specs that stand in for it, for the
+            two tools whose real schema is only knowable per-agent:
+            ``run_subagent`` (one ``run_subagent_<name>`` variant per invocable
+            sub-agent) and ``return_result`` (bound to this agent's output
+            schema). A name mapped to an empty sequence is dropped entirely —
+            that is how an agent granted ``run_subagent`` with an empty
+            allow-list ends up with no spawning tool at all, rather than one it
+            could never use. Names absent from the map resolve normally.
+            :func:`kodo.runtime.agent_tool_specs` builds it.
 
     Returns:
         list[ToolSpec]: Specs to pass to the LLM, in catalog order.
     """
-    return [
-        DISPATCHABLE_TOOLS_BY_NAME[name]
-        for name in tool_names
-        if name in DISPATCHABLE_TOOLS_BY_NAME
-    ]
+    replacements = replacements or {}
+    specs: list[ToolSpec] = []
+    for name in tool_names:
+        if name in replacements:
+            specs.extend(replacements[name])
+        elif name in DISPATCHABLE_TOOLS_BY_NAME:
+            specs.append(DISPATCHABLE_TOOLS_BY_NAME[name])
+    return specs
+
+
+def canonical_tool_call(
+    tool_name: str, tool_input: dict[str, object]
+) -> tuple[str, dict[str, object]]:
+    """Map a per-sub-agent spawn call back to the canonical ``run_subagent`` shape.
+
+    An agent invokes ``run_subagent_<name>(<the sub-agent's own fields>)``. The
+    rest of the engine — the security gate, checkpointing, the tool-call logger,
+    the tool-call card and its detail rows, and crash-resume's re-dispatch
+    ledger — is keyed on one stable name, so the variant is folded back here,
+    once, before any of that runs::
+
+        ("run_subagent_coder", {"instructions": "...", "max_rounds": 3})
+          → ("run_subagent", {"name": "coder",
+                              "task_input": {"instructions": "..."},
+                              "max_rounds": 3})
+
+    ``max_rounds`` is lifted out of the flattened input rather than passed
+    through: it is the engine's loop budget, not part of the sub-agent's task.
+
+    Any other call is returned unchanged, so this is safe to apply to every
+    dispatch unconditionally.
+
+    Args:
+        tool_name: Tool name as the model emitted it.
+        tool_input: Parsed JSON input from the LLM tool-use block.
+
+    Returns:
+        tuple[str, dict[str, object]]: The canonical ``(name, input)`` pair.
+    """
+    target = subagent_from_tool_name(tool_name)
+    if not target:
+        return tool_name, tool_input
+    task_input = {k: v for k, v in tool_input.items() if k != MAX_ROUNDS_KEY}
+    canonical: dict[str, object] = {"name": target, "task_input": task_input}
+    if MAX_ROUNDS_KEY in tool_input:
+        canonical[MAX_ROUNDS_KEY] = tool_input[MAX_ROUNDS_KEY]
+    return RUN_SUBAGENT.name, canonical
 
 
 class ToolDispatcher:
@@ -230,7 +293,7 @@ class ToolDispatcher:
 
     @property
     def stop_requested(self) -> bool:
-        """``True`` once the agent called ``escalate_blocker`` or ``return_result``."""
+        """``True`` once the agent made a terminal call (e.g. ``return_result``)."""
         return self.__ctx.stop_requested
 
     @property

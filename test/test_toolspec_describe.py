@@ -245,8 +245,11 @@ def test_every_spec_description_carries_when_to_use_guidance() -> None:
     model. A spec whose guidance is fully implied by its prose is exempt only if
     it is listed here, so a new spec cannot silently ship without routing help."""
     # Tools whose description already states the trigger unambiguously ("call
-    # this exactly once, last") and so need no separate when-to-use sentence.
-    exempt = {"return_result", "submit_evaluation"}
+    # this exactly once, last") and so need no separate when-to-use sentence,
+    # plus ``run_subagent``, which is never offered to a model at all: it is the
+    # canonical form every ``run_subagent_<name>`` call is folded back to, and
+    # the routing guidance lives on those per-sub-agent tools instead.
+    exempt = {"return_result", "submit_evaluation", "run_subagent"}
     for spec in ALL_TOOLS:
         if spec.name in exempt:
             continue

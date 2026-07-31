@@ -2,8 +2,8 @@
 
 Every agent shares one :class:`~kodo.tools.ToolDispatcher`; these tests
 exercise the tools a leaf sub-agent typically holds — the file-evolution tools
-(``read_file``, ``document_feedback``), ``escalate_blocker``, and the native
-file-I/O / shell tools — plus the shared ``tools_for_agent`` resolver.
+(``read_file``, ``guided_dev_status``) and the native file-I/O / shell tools —
+plus the shared ``tools_for_agent`` resolver.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kodo.guided_state import read_status
 from kodo.project import SessionWorkspace
 from kodo.runtime import GateOrchestrator, SessionState
 from kodo.security import SecurityLayer
@@ -29,7 +28,7 @@ from kodo.tools import (
 )
 from kodo.toolspecs import (
     CREATE_FILE,
-    DOCUMENT_FEEDBACK,
+    GUIDED_DEV_STATUS,
     NO_PROJECT_ERROR,
     READ_FILE,
     requires_intent,
@@ -101,7 +100,11 @@ class _StubServices:
         return self._root_paths
 
     async def run_subagent(
-        self, caller: str, name: str, task_input: dict[str, object]
+        self,
+        caller: str,
+        name: str,
+        task_input: dict[str, object],
+        max_rounds: int | None = None,
     ) -> dict[str, object]:
         return {}
 
@@ -110,18 +113,6 @@ class _StubServices:
 
     async def run_web_summarizer(self, task_input: dict[str, object]) -> dict[str, object]:
         return {"themes": []}
-
-    async def run_author_critic_iteration(
-        self,
-        caller: str,
-        author_name: str,
-        critic_name: str,
-        path: str,
-        input_paths: dict[str, str],
-        instructions: str,
-        for_revision: bool,
-    ) -> dict[str, object]:
-        return {"path": path, "status": "accepted", "concerns": []}
 
     async def rollback(self, root: str, target_sha: str) -> None:
         return None
@@ -193,12 +184,12 @@ def test_read_file_spec_has_correct_name() -> None:
     assert READ_FILE.name == "read_file"
 
 
-def test_document_feedback_spec_has_correct_name() -> None:
-    assert DOCUMENT_FEEDBACK.name == "document_feedback"
+def test_guided_dev_status_spec_has_correct_name() -> None:
+    assert GUIDED_DEV_STATUS.name == "guided_dev_status"
 
 
 def test_dispatchable_catalog_includes_file_evolution_tools() -> None:
-    for name in ("read_file", "document_feedback", "escalate_blocker", "ask_user"):
+    for name in ("read_file", "guided_dev_status", "ask_user"):
         assert name in DISPATCHABLE_TOOLS_BY_NAME
 
 
@@ -218,9 +209,9 @@ def test_dispatchable_catalog_includes_fileio_and_shell_tools() -> None:
 
 
 def test_tools_for_agent_returns_specs_for_declared_tools() -> None:
-    result = tools_for_agent(frozenset(["read_file", "document_feedback"]))
+    result = tools_for_agent(frozenset(["read_file", "guided_dev_status"]))
     names = {t.name for t in result}
-    assert names == {"read_file", "document_feedback"}
+    assert names == {"read_file", "guided_dev_status"}
 
 
 def test_tools_for_agent_skips_unknown_tool_names() -> None:
@@ -274,78 +265,6 @@ async def test_read_file_rejects_ranges_and_pattern_together(tmp_path: Path) -> 
         )
     )
     assert "error" in result
-
-
-# ---------------------------------------------------------------------------
-# document_feedback dispatch
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_document_feedback_records_rejection(tmp_path: Path) -> None:
-    (tmp_path / "specs").mkdir()
-    (tmp_path / "specs" / "a.md").write_text("x", encoding="utf-8")
-    dispatcher = _make_dispatcher(tmp_path, agent_name="architect_critic")
-    result = json.loads(
-        await dispatcher.dispatch(
-            "document_feedback",
-            {
-                "path": "specs/a.md",
-                "accept": False,
-                "concerns": [{"kind": "gap", "description": "missing section"}],
-            },
-        )
-    )
-    assert result == {"status": "recorded", "path": "specs/a.md"}
-    status = read_status(tmp_path / "specs" / "a.md", tmp_path)
-    assert status is not None
-    assert status["status"] == "needs_revision"
-    assert status["reviewer"] == "architect_critic"
-
-
-@pytest.mark.asyncio
-async def test_document_feedback_rejects_empty_concerns(tmp_path: Path) -> None:
-    (tmp_path / "specs").mkdir()
-    (tmp_path / "specs" / "a.md").write_text("x", encoding="utf-8")
-    dispatcher = _make_dispatcher(tmp_path, agent_name="architect_critic")
-    result = json.loads(
-        await dispatcher.dispatch(
-            "document_feedback", {"path": "specs/a.md", "accept": False, "concerns": []}
-        )
-    )
-    assert "error" in result
-
-
-@pytest.mark.asyncio
-async def test_document_feedback_accept_records_pending_acceptance(tmp_path: Path) -> None:
-    (tmp_path / "specs").mkdir()
-    (tmp_path / "specs" / "a.md").write_text("x", encoding="utf-8")
-    dispatcher = _make_dispatcher(tmp_path, agent_name="architect_critic")
-    result = json.loads(
-        await dispatcher.dispatch("document_feedback", {"path": "specs/a.md", "accept": True})
-    )
-    assert result["status"] == "recorded"
-    status = read_status(tmp_path / "specs" / "a.md", tmp_path)
-    assert status is not None
-    assert status["status"] == "pending_acceptance"
-
-
-# ---------------------------------------------------------------------------
-# escalate_blocker
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_escalate_blocker_sets_stop_flag(tmp_path: Path) -> None:
-    dispatcher = _make_dispatcher(tmp_path, answer="user reply")
-    result = json.loads(
-        await dispatcher.dispatch(
-            "escalate_blocker", {"reason": "cap_reached", "summary": "Need help"}
-        )
-    )
-    assert result["status"] == "escalated"
-    assert "user_response" in result
-    assert dispatcher.stop_requested
 
 
 # ---------------------------------------------------------------------------
@@ -947,7 +866,7 @@ async def test_dispatch_unknown_tool_returns_error(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 # Every tool whose own dispatch mutates content on disk; second-degree
-# mutators (run_subagent, run_author_critic_iteration, toolchain_deps) and
+# mutators (run_subagent, toolchain_deps) and
 # toolchain_build (runs the project's own generated scripts) are exempt.
 _INTENT_TOOLS = (
     "filesystem",
@@ -1030,17 +949,15 @@ async def test_requires_project_tool_temporary_bypasses_gate_without_workspace(
 
 @pytest.mark.asyncio
 async def test_requires_project_tool_dispatches_normally_with_workspace(tmp_path: Path) -> None:
-    assert DOCUMENT_FEEDBACK.requires_project, (
-        "this test's fixture assumes document_feedback requires a project; "
+    assert GUIDED_DEV_STATUS.requires_project, (
+        "this test's fixture assumes guided_dev_status requires a project; "
         "update the test if that spec ever changes"
     )
     (tmp_path / "specs").mkdir()
     (tmp_path / "specs" / "a.md").write_text("x", encoding="utf-8")
-    dispatcher = _make_dispatcher(tmp_path, has_workspace=True, agent_name="architect_critic")
-    result = json.loads(
-        await dispatcher.dispatch("document_feedback", {"path": "specs/a.md", "accept": True})
-    )
-    assert result["status"] == "recorded"
+    dispatcher = _make_dispatcher(tmp_path, has_workspace=True, agent_name="guide")
+    result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
+    assert "error" not in result
 
 
 @pytest.mark.asyncio
@@ -1052,8 +969,8 @@ async def test_requires_project_gate_reads_has_workspace_live_within_one_turn(
     regression test for the bug where ``has_workspace`` was snapshotted once
     at dispatcher-creation time and never revisited for the rest of the turn,
     even after a project genuinely came into existence."""
-    assert DOCUMENT_FEEDBACK.requires_project, (
-        "this test's fixture assumes document_feedback requires a project; "
+    assert GUIDED_DEV_STATUS.requires_project, (
+        "this test's fixture assumes guided_dev_status requires a project; "
         "update the test if that spec ever changes"
     )
     (tmp_path / "specs").mkdir()
@@ -1065,14 +982,12 @@ async def test_requires_project_gate_reads_has_workspace_live_within_one_turn(
         gate=_make_gate(),
         session=SessionState(),
         services=services,
-        agent_name="architect_critic",
+        agent_name="guide",
         session_id="sess-test",
         mode="guided",
     )
 
-    rejected = json.loads(
-        await dispatcher.dispatch("document_feedback", {"path": "specs/a.md", "accept": True})
-    )
+    rejected = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
     assert rejected == {"error": NO_PROJECT_ERROR}
 
     # Simulate scaffold_new_project flipping the session's live workspace state
@@ -1081,10 +996,8 @@ async def test_requires_project_gate_reads_has_workspace_live_within_one_turn(
     services._has_workspace = True
     services._root_paths = (RootPath(name="proj", path=str(tmp_path)),)
 
-    allowed = json.loads(
-        await dispatcher.dispatch("document_feedback", {"path": "specs/a.md", "accept": True})
-    )
-    assert allowed["status"] == "recorded"
+    allowed = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
+    assert "error" not in allowed
 
 
 # ---------------------------------------------------------------------------

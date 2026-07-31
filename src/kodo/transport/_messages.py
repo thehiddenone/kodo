@@ -533,9 +533,9 @@ EVT_HF_TOKEN_REVOKE = "hf_token.revoke"
 # ---------------------------------------------------------------------------
 
 # Server → Client request. Surfaced when any agent calls ``ask_user`` (e.g. the
-# Narrative Author or Problem Solver eliciting input, or the Guide's own
-# judgment-call questions) or ``escalate_blocker`` (a single free-text-only
-# question) — carries the agent's whole question batch in one request.
+# Narrative Author or Problem Solver eliciting input, the Guide's own
+# judgment-call questions, or the Guide putting a sub-agent's escalation to the
+# user) — carries the agent's whole question batch in one request.
 # Withheld entirely in autonomous mode (the tool is not offered to the agent).
 # The originating ``tool_use`` is flushed to ``session.jsonl`` before dispatch
 # (so a reconnect mid-question already sees the panel via session.history), and

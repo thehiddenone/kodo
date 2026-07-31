@@ -356,15 +356,16 @@ def test_load_agent_extracts_purpose_section(tmp_path: Path) -> None:
     path = _write_agent(
         tmp_path,
         "narrative_author",
-        "name: narrative_author\nsolo: true\n",
+        "name: narrative_author\n",
         "# Narrative Author\n\nIntro line.\n\n"
         "## Purpose\n\nWrites the narrative. Entry point.\n\n"
         "## Inputs\n\nThe engine delivers...\n",
     )
     agent = load_agent(path)
     assert agent.purpose == "Writes the narrative. Entry point."
-    assert agent.solo is True
-    # A workflow agent (no `standalone:` flag) defaults to standalone=False.
+    # No `role:` → an ordinary, invocable sub-agent; no `standalone:` → workflow.
+    assert agent.role == ""
+    assert agent.is_critic is False
     assert agent.standalone is False
 
 
@@ -377,7 +378,7 @@ def test_load_agent_parses_author_critic(tmp_path: Path) -> None:
     )
     agent = load_agent(path)
     assert agent.critic == "architect_critic"
-    assert agent.solo is False
+    assert agent.is_critic is False
     assert agent.standalone is False
     assert agent.purpose == "Decomposes the narrative."
 
@@ -386,12 +387,45 @@ def test_load_agent_parses_standalone_flag(tmp_path: Path) -> None:
     path = _write_agent(
         tmp_path,
         "toolchain_builder",
-        "name: toolchain_builder\nsolo: true\nstandalone: true\n",
+        "name: toolchain_builder\nstandalone: true\n",
         "## Purpose\n\nSets up the toolchain on demand.\n",
     )
     agent = load_agent(path)
-    assert agent.solo is True
     assert agent.standalone is True
+    assert agent.is_critic is False
+
+
+def test_load_agent_parses_role_critic(tmp_path: Path) -> None:
+    path = _write_agent(
+        tmp_path,
+        "architect_critic",
+        "name: architect_critic\nrole: critic\n",
+        "## Purpose\n\nReviews the decomposition.\n",
+    )
+    agent = load_agent(path)
+    assert agent.role == "critic"
+    assert agent.is_critic is True
+
+
+def test_load_agent_rejects_unknown_role(tmp_path: Path) -> None:
+    path = _write_agent(
+        tmp_path, "odd", "name: odd\nrole: referee\n", "## Purpose\n\nAdjudicates.\n"
+    )
+    with pytest.raises(AgentLoadError, match="unknown role"):
+        load_agent(path)
+
+
+def test_load_agent_rejects_critic_that_declares_its_own_critic(tmp_path: Path) -> None:
+    """A critic reviews; it is never itself reviewed. Allowing both would let
+    the engine build an unbounded review-of-a-review chain."""
+    path = _write_agent(
+        tmp_path,
+        "odd",
+        "name: odd\nrole: critic\ncritic: someone\n",
+        "## Purpose\n\nReviews.\n",
+    )
+    with pytest.raises(AgentLoadError, match="cannot itself declare"):
+        load_agent(path)
 
 
 def test_load_agent_no_purpose_yields_empty_string(tmp_path: Path) -> None:
@@ -419,31 +453,30 @@ def test_load_agent_preserves_subagent_order(tmp_path: Path) -> None:
 
 
 def _write_pipeline_fixture(tmp_path: Path) -> None:
-    """A mini author/critic + solo pipeline plus a caller that lists them all.
+    """A mini pipeline (reviewed and unreviewed agents) plus a caller.
 
-    Mirrors a general shape: an entry-point solo, an author/critic pair, and a
-    second solo that is *also* the author's critic — the renderer must still
-    collapse a solo+critic into one combined row (no live pipeline agent is one
-    today, but the rendering path is still supported).
+    Mirrors the general shape: an unreviewed entry-point agent, two agents each
+    paired with a critic, a shared critic reviewing two of them, and a
+    standalone specialist outside the pipeline.
     """
     _write_preamble(tmp_path)
     _write_agent(
         tmp_path,
         "writer",
-        "name: writer\ndisplay_name: Writer\nsolo: true\n",
+        "name: writer\ndisplay_name: Writer\n",
         "## Purpose\n\nWrites the seed doc. Entry point.\n",
     )
     _write_agent(
         tmp_path,
         "designer",
-        "name: designer\ndisplay_name: Designer\ncritic: builder\n",
-        "## Purpose\n\nDesigns. Author whose critic is `builder`.\n",
+        "name: designer\ndisplay_name: Designer\ncritic: reviewer\n",
+        "## Purpose\n\nDesigns. Author whose critic is `reviewer`.\n",
     )
     _write_agent(
         tmp_path,
         "builder",
-        "name: builder\ndisplay_name: Builder\nsolo: true\n",
-        "## Purpose\n\nValidates `designer` as critic, then builds solo.\n",
+        "name: builder\ndisplay_name: Builder\n",
+        "## Purpose\n\nBuilds, unreviewed.\n",
     )
     _write_agent(
         tmp_path,
@@ -454,14 +487,14 @@ def _write_pipeline_fixture(tmp_path: Path) -> None:
     _write_agent(
         tmp_path,
         "reviewer",
-        "name: reviewer\ndisplay_name: Reviewer\n",
+        "name: reviewer\ndisplay_name: Reviewer\nrole: critic\n",
         "## Purpose\n\nReviews `coder`'s output as critic.\n",
     )
     # A standalone specialist outside the pipeline (gets a `standalone` Kind).
     _write_agent(
         tmp_path,
         "helper",
-        "name: helper\ndisplay_name: Helper\nsolo: true\nstandalone: true\n",
+        "name: helper\ndisplay_name: Helper\nstandalone: true\n",
         "## Purpose\n\nOn-demand specialist; no pipeline dependency.\n",
     )
     # Caller lists them in pipeline order, critics interleaved, helper last.
@@ -480,19 +513,20 @@ def test_subagents_roster_table_rows_and_tools(tmp_path: Path) -> None:
     prompt = registry.get("caller").system_prompt
     assert "{PLACEHOLDER:SUBAGENTS}" not in prompt
 
-    # Author rows use run_author_critic_iteration and name the critic; Kind marks
-    # pipeline membership (workflow vs standalone).
-    assert "| `run_author_critic_iteration` | `designer` | `builder` | workflow |" in prompt
-    assert "| `run_author_critic_iteration` | `coder` | `reviewer` | workflow |" in prompt
-    # Solos use run_subagent with no critic.
-    assert "| `run_subagent` | `writer` | — | workflow |" in prompt
-    assert "| `run_subagent` | `builder` | — | workflow |" in prompt
-    # A standalone solo is marked `standalone` in the Kind column.
-    assert "| `run_subagent` | `helper` | — | standalone |" in prompt
-    # The pure critic `reviewer` is absorbed into coder's row — it gets no row
-    # of its own (no run_subagent / run_author_critic_iteration line for it).
-    assert "| `run_subagent` | `reviewer` |" not in prompt
-    assert "`reviewer` | —" not in prompt
+    # Every invocable sub-agent gets its own tool; a reviewed one names the
+    # critic the engine runs inside that call. Kind marks pipeline membership.
+    assert (
+        "| `run_subagent_designer` | `designer` | `reviewer`, automatically | workflow |" in prompt
+    )
+    assert "| `run_subagent_coder` | `coder` | `reviewer`, automatically | workflow |" in prompt
+    # Unreviewed agents say so explicitly rather than leaving the cell blank.
+    assert "| `run_subagent_writer` | `writer` | none — single pass | workflow |" in prompt
+    assert "| `run_subagent_builder` | `builder` | none — single pass | workflow |" in prompt
+    # A standalone agent is marked `standalone` in the Kind column.
+    assert "| `run_subagent_helper` | `helper` | none — single pass | standalone |" in prompt
+    # The critic `reviewer` is absorbed into its authors' rows and is never
+    # invocable itself — no tool is ever minted for it.
+    assert "run_subagent_reviewer" not in prompt
     # The intro paragraph explaining the Kind column precedes the table.
     assert "**Workflow** sub-agents" in prompt
     assert "**Standalone** sub-agents" in prompt
@@ -537,14 +571,14 @@ def test_subagents_roster_render_via_public_method(tmp_path: Path) -> None:
     # Public method renders the same roster even for a caller without the
     # placeholder embedded (used by prompt-review tooling).
     section = registry.render_subagents_section("caller")
-    assert section.startswith("The sub-agents below")
+    assert section.startswith("Each row's **Tool**")
     assert "| Tool |" in section
     assert "### Writer (`writer`)" in section
 
 
 def test_subagents_missing_purpose_raises_at_construction(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
-    _write_agent(tmp_path, "leaf", "name: leaf\nsolo: true\n", "# Leaf\n\nNo purpose.\n")
+    _write_agent(tmp_path, "leaf", "name: leaf\n", "# Leaf\n\nNo purpose.\n")
     _write_agent(
         tmp_path,
         "caller",
@@ -571,7 +605,7 @@ def test_agent_without_subagents_placeholder_is_untouched(tmp_path: Path) -> Non
     # An agent that lists subagents but does NOT embed the placeholder renders
     # normally — no roster injected, no purpose validation forced.
     _write_preamble(tmp_path)
-    _write_agent(tmp_path, "leaf", "name: leaf\nsolo: true\n", "# Leaf\n\nBody, no purpose.\n")
+    _write_agent(tmp_path, "leaf", "name: leaf\n", "# Leaf\n\nBody, no purpose.\n")
     _write_agent(
         tmp_path,
         "caller",
@@ -595,10 +629,8 @@ def test_real_problem_solver_renders_subagent_roster() -> None:
     assert "{PLACEHOLDER:SUBAGENTS}" not in prompt
     # Problem Solver orchestrates four standalone solos: its own investigate ->
     # plan -> develop trio plus the toolchain setup agent.
-    assert "| `run_subagent` | `investigator` | — | standalone |" in prompt
-    assert "| `run_subagent` | `planner` | — | standalone |" in prompt
-    assert "| `run_subagent` | `developer` | — | standalone |" in prompt
-    assert "| `run_subagent` | `toolchain_builder` | — | standalone |" in prompt
+    for name in ("investigator", "planner", "developer", "toolchain_builder"):
+        assert f"| `run_subagent_{name}` | `{name}` | none — single pass | standalone |" in prompt
     assert "### Investigator (`investigator`)" in prompt
     assert "### Planner (`planner`)" in prompt
     assert "### Developer (`developer`)" in prompt
@@ -611,26 +643,37 @@ def test_real_guide_roster_reproduces_pipeline_pairs() -> None:
     prompt = registry.get("guide").system_prompt
     assert "{PLACEHOLDER:SUBAGENTS}" not in prompt
     section = registry.render_subagents_section("guide")
-    assert "| `run_subagent` | `narrative_author` | — | workflow |" in section
+    # narrative_author is the one pipeline stage with no critic.
     assert (
-        "| `run_author_critic_iteration` | `architect` | `architect_critic` | workflow |" in section
-    )
-    # test_designer is paired with test_design_critic (a pure critic, absorbed
-    # into the author's row); test_coder is now a plain solo row.
-    assert "| `run_author_critic_iteration` | `test_designer` | `test_design_critic` |" in section
-    assert "| `run_subagent` | `test_coder` | — | workflow |" in section
-    # The two product-level end-to-end stages, each an author/critic pair.
-    assert (
-        "| `run_author_critic_iteration` | `e2e_test_designer` | `e2e_test_design_critic` |"
+        "| `run_subagent_narrative_author` | `narrative_author` | none — single pass | workflow |"
         in section
     )
-    assert (
-        "| `run_author_critic_iteration` | `e2e_test_coder` | `e2e_test_code_critic` |" in section
-    )
+    # Every other workflow stage runs its critic inside the same call. Read the
+    # pairings off the live registry rather than restating them, so this test
+    # tracks the frontmatter instead of duplicating it.
+    for author in (
+        "architect",
+        "requirements_author",
+        "functional_designer",
+        "test_designer",
+        "test_coder",
+        "coder",
+        "e2e_test_designer",
+        "e2e_test_coder",
+    ):
+        critic = registry.get(author).critic
+        assert critic, f"{author} is expected to be a reviewed stage"
+        assert (
+            f"| `run_subagent_{author}` | `{author}` | `{critic}`, automatically | workflow |"
+            in section
+        )
+    # No critic is ever invocable in its own right.
+    for critic_name in ("architect_critic", "code_critic", "test_design_critic"):
+        assert f"run_subagent_{critic_name}" not in section
     # The toolchain agent and the shared investigator are the standalone
     # (adjunct) entries in the guide roster.
-    assert "| `run_subagent` | `toolchain_builder` | — | standalone |" in section
-    assert "| `run_subagent` | `investigator` | — | standalone |" in section
+    for name in ("toolchain_builder", "investigator"):
+        assert f"| `run_subagent_{name}` | `{name}` | none — single pass | standalone |" in section
 
 
 def test_real_judge_has_scoped_toolchain_build_tool() -> None:

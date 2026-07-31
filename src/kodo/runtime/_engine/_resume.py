@@ -21,22 +21,27 @@ import uuid
 
 from kodo.common import Envelope
 from kodo.llms import Message, ToolCallLogger
-from kodo.tools import tools_for_agent
+from kodo.tools import canonical_tool_call
+from kodo.toolspecs import ALL_TOOLS, RUN_SUBAGENT
 
+from .._agenttools import agent_tool_specs
 from ._proto import EngineHost
 from ._shared import _GUIDE_AGENT_NAME
 
 _log = logging.getLogger(__name__)
 
-_SUBAGENT_SPAWNING_TOOLS = frozenset({"run_subagent", "run_author_critic_iteration"})
+# Canonical form only: a persisted spawn is recorded under the per-sub-agent
+# name the model used (``run_subagent_<name>``), and membership is tested after
+# ``canonical_tool_call`` folds it back — see ``_resume_main_turn``.
+_SUBAGENT_SPAWNING_TOOLS = frozenset({RUN_SUBAGENT.name})
 
-# Dangling tool calls that cold-restart resume re-dispatches for real. The two
-# spawners are safe because their sub-agent replay ledger guarantees a
-# completed subsession is never re-run. ``ask_user`` and ``escalate_blocker``
-# are safe because their only "side effect" is asking the present user: the
-# whole question batch is re-driven from scratch (partial answers are never
-# stored anywhere), which is the required crash behaviour for it.
-_RESUME_REDISPATCH_TOOLS = _SUBAGENT_SPAWNING_TOOLS | {"ask_user", "escalate_blocker"}
+# Dangling tool calls that cold-restart resume re-dispatches for real. The
+# spawner is safe because its sub-agent replay ledger guarantees a
+# completed subsession is never re-run. ``ask_user`` is safe because its only
+# "side effect" is asking the present user: the whole question batch is
+# re-driven from scratch (partial answers are never stored anywhere), which is
+# the required crash behaviour for it.
+_RESUME_REDISPATCH_TOOLS = _SUBAGENT_SPAWNING_TOOLS | {"ask_user"}
 
 # Appended to session.jsonl (as a real, LLM-visible ``assistant`` message)
 # whenever the user clicks Stop mid-turn — see ``stop``/``_persist_interrupted_turn``.
@@ -229,8 +234,7 @@ class ResumeMixin:
         plugin, model_id, routing = await self._resolve_plugin(agent.capability)
         self._compactor.note_active_model(self._resolve_model_key(agent.capability))
         dispatcher = self._make_dispatcher(entry_agent, self._orch_session_id)
-        tools = tools_for_agent(agent.tools)
-        tool_desc = {t.name: t.user_description for t in tools}
+        tool_desc = {t.name: t.user_description for t in ALL_TOOLS}
         tool_logger = ToolCallLogger(self._llm_logs_dir())
 
         self._session.phase = "running"
@@ -247,7 +251,11 @@ class ResumeMixin:
             tool_name = str(b["name"])
             raw_input = b.get("input")
             tool_input = raw_input if isinstance(raw_input, dict) else {}
-            if tool_name in _RESUME_REDISPATCH_TOOLS or tool_use_id in (
+            # A persisted spawn is recorded under the name the model used
+            # (``run_subagent_<name>``), so test membership against its canonical
+            # form — ``_dispatch_tool_calls`` canonicalizes again on the way in.
+            canonical_name, _ = canonical_tool_call(tool_name, tool_input)
+            if canonical_name in _RESUME_REDISPATCH_TOOLS or tool_use_id in (
                 alert_tool_call_id,
                 edit_review_tool_call_id,
             ):
@@ -275,7 +283,7 @@ class ResumeMixin:
             model=model_id,
             system_prompt=agent.system_prompt,
             messages=self._main_messages,
-            tools=tools,
+            tools=agent_tool_specs(self._registry, agent),
             tool_dispatch=dispatcher.dispatch,
             stream_id=stream_id,
             agent_name=entry_agent,

@@ -19,9 +19,11 @@ REQUIREMENTS_AUTHOR: SubAgentSpec = SubAgentSpec(
             "requirement_ids": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "All PROJECTCODE_RESPONSIBILITYCODE_REQUIREMENTCODE IDs produced.",
+                "description": (
+                    "All PROJECTCODE_RESPONSIBILITYCODE_REQUIREMENTCODE IDs produced. "
+                    "Required unless you are escalating (see `reason`)."
+                ),
             },
         },
-        extra_required=["requirement_ids"],
     ),
 )

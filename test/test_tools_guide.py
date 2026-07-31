@@ -2,8 +2,8 @@
 
 Every agent now shares one :class:`~kodo.tools.ToolDispatcher`; these tests
 exercise the tools the guide typically holds — the read-only status scan
-(``guided_dev_status``), the sub-agent launchers (``run_subagent``,
-``run_author_critic_iteration``), and the terminal tools (``finalize_project``,
+(``guided_dev_status``), the sub-agent launcher (``run_subagent``, reached via
+its per-sub-agent ``run_subagent_<name>`` form), and the terminal tools (``finalize_project``,
 ``rollback``).
 """
 
@@ -18,7 +18,7 @@ import pytest
 
 from kodo.guided_state import append_accepted, append_feedback, append_new_revision
 from kodo.runtime import GateOrchestrator, SessionState
-from kodo.tools import RootPath, ToolDispatcher
+from kodo.tools import RootPath, ToolDispatcher, canonical_tool_call
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -56,7 +56,11 @@ class _StubServices:
         return self._root_paths
 
     async def run_subagent(
-        self, caller: str, name: str, task_input: dict[str, object]
+        self,
+        caller: str,
+        name: str,
+        task_input: dict[str, object],
+        max_rounds: int | None = None,
     ) -> dict[str, object]:
         return {
             "primary_path": f"specs/stub-{name}.md",
@@ -191,7 +195,7 @@ async def test_guided_dev_status_errors_outside_guided_mode(tmp_path: Path) -> N
 
 
 # ---------------------------------------------------------------------------
-# run_subagent / run_author_critic_iteration
+# run_subagent (dispatched in canonical form; the model calls a variant)
 # ---------------------------------------------------------------------------
 
 
@@ -207,42 +211,68 @@ async def test_run_subagent_returns_primary_path() -> None:
     assert result["primary_path"] == "specs/stub-narrative_author.md"
 
 
-@pytest.mark.asyncio
-async def test_run_author_critic_iteration_returns_status() -> None:
-    dispatcher = _make_dispatcher()
-    result = json.loads(
-        await dispatcher.dispatch(
-            "run_author_critic_iteration",
-            {
-                "author_name": "requirements_author",
-                "critic_name": "requirements_critic",
-                "instructions": "go",
-            },
-        )
+def test_canonical_tool_call_unwraps_a_per_subagent_variant() -> None:
+    """A model calls ``run_subagent_<name>`` with the sub-agent's own fields at
+    the top level; the engine folds that into the one canonical shape everything
+    downstream (gating, checkpoints, cards, resume) is keyed on."""
+    name, payload = canonical_tool_call(
+        "run_subagent_coder",
+        {"instructions": "implement it", "input_paths": {"design": "proj/specs/d.md"}},
     )
-    assert result["status"] == "accepted"
-    assert isinstance(result["concerns"], list)
+    assert name == "run_subagent"
+    assert payload == {
+        "name": "coder",
+        "task_input": {
+            "instructions": "implement it",
+            "input_paths": {"design": "proj/specs/d.md"},
+        },
+    }
+
+
+def test_canonical_tool_call_lifts_max_rounds_out_of_the_task() -> None:
+    """``max_rounds`` is the engine's loop budget, not part of the sub-agent's
+    task, so it must not be smuggled into ``task_input``."""
+    _, payload = canonical_tool_call("run_subagent_coder", {"instructions": "go", "max_rounds": 3})
+    assert payload["max_rounds"] == 3
+    assert payload["task_input"] == {"instructions": "go"}
+
+
+def test_canonical_tool_call_leaves_every_other_call_untouched() -> None:
+    """Safe to apply unconditionally to every dispatch."""
+    for tool_name in ("read_file", "run_subagent", "return_result"):
+        assert canonical_tool_call(tool_name, {"a": 1}) == (tool_name, {"a": 1})
+
+
+@pytest.mark.asyncio
+async def test_variant_call_reaches_the_engine_as_a_targeted_spawn() -> None:
+    """End to end through the dispatcher: the variant name selects the sub-agent."""
+    services = _StubServices(has_workspace=True)
+    dispatcher = ToolDispatcher(
+        resolver=MagicMock(),
+        gate=GateOrchestrator(_make_app_state(), MagicMock()),
+        session=SessionState(),
+        services=services,
+        agent_name="guide",
+        session_id="sess-test",
+    )
+    name, payload = canonical_tool_call(
+        "run_subagent_narrative_author", {"instructions": "Build a trading bot"}
+    )
+    result = json.loads(await dispatcher.dispatch(name, payload))
+    assert result["primary_path"] == "specs/stub-narrative_author.md"
 
 
 class _DenyingServices(_StubServices):
     """Services whose spawn methods reject every call, as the engine gate does."""
 
     async def run_subagent(
-        self, caller: str, name: str, task_input: dict[str, object]
-    ) -> dict[str, object]:
-        raise PermissionError(f"Agent {caller!r} is not permitted to spawn sub-agent {name!r}.")
-
-    async def run_author_critic_iteration(
         self,
         caller: str,
-        author_name: str,
-        critic_name: str,
-        path: str,
-        input_paths: dict[str, str],
-        instructions: str,
-        for_revision: bool,
+        name: str,
+        task_input: dict[str, object],
+        max_rounds: int | None = None,
     ) -> dict[str, object]:
-        raise PermissionError(f"Agent {caller!r} is not permitted to spawn {author_name!r}.")
+        raise PermissionError(f"Agent {caller!r} is not permitted to spawn sub-agent {name!r}.")
 
 
 def _make_denying_dispatcher() -> ToolDispatcher:
@@ -267,23 +297,6 @@ async def test_run_subagent_denied_returns_error() -> None:
         )
     )
     assert "primary_path" not in result
-    assert "not permitted" in result["error"]
-
-
-@pytest.mark.asyncio
-async def test_run_author_critic_iteration_denied_returns_error() -> None:
-    dispatcher = _make_denying_dispatcher()
-    result = json.loads(
-        await dispatcher.dispatch(
-            "run_author_critic_iteration",
-            {
-                "author_name": "architect",
-                "critic_name": "architect_critic",
-                "instructions": "go",
-            },
-        )
-    )
-    assert "status" not in result
     assert "not permitted" in result["error"]
 
 

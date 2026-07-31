@@ -35,11 +35,14 @@ from ._context import (
 from ._create_directory import CreateDirectoryTool
 from ._create_file import CreateFileTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
-from ._dispatch import DISPATCHABLE_TOOLS_BY_NAME, ToolDispatcher, tools_for_agent
-from ._document_feedback import DocumentFeedbackTool
+from ._dispatch import (
+    DISPATCHABLE_TOOLS_BY_NAME,
+    ToolDispatcher,
+    canonical_tool_call,
+    tools_for_agent,
+)
 from ._edit_file import EditFileTool, compute_new_content
 from ._edit_review import should_review_edit
-from ._escalate_blocker import EscalateBlockerTool
 from ._filesystem import FilesystemTool
 from ._finalize_project import FinalizeProjectTool
 from ._find_files import FindFilesTool
@@ -62,7 +65,6 @@ from ._read_webpage import ReadWebpageTool
 from ._remaining_time import RemainingTimeTool
 from ._return_result import ReturnResultTool
 from ._rollback import RollbackTool
-from ._run_author_critic_iteration import RunAuthorCriticIterationTool
 from ._run_command import RunCommandTool
 from ._run_subagent import RunSubagentTool
 from ._scaffold_new_project import ScaffoldNewProjectTool
@@ -80,12 +82,10 @@ __all__ = [
     "CreateDirectoryTool",
     "CreateFileTool",
     "DisableAutonomousModeTool",
-    "DocumentFeedbackTool",
     "EditFileTool",
     "EditReviewFeedbackLike",
     "EditReviewLike",
     "EngineServices",
-    "EscalateBlockerTool",
     "FilesystemTool",
     "FinalizeProjectTool",
     "FindFilesTool",
@@ -107,7 +107,6 @@ __all__ = [
     "ReturnResultTool",
     "RollbackTool",
     "RootPath",
-    "RunAuthorCriticIterationTool",
     "RunCommandTool",
     "RunSubagentTool",
     "ScaffoldNewProjectTool",
@@ -127,5 +126,6 @@ __all__ = [
     "resolve_within",
     "root_for",
     "should_review_edit",
+    "canonical_tool_call",
     "tools_for_agent",
 ]

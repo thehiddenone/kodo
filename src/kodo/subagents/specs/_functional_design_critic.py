@@ -17,15 +17,5 @@ FUNCTIONAL_DESIGN_CRITIC: SubAgentSpec = SubAgentSpec(
             "any locked peer Functional Designs for interface-consistency checks."
         ),
     ),
-    output_schema=critic_output(
-        [
-            "not_functional",
-            "requirement_uncovered",
-            "interface_incompleteness",
-            "interface_mismatch",
-            "contradiction",
-            "missing_failure_mode",
-            "ambiguity",
-        ]
-    ),
+    output_schema=critic_output(),
 )

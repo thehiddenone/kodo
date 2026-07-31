@@ -268,6 +268,12 @@ class _FakeRegistry:
             name=name, capability="medium", tools=frozenset(), system_prompt="sys prompt"
         )
 
+    def run_subagent_specs(self, caller: str) -> list[object]:
+        return []
+
+    def return_result_specs(self, name: str) -> list[object]:
+        return []
+
 
 def _resumable_engine(
     *,

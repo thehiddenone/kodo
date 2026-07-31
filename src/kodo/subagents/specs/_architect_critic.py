@@ -14,14 +14,5 @@ ARCHITECT_CRITIC: SubAgentSpec = SubAgentSpec(
     input_schema=pipeline_input(
         input_paths="The architecture document under review.",
     ),
-    output_schema=critic_output(
-        [
-            "multiple_responsibilities",
-            "over_fragmentation",
-            "gap",
-            "contradiction",
-            "orphan",
-            "ambiguous_ownership",
-        ]
-    ),
+    output_schema=critic_output(),
 )

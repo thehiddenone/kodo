@@ -218,6 +218,28 @@ def _build_oai_messages(system: str, messages: list[Message]) -> list[dict[str, 
     return result
 
 
+def build_openai_tools(tools: list[ToolSpec]) -> list[dict[str, object]]:
+    """Render *tools* into the OpenAI ``tools=[...]`` chat-completion shape.
+
+    The single source of truth for this wire shape — :meth:`LlamaPlugin.__raw_stream`
+    calls this to build what it actually sends to ``llama-server``'s
+    OpenAI-compatible endpoint, and ``kodo.__main__``'s ``--tools`` diagnostic
+    calls it to print exactly that, byte for byte.
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t.name,
+                # Prose + dense output-schema sketch; see tool_description.
+                "description": tool_description(t),
+                "parameters": t.input_schema,
+            },
+        }
+        for t in tools
+    ]
+
+
 def _map_finish_reason(reason: str | None) -> str:
     if reason == "stop":
         return "end_turn"
@@ -673,18 +695,7 @@ class LlamaPlugin(LLMPlugin):
     ) -> AsyncIterator[StreamEvent]:
         assert self.__client is not None
         oai_messages = _build_oai_messages(system, messages)
-        oai_tools: list[dict[str, object]] = [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    # Prose + dense output-schema sketch; see tool_description.
-                    "description": tool_description(t),
-                    "parameters": t.input_schema,
-                },
-            }
-            for t in tools
-        ]
+        oai_tools = build_openai_tools(tools)
 
         tool_ids: dict[int, str] = {}
         tool_names: dict[int, str] = {}

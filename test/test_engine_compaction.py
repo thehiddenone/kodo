@@ -138,6 +138,12 @@ class _FakeRegistry:
     def get(self, name: str, autonomous: bool = False) -> SimpleNamespace:
         return SimpleNamespace(capability="medium", name=name)
 
+    def run_subagent_specs(self, caller: str) -> list[object]:
+        return []
+
+    def return_result_specs(self, name: str) -> list[object]:
+        return []
+
 
 class _FakeTransient:
     def __init__(self) -> None:

@@ -2,8 +2,8 @@
 
 Coerces the submitted ``score`` into 0–100, echoes it and the ``report`` back
 (so both ride the tool-call detail event the harness reads), and ends the run
-by setting ``stop_requested`` — the same stop mechanism ``return_result`` and
-``escalate_blocker`` use. See :mod:`kodo.toolspecs._submit_evaluation` for why
+by setting ``stop_requested`` — the same stop mechanism ``return_result``
+uses. See :mod:`kodo.toolspecs._submit_evaluation` for why
 the judge submits its verdict through a tool instead of printing JSON.
 """
 

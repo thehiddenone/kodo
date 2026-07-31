@@ -237,9 +237,25 @@ class EngineHost(Protocol):
     # -- sub-agent dispatch (defined in _subagents) --------------------------------
     def _assert_can_spawn(self, caller: str, *names: str) -> None: ...
 
+    def _critic_for(self, name: str) -> str: ...
+
     async def _spawn_subagent(
         self, name: str, task_input: dict[str, object]
     ) -> dict[str, object]: ...
+
+    async def _run_review_loop(
+        self,
+        author_name: str,
+        critic_name: str,
+        task_input: dict[str, object],
+        max_rounds: int | None,
+    ) -> dict[str, object]: ...
+
+    async def _run_review_round(
+        self, critic_name: str, path: str
+    ) -> tuple[str, list[dict[str, object]]]: ...
+
+    async def _record_review_verdict(self, reviewer: str, output: dict[str, object]) -> None: ...
 
     async def _drive_subsession(
         self, name: str, subsession_id: str, messages: list[Message]

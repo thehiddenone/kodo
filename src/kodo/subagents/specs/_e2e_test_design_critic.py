@@ -17,16 +17,5 @@ E2E_TEST_DESIGN_CRITIC: SubAgentSpec = SubAgentSpec(
             "Narrative, Tech Stack, Design Plan, and all Functional Designs."
         ),
     ),
-    output_schema=critic_output(
-        [
-            "non_behavioral_scenario",
-            "out_of_scope_test",
-            "requirement_uncovered",
-            "mock_underspecified",
-            "missing_external_dependency",
-            "seam_misuse",
-            "ungrounded_or_compound_scenario",
-            "ambiguity",
-        ]
-    ),
+    output_schema=critic_output(),
 )

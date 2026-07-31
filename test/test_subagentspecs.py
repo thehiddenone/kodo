@@ -55,14 +55,106 @@ def test_schemas_are_well_formed(spec: SubAgentSpec) -> None:
         assert out.get("type") == "object"
 
 
-def test_critic_specs_constrain_concern_kinds() -> None:
-    """Every critic's output declares a non-empty concern-kind enum."""
-    for spec in ALL_SUBAGENTS:
-        if not spec.name.endswith("_critic"):
-            continue
-        item = spec.output_schema["properties"]["concerns"]["items"]  # type: ignore[index]
-        kinds = item["properties"]["kind"]["enum"]  # type: ignore[index]
-        assert kinds, f"{spec.name} declares no concern kinds"
+def _critic_names() -> list[str]:
+    """Names of every agent that declares ``role: critic``, read off the registry.
+
+    Derived rather than pattern-matched on ``_critic`` so this tracks the
+    frontmatter that actually drives the engine's behaviour.
+    """
+    registry = AgentRegistry(_AGENTS_DIR)
+    return sorted(a.name for a in registry.all_agents() if a.is_critic)
+
+
+def test_every_critic_declares_the_shared_verdict_shape() -> None:
+    """Every critic returns one shape: the reviewed path, the verdict, and the
+    concerns — the schema the retired ``document_feedback`` tool declared,
+    promoted to the critic's own ``return_result`` payload so a critic reports
+    once instead of twice."""
+    critics = _critic_names()
+    assert critics, "expected the pipeline to have critics; the fixture is wrong"
+    for name in critics:
+        out = _SPECS_BY_NAME[name].output_schema
+        props = out["properties"]  # type: ignore[index]
+        assert set(props) == {"path", "accept", "concerns", "summary"}, name
+        assert set(out["required"]) == {"path", "accept", "concerns"}, name  # type: ignore[index]
+
+
+def _escalation_capable_names() -> set[str]:
+    """Agents that may escalate, read off the live registry.
+
+    The marker is the shared ``base_escalation.md`` snippet in an agent's
+    ``bases:`` frontmatter — an explicit per-agent declaration, never inferred
+    from the agent's name or role. Derived here rather than hardcoded so this
+    file cannot drift from which agents actually carry the contract.
+    """
+    registry = AgentRegistry(_AGENTS_DIR)
+    return {
+        name
+        for name in _agent_names() - _ENTRY_AGENTS
+        if "escalation" in registry.get(name).bases
+    }
+
+
+def test_escalation_is_declared_in_the_prompt_and_the_schema_together() -> None:
+    """A blocked author escalates through ``return_result`` (there is no
+    ``escalate_blocker`` tool), so the two halves must ship together: the
+    ``bases: escalation`` prompt section explaining when and how, and the
+    ``reason``/``options`` fields on the output schema it tells the agent to
+    set. Either half alone is inert."""
+    escalators = _escalation_capable_names()
+    assert escalators, "no agent declares the escalation base; the contract has no holders"
+    for name in escalators:
+        props = _SPECS_BY_NAME[name].output_schema["properties"]  # type: ignore[index]
+        assert "reason" in props, f"{name} loads the escalation base but declares no reason field"
+        assert "options" in props, f"{name} loads the escalation base but declares no options field"
+    # The reverse. Keyed on the ``reason`` + ``options`` *pair*, because
+    # ``reason`` alone is not the marker: ``planner`` has an unrelated one
+    # ("why a plan is or isn't warranted") that has nothing to do with blockers.
+    for name, spec in _SPECS_BY_NAME.items():
+        props = spec.output_schema["properties"]
+        if {"reason", "options"} <= set(props):  # type: ignore[arg-type]
+            assert name in escalators, f"{name} declares the escalation fields but no base"
+
+
+def test_an_escalating_author_can_produce_a_compliant_result() -> None:
+    """Only ``summary`` is required of an escalation-capable author: one blocked
+    before it wrote anything has no ``primary_path`` to report, and a backfilled
+    required field would mark the whole escalation non-compliant — the engine's
+    "this sub-agent failed" signal, which an escalation is not."""
+    for name in _escalation_capable_names():
+        schema = _SPECS_BY_NAME[name].output_schema
+        assert set(schema["required"]) == {"summary"}, name  # type: ignore[index]
+        _, compliant = normalize_output(
+            schema,
+            {
+                "summary": "Blocked: the Tech Stack names no database.",
+                "reason": "missing_tech_stack_field",
+                "options": ["Postgres", "SQLite"],
+            },
+        )
+        assert compliant, f"{name} cannot return a compliant escalation"
+
+
+def test_concern_kind_is_free_form_with_a_pointer_to_the_prompt() -> None:
+    """The concern catalogue is prose in each critic's ``### Concern vocabulary``
+    section, not a schema ``enum``: the catalogue carries per-kind explanations
+    and routing rules a bare enum cannot, and nothing ever enforced the enum
+    (``normalize_output`` checks declared keys and required fields, never value
+    constraints). The schema must therefore point at the prompt instead of
+    duplicating a list that would silently drift."""
+    for name in _critic_names():
+        item = _SPECS_BY_NAME[name].output_schema["properties"]["concerns"]["items"]  # type: ignore[index]
+        kind = item["properties"]["kind"]  # type: ignore[index]
+        assert "enum" not in kind, f"{name} reintroduced a concern-kind enum"
+        assert "Concern vocabulary" in kind["description"], name
+
+
+def test_every_critic_prompt_carries_its_concern_vocabulary() -> None:
+    """The other half of the contract above: since the kinds left the schema,
+    each critic's prompt must actually contain the section the schema points at."""
+    for name in _critic_names():
+        body = (_AGENTS_DIR / f"subagent_{name}.md").read_text(encoding="utf-8")
+        assert "### Concern vocabulary" in body, f"{name} has no concern catalogue in its prompt"
 
 
 def test_test_coder_output_is_solo_author_shape() -> None:
@@ -86,13 +178,13 @@ def test_test_coder_normalizes_author_output() -> None:
     assert author_ok
 
 
-def test_test_design_critic_constrains_behavioral_kinds() -> None:
-    """The new critic's concern vocabulary leads with the behavioral kinds."""
-    spec = _SPECS_BY_NAME["test_design_critic"]
-    item = spec.output_schema["properties"]["concerns"]["items"]  # type: ignore[index]
-    kinds = item["properties"]["kind"]["enum"]  # type: ignore[index]
-    assert "non_behavioral_test" in kinds
-    assert "over_specified_test" in kinds
+def test_test_design_critic_vocabulary_leads_with_behavioral_kinds() -> None:
+    """The behavioral kinds are this critic's whole reason to exist, so they must
+    survive the move of the catalogue from schema enum to prompt prose."""
+    body = (_AGENTS_DIR / "subagent_test_design_critic.md").read_text(encoding="utf-8")
+    vocabulary = body.split("### Concern vocabulary", 1)[1]
+    assert "non_behavioral_test" in vocabulary
+    assert "over_specified_test" in vocabulary
 
 
 def test_return_result_with_engine_owned_compliance_key_stays_compliant() -> None:
@@ -159,12 +251,46 @@ def test_registry_leaves_entry_agents_without_return_result() -> None:
         assert "## Your Task Contract" not in agent.system_prompt, name
 
 
-def test_guide_roster_embeds_callee_schemas() -> None:
+def test_guide_roster_does_not_restate_callee_schemas() -> None:
+    """Schemas reach the caller as real JSON Schema on each
+    ``run_subagent_<name>`` tool, so the roster must not carry a second, prose
+    copy that cannot stay in sync with it."""
     registry = AgentRegistry(_AGENTS_DIR)
     section = registry.render_subagents_section("guide")
-    # The roster now carries each callee's input + output schema blocks.
-    assert "Input schema" in section
-    assert "Output schema" in section
-    # A concrete callee field shows the schemas are really rendered.
-    assert "for_revision_path" in section
-    assert "end_to_end_testable" in section  # architect's extra output field
+    assert "Input schema" not in section
+    assert "Output schema" not in section
+    assert "for_revision_path" not in section
+
+
+def test_callee_schemas_reach_the_guide_through_its_tools() -> None:
+    """The other half: what left the roster must be on the tools themselves."""
+    registry = AgentRegistry(_AGENTS_DIR)
+    specs = {s.name: s for s in registry.run_subagent_specs("guide")}
+
+    architect = specs["run_subagent_architect"]
+    assert "for_revision_path" in architect.input_schema["properties"]  # type: ignore[index]
+    # architect's own extra output field survives into the tool's declared output.
+    assert "end_to_end_testable" in architect.output_schema["properties"]  # type: ignore[index]
+    # A reviewed sub-agent's tool takes the round budget and reports the loop.
+    assert "max_rounds" in architect.input_schema["properties"]  # type: ignore[index]
+    assert "review" in architect.output_schema["properties"]  # type: ignore[index]
+
+    # An unreviewed one gets neither.
+    narrative = specs["run_subagent_narrative_author"]
+    assert "max_rounds" not in narrative.input_schema["properties"]  # type: ignore[index]
+    assert "review" not in narrative.output_schema["properties"]  # type: ignore[index]
+
+
+def test_return_result_is_bound_to_each_agents_own_output_schema() -> None:
+    """A sub-agent reads the shape it must produce off ``return_result``'s
+    ``result`` parameter — the authoritative copy — rather than from prose."""
+    registry = AgentRegistry(_AGENTS_DIR)
+    (spec,) = registry.return_result_specs("architect")
+    result = spec.input_schema["properties"]["result"]  # type: ignore[index]
+    assert "primary_path" in result["properties"]
+    assert "end_to_end_testable" in result["properties"]
+    # The engine-owned compliance field is declared where the agent will read it.
+    assert "schema_compliance" in result["properties"]
+
+    # Entry agents never return a result to anybody, so they get no such tool.
+    assert registry.return_result_specs("guide") == []

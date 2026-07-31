@@ -41,7 +41,16 @@ class _FakeRegistry:
             tools=frozenset(),
             system_prompt="sys",
             display_name="" if name != "architect" else "The Architect",
+            critic="",
+            role="",
+            is_critic=False,
         )
+
+    def run_subagent_specs(self, caller: str) -> list[object]:
+        return []
+
+    def return_result_specs(self, name: str) -> list[object]:
+        return []
 
 
 class _FakeTransient:

@@ -9,7 +9,7 @@ ends up unparseable. This tool gives the judge a **structured terminal call**
 instead: it submits ``score`` (0–100) and a ``report`` as tool input, which the
 engine surfaces on the tool-call detail event, so the harness reads the verdict
 from the wire — no text parsing. Calling it ends the judge's run (it joins the
-same ``stop_requested`` stop mechanism as ``return_result`` / ``escalate_blocker``).
+same ``stop_requested`` stop mechanism as ``return_result``).
 
 The tool is inert outside a validation judge run: an ordinary agent has no
 reason to call it, and doing so would simply end its turn with a recorded

@@ -52,8 +52,8 @@ TOOLCHAIN_BUILD: ToolSpec = ToolSpec(
         "green (run with the default steps).\n"
         "- To run just the tests — e.g. to diagnose failures (implementation bug "
         "vs. test bug vs. spec ambiguity), or after addressing review/user "
-        "feedback that touches code. Detecting that feedback breaks tests "
-        'triggers `escalate_blocker` with `reason: "feedback_breaks_tests"`.'
+        "feedback that touches code. Detecting that feedback breaks tests is "
+        'grounds to escalate with `reason: "feedback_breaks_tests"`.'
     ),
     input_schema={
         "type": "object",

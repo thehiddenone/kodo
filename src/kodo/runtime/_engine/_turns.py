@@ -41,8 +41,13 @@ from kodo.llms import (
     default_cache_breakpoints,
 )
 from kodo.state import render_tool_call_markdown
-from kodo.tools import ToolDispatcher, tools_for_agent
-from kodo.toolspecs import build_detail_rows, normalize_output, tool_result_succeeded
+from kodo.tools import ToolDispatcher, canonical_tool_call
+from kodo.toolspecs import (
+    ALL_TOOLS,
+    build_detail_rows,
+    normalize_output,
+    tool_result_succeeded,
+)
 from kodo.transport import (
     EVT_AGENT_TOOL_CALL_DETAIL,
     EVT_AGENT_TOOL_CALL_PREP,
@@ -51,6 +56,7 @@ from kodo.transport import (
     EVT_USER_ATTACHMENTS,
 )
 
+from .._agenttools import agent_tool_specs
 from .._attachments import MAX_ATTACHMENTS, AttachmentError, inject_attachments, load_attachment
 from .._checkpoints import CheckpointRef
 from .._cyclic_thinking import CyclicThinkingDetector
@@ -228,7 +234,7 @@ class TurnLoopMixin:
             model=model_id,
             system_prompt=agent.system_prompt,
             messages=self._main_messages,
-            tools=tools_for_agent(agent.tools),
+            tools=agent_tool_specs(self._registry, agent),
             tool_dispatch=dispatcher.dispatch,
             stream_id=stream_id,
             agent_name=agent_name,
@@ -410,7 +416,10 @@ class TurnLoopMixin:
             tuple[list[Message], list[Path]]: Updated messages and (unused) files.
         """
         files_written: list[Path] = []
-        tool_desc = {t.name: t.user_description for t in tools}
+        # Keyed on the whole catalog, not just this agent's list: a
+        # ``run_subagent_<name>`` call is canonicalized to ``run_subagent``
+        # before the card is emitted, and that name is not in ``tools``.
+        tool_desc = {t.name: t.user_description for t in ALL_TOOLS}
         tool_logger = ToolCallLogger(self._llm_logs_dir())
         persisted_upto = len(messages)
 
@@ -725,12 +734,22 @@ class TurnLoopMixin:
         autonomous mode. The resume path never passes it (a persisted call is
         replayed as an ordinary call).
 
+        This is also the **single** point where a per-sub-agent spawn call is
+        folded back to its canonical form (:func:`~kodo.tools.canonical_tool_call`):
+        a model calls ``run_subagent_<name>``, but everything downstream of this
+        line — the tool-call card, the call logger, checkpoint prepare/commit,
+        the security gate, result normalization, and the persisted detail rows —
+        is keyed on the catalog's one ``run_subagent`` entry. Doing it here
+        covers the live turn loop and crash-resume alike, since both funnel
+        through this method.
+
         Returns:
             list[dict[str, object]]: ``tool_result`` content blocks, in order.
         """
         recovered_ids = recovered_ids or set()
         tool_results: list[dict[str, object]] = []
-        for tool_use_id, tool_name, tool_input in calls:
+        for tool_use_id, raw_name, raw_input in calls:
+            tool_name, tool_input = canonical_tool_call(raw_name, raw_input)
             # ask_user never gets the generic tool-call card: its handler fires
             # a prompt.question request (carrying this tool_use_id) that the
             # client renders as the interactive question panel instead.
@@ -800,10 +819,13 @@ class TurnLoopMixin:
         and the full ``{root, sha, parent}`` rides the detail event out-of-band
         so the WebView can render the undo / rollback controls. The same
         ``checkpoint`` also drives the coordinator's ``record_guided_revision``
-        (a tracked document's ``new_revision`` jsonl entry), and a successful
-        ``document_feedback`` call with ``accept: true`` drives
-        ``_finalize_document`` (the accept/review flow) — both below, after the
+        (a tracked document's ``new_revision`` jsonl entry), below, after the
         client has already seen this call's own detail event.
+
+        ``tool_name`` is always the *canonical* name — a ``run_subagent_<name>``
+        call was folded back to ``run_subagent`` by
+        :meth:`_dispatch_tool_calls` before it got here — so the spec lookup and
+        every projection built from it stay keyed on the catalog.
 
         A tool with no matching spec (none today) passes through unchanged.
         """
@@ -911,10 +933,6 @@ class TurnLoopMixin:
             await self._checkpoints.record_guided_revision(
                 tool_name, tool_input, checkpoint, agent_name
             )
-        elif tool_name == "document_feedback" and output.get("status") == "recorded":
-            path = str(tool_input.get("path", ""))
-            if bool(tool_input.get("accept", False)) and path:
-                await self._finalize_document(path)
 
         return content
 

@@ -20,14 +20,5 @@ TEST_DESIGN_CRITIC: SubAgentSpec = SubAgentSpec(
         ),
         require_responsibility=True,
     ),
-    output_schema=critic_output(
-        [
-            "non_behavioral_test",
-            "over_specified_test",
-            "compound_test",
-            "ungrounded_test",
-            "coverage_gap",
-            "ambiguity",
-        ]
-    ),
+    output_schema=critic_output(),
 )

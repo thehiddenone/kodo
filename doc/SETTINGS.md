@@ -91,7 +91,7 @@ Governs the stuck-agent watchdog (doc/STUCK_DETECTION.md) — detects a turn tha
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `stuck_detection.active` | `"off"` \| `"local_only"` \| `"local_and_cloud"` | `"local_only"` | Which model residence the watchdog (and the cyclic-thinking detector) runs for. Local LLMs are the primary target — both are small/quantized-model failure modes cloud models rarely exhibit. |
-| `stuck_detection.scope` | `"top_level"` \| `"top_level_and_subagents"` | `"top_level"` | Whether only the main entry agent (Guide/Problem Solver) is watched, or sub-agents (`run_subagent`/`run_author_critic_iteration`) too — applies to both detectors identically. |
+| `stuck_detection.scope` | `"top_level"` \| `"top_level_and_subagents"` | `"top_level"` | Whether only the main entry agent (Guide/Problem Solver) is watched, or sub-agents (spawned through a `run_subagent_<name>` tool) too — applies to both detectors identically. |
 | `stuck_detection.auto_unstuck_interactive` | `bool` | `false` | Outside autonomous mode, whether a detected stall is nudged automatically (`true`) or surfaced as a `prompt.stuck_alert` the user must confirm (`false`). Autonomous mode always nudges immediately, regardless of this flag. **Ordinary stall remediation only** — the cyclic-thinking detector never consults this flag, since by the time it fires the stream is already dead and the repeated content already generated, so remediation there is always immediate. |
 
 ```json

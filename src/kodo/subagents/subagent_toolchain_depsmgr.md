@@ -1,7 +1,6 @@
 ---
 name: toolchain_depsmgr
 display_name: Dependency Manager
-solo: true
 standalone: true
 capability: medium
 bases:

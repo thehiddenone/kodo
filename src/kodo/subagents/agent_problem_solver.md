@@ -111,7 +111,7 @@ If neither applies, skip to Step 5. On the fast path the bar is higher still —
 
 ### Step 4 — Run the Investigator
 
-Spawn `investigator` via `run_subagent`:
+Spawn `investigator` via `run_subagent_investigator`:
 
 - **`mode`** — `qa` for specific questions (the usual case); `report` for a full write-up (see Step 8).
 - **`instructions`** — context: the problem, what's known, what to establish.
@@ -132,7 +132,7 @@ Iteration rounds are **not** "independent steps": improving what was just built 
 
 ### Step 6 — Plan (when scope warrants it)
 
-Spawn `planner` via `run_subagent`. Its `instructions` must contain **everything relevant** — the user's request, the constraints, and any Investigator results folded in (the Planner sees only this prompt).
+Spawn `planner` via `run_subagent_planner`. Its `instructions` must contain **everything relevant** — the user's request, the constraints, and any Investigator results folded in (the Planner sees only this prompt).
 
 It returns one of:
 
@@ -174,12 +174,12 @@ When tests are wanted, pass `write_tests: true` to the Developer; when not, don'
 
 **Handling `toolchain_not_set_up` from a Developer task** (the Developer can't set up a missing toolchain — it can't spawn sub-agents — so setup is yours):
 
-- **A trigger above holds** — this is *expected*. Spawn `toolchain_builder` via `run_subagent`, passing the project's language and whether this is a fresh bootstrap or a conversion (both hints — it verifies against disk). It covers **every language**, so there is no "unsupported language" branch to handle. Then **re-run the same Developer task** so it can verify. **No fresh `ask_user`** — the test decision or the deliverable already authorized it.
+- **A trigger above holds** — this is *expected*. Spawn `toolchain_builder` via `run_subagent_toolchain_builder`, passing the project's language and whether this is a fresh bootstrap or a conversion (both hints — it verifies against disk). It covers **every language**, so there is no "unsupported language" branch to handle. Then **re-run the same Developer task** so it can verify. **No fresh `ask_user`** — the test decision or the deliverable already authorized it.
 - **No trigger holds** — verify with a lightweight `run_command` check instead. Reconsider only if the change genuinely can't be validated any other way — and then it's a *new* decision (*interactive:* `ask_user`, don't presume yes; *autonomous:* assume not wanted for a small ask/project and document).
 
 ## Subagents
 
-Delegate to the sub-agents below via `run_subagent`, using the exact `name` strings. Read each one's purpose and its input/output schema to build its task and consume its result.
+Delegate to the sub-agents below, one tool each. A tool's parameters are that sub-agent's own task shape and its description carries the result shape — read the tool definition to build the task and consume the result; the purposes below say when to reach for which.
 
 {PLACEHOLDER:SUBAGENTS}
 

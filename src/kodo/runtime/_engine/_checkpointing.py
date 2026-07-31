@@ -225,7 +225,7 @@ class CheckpointCoordinator:
         A Problem-Solver edit to a tracked document is recorded too, tagged
         ``workflow: "problem_solving"``, so the Guide can reconcile state
         once Guided mode resumes; no other jsonl entry type is ever written
-        outside Guided mode, since ``document_feedback`` (the only producer
+        outside Guided mode, since a critic's verdict (the only producer
         of the other three) is never granted to Problem Solver.
         """
         project_root = Path(checkpoint.root)

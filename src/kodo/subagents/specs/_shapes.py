@@ -16,11 +16,25 @@ The shapes mirror the contracts the agent prompts already describe:
   convention ``LogicalPathResolver`` uses everywhere else), since a Guided
   session may have more than one bound project.
 - **Author/solo output** — the path(s) a producing sub-agent wrote, plus which
-  one is primary (what a critic reviews / what the author-critic loop tracks).
-- **Critic output** — a ``verdict`` plus a list of structured ``concerns`` whose
-  ``kind`` is drawn from that critic's own vocabulary. This shape is also reused
-  verbatim as the ``concerns`` field of a ``feedback`` entry in a document's
-  ``.jsonl`` evolution log (see ``kodo.guided_state``).
+  one is primary (what a critic reviews / what the author-critic loop tracks) —
+  *or*, when the author is blocked, the escalation described next.
+- **Escalation** — a blocked author reports through the same ``return_result``
+  it uses for a normal result: a non-empty ``reason``, the blocking ``summary``,
+  and any discrete ``options``. This is the shape the retired
+  ``escalate_blocker`` tool declared, minus its ``blocking_artifact_ids``,
+  promoted onto the author's own output for the same reason the critic's verdict
+  was (see below): one terminal call, and a structured result the *caller*
+  actually receives. The old tool stopped the run without ever setting a result,
+  so a blocked sub-agent handed its delegator nothing but a compliance failure.
+  ``_run_review_loop`` stops the moment ``reason`` comes back non-empty
+  (``review.outcome: "escalated"``) rather than sending a blocked author to its
+  critic.
+- **Critic output** — the reviewed ``path``, an ``accept`` verdict, and a list of
+  structured ``concerns``. Identical for every critic (it takes no arguments):
+  this *is* the shape the retired ``document_feedback`` tool declared, promoted
+  to the critic's own ``return_result`` payload so a critic reports its verdict
+  once instead of twice. The engine writes it to the reviewed document's
+  ``.jsonl`` evolution log as a ``feedback`` entry (see ``kodo.guided_state``).
 
 Inline agents (``compactor``, ``toolchain_builder``) read and write files
 directly with no structured pipeline contract; they declare their inline/path
@@ -117,17 +131,35 @@ def pipeline_input(
 def author_output(
     *,
     extra_properties: dict[str, object] | None = None,
-    extra_required: list[str] | None = None,
 ) -> dict[str, object]:
-    """Build the output shape for a file-writing author/solo sub-agent."""
+    """Build the output shape for a file-writing author/solo sub-agent.
+
+    Carries **both** terminal outcomes an author can reach, because
+    ``return_result`` is its only way out (see the module docstring's
+    "Escalation" note):
+
+    - the normal one — ``primary_path`` / ``paths`` / ``summary`` plus whatever
+      the spec adds through ``extra_properties``;
+    - the blocked one — a non-empty ``reason`` (plus the blocker's ``summary``
+      and any ``options``), which the engine reads as an escalation.
+
+    Only ``summary`` is *schema*-required: an author blocked before it wrote
+    anything has no ``primary_path`` to report, and forcing one would make every
+    escalation non-compliant (:func:`~kodo.toolspecs.normalize_output` backfills
+    a missing required field with ``""`` and flags the whole result), which is
+    exactly the "sub-agent failed" signal an escalation is not. The obligation
+    is therefore stated per field in prose — "required unless you are
+    escalating" — including for the fields individual specs add.
+    """
     properties: dict[str, object] = {
         "primary_path": {
             "type": "string",
             "description": (
                 "The path a critic should review / the author-critic loop tracks. "
-                "Required even when only one file was touched. Folder-prefixed "
-                "with the owning project's name, matching the convention "
-                "input_paths used (see pipeline_input)."
+                "Required even when only one file was touched (omit it only when "
+                "escalating — see `reason`). Folder-prefixed with the owning "
+                "project's name, matching the convention input_paths used (see "
+                "pipeline_input)."
             ),
         },
         "paths": {
@@ -135,54 +167,141 @@ def author_output(
             "items": {"type": "string"},
             "description": (
                 "Every path this agent created or edited this round, "
-                "folder-prefixed like primary_path."
+                "folder-prefixed like primary_path. Required unless you are "
+                "escalating; [] when a blocker stopped you before any write."
             ),
         },
         "summary": {
             "type": "string",
-            "description": "One line: what was produced or changed. No file content.",
+            "description": (
+                "Always required. One line: what was produced or changed. When "
+                "escalating (see `reason`), this is instead the plain-English "
+                "summary of where the work stands and what is blocking it — "
+                "written for whoever has to unblock you. No file content either way."
+            ),
         },
     }
     if extra_properties:
         properties.update(extra_properties)
-    required = ["primary_path", "paths", "summary"]
-    if extra_required:
-        required.extend(extra_required)
-    return {"type": "object", "properties": properties, "required": required}
+    properties.update(_escalation_properties())
+    return {"type": "object", "properties": properties, "required": ["summary"]}
 
 
-def concern_item(kinds: list[str]) -> dict[str, object]:
+def _escalation_properties() -> dict[str, object]:
+    """The escalation half of :func:`author_output` (see :func:`author_output`)."""
+    return {
+        "reason": {
+            "type": ["string", "null"],
+            "description": (
+                "Set this ONLY to escalate a blocker you cannot defensibly resolve: "
+                "a short identifier of what is blocking you (e.g. "
+                "'critic_iteration_cap', 'spec_ambiguity', 'missing_tech_stack_field'). "
+                "Returning it ends your run and hands the blocker to whoever "
+                "delegated to you, who owns the resolution — it triages "
+                "procedurally, decides itself in autonomous mode, or puts the "
+                "matter to the user in interactive mode; the resolution comes back "
+                "as the instructions of a later round. Omit it (or null) on a "
+                "normal result. Escalate when an iteration cap is exhausted, when a "
+                "back-and-forth cannot be reconciled, or when the inputs are "
+                "insufficient — never for a stylistic or close-but-defensible call "
+                "you can make yourself."
+            ),
+        },
+        "options": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Escalations only: concrete options to choose between, when the "
+                "blocker admits discrete alternatives. Empty/omitted when you are "
+                "asking for free direction."
+            ),
+        },
+    }
+
+
+def concern_item() -> dict[str, object]:
     """Build the schema for one structured critic concern.
 
-    Fields: ``kind`` (constrained to the critic's own vocabulary),
-    ``description``, and optional ``first_line`` / ``last_line`` / ``excerpt``.
-    This same shape is reused verbatim as a ``feedback`` jsonl entry's
-    ``concerns`` items (see ``kodo.guided_state``).
+    Fields: ``kind``, ``description``, and optional ``first_line`` /
+    ``last_line`` / ``excerpt``. This same shape is reused verbatim as a
+    ``feedback`` jsonl entry's ``concerns`` items (see ``kodo.guided_state``).
+
+    ``kind`` is a free-form string rather than an ``enum``: each critic's own
+    concern catalogue is prose in its ``### Concern vocabulary`` prompt section,
+    which is where it belongs — the catalogue needs the per-kind explanation and
+    the routing rules ("apply production kinds only to production code") that a
+    bare enum cannot carry, and duplicating the bare list here only invited the
+    two to drift. Nothing ever enforced the enum anyway:
+    :func:`~kodo.toolspecs.normalize_output` validates declared keys and required
+    fields, never value constraints.
     """
     return {
         "type": "object",
         "properties": {
-            "kind": {"type": "string", "enum": list(kinds)},
-            "description": {"type": "string"},
-            "first_line": {"type": ["integer", "null"]},
-            "last_line": {"type": ["integer", "null"]},
-            "excerpt": {"type": ["string", "null"]},
+            "kind": {
+                "type": "string",
+                "description": (
+                    "Concern category, from your own concern vocabulary (the "
+                    "'### Concern vocabulary' section of your prompt). Never invent "
+                    "a kind outside it."
+                ),
+            },
+            "description": {
+                "type": "string",
+                "description": "Plain English: what's wrong and the concrete fix.",
+            },
+            "first_line": {
+                "type": ["integer", "null"],
+                "description": "First line of the span this concern is about.",
+            },
+            "last_line": {
+                "type": ["integer", "null"],
+                "description": "Last line of that span (equal to first_line for one line).",
+            },
+            "excerpt": {
+                "type": ["string", "null"],
+                "description": "The text at that location, verbatim.",
+            },
         },
         "required": ["kind", "description"],
     }
 
 
-def critic_output(kinds: list[str]) -> dict[str, object]:
-    """Build the output shape for a critic sub-agent over its concern vocabulary."""
+def critic_output() -> dict[str, object]:
+    """Build the output shape every critic sub-agent returns.
+
+    One shape for all critics — the schema the retired ``document_feedback``
+    tool declared, now the critic's own ``return_result`` payload. The engine
+    appends it to the reviewed file's ``.jsonl`` evolution log as a ``feedback``
+    entry and, on ``accept``, drives the acceptance flow; the critic itself never
+    writes to the log and never decides what happens next.
+    """
     return {
         "type": "object",
         "properties": {
-            "verdict": {"type": "string", "enum": ["accepted", "rejected"]},
+            "path": {
+                "type": "string",
+                "description": (
+                    "Path of the file you reviewed (delivered as task input), "
+                    "folder-prefixed with its project's name."
+                ),
+            },
+            "accept": {
+                "type": "boolean",
+                "description": "True if the file passes review; false if it needs revision.",
+            },
             "concerns": {
                 "type": "array",
-                "items": concern_item(kinds),
-                "description": "Empty when accepted; non-empty when rejected.",
+                "items": concern_item(),
+                "description": (
+                    "Every concern you found, aggregated. Non-empty when `accept` is "
+                    "false; empty when it is true."
+                ),
+            },
+            "summary": {
+                "type": "string",
+                "description": "One line summarizing the review.",
             },
         },
-        "required": ["verdict", "concerns"],
+        "required": ["path", "accept", "concerns"],
     }

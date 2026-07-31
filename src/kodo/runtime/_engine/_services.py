@@ -21,12 +21,11 @@ class _EngineServices:
     def __init__(
         self,
         *,
-        run_subagent: Callable[[str, str, dict[str, object]], Awaitable[dict[str, object]]],
+        run_subagent: Callable[
+            [str, str, dict[str, object], int | None], Awaitable[dict[str, object]]
+        ],
         run_dependency_manager: Callable[[dict[str, object]], Awaitable[dict[str, object]]],
         run_web_search_agent: Callable[[dict[str, object], str], Awaitable[dict[str, object]]],
-        run_author_critic: Callable[
-            [str, str, str, str, dict[str, str], str, bool], Awaitable[dict[str, object]]
-        ],
         rollback: Callable[[str, str], Awaitable[None]],
         disable_autonomous: Callable[[], Awaitable[None]],
         create_project: Callable[[str, str | None, bool], Awaitable[dict[str, object]]],
@@ -41,7 +40,6 @@ class _EngineServices:
         self.__run_subagent = run_subagent
         self.__run_dependency_manager = run_dependency_manager
         self.__run_web_search_agent = run_web_search_agent
-        self.__run_author_critic = run_author_critic
         self.__rollback = rollback
         self.__disable_autonomous = disable_autonomous
         self.__create_project = create_project
@@ -54,10 +52,18 @@ class _EngineServices:
         self.__root_paths = root_paths
 
     async def run_subagent(
-        self, caller: str, name: str, task_input: dict[str, object]
+        self,
+        caller: str,
+        name: str,
+        task_input: dict[str, object],
+        max_rounds: int | None = None,
     ) -> dict[str, object]:
-        """Delegate to the engine's caller-gated sub-agent spawn."""
-        return await self.__run_subagent(caller, name, task_input)
+        """Delegate to the engine's caller-gated sub-agent spawn.
+
+        The engine decides from the callee's own frontmatter whether this is
+        one pass or a whole author/critic loop; ``max_rounds`` only bounds the
+        latter."""
+        return await self.__run_subagent(caller, name, task_input, max_rounds)
 
     async def run_dependency_manager(self, task_input: dict[str, object]) -> dict[str, object]:
         """Delegate to the engine's ungated dependency-manager spawn."""
@@ -68,21 +74,6 @@ class _EngineServices:
     ) -> dict[str, object]:
         """Delegate to the engine's ungated, silent web_search agent run."""
         return await self.__run_web_search_agent(task_input, tool_call_id)
-
-    async def run_author_critic_iteration(
-        self,
-        caller: str,
-        author_name: str,
-        critic_name: str,
-        path: str,
-        input_paths: dict[str, str],
-        instructions: str,
-        for_revision: bool,
-    ) -> dict[str, object]:
-        """Delegate to the engine's caller-gated Author/Critic round."""
-        return await self.__run_author_critic(
-            caller, author_name, critic_name, path, input_paths, instructions, for_revision
-        )
 
     async def rollback(self, root: str, target_sha: str) -> None:
         """Delegate to the engine's ``_run_rollback``."""

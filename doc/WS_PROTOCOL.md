@@ -421,7 +421,7 @@ Review activity is intentionally low-fidelity: the design is for the user to see
   "concern_count": 3 }
 ```
 
-`target_filename` is now the document's real, project-relative path (previously an 8-character artifact-id prefix the panel couldn't open) — content still stays off the wire, just the path. `verdict` is whatever `kodo.guided_state.read_status` derives from the file's `.jsonl` log after the critic's `document_feedback` call (§7, STATE_AND_LIFECYCLE.md), not a value the critic invents.
+`target_filename` is now the document's real, project-relative path (previously an 8-character artifact-id prefix the panel couldn't open) — content still stays off the wire, just the path. `verdict` is whatever `kodo.guided_state.read_status` derives from the file's `.jsonl` log after the engine records the critic's returned verdict (§7, STATE_AND_LIFECYCLE.md), not a value the critic invents.
 
 ### 5.7 `usage.update` — cost accounting
 
@@ -685,7 +685,7 @@ Every server-initiated prompt is a `kind=request` frame. The client's reply is a
 
 ### 6.1 `prompt.question` — a batched question set
 
-Surfaced when any agent calls `ask_user` (e.g. the Narrative Author or the Problem Solver eliciting input, or the Guide's own judgment-call questions), and by `escalate_blocker` for its interactive user prompt (a single free-text-only question). One request carries the agent's **whole question batch**; the client renders it as an in-feed panel of question boxes and replies once, when the user clicks *Confirm and Send*. In autonomous mode `ask_user` is withheld from the agent entirely, so no `prompt.question` is emitted.
+Surfaced when any agent calls `ask_user` (e.g. the Narrative Author or the Problem Solver eliciting input, the Guide's own judgment-call questions, or the Guide putting a sub-agent's escalation to the user). One request carries the agent's **whole question batch**; the client renders it as an in-feed panel of question boxes and replies once, when the user clicks *Confirm and Send*. In autonomous mode `ask_user` is withheld from the agent entirely, so no `prompt.question` is emitted.
 
 Request payload:
 
@@ -702,8 +702,8 @@ Request payload:
   ] }
 ```
 
-- `tool_call_id` — the `ask_user`/`escalate_blocker` `tool_use` block id. The webview uses it to correlate this live request with the `ask_user` feed entry rebuilt from `session.history` (the `tool_use` is flushed to `session.jsonl` before dispatch, so a reconnect mid-question sees both).
-- `options` are plain answer strings, the agent's top choice first. The client always appends its own free-text option, so `options` never contains an "Other". An **empty** `options` list means free-text-only (used by `escalate_blocker`).
+- `tool_call_id` — the `ask_user` `tool_use` block id. The webview uses it to correlate this live request with the `ask_user` feed entry rebuilt from `session.history` (the `tool_use` is flushed to `session.jsonl` before dispatch, so a reconnect mid-question sees both).
+- `options` are plain answer strings, the agent's top choice first. The client always appends its own free-text option, so `options` never contains an "Other". An **empty** `options` list means free-text-only.
 - `kind` — `single_choice` (exactly one of: an option, or free text) or `multi_choice` (one or more; free text counts as a selection).
 
 Response payload — one entry per question, in order:
@@ -722,7 +722,7 @@ Response payload — one entry per question, in order:
 
 ### 6.2 `prompt.approval` — document review gate
 
-Surfaced by the engine itself — never by a sub-agent tool call — right after a critic calls `document_feedback(path, accept=True)` (STATE_AND_LIFECYCLE.md §8.1). In autonomous mode the gate auto-accepts and no `prompt.approval` is emitted (the engine writes the `accepted` jsonl entry directly).
+Surfaced by the engine itself — never by a sub-agent tool call — right after a critic sub-agent returns `accept: true` and the engine records it (`_record_review_verdict`; STATE_AND_LIFECYCLE.md §8.1). In autonomous mode the gate auto-accepts and no `prompt.approval` is emitted (the engine writes the `accepted` jsonl entry directly).
 
 Request payload:
 
@@ -743,7 +743,7 @@ Response payload:
   "feedback_text": "..." | null }
 ```
 
-`feedback_text` accompanies `action = "feedback"`. On `agree`, the engine appends a `review_result` (`decision: "approve"`) entry to the document's `.jsonl` log, then an `accepted` entry — no sub-agent call is involved. On `feedback`, the engine appends `review_result` (`decision: "reject"`, carrying `feedback_text` as `comment`); the next `run_author_critic_iteration` round on that path reads this as `needs_revision` and the author revises.
+`feedback_text` accompanies `action = "feedback"`. On `agree`, the engine appends a `review_result` (`decision: "approve"`) entry to the document's `.jsonl` log, then an `accepted` entry — no sub-agent call is involved. On `feedback`, the engine appends `review_result` (`decision: "reject"`, carrying `feedback_text` as `comment`); the enclosing author/critic loop reads this as `needs_revision` and spends another round on it.
 
 > The doc'd `artifact_path` field is **not** sent today — the panel correlates by
 > `artifact_id` only.
@@ -1089,7 +1089,7 @@ See the `project_kodo_workspace_session_linkage` memory for the full design-deci
 - **No binding step at all.** `MSG_PROJECT_SET`/`EVT_PROJECT_BOUND` no longer exist on the wire. A Guided session's bound roots are exactly its `workspace.folders` (§7.1, §7.1b) — the live VS Code workspace folders, or the locked/bound-directories fallback (§7.1b's "disconnected/isolated operation" extension) when disconnected — precisely the mechanism §7.1b already documents for Problem Solver. `_root_paths()`/`_has_workspace()`/`_make_resolver()` (`kodo/runtime/_engine/_core.py`) no longer branch on `workflow_mode` at all.
 - **No project validation gate.** A bound root no longer needs a pre-existing `.kodo/kodo.md`; like Problem Solver, `.kodo/kodo.md` is scaffolded lazily on first checkpoint commit (`RootMirrorManager.prepare`), or fully laid out (`specs/`/`src/`/`test/` + `kodo.md`) by `scaffold_new_project` — already granted to the Guide, and now actually reachable: previously calling it from Guided mid-session created an orphaned workspace folder Guided's single-root resolver couldn't see.
 - **A session may have N bound projects.** `get_root_paths` returns one entry per bound project (`{name, path}`, same shape Problem Solver has always returned). The Guide picks which project a given piece of work belongs to and folder-prefixes every path it hands to a pipeline sub-agent accordingly (below) — *how* it should split or sequence work across several projects is a prompt-level policy question left for future work, not something this wire/mechanism change decides.
-- **Pipeline document paths are now logical, folder-prefixed paths** — identical convention to every other `LogicalPathResolver`-resolved path in the system (`find_files`'s `root`, `run_command`'s `working_dir`, ...): `"billing-service/specs/requirements/auth.md"`, not the old bare `"specs/requirements/auth.md"`. This applies to `run_author_critic_iteration`'s `path`/`input_paths` (§6, if documented there) and every pipeline sub-agent's `input_paths`/`primary_path`/`for_revision_path` (`kodo.subagents.specs._shapes`). `kodo.guided_state`'s evolution-log functions (`shadow_path`/`is_tracked`/...) are unaffected — they only ever see an already-resolved absolute path plus the specific bound root it belongs to (looked up via the new `kodo.tools.root_for(roots, resolved_path)` helper, a longest-matching-root lookup — see the callers in `document_feedback`, `guided_dev_status`, `record_guided_revision`, document finalization, and `run_author_critic_iteration`).
+- **Pipeline document paths are now logical, folder-prefixed paths** — identical convention to every other `LogicalPathResolver`-resolved path in the system (`find_files`'s `root`, `run_command`'s `working_dir`, ...): `"billing-service/specs/requirements/auth.md"`, not the old bare `"specs/requirements/auth.md"`. This applies to every pipeline sub-agent's `input_paths`/`primary_path`/`for_revision_path` (`kodo.subagents.specs._shapes`), which are exactly the fields a `run_subagent_<name>` tool declares. `kodo.guided_state`'s evolution-log functions (`shadow_path`/`is_tracked`/...) are unaffected — they only ever see an already-resolved absolute path plus the specific bound root it belongs to (looked up via the new `kodo.tools.root_for(roots, resolved_path)` helper, a longest-matching-root lookup — see the callers in `guided_dev_status`, `record_guided_revision`, the engine's critic-verdict recording, and document finalization).
 - **`rollback` (the LLM-facing tool, Guided-only) gained a required `root` input** — a `get_root_paths` name — since a target commit SHA alone no longer identifies which of N bound projects to roll back. The checkpoint-UI-driven `checkpoint.rollback` WS message (§8) is unaffected — it already took an explicit `root`.
 - **kodo-vsix**: the single-select "Choose the project for this Guided Development session" QuickPick and its "will be locked... cannot be changed" confirmation modal are gone entirely. Guided sessions behave exactly like Problem Solver in the client too — no picker, no lock, no per-session project indicator; the session-picker's "Guided"/"Problem solving" label now reads `session.list`'s `workflow_mode` field (a session's last persisted mode, informational only) instead of the removed `project_root` field.
 

@@ -40,7 +40,7 @@ from ._installer import (
     uninstall_llamacpp,
     update_llamacpp,
 )
-from ._llama import LlamaPlugin, MalformedToolCallError, ThinkingStreamParser
+from ._llama import LlamaPlugin, MalformedToolCallError, ThinkingStreamParser, build_openai_tools
 from ._llama_server import (
     LlamaServer,
     LlamaServerConfig,
@@ -58,6 +58,7 @@ __all__ = [
     "RunningServer",
     "ThinkingStreamParser",
     "build_exists",
+    "build_openai_tools",
     "check_llamacpp_update",
     "ensure_llama_running",
     "fetch_latest_build_number",
