@@ -450,10 +450,13 @@ The engine measures the entry agent's main context after every turn and pushes `
 ```json
 { "type": "context.stats",
   "current_tokens": 184320, "limit_tokens": 1000000, "percent": 18.4,
-  "can_compact": true }
+  "can_compact": true,
+  "subsession": { "current_tokens": 38912, "limit_tokens": 131072, "percent": 29.7 } }
 ```
 
 `current_tokens` = the last turn's `input + cache_read + cache_write + output` (≈ the next call's context), or a char-based estimate right after a compaction. `limit_tokens` is the **current model's** context window (per-model `context_window` in the LLM registry — *not* a global setting), so it changes when the model changes. `can_compact` is `true` only while the entry agent is idle (`phase == "awaiting_user"`), no compaction is running, there is context, and the `compactor` agent is registered — the client gates its **Compact now** button on it.
+
+`subsession` mirrors the same three fields (never `can_compact` — compaction only ever applies to the main context) for whichever sub-agent subsession is currently running, measured against *that subsession's own model's* context window (a sub-agent can run on a different model than the main entry agent). It is `null` whenever no subsession is active. The client shows a second "subsession context: …" readout next to the main gauge exactly while this is non-null, and hides it the instant the subsession ends (`subsession.ended`, §5.x) — see `ContextCompactor.note_subsession_context`/`clear_subsession_context` in `_compaction.py`.
 
 When context reaches 90% of `limit_tokens` the engine compacts automatically (the user can also force it via `compact.now`, §7.2a; and switching to a smaller-window model auto-compacts with the outgoing model — STATE_AND_LIFECYCLE.md §4.5). A run is bracketed by `context.compacting` (drives a "Compacting context, please hold on" indicator):
 

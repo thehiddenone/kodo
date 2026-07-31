@@ -501,9 +501,20 @@ class WorkflowEngine(
         ``_queue``, so without this the engine would report "not running"
         (accepting input) while actually never processing another queued
         prompt.
+
+        ``self._session.agent`` is not a reliable ``entry_agent`` here: while
+        a subsession is active it holds the *sub-agent's* own name (set by
+        ``_drive_subsession`` and never restored), not the top-level entry
+        agent that actually owns the dangling ``run_subagent`` tool_use in
+        ``_main_messages`` — using it directly would mistag the interrupted-
+        turn record and could point a future cold-restart resume
+        (:meth:`~._resume.ResumeMixin._resume_main_turn`) at the wrong agent.
+        ``_last_entry_agent()`` recovers the correct one from the already-
+        persisted ``entry_agent`` tag in that case.
         """
         was_running = self._session.phase == "running"
-        entry_agent = self._session.agent
+        in_subsession = self._transient.active_subsession is not None
+        entry_agent = self._last_entry_agent() if in_subsession else self._session.agent
         if self._worker is not None:
             self._worker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -511,6 +522,12 @@ class WorkflowEngine(
             self._worker = None
         if was_running and entry_agent is not None:
             self._persist_interrupted_turn(entry_agent)
+        if in_subsession:
+            # Sent before the "stopped" state event below so the client closes
+            # the collapsible subsession block before it renders the generic
+            # "Interrupted by user" callout after it (see
+            # ``_abort_active_subsession``).
+            await self._abort_active_subsession()
         self._session.phase = "stopped"
         self._session.agent = None
         await self._emitters.emit_state()

@@ -376,8 +376,8 @@ class LlamaFlavor:
             name="default",
             description="Default flavor",
             llama_args={
-                "--cache-type-k": "fp16",
-                "--cache-type-v": "fp16",
+                "--cache-type-k": "f16",
+                "--cache-type-v": "f16",
                 "--ctx-size": "0",
                 "--n-gpu-layers": "-1",
                 "--reasoning-format": "auto",

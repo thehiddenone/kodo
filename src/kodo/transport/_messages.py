@@ -705,9 +705,13 @@ EVT_REVIEW_VERDICT = "review.verdict"
 # Context-compaction events (in-place compaction of an entry agent's main
 # context; see runtime/_engine/_compaction.py + doc/STATE_AND_LIFECYCLE.md §4.5).
 # Server → Client events.
-# - context.stats   {current_tokens, limit_tokens, percent, can_compact}: pushed
-#   on every state change and after each measured turn so the WebView header can
-#   show the live context gauge and enable/disable its "Compact now" button.
+# - context.stats   {current_tokens, limit_tokens, percent, can_compact,
+#   subsession}: pushed on every state change and after each measured turn so
+#   the WebView header can show the live context gauge and enable/disable its
+#   "Compact now" button. ``subsession`` is {current_tokens, limit_tokens,
+#   percent} for whichever sub-agent subsession is currently running (measured
+#   against *its own* model's context window), or ``null`` while none is —
+#   subsessions are never compacted, so it carries no ``can_compact``.
 # - context.compacting {active}: brackets a compaction run so the WebView shows a
 #   "Compacting context, please hold on" indicator with running dots.
 # - context.compacted {summary_excerpt, tokens_before, tokens_after}: emitted once

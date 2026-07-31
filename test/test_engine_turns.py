@@ -170,12 +170,16 @@ class _FakeCompactor:
         self.context_tokens = 0
         self.noted: list[str] = []
         self.auto_compact_calls = 0
+        self.subsession_context_notes: list[tuple[int, str]] = []
 
     def note_active_model(self, key: str) -> None:
         self.noted.append(key)
 
     async def maybe_auto_compact(self) -> None:
         self.auto_compact_calls += 1
+
+    def note_subsession_context(self, tokens: int, model_key: str) -> None:
+        self.subsession_context_notes.append((tokens, model_key))
 
 
 def _usage(**overrides: object) -> Usage:
@@ -561,6 +565,38 @@ async def test_run_agent_turn_track_context_updates_compactor() -> None:
 
     assert engine._compactor.context_tokens == 100 + 3 + 5 + 50
     assert engine._emitters.context_stats_calls == 1
+
+
+async def test_run_agent_turn_subsession_model_key_updates_subsession_gauge() -> None:
+    engine = _base_engine(
+        gateway=_FakeGateway(
+            [
+                [
+                    TurnEnd(
+                        usage=_usage(
+                            input_tokens=200,
+                            output_tokens=20,
+                            cache_write_tokens=0,
+                            cache_read_tokens=0,
+                        ),
+                        stop_reason="end_turn",
+                    )
+                ]
+            ]
+        )
+    )
+
+    async def tool_dispatch(*a, **k):
+        raise AssertionError
+
+    await engine._run_agent_turn(
+        **_agent_turn_kwargs(tool_dispatch=tool_dispatch, subsession_model_key="sub-model")
+    )
+
+    assert engine._compactor.subsession_context_notes == [(220, "sub-model")]
+    assert engine._emitters.context_stats_calls == 1
+    # A subsession turn must never touch the main context gauge.
+    assert engine._compactor.context_tokens == 0
 
 
 async def test_run_agent_turn_no_turn_end_skips_usage_and_context() -> None:

@@ -181,6 +181,15 @@ class ContextCompactor:
         # the new model has a smaller context window, compact with this (old)
         # model first.
         self._active_model_key: str | None = None
+        # Measured token size of the currently-active subsession's own context
+        # (last subsession turn's input + cache + output), and the registry key
+        # of the model that subsession is running on — `None` while no
+        # subsession is running, which is also what tells
+        # `subsession_context_stats_payload` to omit the reading entirely.
+        # Subsessions are never compacted (compaction only ever applies to the
+        # main context), so there is no subsession analogue of `can_compact`.
+        self._subsession_context_tokens = 0
+        self._subsession_model_key: str | None = None
 
     @property
     def context_tokens(self) -> int:
@@ -194,6 +203,28 @@ class ContextCompactor:
     def note_active_model(self, model_key: str) -> None:
         """Record the registry key of the model now owning the main context."""
         self._active_model_key = model_key
+
+    def note_subsession_context(self, tokens: int, model_key: str) -> None:
+        """Record the just-measured token size of the active subsession's context.
+
+        Called after every subsession turn (mirrors ``context_tokens``'s setter
+        for the main context) with the subsession's own model — a sub-agent can
+        run on a different model than the main entry agent, so its context
+        window (and thus its gauge's ``limit_tokens``) can differ.
+        """
+        self._subsession_context_tokens = tokens
+        self._subsession_model_key = model_key
+
+    def clear_subsession_context(self) -> None:
+        """Drop the subsession gauge once its subsession ends.
+
+        Called from ``_close_subsession`` so the client hides the "subsession
+        context" readout the instant control hands back to the parent — it
+        must never show a stale reading for a subsession that is no longer
+        running.
+        """
+        self._subsession_context_tokens = 0
+        self._subsession_model_key = None
 
     def context_limit(self) -> int:
         """Token budget for the main context = current model's context window.
@@ -225,6 +256,26 @@ class ContextCompactor:
             and self._host._agent_available(_COMPACTOR_AGENT_NAME)
         )
 
+    def subsession_context_stats_payload(self) -> dict[str, object] | None:
+        """The active subsession's own gauge reading, or ``None`` when idle.
+
+        Folded into ``context_stats_payload``'s ``subsession`` field so every
+        existing ``emit_context_stats()`` call site (after a turn, on a state
+        change, around a compaction) picks it up for free — the client shows
+        the second "subsession context" readout exactly while this is not
+        ``None`` and hides it the instant ``clear_subsession_context`` runs.
+        """
+        if self._subsession_model_key is None:
+            return None
+        limit = get_context_window(self._subsession_model_key, kodo_user_dir())
+        current = self._subsession_context_tokens
+        percent = round(100.0 * current / limit, 1) if limit > 0 else 0.0
+        return {
+            "current_tokens": current,
+            "limit_tokens": limit,
+            "percent": percent,
+        }
+
     def context_stats_payload(self) -> dict[str, object]:
         """The ``context.stats`` event payload (consumed by the emitters)."""
         limit = self.context_limit()
@@ -235,6 +286,7 @@ class ContextCompactor:
             "limit_tokens": limit,
             "percent": percent,
             "can_compact": self.can_compact(),
+            "subsession": self.subsession_context_stats_payload(),
         }
 
     async def maybe_auto_compact(self) -> None:

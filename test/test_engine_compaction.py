@@ -238,7 +238,45 @@ def test_context_stats_payload_shape() -> None:
         "limit_tokens": 1000,
         "percent": 50.0,
         "can_compact": True,
+        "subsession": None,
     }
+
+
+def test_subsession_context_stats_payload_none_when_no_subsession_active() -> None:
+    compactor, _host, _t, _s = _make_compactor()
+    assert compactor.subsession_context_stats_payload() is None
+
+
+def test_note_subsession_context_records_tokens_and_model() -> None:
+    compactor, _host, _t, _s = _make_compactor()
+    compactor.note_subsession_context(300, "claude-sub")
+    assert compactor._subsession_context_tokens == 300
+    assert compactor._subsession_model_key == "claude-sub"
+    assert compactor.subsession_context_stats_payload() == {
+        "current_tokens": 300,
+        "limit_tokens": 1000,
+        "percent": 30.0,
+    }
+
+
+def test_context_stats_payload_includes_active_subsession_reading() -> None:
+    compactor, _host, _t, _s = _make_compactor()
+    compactor.context_tokens = 500
+    compactor.note_subsession_context(100, "claude-sub")
+    payload = compactor.context_stats_payload()
+    assert payload["subsession"] == {
+        "current_tokens": 100,
+        "limit_tokens": 1000,
+        "percent": 10.0,
+    }
+
+
+def test_clear_subsession_context_hides_the_reading_again() -> None:
+    compactor, _host, _t, _s = _make_compactor()
+    compactor.note_subsession_context(300, "claude-sub")
+    compactor.clear_subsession_context()
+    assert compactor.subsession_context_stats_payload() is None
+    assert compactor.context_stats_payload()["subsession"] is None
 
 
 @pytest.mark.asyncio

@@ -51,6 +51,7 @@ class _FakeTransient:
         self.updates: list[dict[str, object]] = []
         self.web_search_notes: list[tuple[str, list[str]]] = []
         self._rehydrate: dict[str, list[dict[str, object]]] = {}
+        self.active_subsession: dict[str, object] | None = None
 
     def append_subsession_message(self, subsession_id, role, content, kind=None) -> None:
         self.subsession_messages.setdefault(subsession_id, []).append((role, content, kind))
@@ -60,6 +61,8 @@ class _FakeTransient:
 
     def update(self, **kwargs: object) -> None:
         self.updates.append(kwargs)
+        if "active_subsession" in kwargs:
+            self.active_subsession = kwargs["active_subsession"]  # type: ignore[assignment]
 
     def read_subsession_messages(self, subsession_id: str) -> list[dict[str, object]]:
         return self._rehydrate.get(subsession_id, [])
@@ -83,6 +86,9 @@ class _FakeEmitters:
     async def emit_agent_finished(self, name: str) -> None:
         self.events.append(("finished", name))
 
+    async def emit_context_stats(self) -> None:
+        self.events.append(("context_stats",))
+
     async def emit_web_search_note(self, tool_call_id: str, text: str) -> None:
         self.events.append(("note", tool_call_id, text))
 
@@ -99,6 +105,21 @@ class _FakeSink:
 
     async def send(self, env: object) -> None:
         self.sent.append(env)
+
+
+class _FakeCompactor:
+    """Stands in for `ContextCompactor`'s subsession-gauge surface only --
+    nothing here exercises the main-context side."""
+
+    def __init__(self) -> None:
+        self.subsession_context_notes: list[tuple[int, str]] = []
+        self.cleared_count = 0
+
+    def note_subsession_context(self, tokens: int, model_key: str) -> None:
+        self.subsession_context_notes.append((tokens, model_key))
+
+    def clear_subsession_context(self) -> None:
+        self.cleared_count += 1
 
 
 class _FakeDispatcher:
@@ -122,6 +143,7 @@ def _make_engine(
     engine._session = SessionState(session_id="s1")
     engine._emitters = _FakeEmitters()
     engine._sink = _FakeSink()
+    engine._compactor = _FakeCompactor()
     engine._cycle_streak = False
     engine._orch_session_id = "s1"
     # _make_cyclic_thinking_handler (doc/STUCK_DETECTION.md §2.7) reads
@@ -378,10 +400,92 @@ async def test_close_subsession_marks_failed_when_schema_noncompliant() -> None:
     assert engine._sink.sent[-1].payload["failed"] is True
 
 
+async def test_close_subsession_clears_and_reemits_subsession_context_gauge() -> None:
+    engine = _make_engine()
+
+    await engine._close_subsession("investigator", "sub1", {SCHEMA_COMPLIANCE_KEY: True})
+
+    assert engine._compactor.cleared_count == 1
+    assert ("context_stats",) in engine._emitters.events
+
+
 async def test_close_subsession_not_failed_when_schema_compliant() -> None:
     engine = _make_engine()
     await engine._close_subsession("investigator", "sub1", {SCHEMA_COMPLIANCE_KEY: True})
     assert engine._transient.markers[-1]["failed"] is False
+
+
+# ---------------------------------------------------------------------------
+# _abort_active_subsession
+# ---------------------------------------------------------------------------
+
+
+async def test_abort_active_subsession_noop_when_none_active() -> None:
+    """No subsession open (a plain Stop) -- must not touch the compactor,
+    append a marker, or send anything."""
+    engine = _make_engine()
+
+    await engine._abort_active_subsession()
+
+    assert engine._compactor.cleared_count == 0
+    assert engine._transient.markers == []
+    assert engine._sink.sent == []
+
+
+async def test_abort_active_subsession_closes_out_the_open_subsession() -> None:
+    """Mirrors what `_close_subsession` would have done had the cancellation
+    not skipped it -- clears the compactor gauge, re-emits context.stats,
+    appends a subsession_end marker, clears the active pointer, and sends
+    EVT_SUBSESSION_ENDED -- but always marked failed (a Stop is neither the
+    clean finish nor the schema-compliance failure that flag otherwise
+    distinguishes)."""
+    engine = _make_engine()
+    engine._transient.active_subsession = {
+        "subsession_id": "sub1",
+        "agent": "investigator",
+        "display_name": "Investigator",
+        "parent_display_name": "Guide",
+    }
+
+    await engine._abort_active_subsession()
+
+    assert engine._compactor.cleared_count == 1
+    assert ("context_stats",) in engine._emitters.events
+
+    marker = engine._transient.markers[-1]
+    assert marker["type"] == "subsession_end"
+    assert marker["subsession_id"] == "sub1"
+    assert marker["agent"] == "investigator"
+    assert marker["display_name"] == "Investigator"
+    assert marker["parent_display_name"] == "Guide"
+    assert marker["failed"] is True
+    assert marker["result"] == {}
+
+    assert engine._transient.updates[-1] == {"active_subsession": None}
+
+    event = engine._sink.sent[-1]
+    assert event.payload["type"] == "subsession.ended"
+    assert event.payload["subsession_id"] == "sub1"
+    assert event.payload["failed"] is True
+
+
+async def test_abort_active_subsession_falls_back_to_display_name_lookup() -> None:
+    """A stored `active_subsession` from before display_name was recorded (or
+    any falsy value) falls back to `_display_name(agent)`, same as
+    `_close_subsession`."""
+    engine = _make_engine()
+    engine._transient.active_subsession = {
+        "subsession_id": "sub1",
+        "agent": "architect",
+        "display_name": "",
+        "parent_display_name": "",
+    }
+
+    await engine._abort_active_subsession()
+
+    marker = engine._transient.markers[-1]
+    assert marker["display_name"] == "The Architect"
+    assert marker["parent_display_name"] == "guide"
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +504,14 @@ async def test_drive_subsession_returns_dispatcher_output() -> None:
     assert ("started", "investigator") in engine._emitters.events
     assert ("finished", "investigator") in engine._emitters.events
     assert engine._sink.sent[-1].kind == "stream_end"
+
+
+async def test_drive_subsession_passes_resolved_model_as_subsession_model_key() -> None:
+    engine = _make_engine(dispatcher_output={"ok": True})
+
+    await engine._drive_subsession("investigator", "sub1", [])
+
+    assert engine.run_agent_turn_calls[0]["subsession_model_key"] == "model-x"
 
 
 async def test_drive_subsession_synthesizes_fallback_when_no_return_result() -> None:

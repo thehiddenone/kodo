@@ -313,6 +313,33 @@ sub-agent's structured `result`), clears `active_subsession`, and emits
 subsession that "is the active one right now," exactly as the user model
 requires.
 
+A live user-initiated **Stop** while a subsession is active goes through the
+same three steps, not a bypass of them: `_spawn_subagent` awaits
+`_drive_subsession` then `_close_subsession` as two sequential,
+unguarded calls, so cancelling the worker task mid-subsession unwinds
+straight through `_drive_subsession` and skips `_close_subsession`
+entirely — nothing else would ever clear `active_subsession`, clear the
+subsession context gauge, or tell the client the block ended.
+`WorkflowEngine.stop()` (`_core.py`) checks `active_subsession` itself and,
+if set, runs `_abort_active_subsession()` (`_subagents.py`) — the same
+marker/pointer-clear/event sequence as `_close_subsession`, sourcing the
+closing agent/display names from the `active_subsession` record itself
+rather than `session.agent` (which `_drive_subsession` has by then
+overwritten with the sub-agent's own name) — always with `failed: true` (a
+Stop is neither the clean finish nor the schema-compliance failure that flag
+otherwise distinguishes, but the generic "Interrupted by user" callout that
+follows right after already says what happened). This runs before `stop()`
+flips `session.phase` to `"stopped"`, so the client's `subsession.ended`
+handling (closing the collapsible block) lands before the `state` event that
+produces its "Interrupted by user" callout, and the callout renders outside
+the now-closed block, not swallowed into it.
+
+`stop()` also cannot use `session.agent` for the interrupted-turn record's
+`entry_agent` tag while a subsession is active, for the same reason —
+it recovers the true top-level entry agent (who actually owns the dangling
+`run_subagent` tool_use in `_main_messages`) via `_last_entry_agent()`
+instead.
+
 ### Typed sub-agent interface (input/output schemas)
 
 Agent↔sub-agent interaction is typed, mirroring tools. Every sub-agent except
@@ -557,7 +584,7 @@ before — see WS_PROTOCOL.md §5.11.
 | Event | Direction | Payload |
 | --- | --- | --- |
 | `subsession.started` | server → client | `{subsession_id, agent, display_name, task}` |
-| `subsession.ended` | server → client | `{subsession_id, agent, display_name, parent_display_name}` |
+| `subsession.ended` | server → client | `{subsession_id, agent, display_name, parent_display_name, failed}` |
 
 `task` is the rendered task brief; the client shows it as a `subagent_task` card
 right after the start divider.

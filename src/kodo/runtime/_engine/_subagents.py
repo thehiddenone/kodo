@@ -325,6 +325,7 @@ class SubagentMixin:
             agent_name=name,
             stop_after_tools=lambda: dispatcher.stop_requested,
             persist=_persist,
+            subsession_model_key=model_id,
             on_stall=self._make_stall_handler(
                 agent_name=name,
                 routing=routing,
@@ -408,6 +409,8 @@ class SubagentMixin:
         ``output`` is the sub-agent's structured result; it is stored on the
         ``subsession_end`` marker so a crash-resume replay can return it verbatim.
         """
+        self._compactor.clear_subsession_context()
+        await self._emitters.emit_context_stats()
         display_name = self._display_name(name)
         parent_display = self._display_name(self._session.agent or _GUIDE_AGENT_NAME)
         # A sub-agent "failed" when it did not return a schema-compliant result
@@ -436,6 +439,69 @@ class SubagentMixin:
                     "display_name": display_name,
                     "parent_display_name": parent_display,
                     "failed": failed,
+                },
+            )
+        )
+
+    async def _abort_active_subsession(self: EngineHost) -> None:
+        """Close out a subsession a user Stop left open mid-run.
+
+        ``_spawn_subagent`` awaits :meth:`_drive_subsession` then
+        :meth:`_close_subsession` as two sequential, unguarded calls (no
+        ``try/finally``): when :meth:`~._core.WorkflowEngine.stop` cancels the
+        worker task, the cancellation unwinds through ``_drive_subsession``
+        and skips ``_close_subsession`` entirely, leaving
+        ``_transient.active_subsession`` set, the compactor's subsession gauge
+        stale, and the client's collapsible block permanently unclosed (no
+        ``subsession_end`` marker/``EVT_SUBSESSION_ENDED`` ever arrives) — see
+        ``stop()``, which calls this right after folding the cancellation into
+        ``session.jsonl`` and before flipping ``phase`` to ``"stopped"``, so
+        the client's ``subsession_ended`` handling lands before its
+        ``interrupted`` one.
+
+        Reads the closing agent/display names from ``active_subsession``
+        itself (captured correctly at :meth:`_open_subsession` time) rather
+        than recomputing from ``self._session.agent`` the way
+        ``_close_subsession`` does — by now that field holds the *sub-agent's*
+        own name, not its parent's, because ``_drive_subsession`` overwrote it
+        and nothing ever restores it before a Stop can land.
+
+        The handback is always marked ``failed`` — a user-initiated Stop is
+        neither the clean finish nor the schema-compliance failure the
+        ``failed`` flag otherwise distinguishes between, and the generic
+        "Interrupted by user" callout that follows right after already tells
+        the human what actually happened.
+        """
+        active = self._transient.active_subsession
+        if active is None:
+            return
+        subsession_id = str(active.get("subsession_id", ""))
+        name = str(active.get("agent", ""))
+        display_name = str(active.get("display_name") or self._display_name(name))
+        parent_display = str(active.get("parent_display_name") or _GUIDE_AGENT_NAME)
+        self._compactor.clear_subsession_context()
+        await self._emitters.emit_context_stats()
+        self._transient.append_marker(
+            {
+                "type": "subsession_end",
+                "subsession_id": subsession_id,
+                "agent": name,
+                "display_name": display_name,
+                "parent_display_name": parent_display,
+                "failed": True,
+                "result": {},
+            }
+        )
+        self._transient.update(active_subsession=None)
+        await self._sink.send(
+            Envelope.make_event(
+                EVT_SUBSESSION_ENDED,
+                {
+                    "subsession_id": subsession_id,
+                    "agent": name,
+                    "display_name": display_name,
+                    "parent_display_name": parent_display,
+                    "failed": True,
                 },
             )
         )

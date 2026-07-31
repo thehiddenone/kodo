@@ -193,6 +193,7 @@ class EngineHost(Protocol):
         persist: Callable[[list[Message]], None] | None = None,
         flush_before_dispatch: bool = False,
         track_context: bool = False,
+        subsession_model_key: str | None = None,
         on_stall: Callable[[TurnSignal], Awaitable[StallDecision]] | None = None,
         on_tool_calls: Callable[[], None] | None = None,
         on_cyclic_thinking: Callable[[str], Awaitable[StallDecision]] | None = None,
@@ -251,6 +252,8 @@ class EngineHost(Protocol):
     async def _close_subsession(
         self, name: str, subsession_id: str, output: dict[str, object]
     ) -> None: ...
+
+    async def _abort_active_subsession(self) -> None: ...
 
     async def _replay_next_subsession(self, name: str) -> dict[str, object]: ...
 

@@ -513,6 +513,66 @@ async def test_stop_while_running_persists_interrupted_turn(tmp_path: Path) -> N
         await _cancel_worker(engine)
 
 
+async def test_stop_while_in_subsession_closes_it_and_tags_correct_entry_agent(
+    tmp_path: Path,
+) -> None:
+    """Stop mid-subsession must not leave it open forever (the bug: neither
+    `_close_subsession` nor `_drive_subsession` ever runs to completion when
+    the worker task is cancelled, so nothing else closes it out — see
+    `_abort_active_subsession`), and must not mistag the interrupted-turn
+    notice with the sub-agent's own name (`_drive_subsession` overwrites
+    `session.agent` and never restores it before a Stop can land)."""
+    from kodo.llms import Message
+
+    engine, transient, sink, _g = _make_engine(tmp_path)
+    try:
+        await engine.start("s1", resumed=False)
+        # Simulate: the guide's turn flushed a dangling run_subagent tool_use
+        # to disk (tagged entry_agent="guide") before dispatch, then
+        # _open_subsession/_drive_subsession took over -- overwriting
+        # session.agent to the sub-agent's own name, exactly as the real
+        # _drive_subsession does, and leaving active_subsession set (the
+        # sequential _drive_subsession -> _close_subsession await in
+        # _spawn_subagent never got to run).
+        dangling = Message(
+            role="assistant",
+            content=[{"type": "tool_use", "id": "tu_1", "name": "run_subagent", "input": {}}],
+        )
+        engine._main_messages = [Message(role="user", content="go"), dangling]
+        transient.append_message("assistant", dangling.content, entry_agent="guide")
+        transient.update(
+            active_subsession={
+                "subsession_id": "sub1",
+                "agent": "investigator",
+                "display_name": "Investigator",
+                "parent_display_name": "Guide",
+            }
+        )
+        engine._session.phase = "running"
+        engine._session.agent = "investigator"
+
+        await engine.stop()
+
+        assert engine._session.phase == "stopped"
+        assert transient.active_subsession is None
+
+        stopped_notices = [
+            line for line in transient.read_session_lines() if line.get("kind") == "stopped_notice"
+        ]
+        assert stopped_notices
+        # Tagged with the true top-level entry agent recovered via
+        # _last_entry_agent(), not "investigator" (session.agent's stale
+        # value while a subsession is active).
+        assert stopped_notices[-1]["entry_agent"] == "guide"
+
+        ended = [env for env in sink.sent if env.payload.get("type") == "subsession.ended"]
+        assert ended
+        assert ended[-1].payload["subsession_id"] == "sub1"
+        assert ended[-1].payload["failed"] is True
+    finally:
+        await _cancel_worker(engine)
+
+
 # ---------------------------------------------------------------------------
 # handle_prompt_submit / mode + control setters
 # ---------------------------------------------------------------------------

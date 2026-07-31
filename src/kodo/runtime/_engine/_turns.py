@@ -329,6 +329,7 @@ class TurnLoopMixin:
         persist: Callable[[list[Message]], None] | None = None,
         flush_before_dispatch: bool = False,
         track_context: bool = False,
+        subsession_model_key: str | None = None,
         on_stall: Callable[[TurnSignal], Awaitable[StallDecision]] | None = None,
         on_tool_calls: Callable[[], None] | None = None,
         on_cyclic_thinking: Callable[[str], Awaitable[StallDecision]] | None = None,
@@ -372,6 +373,13 @@ class TurnLoopMixin:
                 live context gauge (the compactor's ``context_tokens``) and is
                 pushed to the client. Sub-agent/titler turns leave it ``False``
                 — only the main context counts toward the compaction threshold.
+            subsession_model_key: When set (a sub-agent subsession turn — see
+                ``_drive_subsession``), the same measured token total instead
+                updates the compactor's *subsession* gauge
+                (``note_subsession_context``), using this model's context
+                window as the limit. Mutually exclusive with ``track_context``
+                in practice: a turn is either the main context or a
+                subsession's, never both.
             on_stall: Called whenever a round ends with no tool calls, right
                 before the turn would otherwise end (doc/STUCK_DETECTION.md).
                 Returning ``StallDecision(retry=True, message=...)`` appends
@@ -520,6 +528,16 @@ class TurnLoopMixin:
                         + usage.cache_read_tokens
                         + usage.cache_write_tokens
                         + usage.output_tokens
+                    )
+                    await self._emitters.emit_context_stats()
+                elif subsession_model_key is not None:
+                    usage = turn_end.usage
+                    self._compactor.note_subsession_context(
+                        usage.input_tokens
+                        + usage.cache_read_tokens
+                        + usage.cache_write_tokens
+                        + usage.output_tokens,
+                        subsession_model_key,
                     )
                     await self._emitters.emit_context_stats()
 
