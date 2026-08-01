@@ -398,13 +398,17 @@ def evaluate_command(
             # or produce a spurious redundant ask on a segment like
             # `cat /etc/hosts > /etc/hosts2` once only the read side is
             # granted.
-            # With no workspace loaded (`roots` empty), a "resolved" relative
-            # token is anchored to nothing real (`cwd` is itself `""` in this
-            # state — see `_analysis._resolve`'s `confined` parameter) — never
-            # a stable, reusable filesystem location, so no rule is ever
-            # offered for it, and the reason text doesn't claim the path is
-            # merely "outside the workspace" (there isn't one to be outside
-            # of).
+            # With no workspace loaded (`roots` empty), EVERY non-flag token
+            # is resolved and flagged, relative ones included (see
+            # `_analysis._resolve`'s `confined` parameter) — anchored to the
+            # session's scratch directory, which is only ever where a
+            # workspace-less `run_command` *defaults* to running
+            # (`ToolContext.command_cwd`). So a finding here is routinely not
+            # a real filesystem target at all (`git status` yields
+            # `<cwd>/status`), and never a stable, reusable location worth
+            # pinning a permanent rule to: no rule is ever offered in this
+            # state, and the reason text doesn't claim the path is merely
+            # "outside the workspace" (there isn't one to be outside of).
             eligible = _is_path_offer_eligible(segment) and bool(roots)
             for path in dict.fromkeys(outside_here):  # already deduped per-segment; defensive
                 # `match_path` (case/slash-folded on Windows) is what gets

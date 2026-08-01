@@ -846,7 +846,11 @@ chronological record.
    homeless session with zero bound directories; `run_command` can dispatch
    in this state, `requires_project=False`), the "a plain relative token
    can't escape the confined cwd" free pass no longer applies — there is no
-   confined cwd to trust (`cwd` is itself `""` in this state). Every
+   confined cwd to trust (`cwd` is the session's private scratch directory,
+   only ever where a workspace-less command *defaults* to running — see
+   doc/SECURITY.md §3.1a; it was the empty string until 2026-08-01, which
+   made no difference to any verdict since `roots` is empty either way).
+   Every
    non-flag token, argument or redirect target, relative or absolute, is
    now resolved and checked; since `roots` is empty, every one of them is
    "outside" by construction. The **only** surviving exemption is the OS

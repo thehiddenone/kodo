@@ -19,7 +19,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from ._paths import PathResolver
+from kodo.project import session_temp_dir
+
+from ._paths import NoWorkspaceError, PathResolver
 
 __all__ = [
     "ApprovalLike",
@@ -690,3 +692,49 @@ class ToolContext:
         bound root, in either workflow mode). Surfaced by
         ``get_root_paths``."""
         return self.services.root_paths()
+
+    @property
+    def command_cwd(self) -> Path:
+        """The directory a ``run_command`` with no ``working_dir`` runs in.
+
+        The resolver's :attr:`~kodo.tools.LogicalPathResolver.default_cwd`
+        whenever a workspace/project is bound. With **no** workspace at all
+        that property has nothing to report and raises
+        :class:`~kodo.tools.NoWorkspaceError`, so this falls back to the
+        session's private scratch directory
+        (``~/.kodo/sessions/<id>/tmp``, :func:`kodo.project.session_temp_dir`),
+        creating it on demand — ``run_command`` is ``requires_project=False``
+        and must still be able to run (``cd /somewhere && git status`` is a
+        perfectly ordinary homeless-session command), so it needs *some* real
+        directory to spawn the subprocess in rather than crashing the runtime
+        worker (doc/SECURITY.md §3.1a).
+
+        The scratch directory is deliberately **not** under
+        ``kodo.common.system_temp_roots()``, so choosing it as the fallback
+        does not quietly widen the security layer's OS-temp carve-out: with
+        ``roots`` empty every path resolved against it is still "outside" and
+        still asks. That is exactly why :class:`~kodo.tools.ToolDispatcher`
+        feeds this same value to the security layer as ``default_cwd`` — the
+        permission prompt names the directory the command will genuinely run
+        in, and the verdict is unchanged either way.
+
+        The fallback is keyed on :attr:`has_workspace` *first*, not merely on
+        ``default_cwd`` happening to raise: ``SessionWorkspace.physical_root``
+        (the parent of the window's first folder) can be set on a session
+        with **no** bound folders at all, and running there would be exactly
+        the "silently operating against ``$HOME``" behaviour
+        ``EngineCore._has_workspace`` exists to prevent — while the security
+        layer, judging on the same empty ``roots``, would be describing a
+        different directory entirely. The ``NoWorkspaceError`` catch stays as
+        the complementary guard for the mirror-image state (a locked,
+        disconnected session whose bound roots make ``has_workspace`` true
+        while ``physical_root`` is still ``None``).
+        """
+        if self.has_workspace:
+            try:
+                return self.resolver.default_cwd
+            except NoWorkspaceError:
+                pass
+        scratch = session_temp_dir(self.session_id)
+        scratch.mkdir(parents=True, exist_ok=True)
+        return scratch

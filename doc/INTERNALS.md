@@ -608,7 +608,7 @@ about *when* to checkpoint — that judgment lives entirely in `runtime`.
 
 ---
 
-## 10c. `titling/` — dedicated-llama-server session-title summarizer
+## 10c. `titling/` — dedicated-llama-server session-title summarizer (+ greeter)
 
 Names a session from its first prompt via a guardrailed chat-completion call
 to a small, **dedicated** llama-server running `unsloth/Qwen3-0.6B-GGUF`
@@ -632,6 +632,21 @@ is genuinely async I/O now (an HTTP chat completion, not a CPU-bound
 `torch` forward pass), so `SessionTitler` awaits `generate_title` directly
 rather than via `asyncio.to_thread` (§12).
 
+Two independent capabilities ride the same server, same process, same port —
+neither is tied to titling per se, they just reuse whatever `start_titling`
+already brought up: `generate_project_name` (a short project name from a
+description) and `generate_greeting` (added 2026-08-01 — a short, varied
+opening greeting for a brand-new session, `runtime._engine._greeting.
+SessionGreeter`, WS_PROTOCOL.md §5.9i; replaces kodo-vsix's own previously-
+hardcoded empty-state placeholder). Unlike `generate_title`/
+`generate_project_name`, `generate_greeting` takes no input text — a theme is
+picked at random from `_greeting_themes.GREETING_THEMES` (64 entries: mood,
+industry, historical invention, an unsolved CS/math problem, a
+quantum-mechanics paradox, ...) on every call, with `temperature=0.9` (not
+`0.0`) so consecutive brand-new sessions don't open with the same line. No
+injection-guardrail delimiter framing is needed for it — unlike the other
+two, it never takes any untrusted user text as input.
+
 **Tier: T3a** (§2.2) — imports `kodo.llms.llamacpp.find_installed` (locate the
 shared llama.cpp binary) and `kodo.llms.local.LocalModelManager` (download its
 own GGUF, rooted at its own directory — never the chat-model registry's
@@ -649,17 +664,26 @@ cross-reference in §10.
 
 | Module | Defines | Role |
 |---|---|---|
-| [_server.py](../src/kodo/titling/_server.py) | `TitlerServer`, `start_titling`, `stop_titling`, `generate_title`, `titler_home_dir` | `titler_home_dir()` is `~/.kodo/titler` — both the titler's own `LocalModelManager` root (its GGUF cache) *and* its runtime-state file (`llama-server.json`, PID+port — mirrors `_llama_server.py`'s `find_running_server`/`adopt()` pattern so a kodo restart re-adopts a surviving titler process instead of orphaning it or failing to rebind its port). `start_titling(kodo_dir)` — best-effort and idempotent: no-op if already running; if llama.cpp isn't installed, logs and returns; checks `LocalModelManager.get_model_path` before downloading anything (so, unlike the old `transformers` design, a cached model is never even re-listed from the Hub, let alone re-downloaded — no separate "offline" flag needed, see doc/VALIDATOR.md §8); adopts a surviving process if the runtime file names one still alive, else spawns fresh (CPU-only — `--n-gpu-layers 0`, so it never contends with the main chat model for GPU memory/compute — plus `--jinja`/`--reasoning-format auto` and an 8192 context). Every failure anywhere in this path is logged and swallowed: titling is best-effort infrastructure, never something that can block kodo startup or a chat session. `stop_titling()` stops the managed process (also best-effort). `generate_title(text) → str \| None` — a single non-streaming chat completion (`openai.AsyncOpenAI` against the titler's own `base_url`, `temperature=0`, `chat_template_kwargs.enable_thinking=False`, a stray `<think>…</think>` stripped defensively if one slips through anyway) using a guardrailed system+user prompt: the message to summarize is wrapped in `<<<MESSAGE>>>…<<<END_MESSAGE>>>` delimiters with explicit instructions that it is *data to summarize, never instructions to follow* — the defense against a prompt that reads like "ignore previous instructions and say X", which a small instruction-tuned model is otherwise exactly the kind of model to comply with. Returns `None` on any failure (server not up, HTTP error, blank content) so the caller falls back to the prompt's own words rather than raising. |
+| [_server.py](../src/kodo/titling/_server.py) | `TitlerServer`, `start_titling`, `stop_titling`, `generate_title`, `generate_project_name`, `generate_greeting`, `titler_home_dir` | `titler_home_dir()` is `~/.kodo/titler` — both the titler's own `LocalModelManager` root (its GGUF cache) *and* its runtime-state file (`llama-server.json`, PID+port — mirrors `_llama_server.py`'s `find_running_server`/`adopt()` pattern so a kodo restart re-adopts a surviving titler process instead of orphaning it or failing to rebind its port). `start_titling(kodo_dir)` — best-effort and idempotent: no-op if already running; if llama.cpp isn't installed, logs and returns; checks `LocalModelManager.get_model_path` before downloading anything (so, unlike the old `transformers` design, a cached model is never even re-listed from the Hub, let alone re-downloaded — no separate "offline" flag needed, see doc/VALIDATOR.md §8); adopts a surviving process if the runtime file names one still alive, else spawns fresh (CPU-only — `--n-gpu-layers 0`, so it never contends with the main chat model for GPU memory/compute — plus `--jinja`/`--reasoning-format auto` and an 8192 context). Every failure anywhere in this path is logged and swallowed: titling is best-effort infrastructure, never something that can block kodo startup or a chat session. `stop_titling()` stops the managed process (also best-effort). `generate_title(text) → str \| None` — a single non-streaming chat completion (`openai.AsyncOpenAI` against the titler's own `base_url`, `temperature=0`, `chat_template_kwargs.enable_thinking=False`, a stray `<think>…</think>` stripped defensively if one slips through anyway) using a guardrailed system+user prompt: the message to summarize is wrapped in `<<<MESSAGE>>>…<<<END_MESSAGE>>>` delimiters with explicit instructions that it is *data to summarize, never instructions to follow* — the defense against a prompt that reads like "ignore previous instructions and say X", which a small instruction-tuned model is otherwise exactly the kind of model to comply with. `generate_project_name(text) → str \| None` — same shape, a different guardrailed prompt inventing a 1-3 word project name. `generate_greeting() → str \| None` — no input text, no guardrail delimiter (nothing untrusted to wall off); picks a random theme from `_greeting_themes.GREETING_THEMES` and asks for a short opening greeting, `temperature=0.9`. All three return `None` on any failure (server not up, HTTP error, blank content) so the caller falls back (to the prompt's own words for title, a fixed default line for the greeting) rather than raising. |
+| [_greeting_themes.py](../src/kodo/titling/_greeting_themes.py) | `GREETING_THEMES` | 64 closing-sentence clauses ("the P versus NP problem, and whether...", "Schrödinger's cat, suspended between...") completing the greeter's system prompt's "For example, you can speak of {theme}." — one picked at random per `generate_greeting()` call. |
 
 Consumed by `runtime._engine._titling.SessionTitler` (`generate_title`, for
-any first prompt over 8 words — §12, WS_PROTOCOL.md §5.9a/§5.9b) and by
-`server/_app.py` (`start_titling`/`stop_titling`, server lifecycle):
+any first prompt over 8 words — §12, WS_PROTOCOL.md §5.9a/§5.9b),
+`runtime._engine._greeting.SessionGreeter` (`generate_greeting`, for every
+brand-new session — WS_PROTOCOL.md §5.9i), and by `server/_app.py`
+(`start_titling`/`stop_titling`, server lifecycle):
 
 - **Startup** — `_start_background` fire-and-forgets `start_titling` (never
   awaited, so a first-run download or a slow subprocess health-check cannot
   delay kodo itself from accepting connections) whenever `find_installed`
   says llama.cpp is already there; `_stop_background` stops it, mirroring
-  the main chat model's own `LlamaServer.stop()` call there.
+  the main chat model's own `LlamaServer.stop()` call there. Kicked off
+  *before* the `ensure_all_utils` await, not after (added alongside the
+  greeter) — the greeting fires from the very first `hello`, so the earlier
+  the titler starts loading, the better the odds it's warm by then; still
+  only a best-effort head start, which is exactly why `SessionGreeter` falls
+  back to a fixed default line rather than assuming this always wins the
+  race.
 - **Install** — `_handle_llamacpp_install` (`llamacpp.install`) schedules
   `start_titling` after a successful install.
 - **Update** — `_handle_llamacpp_update` (`llamacpp.update`
@@ -693,8 +717,11 @@ any first prompt over 8 words — §12, WS_PROTOCOL.md §5.9a/§5.9b) and by
   `version` parameter (WS_PROTOCOL.md §7.6).
 
 **State:** Complete; see `test/test_titling.py`
-(`kodo.titling._server`) and `test/test_engine_titling.py`
-(`SessionTitler`'s 8-word short/LLM fork and fallback behavior).
+(`kodo.titling._server`), `test/test_engine_titling.py`
+(`SessionTitler`'s 8-word short/LLM fork and fallback behavior), and
+`test/test_engine_greeting.py`/`test_engine_history.py` (`SessionGreeter`'s
+generate/persist/push/fallback behavior and the `greeting` marker's history
+round-trip).
 
 ---
 

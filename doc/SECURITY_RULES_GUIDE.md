@@ -134,7 +134,10 @@ misjudging a path as confined (or escaping).
 requires a real, resolver-confined `cwd` — which only exists when a
 workspace is loaded (`roots` non-empty). With zero bound roots (a homeless
 session; `run_command` can still dispatch here, its spec sets
-`requires_project=False`), `cwd` is itself `""`, so the free pass is
+`requires_project=False`), `cwd` is the session's private scratch directory
+— merely where a workspace-less command *defaults* to running
+(`ToolContext.command_cwd`, doc/SECURITY.md §3.1a), not a confined workspace
+— so the free pass is
 withdrawn: *every* non-flag token is resolved regardless of whether it
 contains `..`, argument or redirect target alike. Since `roots` is empty,
 every one of them fails the containment check and becomes an outside-path
@@ -144,8 +147,10 @@ above), which applies unconditionally either way. The ask's reason text
 reflects this ("No workspace is loaded, so '…' cannot be verified as safe."
 instead of "outside the workspace"), and — unlike the ordinary case below —
 it is never offer-eligible (§2.7's path-offer machinery requires a stable,
-reusable resolved path to key a rule on; one resolved against an empty
-`cwd` isn't one).
+reusable resolved path to key a rule on; one resolved against a scratch
+directory the command only landed in for want of a workspace isn't one —
+`git status` yields a finding for `<scratch>/status`, which is not a real
+file at all).
 
 **Per-segment attribution, not whole-line.** Each segment's own arguments
 and redirection targets are classified into *that segment's own* list

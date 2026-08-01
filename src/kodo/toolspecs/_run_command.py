@@ -65,7 +65,8 @@ RUN_COMMAND: ToolSpec = ToolSpec(
                     "root (or an absolute path inside it) — or the absolute path "
                     "of your private scratch directory (from `get_root_paths` "
                     "with `temporary: true`), which is always accepted too. "
-                    "Defaults to the project root."
+                    "Defaults to the project root — or, when no project is "
+                    "bound yet, to your private scratch directory."
                 ),
             },
         },

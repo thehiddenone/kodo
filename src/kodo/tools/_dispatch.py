@@ -430,17 +430,23 @@ class ToolDispatcher:
         parts: tuple[PermissionPartLike, ...] = ()
         if ctx.security is not None:
             # `default_cwd` is only ever consulted for `run_command` (see
-            # SecurityLayer.__evaluate_run_command). Any tool can reach this
-            # point with no workspace at all — a `requires_project=True` spec
-            # is already refused by the dispatch gate above, but run_command
-            # itself is `requires_project=False`, and tools like
-            # `scaffold_new_project`'s own additional-project path or
-            # `ask_user` on a homeless session get here too — at which point
-            # a Problem-Solver `LogicalPathResolver` has no root to report
-            # yet. Reading it unconditionally used to crash every such call
-            # (`default_cwd read before a workspace/project exists`). Read it
-            # lazily and only when there is one.
-            default_cwd = str(ctx.resolver.default_cwd) if ctx.has_workspace else ""
+            # SecurityLayer.__evaluate_run_command), so it is read for that
+            # tool alone: any other tool can reach this point with no
+            # workspace at all — a `requires_project=True` spec is already
+            # refused by the dispatch gate above, but `scaffold_new_project`'s
+            # own additional-project path and `ask_user` on a homeless session
+            # get here too — and reading the resolver unconditionally used to
+            # crash every such call (`default_cwd read before a
+            # workspace/project exists`).
+            # For `run_command` this is deliberately the *same* value the
+            # handler will spawn the subprocess in (`ToolContext.command_cwd`,
+            # the scratch-directory fallback when nothing is bound), so the
+            # permission prompt names the directory the command genuinely
+            # runs in. It does not soften any verdict: the scratch directory
+            # is outside `system_temp_roots()`, so with `roots` empty every
+            # path resolved against it is still "outside" and still asks
+            # (doc/SECURITY.md §3.1a).
+            default_cwd = str(ctx.command_cwd) if tool_name == RUN_COMMAND.name else ""
             decision = await ctx.security.evaluate(
                 tool_name=tool_name,
                 tool_input=tool_input,

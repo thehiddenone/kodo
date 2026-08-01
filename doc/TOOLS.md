@@ -395,6 +395,18 @@ in-process update or a genuine `workspace.folders` WS push reconciling a real
 VS Code `onDidChangeWorkspaceFolders` event (WS_PROTOCOL.md §5.9c / §7). This
 is the resolver-side half of the `has_workspace` liveness fix described in §5.
 
+**No workspace at all.** `default_cwd` raises `NoWorkspaceError` when nothing
+is bound, so a `run_command` with no `working_dir` on a homeless session has
+no directory to spawn in. Callers must not read the property directly:
+`ToolContext.command_cwd` ([tools/_context.py](../src/kodo/tools/_context.py))
+returns `default_cwd` when a workspace is bound and the session's private
+scratch directory (`~/.kodo/sessions/<id>/tmp`) when none is. Both
+`run_command`'s handler and `ToolDispatcher`'s security gate go through it, so
+the directory the command runs in is the same one the permission prompt was
+judged against — see doc/SECURITY.md §3.1a for why the scratch directory
+(and not `$HOME`, `physical_root`, or the OS temp directory) is the right
+fallback.
+
 ---
 
 ## 5A. Sub-agents as tools: `run_subagent_<name>` and `return_result`

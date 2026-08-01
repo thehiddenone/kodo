@@ -206,12 +206,16 @@ class LogicalPathResolver:
         has_workspace``) first — unlike ``root_paths``, this has no empty
         state to fall back to. The ``requires_project`` dispatch gate already
         refuses every ``requires_project`` tool with no workspace bound, but
-        a *non*-``requires_project`` tool (``scaffold_new_project``, ``ask_user``,
-        ...) can legitimately dispatch with no workspace at all, so
-        :class:`~kodo.tools.ToolDispatcher`'s security gate reads this
-        property only when ``has_workspace`` is true (see
-        ``ToolDispatcher._ToolDispatcher__security_gate``) rather than
-        unconditionally.
+        a *non*-``requires_project`` tool (``run_command``,
+        ``scaffold_new_project``, ``ask_user``, ...) can legitimately dispatch
+        with no workspace at all.
+
+        Rather than have each of those guard by hand, prefer
+        :attr:`kodo.tools.ToolContext.command_cwd`: it returns this property
+        when a workspace is bound and the session's private scratch directory
+        when none is, which is what both ``run_command``'s handler and
+        :class:`~kodo.tools.ToolDispatcher`'s security gate use (they must
+        agree on one directory — see doc/SECURITY.md §3.1a).
 
         Raises:
             NoWorkspaceError: No workspace/project is bound yet. A caller

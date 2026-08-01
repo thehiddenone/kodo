@@ -66,6 +66,7 @@ from .._session import SessionState
 from ._checkpointing import CheckpointCoordinator
 from ._compaction import ContextCompactor, estimate_tokens
 from ._events import EngineEmitters
+from ._greeting import SessionGreeter
 from ._history import HistoryProjector
 from ._llm import LLMPlumbingMixin
 from ._resume import ResumeMixin
@@ -138,6 +139,7 @@ class WorkflowEngine(
     _emitters: EngineEmitters
     _compactor: ContextCompactor
     _titler: SessionTitler
+    _greeter: SessionGreeter
     _checkpoints: CheckpointCoordinator
     _history: HistoryProjector
     _queue: asyncio.Queue[dict[str, object]]
@@ -251,6 +253,7 @@ class WorkflowEngine(
             sink=sink,
             emitters=self._emitters,
         )
+        self._greeter = SessionGreeter(emitters=self._emitters)
         self._checkpoints = CheckpointCoordinator(self, sink=sink)
         self._history = HistoryProjector(transient, self._checkpoints)
         self._services = _EngineServices(
@@ -309,7 +312,9 @@ class WorkflowEngine(
         (client-driven: ``hello`` creates a new id or resumes an existing one).
         Bound roots are not attached here — they come from
         ``handle_workspace_folders`` (the ``workspace.folders`` push) and
-        ``scaffold_new_project``, exactly like Problem Solver.
+        ``scaffold_new_project``, exactly like Problem Solver. A brand-new
+        session also kicks off ``_greeter.start()`` (fire-and-forget, never
+        awaited) to write and push the session's opening greeting.
 
         Args:
             session_id (str): Session identifier to attach.
@@ -373,6 +378,10 @@ class WorkflowEngine(
                 base_llm, prefer=thinking_level
             )
             self._transient.update(thinking_level=self._session.thinking_level)
+            # Opening greeting (doc/WS_PROTOCOL.md `session.greeting`) — only
+            # for a genuinely brand-new session, never a resumed one.
+            # Fire-and-forget: never awaited, must not delay `hello.ack`.
+            self._greeter.start()
 
         # Best-effort initial snapshot for the very first `hello.ack` — no
         # `workspace.folders` push has landed yet this connection, so a

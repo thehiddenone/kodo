@@ -447,6 +447,20 @@ async def test_history_entries_error_marker_recoverable_defaults_true(tmp_path: 
     assert entries == [{"type": "runtime_error", "message": "oops", "recoverable": True}]
 
 
+async def test_history_entries_greeting_marker(tmp_path: Path) -> None:
+    projector, transient, _c = _make_projector(tmp_path)
+    transient._lines = [{"type": "greeting", "text": "Hello there."}]
+    entries = await projector.history_entries()
+    assert entries == [{"type": "greeting", "text": "Hello there."}]
+
+
+async def test_history_entries_greeting_marker_missing_text_defaults_empty(tmp_path: Path) -> None:
+    projector, transient, _c = _make_projector(tmp_path)
+    transient._lines = [{"type": "greeting"}]
+    entries = await projector.history_entries()
+    assert entries == [{"type": "greeting", "text": ""}]
+
+
 async def test_history_entries_security_rule_added_marker(tmp_path: Path) -> None:
     projector, transient, _c = _make_projector(tmp_path)
     transient._lines = [

@@ -34,6 +34,7 @@ from kodo.transport import (
     EVT_CONTEXT_STATS,
     EVT_ERROR,
     EVT_SECURITY_RULE_ADDED,
+    EVT_SESSION_GREETING,
     EVT_SESSION_NAMING,
     EVT_STATE,
     EVT_USAGE_UPDATE,
@@ -227,6 +228,25 @@ class EngineEmitters:
                 },
             )
         )
+
+    async def emit_greeting(self, text: str) -> None:
+        """Push a brand-new session's opening greeting, and persist it as a marker.
+
+        The marker (``type: "greeting"``) lets :class:`~._history.HistoryProjector`
+        replay the same greeting on reload, mirroring :meth:`emit_error`. It
+        fires once, from a background task (:class:`~._greeting.SessionGreeter`)
+        kicked off when a brand-new session is created — the titler's chat
+        completion is almost never done by the time ``_handle_session_hello``
+        reads back ``session.history`` moments later for that same request, so
+        this live push (not the history replay) is how a freshly-connected
+        client actually sees it the first time; the persisted marker only
+        matters from the next reload onward. Because it is a bare marker (no
+        ``role`` key), :meth:`~._history.HistoryProjector.load_main_messages`
+        never reads it back into the live LLM context — the coding agent
+        itself never sees its own greeting, only the user does.
+        """
+        self._append_marker({"type": "greeting", "text": text})
+        await self._sink.send(Envelope.make_event(EVT_SESSION_GREETING, {"text": text}))
 
     async def emit_error(self, message: str, *, recoverable: bool) -> None:
         """Push a user-facing runtime error, and persist it as a marker.

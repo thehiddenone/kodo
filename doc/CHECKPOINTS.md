@@ -379,8 +379,12 @@ Fixed two ways, together:
   `EngineCore._has_workspace` is built on (§1's "Never `$HOME` or `/`" note
   covers the companion guard on the *root* side; this is the analogous guard
   on the *read* side). Nothing is snapshotted, nothing is tracked, and
-  dispatch proceeds normally to its `requires_project` rejection
-  (`{"error": NO_PROJECT_ERROR}`).
+  dispatch proceeds normally — back then to `run_command`'s
+  `requires_project` rejection (`{"error": NO_PROJECT_ERROR}`); since
+  2026-07-26 that spec is `requires_project=False`, so the call goes through
+  the security gate and, if allowed, runs in the session's scratch directory
+  (doc/SECURITY.md §3.1a). Either way there is nothing to checkpoint: a
+  scratch-directory path belongs to no root, so the mirrors are no-ops.
 - `LogicalPathResolver.default_cwd`'s bare `assert` is now
   `raise NoWorkspaceError(...)` (exported from `kodo.tools`) — a real,
   catchable exception rather than an assertion with no handling contract.

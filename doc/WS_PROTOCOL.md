@@ -204,6 +204,8 @@ A brand-new session (no `session_id` in the request) may also carry an optional 
 
 Immediately after the ack the server **also pushes** a `state` event (§5.1) and, if the resumed session has history, a `session.history` event (§5.11). The redundant `state` keeps first-connect and reconnect on identical client logic.
 
+For a brand-new session only, `hello` also kicks off a background task that writes and pushes the session's opening greeting — see `session.greeting` (§5.9i). Fire-and-forget: it is not part of the ack and never delays it.
+
 After `hello.ack` the client re-syncs the project's persisted session preferences to the server by sending `mode.set` (§7.5) and `workflow.set` (§7.6) with the values it read from `.kodo/settings.json`.
 
 ### 4.2 Shutdown
@@ -578,6 +580,22 @@ Fired when the entry-agent's thinking hits a *second* detected repetition loop s
 ```
 
 `message` is a single ready-to-render sentence. Like `agent.stuck_critical`, entirely client-only — no LLM-facing turn behind this event. Also persisted as a bare `agent_cyclic_thinking_critical` marker (`{type: "agent_cyclic_thinking_critical", message}`, not a `kind`-tagged message) so it replays via `session.history` (§5.11). Kept as a distinct event/marker type from `agent.stuck_critical` (not a reuse) since the root cause and message differ.
+
+### 5.9i `session.greeting` — a brand-new session's opening greeting
+
+Fired once per brand-new session (never for a resumed one), from a background task (`runtime._engine._greeting.SessionGreeter`) kicked off the moment `hello` creates the session (§4.1) — never awaited, so it cannot delay `hello.ack` or anything else in the handshake. Replaces kodo-vsix's own previously-hardcoded empty-state placeholder ("Hello there. I'm Kodo. Ready to build something awesome.").
+
+```json
+{ "type": "session.greeting", "text": "Hello! Ready to help you build something today — think of it like tuning an orchestra before the first note." }
+```
+
+`text` is a short, varied greeting written by `kodo.titling.generate_greeting` — a chat-completion call against the same dedicated titler llama-server §5.9a's summarizer uses (doc/INTERNALS.md §10c), with its own prompt: no input text, a `temperature` of `0.9` (unlike title/project-name's deterministic `0.0`) and a theme picked at random from `kodo.titling._greeting_themes.GREETING_THEMES` (64 entries — mood, industry, historical invention, an unsolved CS/math problem, a quantum-mechanics paradox, ...) on every call, so consecutive brand-new sessions don't open with the same line. If the titler isn't up (not installed, still starting, download in progress, ...) or the completion call fails, falls back to the same fixed default line kodo-vsix used to hardcode, rather than leaving the feed empty.
+
+The titler's own llama-server is started as early as possible in kodo's own startup (`server/_app._start_background`, before the `ensure_all_utils` await) precisely so it has the best chance of being warm by the time the very first `hello` arrives — but this is a best-effort head start, not a guarantee, which is exactly why the fallback above exists.
+
+Also persisted as a `greeting` marker (`{type: "greeting", text}`) so it replays via `session.history` (§5.11) on every future reload — the user always sees their session's original greeting again. Rendered as a non-context, informational feed entry (`exclude_from_context: true`): because it is a bare marker (no `role` key), `HistoryProjector.load_main_messages` never reads it back into the live LLM context, so the coding agent itself never sees its own greeting — only the human does.
+
+In the common case the titler's chat completion is not yet done by the time `_handle_session_hello` reads back `session.history` moments after `hello.ack`, so a freshly-connected client sees the greeting via this live event, not via the initial history replay; the persisted marker only matters from the next reload onward.
 
 ### 5.10 `error` — unsolicited server error
 

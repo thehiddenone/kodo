@@ -164,8 +164,8 @@ from `kodo.shellparser` (the POSIX parser, or the PowerShell/Windows parser on
    is loaded** (`roots` non-empty) — which also keeps subcommand words
    (`install`, `build`) from being misread as files. **With no workspace
    loaded** (`roots` empty — a homeless session with zero bound directories;
-   `run_command`'s `default_cwd` is itself `""` in this state, see
-   `SecurityLayer.__evaluate_run_command`), that free pass is withdrawn: every
+   the cwd everything is anchored to is then the session's private scratch
+   directory, §3.1a), that free pass is withdrawn: every
    non-flag token, relative or not, redirect target or plain argument, is
    resolved and checked the same way, since there is no confined cwd left to
    trust it against — the empty `roots` then makes every one of them "outside"
@@ -219,6 +219,66 @@ from `kodo.shellparser` (the POSIX parser, or the PowerShell/Windows parser on
    subcommand, flags, nested `sh -c`-style command strings, inline-code
    opacity (`python -c`, `-EncodedCommand`), and per-segment substitution /
    pipe / write-redirection facts.
+
+### 3.1a No workspace loaded: where the command actually runs
+
+`run_command` is `requires_project=False` — the dispatch gate that rejects
+every `requires_project` tool on a homeless session deliberately doesn't
+cover it, because inspecting the machine (`cd /some/repo && git status`) is
+an ordinary thing to do *before* a project is bound. So the tool has to
+answer one question the workspace-less state leaves open: which directory
+does the subprocess actually get spawned in when the call carries no
+`working_dir`?
+
+`ToolContext.command_cwd` (`kodo/tools/_context.py`) is the single answer,
+used by **both** the handler and the security gate:
+
+- **A workspace is bound** → `LogicalPathResolver.default_cwd`, i.e. the
+  session's physical root. Unchanged behaviour.
+- **No workspace is bound** (`ToolContext.has_workspace` false, or
+  `default_cwd` raising `NoWorkspaceError` because `physical_root` is `None`)
+  → the session's private scratch directory,
+  `~/.kodo/sessions/<session_id>/tmp` (`kodo.project.session_temp_dir`, §3.0a),
+  created on demand.
+
+Two properties make the scratch directory the right fallback rather than an
+arbitrary one:
+
+1. **It is not under `kodo.common.system_temp_roots()`.** The OS-temp
+   carve-out (§3.1 point 1) is the one exemption that survives having no
+   workspace; anchoring the analysis at a directory *inside* it (`/tmp`, or
+   `tempfile.gettempdir()`) would have silently turned every relative token
+   into an allowed one and gutted the aggressive-ask behaviour. Under
+   `~/.kodo` every path resolved against it is still "outside", so the guard
+   still asks.
+2. **It is never the user's `$HOME` or a stray real directory.** The
+   fallback is keyed on `has_workspace` *first*, not merely on `default_cwd`
+   happening to raise: `SessionWorkspace.physical_root` (the parent of the
+   window's first folder) can be populated on a session with no bound folders
+   at all, and running there is exactly the "silently operating against
+   `$HOME`" outcome `EngineCore._has_workspace` exists to prevent.
+
+`ToolDispatcher.__security_gate` passes this same value as the security
+layer's `default_cwd` — and reads it **for `run_command` only**, since that
+is the only tool whose evaluation consults it (`SecurityLayer.
+__evaluate_run_command`); every other tool is still passed `""`, so a
+`scaffold_new_project` or `ask_user` call on a homeless session never touches
+the resolver at all. Feeding the layer the real cwd means the permission
+prompt names the directory the command will genuinely run in, and it changes
+no verdict: with `roots` empty, a path resolved against the scratch directory
+is "outside" exactly as an unanchored one was, and no permanent rule is ever
+offered in this state (§3.2c) — a finding here is routinely not even a real
+filesystem target (`git status` yields `<cwd>/status`).
+
+**Regression (2026-08-01):** before this, the handler read
+`ctx.resolver.default_cwd` directly. A workspace-less `run_command` therefore
+asked correctly (`security: ASK run_command … No workspace is loaded, so
+'/…/status' cannot be verified as safe`), the user clicked **Allow** — and
+dispatch then died with `NoWorkspaceError: default_cwd read before a
+workspace/project exists`, taking down the runtime worker
+(`kodo.runtime._engine._worker`) instead of running the command. The gate
+half had already been guarded this way in 2026-07-21b (§4); the handler half
+had not.
 
 ### 3.2 The heuristic rule engine
 
@@ -530,7 +590,7 @@ ToolDispatcher.dispatch(tool, input, tool_use_id)          kodo/tools/_dispatch.
   │        tool_name, tool_input,
   │        command_control = ctx.session.command_control,  ← live, never frozen
   │        autonomous      = ctx.session.effective_autonomous,
-  │        default_cwd     = ctx.resolver.default_cwd if ctx.has_workspace else "",  ← 2026-07-21b
+  │        default_cwd     = str(ctx.command_cwd) if tool == run_command else "",  ← 2026-08-01, §3.1a
   │        roots           = ctx.root_paths,
   │        session_rules   = ctx.session.security_rules,   ← merged with the global store inside
   │        session_path_rules = ctx.session.security_path_rules)  ← ditto, §3.2c
@@ -549,18 +609,19 @@ ToolDispatcher.dispatch(tool, input, tool_use_id)          kodo/tools/_dispatch.
   └─ tool_cls(ctx).handle(input)
 ```
 
-**Pre-workspace crash fix (2026-07-21b):** `default_cwd` is only ever consulted
-inside `SecurityLayer.__evaluate_run_command` — and `run_command` sets
-`requires_project=True`, so it can never reach `__security_gate` without a
-workspace bound. Every *other* tool can (`scaffold_new_project`'s own
-no-`path` bootstrap fork, `ask_user`, `wait`, ...), and `ToolContext.resolver`
-in Problem Solver mode is a `LogicalPathResolver` whose `default_cwd`
-**asserts** when no workspace exists (`kodo/tools/_paths.py`) — reading it
-unconditionally for every tool crashed the whole worker (`AssertionError:
-default_cwd read before a workspace/project exists`) the instant any
-non-`requires_project` tool was called before a project existed. Fixed by
-reading `default_cwd` only when `ctx.has_workspace` is true (harmless
-everywhere else, since no other branch of `evaluate()` looks at it) and by
+**Pre-workspace crash fix (2026-07-21b, revised 2026-08-01):** `default_cwd`
+is only ever consulted inside `SecurityLayer.__evaluate_run_command`. Back
+then `run_command` set `requires_project=True`, so it could never reach
+`__security_gate` without a workspace bound; every *other* tool could
+(`scaffold_new_project`'s own no-`path` bootstrap fork, `ask_user`, `wait`,
+...), and `ToolContext.resolver` in Problem Solver mode is a
+`LogicalPathResolver` whose `default_cwd` **asserts** when no workspace
+exists (`kodo/tools/_paths.py`) — reading it unconditionally for every tool
+crashed the whole worker (`AssertionError: default_cwd read before a
+workspace/project exists`) the instant any non-`requires_project` tool was
+called before a project existed. Fixed by reading `default_cwd` only when
+`ctx.has_workspace` was true (harmless everywhere else, since no other branch
+of `evaluate()` looks at it) and by
 giving `scaffold_new_project` a dedicated bypass of the whole security gate
 when it's called with no `path` *and* no workspace yet — that specific call
 has no agent-chosen location for the gate to judge in the first place (the
@@ -569,14 +630,22 @@ existing directory) is always agent-chosen, so it goes through the gate
 normally even with no workspace bound — only the no-`path` bootstrap fork is
 exempt; see `_scaffold_new_project.py` and WS_PROTOCOL.md §6.10.
 
+Since 2026-07-26 `run_command` is `requires_project=False` too, so the "it can
+never reach the gate workspace-less" half of that reasoning no longer holds —
+which is what the 2026-08-01 change (§3.1a) addresses: the gate now reads
+`ToolContext.command_cwd` (scratch-dir fallback included) for `run_command`
+specifically, and `""` for every other tool. The tool-name condition replaces
+the `has_workspace` one; it is strictly narrower, since `run_command` is the
+only tool whose evaluation ever looks at the value.
+
 **Checkpointing's own crash (2026-07-25), and the assert → `NoWorkspaceError`
 change:** the 2026-07-21b fix above only guarded the *security gate's* read of
 `default_cwd`. `CheckpointCoordinator.prepare` (`kodo/runtime/_engine/
 _checkpointing.py`) runs *before* `ToolDispatcher.dispatch` — including before
 its `requires_project` gate — for every tool in `_MUTATING_TOOLS` (`filesystem`,
 `edit_file`, `create_file`, `create_directory`, `run_command`), so a homeless
-session's `run_command` call (`requires_project=True`, but the gate above never
-got a chance to reject it) still crashed the worker on the same
+session's `run_command` call (`requires_project=True` at the time, but the gate
+above never got a chance to reject it) still crashed the worker on the same
 `default_cwd`/`LogicalPathResolver` read, via `mutation_paths`'s `run_command`
 branch. Two changes, together:
 
@@ -592,15 +661,19 @@ branch. Two changes, together:
    `run_command` branch additionally catches `NoWorkspaceError` around its
    `default_cwd` fallback as defense in depth (`mutation_paths` is also called
    directly by `record_guided_revision`). Either way the call is silently not
-   tracked — no mirror commit, no lock, no crash — and dispatch proceeds to its
-   normal `requires_project` rejection (`{"error": NO_PROJECT_ERROR}`).
+   tracked — no mirror commit, no lock, no crash — and dispatch proceeds
+   normally (back then: to the `requires_project` rejection, `{"error":
+   NO_PROJECT_ERROR}`; since 2026-07-26 `run_command` is
+   `requires_project=False`, so it proceeds all the way to the security gate
+   and, if allowed, to the handler — see §3.1a for the cwd it then runs in).
 
 No security-layer behavior changed here: `SecurityLayer.evaluate`'s
 `__evaluate_run_command`/`_analysis.py` path was already safe with
 `default_cwd=""`/`roots=()` (empty `roots` makes every resolved path count as
 "outside", which is the conservative/fail-safe direction) — it just could never
 be *reached* for a homeless session's `run_command` before checkpointing
-crashed first.
+crashed first. That "count everything as outside" property is what §3.1a
+preserves when the empty `default_cwd` became a real scratch-directory path.
 
 `add_security_rule` (`kodo.tools.EngineServices` protocol) reaches
 `WorkflowEngine.add_security_rule` (`kodo/runtime/_engine/_core.py`):

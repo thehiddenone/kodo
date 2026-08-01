@@ -34,11 +34,13 @@ class RunCommandTool(Tool):
         except ValueError as exc:
             return json.dumps({"error": str(exc)})
         try:
-            cwd = (
-                ctx.resolver.resolve(str(working_dir_raw))
-                if working_dir_raw
-                else ctx.resolver.default_cwd
-            )
+            # `command_cwd`, not `resolver.default_cwd`: with no workspace
+            # bound the latter raises and would kill the runtime worker
+            # outright, even though `run_command` is `requires_project=False`
+            # and the security layer has already judged (and the user
+            # allowed) the call. The fallback is the session's private
+            # scratch directory — see `ToolContext.command_cwd`.
+            cwd = ctx.resolver.resolve(str(working_dir_raw)) if working_dir_raw else ctx.command_cwd
         except PermissionError as exc:
             return json.dumps({"error": str(exc)})
 

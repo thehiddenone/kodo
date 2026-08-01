@@ -1887,20 +1887,25 @@ def _make_llm_complete_handler(config: Config, gateway: LLMGateway) -> HandlerFn
 async def _start_background(app: web.Application) -> None:
     user_dir = kodo_user_dir()
 
+    # Fire-and-forget (doc/INTERNALS.md §10c), and deliberately kicked off
+    # *before* the ensure_all_utils await below rather than after: the titler
+    # backs the session-opening greeting (kodo.titling.generate_greeting,
+    # runtime._engine._greeting.SessionGreeter) which fires the moment the
+    # very first hello creates a session, so the earlier this starts loading,
+    # the more likely a first-run model download or subprocess health-check
+    # has finished by then. Still never delays kodo itself from accepting
+    # connections — titling (and the greeter riding it) is simply unavailable
+    # until this finishes, same as before.
+    llama_install = find_installed(user_dir)
+    if llama_install is not None:
+        asyncio.create_task(start_titling(user_dir))
+
     # Ensure the bundled third-party utils (uv, ripgrep, fd) are present under
     # ~/.kodo/bin. Best-effort and idempotent: a no-op once already present,
     # so this only does real work on a first console-style launch. Off the
     # event loop (asyncio.to_thread) so a first-run download does not delay
     # server readiness.
     await asyncio.to_thread(ensure_all_utils, user_dir)
-
-    llama_install = find_installed(user_dir)
-    if llama_install is not None:
-        # Fire-and-forget (doc/INTERNALS.md §10c) — a first-run titler model
-        # download or a slow subprocess health-check must never delay kodo
-        # itself from accepting connections; titling is simply unavailable
-        # until this finishes.
-        asyncio.create_task(start_titling(user_dir))
 
     running = find_running_server(user_dir)
     if running is not None:

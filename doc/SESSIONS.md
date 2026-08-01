@@ -171,7 +171,7 @@ order):
   `read_attachment` tool, not re-read from the links), so the reconstructed
   context matches submit time without the log ever holding the file bytes. See
   WS_PROTOCOL.md §7.1 / `kodo.runtime._attachments`.
-- **Marker lines** — `{"type": "subsession_start"|"subsession_end"|"compaction"|"error"|"security_rule_added"|"agent_stuck_critical"|"usage", ...}`.
+- **Marker lines** — `{"type": "subsession_start"|"subsession_end"|"compaction"|"error"|"security_rule_added"|"agent_stuck_critical"|"usage"|"greeting", ...}`.
   `subsession_start`/`subsession_end` record, *in chronological position*, when
   a sub-agent took over and when it handed control back. They carry
   `subsession_id`, `agent`, `display_name`, and `parent_display_name`;
@@ -180,7 +180,12 @@ order):
   context reset (`summary`, `reason`, `tokens_before`/`tokens_after`). `error`
   records an `EngineEmitters.emit_error` runtime failure (`message`,
   `recoverable`). `security_rule_added` and `agent_stuck_critical` similarly
-  durably record their live counterparts. `usage` records one LLM call's
+  durably record their live counterparts. `greeting` (`{text}`) records a
+  brand-new session's opening greeting (`EngineEmitters.emit_greeting`,
+  `runtime._engine._greeting.SessionGreeter`, doc/WS_PROTOCOL.md §5.9i) — like
+  the others, this is what lets it replay via `session.history` after a
+  reload; being a marker rather than a `{role, content}` message line is what
+  keeps it out of `load_main_messages`' live LLM context (see below). `usage` records one LLM call's
   per-turn stats (`cumulative_usd`, `duration_seconds`, `last_call_tokens`,
   `model`, `usd_cost`, `stop_reason`, `agent`) — the persisted twin of the live
   `usage.update` event, added so the WebView's "Kodo responded in..." row
@@ -194,12 +199,15 @@ order):
   `usd_cost`/`stop_reason`/`agent` straight into this marker, so a call's
   full audit trail lives in the one file (session or subsession) it actually
   happened in, with nothing split out to a separate directory.
-  All of these except `subsession_start`/`subsession_end` can equally appear
-  inside a **subsession's own log** (below) — an error, a granted security
-  rule, or the stuck watchdog can just as easily happen to a sub-agent's own
-  turn as to a top-level one; `EngineEmitters._append_marker` routes to
-  whichever log is active (`TransientStore.active_subsession`) so the event
-  lands where it actually happened, never bleeding into the parent's log.
+  All of these except `subsession_start`/`subsession_end`/`greeting` can
+  equally appear inside a **subsession's own log** (below) — an error, a
+  granted security rule, or the stuck watchdog can just as easily happen to a
+  sub-agent's own turn as to a top-level one; `EngineEmitters._append_marker`
+  routes to whichever log is active (`TransientStore.active_subsession`) so
+  the event lands where it actually happened, never bleeding into the
+  parent's log. `greeting` can't appear there in practice either — it only
+  ever fires once, from `WorkflowEngine.start`'s brand-new-session branch,
+  before any subsession could possibly be active.
 
 `TransientStore.read_messages()` returns only the message lines (for rebuilding
 LLM context); `read_session_lines()` returns everything (for resume and history

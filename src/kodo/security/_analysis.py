@@ -536,13 +536,15 @@ def _resolve(token: str, cwd: str, windows: bool, *, confined: bool = True) -> s
             ``True`` (the ordinary case), a plain relative token — no ``..``
             — is trusted to stay under the already-confined *cwd* and is
             never resolved at all (returns ``None``). When ``False`` there is
-            no confined *cwd* to trust (``cwd`` is itself ``""`` in this
-            state — see ``SecurityLayer.__evaluate_run_command``), so every
+            no confined *cwd* to trust — *cwd* is then the session's private
+            scratch directory, merely where a workspace-less ``run_command``
+            defaults to running (``ToolContext.command_cwd``), which is
+            outside every root and outside the OS temp roots — so every
             relative token is resolved the same way an absolute one would be,
-            anchoring it against ``cwd``/`` (join with `` "" `` is a no-op,
-            so it normalizes on its own text) — the empty *roots* then makes
-            ``_within_any_root`` reject it unconditionally in ``_classify``,
-            same as any other unproven path, short of the OS temp carve-out.
+            anchored against it. The empty *roots* then makes
+            ``_within_any_root`` reject the result unconditionally in
+            ``_classify``, same as any other unproven path, short of the OS
+            temp carve-out.
     """
     mod = ntpath if windows else posixpath
     text = token

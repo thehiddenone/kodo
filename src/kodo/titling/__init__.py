@@ -14,11 +14,18 @@ dedicated llama-server: any caller may invent a short project name from a
 description once the titler is up (used by
 :mod:`kodo.runtime._engine._core`'s autonomous-mode project bootstrapping,
 but not tied to it).
+
+:func:`generate_greeting` is likewise independent: it writes a short, varied
+opening greeting for a brand-new session, used by
+:mod:`kodo.runtime._engine._greeting`'s
+:class:`~kodo.runtime._engine._greeting.SessionGreeter`. See
+``doc/WS_PROTOCOL.md`` (``session.greeting``) for the wire contract.
 """
 
 from __future__ import annotations
 
 from ._server import (
+    generate_greeting,
     generate_project_name,
     generate_title,
     start_titling,
@@ -27,6 +34,7 @@ from ._server import (
 )
 
 __all__ = [
+    "generate_greeting",
     "generate_project_name",
     "generate_title",
     "start_titling",

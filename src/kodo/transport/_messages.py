@@ -878,6 +878,21 @@ EVT_AUTONOMOUS_CHANGED = "autonomous.changed"
 EVT_SESSION_NAME = "session.name"
 EVT_SESSION_NAMING = "session.naming"
 
+# Server → Client event. Fired once per brand-new session (never for a
+# resumed one), shortly after ``hello.ack`` — a short, varied opening
+# greeting written by the local titler llama-server
+# (``kodo.titling.generate_greeting``, background call fired from
+# ``runtime._engine._greeting.SessionGreeter``, never blocking the handshake
+# itself), or a fixed default line if the titler isn't up. Replaces the
+# WebView's own previously-hardcoded empty-state placeholder. ``{text}``.
+# Also persisted as a ``greeting`` marker (see
+# ``EngineEmitters.emit_greeting``) so it replays via ``session.history`` on
+# reload — the client always sees it again after a restart — but, being a
+# marker (no ``role`` key), it is never read back by
+# ``HistoryProjector.load_main_messages`` into the live LLM context: the
+# coding agent itself never sees its own greeting.
+EVT_SESSION_GREETING = "session.greeting"
+
 # Subsession (sub-agent takeover) boundaries — drive the WebView feed dividers
 # ("Narrative Author subagent took over from Kōdo" / "Kōdo resumed").
 EVT_SUBSESSION_STARTED = "subsession.started"

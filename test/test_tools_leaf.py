@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kodo.project import SessionWorkspace
-from kodo.runtime import GateOrchestrator, SessionState
+from kodo.project import SessionWorkspace, session_temp_dir
+from kodo.runtime import GateOrchestrator, PermissionResponse, SessionState
 from kodo.security import SecurityLayer
 from kodo.tools import (
     DISPATCHABLE_TOOLS_BY_NAME,
@@ -59,6 +59,23 @@ def _make_gate(answer: str = "") -> GateOrchestrator:
         return [{"selected": [], "free_text": answer or None} for _ in questions]
 
     gate.fire_questions = _instant_questions  # type: ignore[method-assign]
+    return gate
+
+
+def _make_allowing_gate() -> GateOrchestrator:
+    """A gate whose ``fire_permission`` always answers "allow", recording how
+    often it fired and with what reason — the stand-in for a user clicking
+    Allow on the security prompt."""
+    gate = _make_gate()
+    gate.permission_calls = 0  # type: ignore[attr-defined]
+    gate.permission_reasons = []  # type: ignore[attr-defined]
+
+    async def _allow(*, reason: str = "", **kwargs: object) -> object:
+        gate.permission_calls += 1  # type: ignore[attr-defined]
+        gate.permission_reasons.append(reason)  # type: ignore[attr-defined]
+        return PermissionResponse(action="allow", feedback="", remember=())
+
+    gate.fire_permission = _allow  # type: ignore[method-assign, assignment]
     return gate
 
 
@@ -782,6 +799,95 @@ async def test_run_command_allows_working_dir_under_system_temp_dir(
 
 
 @pytest.mark.asyncio
+async def test_run_command_runs_in_scratch_dir_without_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: with no workspace bound and no ``working_dir``, dispatch
+    used to crash the runtime worker with ``NoWorkspaceError: default_cwd read
+    before a workspace/project exists`` *after* the user had already allowed
+    the call at the permission prompt. ``run_command`` is
+    ``requires_project=False``, so it must still run — in the session's private
+    scratch directory (``ToolContext.command_cwd``), the same directory the
+    security layer was told about."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    dispatcher = _IntentDispatcher(
+        resolver=LogicalPathResolver(SessionWorkspace()),
+        gate=_make_allowing_gate(),
+        session=SessionState(),
+        services=_StubServices(has_workspace=False),
+        agent_name="test_agent",
+        session_id="sess-test",
+        security=SecurityLayer(),
+        mode="problem_solving",
+    )
+
+    result = json.loads(
+        await dispatcher.dispatch(
+            "run_command",
+            {"command": f'"{sys.executable}" -c "import os; print(os.getcwd())"', "timeout": 10},
+        )
+    )
+
+    assert "error" not in result
+    assert result["exit_code"] == 0
+    scratch = session_temp_dir("sess-test")
+    assert scratch.is_dir()
+    assert Path(result["stdout"].strip()).resolve() == scratch.resolve()
+
+
+@pytest.mark.asyncio
+async def test_run_command_without_workspace_asks_and_is_told_the_scratch_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The security layer must judge the workspace-less call against the very
+    directory the command will run in — every path resolved there is still
+    "outside" (the scratch dir is deliberately not under
+    ``system_temp_roots()``), so the guard still asks aggressively rather than
+    quietly allowing."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    # In production `~/.kodo/sessions/<id>/tmp` never sits under the OS temp
+    # directory, which is exactly why anchoring the analysis there keeps the
+    # guard aggressive. Here the redirected HOME *is* pytest's own temp dir, so
+    # point the carve-out elsewhere to reproduce the production relationship.
+    monkeypatch.setattr(
+        "kodo.security._analysis.system_temp_roots", lambda: (str(tmp_path / "othertemp"),)
+    )
+    seen: dict[str, object] = {}
+
+    class _RecordingSecurity(SecurityLayer):
+        async def evaluate(self, **kwargs: object):  # type: ignore[override] # noqa: ANN201
+            seen.update(kwargs)
+            return await super().evaluate(**kwargs)  # type: ignore[arg-type]
+
+    gate = _make_allowing_gate()
+    dispatcher = _IntentDispatcher(
+        resolver=LogicalPathResolver(SessionWorkspace()),
+        gate=gate,
+        session=SessionState(),
+        services=_StubServices(has_workspace=False),
+        agent_name="test_agent",
+        session_id="sess-test",
+        security=_RecordingSecurity(),
+        mode="problem_solving",
+    )
+
+    result = json.loads(
+        await dispatcher.dispatch("run_command", {"command": "cat notes.txt", "timeout": 10})
+    )
+
+    assert seen["default_cwd"] == str(session_temp_dir("sess-test"))
+    assert seen["roots"] == ()
+    # An otherwise read-only command still asks: `notes.txt` resolves against
+    # the scratch dir, which is outside every root and outside the OS temp
+    # carve-out.
+    assert gate.permission_calls == 1
+    assert "No workspace is loaded" in str(gate.permission_reasons[0])
+    assert "error" not in result
+
+
+@pytest.mark.asyncio
 async def test_run_command_requires_timeout(tmp_path: Path) -> None:
     dispatcher = _make_dispatcher(tmp_path)
     result = json.loads(await dispatcher.dispatch("run_command", {"command": "echo hi"}))
@@ -1235,8 +1341,9 @@ async def test_scaffold_new_project_with_path_does_not_bypass_security_gate_with
 async def test_security_gate_default_cwd_read_guarded_without_workspace() -> None:
     """Any non-``requires_project`` tool (not just ``scaffold_new_project``) must
     survive dispatch before a workspace exists: ``default_cwd`` is only ever
-    consulted for ``run_command`` (``requires_project=True``, so it can't
-    reach here workspace-less), but it used to be read unconditionally for
+    consulted for ``run_command`` (which resolves it via
+    ``ToolContext.command_cwd``, scratch-dir fallback and all — see the
+    run_command tests above), but it used to be read unconditionally for
     every tool, crashing on ``LogicalPathResolver``'s assert."""
     services = _StubServices(has_workspace=False)
     dispatcher = _IntentDispatcher(

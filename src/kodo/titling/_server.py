@@ -29,11 +29,17 @@ Public surface:
   ``runtime._engine._titling.SessionTitler``. Returns ``None`` if the titler
   server isn't up for any reason; callers fall back to the prompt's own
   leading words rather than treating this as fatal.
+* :func:`generate_project_name` — independent capability riding the same
+  server; invents a short project name from a description.
+* :func:`generate_greeting` — independent capability riding the same server;
+  writes a short, varied opening greeting for a brand-new session, used by
+  ``runtime._engine._greeting.SessionGreeter``. Themes live in
+  ``_greeting_themes.GREETING_THEMES``.
 
-Both are best-effort: every failure (llama.cpp not installed, model download
-failed, subprocess crashed, HTTP call failed, ...) is logged and swallowed —
-titling is a "nice to have," never something that should affect the main
-chat session.
+All three are best-effort: every failure (llama.cpp not installed, model
+download failed, subprocess crashed, HTTP call failed, ...) is logged and
+swallowed — titling (and the greeter riding it) is a "nice to have," never
+something that should affect the main chat session.
 """
 
 from __future__ import annotations
@@ -44,6 +50,7 @@ import ctypes.wintypes
 import json
 import logging
 import os
+import random
 import re
 import shlex
 import signal
@@ -60,7 +67,15 @@ from kodo.llms.llamacpp import find_installed
 from kodo.llms.local import LocalModelManager
 from kodo.project import kodo_user_dir
 
-__all__ = ["generate_title", "start_titling", "stop_titling", "titler_home_dir"]
+from ._greeting_themes import GREETING_THEMES
+
+__all__ = [
+    "generate_greeting",
+    "generate_title",
+    "start_titling",
+    "stop_titling",
+    "titler_home_dir",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -68,11 +83,19 @@ _log = logging.getLogger(__name__)
 # Model
 # ---------------------------------------------------------------------------
 
-_REPO_ID = "unsloth/Qwen3-0.6B-GGUF"
-_FILENAME = "Qwen3-0.6B-UD-Q8_K_XL.gguf"
+# Qwen3 0.6B
+# _REPO_ID = "unsloth/Qwen3-0.6B-GGUF"
+# _FILENAME = "Qwen3-0.6B-UD-Q8_K_XL.gguf"
+# # Key within the titler's own LocalModelManager (rooted at titler_home_dir(),
+# # never the shared chat-model directory) — opaque, never surfaced to the user.
+# _MODEL_ID = "qwen3-0.6b-titler"
+
+# Qwen2.5 3B Instruct
+_REPO_ID = "Qwen/Qwen2.5-3B-Instruct-GGUF"
+_FILENAME = "qwen2.5-3b-instruct-q8_0.gguf"
 # Key within the titler's own LocalModelManager (rooted at titler_home_dir(),
 # never the shared chat-model directory) — opaque, never surfaced to the user.
-_MODEL_ID = "qwen3-0.6b-titler"
+_MODEL_ID = "qwen25-3b-titler"
 
 _HOST = "127.0.0.1"
 # Distinct from the main chat model's default port (8042, LlamaServerConfig)
@@ -113,7 +136,7 @@ _API_KEY = "key_is_not_required_for_local_inference"
 # character and clamps to 8 words regardless of what the model outputs, so
 # even a successful injection can't produce anything but a short alphanumeric
 # phrase.
-_SYSTEM_PROMPT = (
+_TITLE_SYSTEM_PROMPT = (
     "You write short titles that summarize a message sent to an AI coding "
     "assistant. Output ONLY the title text - no quotes, no punctuation, no "
     "preamble, no explanation, nothing else. The title must be a single "
@@ -133,10 +156,10 @@ _SYSTEM_PROMPT = (
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
-def _build_messages(text: str) -> list[dict[str, str]]:
+def _build_title_messages(text: str) -> list[dict[str, str]]:
     """Build the guardrailed chat messages that ask the titler to summarize *text*."""
     return [
-        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "system", "content": _TITLE_SYSTEM_PROMPT},
         {
             "role": "user",
             "content": f"<<<MESSAGE>>>\n{text}\n<<<END_MESSAGE>>>\n\nTitle (at most 8 words):",
@@ -172,6 +195,30 @@ def _build_project_name_messages(text: str) -> list[dict[str, str]]:
             "role": "user",
             "content": f"<<<MESSAGE>>>\n{text}\n<<<END_MESSAGE>>>\n\nProject name (1-3 words):",
         },
+    ]
+
+
+# No injection-guardrail delimiter framing here, unlike the title/project-name
+# prompts above: neither takes any untrusted user text as input, so there is
+# nothing to wall off as "data, not instructions". `{theme}` is filled from
+# kodo's own fixed `GREETING_THEMES` list, never from anything a user typed.
+_GREETING_SYSTEM_PROMPT_TEMPLATE = (
+    "You write a short, warm opening greeting for an AI coding assistant named "
+    "Kodo, shown the moment a user starts a brand-new session. Output ONLY the "
+    "greeting text - no quotes, no preamble, no explanation, nothing else. "
+    "Keep it to 1-2 short sentences. Introduce yourself as Kodo and invite the "
+    "user to start building. Work in a brief, light, one-clause reference to "
+    "the theme below without turning it into a lecture - it should read like "
+    "a passing flourish, not an essay.\n\n"
+    "For example, you can speak of {theme}."
+)
+
+
+def _build_greeting_messages(theme: str) -> list[dict[str, str]]:
+    """Build the chat messages that ask the titler to write an opening greeting around *theme*."""
+    return [
+        {"role": "system", "content": _GREETING_SYSTEM_PROMPT_TEMPLATE.format(theme=theme)},
+        {"role": "user", "content": "Greet the user now."},
     ]
 
 
@@ -519,7 +566,7 @@ async def generate_title(text: str) -> str | None:
         client = openai.AsyncOpenAI(api_key=_API_KEY, base_url=f"{server.base_url}/v1")
         response = await client.chat.completions.create(
             model=_MODEL_ID,
-            messages=_build_messages(text),  # type: ignore[arg-type]
+            messages=_build_title_messages(text),  # type: ignore[arg-type]
             max_tokens=48,
             temperature=0.0,
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},
@@ -571,4 +618,49 @@ async def generate_project_name(text: str) -> str | None:
         return _THINK_BLOCK_RE.sub("", content).strip() or None
     except Exception:
         _log.exception("Titler project-name completion failed")
+        return None
+
+
+async def generate_greeting() -> str | None:
+    """Write a short, varied opening greeting via the titler's llama-server.
+
+    Independent of :func:`generate_title`/:func:`generate_project_name` —
+    different prompt, same running server. Unlike those two, takes no input
+    text: a theme is picked at random from :data:`kodo.titling._greeting_themes.
+    GREETING_THEMES` on every call so consecutive brand-new sessions don't all
+    open with the same line, and a nonzero ``temperature`` (unlike the
+    deterministic ``0.0`` used for title/project-name, where consistency
+    matters more than variety) is used deliberately for the same reason.
+    Called once per brand-new session by
+    ``runtime._engine._greeting.SessionGreeter`` — never for a resumed one.
+    Genuinely async I/O, same as :func:`generate_title` — callers should
+    ``await`` it directly. Returns ``None`` under the same conditions
+    ``generate_title`` does (server not up, completion failure); the caller
+    falls back to a fixed default greeting rather than leaving a brand-new
+    session's feed empty.
+
+    Returns:
+        str | None: Raw model output (not yet sanitized — that's the
+        caller's job, same as title sanitization is
+        ``runtime._engine._titling.SessionTitler``'s), or ``None`` on failure.
+    """
+    server = _active
+    if server is None or not server.is_running:
+        return None
+    try:
+        client = openai.AsyncOpenAI(api_key=_API_KEY, base_url=f"{server.base_url}/v1")
+        theme = random.choice(GREETING_THEMES)
+        response = await client.chat.completions.create(
+            model=_MODEL_ID,
+            messages=_build_greeting_messages(theme),  # type: ignore[arg-type]
+            max_tokens=128,
+            temperature=0.9,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        content = response.choices[0].message.content
+        if not content:
+            return None
+        return _THINK_BLOCK_RE.sub("", content).strip() or None
+    except Exception:
+        _log.exception("Titler greeting completion failed")
         return None
