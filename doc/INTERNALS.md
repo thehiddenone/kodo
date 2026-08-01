@@ -704,14 +704,19 @@ any first prompt over 8 words — §12, WS_PROTOCOL.md §5.9a/§5.9b) and by
 |---|---|---|
 | [_loader.py](../src/kodo/subagents/_loader.py) | `SubAgent` (frozen: `name`, `tools: frozenset[str]`, `system_prompt`, `source_path`, `capability`, `display_name`, `subagents`, **`bases: tuple[str, ...]`**, **`subagent_order: tuple[str, ...]`**, **`purpose`**, **`solo: bool`**, **`critic`**, **`standalone: bool`**), `AgentLoadError`, `load_agent()` | Parses `subagent_<name>.md` frontmatter + body. Extracts the **`## Purpose`** body section (caller-agnostic "what this agent does / when to call it"); reads the `solo`/`critic`/`standalone` frontmatter that drives a caller's roster; keeps the `subagents:` allow-list in declaration order as `subagent_order`. |
 | [_subagentspec.py](../src/kodo/subagents/_subagentspec.py) + [specs/](../src/kodo/subagents/specs/) | `SubAgentSpec` (frozen: `name`, `description`, `input_schema`, `output_schema`) + one literal per agent in `specs/_<name>.py`, aggregated as `ALL_SUBAGENTS` | The typed input/output contract of a sub-agent — "a tool with agentic behavior". Every sub-agent **except** the entry agents (`guide`, `problem_solver`) has one. `specs/_shapes.py` holds declarative schema builders (`pipeline_input`/`author_output`/`critic_output`). |
-| [_registry.py](../src/kodo/subagents/_registry.py) | `AgentRegistry` | Loads all `subagent_*.md`, the two mandatory preambles `preamble_security.md` and `preamble_performance.md`, **and any `base_*.md` shared snippets**. **Validates** each agent's `tools:` frontmatter against `ALL_TOOLS` at load time (one `_SPECS_BY_NAME` map) and filters `autonomous_mode == "unavailable"` tools out of the returned tool set when `autonomous=True` — it does **not** describe tools in the prompt (that is the `tools` argument's job, §6). **Renders the `## Subagents` roster from `{PLACEHOLDER:SUBAGENTS}`** (`render_subagents_section()`, public), now including each callee's input/output schema. For an agent with a `SubAgentSpec` (`SUBAGENT_SPECS_BY_NAME`, `spec_for()`), **auto-grants `return_result`** and **injects a `## Your Task Contract` section** (its own input + augmented output schema). Prepends the preambles (security, then performance), then the agent's referenced bases, then the contract. |
+| [_registry.py](../src/kodo/subagents/_registry.py) | `AgentRegistry` | Loads all `subagent_*.md`, the two mandatory preambles `preamble_security.md` and `preamble_performance.md`, **and any `base_*.md` shared snippets**. **Validates** each agent's `tools:` frontmatter against `ALL_TOOLS` at load time (one `_SPECS_BY_NAME` map) and filters `autonomous_mode == "unavailable"` tools out of the returned tool set when `autonomous=True` — it does **not** describe tools in the prompt (that is the `tools` argument's job, §6). **Renders the `## Subagents` roster from `{PLACEHOLDER:SUBAGENTS}`** (`render_subagents_section()`, public) — description only, **no schemas**: those reach the caller as real JSON Schema on each callee's own `run_subagent_<name>` tool. For an agent with a `SubAgentSpec` (`SUBAGENT_SPECS_BY_NAME`, `spec_for()`), **auto-grants `return_result`** and injects `_INPUT_PARAMETERS_NOTE`, a short fixed pointer (no schema) at where its real task lands. Prepends the preambles (security, then performance), then the agent's referenced bases, then that note. |
 
 **Links:** `_registry` imports `ALL_TOOLS` from `toolspecs`. `get(name,
 autonomous)` returns a `SubAgent` whose prompt is composed as
-**preamble (security, then performance) → bases → contract → agent body**.
-Because the system prompt is rebuilt on every turn, the preambles (and bases) are
-always present regardless of context compaction (compaction rewrites only the
-message history). Consumed only by `WorkflowEngine`.
+**preamble (security, then performance) → bases → Input Parameters note →
+agent body**. Because the system prompt is rebuilt on every turn, the
+preambles (and bases) are always present regardless of context compaction
+(compaction rewrites only the message history). No schema ever appears in this
+prompt — the concrete task (with per-field descriptions pulled from the
+schema, and the sub-agent's only remaining explanation of `return_result`) is
+rendered fresh per call into the first user turn instead
+(`kodo.runtime._engine._subagents._render_task_input`, doc/SESSIONS.md
+"Typed sub-agent interface"). Consumed only by `WorkflowEngine`.
 
 **Shared bases (`bases:` frontmatter):** an agent may list `bases: [<name>, …]`;
 each names a `base_<name>.md` file in the subagents dir whose body is prepended

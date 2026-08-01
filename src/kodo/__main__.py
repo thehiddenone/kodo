@@ -226,8 +226,7 @@ def _resolve(
             )
             return None, None, 2
     elif (
-        get_local_registry(kodo_dir).get(model_arg) is None
-        and _find_cloud_entry(model_arg) is None
+        get_local_registry(kodo_dir).get(model_arg) is None and _find_cloud_entry(model_arg) is None
     ):
         print(
             f"Error: unknown LLM id {model_arg!r} — not in the local or cloud registry",

@@ -45,6 +45,13 @@ lives once with each sub-agent and is reused by every caller. It carries **no**
 schemas: those reach the caller as real JSON Schema on the generated tools above.
 See :meth:`AgentRegistry.render_subagents_section`.
 
+A schema-bearing agent's own system prompt never contains its input or output
+schema either — no ``## Your Task Contract`` block, no JSON dump. It only gets
+:data:`_INPUT_PARAMETERS_NOTE`, a short fixed pointer to where its real task
+lands: the first user turn, rendered per call (with real values, per-field
+descriptions, and the `return_result` reminder) by
+:func:`kodo.runtime._engine._subagents._render_task_input`, never here.
+
 Raises :class:`~._loader.AgentLoadError` on duplicate names, missing entries, a
 tool with no matching :class:`~kodo.toolspecs.ToolSpec`, or a ``critic:`` that
 does not resolve to an agent declaring ``role: critic``.
@@ -52,7 +59,6 @@ does not resolve to an agent declaring ``role: critic``.
 
 from __future__ import annotations
 
-import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -113,11 +119,29 @@ _SUBAGENTS_INTRO = (
 _SPECS_BY_NAME: dict[str, ToolSpec] = {t.name: t for t in ALL_TOOLS}
 
 # Every sub-agent's typed interface, keyed by agent name. An agent that has an
-# entry here is "schema-bearing": it is auto-granted ``return_result``, gets a
-# ``## Your Task Contract`` section rendered into its own prompt, and its schemas
-# appear in any caller's roster. Entry agents (guide/problem_solver) have no
-# spec and are left untouched.
+# entry here is "schema-bearing": it is auto-granted ``return_result`` and gets
+# ``_INPUT_PARAMETERS_NOTE`` rendered into its own prompt. Its schemas reach a
+# *caller* as real JSON Schema on the generated ``run_subagent_<name>`` tool
+# (never restated in any roster), and reach the agent *itself* as the real
+# values under ``## Input Parameters`` at the bottom of its first message (see
+# ``kodo.runtime._engine._subagents._render_task_input``) — no schema is ever
+# shown in a system prompt. Entry agents (guide/problem_solver) have no spec
+# and are left untouched.
 SUBAGENT_SPECS_BY_NAME: dict[str, SubAgentSpec] = {s.name: s for s in ALL_SUBAGENTS}
+
+# Short note injected into every schema-bearing agent's own system prompt,
+# right before its own body (replacing the old ``## Your Task Contract``,
+# which restated the raw input schema as prose — a real per-call rendering,
+# not a schema dump, now lives in the first user turn instead; see
+# ``_render_task_input``). Deliberately carries no schema and no per-agent
+# detail: the concrete values, their descriptions, and the `return_result`
+# reminder are rendered fresh per call, where the real task is actually known.
+_INPUT_PARAMETERS_NOTE = (
+    "Your task arrives as your first message: free-form `instructions`, "
+    "followed by an **Input Parameters** section listing every other value "
+    "you were given — the last part of that message, with a reminder there "
+    "of how to return your result."
+)
 
 
 def _review_output_schema(output_schema: dict[str, object], critic: str) -> dict[str, object]:
@@ -306,29 +330,6 @@ class AgentRegistry:
             if name not in _SPECS_BY_NAME:
                 raise AgentLoadError(f"{path}: tool {name!r} has no ToolSpec in kodo.toolspecs")
 
-    @staticmethod
-    def __render_contract_section(spec: SubAgentSpec) -> str:
-        """Render an agent's own ``## Your Task Contract`` from its spec.
-
-        Shows only the **input** side: the structured task the agent receives.
-        The output side is deliberately absent — it reaches the agent as the
-        real JSON Schema bound to ``return_result``'s ``result`` parameter (see
-        :func:`~kodo.toolspecs.build_return_result_spec`), which is where a tool
-        contract belongs. Restating it here would duplicate the one authoritative
-        copy in a channel that cannot stay in sync with it.
-        """
-        input_json = json.dumps(spec.input_schema, indent=2)
-        return (
-            "## Your Task Contract\n\n"
-            "You are invoked with a structured task matching this **input schema**:\n\n"
-            f"```json\n{input_json}\n```\n\n"
-            "When you finish, call `return_result` exactly once. Its `result` parameter "
-            "declares the exact shape you must produce — read it there; it is the "
-            "authoritative copy. The engine validates what you send and reports "
-            "`schema_compliance: false` if it had to repair your payload (missing "
-            "fields backfilled with empty strings, undeclared fields dropped)."
-        )
-
     def __render_subagents_section(self, caller: SubAgent) -> str:
         """Render the sub-agent roster that fills *caller*'s ``{PLACEHOLDER:SUBAGENTS}``.
 
@@ -428,14 +429,14 @@ class AgentRegistry:
                 _SUBAGENTS_PLACEHOLDER, self.__render_subagents_section(agent)
             )
         # Order of precedence: global preamble (security + performance) first,
-        # then any shared base contract, then the agent's own typed task
-        # contract (when it has a spec), then the agent's own body (which may
-        # specialize the base). Bases are validated to exist at load time.
-        contract = [self.__render_contract_section(spec)] if spec is not None else []
+        # then any shared base contract, then (for a schema-bearing agent) the
+        # short Input Parameters pointer note, then the agent's own body (which
+        # may specialize the base). Bases are validated to exist at load time.
+        note = [_INPUT_PARAMETERS_NOTE] if spec is not None else []
         parts = [
             self.__preamble,
             *(self.__bases[b] for b in agent.bases),
-            *contract,
+            *note,
             system_prompt,
         ]
         system_prompt = "\n\n".join(parts)

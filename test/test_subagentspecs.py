@@ -3,8 +3,13 @@
 Mirrors the role of ``test_tools_compliance.py`` for tools: every sub-agent
 (except the user-facing entry agents) declares a typed ``SubAgentSpec``, the
 specs and the ``subagent_*.md`` files correspond one-to-one, the schemas are
-well-formed, and the registry auto-grants ``return_result`` + a ``## Your Task
-Contract`` to schema-bearing agents while leaving entry agents untouched.
+well-formed, and the registry auto-grants ``return_result`` + the short
+Input Parameters pointer note to schema-bearing agents while leaving entry
+agents untouched. Neither the input nor the output schema is ever restated as
+prose in a system prompt (see ``_registry.py``'s module docstring) — the input
+schema reaches a caller as real JSON Schema on ``run_subagent_<name>``, and the
+sub-agent itself sees concrete values (not the schema) under ``## Input
+Parameters`` in its first user turn (``_render_task_input``), not here.
 """
 
 from __future__ import annotations
@@ -195,9 +200,10 @@ def test_test_design_critic_vocabulary_leads_with_behavioral_kinds() -> None:
 def test_return_result_with_engine_owned_compliance_key_stays_compliant() -> None:
     """A result that includes the engine-owned ``schema_compliance`` key is compliant.
 
-    Regression: an agent is shown the *augmented* output schema (via its ``##
-    Your Task Contract``), which lists ``schema_compliance`` as required, so an
-    obedient agent includes it in its ``return_result`` payload. Validation,
+    Regression: an agent is shown the *augmented* output schema (as the real
+    JSON Schema bound to its own ``return_result`` tool's ``result`` parameter),
+    which lists ``schema_compliance`` as required, so an obedient agent
+    includes it in its ``return_result`` payload. Validation,
     however, runs against the *raw* ``spec.output_schema`` that omits the key.
     Before the fix, normalize_output treated the supplied key as an undeclared
     extra, dropped it, and wrongly marked the otherwise-perfect result
@@ -240,12 +246,14 @@ def test_engine_owned_compliance_key_does_not_mask_a_real_violation() -> None:
     assert normalized["schema_compliance"] is False
 
 
-def test_registry_auto_grants_return_result_and_contract() -> None:
+def test_registry_auto_grants_return_result_and_input_parameters_note() -> None:
     registry = AgentRegistry(_AGENTS_DIR)
     for name in _SPECS_BY_NAME:
         agent = registry.get(name)
         assert "return_result" in agent.tools, name
-        assert "## Your Task Contract" in agent.system_prompt, name
+        assert "Input Parameters" in agent.system_prompt, name
+        assert "## Your Task Contract" not in agent.system_prompt, name
+        assert "input_schema" not in agent.system_prompt, name
 
 
 def test_registry_leaves_entry_agents_without_return_result() -> None:
@@ -253,6 +261,7 @@ def test_registry_leaves_entry_agents_without_return_result() -> None:
     for name in _ENTRY_AGENTS:
         agent = registry.get(name)
         assert "return_result" not in agent.tools, name
+        assert "Input Parameters" not in agent.system_prompt, name
         assert "## Your Task Contract" not in agent.system_prompt, name
 
 

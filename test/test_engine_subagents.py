@@ -52,6 +52,9 @@ class _FakeRegistry:
     def return_result_specs(self, name: str) -> list[object]:
         return []
 
+    def spec_for(self, name: str) -> object | None:
+        return None
+
 
 class _FakeTransient:
     def __init__(self) -> None:
@@ -328,25 +331,84 @@ def test_render_task_input_instructions_only() -> None:
     assert text == "# Task\n\nDo the thing."
 
 
-def test_render_task_input_with_other_fields() -> None:
+def test_render_task_input_no_schema_fallback() -> None:
+    """No ``input_schema`` (a spec-less spawn target — should not happen for a
+    real spawn, but the fallback is defensive): still pretty-prints the other
+    fields under Input Parameters, with no descriptions and no `return_result`
+    reminder, since neither can be sourced without the schema."""
     text = WorkflowEngine._render_task_input(
         {"instructions": "Do it", "paths": ["a.md", "b.md"], "count": 3, "empty_list": []}
     )
     assert "# Task\n\nDo it" in text
-    assert "## Inputs" in text
-    assert "- paths: a.md, b.md" in text
-    assert "- count: 3" in text
-    assert "- empty_list: (none)" in text
+    assert "## Input Parameters" in text
+    assert "- **paths**: a.md, b.md" in text
+    assert "- **count**: 3" in text
+    assert "- **empty_list**: (none)" in text
+    assert "return_result" not in text
 
 
 def test_render_task_input_no_instructions_only_other_fields() -> None:
     text = WorkflowEngine._render_task_input({"target": "file.md"})
-    assert text == "## Inputs\n- target: file.md"
+    assert text == "## Input Parameters\n- **target**: file.md"
 
 
 def test_render_task_input_blank_instructions_treated_as_absent() -> None:
     text = WorkflowEngine._render_task_input({"instructions": "   "})
     assert text == "(no task)"
+
+
+def test_render_task_input_with_schema_adds_descriptions_reminder_and_order() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "instructions": {"type": "string"},
+            "count": {"type": "integer", "description": "How many to do."},
+            "paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Files to touch.",
+            },
+        },
+    }
+    text = WorkflowEngine._render_task_input(
+        {"instructions": "Do it", "paths": ["a.md", "b.md"], "count": 3}, schema
+    )
+    assert "## Input Parameters" in text
+    # Schema property order (count before paths) wins over the caller's dict order.
+    assert text.index("**count**") < text.index("**paths**")
+    assert "- **count** (How many to do.): 3" in text
+    assert "- **paths** (Files to touch.): a.md, b.md" in text
+    assert "call `return_result` exactly once" in text
+
+
+def test_render_task_input_schema_bearing_with_no_extra_params_still_shows_reminder() -> None:
+    schema = {"type": "object", "properties": {"instructions": {"type": "string"}}}
+    text = WorkflowEngine._render_task_input({"instructions": "Do it"}, schema)
+    assert "## Input Parameters" in text
+    assert "(no parameters beyond the task above)" in text
+    assert "call `return_result` exactly once" in text
+
+
+def test_render_task_input_nested_dict_value_renders_as_bullets() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"input_paths": {"type": "object", "description": "Named paths."}},
+    }
+    text = WorkflowEngine._render_task_input(
+        {"instructions": "Do it", "input_paths": {"target": "file.md"}}, schema
+    )
+    assert "- **target**: file.md" in text
+
+
+def test_render_task_input_null_value_renders_as_none_not_python_literal() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"for_revision_path": {"type": ["string", "null"]}},
+    }
+    text = WorkflowEngine._render_task_input(
+        {"instructions": "Do it", "for_revision_path": None}, schema
+    )
+    assert "- **for_revision_path**: (none)" in text
 
 
 # ---------------------------------------------------------------------------

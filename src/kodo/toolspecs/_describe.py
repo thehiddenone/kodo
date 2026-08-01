@@ -28,10 +28,12 @@ one-line prose note listing the fields that may be absent.
 
 The engine-owned ``schema_compliance`` field (see :mod:`._compliance`) is **not**
 included: it is injected into every tool result identically, so repeating its
-long explanation under all ~30 tools would cost far more than it teaches. Agents
-that need it are told about it once, by their own ``## Your Task Contract``
-section (rendered by :class:`~kodo.subagents._registry.AgentRegistry` from the
-*augmented* schema).
+long explanation under all ~30 tools would cost far more than it teaches. A
+sub-agent is the one caller that needs it, and it is told about it exactly
+once anyway — not in prose, but as a real property description on its own
+``return_result`` tool's ``result`` schema (:func:`~kodo.toolspecs.build_return_result_spec`,
+which runs the sub-agent's declared ``output_schema`` through
+:func:`~kodo.toolspecs.augment_output_schema` before handing it to the model).
 """
 
 from __future__ import annotations

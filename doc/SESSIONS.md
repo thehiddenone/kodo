@@ -345,17 +345,28 @@ instead.
 Agent↔sub-agent interaction is typed, mirroring tools. Every sub-agent except
 the entry agents (`guide`, `problem_solver`) has a `SubAgentSpec`
 (`kodo.subagents.specs`, one literal per file) declaring an `input_schema` and an
-`output_schema`. The registry auto-grants such agents the terminal
-`return_result` tool and injects a `## Your Task Contract` section (their own
-input/output schema) into their prompt; a caller's `{PLACEHOLDER:SUBAGENTS}`
-roster also renders every callee's schemas.
+`output_schema`. Neither schema is ever restated as prose in a system prompt.
+The registry auto-grants such agents the terminal `return_result` tool and a
+short, fixed note pointing at where its real task lands (no schema, no
+per-agent detail — see `_registry.py`'s `_INPUT_PARAMETERS_NOTE`, which
+replaced the old `## Your Task Contract` section); a caller's
+`{PLACEHOLDER:SUBAGENTS}` roster renders every callee's description but no
+schemas either — those reach the caller as real JSON Schema on its own
+`run_subagent_<name>` tool.
 
 - **Input.** `run_subagent` takes `{name, task_input}` where `task_input` is a
-  structured object conforming to the callee's `input_schema`. The engine renders
-  it to the seed user turn (`_render_task_input`) but persists that seed with
-  `kind="subagent_task"`, so the UI shows it as a distinct **task brief** card,
-  not a user-prompt bubble. The rendered task also rides the `subsession.started`
-  event's `task` field for the live feed.
+  structured object conforming to the callee's `input_schema`. The engine
+  renders it to the seed user turn (`_render_task_input`): `instructions`
+  becomes a `# Task` heading, and every other field the sub-agent was actually
+  given is pretty-printed under a trailing `## Input Parameters` section, each
+  labeled with its schema `description` when one exists — this is the
+  concrete-values counterpart to the caller-facing schema, and the last
+  section of the message (for a chat-templated local model, the last section
+  of the whole prompt). That section also carries the sub-agent's only
+  remaining prose reminder of how `return_result` works. The seed is persisted
+  with `kind="subagent_task"`, so the UI shows it as a distinct **task brief**
+  card, not a user-prompt bubble. The rendered task also rides the
+  `subsession.started` event's `task` field for the live feed.
 - **Output.** The sub-agent ends its run by calling `return_result` with a
   payload validated/normalized against its `output_schema` (`normalize_output`,
   which also handles a top-level `oneOf` for a dual-role sub-agent returning one

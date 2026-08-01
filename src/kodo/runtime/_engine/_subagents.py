@@ -49,6 +49,20 @@ _MAX_WEB_SEARCH_TIMEOUT_S = 600.0
 _DEFAULT_MAX_REVIEW_ROUNDS = MAX_ROUNDS_DEFAULT
 _MAX_REVIEW_ROUNDS = 10
 
+# Closing note appended to every schema-bearing spawn's rendered Input
+# Parameters section (see ``_render_task_input``). This is the sub-agent's only
+# remaining prose explanation of `return_result` beyond the tool's own
+# `description` (`kodo.toolspecs._return_result._DESCRIPTION`) — the registry
+# used to restate it inside a `## Your Task Contract` system-prompt section,
+# which is gone; this per-call section is where it lives now.
+_RETURN_RESULT_REMINDER = (
+    "When you finish, call `return_result` exactly once. Its `result` parameter "
+    "declares the exact shape you must produce — read it there; it is the "
+    "authoritative copy. The engine validates what you send and reports "
+    "`schema_compliance: false` if it had to repair your payload (missing "
+    "fields backfilled with empty strings, undeclared fields dropped)."
+)
+
 _log = logging.getLogger(__name__)
 
 
@@ -484,8 +498,14 @@ class SubagentMixin:
 
         session_id = f"web-search-{uuid.uuid4().hex}"
         dispatcher = self._make_dispatcher(_WEB_SEARCH_AGENT_NAME, session_id, deadline=deadline)
+        web_search_spec = self._registry.spec_for(_WEB_SEARCH_AGENT_NAME)
         messages: list[Message] = [
-            Message(role="user", content=self._render_task_input(task_input))
+            Message(
+                role="user",
+                content=self._render_task_input(
+                    task_input, web_search_spec.input_schema if web_search_spec else None
+                ),
+            )
         ]
 
         notes: list[str] = []
@@ -520,13 +540,69 @@ class SubagentMixin:
         return {"themes": [], "note": "Search timed out before a report could be produced."}
 
     @staticmethod
-    def _render_task_input(task_input: dict[str, object]) -> str:
+    def _render_param_value(value: object, indent: str = "") -> str:
+        """Pretty-print one Input Parameters value as markdown, recursing into containers.
+
+        A scalar renders inline. A flat list of scalars renders comma-joined
+        (unchanged from before). A dict, or a list containing one, renders as a
+        nested bullet list instead of a Python repr — task inputs regularly
+        carry a labeled path collection (``input_paths: {"target": "..."}``),
+        and a smaller local model reads that far more reliably as markdown
+        bullets than as ``{'target': '...'}``. ``None`` (an omitted optional
+        field, e.g. ``for_revision_path`` on a first round) renders as
+        ``(none)`` rather than the Python literal ``None``.
+        """
+        if value is None:
+            return "(none)"
+        if isinstance(value, dict):
+            if not value:
+                return "(none)"
+            return "\n" + "\n".join(
+                f"{indent}  - **{k}**: {SubagentMixin._render_param_value(v, indent + '  ')}"
+                for k, v in value.items()
+            )
+        if isinstance(value, list):
+            if not value:
+                return "(none)"
+            if all(not isinstance(v, (dict, list)) for v in value):
+                return ", ".join(str(v) for v in value)
+            return "\n" + "\n".join(
+                f"{indent}  - {SubagentMixin._render_param_value(v, indent + '  ')}" for v in value
+            )
+        return str(value)
+
+    @staticmethod
+    def _render_task_input(
+        task_input: dict[str, object], input_schema: dict[str, object] | None = None
+    ) -> str:
         """Render a structured ``task_input`` to the user turn the sub-agent reads.
 
-        The instructions become the heading; every other field is listed under
-        ``## Inputs`` (lists comma-joined). This is what the LLM sees; the UI
-        renders the same task as a distinct *task brief* entry (see the
-        ``subagent_task`` entry kind), not as a user prompt bubble.
+        ``instructions`` becomes the ``# Task`` heading. Every other field the
+        sub-agent was actually given is pretty-printed under a trailing
+        ``## Input Parameters`` section — the last section of this message, and
+        (since a local model's chat template concatenates system prompt and
+        first user turn into one flat string) the last section of the whole
+        prompt the agent's own ``.md`` file promises it. This is also the only
+        place the sub-agent still sees a description of `return_result`'s job:
+        the registry no longer restates the input schema in the system prompt
+        (see ``AgentRegistry``'s dropped ``## Your Task Contract``), so this
+        per-call section is what replaces it, populated with real values
+        instead of a schema.
+
+        Args:
+            task_input: The concrete task this call is spawning the sub-agent
+                with.
+            input_schema: The sub-agent's declared ``input_schema`` (from its
+                ``SubAgentSpec``), used only to (a) order fields the way the
+                spec declares them and (b) pull each field's ``description`` so
+                a smaller local model doesn't have to infer what a bare value
+                means. ``None`` for a sub-agent with no spec (should not happen
+                for a real spawn, but degrades gracefully — no descriptions, no
+                `return_result` reminder, caller-supplied field order).
+
+        This is what the LLM sees; the UI renders the same task as a distinct
+        *task brief* entry (see the ``subagent_task`` entry kind), not as a
+        user prompt bubble.
         """
         if not task_input:
             return "(no task)"
@@ -535,15 +611,35 @@ class SubagentMixin:
         if isinstance(instructions, str) and instructions.strip():
             lines.append("# Task\n\n" + instructions.strip())
         others = {k: v for k, v in task_input.items() if k != "instructions"}
-        if others:
-            input_lines = ["## Inputs"]
-            for key, value in others.items():
-                if isinstance(value, list):
-                    rendered = ", ".join(str(x) for x in value) if value else "(none)"
-                else:
-                    rendered = str(value)
-                input_lines.append(f"- {key}: {rendered}")
-            lines.append("\n".join(input_lines))
+        properties_raw = input_schema.get("properties") if isinstance(input_schema, dict) else None
+        properties: dict[str, object] = properties_raw if isinstance(properties_raw, dict) else {}
+        ordered_keys = [k for k in properties if k in others]
+        ordered_keys += [k for k in others if k not in ordered_keys]
+
+        if input_schema is not None:
+            param_lines = ["## Input Parameters"]
+            if ordered_keys:
+                for key in ordered_keys:
+                    prop = properties.get(key)
+                    description = prop.get("description") if isinstance(prop, dict) else None
+                    label = f"**{key}**"
+                    if isinstance(description, str) and description.strip():
+                        label += f" ({description.strip()})"
+                    rendered = SubagentMixin._render_param_value(others[key])
+                    param_lines.append(f"- {label}: {rendered}")
+            else:
+                param_lines.append("(no parameters beyond the task above)")
+            param_lines.append("")
+            param_lines.append(_RETURN_RESULT_REMINDER)
+            lines.append("\n".join(param_lines))
+        elif others:
+            # Defensive fallback for a sub-agent spawned with no spec on record
+            # (should not happen in practice — every real spawn target is
+            # schema-bearing). No descriptions, no return_result reminder.
+            param_lines = ["## Input Parameters"]
+            for key in ordered_keys:
+                param_lines.append(f"- **{key}**: {SubagentMixin._render_param_value(others[key])}")
+            lines.append("\n".join(param_lines))
         return "\n\n".join(lines) or "(no task)"
 
     async def _spawn_subagent(
@@ -576,7 +672,8 @@ class SubagentMixin:
         self._replay_subsessions = None
 
         subsession_id = uuid.uuid4().hex
-        seed_content = self._render_task_input(task_input)
+        spec = self._registry.spec_for(name)
+        seed_content = self._render_task_input(task_input, spec.input_schema if spec else None)
         await self._open_subsession(name, subsession_id, seed_content)
 
         seed = Message(role="user", content=seed_content)

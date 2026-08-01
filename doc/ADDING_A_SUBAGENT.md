@@ -116,15 +116,22 @@ ruff check src/kodo/subagents/specs/
 
 Then **read the prompt your agent will actually receive** — the rendered article,
 with the preambles, any `bases:` snippets, the `{PLACEHOLDER:SUBAGENTS}` roster
-and the task contract all substituted:
+and the Input Parameters note all substituted:
 
 ```bash
 PYTHONPATH=src python3 -m kodo --system-prompt foo --model claude-opus-5
 ```
 
-This is the fastest way to catch a placeholder that never got filled, a roster
-row that reads wrong, or a contract that doesn't match your `SubAgentSpec`. It
-calls `AgentRegistry.get` itself, so what it prints is what the engine sends
+This is the fastest way to catch a placeholder that never got filled or a
+roster row that reads wrong. It will **not** show your concrete task or its
+schema — no schema is ever restated in a sub-agent's own prompt (input or
+output). The input schema reaches a *caller* as real JSON Schema on
+`run_subagent_foo`; the sub-agent itself sees concrete values, per-field
+descriptions, and the `return_result` reminder rendered fresh per call under
+`## Input Parameters` in its first user turn (`_render_task_input`,
+doc/SESSIONS.md "Typed sub-agent interface") — check that path if you need to
+verify a field's description reads well. It calls `AgentRegistry.get` itself,
+so what `--system-prompt` prints is what the engine sends
 (see [INTERNALS.md](INTERNALS.md) §9a). `--model`/`-m` only has to resolve —
 every model gets the same prompt today — and can be omitted to use the first
 installed model in the local registry. `test/test_main.py` sweeps *every*

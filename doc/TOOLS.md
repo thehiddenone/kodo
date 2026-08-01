@@ -421,6 +421,36 @@ run_subagent_coder(instructions, input_paths, responsibility_code,
 `subagents:` allow-list. A **critic** (`role: critic`) is skipped: no caller
 ever spawns one, so no tool is minted for it.
 
+### What the sub-agent itself receives
+
+Everything above is the *caller's* view. The sub-agent being spawned never
+sees its own `input_schema` — not as JSON, not as prose. Its system prompt
+(`AgentRegistry.get`) carries only a short, fixed pointer
+(`_INPUT_PARAMETERS_NOTE` in `_registry.py`) saying where the real task lands;
+there is no `## Your Task Contract` section and no schema dump.
+
+The concrete values live instead in the first user turn, rendered fresh per
+call by
+[`_render_task_input`](../src/kodo/runtime/_engine/_subagents.py):
+`instructions` becomes a `# Task` heading, and every other field the caller
+actually supplied is pretty-printed under a trailing `## Input Parameters`
+section — schema property order, each labeled with its `description` when the
+spec declares one, nested dicts/lists rendered as markdown bullets rather than
+a Python repr. That section is the *last* thing in the message and (since a
+local model's chat template concatenates system prompt and first user turn
+into one flat string) the last thing in the whole prompt — deliberately, so
+the model reads it right before it has to act. It ends with the sub-agent's
+only remaining prose explanation of `return_result` (the tool's own
+`description` still carries the same text independently; see
+`_return_result.py`).
+
+Why render values instead of baking them into the system prompt: the
+`AgentRegistry.get` system prompt is agent-*type*-scoped and does not vary by
+call, which lets a local `llama.cpp`-served model reuse the KV cache for the
+shared prefix (preambles + bases + note + body) across every spawn of the same
+sub-agent. Only the first user turn — necessarily per-call, since it carries
+this call's actual values — varies.
+
 ### The canonical form
 
 `RUN_SUBAGENT` still exists in the catalog, but is never offered to a model. It

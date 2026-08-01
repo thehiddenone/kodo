@@ -70,8 +70,10 @@ __all__ = [
 ]
 
 # Every sub-agent spec in the catalog. Consumed by kodo.subagents._registry to
-# render each agent's `## Your Task Contract` and the caller's `## Subagents`
-# roster, and to validate spec<->subagent_<name>.md correspondence.
+# auto-grant `return_result` (bound to each spec's output_schema) and the
+# Input Parameters note, to mint each caller's `run_subagent_<name>` tools and
+# `## Subagents` roster, and to validate spec<->subagent_<name>.md
+# correspondence.
 ALL_SUBAGENTS: tuple[SubAgentSpec, ...] = (
     NARRATIVE_AUTHOR,
     ARCHITECT,
