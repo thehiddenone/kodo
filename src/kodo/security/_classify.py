@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from kodo.shellparser import ParsedCommand, Redirection, Segment, redirection_writes_file
 
-__all__ = ["NormalizedSegment", "SUB_MARK", "leaf_name", "normalize_segments"]
+__all__ = ["CD_EXECUTABLES", "NormalizedSegment", "SUB_MARK", "leaf_name", "normalize_segments"]
 
 # Substitutions are masked to this marker BEFORE parsing (see ._analysis);
 # any token carrying it is statically unresolvable.
@@ -108,6 +108,14 @@ _PS_ALIASES: dict[str, str] = {
 # (``mise exec node -- npm run build``).
 _DASHDASH_RUNNERS = frozenset({("mise", "exec"), ("mise", "x")})
 
+# `cd`/PowerShell `Set-Location` (POSIX `chdir`/`sl` and the PowerShell
+# aliases `chdir`/`sl` all normalize to `set-location` via `_PS_ALIASES`
+# above before a segment ever reaches a caller — no dialect branching needed
+# there). Shared by `._rules` (the workspace-escape "always allow" offer for
+# read-only/`cd` commands) and `._analysis` (tracking an inline `cd`'s effect
+# on the cwd of later segments in the same `&&`/`;`/`||` chain).
+CD_EXECUTABLES = frozenset({"cd", "set-location"})
+
 
 @dataclass(frozen=True)
 class NormalizedSegment:
@@ -132,9 +140,12 @@ class NormalizedSegment:
             (``python -c``, ``-EncodedCommand``) that cannot be analyzed.
         piped_input: The segment's stdin is the previous segment's pipe.
         writes_file: A redirection writes to a file (not a stream merge) —
-            keeps a writer out of the read-only fast path; a plain,
+            keeps a writer out of the *whole-command* ``CommandAnalysis.read_only``
+            fast path; a read-only executable's write is still judged (and,
+            for a workspace-confined and statically-resolvable target,
+            allowed) per segment in ``._rules._judge_segment``. A plain,
             workspace-confined redirection no longer disqualifies the Phase 2
-            "always allow" offer on its own (doc/SECURITY_RULES_PLAN.md §2.6).
+            "always allow" offer on its own either (doc/SECURITY_RULES_PLAN.md §2.6).
     """
 
     executable: str

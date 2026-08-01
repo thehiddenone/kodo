@@ -175,7 +175,12 @@ from `kodo.shellparser` (the POSIX parser, or the PowerShell/Windows parser on
    wording, and never offers a permanent rule (§3.2c) — a path resolved
    against an empty cwd isn't a stable, reusable key to pin one to.
    Executables are exempt (running `/usr/bin/python` is normal; the program
-   is not a *target*). Device sinks (`/dev/null`, `NUL`, PowerShell's `$null`
+   is not a *target*) — and so, unconditionally, are `which`/Windows
+   `where`'s own **arguments**: they name a program to look up on `PATH`,
+   not a data path, so `which /usr/bin/python3` never produces a finding at
+   all (`_analysis._PATH_QUERY_EXECUTABLES`), unlike every other reader's
+   arguments (`cat /etc/hosts` still asks). Device sinks (`/dev/null`, `NUL`,
+   PowerShell's `$null`
    variable, …) and fd-merges/duplications (`2>&1`, `>&2`, …) are exempt —
    see §5 for how these are recognized structurally. `--flag=value` values
    are checked. A path under `kodo.common.system_temp_roots()`
@@ -206,7 +211,7 @@ from `kodo.shellparser` (the POSIX parser, or the PowerShell/Windows parser on
    an unpeeled mutating command behind it (`env rm -rf x` must resolve to
    `rm`, not short-circuit on `env`). `date` and `hostname` are deliberately
    **not** on this list — both have a mutating form and are judged
-   per-segment instead (§3.2 step 4).
+   per-segment instead (§3.2 step 5).
 4. **`segments`** — the normalized per-segment view
    (`kodo.security._classify`): canonical executable (transparent wrappers
    like `env`/`nohup`/`timeout`/`mise exec … --` peeled, `python -m mod`
@@ -230,6 +235,18 @@ evaluate_command()` — a deterministic verdict ladder, first hit wins
    temp-dir target simply skips this step for its own segment — it still
    runs the rest of the ladder, so e.g. `rm -rf /tmp/x` still asks
    (destructive, category rule) while `cat /tmp/x` or `touch /tmp/x` allow.
+   Every relative token is resolved against that segment's own *effective*
+   cwd, not necessarily the `run_command` call's declared one —
+   `kodo.security._analysis._track_cwd` walks the command line and shifts
+   the tracked cwd after an inline `cd`/`Set-Location` whose target is a
+   single, statically-resolvable positional and whose following operator is
+   `&&`/`;`/`||` (never `|`, which forks a subshell per side, or a bare
+   `&`, which backgrounds without waiting): `cd /project/sub && cat
+   ../file.txt` resolves `../file.txt` against `/project/sub`, not the
+   command's own starting directory. A `cd` this can't resolve (a
+   substitution, `cd -`, or a bare `cd`) simply stops the chain from
+   updating any further — every later segment keeps the last *known-good*
+   cwd, failing closed rather than guessing.
 2. **Command substitutions** — each `$(...)`/backtick snippet is recursively
    evaluated as its own command (depth-capped at 3); a dangerous inner
    command asks. `echo $(date)` allows; `echo $(rm -rf /)` asks.
@@ -241,12 +258,33 @@ evaluate_command()` — a deterministic verdict ladder, first hit wins
    moved from a whole-line short-circuit to a per-segment one. Value
    expansions (`$VAR`) are tolerated in the fast path itself: an unknown
    value fed to a pure reader cannot mutate anything.
-4. **Per-segment rules** — every pipeline segment must individually clear:
+4. **Toolchain-builder scripts** — a segment whose own executable directly
+   invokes one of `toolchain_builder`'s generated `scripts/<step>.{sh,ps1}`
+   entrypoints (`build`/`format`/`static_analysis`/`test`/`full_build` — see
+   `subagent_toolchain_builder.md` Phase 4) under a workspace root → **allow**,
+   ahead of the rule table (`kodo.security._analysis._toolchain_script_hit`,
+   judged per segment via `CommandAnalysis.segment_toolchain_script`). Only a
+   direct, path-shaped invocation qualifies (`./scripts/build.sh`,
+   `.\scripts\build.ps1`) — a bare `build.sh` found via `PATH` never matches,
+   since these scripts are never installed onto `PATH`. Running the same
+   script *through* a shell (`bash scripts/build.sh`,
+   `powershell -File scripts\build.ps1`) was already allowed before this,
+   via step 5's "shell running a workspace script" rule; this step exists
+   only for the direct-invocation form, whose basename (`build.sh`, or just
+   `build` once `.ps1` is leaf-name-stripped) is on no allow-list and would
+   otherwise fall to the generic default-ask. Matched against the segment's
+   own effective cwd (step 1's `_track_cwd`, above) — so `cd <project> &&
+   ./scripts/build.sh`, written as one command instead of passing
+   `working_dir` separately, is recognized exactly the same way.
+5. **Per-segment rules** — every pipeline segment must individually clear:
    - *structural red flags*: a bare shell as a pipe target (`curl … | sh`),
      inline/encoded code (`python -c`, `-EncodedCommand`,
      `Invoke-Expression`), `xargs` feeding stdin-supplied arguments to a
-     non-read-only child; nested shell strings (`sh -c "…"`, `cmd /c …`)
-     recurse through the whole ladder;
+     non-read-only child; `command foo` dispatching to another program
+     directly (bypassing shell functions/aliases) — except its query form,
+     `command -v`/`-V foo`, which only prints where `foo` would resolve and
+     allows unconditionally, the `which`/`type` equivalent; nested shell
+     strings (`sh -c "…"`, `cmd /c …`) recurse through the whole ladder;
    - **dual-mode commands** (`kodo.security._rules._DUAL_MODE`): a small set
      of commands are benign when read-only and dangerous when mutating in a
      way a blanket allow-list or a `flags_any` rule can't express (a
@@ -260,6 +298,17 @@ evaluate_command()` — a deterministic verdict ladder, first hit wins
      getting the read-only leniency below, since it could be the mutating
      form. `uname` was reviewed and has no mutating form on any platform, so
      it stays on the plain read-only list.
+   - **read-only executables tolerate value expansions, and now writes
+     too**: `exe in readonly` → **allow**, even with an unresolved `$VAR`
+     ("an unknown value fed to a reader cannot mutate anything") — and even
+     with a writing redirection (`cat > file`, `echo … > file`), since this
+     segment is only reached once step 1 has already confirmed every one of
+     its own targets, including the redirection target, is
+     workspace-confined (or under the OS temp directory); writing there is
+     then trusted exactly like `create_file`/`edit_file` on the same path.
+     The one exception: a write whose *target* can't be statically resolved
+     (`cat $VAR > $OUT`) still asks (`category="unknown"`, un-offered) —
+     step 1 couldn't have vetted a path it never saw.
    - the **ordered `CommandRule` table** (`kodo.security._defaults`, one
      table per dialect, ask-rules and allow-rules interleaved, specific
      before general). Ask-rules carry a danger **category** — `deployment`
@@ -274,7 +323,7 @@ evaluate_command()` — a deterministic verdict ladder, first hit wins
      mutators (their visible path targets were already outside-checked, and
      workspace changes are checkpointed). An allow-rule match is **voided by
      an embedded substitution** — `mv $SRC $DST` asks.
-5. **Default: ask** — "`foo` is not in the known-safe command set", the same
+6. **Default: ask** — "`foo` is not in the known-safe command set", the same
    deterministic sentence every time. The known friction here is inline
    interpreter code (`python -c "…"`), which is opaque by design and always
    asks; agents should prefer `python -m` or a script file, both of which
@@ -385,9 +434,20 @@ once the split existed:
   plain, workspace-confined redirection (`cat file.txt > out.txt`) has
   nothing left to disqualify: the outside-workspace check (§3.2 step 1)
   still runs on every future invocation regardless of any granted rule, so
-  `cat > file.ext << 'EOF' … EOF` — the exact friction case §2.4a.6 of
-  SECURITY_RULES_PLAN.md called out as permanently un-offerable — is now
-  offered like any other unknown command.
+  a redirection from an *unrecognized* command (`mytool > out.txt`) — the
+  exact friction case §2.4a.6 of SECURITY_RULES_PLAN.md called out as
+  permanently un-offerable — is now offered like any other unknown command.
+  A **read-only-listed executable's own write is a step further: it no
+  longer even asks.** `cat > file.ext << 'EOF' … EOF` (the friction case's
+  literal example) now **allows outright**, judged in §3.2 step 5's
+  read-only-tolerance bullet rather than reaching the offer machinery at
+  all — `_judge_segment` is only reached once this segment's own targets
+  (including the redirection target) are already confirmed
+  workspace-confined by step 1, so writing there is trusted exactly like
+  `create_file`/`edit_file` on the same path. Only a write whose target
+  can't be statically resolved (`cat $VAR > $OUT`) still asks, un-offered
+  (`category="unknown"`, no `rule_offer`) — the outside-workspace check
+  couldn't have vetted a path it never saw.
 - **A value substitution (`$VAR`/`%VAR%`) only disqualifies its own
   segment**, not the whole line. `mycli $FOO && othercli two` still offers
   `othercli two`; only the segment actually carrying the substitution loses
@@ -432,7 +492,7 @@ hit the same granted rule.
   as the sensitive-path denylist, for the same reason: a path resolved
   against an empty cwd has nothing stable to pin a rule to.
 - **Nested/substituted contexts stay non-offerable for free** — the existing
-  command-substitution/nested-shell wrapping (§3.2 steps 2/4) already
+  command-substitution/nested-shell wrapping (§3.2 steps 2/5) already
   discards a recursive `evaluate_command()` call's `.parts`/`.rule_offer`
   unconditionally on failure, so an eligible command wrapped in `bash -c
   "cat /etc/hosts"` never surfaces its own offer (a `known_path_rules` grant
@@ -613,7 +673,7 @@ same structural view):
   completely untouched. Before this, `2>&1`/`2>/dev/null`/`>&2` degraded
   into stray digit/punctuation tokens in `segment.args` — invisible to path
   analysis (not path-shaped) but capable of corrupting the dual-mode
-  mutation heuristics (§3.2 step 4): `hostname 2>&1` or `date 2>/dev/null`
+  mutation heuristics (§3.2 step 5): `hostname 2>&1` or `date 2>/dev/null`
   could misread the leftover `"2"` as a real positional value and ask as if
   the command were setting the hostname/clock.
 - `parse_powershell_command()` — a hand-rolled PowerShell/Windows

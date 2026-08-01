@@ -510,7 +510,10 @@ _POSIX_RULES: tuple[CommandRule, ...] = _SHARED_RULES + (
     # Shell builtins that only affect the (per-call, throwaway) shell.
     # `ulimit` is judged per-segment instead (`._rules._DUAL_MODE`) — a value
     # argument sets a resource limit, which isn't unconditionally benign.
+    # `pushd`/`popd` mutate only the shell's own directory stack, the same
+    # bucket as `cd`; `history`/`jobs`/`dirs` are pure introspection.
     _allow(("cd", "export", "set", "unset", "alias", "source", ".")),
+    _allow(("pushd", "popd", "dirs", "jobs", "history")),
     # Process/system introspection (read-only in effect). `sysctl` is judged
     # per-segment instead (`._rules._DUAL_MODE`) — `-w`/assignment form
     # writes a live kernel parameter.

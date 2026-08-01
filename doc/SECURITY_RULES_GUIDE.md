@@ -113,6 +113,23 @@ read-only fast path (§4) needs its own explicit AND-gate rather than being
 able to trust "no outside-path finding" as automatic for every read-only
 command.
 
+**"cwd" here means each segment's own *effective* cwd, not necessarily the
+`run_command` call's declared one.** `_analysis._track_cwd` walks the
+parsed segments and operators once, up front, and shifts the tracked cwd
+after an inline `cd`/`Set-Location` whose target is a single,
+substitution-free positional and whose following operator keeps running in
+the same shell process (`&&`/`;`/`||` — never `|`/`|&`, which fork a
+subshell per side, or a bare `&`, which backgrounds without waiting for the
+`cd` to take effect). So `cd /project/sub && cat ../file.txt`, written as
+one command instead of setting `working_dir` to `/project/sub` separately,
+resolves `../file.txt` against `/project/sub` — exactly what a person
+typing it at a terminal would expect — not against the command's own
+starting directory. A `cd` the tracker can't resolve (a bare `cd` → `$HOME`,
+`cd -` → previous directory, a substitution-carrying target) simply stops
+the chain from updating any further: every later segment keeps the last
+*known-good* cwd rather than a guess, failing closed instead of silently
+misjudging a path as confined (or escaping).
+
 **…except when there's no workspace to be confined to.** That assumption
 requires a real, resolver-confined `cwd` — which only exists when a
 workspace is loaded (`roots` non-empty). With zero bound roots (a homeless
@@ -174,6 +191,16 @@ unconditional built-in allow-rule (matches any argument) in the normal
 table, so if a segment fell through to it once its outside-path findings
 happened to be silenced, `cd /outside/granted && cd /outside/UNgranted` risk
 conflating a granted path with an ungranted one sharing the same segment.
+
+**`which`/Windows `where` are exempt from this entire step.** Their
+positional arguments are program-name lookups, not data targets — the same
+trust an executable's own name always gets (§1). `which /usr/bin/python3`
+never produces a finding at all, so it goes straight to §4's read-only fast
+path and allows unconditionally, unlike every other reader (`cat
+/etc/hosts` still asks). Implemented in `_analysis.analyze_command` by
+skipping argument classification entirely for a segment whose executable is
+`which`/`where` (`_PATH_QUERY_EXECUTABLES`); redirection targets are still
+classified normally.
 
 **Windows case-folding.** `cd`/`chdir`/`sl` all normalize to `set-location`
 before this step ever runs (§1.4), so no dialect branching is needed in the
@@ -278,10 +305,55 @@ unresolvable value could be the dangerous form.
 
 ---
 
+## 4a. Step 3a — toolchain-builder scripts
+
+**The question:** does this segment's own executable directly invoke one of
+`toolchain_builder`'s generated `scripts/<step>.{sh,ps1}` entrypoints
+(`build`/`format`/`static_analysis`/`test`/`full_build` —
+`subagent_toolchain_builder.md` Phase 4), resolved under a workspace root?
+
+Checked **per segment**, right after §4 and before §5 — ahead of the rule
+table, since the script's own basename (`build.sh`, or just `build` once
+`.ps1` is leaf-name-stripped) is never on any allow-list and would otherwise
+fall straight through to §5h's generic default-ask.
+
+Running the script **through** a shell (`bash scripts/build.sh`,
+`powershell -File scripts\build.ps1`) is already allowed by §5a's "shell
+running a workspace script" rule — this step exists for the **direct**
+invocation form only (`./scripts/build.sh`, `.\scripts\build.ps1`), which
+has no path through the shell branch at all.
+
+**Matching** (`_analysis._toolchain_script_hit`): the token must itself
+contain a path separator (`./scripts/build.sh`, `scripts/build.sh`, an
+absolute path) — a bare `build.sh` found via `PATH` never qualifies, since
+toolchain_builder never installs anything onto `PATH`, and requiring a
+separator also keeps this from ever matching an unrelated same-named
+program. The resolved absolute path must equal
+`<root>/scripts/<step>.sh` (POSIX) / `<root>\scripts\<step>.ps1` (Windows)
+for one of the five known step names, under **some** workspace root — no
+workspace loaded (`roots` empty) never matches. Resolution is against this
+segment's own *effective* cwd (§2's `_track_cwd`), so `cd <project-dir> &&
+./scripts/build.sh` — written as one command instead of passing
+`working_dir` separately — is recognized exactly the same as
+`./scripts/build.sh` alone with `working_dir` already set to
+`<project-dir>`.
+
+| Command | Outcome |
+|---|---|
+| `./scripts/build.sh` | **Allow** — matches `<root>/scripts/build.sh` |
+| `scripts/full_build.sh my_test` | **Allow** — the test-selector argument doesn't disqualify it |
+| `cd <root> && ./scripts/build.sh` | **Allow** — the inline `cd` shifts the effective cwd to `<root>` before this step resolves the token |
+| `bash scripts/build.sh` | **Allow**, but via §5a (shell + positional script), not this step |
+| `./scripts/deploy.sh` | **Not this step** — `deploy` isn't one of the five known names; falls to §5h |
+| `/somewhere/else/scripts/build.sh` | **Not this step** — not under any workspace root |
+
+---
+
 ## 5. Step 4 — the per-segment rule table
 
 Reached only for a segment with **no** outside-workspace finding of its own
-(§2 intercepted those already). Checked in this order, first hit wins:
+(§2 intercepted those already) and not caught by §4a above. Checked in this
+order, first hit wins:
 
 **5a. Bare shell / interpreter as the executable** (`SHELL_EXECUTABLES` —
 `sh`, `bash`, `zsh`, `cmd`, `powershell`, `pwsh`, …):
@@ -313,7 +385,17 @@ the command line, so they're fundamentally unknowable statically. A
 read-only child (`ls | xargs cat`) allows; anything else (`ls | xargs rm`)
 asks, `unknown`, no special leniency.
 
-**5d. Dual-mode commands** (`sysctl`, `ulimit`, `date`, `hostname` —
+**5d. `command`** → distinguishes its query form from its dispatch form,
+matched by executable name the same way `xargs`/dual-mode are: `command
+-v`/`-V foo` **allows** (prints where `foo` would resolve, executes
+nothing — the POSIX `which`/`type` equivalent); any other form (`command
+foo …`) **asks, `unknown`**, offerable, with a reason naming the bypass —
+deliberately **not** wrapper-peeled to `foo` the way `env`/`nohup`/`timeout`
+are (§1), so `command rm -rf /` can't inherit a blanket allow through the
+wrapper; this is the same outcome (ask) it always got, just with a clearer
+reason instead of falling through to the generic default at 5h.
+
+**5e. Dual-mode commands** (`sysctl`, `ulimit`, `date`, `hostname` —
 `_DUAL_MODE`) — benign when read-only, dangerous when mutating, in a way no
 blanket allow-list or `flags_any` rule can express (a *positional value*,
 not a flag, decides): `sysctl -w`/an assignment (`vm.swappiness=10`)
@@ -324,13 +406,22 @@ positional sets it; bare reads. **A substitution here always asks** — unlike
 the general read-only leniency, an unresolvable value on a dual-mode command
 could be exactly the mutating form, so no benefit of the doubt is given.
 
-**5e. Read-only executables tolerate value expansions** (unlike everywhere
-else): `exe in readonly and not segment.writes_file` → **allow**, even with
-an unresolved `$VAR` — "an unknown value fed to a reader cannot mutate
-anything." A writing redirection still disqualifies (the target file *is* a
-mutation, resolved or not).
+**5f. Read-only executables tolerate value expansions — and writes**
+(unlike everywhere else): `exe in readonly` → **allow**, even with an
+unresolved `$VAR` — "an unknown value fed to a reader cannot mutate
+anything" — and even with a writing redirection (`cat > file`, `echo … >
+file`, a heredoc-write like `cat > new_file.py << 'EOF' … EOF`). This
+function is only ever reached once §2 has already confirmed every one of
+*this segment's own* targets, including the redirection target, is
+workspace-confined (or under the OS temp directory) — so writing here is
+trusted exactly like `create_file`/`edit_file` on the same path; an
+escaping write target still asks, via §2, before this step is ever reached
+for the segment. The one remaining exception: `exe in readonly and
+segment.writes_file and segment.has_substitution` → **ask**,
+`category="unknown"`, un-offered — a write whose *target itself* can't be
+statically resolved is the one case §2 never got a concrete path to vet.
 
-**5f. The ordered `CommandRule` table** (`_defaults.py`, one table per
+**5g. The ordered `CommandRule` table** (`_defaults.py`, one table per
 dialect, specific rules before general, ask-rules and allow-rules
 interleaved). Category taxonomy, with a representative example each:
 
@@ -343,7 +434,7 @@ interleaved). Category taxonomy, with a representative example each:
 | `privilege` | **Never** | `sudo`, `su`, `doas` |
 | `obfuscation` | **Never** | `eval "…"` (POSIX), `Invoke-Expression` (PowerShell) |
 | `unknown` | Yes (default-ask) | any executable not in the table at all |
-| `benign-dev` | n/a (this is the *allow* category) | `npm run build`, `pytest`, safe `git` subcommands, `cd`/`export`/`set` (shell builtins), `ps`/`top`/`free` |
+| `benign-dev` | n/a (this is the *allow* category) | `npm run build`, `pytest`, safe `git` subcommands, `cd`/`export`/`set`/`pushd`/`popd`/`dirs`/`jobs`/`history` (shell builtins), `ps`/`top`/`free` |
 
 Specific-before-general ordering matters: `git push --force` (destructive)
 is checked before the bare `git push` (deployment) rule, so a force-push
@@ -354,7 +445,7 @@ $DST` asks even though `mv` (with a resolved destination) would otherwise be
 in-workspace-file-mutator-allowed, because the unresolved destination could
 be anywhere.
 
-**5g. Default: ask.** Nothing in the table matched — `"'{display}' is not
+**5h. Default: ask.** Nothing in the table matched — `"'{display}' is not
 in the known-safe command set."`, `unknown`, `rule_eligible=True`. The one
 recurring friction here is inline interpreter code (5b), which is opaque by
 design and always asks regardless of how trivial the snippet is; agents
@@ -372,7 +463,7 @@ over different inputs and with different disqualifiers:
 |---|---|---|
 | Precondition from the caller | `rule_eligible` category (deployment/system/network/unknown) | executable in read-only/`cd` bucket, no write in the segment |
 | Control-structure keyword (`for`/`if`/`do`/`done`/…) | Disqualifies unconditionally, known or not | n/a — never in the read-only/`cd` bucket, so never eligible in the first place |
-| Substitution in the segment | Disqualifies | *(segments with substitutions never reach here — they're either in §3's whole-line wrap or the general leniency of §5e)* |
+| Substitution in the segment | Disqualifies | *(segments with substitutions never reach here — they're either in §3's whole-line wrap or the general leniency of §5f)* |
 | Nested/opaque shell | Disqualifies | *(same — never reaches here)* |
 | Path-like **argument** | Known command: ignored. Unknown command: disqualifies *unless* it's the subcommand itself | n/a — the whole point of this shape *is* a path |
 | Credential-shaped path | n/a | Disqualifies (`_sensitive_roots`) |
@@ -475,8 +566,9 @@ asks — not a segment already `allow`-matched via §4/§5) is collected into
 
 | Step | Question | On hit |
 |---|---|---|
-| 1 | Any segment's argument/redirection resolves outside every root + OS temp? | Ask per finding; offerable iff executable ∈ read-only/`cd` bucket, no write in segment, path not sensitive |
+| 1 | Any segment's argument/redirection, resolved against its own *effective* cwd (`_track_cwd`, following an earlier inline `cd`/`Set-Location`), lies outside every root + OS temp? (`which`/`where` exempt — arguments are lookups, not targets) | Ask per finding; offerable iff executable ∈ read-only/`cd` bucket, no write in segment, path not sensitive |
 | 2 | Any `$(...)`/backtick recurses to non-allow? | Ask, whole line, never offerable |
 | 3 | Every executable read-only, no writes, no step-1 finding anywhere? | Allow, `source="static"` |
-| 4a–g | Per remaining segment: shell/inline-code/`xargs`/dual-mode/readonly-tolerance/rule-table/default | Allow or ask, per segment, offerable per §6 |
+| 3a | Segment's executable, resolved against its own effective cwd, is a toolchain_builder `scripts/<step>.{sh,ps1}` under a workspace root? | Allow |
+| 4a–h | Per remaining segment: shell/inline-code/`xargs`/`command`/dual-mode/readonly-tolerance (now including workspace-confined writes)/rule-table/default | Allow or ask, per segment, offerable per §6 |
 | — | Nothing left asking? | Allow, `source="rules"` |

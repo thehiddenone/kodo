@@ -204,18 +204,40 @@ def test_known_rule_never_silences_a_non_eligible_ask() -> None:
     assert d.category == "destructive"
 
 
+def test_readonly_exe_write_to_workspace_confined_target_allows() -> None:
+    # `cat > out.txt`/`echo hi > out.txt`: a read-only executable's write is
+    # judged per segment (`._rules._judge_segment`) rather than through the
+    # (stricter, whole-command) read-only fast path — since this segment is
+    # only reached once its own targets are already confirmed
+    # workspace-confined, writing here is trusted exactly like
+    # `create_file`/`edit_file` on the same path. Only an escaping or
+    # unresolvable write target still asks (see
+    # `test_write_disqualifies_the_whole_segments_offers` and
+    # `test_readonly_exe_write_with_unresolvable_target_still_asks`).
+    assert _posix("cat > out.txt").action == "allow"
+    assert _posix("echo hi > out.txt").action == "allow"
+
+
+def test_readonly_exe_write_with_unresolvable_target_still_asks() -> None:
+    d = _posix("cat > $OUT")
+    assert d.action == "ask"
+    assert d.category == "unknown"
+    assert d.rule_offer is None
+
+
 def test_plain_redirection_no_longer_disqualifies_the_offer() -> None:
-    # `cat > out.txt` still asks (writing is not the read-only fast path) and
-    # is category-eligible ("unknown" -> default-ask eligible=True). A plain,
+    # `mytool > out.txt` still asks (`mytool` is an unrecognized executable,
+    # unrelated to the read-only write relaxation above) and is
+    # category-eligible ("unknown" -> default-ask eligible=True). A plain,
     # workspace-confined redirection no longer disqualifies the offer (§2.6):
     # the outside-workspace check still runs on every future invocation, and
     # the real risk (a script piped into a shell/interpreter) is caught
     # separately by the nested_command/nested_opaque checks, which are never
     # offer-eligible in the first place.
-    d = _posix("cat > out.txt")
+    d = _posix("mytool > out.txt")
     assert d.action == "ask"
     assert d.rule_eligible is True
-    assert d.rule_offer == ("cat", "")
+    assert d.rule_offer == ("mytool", "")
 
 
 def test_path_like_argument_disqualifies_the_offer() -> None:
@@ -423,13 +445,18 @@ def test_xargs_readonly_child_allows_mutating_child_asks() -> None:
 
 def test_heredoc_body_does_not_leak_into_subcommand() -> None:
     # The reported bug: a C++ snippet containing `static` as its first
-    # non-comment token used to become `cat`'s bogus "subcommand", producing
-    # a confusing "'cat static' is not in the known-safe command set" ask.
+    # non-comment token used to become the command's bogus "subcommand",
+    # producing a confusing "'mytool static' is not in the known-safe
+    # command set" ask. An unrecognized executable (rather than `cat`, whose
+    # own workspace-confined write now allows outright — see
+    # test_readonly_exe_write_to_workspace_confined_target_allows) keeps this
+    # exercising the same default-ask/shape path the bug was originally in.
     d = _posix(
-        "cat > out.cpp << 'EOF'\n#include <cstdio>\nstatic void helper() { printf(\"hi;\"); }\nEOF"
+        "mytool > out.cpp << 'EOF'\n"
+        '#include <cstdio>\nstatic void helper() { printf("hi;"); }\nEOF'
     )
     assert "static" not in d.reason
-    assert d.shape == ("cat", "")
+    assert d.shape == ("mytool", "")
 
 
 def test_bare_shell_fed_heredoc_is_recursed_as_code() -> None:
@@ -830,3 +857,174 @@ def test_windows_subshell_auto_allows_and_flags_danger() -> None:
     d = _win("(Remove-Item C:\\ws\\proj\\build -Recurse)")
     assert d.action == "ask"
     assert d.category == "destructive"
+
+
+# ----------------------------------------------------------------------
+# `which`/`where`: a program-name lookup, not a data-path read — an
+# outside-workspace argument is exempt from the escape check the same way
+# an executable's own name always is.
+# ----------------------------------------------------------------------
+
+
+def test_which_outside_workspace_argument_allows() -> None:
+    assert _posix("which /usr/bin/python3").action == "allow"
+    assert _posix("which -a python3 node").action == "allow"
+
+
+def test_where_outside_workspace_argument_allows() -> None:
+    assert _win("where C:\\Windows\\System32\\node.exe").action == "allow"
+
+
+def test_cat_outside_workspace_argument_still_asks() -> None:
+    # The which/where exemption must not leak to other readers.
+    d = _posix("cat /etc/hosts")
+    assert d.action == "ask"
+    assert d.source == "workspace"
+
+
+# ----------------------------------------------------------------------
+# toolchain_builder-generated scripts (scripts/<step>.{sh,ps1}): direct
+# invocation allows unconditionally; running via `bash`/`powershell -File`
+# already allowed via the "shell running a workspace script" rule.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "./scripts/build.sh",
+        "scripts/build.sh",
+        "/ws/proj/scripts/build.sh",
+        "./scripts/format.sh",
+        "./scripts/static_analysis.sh",
+        "./scripts/test.sh",
+        "./scripts/full_build.sh",
+        "./scripts/test.sh test_foo",
+    ],
+)
+def test_toolchain_script_direct_invocation_allows(command: str) -> None:
+    d = _posix(command)
+    assert d.action == "allow", f"{command!r} -> {d.reason}"
+
+
+def test_toolchain_script_direct_invocation_allows_windows() -> None:
+    assert _win(".\\scripts\\build.ps1").action == "allow"
+    assert _win(".\\scripts\\full_build.ps1 -TestSelector foo").action == "allow"
+
+
+def test_unrelated_script_under_scripts_dir_still_asks() -> None:
+    d = _posix("./scripts/deploy.sh")
+    assert d.action == "ask"
+
+
+def test_toolchain_script_outside_any_root_still_asks() -> None:
+    d = _posix("/somewhere/else/scripts/build.sh")
+    assert d.action == "ask"
+
+
+def test_toolchain_script_via_shell_wrapper_already_allowed() -> None:
+    assert _posix("bash scripts/build.sh").action == "allow"
+    assert _posix("sh scripts/full_build.sh").action == "allow"
+
+
+# ----------------------------------------------------------------------
+# Inline `cd <dir> && ...` chains shift the effective cwd for later segments
+# (`_analysis._track_cwd`) — an agent writing `cd <project> && ./scripts/
+# build.sh` in one command, instead of passing `working_dir` separately, must
+# still hit the toolchain-script fast path above.
+# ----------------------------------------------------------------------
+
+
+def test_inline_cd_to_project_then_toolchain_script_allows() -> None:
+    # The declared cwd ("/ws") is the parent, NOT the project root
+    # ("/ws/proj") that scripts/build.sh actually lives under — exactly the
+    # `cd /project && ./scripts/build.sh` shape an agent writes instead of
+    # setting `working_dir`.
+    d = evaluate_command(
+        "cd /ws/proj && ./scripts/build.sh", cwd="/ws", roots=_ROOTS, windows=False
+    )
+    assert d.action == "allow", d.reason
+
+
+def test_inline_relative_cd_then_toolchain_script_allows() -> None:
+    d = evaluate_command("cd proj && ./scripts/format.sh", cwd="/ws", roots=_ROOTS, windows=False)
+    assert d.action == "allow", d.reason
+
+
+def test_inline_cd_chain_multiple_hops_then_toolchain_script_allows() -> None:
+    # Each hop stays inside the root: `/ws/proj` -> `/ws/proj/sub` -> back to
+    # `/ws/proj` (`cd ..`) — the tracked cwd must reflect the *net* effect of
+    # the whole chain, not just the first `cd`.
+    d = evaluate_command(
+        "cd /ws/proj && cd sub && cd .. && ./scripts/test.sh",
+        cwd="/somewhere/else",
+        roots=_ROOTS,
+        windows=False,
+    )
+    assert d.action == "allow", d.reason
+
+
+def test_inline_cd_across_pipe_does_not_propagate() -> None:
+    # `|` forks a subshell per side — a `cd` there never reaches anything
+    # after, unlike `&&`/`;`/`||`.
+    d = evaluate_command(
+        "cd /ws/proj | true && ./scripts/build.sh", cwd="/ws", roots=_ROOTS, windows=False
+    )
+    assert d.action == "ask"
+
+
+def test_inline_cd_with_unresolvable_target_does_not_propagate() -> None:
+    # `cd $DIR`: the target can't be statically resolved, so the chain must
+    # not guess — later segments keep the last known-good cwd (fails closed,
+    # both cd's own ask and the script's stay).
+    d = evaluate_command("cd $DIR && ./scripts/build.sh", cwd="/ws", roots=_ROOTS, windows=False)
+    assert d.action == "ask"
+
+
+def test_bare_cd_then_toolchain_script_still_asks() -> None:
+    # A bare `cd` (goes to $HOME) can't be resolved either — must not be
+    # treated as a no-op that leaves the cwd at the declared one by luck.
+    d = evaluate_command("cd && ./scripts/build.sh", cwd="/ws", roots=_ROOTS, windows=False)
+    assert d.action == "ask"
+
+
+def test_inline_cd_windows_toolchain_script_allows() -> None:
+    d = evaluate_command(
+        "cd C:\\ws\\proj && .\\scripts\\build.ps1", cwd="C:\\ws", roots=_WROOTS, windows=True
+    )
+    assert d.action == "allow", d.reason
+
+
+# ----------------------------------------------------------------------
+# `command`: transparent dispatch to another program, distinct from a pure
+# `-v`/`-V` resolution query.
+# ----------------------------------------------------------------------
+
+
+def test_command_dash_v_query_allows() -> None:
+    assert _posix("command -v curl").action == "allow"
+    assert _posix("command -V python3").action == "allow"
+
+
+def test_command_bare_dispatch_still_asks() -> None:
+    d = _posix("command rm -rf build")
+    assert d.action == "ask"
+    assert "bypassing" in d.reason.lower()
+
+
+# ----------------------------------------------------------------------
+# Shell-state builtins: only the (per-call) shell/directory-stack, no
+# filesystem mutation — same bucket as the existing cd/export/... rule.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("command", ["history", "jobs", "dirs", "pushd /tmp", "popd"])
+def test_shell_state_builtins_allow(command: str) -> None:
+    d = _posix(command)
+    assert d.action == "allow", f"{command!r} -> {d.reason}"
+
+
+def test_type_posix_builtin_already_allows() -> None:
+    # `type` was already on the read-only fast-path list before this change;
+    # pinned here so a future edit to that list doesn't silently regress it.
+    assert _posix("type node").action == "allow"

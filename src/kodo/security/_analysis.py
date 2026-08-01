@@ -36,7 +36,7 @@ from kodo.shellparser import (
     parse_powershell_command,
 )
 
-from ._classify import SUB_MARK, NormalizedSegment, normalize_segments
+from ._classify import CD_EXECUTABLES, SUB_MARK, NormalizedSegment, leaf_name, normalize_segments
 
 __all__ = ["CommandAnalysis", "analyze_command"]
 
@@ -134,6 +134,16 @@ _READONLY_EXECUTABLES = frozenset(
     }
 )
 
+# `which`/Windows `where` only report where a program lives on PATH — their
+# positional arguments are program-name lookups, not data targets, the same
+# way an executable's own name is exempt from the outside-workspace check
+# (see the module docstring). So unlike every other reader's arguments
+# (`cat /etc/hosts` still asks), an absolute-path argument here
+# (`which /usr/bin/python3`) is never classified as a workspace-escape
+# target either — unconditionally allowed via `read_only` (both names are
+# already on `_READONLY_EXECUTABLES` above).
+_PATH_QUERY_EXECUTABLES = frozenset({"which", "where"})
+
 # PowerShell cmdlets that only read — the aliased form ``ls``/``cat``/etc.
 # resolve to on Windows (``._classify._PS_ALIASES``) before reaching here, so
 # the POSIX names above never match; checked in addition to
@@ -198,6 +208,23 @@ class CommandAnalysis:
             engine matches on.
         operators: The separators joining the segments, verbatim from the
             parse (``'|'``, ``'&&'``, …).
+        segment_toolchain_script: Per segment (positionally aligned with
+            ``segments``), whether that segment's own executable directly
+            invokes one of ``toolchain_builder``'s generated
+            ``scripts/<step>.{sh,ps1}`` entrypoints under a workspace root
+            (``build``/``format``/``static_analysis``/``test``/
+            ``full_build`` — see ``subagent_toolchain_builder.md`` Phase 4).
+            Running one *through* a shell (``bash scripts/build.sh``) is
+            already covered by the "shell running a workspace script" rule
+            (``._rules._judge_segment``'s ``SHELL_EXECUTABLES`` branch); this
+            covers the direct-invocation form (``./scripts/build.sh``,
+            ``.\\scripts\\build.ps1``) that would otherwise fall through to
+            the generic "not in the known-safe command set" default, since
+            the script's own basename is never on any allow-list. Matched
+            against each segment's own *effective* cwd (``_track_cwd``), not
+            necessarily the command's declared one — ``cd <project> &&
+            ./scripts/build.sh`` is recognized the same as passing
+            ``working_dir`` separately.
     """
 
     outside_paths: tuple[str, ...]
@@ -207,6 +234,7 @@ class CommandAnalysis:
     segments: tuple[NormalizedSegment, ...] = ()
     operators: tuple[str, ...] = ()
     segment_outside_paths: tuple[tuple[str, ...], ...] = ()
+    segment_toolchain_script: tuple[bool, ...] = ()
 
 
 def analyze_command(
@@ -221,7 +249,11 @@ def analyze_command(
     Args:
         command: The raw shell command line.
         cwd: The directory the command will run in (absolute; already
-            workspace-confined by the path resolver).
+            workspace-confined by the path resolver) — the *declared*
+            starting cwd. An inline ``cd``/``Set-Location`` earlier in the
+            same ``&&``/``;``/``||`` chain shifts the *effective* cwd used
+            for everything after it (see :func:`_track_cwd`); *cwd* itself
+            is only ever what the first segment sees.
         roots: Absolute workspace root paths.
         windows: Parse as PowerShell/cmd (``True``) or POSIX (``False``);
             defaults to the current platform.
@@ -259,6 +291,11 @@ def analyze_command(
             masked = pattern.sub(_SUB_MARK, masked)
 
     parsed: ParsedCommand = parse_powershell_command(masked) if win else parse_command(masked)
+    segments = normalize_segments(parsed, windows=win)
+
+    # The cwd each segment actually runs in — shifts after an inline `cd`/
+    # `Set-Location` earlier in the same &&/;/|| chain (see `_track_cwd`).
+    effective_cwds = _track_cwd(segments, parsed.operators, cwd, win)
 
     # Each segment gets its own accumulating list, so a path repeated across
     # segments (`cat /etc/hosts && grep x /etc/hosts`) is attributed to BOTH
@@ -267,13 +304,16 @@ def analyze_command(
     # recorded, or the second segment's finding would be silently dropped.
     per_segment: list[list[str]] = [[] for _ in parsed.segments]
     for i, segment in enumerate(parsed.segments):
-        for arg in segment.args:
-            _classify(arg, cwd, roots, win, per_segment[i])
+        seg_cwd = effective_cwds[i]
+        exe_leaf = leaf_name(segment.executable) if segment.executable else ""
+        if exe_leaf not in _PATH_QUERY_EXECUTABLES:
+            for arg in segment.args:
+                _classify(arg, seg_cwd, roots, win, per_segment[i])
         for redir in segment.redirections:
             target = redir.target
             if not target or is_fd_merge_target(target) or (win and _PS_NULL_RE.match(target)):
                 continue
-            _classify(target, cwd, roots, win, per_segment[i], force_path=True)
+            _classify(target, seg_cwd, roots, win, per_segment[i], force_path=True)
 
     # Flatten to the whole-command view, first-occurrence order, deduped —
     # reproduces exactly what the old single-shared-list pass computed.
@@ -285,8 +325,12 @@ def analyze_command(
                 seen.add(path)
                 outside.append(path)
 
-    segments = normalize_segments(parsed, windows=win)
     read_only = _is_read_only(segments, windows=win)
+    segment_toolchain_script = tuple(
+        bool(segment.executable)
+        and _toolchain_script_hit(segment.executable, effective_cwds[i], roots, win)
+        for i, segment in enumerate(parsed.segments)
+    )
     return CommandAnalysis(
         outside_paths=tuple(outside),
         unresolved=tuple(unresolved),
@@ -295,6 +339,7 @@ def analyze_command(
         segments=segments,
         operators=parsed.operators,
         segment_outside_paths=tuple(tuple(paths) for paths in per_segment),
+        segment_toolchain_script=segment_toolchain_script,
     )
 
 
@@ -320,6 +365,119 @@ def _is_read_only(segments: tuple[NormalizedSegment, ...], *, windows: bool) -> 
         and not segment.nested_opaque
         for segment in named
     )
+
+
+# Operators that keep running in the SAME shell process, so an inline `cd`
+# on the left is still in effect for the right (`cd x && build`, `cd x;
+# build`, `cd x || build`). `|`/`|&` fork a subshell per side (POSIX; a
+# PowerShell pipe stage is likewise its own process), and `&` backgrounds its
+# left side without waiting — a `cd` there is never reliably in effect (in
+# this process or any other) before the next segment starts. Neither is
+# tracked across; a `cd` on the far side of one just doesn't update the
+# chain, the same as an unresolvable target (see `_track_cwd`).
+_SEQUENTIAL_OPERATORS = frozenset({"&&", ";", "||"})
+
+
+def _resolve_absolute(token: str, cwd: str, windows: bool) -> str:
+    """Normalize *token* to an absolute path, joined against *cwd* when
+    relative.
+
+    Unlike ``_resolve`` (which returns ``None`` for a plain relative token
+    that can't escape a *confined* cwd — the outside-workspace check only
+    needs an escape verdict, not the concrete path), this always resolves:
+    for callers that need the literal absolute path itself — the
+    toolchain-script exact-path match, and tracking an inline ``cd``'s effect
+    on later segments' cwd (``_track_cwd``).
+    """
+    mod = ntpath if windows else posixpath
+    text = os.path.expanduser(token) if token.startswith("~") else token
+    if windows:
+        is_abs = bool(re.match(r"^[A-Za-z]:[\\/]", text)) or text.startswith("\\\\")
+    else:
+        is_abs = text.startswith("/")
+    return str(mod.normpath(text) if is_abs else mod.normpath(mod.join(cwd, text)))
+
+
+def _track_cwd(
+    segments: tuple[NormalizedSegment, ...],
+    operators: tuple[str, ...],
+    cwd: str,
+    windows: bool,
+) -> tuple[str, ...]:
+    """The effective working directory for each segment, following any
+    inline ``cd``/``Set-Location`` earlier in the same ``&&``/``;``/``||``
+    chain.
+
+    A ``run_command`` call states its cwd once (``working_dir``, defaulting
+    to the project root) — but an agent very often writes ``cd <dir> &&
+    <rest>`` directly in the command string instead, the same way a person
+    would at a terminal. Every cwd-relative check downstream — the
+    outside-workspace resolver in ``analyze_command``, and the
+    toolchain-builder-script fast path in ``_toolchain_script_hit`` — used to
+    stay anchored to the single declared *cwd* regardless, so an ordinary
+    ``cd /project/subdir && ./scripts/build.sh`` resolved
+    ``./scripts/build.sh`` against the wrong directory and fell through to
+    the generic default-ask instead of the toolchain-script allow.
+
+    Only a ``cd`` whose target is a single, substitution-free positional
+    argument updates the tracked cwd. A bare ``cd`` (goes to ``$HOME``),
+    ``cd -`` (previous directory), or a ``cd $VAR``/``cd $(...)`` target all
+    leave the chain right where it was and are otherwise ignored — this
+    fails *closed*, not silently correct: every segment from that point on
+    keeps the last *known-good* cwd rather than a guess, so an unrecognized
+    command still asks instead of being misjudged as confined to (or
+    escaping) the wrong directory.
+    """
+    effective = [cwd] * len(segments)
+    current = cwd
+    last = len(segments) - 1
+    for i, segment in enumerate(segments):
+        effective[i] = current
+        if i >= last or operators[i] not in _SEQUENTIAL_OPERATORS:
+            continue
+        if segment.executable not in CD_EXECUTABLES:
+            continue
+        if segment.has_substitution or len(segment.args) != 1 or segment.args[0] == "-":
+            continue
+        current = _resolve_absolute(segment.args[0], current, windows)
+    return tuple(effective)
+
+
+# The five entrypoints `toolchain_builder` always generates as a per-platform
+# pair under `scripts/` at the project root (subagent_toolchain_builder.md
+# Phase 4) — a fixed, project-relative convention, not configurable.
+_TOOLCHAIN_SCRIPT_STEPS = ("build", "format", "static_analysis", "test", "full_build")
+
+
+def _toolchain_script_hit(token: str, cwd: str, roots: tuple[str, ...], windows: bool) -> bool:
+    """Whether *token* (a segment's raw, un-normalized executable) directly
+    invokes ``scripts/<step>.sh`` (POSIX) / ``scripts\\<step>.ps1`` (Windows)
+    under one of *roots*, for one of the five toolchain_builder step names.
+
+    Only a *path* invocation qualifies (``./scripts/build.sh``,
+    ``scripts/build.sh``, an absolute path under a root) — a bare ``build.sh``
+    found via ``PATH`` does not, since toolchain_builder never installs
+    anything onto ``PATH``; requiring a path separator also keeps this from
+    ever matching an unrelated same-named program. No workspace loaded
+    (``roots`` empty) never matches either — there is no root to anchor
+    ``scripts/`` under. *cwd* is this segment's own *effective* cwd
+    (``analyze_command``'s ``_track_cwd`` result), not necessarily the
+    command's originally-declared one — an inline ``cd`` earlier in the same
+    ``&&``/``;``/``||`` chain already shifted it by the time this runs.
+    """
+    if not roots or ("/" not in token and "\\" not in token):
+        return False
+    mod = ntpath if windows else posixpath
+    resolved = _resolve_absolute(token, cwd, windows)
+    norm_cmp = resolved.replace("/", "\\").lower() if windows else resolved
+    ext = "ps1" if windows else "sh"
+    for root in roots:
+        for step in _TOOLCHAIN_SCRIPT_STEPS:
+            candidate = mod.normpath(mod.join(root, "scripts", f"{step}.{ext}"))
+            candidate_cmp = candidate.replace("/", "\\").lower() if windows else candidate
+            if norm_cmp == candidate_cmp:
+                return True
+    return False
 
 
 def _classify(

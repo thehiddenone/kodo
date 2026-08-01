@@ -318,6 +318,13 @@ Where the shipped code departs from §2.4's sketch, and why:
    via `<`/`<<`) through `nested_command`/`nested_opaque`, which are not
    `rule_eligible` regardless of redirection. `cat > file.ext << 'EOF' …
    EOF` is offer-eligible as of §2.6.
+
+   **Superseded further, 2026-07-31:** a read-only executable's own write no
+   longer asks *at all* once its target is confirmed workspace-confined —
+   see "Read-only executable writes to a workspace-confined target now
+   allow" at the end of this document. `cat > file.ext << 'EOF' … EOF`
+   allows outright; only a non-read-only unrecognized command's redirect
+   (`mytool > out.txt`) still asks-but-offered as described above.
 7. **The blanket path-argument exclusion (§2.2 rule 3, original form) was
    too strict for single-argument bespoke CLIs (2026-07-15 fix).** A user
    ran a project-local tool, `1brc ./measurements.txt`, and got no offer at
@@ -850,3 +857,70 @@ chronological record.
    (§3.2c) and uses a distinct reason ("No workspace is loaded, so '…'
    cannot be verified as safe.") instead of "outside the workspace" — there
    isn't one to be outside of.
+
+## Read-only executable writes to a workspace-confined target now allow (post-launch, 2026-07-31)
+
+**Superseded here: §2.4a.6's "friction case" verdict for `cat > file.ext <<
+'EOF' … EOF`.** That entry (later revised by §2.6 to make the ask
+offer-eligible) treated a read-only executable's own write as *always*
+asking — "a file-writing `cat`/`tee`/… still asks every time, once, on
+purpose." Reported as a spurious permission prompt (`cat > new_file.py <<
+'EOF' … EOF`, a routine file-creation idiom, alarmed as "not in the
+known-safe command set" even though the target was entirely
+workspace-confined). Re-examined: the outside-workspace check (§1) already
+runs on the redirection target *before* `_judge_segment` is ever reached for
+that segment (doc/SECURITY.md §3.2 step 1) — an escaping write target still
+asks there, unconditionally. Once that's already true, asking *again* for a
+target it just proved is workspace-confined added friction without adding
+safety; `create_file`/`edit_file` already write to the same kind of
+workspace-confined path with no per-call prompt at all.
+
+`kodo.security._rules._judge_segment`'s read-only-tolerance check
+(`_READONLY_EXECUTABLES`/`_READONLY_CMDLETS`) now allows a write the same
+way it already tolerated an unresolved `$VAR` in a read — with one
+exception preserved: a write whose *target itself* carries an unresolvable
+substitution (`cat $VAR > $OUT`) still asks, `category="unknown"`,
+un-offered, since the outside-workspace check never got a concrete path to
+vet. `CD_EXECUTABLES` moved from `._rules` to `._classify` (shared with the
+new work below) with no behavior change. No wire/protocol change — this is
+a pure allow/ask shift inside the existing `RuleDecision` shape.
+
+## Inline `cd <dir> && …` chains shift the effective cwd (post-launch, 2026-07-31)
+
+Reported alongside the above: a `toolchain_builder`-generated
+`./scripts/build.sh` / `./scripts/format.sh`, invoked as `cd
+<project-dir> && ./scripts/build.sh` in one `run_command` call, alarmed as
+"not in the known-safe command set" instead of hitting the toolchain-script
+fast path (doc/SECURITY.md §3.2 step 4). Root cause: `run_command` states
+its cwd once (`working_dir`, defaulting to the project root), and every
+cwd-relative check in `kodo.security._analysis` — the outside-workspace
+resolver and `_toolchain_script_hit`'s exact-path match — resolved every
+segment's tokens against that single declared cwd, with no awareness that
+an inline `cd` earlier in the same command had already moved it. An agent
+writing `cd <dir> && <rest>` directly in the command string, the same way a
+person would at a terminal, instead of setting `working_dir` separately,
+defeated the fast path whenever `<dir>` differed from the call's declared
+cwd — which is routine right after `scaffold_new_project` lays a new
+project out in its own subdirectory.
+
+Fixed with `kodo.security._analysis._track_cwd`: given the command's
+normalized segments and the operators joining them, it walks the chain and
+returns each segment's own *effective* cwd, shifting it after a `cd`/
+`Set-Location` whose target is a single, substitution-free positional and
+whose following operator is `&&`/`;`/`||` (never `|`/`|&`, which fork a
+subshell per side, or a bare `&`, which backgrounds without waiting — a
+`cd` there is never reliably in effect for what follows). A `cd` this can't
+resolve — a bare `cd` (`$HOME`), `cd -` (previous directory), or a
+substitution-carrying target — simply stops the chain from updating any
+further: fails *closed*, not silently correct, so every later segment keeps
+the last *known-good* cwd rather than a guess, and an unrecognized command
+still asks instead of being misjudged as confined to (or escaping) the
+wrong directory. `analyze_command` now computes `segments` up front (moved
+earlier, no behavior change of its own) and threads each segment's
+effective cwd into both the outside-workspace `_classify` calls and
+`_toolchain_script_hit` — the latter's own path-resolution logic, previously
+inlined, was factored out into the shared `_resolve_absolute` helper
+(`_track_cwd` needs the identical absolute/relative join). This also
+tightens the general outside-workspace check, not just the toolchain-script
+fast path: `cd a && cd b && cat ../file` now resolves `../file` against
+`a/b`, not the command's own starting directory. No wire/protocol change.
