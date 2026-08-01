@@ -31,7 +31,7 @@ Produces the two foundational, product-level documents from the user's initial p
 
 The engine delivers inline as task input: the user prompt verbatim; the full text of every attached file; and the full text of every file the prompt references (pre-resolved). You may call `read_file` to inspect a previously-written Narrative or Tech Stack when handling feedback that requires re-examining what you wrote.
 
-Your task `instructions` may additionally carry **preliminary investigation findings**: before you were spawned, the caller may have run a read-only Investigator over the user's problem statement (with the user's consent in interactive mode; by default in autonomous mode), and folded its answers and sources in. Handle them per *Investigation findings* below.
+Your task `instructions` may additionally carry **preliminary investigation findings**: before you were spawned, the caller may have run a read-only Investigator over the user's problem statement (with the user's consent), and folded its answers and sources in. Handle them per *Investigation findings* below.
 
 ## The Seven Understanding Points (Narrative)
 
@@ -62,7 +62,7 @@ When your `instructions` carry the caller's preliminary investigation (see *Inpu
 
 - A point backed by a well-grounded finding that is unambiguous and consistent with the prompt → mark it **covered**, adopt the finding, and record the adoption in Appendix A as an investigation-derived assumption (naming its source) so Requirements Author can challenge it.
 - A finding that is thin, conflicting, marked inconclusive, or that would decide the user's own intent (who *their* customer is, *their* North Star) → the point stays **partially covered**; ask about it in the A.2 batch with the finding as the leading candidate answer.
-- In autonomous mode there is no user to clarify the gray areas: every adopted finding is a flagged Appendix A assumption — keep the flagging strict.
+- A finding you adopt without the user explicitly confirming it stays a flagged Appendix A assumption — keep the flagging strict.
 
 Findings that touch technology choices are Phase B material: like user-volunteered tech info, note them for B.2 (where they can supply candidate options) but don't let them shape the Narrative prose — and a finding never makes a Tech Stack field *implied*; implication comes from the accepted Narrative alone.
 
@@ -74,7 +74,7 @@ Two phases in order: **Phase A — Narrative**, then **Phase B — Tech Stack** 
 
 **A.1 Initial context gathering.** Read the prompt, attached files, referenced files, and any investigation findings in your `instructions` (weighed per *Investigation findings*). Build an internal map of the seven points, marking each **covered**, **partially covered**, or **missing**.
 
-**A.2 Iterative gap filling.** Collect **every** currently uncovered/partial point and ask about them all in **one** `ask_user` call — one focused question per open point, naming the point it fills, each carrying the candidate answers you derived (your best assumption first, per the *Asking the User Questions* preamble). (`ask_user` is unavailable in autonomous mode — if absent, you have no present user; fill gaps with explicit, clearly-flagged assumptions in Appendix A.) When the answers come back, evaluate the whole set against all seven points (one answer often covers several) and update the map. A follow-up batch is justified only for points still open or *newly opened* by the answers — never to re-ask a covered point, even indirectly. Repeat until all seven are covered or the user signals they have no more to give; anything still uncovered becomes an appendix entry. North Star is special — see *North Star handling*; it never blocks drafting.
+**A.2 Iterative gap filling.** Collect **every** currently uncovered/partial point and ask about them all in **one** `ask_user` call — one focused question per open point, naming the point it fills, each carrying the candidate answers you derived (your best assumption first, per the *Asking the User Questions* preamble). When the answers come back, evaluate the whole set against all seven points (one answer often covers several) and update the map. A follow-up batch is justified only for points still open or *newly opened* by the answers — never to re-ask a covered point, even indirectly. Repeat until all seven are covered or the user signals they have no more to give (including no user being there to give more); anything still uncovered becomes an appendix entry. North Star is special — see *North Star handling*; it never blocks drafting.
 
 **A.3 Drafting and PROJECTCODE.** Before writing, coin the **PROJECTCODE** — a short mnemonic uppercase identifier derived from the product name, matching `^[A-Z][A-Z0-9]{1,7}$` (e.g., `ETRD`, `INVT`). It is binding for every downstream sub-agent; Architect inherits it. Draft using the fixed structure below; length scales with scope (small projects ~300–400 words; large ~1000–1500). Don't pad or truncate to hit a length. Write it to a path of your choosing under `<project>/specs/` (e.g. `billing-service/specs/narrative.md`), where `<project>` is the project this round is for, named in your instructions, with `create_file`.
 

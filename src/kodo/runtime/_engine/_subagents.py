@@ -56,11 +56,9 @@ _MAX_REVIEW_ROUNDS = 10
 # used to restate it inside a `## Your Task Contract` system-prompt section,
 # which is gone; this per-call section is where it lives now.
 _RETURN_RESULT_REMINDER = (
-    "When you finish, call `return_result` exactly once. Its `result` parameter "
-    "declares the exact shape you must produce — read it there; it is the "
-    "authoritative copy. The engine validates what you send and reports "
-    "`schema_compliance: false` if it had to repair your payload (missing "
-    "fields backfilled with empty strings, undeclared fields dropped)."
+    "When you finish, call `return_result` exactly once. Its `result` "
+    "parameter declares the exact shape you must produce — read it there and "
+    "follow it exactly."
 )
 
 _log = logging.getLogger(__name__)

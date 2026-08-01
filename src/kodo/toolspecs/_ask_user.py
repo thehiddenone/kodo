@@ -1,10 +1,13 @@
 """``ask_user`` tool spec — batched user questioning.
 
 An agent gathers every open question about its current topic of work into one
-call; the user answers them all in a single WebView form. Withheld in
-autonomous mode (no answer to synthesize). The questioning discipline itself —
-think first, derive real candidate answers, top choice first — lives in the
-performance preamble ("Asking the User Questions").
+call; the user answers them all in a single WebView form. Always granted,
+in interactive and autonomous sessions alike — an agent never needs to check
+whether it is available or branch its own behavior on the session's mode. When
+there is no user to answer (an autonomous session), the tool synthesizes an
+answer instead of blocking: see ``kodo.tools.AskUserTool``. The questioning
+discipline itself — think first, derive real candidate answers, top choice
+first — lives in the performance preamble ("Asking the User Questions").
 """
 
 from __future__ import annotations
@@ -26,9 +29,9 @@ ASK_USER: ToolSpec = ToolSpec(
         "yourself (your best assumption FIRST); the UI automatically appends "
         "a free-text option to every question, so never add an 'Other'/'free "
         "text' option yourself. See the 'Asking the User Questions' preamble "
-        "section for the full discipline. Unavailable in autonomous mode "
-        "(there is no answer to synthesize when the user is away); assume and "
-        "document, or escalate (return a `reason`), instead. Distinct from "
+        "section for the full discipline. Always call it when a genuine open "
+        "question exists — it always returns an answer, whether or not a user "
+        "is actually there to give one. Distinct from "
         "request_user_review_artifact, which is a sign-off on a finished "
         "artifact rather than a question."
         "\n\nWhen to use: information about the current topic of work is "
@@ -97,7 +100,13 @@ ASK_USER: ToolSpec = ToolSpec(
                     "One entry per question, in the same order. 'selected' "
                     "echoes the chosen option texts verbatim (empty when the "
                     "user answered only in free text); 'free_text' is the "
-                    "user's own text, or null when they did not use it."
+                    "user's own text, or null when they did not use it. When "
+                    "no user was present to answer, a single_choice question "
+                    "comes back with its first option selected (your own "
+                    "stated best guess) and a multi_choice question comes "
+                    "back with 'selected' empty and 'free_text' carrying a "
+                    "notice that nobody was there to answer — read that as an "
+                    "instruction to decide for yourself, not a real preference."
                 ),
                 "items": {
                     "type": "object",
@@ -115,9 +124,9 @@ ASK_USER: ToolSpec = ToolSpec(
     input_visibility={"questions": "always"},
     output_visibility={"answers": "always"},
     autonomous_mode=(
-        "Unavailable — there is no answer to synthesize when the user is "
-        "away, so this tool is withheld entirely. An agent that would have "
-        "asked must instead assume-and-document or, if blocked, escalate by "
-        "returning a `reason` on its result."
+        "Auto-accepted — the tool stays available, and with no user present "
+        "to answer, its own handler synthesizes an answer instead of blocking "
+        "(see `output_schema` above). An agent never needs to check the mode "
+        "or branch its own behavior on it."
     ),
 )

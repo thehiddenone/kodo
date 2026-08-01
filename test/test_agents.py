@@ -334,7 +334,19 @@ def test_registry_unknown_tool_raises(tmp_path: Path) -> None:
         AgentRegistry(tmp_path)
 
 
-def test_registry_ask_user_unavailable_in_autonomous_mode(tmp_path: Path) -> None:
+def test_registry_autonomous_filter_matches_live_spec_and_spares_ask_user(
+    tmp_path: Path,
+) -> None:
+    """The autonomous-mode filter drops exactly the tools the live ToolSpec
+    catalog marks 'unavailable' — read from the registry, not hardcoded — and
+    ``ask_user`` is not among them: it stays granted in both modes and
+    synthesizes its own answer when no user is present (see
+    ``kodo.tools.AskUserTool``), so agent prompts never need to branch on
+    mode to use it."""
+    from kodo.subagents._registry import _AUTONOMOUS_DISABLED
+
+    assert "ask_user" not in _AUTONOMOUS_DISABLED
+
     _write_preamble(tmp_path)
     _write_agent(
         tmp_path,
@@ -343,8 +355,10 @@ def test_registry_ask_user_unavailable_in_autonomous_mode(tmp_path: Path) -> Non
         "Prompt A.\n\n## What to Avoid\n",
     )
     registry = AgentRegistry(tmp_path)
-    assert registry.get("agent_a", autonomous=True).tools == frozenset(["read_file"])
-    assert registry.get("agent_a").tools == frozenset(["ask_user", "read_file"])
+    interactive_tools = registry.get("agent_a").tools
+    autonomous_tools = registry.get("agent_a", autonomous=True).tools
+    assert interactive_tools == frozenset(["ask_user", "read_file"])
+    assert autonomous_tools == interactive_tools - _AUTONOMOUS_DISABLED
 
 
 # ---------------------------------------------------------------------------

@@ -520,9 +520,9 @@ the caller as that `run_subagent_<name>` call's result. `_run_review_loop`
 checks it via `_escalation_reason()` (non-empty `reason` — emptiness is the
 test, since `normalize_output` backfills with `""`) and stops on the spot with
 `review.outcome: "escalated"`. Resolving it belongs to the **caller**, not the
-engine: the Guide puts it to the user with `ask_user` in interactive mode,
-decides it itself in autonomous mode, and either way sends the resolution back
-by re-running the stage with it written into `instructions`.
+engine: the Guide puts it to the user with `ask_user` (which self-resolves,
+per §8, when nobody is there to answer) and sends the resolution back by
+re-running the stage with it written into `instructions`.
 
 > This replaces the retired `escalate_blocker` tool, which set `stop_requested`
 > without ever setting a result — so a blocked sub-agent handed its caller
@@ -671,21 +671,32 @@ submitted to the OpenAI-compatible client — via the same production plumbing
 ## 8. Autonomous mode
 
 Filtering for autonomous mode happens **once**, in the agent registry — not in
-the tool layer. A spec whose `autonomous_mode` contains `"unavailable"` (today
-only `ask_user`) is dropped from the agent's `.tools` set when
-`registry.get(name, autonomous=True)` is called. Because the engine builds the
-LLM tool list from the *already-filtered* `agent.tools`, the withheld tool simply
-never reaches the model — there is no prompt-side tool list that could
-contradict it.
+the tool layer. A spec whose `autonomous_mode` contains `"unavailable"` is
+dropped from the agent's `.tools` set when `registry.get(name, autonomous=True)`
+is called. Because the engine builds the LLM tool list from the
+*already-filtered* `agent.tools`, the withheld tool simply never reaches the
+model — there is no prompt-side tool list that could contradict it. No
+packaged tool declares `"unavailable"` today (`_AUTONOMOUS_DISABLED` in
+`subagents._registry` is currently empty) — the mechanism stays available for
+a tool that genuinely has no synthesizable answer, but the one tool that used
+to use it (`ask_user`) has since moved to the pattern below instead.
 
 A tool can also declare `autonomous_mode="auto-accepted …"` for a spec whose
 *handler* short-circuits on `ctx.session.effective_autonomous` and synthesizes
-its response instead of blocking on the gate — no tool does today, since the
-one example (the former `request_user_review_artifact`) moved into the
-engine: `_finalize_document` (triggered by `_record_review_verdict` when a
-critic returns `accept: true`, not by a dispatched tool) checks
-`effective_autonomous` itself and either auto-accepts or fires the gate. The mechanism remains available for a future tool that
-needs it.
+its response instead of blocking on the gate. `ask_user` is the example:
+`AskUserTool.handle` checks `effective_autonomous` itself and, with no user to
+answer, returns a synthesized answer per question — a `single_choice`
+question's first option (the agent's own stated best guess), a `multi_choice`
+question's `free_text` set to a fixed notice telling the agent nobody is there
+and it should decide for itself — instead of firing `fire_questions` and
+blocking. This is deliberate: agent prompts call `ask_user` unconditionally and
+never branch on mode themselves (see `preamble_performance.md`'s "Asking the
+User Questions" section for how they're expected to read a synthesized
+answer). The former `request_user_review_artifact` used the same idea before
+it moved into the engine outright: `_finalize_document` (triggered by
+`_record_review_verdict` when a critic returns `accept: true`, not by a
+dispatched tool) checks `effective_autonomous` itself and either auto-accepts
+or fires the gate.
 
 > **Where `effective_autonomous` comes from.** The user-facing toggle sets
 > `SessionState.autonomous`, but the engine *freezes* that into
@@ -850,11 +861,12 @@ author that writes a file:
    │  …reasons, calls next tool…
 ```
 
-The gate-backed tool `ask_user` follows the same path
-but its handler `await`s `ctx.gate.fire_*`, which sends a `kind=request`
-frame to the VS Code client and
-blocks on a future until the user responds — see
-[INTERNALS.md §15 "User gate"](INTERNALS.md).
+`ask_user` follows the same path but its handler branches on
+`ctx.session.effective_autonomous` first (§8): in an interactive session it
+`await`s `ctx.gate.fire_*`, which sends a `kind=request` frame to the VS Code
+client and blocks on a future until the user responds — see
+[INTERNALS.md §15 "User gate"](INTERNALS.md) — while in an autonomous one it
+never touches the gate at all and returns a synthesized answer immediately.
 
 `ask_user` carries a **question batch** — every open question about the
 agent's current topic in one call, each with the candidate answers the agent

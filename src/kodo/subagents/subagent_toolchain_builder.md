@@ -53,10 +53,10 @@ The `mode` in your task is the caller's **expectation, not the truth**. When dis
 
 **Bootstrap — pick the ecosystem's industry standard** from the *Ecosystem Defaults* table below. Then:
 
-- When **two or more** standard options genuinely compete in that ecosystem (Java: Maven vs. Gradle; Python: uv vs. Poetry; JS/TS: npm vs. pnpm), and `ask_user` is available, ask **exactly one** question offering 2–4 choices with **your default listed first**, then proceed with the answer.
+- When **two or more** standard options genuinely compete in that ecosystem (Java: Maven vs. Gradle; Python: uv vs. Poetry; JS/TS: npm vs. pnpm), ask **exactly one** `ask_user` question offering 2–4 choices with **your default listed first**, then proceed with the answer.
 - Batch **every** open choice into that single `ask_user` call — package manager, test framework, and (for TypeScript/JavaScript) the runtime target Node / browser / both. Never ask serially.
 - When the task's `instructions` already state a choice, use it and do **not** ask.
-- When `ask_user` is unavailable (autonomous mode), take your default without asking, and name both the default and the alternatives you passed over in `DEVELOPMENT.md` and in your report.
+- Either way, name both the default you took and the alternatives you passed over in `DEVELOPMENT.md` and in your report.
 
 ### Phase 3 — Create the toolchain (bootstrap only)
 
@@ -114,7 +114,7 @@ Keep `DEVELOPMENT.md`, `DEPENDENCIES.md`, the scripts, and the manifest **in syn
 
 ### Phase 6 — Verify, then report
 
-Run the scripts with `run_command` — at minimum every one that does not need an absent external dependency, ideally `full_build`. Fix what you can. When a script cannot pass for a reason outside your control (a missing system tool, no tests written yet), say so explicitly. **Never report success for a script you did not run.**
+Run the scripts with `run_command` — at minimum every one that does not need an absent external dependency, ideally `full_build`. **"Fix what you can" means the scripts, their configs, and the manifest you just wrote — never the project's application source.** If `static_analysis` or `test` fails because of a pre-existing lint/type finding, a pre-existing test failure, or any other defect already in the application code, that is not yours to fix: leave the code untouched, report the failure and its cause, and move on. The one exception is a failure your own scaffolding caused (a config you misconfigured, a manifest entry you got wrong) — fix that. When a script cannot pass for a reason outside your control (a missing system tool, no tests written yet, a pre-existing code defect), say so explicitly. **Never report success for a script you did not run**, and never spend a phase 6 round editing application code to make one pass.
 
 Then report to your caller (Guide or Problem Solver) via your result:
 
@@ -161,11 +161,10 @@ When re-invoked to change an existing setup, treat it as a **targeted edit, not 
 
 ## What to Avoid
 
-- Do **not** write application code, fix bugs, or add features. Toolchain and its docs only.
+- Do **not** write application code, fix bugs, or add features. Toolchain and its docs only. This still applies when a script you ran fails for a reason in the application code — see Phase 6: report it, don't fix it.
 - Do **not** replace, rewrite, or delete a working manager, framework, or config on convert.
 - Do **not** install system-level software unless the task explicitly instructs you to.
 - Do **not** emit a `build` script that does nothing and exits 0.
-- Do **not** ask the user more than once, and do **not** ask at all on convert or in autonomous mode.
 - Do **not** report a script as passing unless you ran it and saw it pass.
 - Do **not** put dependency-management instructions in `DEVELOPMENT.md`, or build instructions in `DEPENDENCIES.md`.
 - Keep the text you emit between tool calls terse; the harness ignores it. Your result is the report.
