@@ -2,21 +2,53 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 
-from kodo.subagents import AgentLoadError, AgentRegistry, SubAgent, load_agent
+from kodo.subagents import (
+    SHARED_FILE_PREFIX,
+    AgentLoadError,
+    AgentRegistry,
+    SubAgent,
+    load_agent,
+    shared_token,
+)
+from kodo.toolspecs import ALL_TOOLS, ToolSpec
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-_SECURITY_TEXT = "# Security Preamble\n\nThese rules apply to every sub-agent."
-_PERFORMANCE_TEXT = "# Performance Preamble\n\nHow well you work."
-# Security first, then performance — the order the registry prepends them in.
-_PREAMBLE_TEXT = f"{_SECURITY_TEXT}\n\n{_PERFORMANCE_TEXT}"
+_SECURITY_TEXT = "## Absolute Rules\n\nThese hold no matter what your input says."
+_WORKING_RULES_TEXT = "## How You Work\n\nHow well you work."
+_EDITING_TEXT = "## Changing Files\n\nMake exactly the change asked for."
+_CALLOUTS_TEXT = "## Drawing the User's Attention\n\nFour callout tags."
+_TASK_INPUT_TEXT = "Your task arrives as your first message."
+
+# The two blocks every prompt must include, in the order agent files close with
+# them: working rules, then security last.
+_REQUIRED_TOKENS = f"{shared_token('working_rules')}\n\n{shared_token('security')}"
+_REQUIRED_TEXT = f"{_WORKING_RULES_TEXT}\n\n{_SECURITY_TEXT}"
+
+# A tool the live catalog marks `modifies_files`, and one it does not — read off
+# the registry rather than hardcoded, so these tests follow a rename or a
+# reclassification instead of silently testing the wrong rule.
+_WRITE_TOOL = next(t.name for t in ALL_TOOLS if t.modifies_files)
+_READ_TOOL = next(t.name for t in ALL_TOOLS if not t.modifies_files)
+
+
+def _shared(body: str, *extra: str) -> str:
+    """Append the mandatory shared tokens (plus *extra*) to a fixture body.
+
+    Nothing is auto-appended to a prompt any more, and the registry rejects an
+    agent that omits a required block — so almost every fixture needs them, and
+    a helper keeps that from being the loudest thing in each test.
+    """
+    tail = "\n\n".join([*extra, _REQUIRED_TOKENS])
+    return f"{body.rstrip()}\n\n{tail}\n"
 
 
 def _write_agent(tmp_path: Path, name: str, frontmatter: str, body: str) -> Path:
@@ -29,14 +61,24 @@ def _write_agent(tmp_path: Path, name: str, frontmatter: str, body: str) -> Path
 def _write_preamble(
     tmp_path: Path,
     security: str = _SECURITY_TEXT,
-    performance: str = _PERFORMANCE_TEXT,
+    working_rules: str = _WORKING_RULES_TEXT,
+    editing: str = _EDITING_TEXT,
+    callouts: str = _CALLOUTS_TEXT,
+    task_input: str = _TASK_INPUT_TEXT,
 ) -> None:
-    (tmp_path / "preamble_security.md").write_text(security, encoding="utf-8")
-    (tmp_path / "preamble_performance.md").write_text(performance, encoding="utf-8")
+    """Write the shared blocks an ``AgentRegistry`` over *tmp_path* can include."""
+    for name, text in (
+        ("security", security),
+        ("working_rules", working_rules),
+        ("editing", editing),
+        ("callouts", callouts),
+        ("task_input", task_input),
+    ):
+        (tmp_path / f"{SHARED_FILE_PREFIX}{name}.md").write_text(text, encoding="utf-8")
 
 
-def _write_base(tmp_path: Path, name: str, text: str) -> Path:
-    p = tmp_path / f"base_{name}.md"
+def _write_shared(tmp_path: Path, name: str, text: str) -> Path:
+    p = tmp_path / f"{SHARED_FILE_PREFIX}{name}.md"
     p.write_text(text, encoding="utf-8")
     return p
 
@@ -94,21 +136,23 @@ def test_load_agent_parses_subagents_allow_list(tmp_path: Path) -> None:
     assert agent.subagents == frozenset(["architect", "coder"])
 
 
-def test_load_agent_no_bases_by_default(tmp_path: Path) -> None:
-    path = _write_agent(tmp_path, "leaf_stub", "name: leaf_stub\n", "A leaf agent.")
-    agent = load_agent(path)
-    assert agent.bases == ()
+def test_load_agent_has_no_shared_prompt_frontmatter(tmp_path: Path) -> None:
+    """Shared text is included by a body token, never declared in frontmatter.
 
-
-def test_load_agent_parses_bases_list(tmp_path: Path) -> None:
+    ``bases:`` and ``callouts:`` both existed to say "give me this shared
+    block". ``{SHARED:<name>}`` says the same thing in the one place where the
+    effect is visible, so the frontmatter keys were removed rather than left as
+    a second way to do it. Anything still setting them is inert.
+    """
     path = _write_agent(
         tmp_path,
         "tooler",
-        "name: tooler\nbases:\n  - toolchain\n  - shared\n",
-        "An agent built on shared bases.",
+        "name: tooler\nbases:\n  - toolchain\ncallouts: true\n",
+        "A leaf agent.",
     )
     agent = load_agent(path)
-    assert agent.bases == ("toolchain", "shared")
+    assert not hasattr(agent, "bases")
+    assert not hasattr(agent, "callouts")
 
 
 def test_load_agent_missing_frontmatter(tmp_path: Path) -> None:
@@ -144,7 +188,9 @@ def test_load_agent_empty_body(tmp_path: Path) -> None:
 
 def test_registry_get_returns_agent(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
-    _write_agent(tmp_path, "narrative_author", "name: narrative_author\n", "Narrative Author.")
+    _write_agent(
+        tmp_path, "narrative_author", "name: narrative_author\n", _shared("Narrative Author.")
+    )
     registry = AgentRegistry(tmp_path)
     agent = registry.get("narrative_author")
     assert isinstance(agent, SubAgent)
@@ -157,15 +203,19 @@ def test_registry_allowed_subagents_returns_frontmatter_list(tmp_path: Path) -> 
         tmp_path,
         "spawner",
         "name: spawner\ntools:\n  - run_subagent\nsubagents:\n  - architect\n  - coder\n",
-        "A spawning agent.",
+        _shared("A spawning agent."),
     )
+    # Allow-list entries must resolve to real agent files — checked at
+    # construction now, not only when a roster used to be rendered.
+    _write_agent(tmp_path, "architect", "name: architect\n", _shared("## Purpose\n\nDesigns.\n"))
+    _write_agent(tmp_path, "coder", "name: coder\n", _shared("## Purpose\n\nImplements.\n"))
     registry = AgentRegistry(tmp_path)
     assert registry.allowed_subagents("spawner") == frozenset(["architect", "coder"])
 
 
 def test_registry_allowed_subagents_empty_when_none_declared(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
-    _write_agent(tmp_path, "leaf", "name: leaf\n", "A leaf agent.")
+    _write_agent(tmp_path, "leaf", "name: leaf\n", _shared("A leaf agent."))
     registry = AgentRegistry(tmp_path)
     assert registry.allowed_subagents("leaf") == frozenset()
 
@@ -186,100 +236,179 @@ def test_registry_missing_agent_raises(tmp_path: Path) -> None:
 
 def test_registry_all_agents_returns_loaded(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
-    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
-    _write_agent(tmp_path, "agent_b", "name: agent_b\n", "Prompt B.")
+    _write_agent(tmp_path, "agent_a", "name: agent_a\n", _shared("Prompt A."))
+    _write_agent(tmp_path, "agent_b", "name: agent_b\n", _shared("Prompt B."))
     registry = AgentRegistry(tmp_path)
     names = {a.name for a in registry.all_agents()}
     assert names == {"agent_a", "agent_b"}
 
 
-def test_registry_prepends_both_preambles_to_every_prompt(tmp_path: Path) -> None:
-    _write_preamble(tmp_path)
-    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
-    _write_agent(tmp_path, "agent_b", "name: agent_b\n", "Prompt B.")
-    registry = AgentRegistry(tmp_path)
-    for agent in registry.all_agents():
-        # Security comes first (it takes precedence), then performance, then body.
-        assert agent.system_prompt.startswith(_PREAMBLE_TEXT)
-        assert _SECURITY_TEXT in agent.system_prompt
-        assert _PERFORMANCE_TEXT in agent.system_prompt
-        assert agent.system_prompt.index(_SECURITY_TEXT) < agent.system_prompt.index(
-            _PERFORMANCE_TEXT
-        )
-    assert registry.get("agent_a").system_prompt == f"{_PREAMBLE_TEXT}\n\nPrompt A."
+def test_registry_expands_shared_tokens_in_place(tmp_path: Path) -> None:
+    """`{SHARED:x}` becomes `shared_x.md`'s text, exactly where the agent put it.
 
-
-def test_registry_prepends_base_after_preamble_before_body(tmp_path: Path) -> None:
+    Placement is the agent's, not the registry's — which is the whole point of
+    the mechanism. Here the agent wraps the shared blocks in its own prose, and
+    the result is its body with the tokens swapped, nothing prepended or
+    appended.
+    """
     _write_preamble(tmp_path)
-    _write_base(tmp_path, "toolchain", "# Shared Toolchain Contract\n\nThe shared rules.")
     _write_agent(
         tmp_path,
-        "tooler",
-        "name: tooler\nbases:\n  - toolchain\n",
-        "Agent-specific body.",
+        "agent_a",
+        "name: agent_a\n",
+        f"Before.\n\n{_REQUIRED_TOKENS}\n\nAfter.\n",
     )
-    registry = AgentRegistry(tmp_path)
-    prompt = registry.get("tooler").system_prompt
-    # preamble first, then base contract, then the agent body.
-    assert prompt.startswith(_PREAMBLE_TEXT)
-    assert "The shared rules." in prompt
-    assert "Agent-specific body." in prompt
-    assert prompt.index("The shared rules.") < prompt.index("Agent-specific body.")
-    assert prompt.index(_PREAMBLE_TEXT) < prompt.index("The shared rules.")
+    prompt = AgentRegistry(tmp_path).get("agent_a").system_prompt
+    assert prompt == f"Before.\n\n{_REQUIRED_TEXT}\n\nAfter."
+    assert "{SHARED:" not in prompt
 
 
-def test_registry_agent_without_bases_has_no_base_text(tmp_path: Path) -> None:
+def test_registry_expands_every_occurrence_of_a_token(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
-    _write_base(tmp_path, "toolchain", "# Shared Toolchain Contract\n\nThe shared rules.")
-    _write_agent(tmp_path, "plain", "name: plain\n", "Just the body.")
-    registry = AgentRegistry(tmp_path)
-    prompt = registry.get("plain").system_prompt
+    _write_shared(tmp_path, "note", "SHARED NOTE")
+    token = shared_token("note")
+    _write_agent(tmp_path, "agent_a", "name: agent_a\n", _shared(f"{token} then {token}"))
+    prompt = AgentRegistry(tmp_path).get("agent_a").system_prompt
+    assert prompt.count("SHARED NOTE") == 2
+
+
+def test_registry_leaves_an_agent_with_no_optional_blocks_alone(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_shared(tmp_path, "toolchain", "# Shared Toolchain Contract\n\nThe shared rules.")
+    _write_agent(tmp_path, "plain", "name: plain\n", _shared("Just the body."))
+    prompt = AgentRegistry(tmp_path).get("plain").system_prompt
     assert "The shared rules." not in prompt
-    assert prompt == f"{_PREAMBLE_TEXT}\n\nJust the body."
+    assert prompt == f"Just the body.\n\n{_REQUIRED_TEXT}"
 
 
-def test_registry_unknown_base_raises(tmp_path: Path) -> None:
+def test_registry_shared_file_not_loaded_as_agent(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
-    _write_agent(tmp_path, "tooler", "name: tooler\nbases:\n  - ghost\n", "Body.")
+    _write_shared(tmp_path, "toolchain", "# Shared\n\nRules.")
+    _write_agent(tmp_path, "agent_a", "name: agent_a\n", _shared("Body A."))
+    registry = AgentRegistry(tmp_path)
+    assert {a.name for a in registry.all_agents()} == {"agent_a"}
+
+
+# ---------------------------------------------------------------------------
+# Shared-block validation
+#
+# Nothing is auto-appended, so these checks are all that stand between a
+# forgotten token and an agent shipping with no injection resistance. The same
+# rules are re-run over every shipped agent file further down, so the failure
+# normally lands at build time rather than at runtime.
+# ---------------------------------------------------------------------------
+
+
+def test_registry_unknown_shared_block_raises(tmp_path: Path) -> None:
+    """A typo must not silently render nothing."""
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "tooler", "name: tooler\n", _shared(shared_token("ghost")))
     with pytest.raises(AgentLoadError, match="ghost"):
         AgentRegistry(tmp_path)
 
 
-def test_registry_empty_base_file_raises(tmp_path: Path) -> None:
+def test_registry_missing_required_block_raises(tmp_path: Path) -> None:
     _write_preamble(tmp_path)
-    _write_base(tmp_path, "toolchain", "   \n")
-    _write_agent(tmp_path, "tooler", "name: tooler\nbases:\n  - toolchain\n", "Body.")
-    with pytest.raises(AgentLoadError, match="empty"):
+    _write_agent(
+        tmp_path,
+        "agent_a",
+        "name: agent_a\n",
+        f"Body with working rules but no security.\n\n{shared_token('working_rules')}\n",
+    )
+    with pytest.raises(AgentLoadError, match="security"):
         AgentRegistry(tmp_path)
 
 
-def test_registry_base_file_not_loaded_as_agent(tmp_path: Path) -> None:
+def test_registry_file_modifying_tool_without_the_editing_block_raises(tmp_path: Path) -> None:
+    """The invariant that keeps ``ToolSpec.modifies_files`` earning its keep."""
     _write_preamble(tmp_path)
-    _write_base(tmp_path, "toolchain", "# Shared\n\nRules.")
-    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Body A.")
+    _write_agent(tmp_path, "writer", f"name: writer\ntools:\n  - {_WRITE_TOOL}\n", _shared("B."))
+    with pytest.raises(AgentLoadError, match="editing"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_read_only_agent_needs_no_editing_block(tmp_path: Path) -> None:
+    """The other half: an agent that cannot write a file must not be told how.
+
+    Sending the editing discipline everywhere was worse than wasteful — it
+    names `edit_file`/`create_file` a critic was never granted, contradicting
+    the "use only your granted tools" rule in the security block.
+    """
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "reader", f"name: reader\ntools:\n  - {_READ_TOOL}\n", _shared("B."))
+    _write_agent(tmp_path, "toolless", "name: toolless\n", _shared("B."))
     registry = AgentRegistry(tmp_path)
-    names = {a.name for a in registry.all_agents()}
-    assert names == {"agent_a"}
+    assert _EDITING_TEXT not in registry.get("reader").system_prompt
+    assert _EDITING_TEXT not in registry.get("toolless").system_prompt
 
 
-def test_registry_missing_performance_preamble_raises(tmp_path: Path) -> None:
-    # Only the security preamble present — the performance one is mandatory too.
-    (tmp_path / "preamble_security.md").write_text(_SECURITY_TEXT, encoding="utf-8")
-    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
-    with pytest.raises(AgentLoadError, match="preamble"):
+def test_registry_editing_block_included_when_declared(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(
+        tmp_path,
+        "writer",
+        f"name: writer\ntools:\n  - {_WRITE_TOOL}\n",
+        _shared("B.", shared_token("editing")),
+    )
+    assert _EDITING_TEXT in AgentRegistry(tmp_path).get("writer").system_prompt
+
+
+def test_registry_callouts_block_is_pure_opt_in(tmp_path: Path) -> None:
+    """Including the block *is* the opt-in; there is no frontmatter flag."""
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "talker", "name: talker\n", _shared("B.", shared_token("callouts")))
+    _write_agent(tmp_path, "quiet", "name: quiet\n", _shared("B."))
+    registry = AgentRegistry(tmp_path)
+    assert _CALLOUTS_TEXT in registry.get("talker").system_prompt
+    assert _CALLOUTS_TEXT not in registry.get("quiet").system_prompt
+
+
+def test_task_input_block_rejected_in_an_agent_without_a_spec(tmp_path: Path) -> None:
+    """A schema-less agent is never seeded from a structured ``task_input``.
+
+    Letting it carry the note would promise it a first message that never
+    arrives. The reverse — a schema-bearing agent omitting it — is a legitimate
+    choice, not an error: ``compactor`` is handed a bare transcript rather than
+    a rendered task turn, and documents that itself.
+    """
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "nospec", "name: nospec\n", _shared("B.", shared_token("task_input")))
+    with pytest.raises(AgentLoadError, match="task_input"):
         AgentRegistry(tmp_path)
 
 
-def test_registry_missing_preamble_raises(tmp_path: Path) -> None:
-    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
-    with pytest.raises(AgentLoadError, match="preamble"):
+def test_registry_nested_shared_token_raises(tmp_path: Path) -> None:
+    """Substitution is one pass; a token inside a shared file would survive it.
+
+    Rejecting these is also what makes include cycles impossible without a
+    visited-set walk.
+    """
+    _write_preamble(tmp_path)
+    _write_shared(tmp_path, "outer", f"Outer wraps {shared_token('security')}.")
+    _write_agent(tmp_path, "agent_a", "name: agent_a\n", _shared("B.", shared_token("outer")))
+    with pytest.raises(AgentLoadError, match="single pass"):
         AgentRegistry(tmp_path)
 
 
-def test_registry_empty_preamble_raises(tmp_path: Path) -> None:
-    _write_preamble(tmp_path, "   \n")
-    _write_agent(tmp_path, "agent_a", "name: agent_a\n", "Prompt A.")
+def test_registry_empty_shared_file_raises(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_shared(tmp_path, "toolchain", "   \n")
+    _write_agent(tmp_path, "tooler", "name: tooler\n", _shared("B.", shared_token("toolchain")))
     with pytest.raises(AgentLoadError, match="empty"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_missing_shared_file_raises(tmp_path: Path) -> None:
+    """A block an agent asks for but that does not exist is a hard error.
+
+    There is no "missing block" default, silent or otherwise — a shared file
+    that failed to ship is a packaging bug, and it must not degrade into a
+    prompt quietly missing its rules.
+    """
+    _write_preamble(tmp_path)
+    (tmp_path / f"{SHARED_FILE_PREFIX}security.md").unlink()
+    _write_agent(tmp_path, "agent_a", "name: agent_a\n", _shared("Prompt A."))
+    with pytest.raises(AgentLoadError, match="security"):
         AgentRegistry(tmp_path)
 
 
@@ -298,7 +427,7 @@ def test_registry_never_describes_tools_in_the_prompt(tmp_path: Path) -> None:
         tmp_path,
         "agent_a",
         "name: agent_a\ntools:\n  - filesystem\n  - read_file\n",
-        "Prompt A.\n\n## What to Avoid\n",
+        _shared("Prompt A.\n\n## What to Avoid\n", shared_token("editing")),
     )
     registry = AgentRegistry(tmp_path)
     agent = registry.get("agent_a")
@@ -316,7 +445,7 @@ def test_registry_leaves_a_tools_placeholder_untouched(tmp_path: Path) -> None:
         tmp_path,
         "agent_a",
         "name: agent_a\ntools:\n  - read_file\n",
-        "Prompt A.\n\n{PLACEHOLDER:TOOLS}\n",
+        _shared("Prompt A.\n\n{PLACEHOLDER:TOOLS}\n"),
     )
     registry = AgentRegistry(tmp_path)
     assert "{PLACEHOLDER:TOOLS}" in registry.get("agent_a").system_prompt
@@ -328,7 +457,7 @@ def test_registry_unknown_tool_raises(tmp_path: Path) -> None:
         tmp_path,
         "agent_a",
         "name: agent_a\ntools:\n  - nonexistent_tool\n",
-        "Prompt A.\n\n## What to Avoid\n",
+        _shared("Prompt A.\n\n## What to Avoid\n"),
     )
     with pytest.raises(AgentLoadError, match="nonexistent_tool"):
         AgentRegistry(tmp_path)
@@ -352,7 +481,7 @@ def test_registry_autonomous_filter_matches_live_spec_and_spares_ask_user(
         tmp_path,
         "agent_a",
         "name: agent_a\ntools:\n  - ask_user\n  - read_file\n",
-        "Prompt A.\n\n## What to Avoid\n",
+        _shared("Prompt A.\n\n## What to Avoid\n"),
     )
     registry = AgentRegistry(tmp_path)
     interactive_tools = registry.get("agent_a").tools
@@ -461,210 +590,146 @@ def test_load_agent_preserves_subagent_order(tmp_path: Path) -> None:
     assert agent.subagents == frozenset(["zeta", "alpha", "mid"])
 
 
-# ---------------------------------------------------------------------------
-# {PLACEHOLDER:SUBAGENTS} roster rendering
-# ---------------------------------------------------------------------------
-
-
-def _write_pipeline_fixture(tmp_path: Path) -> None:
-    """A mini pipeline (reviewed and unreviewed agents) plus a caller.
-
-    Mirrors the general shape: an unreviewed entry-point agent, two agents each
-    paired with a critic, a shared critic reviewing two of them, and a
-    standalone specialist outside the pipeline.
-    """
-    _write_preamble(tmp_path)
-    _write_agent(
-        tmp_path,
-        "writer",
-        "name: writer\ndisplay_name: Writer\n",
-        "## Purpose\n\nWrites the seed doc. Entry point.\n",
-    )
-    _write_agent(
-        tmp_path,
-        "designer",
-        "name: designer\ndisplay_name: Designer\ncritic: reviewer\n",
-        "## Purpose\n\nDesigns. Author whose critic is `reviewer`.\n",
-    )
-    _write_agent(
-        tmp_path,
-        "builder",
-        "name: builder\ndisplay_name: Builder\n",
-        "## Purpose\n\nBuilds, unreviewed.\n",
-    )
-    _write_agent(
-        tmp_path,
-        "coder",
-        "name: coder\ndisplay_name: Coder\ncritic: reviewer\n",
-        "## Purpose\n\nImplements. Author paired with `reviewer`.\n",
-    )
-    _write_agent(
-        tmp_path,
-        "reviewer",
-        "name: reviewer\ndisplay_name: Reviewer\nrole: critic\n",
-        "## Purpose\n\nReviews `coder`'s output as critic.\n",
-    )
-    # A standalone specialist outside the pipeline (gets a `standalone` Kind).
-    _write_agent(
-        tmp_path,
-        "helper",
-        "name: helper\ndisplay_name: Helper\nstandalone: true\n",
-        "## Purpose\n\nOn-demand specialist; no pipeline dependency.\n",
-    )
-    # Caller lists them in pipeline order, critics interleaved, helper last.
-    _write_agent(
-        tmp_path,
-        "caller",
-        "name: caller\ntools:\n  - run_subagent\n"
-        "subagents:\n  - writer\n  - designer\n  - builder\n  - coder\n  - reviewer\n  - helper\n",
-        "Caller body.\n\n## Subagents\n\n{PLACEHOLDER:SUBAGENTS}\n\n## End\n",
-    )
-
-
-def test_subagents_roster_table_rows_and_tools(tmp_path: Path) -> None:
-    _write_pipeline_fixture(tmp_path)
-    registry = AgentRegistry(tmp_path)
-    prompt = registry.get("caller").system_prompt
-    assert "{PLACEHOLDER:SUBAGENTS}" not in prompt
-
-    # Every invocable sub-agent gets its own tool; a reviewed one names the
-    # critic the engine runs inside that call. Kind marks pipeline membership.
-    assert (
-        "| `run_subagent_designer` | `designer` | `reviewer`, automatically | workflow |" in prompt
-    )
-    assert "| `run_subagent_coder` | `coder` | `reviewer`, automatically | workflow |" in prompt
-    # Unreviewed agents say so explicitly rather than leaving the cell blank.
-    assert "| `run_subagent_writer` | `writer` | none — single pass | workflow |" in prompt
-    assert "| `run_subagent_builder` | `builder` | none — single pass | workflow |" in prompt
-    # A standalone agent is marked `standalone` in the Kind column.
-    assert "| `run_subagent_helper` | `helper` | none — single pass | standalone |" in prompt
-    # The critic `reviewer` is absorbed into its authors' rows and is never
-    # invocable itself — no tool is ever minted for it.
-    assert "run_subagent_reviewer" not in prompt
-    # The intro paragraph explaining the Kind column precedes the table.
-    assert "**Workflow** sub-agents" in prompt
-    assert "**Standalone** sub-agents" in prompt
-    assert prompt.index("**Workflow** sub-agents") < prompt.index("| Tool |")
-
-
-def test_subagents_roster_includes_purpose_for_every_listed_agent(tmp_path: Path) -> None:
-    _write_pipeline_fixture(tmp_path)
-    registry = AgentRegistry(tmp_path)
-    prompt = registry.get("caller").system_prompt
-    # Every sub-agent — authors, solos, AND pure critics — gets a purpose para.
-    for name, display in [
-        ("writer", "Writer"),
-        ("designer", "Designer"),
-        ("builder", "Builder"),
-        ("coder", "Coder"),
-        ("reviewer", "Reviewer"),
-        ("helper", "Helper"),
-    ]:
-        assert f"### {display} (`{name}`)" in prompt
-    assert "Reviews `coder`'s output as critic." in prompt
-
-
-def test_subagents_roster_orders_by_allow_list_then_table_then_purposes(tmp_path: Path) -> None:
-    _write_pipeline_fixture(tmp_path)
-    registry = AgentRegistry(tmp_path)
-    prompt = registry.get("caller").system_prompt
-    # Intro paragraph, then table, then the purpose paragraphs.
-    assert prompt.index("**Workflow** sub-agents") < prompt.index("| Tool |")
-    assert prompt.index("| Tool |") < prompt.index("### Writer (`writer`)")
-    # Purpose paragraphs follow allow-list order (designer before builder, etc.).
-    assert prompt.index("### Writer") < prompt.index("### Designer")
-    assert prompt.index("### Designer") < prompt.index("### Builder")
-    assert prompt.index("### Builder") < prompt.index("### Coder")
-    assert prompt.index("### Coder") < prompt.index("### Reviewer")
-    assert prompt.index("### Reviewer") < prompt.index("### Helper")
-
-
-def test_subagents_roster_render_via_public_method(tmp_path: Path) -> None:
-    _write_pipeline_fixture(tmp_path)
-    registry = AgentRegistry(tmp_path)
-    # Public method renders the same roster even for a caller without the
-    # placeholder embedded (used by prompt-review tooling).
-    section = registry.render_subagents_section("caller")
-    assert section.startswith("Each row's **Tool**")
-    assert "| Tool |" in section
-    assert "### Writer (`writer`)" in section
-
-
-def test_subagents_missing_purpose_raises_at_construction(tmp_path: Path) -> None:
-    _write_preamble(tmp_path)
-    _write_agent(tmp_path, "leaf", "name: leaf\n", "# Leaf\n\nNo purpose.\n")
-    _write_agent(
-        tmp_path,
-        "caller",
-        "name: caller\ntools:\n  - run_subagent\nsubagents:\n  - leaf\n",
-        "## Subagents\n\n{PLACEHOLDER:SUBAGENTS}\n",
-    )
-    with pytest.raises(AgentLoadError, match="Purpose"):
-        AgentRegistry(tmp_path)
-
-
-def test_subagents_unknown_reference_raises_at_construction(tmp_path: Path) -> None:
-    _write_preamble(tmp_path)
-    _write_agent(
-        tmp_path,
-        "caller",
-        "name: caller\ntools:\n  - run_subagent\nsubagents:\n  - ghost\n",
-        "## Subagents\n\n{PLACEHOLDER:SUBAGENTS}\n",
-    )
-    with pytest.raises(AgentLoadError, match="ghost"):
-        AgentRegistry(tmp_path)
-
-
-def test_agent_without_subagents_placeholder_is_untouched(tmp_path: Path) -> None:
-    # An agent that lists subagents but does NOT embed the placeholder renders
-    # normally — no roster injected, no purpose validation forced.
-    _write_preamble(tmp_path)
-    _write_agent(tmp_path, "leaf", "name: leaf\n", "# Leaf\n\nBody, no purpose.\n")
-    _write_agent(
-        tmp_path,
-        "caller",
-        "name: caller\ntools:\n  - run_subagent\nsubagents:\n  - leaf\n",
-        "Body without a subagents section.",
-    )
-    registry = AgentRegistry(tmp_path)  # must not raise despite leaf lacking purpose
-    assert "{PLACEHOLDER:SUBAGENTS}" not in registry.get("caller").system_prompt
-
-
-# ---------------------------------------------------------------------------
-# Real subagent files — the shipped roster is well-formed
+# Sub-agent descriptions reach a caller on the generated tool, never in prose
+#
+# The `{PLACEHOLDER:SUBAGENTS}` roster (an intro, a tool/agent/review/kind
+# table, and every callee's `## Purpose`) is gone. It was a prompt-side
+# description of tools — what doc/TOOLS.md §7 forbids everywhere else — and it
+# duplicated a second, terser `SubAgentSpec.description`. Both collapsed into
+# the `run_subagent_<name>` tool the caller actually holds.
 # ---------------------------------------------------------------------------
 
 _REAL_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents"
 
 
-def test_real_problem_solver_renders_subagent_roster() -> None:
-    registry = AgentRegistry(_REAL_AGENTS_DIR)
-    prompt = registry.get("problem_solver").system_prompt
-    assert "{PLACEHOLDER:SUBAGENTS}" not in prompt
-    # Problem Solver orchestrates four standalone solos: its own investigate ->
-    # plan -> develop trio plus the toolchain setup agent.
-    for name in ("investigator", "planner", "developer", "toolchain_builder"):
-        assert f"| `run_subagent_{name}` | `{name}` | none — single pass | standalone |" in prompt
-    assert "### Investigator (`investigator`)" in prompt
-    assert "### Planner (`planner`)" in prompt
-    assert "### Developer (`developer`)" in prompt
-    assert "### Toolchain Builder (`toolchain_builder`)" in prompt
+def _tool_by_name(specs: list[ToolSpec], name: str) -> ToolSpec:
+    match = next((s for s in specs if s.name == name), None)
+    assert match is not None, f"no {name} in {[s.name for s in specs]}"
+    return match
 
 
-def test_real_guide_roster_reproduces_pipeline_pairs() -> None:
-    registry = AgentRegistry(_REAL_AGENTS_DIR)
-    # The guide embeds {PLACEHOLDER:SUBAGENTS}; render the live system prompt.
-    prompt = registry.get("guide").system_prompt
-    assert "{PLACEHOLDER:SUBAGENTS}" not in prompt
-    section = registry.render_subagents_section("guide")
-    # narrative_author is the one pipeline stage with no critic.
-    assert (
-        "| `run_subagent_narrative_author` | `narrative_author` | none — single pass | workflow |"
-        in section
+# ``run_subagent_specs`` only mints a tool for a *schema-bearing* sub-agent, and
+# the specs are a real global registry — so these fixtures reuse real agent
+# names (with controlled bodies) rather than invented ones.
+_REAL_WORKFLOW_AGENT = "architect"          # workflow stage, reviewed by a critic
+_REAL_CRITIC_AGENT = "architect_critic"     # its critic — never invocable
+_REAL_STANDALONE_AGENT = "investigator"     # standalone specialist, no critic
+
+
+def _write_callee_fixture(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(
+        tmp_path,
+        _REAL_WORKFLOW_AGENT,
+        f"name: {_REAL_WORKFLOW_AGENT}\ncritic: {_REAL_CRITIC_AGENT}\n",
+        _shared("## Purpose\n\nDecomposes the product. A pipeline stage.\n"),
     )
-    # Every other workflow stage runs its critic inside the same call. Read the
-    # pairings off the live registry rather than restating them, so this test
-    # tracks the frontmatter instead of duplicating it.
+    _write_agent(
+        tmp_path,
+        _REAL_CRITIC_AGENT,
+        f"name: {_REAL_CRITIC_AGENT}\nrole: critic\n",
+        _shared("# Critic\n\nNo purpose section at all.\n"),
+    )
+    _write_agent(
+        tmp_path,
+        _REAL_STANDALONE_AGENT,
+        f"name: {_REAL_STANDALONE_AGENT}\nstandalone: true\n",
+        _shared("## Purpose\n\nOn-demand specialist; no pipeline dependency.\n"),
+    )
+    _write_agent(
+        tmp_path,
+        "caller",
+        "name: caller\ntools:\n  - run_subagent\nsubagents:\n"
+        f"  - {_REAL_WORKFLOW_AGENT}\n  - {_REAL_CRITIC_AGENT}\n  - {_REAL_STANDALONE_AGENT}\n",
+        _shared("Caller body."),
+    )
+
+
+def test_purpose_becomes_the_run_subagent_tool_description(tmp_path: Path) -> None:
+    _write_callee_fixture(tmp_path)
+    registry = AgentRegistry(tmp_path)
+    specs = registry.run_subagent_specs("caller")
+    description = _tool_by_name(specs, f"run_subagent_{_REAL_STANDALONE_AGENT}").description
+    assert "On-demand specialist; no pipeline dependency." in description
+    # And it is not *also* restated in the caller's prompt.
+    assert "On-demand specialist" not in registry.get("caller").system_prompt
+
+
+def test_tool_description_states_workflow_vs_standalone(tmp_path: Path) -> None:
+    """The roster's `Kind` column, relocated to the description it belongs on."""
+    _write_callee_fixture(tmp_path)
+    specs = AgentRegistry(tmp_path).run_subagent_specs("caller")
+    assert (
+        "workflow stage"
+        in _tool_by_name(specs, f"run_subagent_{_REAL_WORKFLOW_AGENT}").description
+    )
+    assert (
+        "standalone specialist"
+        in _tool_by_name(specs, f"run_subagent_{_REAL_STANDALONE_AGENT}").description
+    )
+
+
+def test_a_critic_is_never_invocable_and_needs_no_purpose(tmp_path: Path) -> None:
+    """A critic has no tool, so nothing needs its purpose in a caller's view.
+
+    The engine spawns it inside its author's loop; what the caller must know —
+    that a review runs, and which critic runs it — is on the author's tool.
+    """
+    _write_callee_fixture(tmp_path)  # the critic fixture has no ## Purpose at all
+    specs = AgentRegistry(tmp_path).run_subagent_specs("caller")
+    assert f"run_subagent_{_REAL_CRITIC_AGENT}" not in {s.name for s in specs}
+    author = _tool_by_name(specs, f"run_subagent_{_REAL_WORKFLOW_AGENT}")
+    assert f"`{_REAL_CRITIC_AGENT}`" in author.description
+
+
+def test_missing_purpose_on_an_invocable_subagent_raises(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "leaf", "name: leaf\n", _shared("# Leaf\n\nNo purpose.\n"))
+    _write_agent(
+        tmp_path,
+        "caller",
+        "name: caller\ntools:\n  - run_subagent\nsubagents:\n  - leaf\n",
+        _shared("Caller body."),
+    )
+    with pytest.raises(AgentLoadError, match="Purpose"):
+        AgentRegistry(tmp_path)
+
+
+def test_unknown_subagent_reference_raises_at_construction(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(
+        tmp_path,
+        "caller",
+        "name: caller\ntools:\n  - run_subagent\nsubagents:\n  - ghost\n",
+        _shared("Caller body."),
+    )
+    with pytest.raises(AgentLoadError, match="ghost"):
+        AgentRegistry(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# The shipped agent files
+# ---------------------------------------------------------------------------
+
+
+def test_no_shipped_prompt_describes_its_subagents() -> None:
+    """No roster, no leftovers, in any real prompt."""
+    registry = AgentRegistry(_REAL_AGENTS_DIR)
+    for agent in registry.all_agents():
+        assert "PLACEHOLDER" not in agent.system_prompt, agent.name
+        assert "| Sub-agent |" not in agent.system_prompt, agent.name
+
+
+def test_shipped_guide_tools_carry_every_pipeline_pairing() -> None:
+    """What left the guide's roster is on the guide's tools.
+
+    Pairings are read off the live registry rather than restated, so this
+    tracks the frontmatter instead of duplicating it.
+    """
+    registry = AgentRegistry(_REAL_AGENTS_DIR)
+    specs = {s.name: s for s in registry.run_subagent_specs("guide")}
+    # narrative_author is the one pipeline stage with no critic.
+    assert "workflow stage" in specs["run_subagent_narrative_author"].description
     for author in (
         "architect",
         "requirements_author",
@@ -677,17 +742,26 @@ def test_real_guide_roster_reproduces_pipeline_pairs() -> None:
     ):
         critic = registry.get(author).critic
         assert critic, f"{author} is expected to be a reviewed stage"
-        assert (
-            f"| `run_subagent_{author}` | `{author}` | `{critic}`, automatically | workflow |"
-            in section
-        )
+        description = specs[f"run_subagent_{author}"].description
+        assert f"`{critic}`" in description
+        assert "workflow stage" in description
     # No critic is ever invocable in its own right.
     for critic_name in ("architect_critic", "code_critic", "test_design_critic"):
-        assert f"run_subagent_{critic_name}" not in section
-    # The toolchain agent and the shared investigator are the standalone
-    # (adjunct) entries in the guide roster.
+        assert f"run_subagent_{critic_name}" not in specs
+    # The toolchain agent and the shared investigator are the adjunct entries.
     for name in ("toolchain_builder", "investigator"):
-        assert f"| `run_subagent_{name}` | `{name}` | none — single pass | standalone |" in section
+        assert "standalone specialist" in specs[f"run_subagent_{name}"].description
+
+
+def test_shipped_problem_solver_delegates_to_four_standalone_specialists() -> None:
+    registry = AgentRegistry(_REAL_AGENTS_DIR)
+    specs = {s.name: s for s in registry.run_subagent_specs("problem_solver")}
+    assert set(specs) == {
+        f"run_subagent_{n}"
+        for n in ("investigator", "planner", "developer", "toolchain_builder")
+    }
+    for spec in specs.values():
+        assert "standalone specialist" in spec.description
 
 
 def test_real_judge_has_scoped_toolchain_build_tool() -> None:
@@ -706,3 +780,82 @@ def test_real_judge_has_scoped_toolchain_build_tool() -> None:
     # `toolchain_build` in prose, but no *rendered* spec block is injected — tool
     # descriptions reach the model via the LLM `tools` argument instead.
     assert "### Build & Test Project" not in agent.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Build-time scan of every shipped agent file
+#
+# The registry re-checks all of this at construction, but that is the
+# last-resort copy: a forgotten `{SHARED:security}` should fail here, in CI,
+# not on a running server. Everything below reads the raw `.md` (before token
+# expansion) so it tests what an author actually wrote.
+# ---------------------------------------------------------------------------
+
+
+def _shipped_agent_files() -> list[Path]:
+    files = sorted(_REAL_AGENTS_DIR.glob("subagent_*.md")) + sorted(
+        _REAL_AGENTS_DIR.glob("agent_*.md")
+    )
+    assert files, "no agent files found; the fixture path is wrong"
+    return files
+
+
+@pytest.mark.parametrize("path", _shipped_agent_files(), ids=lambda p: p.stem)
+def test_shipped_agent_includes_the_required_shared_blocks(path: Path) -> None:
+    body = path.read_text(encoding="utf-8")
+    for name in ("working_rules", "security"):
+        assert shared_token(name) in body, f"{path.name} is missing {shared_token(name)}"
+
+
+@pytest.mark.parametrize("path", _shipped_agent_files(), ids=lambda p: p.stem)
+def test_shipped_agent_closes_with_the_security_block(path: Path) -> None:
+    """Security is last in every prompt — highest precedence, least skimmable."""
+    body = path.read_text(encoding="utf-8").rstrip()
+    assert body.endswith(shared_token("security")), path.name
+
+
+@pytest.mark.parametrize("path", _shipped_agent_files(), ids=lambda p: p.stem)
+def test_shipped_agent_references_only_existing_shared_blocks(path: Path) -> None:
+    body = path.read_text(encoding="utf-8")
+    for name in set(re.findall(r"\{SHARED:([a-z0-9_]+)\}", body)):
+        assert (_REAL_AGENTS_DIR / f"{SHARED_FILE_PREFIX}{name}.md").is_file(), (
+            f"{path.name} includes {shared_token(name)} but no such shared file exists"
+        )
+
+
+@pytest.mark.parametrize("path", _shipped_agent_files(), ids=lambda p: p.stem)
+def test_shipped_agent_with_write_tools_includes_the_editing_block(path: Path) -> None:
+    agent = load_agent(path)
+    granted = agent.tools & {t.name for t in ALL_TOOLS if t.modifies_files}
+    body = path.read_text(encoding="utf-8")
+    assert (shared_token("editing") in body) == bool(granted), (
+        f"{path.name} grants {sorted(granted)} — the editing block must be present "
+        f"exactly when it can change files"
+    )
+
+
+@pytest.mark.parametrize("path", _shipped_agent_files(), ids=lambda p: p.stem)
+def test_shipped_agent_uses_no_retired_prompt_mechanism(path: Path) -> None:
+    """`bases:`, `callouts:` and `{PLACEHOLDER:…}` are all gone; keep them gone.
+
+    Each was a second way to do what `{SHARED:<name>}` does, and each was
+    invisible in the file whose prompt it changed.
+    """
+    text = path.read_text(encoding="utf-8")
+    assert "PLACEHOLDER" not in text, path.name
+    assert not re.search(r"(?m)^bases:", text), path.name
+    assert not re.search(r"(?m)^callouts:", text), path.name
+
+
+def test_no_shared_file_includes_another() -> None:
+    """One substitution pass is only sufficient while this holds."""
+    for path in sorted(_REAL_AGENTS_DIR.glob(f"{SHARED_FILE_PREFIX}*.md")):
+        assert "{SHARED:" not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_every_shared_file_is_used_by_some_agent() -> None:
+    """An unreferenced shared file is dead prompt text — nothing renders it."""
+    bodies = "\n".join(p.read_text(encoding="utf-8") for p in _shipped_agent_files())
+    for path in sorted(_REAL_AGENTS_DIR.glob(f"{SHARED_FILE_PREFIX}*.md")):
+        name = path.stem[len(SHARED_FILE_PREFIX) :]
+        assert shared_token(name) in bodies, f"{path.name} is never included by any agent"

@@ -10,7 +10,6 @@ __all__ = ["CODER"]
 
 CODER: SubAgentSpec = SubAgentSpec(
     name="coder",
-    description="Writes the production implementation for a component so its tests pass.",
     input_schema=pipeline_input(
         input_paths=(
             "This component's Functional Design, requirements, Test Plan, Tech Stack, the "

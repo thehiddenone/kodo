@@ -20,11 +20,6 @@ __all__ = ["WEB_SEARCH_AGENT"]
 
 WEB_SEARCH_AGENT: SubAgentSpec = SubAgentSpec(
     name="web_search",
-    description=(
-        "Researches a web query end to end — plans which engines to query and when, "
-        "reads the promising pages, and synthesizes a themed report — pacing itself "
-        "to avoid anti-bot walls and wrapping up within its time budget."
-    ),
     input_schema={
         "type": "object",
         "properties": {

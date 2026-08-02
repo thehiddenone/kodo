@@ -10,7 +10,6 @@ __all__ = ["REQUIREMENTS_CRITIC"]
 
 REQUIREMENTS_CRITIC: SubAgentSpec = SubAgentSpec(
     name="requirements_critic",
-    description="Reviews the requirements for clarity, completeness, and North Star alignment.",
     input_schema=pipeline_input(
         input_paths=(
             "The requirements document under review and the architecture for sub-narratives "

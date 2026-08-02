@@ -298,8 +298,13 @@ channel and must also carry the tool's **when-to-use** guidance;
 top-choice answer always first, the client appending the free-text option
 itself — and returns `answers: [{selected: [str], free_text: str|null}]` in
 question order. The batching discipline (think first, one call per topic,
-derived candidate answers) lives in `preamble_performance.md` ("Asking the
-User Questions"), shared by every agent. (`ask_user` was once split into a
+derived candidate answers, best assumption first) lives in the spec's own
+`description`. It used to be an "Asking the User Questions" section of
+a shared block sent to *every* agent — ~380 words about a tool only
+four of them hold (`guide`, `problem_solver`, `narrative_author`,
+`toolchain_builder`), duplicating half of what the spec already said and
+cross-referencing the other half. On the spec it is self-gating: it reaches
+exactly the holders, and there is one copy. (`ask_user` was once split into a
 leaf spec and a separate guide spec; they were collapsed into one — the
 runtime contract was identical and the guide-only guidance already lives in
 the guide prompt body.)
@@ -321,7 +326,7 @@ placeholders.
 | `get_web_search_state` / `update_web_search_state` | ✅ implemented — the `web_search` agent's persistent key-value pacing memory (`kodo.websearch.WebSearchStateStore`, `~/.kodo/websearch/agent_state.json`, 12h TTL per entry refreshed on write). `update_web_search_state`'s special `<time_mark>` value records `time.time()` under a key instead of a literal string; reading it back returns the elapsed seconds, recomputed fresh every call. Exclusive to the `web_search` agent by convention. Security impact `NONE`; available in autonomous mode. |
 | `wait` / `remaining_time` | ✅ implemented — the `web_search` agent's anti-burst pacing lever (a clamped sleep, ≤30s/call, never sleeping past `ToolContext.deadline`) and timeout countdown (seconds left before the run's deadline, set from the tool's `timeout`). Exclusive to the `web_search` agent by convention. Security impact `NONE`; available in autonomous mode. |
 | `run_subagent`, `rollback`, `finalize_project` | ✅ implemented. `run_subagent` is never offered as-is: each caller gets one `run_subagent_<name>` tool per invocable sub-agent, carrying that sub-agent's own `input_schema`, and the engine folds such a call back to the canonical form before dispatch (doc/TOOLS.md §5A). When the target declares a `critic:`, one call runs the whole author/critic loop. `rollback` now delegates to the same shadow-git mirror Problem Solver uses (§7/§10b). |
-| `disable_autonomous_mode` | ✅ implemented (`DisableAutonomousModeTool`, in `_TOOL_CLASSES`). Declared by `guide`; resolved by `tools_for_agent` and dispatched. (Progress reporting is no longer a tool — agents emit `<kodo_info>` callouts in their message text; see the performance preamble.) |
+| `disable_autonomous_mode` | ✅ implemented (`DisableAutonomousModeTool`, in `_TOOL_CLASSES`). Declared by `guide`; resolved by `tools_for_agent` and dispatched. (Progress reporting is no longer a tool — agents emit `<kodo_info>` callouts in their message text; see `shared_callouts.md`, which only the two entry agents include.) |
 | `scaffold_new_project` | ✅ implemented (`ScaffoldNewProjectTool`). Granted to `guide` + `problem_solver`. Merges the former `create_new_project`/`init_project` tools into one; a thin shim that dispatches on the agent's input to `_EngineServices.create_project(name)` / `.bootstrap_project(name)` / `.init_project(path)` (unchanged engine primitives): **no `path`, no workspace bound yet** → `bootstrap_project` — resolves a workspace-home folder (interactive folder-picker dialog, or under `~/kodo-projects/<name>` in autonomous mode) regardless of whether `name` was given, then delegates to `create_project`; **no `path`, workspace already bound** → `create_project`, requiring a non-empty `name` — the engine slugifies it, makes a fresh directory under the session workspace root (auto-suffix `-2`/`-3`… on collision), scaffolds `.kodo/`+`kodo.md`+checkpoint mirror via `RootMirrorManager.prepare`, records it in the logical-root map, and pushes `EVT_WORKSPACE_ADD_FOLDER` so the extension adds it to the open workspace (WS_PROTOCOL §5.9c); **`path` given** → `init_project` — *path* must already exist (`ProjectLayout.init_existing` raises `ProjectLayoutError` otherwise), and the directory is judged empty when it holds no entries besides dotfiles/dot-directories (`.git/`, `.gitignore`, ...), in which case — and only then — `specs/`/`src/`/`test/` are laid out, exactly like `create_project`; either way `.kodo/`+`kodo.md`+checkpoint mirror are scaffolded via the same `RootMirrorManager.prepare` (mandatory baseline commit before the call returns), and `EVT_WORKSPACE_ADD_FOLDER` is pushed only when *path* isn't already one of the session's registered workspace folders; **`path` given and it already has a `.kodo/`** (already a Kodo project) → `ProjectLayout.init_existing` no longer raises — it returns `(scaffolded=False, already_scaffolded=True)`, a no-op success (nothing on disk touched, but the directory is still idempotently registered/locked/mirror-prepared), and the tool reports `already_scaffolded: true` instead of erroring. In every no-`path` branch an absolute path is never LLM-suppliable — only ever the engine's own bootstrap placement or a real user action (the native "Create Project" folder-picker) — closing the path-injection surface for *creation*; `path` is only ever used to point at something that must already exist. With no `path` **and** no workspace bound yet, `ToolDispatcher` also skips `__security_gate` entirely for this call (doc/SECURITY.md §4) — there is no agent-chosen location for it to judge; a `path`-driven call goes through the gate normally even with no workspace bound, since `path` *is* an agent-chosen location. |
 | `toolchain_build`/`toolchain_deps` | ✅ implemented. `toolchain_build` executes a project's generated `scripts/<step>.{sh,ps1}` pair (the toolchain-setup agent's output, §8/§11) in canonical order; its mandatory `project_path` names the project root to build (the dir holding `.kodo/`) — supplied by the caller, since Problem Solver runs have no bound project and any kodo project on disk is buildable (absolute paths as-is, relative paths through the run's resolver) — format → build → static_analysis → test — stopping at the first failure; a missing script returns a clear error directing the caller to run the toolchain-setup agent first. `toolchain_build` is also the validator's `judge` agent's one non-read-only tool (doc/VALIDATOR.md §9.2) — an RVP can ask the judge to call it for real, executed build/test evidence rather than an inferred read-only verdict. `toolchain_deps` performs **one** add/remove/update dependency op: it does not touch manifests itself but spawns the `toolchain_depsmgr` sub-agent (via the dedicated ungated `_EngineServices.run_dependency_manager`, **not** `run_subagent` — holding the tool is the authorization, so the sub-agent is never in any caller's allow-list/roster) which follows the project's `DEPENDENCIES.md`. When that sub-agent reports `status: "dependencies_md_missing"`, the tool returns the same status plus a remediation `message` telling the caller to run the toolchain-setup sub-agent (`toolchain_builder`, which covers every language) first — error-forwarding via the matched tool/sub-agent schemas. |
 
@@ -451,7 +456,7 @@ Both reasons are gone.
 
 The project's build model instead lives in **agent-generated scripts and docs**: the
 single, language-agnostic toolchain-setup sub-agent (`toolchain_builder`, which
-carries the five-script contract in its own body and shares `base_dependencies.md`
+carries the five-script contract in its own body and shares `shared_dependencies.md`
 with `toolchain_depsmgr`, §11) generates five
 per-platform script pairs — `scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`
 — plus two root docs: `DEVELOPMENT.md` (build/check/test how-to) and
@@ -485,7 +490,7 @@ Dependency management remains deliberately unimplemented.
 | [_context.py](../src/kodo/llms/_context.py) | `get_context_window()` | Cross-registry lookup — checks cloud (`model_id`) then local (`name`) so callers with just a resolved key don't need to know which registry it came from. |
 | [_logger.py](../src/kodo/llms/_logger.py) | `LoggingLLMPlugin(LLMPlugin)` | **Decorator** wrapping any `LLMPlugin`; writes `NNNN_request.json`/`NNNN_response.json`. Process-wide counter. |
 | [_tool_logger.py](../src/kodo/llms/_tool_logger.py) | `ToolCallLogger` | Writes per-tool invocation/result JSON; turn counter. Used by the engine, not a plugin. |
-| [_sanitize.py](../src/kodo/llms/_sanitize.py) | `strip_kodo_callouts` | Regex-strips `<kodo_info>`/`<kodo_warn>`/`<kodo_crit>`/`<kodo>` callout tags (incl. their content) from assistant text. These tags are a one-way notification to the human user (§ performance preamble), so their content is never replayed back into the model's own context. Called only by the wire-format builders below and by `runtime/_engine/`'s `render_transcript` (compaction input) — never by anything that persists or renders history, so `session.jsonl`/the WebView still see the tags verbatim. |
+| [_sanitize.py](../src/kodo/llms/_sanitize.py) | `strip_kodo_callouts` | Regex-strips `<kodo_info>`/`<kodo_warn>`/`<kodo_crit>`/`<kodo>` callout tags (incl. their content) from assistant text. These tags are a one-way notification to the human user (§ `shared_callouts.md`), so their content is never replayed back into the model's own context. Called only by the wire-format builders below and by `runtime/_engine/`'s `render_transcript` (compaction input) — never by anything that persists or renders history, so `session.jsonl`/the WebView still see the tags verbatim. |
 | [anthropic/_claude.py](../src/kodo/llms/anthropic/_claude.py) | `ClaudePlugin(LLMPlugin)`, `UnrecoverableError` | **Subclasses** ABC. Uses `anthropic.AsyncAnthropic`; composes `_cache` (breakpoints) + `_retry` (`with_retry_iter`). Enables extended thinking on every call (`thinking={"type": "enabled", "budget_tokens": 4096}`); yields `ThinkingDelta` from the SDK's raw thinking delta and `ThinkingSignature` from its `signature_delta`. Cancellation via per-`stream_id` `asyncio.Event`. |
 | [anthropic/_cache.py](../src/kodo/llms/anthropic/_cache.py) | `build_system_blocks`, `build_message_params`, `_drop_unsigned_thinking`, `_strip_callout_text` | Prompt-cache breakpoint construction. `_drop_unsigned_thinking` strips any persisted `"thinking"` block lacking a `signature` (e.g. one originated by llama.cpp in a mixed-provider session) before it reaches Claude, which rejects unsigned thinking blocks. `_strip_callout_text` runs `_sanitize.strip_kodo_callouts` over every assistant `"text"` block (and bare string content) before it is sent. |
 | [anthropic/_retry.py](../src/kodo/llms/anthropic/_retry.py) | `with_retry`, `with_retry_iter`, `UnrecoverableError`, `RetryExhaustedError` | Exponential backoff (2/8/32s); classifies auth/billing as unrecoverable. |
@@ -504,7 +509,7 @@ events) and *sideways* into its sibling local-inference utilities (§10).
 
 | Module | Defines | Links |
 |---|---|---|
-| [__main__.py](../src/kodo/__main__.py) | `main()` — `python -m kodo` / the packaged `kodo` console script (`pyproject.toml`'s `[project.scripts]`) | Diagnostic CLI, two mutually exclusive commands, each taking a single `AGENT` name: `--system-prompt`/`-p` and `--tools`. `--system-prompt` prints the exact system prompt kodo would send, by calling `AgentRegistry.get(agent, autonomous=False)` — the real render path, not a reimplementation — so preambles/bases/roster/contract are all substituted; tools are *not* in the prompt at all (TOOLS.md §7). `--tools` prints the agent's `tools=[...]` payload exactly as submitted to the OpenAI-compatible client, via `kodo.tools.tools_for_agent(agent.tools)` → `kodo.llms.llamacpp.build_openai_tools()` — the same function `LlamaPlugin.__raw_stream` calls to talk to `llama-server`, factored out so the CLI reproduces production output byte for byte rather than a hand-built copy of the wire shape. A separate `--model`/`-m LLM_ID` (local registry `name` or cloud `model_id`, checked in that order) selects the model for either command; when omitted, `_first_installed_local_model` picks the first installed entry in the local registry (same "installed" definition as `kodo/server/_app.py`'s `_local_entry_installed`), erroring if nothing is installed. `--model` must resolve but changes nothing today for either command: no plugin appends model-specific text to the prompt, and the OpenAI tools shape is the one `LlamaPlugin` builds regardless of which vendor `LLM_ID` resolves to. It exists for planned per-LLM variation. Unknown agent or model → exit 2; the agent is resolved first. No `--autonomous` flag by design. Tests: `test/test_main.py`. |
+| [__main__.py](../src/kodo/__main__.py) | `main()` — `python -m kodo` / the packaged `kodo` console script (`pyproject.toml`'s `[project.scripts]`) | Diagnostic CLI, two mutually exclusive commands, each taking a single `AGENT` name: `--system-prompt`/`-p` and `--tools`. `--system-prompt` prints the exact system prompt kodo would send, by calling `AgentRegistry.get(agent, autonomous=False)` — the real render path, not a reimplementation — so every `{SHARED:…}` block is substituted; tools are *not* in the prompt at all (TOOLS.md §7). `--tools` prints the agent's `tools=[...]` payload exactly as submitted to the OpenAI-compatible client, via `kodo.tools.tools_for_agent(agent.tools)` → `kodo.llms.llamacpp.build_openai_tools()` — the same function `LlamaPlugin.__raw_stream` calls to talk to `llama-server`, factored out so the CLI reproduces production output byte for byte rather than a hand-built copy of the wire shape. A separate `--model`/`-m LLM_ID` (local registry `name` or cloud `model_id`, checked in that order) selects the model for either command; when omitted, `_first_installed_local_model` picks the first installed entry in the local registry (same "installed" definition as `kodo/server/_app.py`'s `_local_entry_installed`), erroring if nothing is installed. `--model` must resolve but changes nothing today for either command: no plugin appends model-specific text to the prompt, and the OpenAI tools shape is the one `LlamaPlugin` builds regardless of which vendor `LLM_ID` resolves to. It exists for planned per-LLM variation. Unknown agent or model → exit 2; the agent is resolved first. No `--autonomous` flag by design. Tests: `test/test_main.py`. |
 
 ---
 
@@ -729,87 +734,147 @@ round-trip).
 
 | Module | Defines | Links |
 |---|---|---|
-| [_loader.py](../src/kodo/subagents/_loader.py) | `SubAgent` (frozen: `name`, `tools: frozenset[str]`, `system_prompt`, `source_path`, `capability`, `display_name`, `subagents`, **`bases: tuple[str, ...]`**, **`subagent_order: tuple[str, ...]`**, **`purpose`**, **`solo: bool`**, **`critic`**, **`standalone: bool`**), `AgentLoadError`, `load_agent()` | Parses `subagent_<name>.md` frontmatter + body. Extracts the **`## Purpose`** body section (caller-agnostic "what this agent does / when to call it"); reads the `solo`/`critic`/`standalone` frontmatter that drives a caller's roster; keeps the `subagents:` allow-list in declaration order as `subagent_order`. |
-| [_subagentspec.py](../src/kodo/subagents/_subagentspec.py) + [specs/](../src/kodo/subagents/specs/) | `SubAgentSpec` (frozen: `name`, `description`, `input_schema`, `output_schema`) + one literal per agent in `specs/_<name>.py`, aggregated as `ALL_SUBAGENTS` | The typed input/output contract of a sub-agent — "a tool with agentic behavior". Every sub-agent **except** the entry agents (`guide`, `problem_solver`) has one. `specs/_shapes.py` holds declarative schema builders (`pipeline_input`/`author_output`/`critic_output`). |
-| [_registry.py](../src/kodo/subagents/_registry.py) | `AgentRegistry` | Loads all `subagent_*.md`, the two mandatory preambles `preamble_security.md` and `preamble_performance.md`, **and any `base_*.md` shared snippets**. **Validates** each agent's `tools:` frontmatter against `ALL_TOOLS` at load time (one `_SPECS_BY_NAME` map) and filters `autonomous_mode == "unavailable"` tools out of the returned tool set when `autonomous=True` — it does **not** describe tools in the prompt (that is the `tools` argument's job, §6). **Renders the `## Subagents` roster from `{PLACEHOLDER:SUBAGENTS}`** (`render_subagents_section()`, public) — description only, **no schemas**: those reach the caller as real JSON Schema on each callee's own `run_subagent_<name>` tool. For an agent with a `SubAgentSpec` (`SUBAGENT_SPECS_BY_NAME`, `spec_for()`), **auto-grants `return_result`** and injects `_INPUT_PARAMETERS_NOTE`, a short fixed pointer (no schema) at where its real task lands. Prepends the preambles (security, then performance), then the agent's referenced bases, then that note. |
+| [_loader.py](../src/kodo/subagents/_loader.py) | `SubAgent` (frozen: `name`, `tools: frozenset[str]`, `system_prompt`, `source_path`, `capability`, `display_name`, `subagents`, **`subagent_order: tuple[str, ...]`**, **`purpose`**, **`role`**, **`critic`**, **`standalone: bool`**), `AgentLoadError`, `load_agent()` | Parses `subagent_<name>.md` frontmatter + body. Extracts the **`## Purpose`** body section, which becomes the agent's `run_subagent_<name>` tool description (hence caller-agnostic, third person); reads the `role`/`critic`/`standalone` frontmatter; keeps the `subagents:` allow-list in declaration order as `subagent_order`. No `bases:`/`callouts:` — shared text is included by `{SHARED:<name>}` in the body instead. |
+| [_subagentspec.py](../src/kodo/subagents/_subagentspec.py) + [specs/](../src/kodo/subagents/specs/) | `SubAgentSpec` (frozen: `name`, `input_schema`, `output_schema` — **no `description`**; the prose is the agent's `## Purpose`) + one literal per agent in `specs/_<name>.py`, aggregated as `ALL_SUBAGENTS` | The typed input/output contract of a sub-agent — "a tool with agentic behavior". Every sub-agent **except** the entry agents (`guide`, `problem_solver`) has one. `specs/_shapes.py` holds declarative schema builders (`pipeline_input`/`author_output`/`critic_output`). |
+| [_registry.py](../src/kodo/subagents/_registry.py) | `AgentRegistry`, `shared_token()`, `SHARED_FILE_PREFIX` | Loads all `subagent_*.md` / `agent_*.md` plus every `shared_*.md` block. **Expands** each agent's `{SHARED:<name>}` tokens in one pass — the only prompt-assembly step there is. **Validates** at construction: `tools:` resolve against `ALL_TOOLS`; every `{SHARED:…}` name exists; `working_rules` + `security` are present; a `modifies_files` grant implies `{SHARED:editing}`; `{SHARED:task_input}` implies a `SubAgentSpec`; a shared file contains no token of its own; every `subagents:` entry resolves and (unless a critic) carries a `## Purpose`. Filters `autonomous_mode == "unavailable"` tools when `autonomous=True`, and **auto-grants `return_result`** to any agent with a `SubAgentSpec` (`SUBAGENT_SPECS_BY_NAME`, `spec_for()`). It does **not** describe tools in the prompt (that is the `tools` argument's job, §6) — including sub-agents: `run_subagent_specs()` builds each callee's tool from that callee's own `## Purpose`. |
 
 **Links:** `_registry` imports `ALL_TOOLS` from `toolspecs`. `get(name,
-autonomous)` returns a `SubAgent` whose prompt is composed as
-**preamble (security, then performance) → bases → Input Parameters note →
-agent body**. Because the system prompt is rebuilt on every turn, the
-preambles (and bases) are always present regardless of context compaction
-(compaction rewrites only the message history). No schema ever appears in this
-prompt — the concrete task (with per-field descriptions pulled from the
-schema, and the sub-agent's only remaining explanation of `return_result`) is
-rendered fresh per call into the first user turn instead
+autonomous)` returns a `SubAgent` whose prompt is its own body with every
+`{SHARED:<name>}` token replaced by the contents of `shared_<name>.md`. That is
+the entire assembly step — nothing is prepended, nothing is appended.
+
+**One mechanism for shared prompt text.** `{SHARED:<name>}` ⇄
+`shared_<name>.md`, and that is the whole rule. It replaced three mechanisms
+that all did the same job by different means: `bases:` frontmatter (prepended),
+*preambles* (appended, two of them gated on a tool grant and a frontmatter
+flag), and a Python constant substituted into a bespoke `{PLACEHOLDER:…}`.
+None of the three let an author see, from the file they were editing, what the
+prompt would actually contain. `SubAgent.bases` and the `callouts:` flag are
+both **gone**: including a block *is* the declaration.
+
+The shipped blocks, and the convention agents follow for placing them:
+
+| Block | Rendered heading | Placement convention |
+|---|---|---|
+| `{SHARED:task_input}` | *(no heading — one paragraph)* | right after the opening identity paragraph |
+| `{SHARED:dependencies}` | `# Dependency Contract` | after `## Purpose`, before the body that executes it |
+| `{SHARED:escalation}` | `# Escalating a Blocker` | first of the closing blocks |
+| `{SHARED:editing}` | `## Changing Files` | closing blocks |
+| `{SHARED:callouts}` | `## Drawing the User's Attention` | closing blocks |
+| `{SHARED:working_rules}` | `## How You Work` | second-to-last |
+| `{SHARED:security}` | `## Absolute Rules` | **always last** |
+
+The rule blocks close a prompt rather than opening it, so a prompt starts on
+the agent's identity and role and ends with the rules that bind them, with
+security both highest-precedence and in the position a long prompt can least
+afford to have skimmed.
+
+**Nothing is auto-appended, so three checks stand in for it.** An agent that
+forgot `{SHARED:security}` would ship with no injection resistance and the only
+symptom would be bad model behavior. So: `AgentRegistry.__validate_shared`
+raises `AgentLoadError` at construction when a prompt omits a block in
+`_REQUIRED_SHARED` (`working_rules`, `security`), when an agent granted a
+`ToolSpec.modifies_files` tool omits `{SHARED:editing}`, when a block name has
+no `shared_*.md`, or when a schema-less agent includes `{SHARED:task_input}`;
+`test_agents.py` re-runs the same rules over every shipped `agent_*.md` /
+`subagent_*.md` so the failure lands at build time; and shared files may not
+contain tokens themselves (checked at load), which makes the single
+substitution pass provably sufficient and rules out include cycles.
+
+Two blocks are deliberately **not** everywhere. `{SHARED:editing}` names
+`edit_file`/`create_file` and belongs only to agents granted such a tool —
+roughly half never write a file (every critic, `investigator`, `compactor`,
+`planner`, `web_search`), and telling a critic how to keep a diff minimal
+contradicts the "use only your granted tools" rule in `{SHARED:security}`.
+`{SHARED:callouts}` reaches only `guide` and `problem_solver`: a sub-agent's
+text is buried in a collapsed subsession block whose open/close callouts the
+*client* synthesizes from the `subsession_start`/`subsession_end` markers
+(`SessionEntryView.tsx`), not the agent.
+
+Because the system prompt is rebuilt on every turn, every block is present
+regardless of context compaction (compaction rewrites only the message
+history). No schema ever appears in this prompt — the concrete task (with
+per-field descriptions pulled from the schema, and the sub-agent's only
+remaining explanation of `return_result`) is rendered fresh per call into the
+first user turn instead
 (`kodo.runtime._engine._subagents._render_task_input`, doc/SESSIONS.md
 "Typed sub-agent interface"). Consumed only by `WorkflowEngine`.
 
-**Shared bases (`bases:` frontmatter):** an agent may list `bases: [<name>, …]`;
-each names a `base_<name>.md` file in the subagents dir whose body is prepended
-(after the preambles, before the agent's own body, which may specialize it).
-`base_*.md` files are **not** globbed as agents (the agent glob stays
-`subagent_*.md`), so they never register as spawnable agents. The registry
-validates every referenced base exists and is non-empty at construction
-(fail-fast, alongside the tool-resolution check). This lets a family of agents
-share one contract without duplication — used by the **dependency contract**
-(`base_dependencies.md`, the `DEPENDENCIES.md` format spec) shared by its *writer*
-(`toolchain_builder`) and its *reader* (`toolchain_depsmgr`), both
-`bases: [dependencies]`, and by the **escalation contract**
-(`base_escalation.md`, when and how to hand a blocker back through
-`return_result`) shared by the eight pipeline authors, each
-`bases: [escalation]` — the prompt half of the `reason`/`options` output fields
-`author_output()` declares (TOOLS.md §5A). (`base_toolchain.md` also existed while four
-language-specific toolchain agents shared the five-script contract; when they
-merged into `toolchain_builder` it had a single consumer and was folded into that
-agent's body.)
+**`{SHARED:task_input}`** is the pointer to where a sub-agent's real task
+lands. Including it is what *opts an agent into* the note, which fixed a
+standing inaccuracy: it used to be injected into every schema-bearing agent,
+`compactor` included, even though `_generate_compaction_summary` seeds that one
+with a bare `"Conversation transcript to compact: …"` message rather than a
+rendered `# Task` + `## Input Parameters` turn. `compactor` therefore includes
+no such block and documents its real input in its own `## Your Input` section.
+A schema-**less** agent including it is a load-time error (it would promise a
+first message that never arrives).
 
-**Sub-agent roster (`{PLACEHOLDER:SUBAGENTS}`):** a *caller* agent (one with a
-`subagents:` allow-list) may embed `{PLACEHOLDER:SUBAGENTS}`. The registry replaces
-it with a **roster**: a short **intro paragraph** (workflow vs standalone), then a
-table of the invocable sub-agents, then each listed sub-agent's `## Purpose`
-paragraph, all in the caller's allow-list order. The roster is built from the
-**callee** agents' frontmatter + body, so a sub-agent's description lives once with
-it and is reused by every caller (the `## Purpose` text is written
-**caller-agnostic**). Table rules, per callee frontmatter: a `critic: <name>` marks
-an **author**, whose row's **Review** column names the critic the engine runs
-inside its `run_subagent_<name>` call; a `role: critic` agent is absorbed into its
-author's row and gets no row of its own (but still gets a purpose paragraph), since
-no caller ever spawns one. The roster carries **no schemas** — those reach the caller
-as real JSON Schema on the generated tools (doc/TOOLS.md §5A). The **`Kind`** column
-reads `standalone` when the callee declares `standalone: true`, else `workflow` —
-distinguishing on-demand specialists (e.g. `toolchain_builder`, `investigator`) from ordered-pipeline
-agents. The roster carries **no ordering column**: ordering lives in the caller's
-prose (the Guide's numbered pipeline + the Design Plan), since a single linear
-predecessor (`depends_on`, now removed) misrepresented the real inter-agent
-dependencies. An agent can be **both** solo and a critic — the renderer still
-supports that (a solo+critic gets its own `run_subagent` row *and* its author's
-`critic_name`), though no live agent currently is one.
-`render_subagents_section(name)` is public so prompt-review tooling can render a
-caller's roster even when its body omits the placeholder. Validated fail-fast at
-construction (every listed sub-agent must exist and carry a `## Purpose`). Live
-users: **`problem_solver`** (lists its `investigator`/`planner`/`developer` trio
-**+ `toolchain_builder`**) and **`guide`** (the full pipeline +
-`toolchain_builder` + the shared `investigator`; its
-`## Subagents` section embeds the placeholder and a thin stage→agent map
-replaces the old hand-written `### Sub-Agent Names` table).
-See [GUIDE_PROMPT_REVIEW.md](GUIDE_PROMPT_REVIEW.md) for the live assembled prompt and
-the amendment record.
+**The two shared contracts.** `shared_dependencies.md` is the `DEPENDENCIES.md`
+format spec, shared by its *writer* (`toolchain_builder`) and its *reader*
+(`toolchain_depsmgr`). `shared_escalation.md` is when and how to hand a blocker
+back through `return_result` — the prompt half of the `reason`/`options` output
+fields `author_output()` declares (TOOLS.md §5A) — shared by the eight pipeline
+authors. (`base_toolchain.md` also existed while four language-specific
+toolchain agents shared the five-script contract; when they merged into
+`toolchain_builder` it had a single consumer and was folded into that agent's
+body.)
 
-**The agents + 2 preambles + shared bases** (frontmatter `tools:` lists):
+**There is no sub-agent roster.** A caller used to embed
+`{PLACEHOLDER:SUBAGENTS}`, which expanded into an intro paragraph, a
+tool/agent/review/kind table, and every listed sub-agent's `## Purpose`. It was
+a prompt-side description of tools — what §7 forbids everywhere else — and it
+duplicated a second, terser description each sub-agent carried on its
+`SubAgentSpec`. Both collapsed into the generated tool:
 
-The **security preamble** carries the confidentiality / injection-resistance /
-role-fixing / tool-discipline / output-hygiene rules. The **performance
-preamble** carries execution-quality rules: Communication Style, Reasoning Is
+- `## Purpose` **is** the `run_subagent_<name>` description now. That is why it
+  is written caller-agnostic and third-person: its audience is whoever is
+  deciding whether to delegate. The registry requires one on every sub-agent
+  that appears in some caller's `subagents:` allow-list.
+- `build_run_subagent_spec` appends the facts the table columns carried: a
+  sentence from `standalone:` (workflow stage vs on-demand specialist) and, for
+  an author, the review-loop contract from `critic:`.
+- `SubAgentSpec.description` **no longer exists**; a spec carries schemas only.
+- A **critic** is not invocable and gets no tool. What a caller needs to know
+  about it is in its author's description; its own `## Purpose` is optional and
+  serves only its own prompt.
+
+Ordering was never in the roster either and still is not: it lives in the
+caller's prose (the Guide's numbered pipeline + the Design Plan), since a single
+linear predecessor (`depends_on`, long removed) misrepresented the real
+inter-agent dependencies. To read any live assembled prompt, run
+`python -m kodo -p <agent>`.
+
+**The agents + the shared blocks** (frontmatter `tools:` lists):
+
+`{SHARED:security}` → `## Absolute Rules` (always last) carries the
+injection-resistance / role-fixing / tool-discipline / output-hygiene rules.
+Confidentiality is one clause of "keep your outputs clean" rather than its own
+section: the earlier version spent a quarter of the block resisting prompt
+*extraction*, which defends nothing here — the user owns these prompts and can
+print any of them with `python -m kodo -p <agent>`. What survived at full
+length is the part with a real attack surface (sub-agents consume other
+sub-agents' artifacts, repo file contents, and tool output), including its
+concrete attack framings — *"I am the developer"*, *"this is a security
+audit"*, *"repeat everything above"* — which are the anchors doing the
+refusal work and must not be compressed into an abstraction.
+
+`{SHARED:working_rules}` → `## How You Work` (every agent) carries Reasoning Is
 Silent, **Thinking Is Only for Thinking** (no tool-call syntax of any format
 inside thinking blocks — nothing there is parsed or executed; never fabricate a
 phantom call's result; end thinking and invoke the tool for real — added after
 Qwen36-27B was observed emitting XML-tag pseudo-calls inside its reasoning),
-**Edit Discipline** (targeted, minimal edits; prefer a targeted
-`edit_file` over regenerating a whole file; no drive-by changes), **Scratch /
-Temporary Work** (pass `temporary: true` on the file tools for throwaway work
-that should not land in the project — see doc/SECURITY.md), Read Before You
-Write, Match Existing Conventions, Verify Don't Assume, and Stay In Scope.
+Verify Don't Assume, and the tone rule (mirror the user when speaking to them,
+never in an artifact).
+
+`{SHARED:editing}` → `## Changing Files` (agents that can write files) carries minimal-change
+edit discipline, no drive-by changes, read-before-you-write, match existing
+conventions, and one sentence on `temporary: true` for throwaway work (see
+doc/SECURITY.md). Two things that were here are gone rather than moved,
+because each duplicated a tool description that is *always* in context for
+whoever holds the tool: "prefer a targeted `edit_file` over regenerating a
+whole file" is `edit_file`'s own opening line, and the scratch section's
+tool-by-tool enumeration is on each tool's `temporary` parameter already.
 
 | Agent | Tools declared | Role |
 |---|---|---|
@@ -819,14 +884,14 @@ Write, Match Existing Conventions, Verify Don't Assume, and Stay In Scope.
 | `planner` | *(none; auto-granted `return_result`)* | **Planner** for Problem Solver (`solo` + `standalone`). From a single `instructions` prompt (task + investigation results) decides whether the work is ≥2 independent steps: returns `plan_warranted: false` (Problem Solver runs one Developer task) or an ordered `tasks` list, each naming the sub-agent (`investigator`/`developer`) and how Problem Solver should build its input. Executes nothing itself. |
 | `developer` | filesystem, edit_file, create_file, create_directory, read_file, run_command, find_files, find_text_in_files, get_root_paths, toolchain_build, toolchain_deps | **Coder + Test Coder in one** for Problem Solver (`solo` + `standalone`). From free-form `instructions` works out the target behavior, writes production code and behavioral tests, and keeps the project building. No upstream artifacts, no critic loop. It does **not** set up a missing toolchain (that would require a nested subsession spawn, which the single-level subsession model doesn't support); instead it returns `verification` starting with the token `toolchain_not_set_up` and the Problem Solver sets the toolchain up and re-runs it. |
 | `toolchain_builder` | run_command, filesystem, edit_file, create_file, create_directory, find_files, find_text_in_files, get_root_paths, ask_user | **Toolchain-setup** agent (`bases: [dependencies]`), the single, **language-agnostic** replacement for the former `toolchain_python`/`toolchain_cpp`/`toolchain_rust`/`toolchain_typescript` family (merged 2026-07-28; `base_toolchain.md` was folded into its body at the same time). Spawnable by `guide` and `problem_solver` (both entry agents — never by a sub-agent, to avoid nested subsessions). Runs six ordered phases: **detect** the state on disk → **choose** the toolchain → **create** it when absent → write the **five scripts** → write the **docs** → **verify and report**. The task's `mode` is a caller *hint*; the agent classifies bootstrap-vs-convert from disk and returns `mode_used`. On bootstrap it takes the ecosystem's industry-standard stack from a compact **Ecosystem Defaults** table (Python, TypeScript, JavaScript, Rust, C/C++, Go, Java/Kotlin, C#/.NET, Ruby, Swift — anything outside it is still in scope via that ecosystem's most widely adopted equivalents); when two standards genuinely compete it makes **one** batched `ask_user` call with its default listed first, and in autonomous mode takes the default and records it. Outputs the five per-platform script pairs (`scripts/{build,format,static_analysis,test,full_build}.{sh,ps1}`) + `DEVELOPMENT.md` + `DEPENDENCIES.md`, executed by `toolchain_build`/`toolchain_deps` (§8). Key contract rule: **`build` is never a no-op** — a four-rung ladder (distributable package → executable/bundle → compile every target → whole-program syntax/import check) closes the "this language needs no build" trap that the per-language prompts each had to close separately. The old family's deliberate divergences survive as *Ecosystem notes*: C++ bakes warnings-as-errors into `CMakeLists.txt` so every build fails on a warning and `static_analysis` has three mandatory parts; Rust deliberately keeps `build` lenient with all strictness in `static_analysis` (`-D warnings`); TS/JS makes `scripts/` the single source of truth on bootstrap and wraps `package.json` `"scripts"` on convert, and never migrates a JavaScript project to TypeScript on its own initiative (JS is now set up **as JS**, no longer reported out of scope); Python requires a type checker in `static_analysis`; and each manager's dependency-kind collapse is stated honestly rather than invented. Suggest-then-confirm invocation. |
-| `toolchain_depsmgr` | get_root_paths, find_files, read_file, run_command, edit_file, create_file | **Dependency-management** agent (`bases: [dependencies]`). The acting force behind the `toolchain_deps` tool — **not** spawnable via `run_subagent` by anyone (no agent lists it; the tool drives it through the ungated `run_dependency_manager` service). Per run it performs one add/remove/update op by reading and executing the project's `DEPENDENCIES.md`; returns `status: completed/failed/dependencies_md_missing`. Toolchain-agnostic: all language specifics come from `DEPENDENCIES.md`. |
+| `toolchain_depsmgr` | get_root_paths, find_files, read_file, run_command, edit_file, create_file | **Dependency-management** agent (`{SHARED:dependencies}`). The acting force behind the `toolchain_deps` tool — **not** spawnable via `run_subagent` by anyone (no agent lists it; the tool drives it through the ungated `run_dependency_manager` service). Per run it performs one add/remove/update op by reading and executing the project's `DEPENDENCIES.md`; returns `status: completed/failed/dependencies_md_missing`. Toolchain-agnostic: all language specifics come from `DEPENDENCIES.md`. |
 | `narrative_author` | filesystem, edit_file, create_file, create_directory, read_file, ask_user | Solo, user-facing intake. Writes the Narrative and Tech Stack documents directly. |
 | `architect`, `requirements_author`, `functional_designer`, `e2e_test_designer`, `test_designer` | filesystem, edit_file, create_file, create_directory, read_file | Authors (paired with a critic), all carrying `bases: [escalation]` — they escalate a blocker through `return_result`'s `reason`/`summary`/`options`, not through a tool. `coder` and `e2e_test_coder` additionally hold `toolchain_build`/`toolchain_deps`. |
 | `architect_critic`, `requirements_critic`, `functional_design_critic`, `test_design_critic`, `e2e_test_design_critic`, `code_critic`, `e2e_test_code_critic` | read_file (+ the auto-granted `return_result`) | Critics (`role: critic`) — their `return_result` payload *is* the verdict (`{path, accept, concerns, summary}`), which the engine records; the engine alone drives the accept/review flow (§7/§12.1). `test_design_critic` reviews the per-component Test Plan, holding every test to behavior over implementation; `e2e_test_code_critic` reviews the end-to-end suite *as code*, enforcing opaque-box, behavior-and-side-effect assertions over implementation details. |
-| `test_coder` | filesystem, edit_file, create_file, create_directory, read_file (+ `bases: [escalation]`) | Solo author of test code + stubs from the accepted Test Plan (no longer a critic — plan review moved to `test_design_critic`). |
-| `e2e_test_coder` | filesystem, edit_file, create_file, create_directory, read_file, toolchain_build, toolchain_deps (+ `bases: [escalation]`) | Author (paired with `e2e_test_code_critic`) of the product-level end-to-end integration suite (stage 9). Assembles the whole system as a black box behind local mock servers + injected configuration, runs it via `toolchain_build`, and iterates to a clean state before the critic; a genuine system-behavior mismatch is escalated to the guide (`reason: "system_behavior_mismatch"`), not papered over. |
+| `test_coder` | filesystem, edit_file, create_file, create_directory, read_file (+ `{SHARED:escalation}`) | Solo author of test code + stubs from the accepted Test Plan (no longer a critic — plan review moved to `test_design_critic`). |
+| `e2e_test_coder` | filesystem, edit_file, create_file, create_directory, read_file, toolchain_build, toolchain_deps (+ `{SHARED:escalation}`) | Author (paired with `e2e_test_code_critic`) of the product-level end-to-end integration suite (stage 9). Assembles the whole system as a black box behind local mock servers + injected configuration, runs it via `toolchain_build`, and iterates to a clean state before the critic; a genuine system-behavior mismatch is escalated to the guide (`reason: "system_behavior_mismatch"`), not papered over. |
 
-**State:** Loader/registry complete (incl. `bases:` shared snippets **and the `{PLACEHOLDER:SUBAGENTS}` roster from per-agent `## Purpose` + `solo`/`critic`/`standalone` frontmatter**); agent roster present (guided pipeline + `problem_solver` as an orchestrator over its `investigator`/`planner`/`developer` trio + the language-agnostic `toolchain_builder` toolchain-setup agent); every declared tool now has a dispatch handler.
+**State:** Loader/registry complete (incl. `{SHARED:<name>}` inclusion **and per-agent `run_subagent_<name>` tools built from `## Purpose` + `critic`/`standalone` frontmatter**); agent roster present (guided pipeline + `problem_solver` as an orchestrator over its `investigator`/`planner`/`developer` trio + the language-agnostic `toolchain_builder` toolchain-setup agent); every declared tool now has a dispatch handler.
 
 ---
 

@@ -18,10 +18,6 @@ __all__ = ["TEST_CODER"]
 
 TEST_CODER: SubAgentSpec = SubAgentSpec(
     name="test_coder",
-    description=(
-        "Solo author: writes the test code and minimal production stubs for a component from the "
-        "accepted Test Plan (all tests failing — the TDD starting state)."
-    ),
     input_schema=pipeline_input(
         input_paths="The Test Plan, the Functional Design, the Tech Stack, and the requirements.",
         require_responsibility=True,

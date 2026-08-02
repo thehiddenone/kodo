@@ -176,4 +176,5 @@ SCAFFOLD_NEW_PROJECT: ToolSpec = ToolSpec(
         "scaffolded": "always",
         "already_scaffolded": "always",
     },
+    modifies_files=True,
 )

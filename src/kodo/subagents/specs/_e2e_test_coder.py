@@ -20,11 +20,6 @@ __all__ = ["E2E_TEST_CODER"]
 
 E2E_TEST_CODER: SubAgentSpec = SubAgentSpec(
     name="e2e_test_coder",
-    description=(
-        "Implements and runs the product-level end-to-end integration suite from the accepted "
-        "End-to-End Test Plan: harness assembling the whole system as a black box, local mock "
-        "servers for external dependencies, configuration injection, and behavioral assertions."
-    ),
     input_schema=pipeline_input(
         input_paths=(
             "The End-to-End Test Plan (inventory + Mock Specifications + scenarios), the "

@@ -10,7 +10,6 @@ __all__ = ["E2E_TEST_DESIGNER"]
 
 E2E_TEST_DESIGNER: SubAgentSpec = SubAgentSpec(
     name="e2e_test_designer",
-    description="Produces the End-to-End Test Plan against mocked external dependencies.",
     input_schema=pipeline_input(
         input_paths=(
             "The architecture (Part 3 verdict + seams), requirements, Narrative, Tech Stack, "

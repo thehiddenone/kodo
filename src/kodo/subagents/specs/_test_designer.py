@@ -10,7 +10,6 @@ __all__ = ["TEST_DESIGNER"]
 
 TEST_DESIGNER: SubAgentSpec = SubAgentSpec(
     name="test_designer",
-    description="Produces the per-component Test Plan of behavioral test entries.",
     input_schema=pipeline_input(
         input_paths=(
             "Must include this component's Functional Design, the requirements, and the Tech Stack."

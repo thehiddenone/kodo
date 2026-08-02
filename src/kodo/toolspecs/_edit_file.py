@@ -192,4 +192,5 @@ EDIT_FILE: ToolSpec = ToolSpec(
     },
     output_visibility={"status": "always", "path": "always", "feedback": "visible"},
     requires_project=False,
+    modifies_files=True,
 )

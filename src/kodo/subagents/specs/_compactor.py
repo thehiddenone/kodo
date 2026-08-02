@@ -9,7 +9,6 @@ __all__ = ["COMPACTOR"]
 
 COMPACTOR: SubAgentSpec = SubAgentSpec(
     name="compactor",
-    description="Summarises a conversation transcript into a compact handoff briefing.",
     input_schema={
         "type": "object",
         "properties": {

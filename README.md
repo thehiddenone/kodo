@@ -1,5 +1,9 @@
 # Kōdo
 
+<div style="display: flex; justify-content: center; margin: 20px 0;">
+    <center><img src="images/kodo256px.svg" width="100%" height="256px" alt="Kodo"/></center>
+</div>
+
 [![Kodo CI](https://github.com/thehiddenone/kodo/actions/workflows/ci.yml/badge.svg)](https://github.com/thehiddenone/kodo/actions/workflows/ci.yml)
 
 **Kōdo** (コード) is a build system that converts natural language into working code through a multi-agent LLM workflow — designed from the ground up to run on your own hardware, model included. That's the pitch. How much of it actually holds up today, versus how much is still a plan with code attached, is spelled out plainly in [Status](#status) at the bottom — read that before you get your hopes up.

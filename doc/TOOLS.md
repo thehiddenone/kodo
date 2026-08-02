@@ -98,6 +98,7 @@ FINALIZE_PROJECT: ToolSpec = ToolSpec(
     security_impact=SecurityImpact.LOW,    # engine-side gating only (§8)
     input_visibility={}, output_visibility={"status": "always"},
     autonomous_mode=None,                  # per-mode behavior (see §8)
+    modifies_files=False,                  # prompt assembly only (see below)
 )
 ```
 
@@ -109,10 +110,17 @@ Crucially, **not all fields reach the LLM the same way:**
 - `output_schema` → reaches the model **only** through `description`, as the
   dense sketch `tool_description()` appends (see §7). An LLM tool definition has
   no output-schema field.
-- `external_name`, `security_impact`, `autonomous_mode`, `user_description` →
-  never seen by the model. `external_name`/`user_description` label **UI events**
-  (`agent.tool_call`); `security_impact` drives engine-side gating;
-  `autonomous_mode` drives per-mode tool filtering.
+- `external_name`, `security_impact`, `autonomous_mode`, `user_description`,
+  `modifies_files` → never seen by the model.
+  `external_name`/`user_description` label **UI events** (`agent.tool_call`);
+  `security_impact` drives engine-side gating; `autonomous_mode` drives
+  per-mode tool filtering; `modifies_files` says a successful call can create,
+  change, or delete files in the project tree, and is read only by
+  `AgentRegistry` to decide whether an agent's prompt gets the shared
+  `## Changing Files` block (INTERNALS.md). It is **not** a security signal —
+  that is `security_impact` — and it is declared per spec rather than inferred
+  from a name list, so a new file-touching tool cannot silently miss the
+  editing discipline.
 
 Because `description` is the single prose channel, it must carry everything the
 model needs to *route* to this tool over a neighbouring one — that is why the
@@ -362,9 +370,11 @@ the same flag:
   there ever earns a checkpoint, an undo/rollback entry, or a Guided
   `new_revision` attribution.
 
-Agents are told when to reach for this in `preamble_performance.md`'s
-"Scratch / Temporary Work" section: throwaway notes, intermediate files, and
-working copies that should never land in the project.
+Agents are told when to reach for this in `shared_editing.md`'s closing
+paragraph — throwaway notes, intermediate files, and working copies that should
+never land in the project — which reaches only agents holding a
+`modifies_files` tool. The per-tool detail lives on each tool's own
+`temporary` parameter description, which is where an agent actually reads it.
 
 **Discovering the directory itself.** `get_root_paths` also takes an optional
 `temporary: true` input ([toolspecs/_get_root_paths.py](../src/kodo/toolspecs/_get_root_paths.py),
@@ -459,8 +469,9 @@ only remaining prose explanation of `return_result` (the tool's own
 Why render values instead of baking them into the system prompt: the
 `AgentRegistry.get` system prompt is agent-*type*-scoped and does not vary by
 call, which lets a local `llama.cpp`-served model reuse the KV cache for the
-shared prefix (preambles + bases + note + body) across every spawn of the same
-sub-agent. Only the first user turn — necessarily per-call, since it carries
+whole rendered prompt across every spawn of the same sub-agent. Which
+`{SHARED:…}` blocks an agent includes is fixed in its `.md`, so nothing about
+the prompt varies per call. Only the first user turn — necessarily per-call, since it carries
 this call's actual values — varies.
 
 ### The canonical form
@@ -520,8 +531,9 @@ when the decision is between discrete alternatives.
 The fields are built by
 [`author_output()`](../src/kodo/subagents/specs/_shapes.py) and reach the model
 on `return_result`'s `result` parameter like everything else. The prompt half is
-the shared `base_escalation.md` snippet, opted into per agent through
-`bases: escalation` — the two must ship together, and a test asserts they do.
+the shared `shared_escalation.md` block, opted into per agent by including
+`{SHARED:escalation}` in its body — the two must ship together, and a test
+asserts they do.
 Only `summary` is *schema*-required for such an author: one blocked before it
 wrote anything has no `primary_path`, and a backfilled required field would mark
 the escalation `schema_compliance: false` — the engine's "this sub-agent failed"
@@ -702,9 +714,8 @@ question's first option (the agent's own stated best guess), a `multi_choice`
 question's `free_text` set to a fixed notice telling the agent nobody is there
 and it should decide for itself — instead of firing `fire_questions` and
 blocking. This is deliberate: agent prompts call `ask_user` unconditionally and
-never branch on mode themselves (see `preamble_performance.md`'s "Asking the
-User Questions" section for how they're expected to read a synthesized
-answer). The former `request_user_review_artifact` used the same idea before
+never branch on mode themselves (see `ASK_USER.description` and its `answers`
+output description for how they're expected to read a synthesized answer). The former `request_user_review_artifact` used the same idea before
 it moved into the engine outright: `_finalize_document` (triggered by
 `_record_review_verdict` when a critic returns `accept: true`, not by a
 dispatched tool) checks `effective_autonomous` itself and either auto-accepts
@@ -883,9 +894,9 @@ never touches the gate at all and returns a synthesized answer immediately.
 `ask_user` carries a **question batch** — every open question about the
 agent's current topic in one call, each with the candidate answers the agent
 derived itself (top choice first; the client appends the free-text option, so
-specs never include an "Other"). The discipline lives in
-`preamble_performance.md` ("Asking the User Questions"), shared by every
-agent, not in per-agent prompts. The client renders the batch as an
+specs never include an "Other"). The discipline lives in the spec's own
+`description` — so it reaches exactly the four agents granted the tool, not
+every agent — and not in per-agent prompts. The client renders the batch as an
 interactive **in-feed question panel** rather than a tool-call card (the
 engine suppresses `agent.tool_call`/`agent.tool_call_detail` for `ask_user`):
 the user navigates the boxes, revises selections freely, and answers land

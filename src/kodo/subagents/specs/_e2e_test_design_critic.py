@@ -10,7 +10,6 @@ __all__ = ["E2E_TEST_DESIGN_CRITIC"]
 
 E2E_TEST_DESIGN_CRITIC: SubAgentSpec = SubAgentSpec(
     name="e2e_test_design_critic",
-    description="Reviews the End-to-End Test Plan for behavioral, in-scope, well-mocked scenarios.",
     input_schema=pipeline_input(
         input_paths=(
             "The End-to-End Test Plan under review, plus the architecture, requirements, "

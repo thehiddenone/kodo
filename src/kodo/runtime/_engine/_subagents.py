@@ -429,7 +429,7 @@ class SubagentMixin:
         Ungated by design: the tool's possession is the authorization, so the
         fixed ``toolchain_depsmgr`` agent is driven straight through
         :meth:`_spawn_subagent` without an allow-list check and without sitting
-        in any caller's ``subagents:`` roster — keeping every dependency change on
+        in any caller's ``subagents:`` allow-list — keeping every dependency change on
         the single ``toolchain_deps`` path (which alone knows how to translate a
         missing ``DEPENDENCIES.md`` into a remediation message).
 

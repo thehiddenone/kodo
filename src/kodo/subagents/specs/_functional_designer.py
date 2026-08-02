@@ -10,7 +10,6 @@ __all__ = ["FUNCTIONAL_DESIGNER"]
 
 FUNCTIONAL_DESIGNER: SubAgentSpec = SubAgentSpec(
     name="functional_designer",
-    description="Produces the Design Plan (DAG, direction, order) and per-codename designs.",
     input_schema=pipeline_input(
         input_paths="Must include the architecture, requirements, Narrative, and Tech Stack.",
     ),

@@ -25,11 +25,6 @@ __all__ = ["INVESTIGATOR"]
 
 INVESTIGATOR: SubAgentSpec = SubAgentSpec(
     name="investigator",
-    description=(
-        "Read-only investigator: answers from settled knowledge, explores existing code, "
-        "and/or searches the web to answer specific questions (qa mode) or produce a full "
-        "investigative report (report mode)."
-    ),
     input_schema={
         "type": "object",
         "properties": {

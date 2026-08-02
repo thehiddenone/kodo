@@ -10,9 +10,6 @@ __all__ = ["TEST_DESIGN_CRITIC"]
 
 TEST_DESIGN_CRITIC: SubAgentSpec = SubAgentSpec(
     name="test_design_critic",
-    description=(
-        "Reviews the per-component Test Plan, holding every test to behavior over implementation."
-    ),
     input_schema=pipeline_input(
         input_paths=(
             "The Test Plan under review, plus this component's Functional Design, the "

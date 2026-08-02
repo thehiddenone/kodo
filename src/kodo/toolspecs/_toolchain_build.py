@@ -154,4 +154,6 @@ TOOLCHAIN_BUILD: ToolSpec = ToolSpec(
         "test_selector": "always",
     },
     output_visibility={"success": "always", "steps": "visible"},
+    # The `format` step rewrites source in place.
+    modifies_files=True,
 )

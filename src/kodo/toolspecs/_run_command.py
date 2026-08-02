@@ -107,4 +107,5 @@ RUN_COMMAND: ToolSpec = ToolSpec(
     },
     output_visibility={"exit_code": "always", "stdout": "visible", "stderr": "visible"},
     requires_project=False,
+    modifies_files=True,
 )

@@ -1,7 +1,7 @@
 """Stripping of one-way user-notification tags from LLM-bound context.
 
 The four kodo callout tags (``<kodo_info>``, ``<kodo_warn>``, ``<kodo_crit>``,
-``<kodo>``, see ``subagents/preamble_performance.md``) are direct, one-way
+``<kodo>``, see ``subagents/shared_callouts.md``) are direct, one-way
 messages an agent sends to the human user and are rendered specially by the
 WebView. The model has no use for its own past notifications played back to
 it as context, so their content is removed from any text built for an

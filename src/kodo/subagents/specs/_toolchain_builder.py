@@ -9,12 +9,6 @@ __all__ = ["TOOLCHAIN_BUILDER"]
 
 TOOLCHAIN_BUILDER: SubAgentSpec = SubAgentSpec(
     name="toolchain_builder",
-    description=(
-        "Sets up the five standard build scripts + DEVELOPMENT.md (and DEPENDENCIES.md "
-        "when the project has dependencies) for a project in any language: detects the "
-        "existing toolchain and builds on it, or creates one with the ecosystem's "
-        "industry-standard tools when none exists."
-    ),
     input_schema={
         "type": "object",
         "properties": {

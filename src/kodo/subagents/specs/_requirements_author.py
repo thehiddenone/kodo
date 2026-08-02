@@ -10,7 +10,6 @@ __all__ = ["REQUIREMENTS_AUTHOR"]
 
 REQUIREMENTS_AUTHOR: SubAgentSpec = SubAgentSpec(
     name="requirements_author",
-    description="Writes the structured per-responsibility requirements document.",
     input_schema=pipeline_input(
         input_paths="Must include the architecture and the Narrative (for the North Star).",
     ),

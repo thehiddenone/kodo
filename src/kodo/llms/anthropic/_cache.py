@@ -102,7 +102,7 @@ def _strip_callout_text(content: list[dict[str, object]]) -> list[dict[str, obje
     """Strip kodo callout tags from an assistant message's ``text`` blocks.
 
     The four callout tags are one-way notifications to the human user (see
-    ``subagents/preamble_performance.md``); their content must never be
+    ``subagents/shared_callouts.md``); their content must never be
     replayed back into the model's own context.
     """
     for block in content:

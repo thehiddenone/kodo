@@ -1,0 +1,1 @@
+Your task arrives as your first message: free-form `instructions`, followed by an **Input Parameters** section listing every other value you were given — the last part of that message, with a reminder there of how to return your result.

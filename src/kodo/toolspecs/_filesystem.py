@@ -188,4 +188,5 @@ FILESYSTEM: ToolSpec = ToolSpec(
         "destination": "always",
     },
     requires_project=False,
+    modifies_files=True,
 )

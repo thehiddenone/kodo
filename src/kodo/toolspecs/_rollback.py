@@ -52,4 +52,5 @@ ROLLBACK: ToolSpec = ToolSpec(
     input_visibility={"intent": "always", "root": "always", "target_sha": "always"},
     output_visibility={"status": "always"},
     requires_project=True,
+    modifies_files=True,
 )

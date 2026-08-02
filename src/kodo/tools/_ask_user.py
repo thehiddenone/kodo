@@ -37,7 +37,8 @@ _QUESTION_KINDS = ("single_choice", "multi_choice")
 # Returned as a multi_choice question's free_text when the session is
 # autonomous (no one to answer). Distinct from a real user's free text so an
 # agent reading it recognizes it as an instruction to decide for itself, not a
-# genuine preference — see the "Asking the User Questions" preamble section.
+# genuine preference — see ``ASK_USER.description`` and its ``answers`` output
+# description, which is where the questioning discipline lives.
 _AUTONOMOUS_MULTI_CHOICE_NOTICE = (
     "User is away and cannot answer this question — choose whichever "
     "option(s) fit best in your own judgment, and proceed."

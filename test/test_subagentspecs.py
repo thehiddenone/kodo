@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from kodo.subagents import AgentRegistry
+from kodo.subagents import AgentRegistry, shared_token
 from kodo.subagents.specs import ALL_SUBAGENTS, SubAgentSpec
 from kodo.toolspecs import normalize_output
 
@@ -50,7 +50,11 @@ def test_entry_agents_have_no_spec() -> None:
 @pytest.mark.parametrize("spec", ALL_SUBAGENTS, ids=lambda s: s.name)
 def test_schemas_are_well_formed(spec: SubAgentSpec) -> None:
     assert isinstance(spec, SubAgentSpec)
-    assert spec.name and spec.description
+    # A spec carries schemas and nothing else. The caller-facing prose lives in
+    # the agent's own `## Purpose`, which becomes its run_subagent tool's
+    # description — one text, one destination.
+    assert spec.name
+    assert not hasattr(spec, "description")
     assert spec.input_schema.get("type") == "object"
     out = spec.output_schema
     branches = out.get("oneOf")
@@ -94,36 +98,39 @@ def test_every_critic_declares_the_shared_verdict_shape() -> None:
 def _escalation_capable_names() -> set[str]:
     """Agents that may escalate, read off the live registry.
 
-    The marker is the shared ``base_escalation.md`` snippet in an agent's
-    ``bases:`` frontmatter — an explicit per-agent declaration, never inferred
-    from the agent's name or role. Derived here rather than hardcoded so this
-    file cannot drift from which agents actually carry the contract.
+    The marker is a ``{SHARED:escalation}`` inclusion in the agent's own body —
+    an explicit per-agent declaration, never inferred from the agent's name or
+    role. Read off the raw ``.md`` (the registry's rendered prompt has already
+    expanded the token away), so this file cannot drift from which agents
+    actually carry the contract.
     """
-    registry = AgentRegistry(_AGENTS_DIR)
+    token = shared_token("escalation")
     return {
-        name for name in _agent_names() - _ENTRY_AGENTS if "escalation" in registry.get(name).bases
+        name
+        for name in _agent_names() - _ENTRY_AGENTS
+        if token in (_AGENTS_DIR / f"subagent_{name}.md").read_text(encoding="utf-8")
     }
 
 
 def test_escalation_is_declared_in_the_prompt_and_the_schema_together() -> None:
     """A blocked author escalates through ``return_result`` (there is no
     ``escalate_blocker`` tool), so the two halves must ship together: the
-    ``bases: escalation`` prompt section explaining when and how, and the
+    ``{SHARED:escalation}`` prompt block explaining when and how, and the
     ``reason``/``options`` fields on the output schema it tells the agent to
     set. Either half alone is inert."""
     escalators = _escalation_capable_names()
     assert escalators, "no agent declares the escalation base; the contract has no holders"
     for name in escalators:
         props = _SPECS_BY_NAME[name].output_schema["properties"]  # type: ignore[index]
-        assert "reason" in props, f"{name} loads the escalation base but declares no reason field"
-        assert "options" in props, f"{name} loads the escalation base but declares no options field"
+        assert "reason" in props, f"{name} includes the escalation block but has no reason field"
+        assert "options" in props, f"{name} includes the escalation block but has no options field"
     # The reverse. Keyed on the ``reason`` + ``options`` *pair*, because
     # ``reason`` alone is not the marker: ``planner`` has an unrelated one
     # ("why a plan is or isn't warranted") that has nothing to do with blockers.
     for name, spec in _SPECS_BY_NAME.items():
         props = spec.output_schema["properties"]
         if {"reason", "options"} <= set(props):  # type: ignore[arg-type]
-            assert name in escalators, f"{name} declares the escalation fields but no base"
+            assert name in escalators, f"{name} declares the escalation fields but no block"
 
 
 def test_an_escalating_author_can_produce_a_compliant_result() -> None:
@@ -246,12 +253,22 @@ def test_engine_owned_compliance_key_does_not_mask_a_real_violation() -> None:
     assert normalized["schema_compliance"] is False
 
 
+# The one schema-bearing agent the engine does *not* seed through
+# `_render_task_input`: `_generate_compaction_summary` hands it a bare
+# "Conversation transcript to compact: …" user message, so the Input Parameters
+# note would describe a first message it never receives. It documents its real
+# input itself, in its own `## Your Input` section.
+_NO_TASK_INPUT_NOTE = {"compactor"}
+
+
 def test_registry_auto_grants_return_result_and_input_parameters_note() -> None:
     registry = AgentRegistry(_AGENTS_DIR)
     for name in _SPECS_BY_NAME:
         agent = registry.get(name)
         assert "return_result" in agent.tools, name
-        assert "Input Parameters" in agent.system_prompt, name
+        expected = name not in _NO_TASK_INPUT_NOTE
+        assert ("Input Parameters" in agent.system_prompt) is expected, name
+        assert "{PLACEHOLDER:" not in agent.system_prompt, name
         assert "## Your Task Contract" not in agent.system_prompt, name
         assert "input_schema" not in agent.system_prompt, name
 
@@ -265,15 +282,20 @@ def test_registry_leaves_entry_agents_without_return_result() -> None:
         assert "## Your Task Contract" not in agent.system_prompt, name
 
 
-def test_guide_roster_does_not_restate_callee_schemas() -> None:
-    """Schemas reach the caller as real JSON Schema on each
-    ``run_subagent_<name>`` tool, so the roster must not carry a second, prose
-    copy that cannot stay in sync with it."""
+def test_guide_prompt_does_not_describe_its_subagents() -> None:
+    """Everything about a sub-agent reaches the guide on the tool that invokes
+    it — never in the prompt. The ``{PLACEHOLDER:SUBAGENTS}`` roster that used to
+    restate it there is gone; this pins that it stays gone."""
     registry = AgentRegistry(_AGENTS_DIR)
-    section = registry.render_subagents_section("guide")
-    assert "Input schema" not in section
-    assert "Output schema" not in section
-    assert "for_revision_path" not in section
+    prompt = registry.get("guide").system_prompt
+    assert "PLACEHOLDER" not in prompt
+    assert "| Sub-agent |" not in prompt  # the roster table's header
+    # The real property: no callee's own description is restated in the prompt.
+    # It reaches the guide on the tool, and only there.
+    for name in registry.allowed_subagents("guide"):
+        purpose = registry.get(name).purpose
+        if purpose:
+            assert purpose.splitlines()[0] not in prompt, name
 
 
 def test_callee_schemas_reach_the_guide_through_its_tools() -> None:

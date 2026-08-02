@@ -159,12 +159,12 @@ def test_local_and_cloud_ids_render_the_same_prompt(
 def test_output_is_the_fully_rendered_prompt_not_a_raw_file(
     kodo_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Preambles prepended, every placeholder substituted."""
+    """Every ``{SHARED:…}`` block expanded, no token of any kind left behind."""
     _, out, _ = _run(capsys, "--system-prompt", _PINNED_AGENT, "--model", _cloud_id())
-    security = (_REAL_AGENTS_DIR / "preamble_security.md").read_text(encoding="utf-8")
-    performance = (_REAL_AGENTS_DIR / "preamble_performance.md").read_text(encoding="utf-8")
-    assert security in out
-    assert performance in out
+    for name in ("security", "working_rules"):
+        block = (_REAL_AGENTS_DIR / f"shared_{name}.md").read_text(encoding="utf-8").strip()
+        assert block in out, name
+    assert "{SHARED:" not in out
     assert "{PLACEHOLDER" not in out
 
 

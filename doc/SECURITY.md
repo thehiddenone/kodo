@@ -124,8 +124,9 @@ exemption is symmetric on the checkpoint side:
 mirror snapshot/commit outright for a `temporary` call, so nothing there ever
 earns a checkpoint, an undo/rollback entry, or a Guided `new_revision`
 attribution — the scratch directory sits outside every project's git mirror
-by construction. See doc/TOOLS.md and `preamble_performance.md`'s "Scratch /
-Temporary Work" section for the agent-facing contract.
+by construction. See doc/TOOLS.md, each tool's own `temporary` parameter
+description, and `shared_editing.md`'s closing paragraph for the
+agent-facing contract.
 
 `get_root_paths` surfaces this same directory's path (via `temporary: true`)
 without itself being a mutating call, so it is simply `NONE`-impact and

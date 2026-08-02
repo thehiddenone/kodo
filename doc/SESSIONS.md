@@ -358,7 +358,7 @@ The registry auto-grants such agents the terminal `return_result` tool and a
 short, fixed note pointing at where its real task lands (no schema, no
 per-agent detail — see `_registry.py`'s `_INPUT_PARAMETERS_NOTE`, which
 replaced the old `## Your Task Contract` section); a caller's
-`{PLACEHOLDER:SUBAGENTS}` roster renders every callee's description but no
+each `run_subagent_<name>` tool carries its callee's description but no
 schemas either — those reach the caller as real JSON Schema on its own
 `run_subagent_<name>` tool.
 

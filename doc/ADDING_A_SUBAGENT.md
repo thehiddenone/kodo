@@ -22,12 +22,38 @@ A new sub-agent named `foo` needs **all** of these, or the registry raises
      `kodo.toolspecs`). For an **author** add `critic: <critic_name>`; for a
      **critic** add `role: critic`; for an on-demand specialist add
      `standalone: true`. An agent that is simply invoked and returns declares
-     none of them.
-   - Body **must** contain a `## Purpose` section (caller-agnostic, third person)
-     — the registry renders it into every caller's `{PLACEHOLDER:SUBAGENTS}`
-     roster and **fails fast if it's missing**. Do **not** write a `## Tools`
-     section: granted tools are never described in the prompt, only in the LLM
-     `tools` argument (see [TOOLS.md](TOOLS.md) §7).
+     none of them. There is no frontmatter for shared prompt text — see the
+     `{SHARED:…}` list below.
+   - Body **must** contain a `## Purpose` section (caller-agnostic, third
+     person). It becomes the **description of your agent's
+     `run_subagent_foo` tool** — the only thing a caller ever reads about it —
+     so write it for whoever is deciding whether to delegate. The registry
+     fails fast if an agent in some caller's `subagents:` list has none. Do
+     **not** write a `## Tools` section: granted tools are never described in
+     the prompt, only in the LLM `tools` argument ([TOOLS.md](TOOLS.md) §7).
+   - Body **must** include the shared blocks it needs, via `{SHARED:<name>}` →
+     `shared_<name>.md`. That one token is the *only* mechanism; there is no
+     `bases:`, no `callouts:`, no auto-append. What to include:
+     - `{SHARED:working_rules}` and `{SHARED:security}` — **mandatory**, in that
+       order, as the last two things in the file. Construction fails without
+       them, and so does `test_agents.py`.
+     - `{SHARED:editing}` — **mandatory if** you granted any tool whose
+       `ToolSpec.modifies_files` is true; forbidden otherwise, since it names
+       tools you weren't given.
+     - `{SHARED:task_input}` — the pointer saying the real task arrives as the
+       first message. Include it (conventionally its own paragraph right after
+       the opening identity paragraph). Omit it only if the engine seeds your
+       agent some way other than `_render_task_input` — today only `compactor`,
+       which describes its real input itself.
+     - `{SHARED:escalation}` — if your agent can hand a blocker back; pairs with
+       `author_output(...)` (see below).
+     - `{SHARED:dependencies}` — if your agent reads or writes `DEPENDENCIES.md`.
+     - `{SHARED:callouts}` — entry agents only. A sub-agent runs inside a
+       subsession block where its text is collapsed and the block's own
+       open/close callouts are drawn by the client.
+   - Do **not** restate anything a shared block or a tool description already
+     says (minimal edits, silent reasoning, injection resistance, the
+     `ask_user` discipline).
 2. **Spec** — `src/kodo/subagents/specs/_foo.py`
    - One module-level `SubAgentSpec` constant (e.g. `FOO`), mirroring the
      one-literal-per-file `toolspecs` convention.
@@ -42,7 +68,7 @@ A new sub-agent named `foo` needs **all** of these, or the registry raises
    - `author_output(...)` also declares the **escalation** fields
      (`reason`/`options`, with `summary` doing double duty) and requires only
      `summary`, so a blocked author can return a compliant escalation. Pair it
-     with `bases: [escalation]` in the frontmatter — the schema half without the
+     with `{SHARED:escalation}` in the body — the schema half without the
      prompt half is inert, and a test in `test_subagentspecs.py` fails if you
      ship one without the other. See doc/TOOLS.md §5A.
    - Every critic returns the **same** shape (`critic_output()` takes no
@@ -78,30 +104,38 @@ tool — it takes an optional `max_rounds` and returns a `review` block — and 
 engine spawns the critic inside that call. A caller never names a critic, never
 gets a tool for one, and never iterates by hand (doc/TOOLS.md §5A).
 
-Roster rendering (`_registry.py`): every non-critic in the allow-list gets a row
-naming its `run_subagent_<name>` tool, with the **Review** column showing its
-critic or `none — single pass`. A critic is absorbed into its author's row and
-gets no row of its own — but still gets a `## Purpose` paragraph, so the caller
-knows what the review will hold its output to. The roster carries **no schemas**:
-those live on the tools.
+Tool generation (`_registry.py`): every non-critic in the allow-list gets a
+`run_subagent_<name>` tool whose description is that agent's own `## Purpose`,
+plus a sentence saying whether it is a workflow stage or a standalone
+specialist, plus — for an author — the review-loop contract naming its critic.
+A critic gets no tool at all; what a caller needs to know about it is in its
+author's description. **Nothing about a sub-agent is written into a caller's
+prompt** — there is no roster.
 
 ## Pipeline placement (guide prompt)
 
 If `foo` is a pipeline stage (not `standalone`), update **`agent_guide.md`**:
 the numbered **"The Pipeline You Run"** list, the **Stage → agent map** table,
-and any cascade/escalation prose that names the stage. The guide prompt — not
-the roster — is the source of truth for stage order. Keep author and critic
-adjacent in the `subagents:` list so the rendered roster reads naturally.
+and any cascade/escalation prose that names the stage. The guide prompt is the
+source of truth for stage order; a tool description says what its agent does,
+never where it sits in the sequence. Keep author and critic adjacent in the
+`subagents:` list so the generated tools read in pipeline order.
 
 ## Tests
 
 - `test/test_subagentspecs.py` — schema well-formedness + per-critic concern
   enums are auto-parametrized over `ALL_SUBAGENTS`, so a new critic is covered
   for free; add a focused test if it has notable kinds.
-- `test/test_agents.py::test_real_guide_roster_reproduces_pipeline_pairs`
-  asserts specific roster rows — update it when you change a pairing.
-- Both build `AgentRegistry(_REAL_AGENTS_DIR)`, which is the real fail-fast check
-  that every `## Purpose`, tool, base, and roster reference resolves.
+- `test/test_agents.py::test_shipped_guide_tools_carry_every_pipeline_pairing`
+  checks each author's tool names its critic — update it when you change a
+  pairing.
+- `test/test_agents.py` also parametrizes a scan over **every** shipped
+  `agent_*.md` / `subagent_*.md`: required blocks present, security last, no
+  unknown block, editing-block-iff-write-tools, no retired `bases:`/`callouts:`
+  /`{PLACEHOLDER:…}`. That is where a forgotten token should fail — at build
+  time, not on a running server.
+- Both build `AgentRegistry(_REAL_AGENTS_DIR)`, the last-resort runtime copy of
+  the same checks.
 
 ## Run / verify
 
@@ -114,16 +148,15 @@ PYTHONPATH=src python3 -c "from pathlib import Path; from kodo.subagents import 
 ruff check src/kodo/subagents/specs/
 ```
 
-Then **read the prompt your agent will actually receive** — the rendered article,
-with the preambles, any `bases:` snippets, the `{PLACEHOLDER:SUBAGENTS}` roster
-and the Input Parameters note all substituted:
+Then **read the prompt your agent will actually receive** — your body with every
+`{SHARED:…}` token expanded in place:
 
 ```bash
 PYTHONPATH=src python3 -m kodo --system-prompt foo --model claude-opus-5
 ```
 
-This is the fastest way to catch a placeholder that never got filled or a
-roster row that reads wrong. It will **not** show your concrete task or its
+This is the fastest way to see the blocks land where you meant them to. It
+will **not** show your concrete task or its
 schema — no schema is ever restated in a sub-agent's own prompt (input or
 output). The input schema reaches a *caller* as real JSON Schema on
 `run_subagent_foo`; the sub-agent itself sees concrete values, per-field
@@ -156,7 +189,7 @@ behavioral review was split out of `test_coder` into the new
 - **Hunt every mention**: `grep -rn` the old agent name across `src` **and**
   `doc` and `test`. Update the guide pipeline, the INTERNALS agent-tools table,
   any `oneOf`/dual-role comments in `toolspecs/_compliance.py`, escalate-blocker
-  example `reason` strings, and roster assertions in `test_agents.py`. Escalate
+  example `reason` strings, and the pairing assertions in `test_agents.py`. Escalate
   `reason` strings and critic `kind`s are free-form (no engine branches on them),
   so they're safe to rename — but stale ones mislead the next reader.
 - **Memory + docs**: update `project_kodo.md` and the doc set in the same change

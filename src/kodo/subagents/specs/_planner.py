@@ -23,11 +23,6 @@ __all__ = ["PLANNER"]
 
 PLANNER: SubAgentSpec = SubAgentSpec(
     name="planner",
-    description=(
-        "Decides whether a task needs a multi-step plan and, if so, returns an ordered list of "
-        "independent Problem-Solver tasks (each naming the sub-agent to run and how to build its "
-        "input); returns plan_warranted=false for anything that collapses to a single step."
-    ),
     input_schema={
         "type": "object",
         "properties": {

@@ -60,20 +60,17 @@ class SubAgent:
         display_name: User-friendly name shown in the UI (e.g. in subsession
             takeover dividers). Falls back to a title-cased ``name`` when the
             frontmatter does not set ``display_name``.
-        bases: Names of shared base snippets (``base_<name>.md`` in the subagents
-            dir) whose bodies are prepended to this agent's prompt at render time,
-            after the global preambles and before the agent's own body. Empty by
-            default. Lets a family of agents (e.g. the toolchain-setup agents)
-            share one contract without duplicating it; the registry validates each
-            reference exists at load time.
         subagent_order: The ``subagents:`` allow-list in declaration order. Same
             membership as :attr:`subagents` (a set, order-free, used for the
-            dispatch gate), but order-preserving so a caller's ``## Subagents``
-            roster table/paragraphs render in the order the author listed them.
+            dispatch gate), but order-preserving so a caller's generated
+            ``run_subagent_<name>`` tools are built in the order the author
+            listed them.
         purpose: Body of this agent's ``## Purpose`` section — a *caller-agnostic*
-            description of what the agent does and when to call it. Empty when the
-            file has no ``## Purpose`` section. The registry renders it into a
-            caller's roster when filling ``{PLACEHOLDER:SUBAGENTS}``.
+            description of what the agent does and when to call it. It becomes
+            the **description of this agent's ``run_subagent_<name>`` tool**, so
+            it is written third-person for whoever is deciding whether to
+            delegate, and the registry requires it on every invocable sub-agent.
+            Empty only for an entry agent or a critic (neither is invocable).
         role: The agent's structural role, from frontmatter ``role:``. Only
             ``"critic"`` is recognized today; everything else (the default ``""``)
             is an ordinary sub-agent. A critic is **not** invocable by a caller —
@@ -93,8 +90,9 @@ class SubAgent:
             demand whenever the need arises, with no upstream dependency on any
             other agent's output. ``False`` (the default) marks a **workflow**
             agent that advances the pre-determined pipeline and consumes the
-            artifacts of the stage before it. Shown as the ``Kind`` column in a
-            caller's roster table.
+            artifacts of the stage before it. Stated as a sentence in the
+            generated ``run_subagent_<name>`` tool's description, since it is
+            what tells a caller whether ordering matters.
     """
 
     name: str
@@ -104,7 +102,6 @@ class SubAgent:
     capability: str = "medium"
     display_name: str = ""
     subagents: frozenset[str] = frozenset()
-    bases: tuple[str, ...] = ()
     subagent_order: tuple[str, ...] = ()
     purpose: str = ""
     role: str = ""
@@ -154,14 +151,6 @@ def load_agent(path: Path) -> SubAgent:
         subagent_order = ()
     subagents: frozenset[str] = frozenset(subagent_order)
 
-    bases_raw = fm_dict.get("bases", [])
-    if isinstance(bases_raw, list):
-        bases: tuple[str, ...] = tuple(str(b) for b in bases_raw)
-    elif isinstance(bases_raw, str):
-        bases = (bases_raw,)
-    else:
-        bases = ()
-
     expected_stems = (f"subagent_{name}", f"agent_{name}")
     if path.stem not in expected_stems:
         raise AgentLoadError(
@@ -204,7 +193,6 @@ def load_agent(path: Path) -> SubAgent:
         capability=capability,
         display_name=display_name,
         subagents=subagents,
-        bases=bases,
         subagent_order=subagent_order,
         purpose=purpose,
         role=role,

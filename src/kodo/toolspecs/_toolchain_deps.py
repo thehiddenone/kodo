@@ -134,4 +134,5 @@ TOOLCHAIN_DEPS: ToolSpec = ToolSpec(
         "commands_run": "visible",
         "files_changed": "visible",
     },
+    modifies_files=True,
 )

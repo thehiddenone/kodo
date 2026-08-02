@@ -10,10 +10,6 @@ __all__ = ["ARCHITECT"]
 
 ARCHITECT: SubAgentSpec = SubAgentSpec(
     name="architect",
-    description=(
-        "Decomposes the product into codenamed responsibilities and determines "
-        "end-to-end testability."
-    ),
     input_schema=pipeline_input(
         input_paths="Must include the accepted Narrative and Tech Stack documents.",
     ),

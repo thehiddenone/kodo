@@ -35,3 +35,7 @@ Preserve, in clear sections, everything the agent needs to continue:
 - Write in plain, professional English. Markdown headings and bullets are encouraged.
 
 Return the briefing as `result.summary` via `return_result`, and nothing more.
+
+{SHARED:working_rules}
+
+{SHARED:security}

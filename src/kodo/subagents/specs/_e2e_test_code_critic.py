@@ -17,10 +17,6 @@ __all__ = ["E2E_TEST_CODE_CRITIC"]
 
 E2E_TEST_CODE_CRITIC: SubAgentSpec = SubAgentSpec(
     name="e2e_test_code_critic",
-    description=(
-        "Reviews the end-to-end integration suite as code: enforces opaque-box, behavior-and-"
-        "side-effect assertions over implementation details, plus common-sense quality rules."
-    ),
     input_schema=pipeline_input(
         input_paths=(
             "The integration-suite file(s) under review (harness, mock servers, configuration "

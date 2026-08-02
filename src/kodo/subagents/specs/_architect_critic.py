@@ -10,7 +10,6 @@ __all__ = ["ARCHITECT_CRITIC"]
 
 ARCHITECT_CRITIC: SubAgentSpec = SubAgentSpec(
     name="architect_critic",
-    description="Reviews the architecture document for sound, single-responsibility decomposition.",
     input_schema=pipeline_input(
         input_paths="The architecture document under review.",
     ),

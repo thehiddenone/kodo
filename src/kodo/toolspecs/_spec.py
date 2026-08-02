@@ -101,6 +101,20 @@ class ToolSpec:
             ``scaffold_new_project`` first) when no project is bound and the
             call doesn't carry ``temporary: true`` — see
             :mod:`kodo.toolspecs._workspace`.
+        modifies_files: Whether a successful call can create, change, or delete
+            files in the project tree. Purely a **prompt** signal, not a
+            security one (that is :attr:`security_impact`): an agent granted at
+            least one tool declaring this must include ``{SHARED:editing}`` —
+            the shared editing discipline (``shared_editing.md``: minimal
+            change, no drive-by edits, read before you write, scratch work) —
+            and :class:`~kodo.subagents.AgentRegistry` refuses to load one that
+            does not. The pairing runs both ways: roughly half the agents never
+            write a file (every critic, the investigator, the compactor, the
+            planner, the web searcher), and that block is worse than noise in
+            their prompts because it names tools they were never granted,
+            contradicting the "use only your granted tools" rule. Declared per
+            spec rather than inferred from a name list in the registry, so a new
+            file-touching tool cannot silently miss the discipline.
     """
 
     name: str
@@ -114,3 +128,4 @@ class ToolSpec:
     output_visibility: dict[str, str]
     autonomous_mode: str | None = None
     requires_project: bool = False
+    modifies_files: bool = False

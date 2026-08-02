@@ -424,7 +424,7 @@ class EngineServices(Protocol):
         ``toolchain_deps`` tool: holding that tool is the authorization, so the
         dependency-management sub-agent is spawned directly (a fixed engine-side
         name) without consulting any caller's ``subagents:`` allow-list and never
-        appears in a ``run_subagent`` roster. ``task_input`` conforms to the
+        appears in the caller's ``subagents:`` allow-list. ``task_input`` conforms to the
         sub-agent's ``input_schema``; the return is its ``output_schema`` result
         (carrying the ``status`` the tool translates, including
         ``dependencies_md_missing``).

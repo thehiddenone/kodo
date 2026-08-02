@@ -10,7 +10,6 @@ __all__ = ["CODE_CRITIC"]
 
 CODE_CRITIC: SubAgentSpec = SubAgentSpec(
     name="code_critic",
-    description="Reviews a single code or test artifact in isolation for quality and safety.",
     input_schema=pipeline_input(
         input_paths=(
             "The single code or test file under review. Never the design, requirements, or "

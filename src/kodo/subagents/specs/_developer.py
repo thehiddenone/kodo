@@ -17,10 +17,6 @@ __all__ = ["DEVELOPER"]
 
 DEVELOPER: SubAgentSpec = SubAgentSpec(
     name="developer",
-    description=(
-        "Coder and Test Coder in one: from free-form instructions, writes the production code and "
-        "behavior-based tests for it and keeps the project building."
-    ),
     input_schema={
         "type": "object",
         "properties": {

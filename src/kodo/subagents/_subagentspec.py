@@ -5,12 +5,20 @@ it declares an ``input_schema`` (what the caller must supply when delegating) an
 an ``output_schema`` (what the sub-agent returns, via the ``return_result`` tool,
 when it finishes). Both are JSON-Schema ``object`` dicts.
 
-Per the project decision, a ``SubAgentSpec`` carries **only** the schemas (plus a
-caller-facing ``description``); every other piece of agent metadata — tools,
-capability, ``display_name``, ``solo``/``critic``/``standalone``, ``## Purpose`` —
+Per the project decision, a ``SubAgentSpec`` carries **only** the schemas; every
+other piece of agent metadata — tools, capability, ``display_name``,
+``critic``/``standalone``, and the prose describing the agent (``## Purpose``) —
 stays in the ``subagent_*.md`` frontmatter/body and is loaded by
 :func:`~kodo.subagents._loader.load_agent`. The registry cross-references a spec
 to its :class:`~kodo.subagents._loader.SubAgent` by ``name``.
+
+There was once a ``description`` field here too, a one-line caller-facing
+summary. It was deleted because it competed with ``## Purpose`` for the same
+job: both described the sub-agent to a caller, and once the prompt-side roster
+was removed both wanted the same destination — the generated
+``run_subagent_<name>`` tool's description. ``## Purpose`` won (it is the fuller
+text, it lives with the prose, and it was already written caller-agnostic), so
+the schemas here and the prose there no longer overlap at all.
 
 One spec per file under :mod:`kodo.subagents.specs`, mirroring the
 ``kodo.toolspecs`` one-literal-per-file convention.
@@ -30,9 +38,6 @@ class SubAgentSpec:
     Attributes:
         name: Sub-agent name — matches ``SubAgent.name`` and the
             ``subagent_<name>.md`` filename stem.
-        description: One-line, caller-facing summary of the delegation, rendered
-            into a caller's ``{PLACEHOLDER:SUBAGENTS}`` roster alongside the
-            schemas.
         input_schema: JSON Schema (an ``object`` schema) describing the
             structured task the caller must supply when delegating. The engine
             validates the delegated ``task_input`` against it before spawning.
@@ -46,6 +51,5 @@ class SubAgentSpec:
     """
 
     name: str
-    description: str
     input_schema: dict[str, object]
     output_schema: dict[str, object]

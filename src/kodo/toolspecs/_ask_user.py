@@ -5,9 +5,15 @@ call; the user answers them all in a single WebView form. Always granted,
 in interactive and autonomous sessions alike — an agent never needs to check
 whether it is available or branch its own behavior on the session's mode. When
 there is no user to answer (an autonomous session), the tool synthesizes an
-answer instead of blocking: see ``kodo.tools.AskUserTool``. The questioning
-discipline itself — think first, derive real candidate answers, top choice
-first — lives in the performance preamble ("Asking the User Questions").
+answer instead of blocking: see ``kodo.tools.AskUserTool``.
+
+The questioning discipline — think first, batch every question, derive real
+candidate answers, best assumption first — lives in :attr:`description` below,
+**not** in a shared prompt block. It used to be an "Asking the User Questions"
+section of the block every agent includes, which meant all of them read ~380
+words about a tool only four of them hold, alongside a near-duplicate half of
+the same rules here. Keeping it on the spec makes the guidance self-gating: it
+reaches exactly the agents granted the tool, and there is one copy to maintain.
 """
 
 from __future__ import annotations
@@ -23,20 +29,34 @@ ASK_USER: ToolSpec = ToolSpec(
     user_description="Ask the user questions",
     description=(
         "Present the user a set of questions and block until they confirm "
-        "answers to all of them. Bundle EVERY open question about the topic "
-        "you are working on into one call — never a drip of single-question "
-        "calls. Each question carries the candidate answers you derived "
-        "yourself (your best assumption FIRST); the UI automatically appends "
-        "a free-text option to every question, so never add an 'Other'/'free "
-        "text' option yourself. See the 'Asking the User Questions' preamble "
-        "section for the full discipline. Always call it when a genuine open "
-        "question exists — it always returns an answer, whether or not a user "
-        "is actually there to give one. Distinct from "
-        "request_user_review_artifact, which is a sign-off on a finished "
-        "artifact rather than a question."
-        "\n\nWhen to use: information about the current topic of work is "
+        "answers to all of them. This is your only channel for questions, and "
+        "it carries a strict discipline:\n"
+        "- **Think before you ask.** Work through the topic first and identify "
+        "*everything* genuinely unclear about it, then ask all of it in ONE "
+        "call — never a drip of single-question calls for things you could "
+        "have foreseen together.\n"
+        "- **Derive the answers yourself first.** For each question, list the "
+        "real candidate answers — the assumptions you could defensibly make on "
+        "your own. Those are the `options`. Your single best assumption goes "
+        "FIRST (the top choice is never marked in any other way), the rest in "
+        "descending plausibility. Options are genuine answers, not "
+        "placeholders.\n"
+        "- **Never add a free-text option.** The UI appends a free-text field "
+        "as the last option of every question; an 'Other'/'none of the above' "
+        "option of your own just duplicates it.\n"
+        "- **Act on the full set.** The user answers everything at once and "
+        "confirms. Incorporate the whole batch before proceeding. A follow-up "
+        "call is justified only for questions the earlier answers *newly "
+        "opened* — never to re-ask what an earlier answer already covered, "
+        "even indirectly.\n"
+        "- **It always returns an answer**, whether or not anyone is there to "
+        "give one — never check for or reason about whether a user is present. "
+        "See `answers` in the output for how a no-user answer looks and what "
+        "to do with it.\n\n"
+        "When to use: information about the current topic of work is "
         "uncovered or only partially covered, or user-supplied input "
-        "contradicts itself and must be reconciled before you incorporate it."
+        "contradicts itself and must be reconciled before you incorporate it. "
+        "Always call it when a genuine open question exists."
     ),
     input_schema={
         "type": "object",

@@ -10,7 +10,6 @@ __all__ = ["NARRATIVE_AUTHOR"]
 
 NARRATIVE_AUTHOR: SubAgentSpec = SubAgentSpec(
     name="narrative_author",
-    description="Produces the Narrative and Tech Stack documents from a dialogue with the user.",
     input_schema=pipeline_input(
         input_paths=(
             "Optional: the agent's own prior Narrative/Tech Stack documents when handling "

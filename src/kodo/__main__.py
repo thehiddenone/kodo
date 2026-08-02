@@ -4,7 +4,7 @@ and tool-definition diagnostics.
 ``--system-prompt AGENT`` (``-p AGENT``) prints the exact system prompt kodo
 would send for that agent, by calling the real runtime code rather than
 reimplementing it: :meth:`~kodo.subagents.AgentRegistry.get` renders the
-agent's body — preambles, bases, sub-agent roster, task contract — exactly as
+agent's body with every ``{SHARED:…}`` block expanded — exactly as
 ``kodo/server/_app.py`` does for a live session.
 
 An agent's granted tools are deliberately **not** part of that prompt; they

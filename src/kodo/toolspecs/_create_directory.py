@@ -94,4 +94,5 @@ CREATE_DIRECTORY: ToolSpec = ToolSpec(
     input_visibility={"intent": "always", "path": "always", "temporary": "visible"},
     output_visibility={"status": "always", "path": "always"},
     requires_project=False,
+    modifies_files=True,
 )

@@ -2,7 +2,7 @@
 
 The acting force behind the ``toolchain_deps`` tool: a language-agnostic agent
 that executes one add/remove/update dependency operation by following the
-project's ``DEPENDENCIES.md`` (the *Dependency Contract*, ``base_dependencies``).
+project's ``DEPENDENCIES.md`` (the *Dependency Contract*, ``shared_dependencies``).
 Its ``output_schema`` carries a ``status`` whose ``dependencies_md_missing``
 value is how it tells the tool the project has no ``DEPENDENCIES.md`` yet, so the
 tool can hand the caller a remediation sub-prompt instead of a bare failure.
@@ -23,10 +23,6 @@ __all__ = ["TOOLCHAIN_DEPSMGR"]
 
 TOOLCHAIN_DEPSMGR: SubAgentSpec = SubAgentSpec(
     name="toolchain_depsmgr",
-    description=(
-        "Executes one add/remove/update dependency operation for any toolchain by "
-        "following the project's DEPENDENCIES.md."
-    ),
     input_schema={
         "type": "object",
         "properties": {

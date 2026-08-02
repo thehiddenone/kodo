@@ -1,12 +1,59 @@
 """Subagent registry — ``name -> SubAgent`` lookup.
 
 Loads all ``.md`` files from the subagents package directory at construction time.
-Two mandatory preambles — the **security** preamble (``preamble_security.md``)
-and the **performance** preamble (``preamble_performance.md``) — are prepended,
-in that order, to every subagent's system prompt. Because the system prompt is
-rebuilt fresh on every turn, both preambles are always present regardless of
-context compaction (compaction only rewrites the conversation history, never the
-system prompt).
+
+Shared prompt text
+==================
+
+There is **one** way to reuse prompt text across agents, and it is textual
+inclusion: a ``{SHARED:<name>}`` token anywhere in an agent's body is replaced
+with the contents of ``shared_<name>.md`` from this package. That is the whole
+rule. It replaced three separate mechanisms that all did the same thing by
+different means — ``bases:`` frontmatter (prepended), *preambles* (appended,
+two of them gated on a tool grant and a frontmatter flag), and a Python
+constant substituted into a bespoke placeholder — none of which an agent author
+could see the effect of without reading the registry.
+
+Consequences worth knowing:
+
+- **Placement is the agent's**, so an author decides where each block reads
+  best rather than accepting a fixed prepend/append slot. The convention the
+  agents follow is: shared *contracts* (``escalation``, ``dependencies``) sit
+  where the body refers to them, ``task_input`` sits right after the opening
+  identity paragraph, and the rule blocks close the file in the order
+  ``editing`` (if any) → ``callouts`` (if any) → ``working_rules`` →
+  ``security``.
+- **Inclusion is the declaration.** ``SubAgent.bases`` and a ``callouts:``
+  frontmatter flag both disappeared: an agent that wants the callout rules
+  writes ``{SHARED:callouts}``, and that *is* the opt-in. No registry-side gate
+  decides for it.
+- **Nothing is auto-appended**, so an agent that forgets ``{SHARED:security}``
+  would ship without injection resistance. Three checks make that impossible:
+  :meth:`AgentRegistry.__validate_shared` raises at construction if a prompt is
+  missing a block in :data:`_REQUIRED_SHARED` or (when it holds a
+  ``modifies_files`` tool) ``editing``; ``test_agents.py`` scans every
+  ``agent_*.md`` / ``subagent_*.md`` for the same thing so it fails at build
+  time rather than at runtime; and an unknown ``{SHARED:name}`` is itself a
+  load error, so a typo cannot silently render nothing.
+- Substitution is a **single pass**. Shared files may not contain tokens of
+  their own (checked at load), which makes one pass provably sufficient and
+  rules out include cycles.
+
+The rule blocks close a prompt rather than opening it, so every prompt starts
+on the agent's identity and role and ends with the rules that bind them —
+``security`` last, being both highest-precedence and the block a long prompt
+can least afford to have skimmed. Because the system prompt is rebuilt fresh on
+every turn, all of it is present regardless of context compaction (compaction
+only rewrites the conversation history, never the system prompt).
+
+Two shared blocks are deliberately *not* included by every agent, because
+sending them everywhere was counterproductive rather than merely wasteful:
+``editing`` names ``edit_file``/``create_file`` and reaches only agents granted
+such a tool (roughly half of them never write a file, and telling a critic how
+to keep a diff minimal contradicts the "use only your granted tools" rule in
+``security``); ``callouts`` reaches only the two entry agents, since a
+sub-agent's text is buried in a collapsed subsession block whose open/close
+callouts the *client* draws.
 
 An agent's granted tools are **not** described in its prompt. They reach the
 model through the LLM tool-definition ``tools`` argument, whose description is
@@ -22,9 +69,11 @@ so their schemas are the sub-agents' real ones instead of an opaque ``object``:
 
 - :meth:`AgentRegistry.run_subagent_specs` mints one ``run_subagent_<name>``
   tool per invocable sub-agent in a caller's allow-list, each declaring that
-  sub-agent's ``input_schema`` inline. A sub-agent that declares a ``critic:``
-  gets the loop contract (an optional ``max_rounds``; a ``review`` block in its
-  output), because one such call runs the entire author→critic loop.
+  sub-agent's ``input_schema`` inline and carrying that sub-agent's own
+  ``## Purpose`` body as its description. A sub-agent that declares a
+  ``critic:`` gets the loop contract (an optional ``max_rounds``; a ``review``
+  block in its output), because one such call runs the entire author→critic
+  loop.
 - :meth:`AgentRegistry.return_result_specs` mints the ``return_result`` an agent
   sees, with ``result`` bound to that agent's own ``output_schema``.
 
@@ -33,32 +82,42 @@ catalog's canonical ``run_subagent`` / ``return_result`` entries; see
 :func:`kodo.runtime.agent_tool_specs`, which is the single place that assembles
 them.
 
-A caller agent (one with a ``subagents:`` allow-list) may also embed a
-``{PLACEHOLDER:SUBAGENTS}`` token. It is replaced with a **sub-agent roster**:
-an intro paragraph explaining the ``Kind`` and ``Review`` columns, then a table
-with one row per *invocable* sub-agent (critics are absorbed into their author's
-``Review`` cell, since no caller ever spawns one), followed by each listed
-sub-agent's caller-agnostic ``## Purpose`` paragraph — in the caller's allow-list
-order. The roster is built from the *callee* agents' frontmatter
-(``role``/``critic``/``standalone``) and ``## Purpose`` body, so the description
-lives once with each sub-agent and is reused by every caller. It carries **no**
-schemas: those reach the caller as real JSON Schema on the generated tools above.
-See :meth:`AgentRegistry.render_subagents_section`.
+**There is no sub-agent roster.** A caller used to embed a
+``{PLACEHOLDER:SUBAGENTS}`` token that expanded into an intro, a
+tool/agent/review/kind table, and every listed sub-agent's ``## Purpose``
+paragraph. That was a prompt-side description of tools — precisely what
+doc/TOOLS.md §7 forbids everywhere else — and it duplicated a second, terser
+description each sub-agent also carried on its ``SubAgentSpec``. Both collapsed
+into the generated tool: ``## Purpose`` *is* the ``run_subagent_<name>``
+description now, joined by the sentence saying whether the sub-agent is a
+pipeline stage or an on-demand specialist (from ``standalone:``) and, for an
+author, the review-loop contract (from ``critic:``). ``SubAgentSpec`` no longer
+has a ``description`` field at all. A **critic** is not invocable and gets no
+tool of its own; what a caller needs to know about it lives in its author's
+description, and its own ``## Purpose`` stays in its own prompt.
 
 A schema-bearing agent's own system prompt never contains its input or output
 schema either — no ``## Your Task Contract`` block, no JSON dump. It only gets
-:data:`_INPUT_PARAMETERS_NOTE`, a short fixed pointer to where its real task
-lands: the first user turn, rendered per call (with real values, per-field
-descriptions, and the `return_result` reminder) by
+``{SHARED:task_input}``, a short fixed pointer to where its real task lands: the
+first user turn, rendered per call (with real values, per-field descriptions,
+and the `return_result` reminder) by
 :func:`kodo.runtime._engine._subagents._render_task_input`, never here.
+Including that block is what *opts an agent into* the note, which fixed a
+standing inaccuracy: it used to be injected into every schema-bearing agent,
+including ``compactor``, which the engine seeds with a bare transcript message
+rather than a rendered task turn. An agent with no ``SubAgentSpec`` including
+it is a load-time error.
 
 Raises :class:`~._loader.AgentLoadError` on duplicate names, missing entries, a
-tool with no matching :class:`~kodo.toolspecs.ToolSpec`, or a ``critic:`` that
-does not resolve to an agent declaring ``role: critic``.
+tool with no matching :class:`~kodo.toolspecs.ToolSpec`, a ``critic:`` that does
+not resolve to an agent declaring ``role: critic``, an unknown/missing/nested
+``{SHARED:…}``, a sub-agent with no ``## Purpose``, or ``{SHARED:task_input}``
+in an agent with no spec.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -69,16 +128,47 @@ from kodo.toolspecs import (
     ToolSpec,
     build_return_result_spec,
     build_run_subagent_spec,
-    run_subagent_tool_name,
 )
 
 from ._loader import AgentLoadError, SubAgent, load_agent
 from ._subagentspec import SubAgentSpec
 from .specs import ALL_SUBAGENTS
 
-_SECURITY_PREAMBLE_FILENAME = "preamble_security.md"
-_PERFORMANCE_PREAMBLE_FILENAME = "preamble_performance.md"
-_SUBAGENTS_PLACEHOLDER = "{PLACEHOLDER:SUBAGENTS}"
+# ``shared_<name>.md`` in this package ⇄ ``{SHARED:<name>}`` in an agent body.
+# The lowercase-only name pattern is deliberate: it matches the filenames, so a
+# stray ``{SHARED:Security}`` fails the unknown-name check loudly instead of
+# being silently normalized into something that happens to work.
+SHARED_FILE_PREFIX = "shared_"
+_SHARED_TOKEN_RE = re.compile(r"\{SHARED:([a-z0-9_]+)\}")
+
+
+def shared_token(name: str) -> str:
+    """Return the token that includes ``shared_<name>.md`` — ``{SHARED:<name>}``.
+
+    One place builds this string, so the tests and the error messages cannot
+    drift from what :data:`_SHARED_TOKEN_RE` actually matches.
+    """
+    return f"{{SHARED:{name}}}"
+
+
+# Shared blocks every agent's prompt must include, checked at construction.
+# Nothing is auto-appended any more (inclusion is the agent's own declaration),
+# so without this an agent could ship with no injection resistance and no
+# working rules, and the only symptom would be bad model behavior. Kept minimal
+# on purpose: a block belongs here only if *no* agent could correctly omit it.
+_REQUIRED_SHARED: tuple[str, ...] = ("working_rules", "security")
+
+# The shared block an agent must include when it can change files on disk, and
+# the tools that make it so — read off the live specs rather than named here.
+# The pairing is what keeps ``ToolSpec.modifies_files`` honest: grant a
+# file-touching tool without the discipline and construction fails.
+_EDITING_SHARED = "editing"
+_FILE_MODIFYING_TOOLS: frozenset[str] = frozenset(t.name for t in ALL_TOOLS if t.modifies_files)
+
+# The shared block that tells a sub-agent where its real task lands. Valid only
+# in an agent the engine seeds from a structured ``task_input`` (i.e. one with a
+# ``SubAgentSpec``); see the module docstring.
+_TASK_INPUT_SHARED = "task_input"
 
 # The terminal tool every schema-bearing sub-agent is auto-granted (so it can
 # return its result against its declared output schema). Granted in the registry
@@ -91,57 +181,18 @@ _RETURN_RESULT_TOOL = RETURN_RESULT.name
 # it into one variant per sub-agent the agent may invoke.
 _RUN_SUBAGENT_TOOL = RUN_SUBAGENT.name
 
-# Intro paragraph that precedes the roster table. Drawn from the callees'
-# ``standalone``/``critic`` frontmatter, it tells the caller how to read the
-# ``Kind`` column (**workflow** agents advance an ordered pipeline and depend on
-# upstream artifacts; **standalone** agents are on-demand specialists with no
-# such dependency) and the ``Review`` column (whether one call also runs the
-# author/critic loop).
-_SUBAGENTS_INTRO = (
-    "Each row's **Tool** is the exact tool that invokes that sub-agent; its "
-    "parameters are the sub-agent's own task shape, declared on the tool itself.\n\n"
-    "The sub-agents come in two kinds, marked in the **Kind** column. "
-    "**Workflow** sub-agents advance a pre-determined pipeline: each one consumes "
-    "the artifacts produced by the stage before it, so they run in a fixed order "
-    "and depend on upstream output. **Standalone** sub-agents are specialists you "
-    "invoke whenever the need arises; they sit outside the pipeline and do not "
-    "depend on the outcome of any other agent.\n\n"
-    "The **Review** column says what happens after the sub-agent produces its "
-    "file. Where it names a critic, one call runs the *entire* author/critic loop: "
-    "the engine spawns the sub-agent, hands its primary file to that critic, and "
-    "re-runs the sub-agent with the critic's concerns until the critic accepts or "
-    "the round budget is spent. You never invoke a critic yourself and you never "
-    'call the tool again to run "another round" — the returned `review` block '
-    "tells you how the loop ended."
-)
-
 # Every tool spec, keyed by tool name (names are unique in the catalog).
 _SPECS_BY_NAME: dict[str, ToolSpec] = {t.name: t for t in ALL_TOOLS}
 
 # Every sub-agent's typed interface, keyed by agent name. An agent that has an
-# entry here is "schema-bearing": it is auto-granted ``return_result`` and gets
-# ``_INPUT_PARAMETERS_NOTE`` rendered into its own prompt. Its schemas reach a
-# *caller* as real JSON Schema on the generated ``run_subagent_<name>`` tool
-# (never restated in any roster), and reach the agent *itself* as the real
-# values under ``## Input Parameters`` at the bottom of its first message (see
-# ``kodo.runtime._engine._subagents._render_task_input``) — no schema is ever
-# shown in a system prompt. Entry agents (guide/problem_solver) have no spec
-# and are left untouched.
+# entry here is "schema-bearing": it is auto-granted ``return_result`` and may
+# include ``{SHARED:task_input}``. Its schemas reach a *caller* as real JSON
+# Schema on the generated ``run_subagent_<name>`` tool, and reach the agent
+# *itself* as the real values under ``## Input Parameters`` at the bottom of its
+# first message (see ``kodo.runtime._engine._subagents._render_task_input``) —
+# no schema is ever shown in a system prompt. Entry agents (guide/problem_solver
+# /judge) have no spec and are left untouched.
 SUBAGENT_SPECS_BY_NAME: dict[str, SubAgentSpec] = {s.name: s for s in ALL_SUBAGENTS}
-
-# Short note injected into every schema-bearing agent's own system prompt,
-# right before its own body (replacing the old ``## Your Task Contract``,
-# which restated the raw input schema as prose — a real per-call rendering,
-# not a schema dump, now lives in the first user turn instead; see
-# ``_render_task_input``). Deliberately carries no schema and no per-agent
-# detail: the concrete values, their descriptions, and the `return_result`
-# reminder are rendered fresh per call, where the real task is actually known.
-_INPUT_PARAMETERS_NOTE = (
-    "Your task arrives as your first message: free-form `instructions`, "
-    "followed by an **Input Parameters** section listing every other value "
-    "you were given — the last part of that message, with a reminder there "
-    "of how to return your result."
-)
 
 
 def _review_output_schema(output_schema: dict[str, object], critic: str) -> dict[str, object]:
@@ -220,45 +271,50 @@ _AUTONOMOUS_DISABLED: frozenset[str] = frozenset(
 class AgentRegistry:
     """Index of all loaded subagents, looked up by name.
 
-    Every agent returned by :meth:`get` has the security and performance
-    preambles prepended (in that order), its ``{PLACEHOLDER:SUBAGENTS}`` roster
-    filled in (when it embeds one), and its tool set filtered for the requested
-    mode.
+    Every agent returned by :meth:`get` has every ``{SHARED:<name>}`` token in
+    its body replaced with ``shared_<name>.md``'s contents, and its tool set
+    filtered for the requested mode.
 
     Args:
-        agents_dir: Directory containing ``preamble_security.md``,
-            ``preamble_performance.md``, any ``base_*.md`` shared snippets, the
+        agents_dir: Directory containing the ``shared_*.md`` blocks, the
             ``subagent_*.md`` files, and the ``agent_*.md`` entry-agent files
-            (``guide``, ``problem_solver``).
+            (``guide``, ``problem_solver``, ``judge``).
 
     Raises:
-        AgentLoadError: a preamble or base file is missing or empty, an agent
-            references a tool with no matching :class:`~kodo.toolspecs.ToolSpec`,
-            or an agent references a ``bases:`` entry with no ``base_*.md`` file.
+        AgentLoadError: a shared file is empty or itself contains a
+            ``{SHARED:…}`` token, an agent references a tool with no matching
+            :class:`~kodo.toolspecs.ToolSpec`, an agent includes an unknown
+            shared block, omits a required one, holds a file-modifying tool
+            without ``{SHARED:editing}``, or includes ``{SHARED:task_input}``
+            without being schema-bearing.
     """
 
-    __slots__ = ("__agents", "__preamble", "__bases")
+    __slots__ = ("__agents", "__shared")
 
     def __init__(self, agents_dir: Path) -> None:
-        # Security first (it takes precedence), then performance. Both are always
-        # re-prepended on every render, so compaction can never drop them.
-        security = self.__load_preamble(agents_dir, _SECURITY_PREAMBLE_FILENAME)
-        performance = self.__load_preamble(agents_dir, _PERFORMANCE_PREAMBLE_FILENAME)
-        self.__preamble = f"{security}\n\n{performance}"
-        # Shared base snippets (``base_<name>.md``), keyed by ``<name>``. Agents
-        # opt into them via the frontmatter ``bases:`` list; they are never loaded
-        # as agents (the agent globs are ``subagent_*.md`` and ``agent_*.md``).
-        self.__bases: dict[str, str] = {}
-        for path in sorted(agents_dir.glob("base_*.md")):
-            name = path.stem[len("base_") :]
+        # Shared blocks (``shared_<name>.md``), keyed by ``<name>``. Never
+        # globbed as agents (those globs are ``subagent_*.md`` / ``agent_*.md``),
+        # so a shared file can never register as a spawnable agent.
+        self.__shared: dict[str, str] = {}
+        for path in sorted(agents_dir.glob(f"{SHARED_FILE_PREFIX}*.md")):
+            name = path.stem[len(SHARED_FILE_PREFIX) :]
             text = path.read_text(encoding="utf-8").strip()
             if not text:
-                raise AgentLoadError(f"{path}: base file is empty")
-            self.__bases[name] = text
+                raise AgentLoadError(f"{path}: shared file is empty")
+            # Substitution is a single pass, which is only provably sufficient
+            # while shared files carry no tokens themselves. Rejecting them here
+            # is also what rules out include cycles, without a visited-set walk.
+            nested = _SHARED_TOKEN_RE.search(text)
+            if nested:
+                raise AgentLoadError(
+                    f"{path}: shared files must not include other shared files "
+                    f"(found {nested.group(0)}); inclusion is a single pass"
+                )
+            self.__shared[name] = text
         self.__agents: dict[str, SubAgent] = {}
         # Sub-agents (``subagent_*.md``) and the user-facing entry agents
-        # (``agent_*.md`` — ``guide``, ``problem_solver``) share one registry,
-        # looked up by name regardless of which filename prefix they use.
+        # (``agent_*.md`` — ``guide``, ``problem_solver``, ``judge``) share one
+        # registry, looked up by name regardless of which prefix they use.
         agent_paths = sorted(agents_dir.glob("subagent_*.md")) + sorted(
             agents_dir.glob("agent_*.md")
         )
@@ -267,20 +323,20 @@ class AgentRegistry:
             # Validate every declared tool resolves now, at load time, so a bad
             # frontmatter reference fails fast rather than at first dispatch.
             self.__validate_tools(agent.tools, path)
-            # Validate every declared base exists, for the same fail-fast reason.
-            for base in agent.bases:
-                if base not in self.__bases:
-                    raise AgentLoadError(
-                        f"{path}: base {base!r} has no base_{base}.md in {agents_dir}"
-                    )
+            self.__validate_shared(agent)
             self.__agents[agent.name] = agent
+        # Every sub-agent some caller may spawn — the union of all
+        # ``subagents:`` allow-lists. Exactly these get a generated
+        # ``run_subagent_<name>`` tool, so exactly these need the ``## Purpose``
+        # that becomes its description. Derived rather than assumed: the
+        # engine-driven agents (``compactor``, ``web_search``,
+        # ``toolchain_depsmgr``) sit in no allow-list and correctly have none.
+        invocable = {name for agent in self.__agents.values() for name in agent.subagent_order}
         # Second pass — every agent is loaded now, so cross-agent references can
-        # be validated. Fail-fast at construction, same as the tool/base checks
-        # above: a declared ``critic:`` must resolve to a real agent that
-        # actually declares ``role: critic`` (otherwise the engine would spawn
-        # something that never records a verdict), and each
-        # ``{PLACEHOLDER:SUBAGENTS}`` roster's listed sub-agents must exist and
-        # carry a ``## Purpose`` section.
+        # be validated. Fail-fast at construction, same as the checks above: a
+        # declared ``critic:`` must resolve to a real agent that actually
+        # declares ``role: critic`` (otherwise the engine would spawn something
+        # that never records a verdict).
         for agent in self.__agents.values():
             # ``subagents:`` and the ``run_subagent`` grant are two halves of one
             # decision: the allow-list says *which* sub-agents, the tool grant is
@@ -306,18 +362,22 @@ class AgentRegistry:
                         f"{agent.source_path}: critic {agent.critic!r} does not declare "
                         f"'role: critic' in its own frontmatter"
                     )
-            if _SUBAGENTS_PLACEHOLDER in agent.system_prompt:
-                self.__render_subagents_section(agent)
-
-    @staticmethod
-    def __load_preamble(agents_dir: Path, filename: str) -> str:
-        path = agents_dir / filename
-        if not path.is_file():
-            raise AgentLoadError(f"{path}: preamble file is missing")
-        preamble = path.read_text(encoding="utf-8").strip()
-        if not preamble:
-            raise AgentLoadError(f"{path}: preamble file is empty")
-        return preamble
+            # An invocable sub-agent's ``## Purpose`` is its generated tool's
+            # description, so a missing one would ship a tool the caller cannot
+            # route to. Critics are exempt (the engine spawns them inside their
+            # author's loop, so they get no tool), as is any agent no caller
+            # lists — the engine-driven ones describe themselves to nobody.
+            if agent.name in invocable and not agent.is_critic and not agent.purpose:
+                raise AgentLoadError(
+                    f"{agent.source_path}: no '## Purpose' section — it is the "
+                    f"description of this sub-agent's run_subagent_{agent.name} tool"
+                )
+            for sub in agent.subagent_order:
+                if sub not in self.__agents:
+                    raise AgentLoadError(
+                        f"{agent.source_path}: subagents entry {sub!r} has no "
+                        f"subagent_{sub}.md in the registry"
+                    )
 
     @staticmethod
     def __validate_tools(agent_tools: frozenset[str], path: Path) -> None:
@@ -330,90 +390,73 @@ class AgentRegistry:
             if name not in _SPECS_BY_NAME:
                 raise AgentLoadError(f"{path}: tool {name!r} has no ToolSpec in kodo.toolspecs")
 
-    def __render_subagents_section(self, caller: SubAgent) -> str:
-        """Render the sub-agent roster that fills *caller*'s ``{PLACEHOLDER:SUBAGENTS}``.
+    def __validate_shared(self, agent: SubAgent) -> None:
+        """Check *agent*'s ``{SHARED:…}`` inclusions at construction time.
 
-        Three parts, in this order:
-
-        1. An **intro paragraph** (:data:`_SUBAGENTS_INTRO`) explaining how to
-           read the ``Kind`` column — workflow (ordered, upstream-dependent) vs
-           standalone (on-demand specialist) — and that a sub-agent with a critic
-           reviews itself.
-        2. A **roster table** with one row per *invocable* sub-agent in the
-           caller's ``subagents:`` allow-list order, naming the
-           ``run_subagent_<name>`` tool that invokes it. A **critic**
-           (``role: critic``) is not invocable — the engine spawns it as part of
-           its author's loop — so it is absorbed into that author's ``Review``
-           column and gets no row. The ``Kind`` column reads ``standalone`` when
-           the callee declares ``standalone: true``, else ``workflow``.
-        3. A **purpose paragraph** per sub-agent in the allow-list — invocable
-           ones and critics alike — so an author and its critic read adjacent.
-           Each is the caller-agnostic ``## Purpose`` body from that agent's file.
-
-        The callees' input/output **schemas are deliberately absent**: each one
-        now reaches the caller as the real JSON Schema on its own
-        ``run_subagent_<name>`` tool definition, so restating it here would
-        duplicate the authoritative copy in a channel that cannot stay in sync
-        with it.
-
-        Validates (fail-fast) that every listed sub-agent exists and carries a
-        ``## Purpose`` section.
-        """
-        order = caller.subagent_order
-        for sub in order:
-            if sub not in self.__agents:
-                raise AgentLoadError(
-                    f"{caller.source_path}: subagents entry {sub!r} has no "
-                    f"subagent_{sub}.md in the registry"
-                )
-            if not self.__agents[sub].purpose:
-                raise AgentLoadError(
-                    f"{caller.source_path}: sub-agent {sub!r} has no '## Purpose' "
-                    f"section, required to render {_SUBAGENTS_PLACEHOLDER}"
-                )
-
-        rows: list[str] = []
-        for sub in order:
-            agent = self.__agents[sub]
-            if agent.is_critic:
-                continue  # spawned by the engine inside its author's loop, never by a caller
-            review = f"`{agent.critic}`, automatically" if agent.critic else "none — single pass"
-            kind = "standalone" if agent.standalone else "workflow"
-            rows.append(f"| `{run_subagent_tool_name(sub)}` | `{sub}` | {review} | {kind} |")
-        table = (
-            "| Tool | Sub-agent | Review | Kind |\n"
-            "| ---- | --------- | ------ | ---- |\n" + "\n".join(rows)
-        )
-
-        paras = [
-            f"### {self.__agents[sub].display_name} (`{sub}`)\n\n{self.__agents[sub].purpose}"
-            for sub in order
-        ]
-        return _SUBAGENTS_INTRO + "\n\n" + table + "\n\n" + "\n\n".join(paras)
-
-    def render_subagents_section(self, name: str) -> str:
-        """Public access to the rendered sub-agent roster for *name*'s allow-list.
-
-        Same content the registry injects at ``{PLACEHOLDER:SUBAGENTS}``, exposed
-        so callers (e.g. prompt-review tooling) can render an agent's roster even
-        when its own body does not embed the placeholder.
+        Nothing is auto-appended to a prompt any more — inclusion is the agent's
+        own declaration — so these four checks are the only thing standing
+        between a forgotten token and an agent running with no injection
+        resistance. ``test_agents.py`` re-runs the same rules over every agent
+        file so the failure normally lands at build time; this is the last-resort
+        copy for anything that reaches a running server.
 
         Raises:
-            AgentLoadError: No agent file for *name*, or a listed sub-agent is
-                missing or lacks a ``## Purpose`` section.
+            AgentLoadError: an unknown block name, a missing required block, a
+                file-modifying tool without the editing discipline, or a
+                task-input note in an agent that is never seeded with one.
         """
-        if name not in self.__agents:
+        included = {m.group(1) for m in _SHARED_TOKEN_RE.finditer(agent.system_prompt)}
+
+        unknown = sorted(included - self.__shared.keys())
+        if unknown:
             raise AgentLoadError(
-                f"No agent file for {name!r}. Expected: subagents/subagent_{name}.md "
-                f"or subagents/agent_{name}.md"
+                f"{agent.source_path}: unknown shared block(s) {unknown} — expected a "
+                f"{SHARED_FILE_PREFIX}<name>.md for each; known: {sorted(self.__shared)}"
             )
-        return self.__render_subagents_section(self.__agents[name])
+
+        missing = [name for name in _REQUIRED_SHARED if name not in included]
+        if missing:
+            raise AgentLoadError(
+                f"{agent.source_path}: every agent prompt must include "
+                f"{', '.join(shared_token(n) for n in missing)}"
+            )
+
+        # The invariant that keeps ``ToolSpec.modifies_files`` honest: an agent
+        # that can change files on disk states the discipline for doing so.
+        if agent.tools & _FILE_MODIFYING_TOOLS and _EDITING_SHARED not in included:
+            granted = sorted(agent.tools & _FILE_MODIFYING_TOOLS)
+            raise AgentLoadError(
+                f"{agent.source_path}: grants file-modifying tool(s) {granted}, so its "
+                f"prompt must include {shared_token(_EDITING_SHARED)}"
+            )
+
+        # Guard the direction that is always a bug: an agent with no
+        # SubAgentSpec is never seeded from a structured ``task_input``, so the
+        # note would promise it a first message that never arrives.
+        #
+        # The other direction is a legitimate choice, not an omission, which is
+        # why ``task_input`` is not in ``_REQUIRED_SHARED``. A schema-bearing
+        # agent the engine seeds some *other* way must not carry it either —
+        # ``compactor`` is handed a bare "Conversation transcript to compact: …"
+        # user message by ``_generate_compaction_summary``, never a rendered
+        # ``# Task`` + ``## Input Parameters`` turn — and it documents its real
+        # input itself. Requiring it everywhere would force that agent to state
+        # something false about its own input.
+        if _TASK_INPUT_SHARED in included and agent.name not in SUBAGENT_SPECS_BY_NAME:
+            raise AgentLoadError(
+                f"{agent.source_path}: {shared_token(_TASK_INPUT_SHARED)} is only valid "
+                f"in an agent that declares a SubAgentSpec — this one has none, so it "
+                f"is never seeded from a structured task_input"
+            )
 
     def __finalize(self, agent: SubAgent, autonomous: bool) -> SubAgent:
         """Render *agent* for the requested mode.
 
-        Filters autonomous-disabled tools out of the effective tool set, then
-        prepends the shared base snippets (if any) and the global preamble.
+        Filters autonomous-disabled tools out of the effective tool set and
+        expands every ``{SHARED:<name>}`` token in the body. One pass suffices:
+        shared files are rejected at construction if they contain tokens of
+        their own, and every name is known to resolve (also checked there), so
+        the substitution here cannot fail.
         """
         spec = SUBAGENT_SPECS_BY_NAME.get(agent.name)
         effective_tools = agent.tools
@@ -423,23 +466,9 @@ class AgentRegistry:
             effective_tools = effective_tools | {_RETURN_RESULT_TOOL}
         if autonomous and _AUTONOMOUS_DISABLED:
             effective_tools = frozenset(t for t in effective_tools if t not in _AUTONOMOUS_DISABLED)
-        system_prompt = agent.system_prompt
-        if _SUBAGENTS_PLACEHOLDER in system_prompt:
-            system_prompt = system_prompt.replace(
-                _SUBAGENTS_PLACEHOLDER, self.__render_subagents_section(agent)
-            )
-        # Order of precedence: global preamble (security + performance) first,
-        # then any shared base contract, then (for a schema-bearing agent) the
-        # short Input Parameters pointer note, then the agent's own body (which
-        # may specialize the base). Bases are validated to exist at load time.
-        note = [_INPUT_PARAMETERS_NOTE] if spec is not None else []
-        parts = [
-            self.__preamble,
-            *(self.__bases[b] for b in agent.bases),
-            *note,
-            system_prompt,
-        ]
-        system_prompt = "\n\n".join(parts)
+        system_prompt = _SHARED_TOKEN_RE.sub(
+            lambda m: self.__shared[m.group(1)], agent.system_prompt
+        )
         return replace(agent, tools=effective_tools, system_prompt=system_prompt)
 
     def get(self, name: str, autonomous: bool = False) -> SubAgent:
@@ -493,6 +522,16 @@ class AgentRegistry:
         per sub-agent instead of one opaque ``task_input`` object it has to
         reconstruct from prose.
 
+        The **description is the callee's own ``## Purpose`` body**, which is
+        why that section is caller-agnostic and third-person: it is written for
+        whoever is deciding whether to delegate. It is the only description
+        there is — the roster that used to carry a second copy is gone, and
+        :class:`SubAgentSpec` no longer has a ``description`` field.
+        :func:`~kodo.toolspecs.build_run_subagent_spec` appends the two facts
+        the roster's table columns used to carry: whether the sub-agent is a
+        pipeline stage or an on-demand specialist (``standalone:``) and, for an
+        author, the review-loop contract (``critic:``).
+
         A sub-agent that declares a ``critic:`` gets the *loop* contract: its
         tool takes an optional ``max_rounds`` and its declared output is the
         agent's own output schema plus a ``review`` block (see
@@ -526,7 +565,7 @@ class AgentRegistry:
                 build_run_subagent_spec(
                     subagent_name=name,
                     display_name=agent.display_name,
-                    description=spec.description,
+                    description=agent.purpose,
                     input_schema=spec.input_schema,
                     output_schema=(
                         _review_output_schema(spec.output_schema, agent.critic)
@@ -534,6 +573,7 @@ class AgentRegistry:
                         else spec.output_schema
                     ),
                     critic_name=agent.critic,
+                    standalone=agent.standalone,
                 )
             )
         return specs

@@ -119,6 +119,7 @@ def build_run_subagent_spec(
     input_schema: dict[str, object],
     output_schema: dict[str, object],
     critic_name: str = "",
+    standalone: bool = False,
 ) -> ToolSpec:
     """Build the ``run_subagent_<name>`` tool one caller sees for one sub-agent.
 
@@ -130,12 +131,18 @@ def build_run_subagent_spec(
     this builder must not pre-render it, or the description would carry two
     ``Returns:`` blocks.
 
+    This spec is the **only** place a caller learns what a sub-agent is for.
+    The prompt-side roster that used to restate it is gone (doc/TOOLS.md §7:
+    tools are described through the ``tools`` argument, never in a prompt), so
+    the *kind* and *review* facts its table columns carried are appended here
+    as prose.
+
     Args:
         subagent_name: Registry name of the sub-agent this tool invokes.
         display_name: The sub-agent's user-facing name, used for
             ``external_name`` (which never reaches the model).
         description: The sub-agent's caller-facing summary — what it does and
-            when to delegate to it.
+            when to delegate to it. This is its ``## Purpose`` body.
         input_schema: The sub-agent's declared ``input_schema``.
         output_schema: What this tool returns to the caller: the sub-agent's own
             output schema, plus the ``review`` block when *critic_name* is set.
@@ -143,6 +150,10 @@ def build_run_subagent_spec(
             has none. A non-empty value means the engine runs the whole
             author→critic loop inside one call, so the description says so and
             ``max_rounds`` is offered.
+        standalone: ``True`` for an on-demand specialist that depends on no
+            other agent's output; ``False`` for a workflow stage that consumes
+            the artifacts of the stage before it. Stated in the description
+            because it is what tells a caller whether ordering matters.
 
     Returns:
         ToolSpec: The variant spec, ready to hand to the LLM.
@@ -153,6 +164,14 @@ def build_run_subagent_spec(
     required = [str(r) for r in required_raw] if isinstance(required_raw, list) else []
 
     prose = [description.strip()]
+    prose.append(
+        "A **standalone specialist**: invoke it whenever the need arises. It "
+        "sits outside the pipeline and depends on no other agent's output."
+        if standalone
+        else "A **workflow stage**: it consumes the artifacts produced by the "
+        "stage before it, so it runs in a fixed order and depends on upstream "
+        "output being in place."
+    )
     if critic_name:
         prose.append(
             f"This runs the full review loop, not a single pass: the engine spawns "
