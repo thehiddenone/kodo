@@ -14,16 +14,18 @@ exhaust its budget.
 Two independent checks against the growing trailing buffer:
 
 1. **Exact block-repeat** (the primary check, and what actually catches "the
-   same 3 lines over and over"): tries every candidate period length in
-   ``[_MIN_PERIOD, _MAX_PERIOD]`` and fires the instant the buffer's tail
-   consists of ``_MIN_REPEATS`` back-to-back identical copies of some
-   period-length block. Trying a full range of candidate lengths (rather
-   than a handful of fixed sizes) matters here: real repeated content has
-   whatever length its own lines happen to add up to, essentially never a
-   "round" number, so a sparse fixed ladder would miss almost everything in
-   practice. Every check is a handful of bounded-length slice comparisons
-   (bounded by ``_MAX_PERIOD``, never by total buffer length), so this stays
-   cheap regardless of how long the round has been generating.
+   same 3 lines over and over"): fires the instant the buffer's tail consists
+   of ``_MIN_REPEATS`` back-to-back identical copies of some block whose
+   length lies in ``[_MIN_PERIOD, _MAX_PERIOD]``. Admitting a full range of
+   period lengths (rather than a handful of fixed sizes) matters here: real
+   repeated content has whatever length its own lines happen to add up to,
+   essentially never a "round" number, so a sparse fixed ladder would miss
+   almost everything in practice. The candidate lengths are *found*, not
+   enumerated (see :meth:`~CyclicThinkingDetector._check_exact_repeat`), so
+   the usual non-repeating case costs one C-level substring search rather
+   than hundreds of Python-level slice comparisons -- this check runs on
+   every single streamed fragment, so its constant factor is the dominant
+   cost of the whole class.
 2. **Fuzzy near-duplicate** (throttled -- run only every
    ``_FUZZY_CHECK_INTERVAL_CHARS`` new characters, since it's a more
    expensive check): a shingled similarity ratio between the two most recent
@@ -57,7 +59,10 @@ __all__ = ["CyclicThinkingDetector"]
 # by innocent coincidence) is never even considered -- the target failure
 # mode ("the same 3 lines over and over") is line-scale, not word-scale, and
 # a higher floor also meaningfully cuts the odds of a short-period exact
-# match ever occurring by pure chance in ordinary prose.
+# match ever occurring by pure chance in ordinary prose. It doubles as the
+# probe length in ``_check_exact_repeat`` (a probe must fit inside a single
+# period), which is the other reason not to drop it near word scale: a short
+# probe recurs by chance and costs extra searches.
 _MIN_PERIOD = 24
 _MAX_PERIOD = 600
 
@@ -118,16 +123,46 @@ class CyclicThinkingDetector:
         return False
 
     def _check_exact_repeat(self) -> bool:
+        """True iff the buffer's tail is ``_MIN_REPEATS`` copies of one block.
+
+        Candidate period lengths are located instead of enumerated. Any
+        qualifying period ``p`` makes the buffer's last ``_MIN_PERIOD``
+        characters (the *probe*) reappear verbatim exactly ``p`` characters
+        earlier -- the probe is no longer than one period, and stepping one
+        period back stays inside the repeated region -- so the candidate
+        periods are precisely the probe's earlier occurrences, which
+        ``str.rfind`` locates at C speed. In ordinary non-repeating prose the
+        probe never recurs, so the whole check is one failed search. Walking
+        every length in ``[_MIN_PERIOD, _MAX_PERIOD]`` instead would copy
+        hundreds of kilobytes per streamed fragment (~170us a call, enough to
+        stall the streaming event loop for most of a second on a long
+        thinking block); this costs under a microsecond.
+        """
         buf = self._buf
         n = len(buf)
-        for p in range(_MIN_PERIOD, _MAX_PERIOD + 1):
-            if n < _MIN_REPEATS * p:
-                break  # every larger period is even less satisfiable
-            tail = buf[n - p :]
-            if all(
-                buf[n - rep * p : n - (rep - 1) * p] == tail for rep in range(2, _MIN_REPEATS + 1)
+        if n < _MIN_REPEATS * _MIN_PERIOD:
+            return False
+
+        probe = buf[n - _MIN_PERIOD :]
+        probe_start = n - _MIN_PERIOD
+        # An occurrence starting at `idx` means period == probe_start - idx,
+        # so these two bounds are exactly the `p <= _MAX_PERIOD` and
+        # `p >= _MIN_PERIOD` constraints.
+        earliest_start = max(0, probe_start - _MAX_PERIOD)
+        search_end = probe_start  # exclusive end of the region rfind may match in
+        while search_end - earliest_start >= _MIN_PERIOD:
+            idx = buf.rfind(probe, earliest_start, search_end)
+            if idx < 0:
+                return False
+            p = probe_start - idx
+            # A run of `_MIN_REPEATS` identical period-p blocks is exactly a
+            # tail of `_MIN_REPEATS * p` characters that equals itself shifted
+            # by one period -- one comparison instead of `_MIN_REPEATS - 1`.
+            if n >= _MIN_REPEATS * p and (
+                buf[n - _MIN_REPEATS * p : n - p] == buf[n - (_MIN_REPEATS - 1) * p : n]
             ):
                 return True
+            search_end = idx + _MIN_PERIOD - 1  # keep looking strictly further back
         return False
 
     def _check_fuzzy_repeat(self) -> bool:

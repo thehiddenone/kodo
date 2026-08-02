@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import random
 
-from kodo.runtime._cyclic_thinking import CyclicThinkingDetector
+from kodo.runtime._cyclic_thinking import (
+    _MAX_PERIOD,
+    _MIN_PERIOD,
+    _MIN_REPEATS,
+    CyclicThinkingDetector,
+)
 
 _VOCAB = [
     "system", "value", "threshold", "compute", "review", "dataset", "vector",
@@ -77,6 +82,32 @@ def test_exact_repeat_detected_when_fed_in_single_character_fragments() -> None:
     detector = CyclicThinkingDetector()
 
     assert _feed_chunks(detector, block * 3, size=1) is True
+
+
+def test_exact_repeat_fires_at_both_ends_of_the_period_range() -> None:
+    """The shortest and longest admitted period lengths both fire.
+
+    ``_check_exact_repeat`` locates candidate periods by searching for a
+    repeat of the buffer's trailing ``_MIN_PERIOD`` characters rather than
+    trying each length in turn, so the two ends of ``[_MIN_PERIOD,
+    _MAX_PERIOD]`` are exactly where an off-by-one in that search would show
+    up -- neither is exercised by the line-scale blocks used elsewhere here.
+    """
+    for period in (_MIN_PERIOD, _MAX_PERIOD):
+        block = "".join(_VOCAB[i % len(_VOCAB)][0] for i in range(period))
+        detector = CyclicThinkingDetector()
+
+        assert _feed_chunks(detector, block * _MIN_REPEATS) is True, period
+
+
+def test_repeat_shorter_than_the_minimum_period_never_fires() -> None:
+    """A block one character below ``_MIN_PERIOD``, repeated the required
+    number of times, stays below the floor and must not fire -- the floor is
+    what keeps word-scale repetition out (see ``_MIN_PERIOD``'s rationale)."""
+    block = "x" * (_MIN_PERIOD - 1)
+    detector = CyclicThinkingDetector()
+
+    assert _feed_chunks(detector, block * _MIN_REPEATS) is False
 
 
 def test_two_repeats_of_a_long_period_never_fires() -> None:
