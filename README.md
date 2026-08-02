@@ -1,8 +1,8 @@
 # Kōdo
 
-<div style="display: flex; justify-content: center; margin: 20px 0;">
-    <center><img src="images/kodo256px.svg" width="100%" height="256px" alt="Kodo"/></center>
-</div>
+<p align="center">
+    <img src="images/kodo256px.svg" width="256" height="256" alt="Kodo"/>
+</p>
 
 [![Kodo CI](https://github.com/thehiddenone/kodo/actions/workflows/ci.yml/badge.svg)](https://github.com/thehiddenone/kodo/actions/workflows/ci.yml)
 
