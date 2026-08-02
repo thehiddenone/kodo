@@ -1414,12 +1414,12 @@ entry* name in all four, not the flavor's own name/id.
 { "type": "local_llm.add_flavor", "name": "qwen36-27b", "flavor_name": "1M Context",
   "description": "YaRN rope-scaling for a 1M-token context window.",
   "llama_args_text": "--ctx-size 1048576\n--rope-scaling yarn\n--rope-scale 4",
-  "min_ram": 0, "min_vram": 24 }
+  "min_ram": 0, "min_vram": 24, "platform": "mac" }
 { "type": "local_llm.update_flavor", "name": "qwen36-27b", "flavor_id": "1m-context",
   "flavor_name": "1M Context (tuned)",
   "description": "YaRN rope-scaling for a 1M-token context window.",
   "llama_args_text": "--ctx-size 1048576\n--rope-scaling yarn\n--rope-scale 4.5",
-  "min_ram": 0, "min_vram": 24 }
+  "min_ram": 0, "min_vram": 24, "platform": "mac" }
 { "type": "local_llm.remove_flavor", "name": "qwen36-27b", "flavor_id": "1m-context" }
 { "type": "local_llm.set_active_flavor", "name": "qwen36-27b", "flavor_id": "1m-context" }
 ```
@@ -1433,7 +1433,13 @@ already a parsed dict by the time it reaches the wire (client-parsed).
 default to `0` ("no known requirement") when omitted — `update_flavor` does
 **not** carry the previous value forward for an omitted field, unlike
 `llama_args_text`'s implicit full-replace semantics; the modal always
-resends both fields' current contents. `add_flavor` always creates a
+resends both fields' current contents. `platform` (`"mac" | "gpu" | "both"`,
+doc/LLM_REGISTRY.md §4.6b) is likewise optional, defaults to `"both"` when
+omitted/unrecognized, and is not carried forward by `update_flavor` either —
+it restricts which host(s) the flavor may be launched on and, unlike
+`min_ram`/`min_vram`, is only ever consulted for *automatic* default-flavor
+selection (`get_effective_flavor_id`), never as a selection gate. `add_flavor`
+always creates a
 **new** flavor (auto-generated id from `flavor_name`); `update_flavor`
 overwrites an **existing custom** flavor's definition in place, keeping
 `flavor_id` fixed. **Predefined flavors are strictly read-only**:

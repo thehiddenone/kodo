@@ -25,6 +25,7 @@ from huggingface_hub.errors import GatedRepoError
 
 from kodo.binutils import ensure_all_utils
 from kodo.llms import (
+    LlamaFlavorPlatform,
     LLMGateway,
     LLMRouting,
     LocalLLMEntry,
@@ -376,6 +377,7 @@ def _flavors_payload(entry: LocalLLMEntry, kodo_dir: Path) -> list[dict[str, obj
             "predefined": f.id in predefined_ids,
             "min_ram": f.min_ram,
             "min_vram": f.min_vram,
+            "platform": f.platform.value,
         }
         for f in get_flavors(kodo_dir, entry)
     ]
@@ -1370,6 +1372,17 @@ def _parse_non_negative_int(raw: object) -> int:
         return 0
 
 
+def _parse_flavor_platform(raw: object) -> LlamaFlavorPlatform:
+    """Best-effort ``LlamaFlavorPlatform`` parse for the ``platform`` webview field
+    (add_flavor/update_flavor) — falls back to ``BOTH`` ("no known
+    restriction") for anything missing or unrecognized, same permissive
+    style as :func:`_parse_non_negative_int`."""
+    try:
+        return LlamaFlavorPlatform(str(raw))
+    except ValueError:
+        return LlamaFlavorPlatform.BOTH
+
+
 def _seed_default_flavor(kodo_dir: Path, entry: LocalLLMEntry, payload: dict[str, object]) -> None:
     """Seed *entry*'s first (custom) flavor from an "Add local LLM" modal's own fields.
 
@@ -1535,6 +1548,7 @@ async def _handle_local_llm_add_flavor(req: Request) -> None:
             llama_args=parse_llama_args_text(payload.get("llama_args_text", "")),
             min_ram=_parse_non_negative_int(payload.get("min_ram", 0)),
             min_vram=_parse_non_negative_int(payload.get("min_vram", 0)),
+            platform=_parse_flavor_platform(payload.get("platform")),
         )
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
@@ -1563,6 +1577,7 @@ async def _handle_local_llm_update_flavor(req: Request) -> None:
             llama_args=parse_llama_args_text(payload.get("llama_args_text", "")),
             min_ram=_parse_non_negative_int(payload.get("min_ram", 0)),
             min_vram=_parse_non_negative_int(payload.get("min_vram", 0)),
+            platform=_parse_flavor_platform(payload.get("platform")),
         )
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))

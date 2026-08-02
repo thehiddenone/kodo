@@ -23,6 +23,7 @@ import pytest
 from kodo.llms import _local_registry
 from kodo.llms._local_registry import (
     LlamaFlavor,
+    LlamaFlavorPlatform,
     LocalLLMEntry,
     add_flavor,
     add_local_entry,
@@ -204,6 +205,62 @@ def test_get_flavors_round_trips_min_ram_and_min_vram_from_disk(tmp_path: Path) 
     assert custom.min_vram == 0
 
 
+def test_get_flavors_round_trips_platform_from_disk(tmp_path: Path) -> None:
+    import json
+
+    registry_file = tmp_path / "etc" / "local-llm-registry.json"
+    registry_file.parent.mkdir(parents=True)
+    registry_file.write_text(
+        json.dumps(
+            {
+                "flavors": {
+                    "fake-model": [
+                        {
+                            "id": "gpu-flavor",
+                            "name": "GPU Flavor",
+                            "llama_args": {},
+                            "platform": "gpu",
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    entry = get_local_registry(tmp_path)["fake-model"]
+    custom = next(f for f in get_flavors(tmp_path, entry) if f.id == "gpu-flavor")
+    assert custom.platform == LlamaFlavorPlatform.GPU
+
+
+def test_get_flavors_defaults_platform_to_both_when_missing_or_invalid_on_disk(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    registry_file = tmp_path / "etc" / "local-llm-registry.json"
+    registry_file.parent.mkdir(parents=True)
+    registry_file.write_text(
+        json.dumps(
+            {
+                "flavors": {
+                    "fake-model": [
+                        {"id": "no-platform", "name": "No Platform", "llama_args": {}},
+                        {
+                            "id": "bad-platform",
+                            "name": "Bad Platform",
+                            "llama_args": {},
+                            "platform": "windows",
+                        },
+                    ]
+                }
+            }
+        )
+    )
+    entry = get_local_registry(tmp_path)["fake-model"]
+    flavors = {f.id: f for f in get_flavors(tmp_path, entry)}
+    assert flavors["no-platform"].platform == LlamaFlavorPlatform.BOTH
+    assert flavors["bad-platform"].platform == LlamaFlavorPlatform.BOTH
+
+
 def test_get_flavors_empty_after_removing_a_custom_entrys_only_flavor(tmp_path: Path) -> None:
     # add_local_entry forces flavors=() on every custom kind, so a custom
     # entry starts genuinely flavor-less until something (here: the test
@@ -283,6 +340,18 @@ def test_add_flavor_can_set_min_ram_and_min_vram(tmp_path: Path) -> None:
     flavor = add_flavor(tmp_path, "fake-model", "Mac Flavor", min_ram=64, min_vram=0)
     assert flavor.min_ram == 64
     assert flavor.min_vram == 0
+
+
+def test_add_flavor_defaults_platform_to_both(tmp_path: Path) -> None:
+    flavor = add_flavor(tmp_path, "fake-model", "New")
+    assert flavor.platform == LlamaFlavorPlatform.BOTH
+
+
+def test_add_flavor_can_set_platform(tmp_path: Path) -> None:
+    flavor = add_flavor(
+        tmp_path, "fake-model", "Mac Flavor", platform=LlamaFlavorPlatform.MAC
+    )
+    assert flavor.platform == LlamaFlavorPlatform.MAC
 
 
 def test_add_flavor_strips_reserved_reasoning_cap_args(tmp_path: Path) -> None:
@@ -401,6 +470,21 @@ def test_update_flavor_can_set_min_ram_and_min_vram(tmp_path: Path) -> None:
     )
     assert updated.min_ram == 24
     assert updated.min_vram == 12
+
+
+def test_update_flavor_can_set_platform(tmp_path: Path) -> None:
+    flavor = add_flavor(tmp_path, "fake-model", "GPU Flavor")
+    updated = update_flavor(
+        tmp_path, "fake-model", flavor.id, "GPU Flavor (v2)", platform=LlamaFlavorPlatform.GPU
+    )
+    assert updated.platform == LlamaFlavorPlatform.GPU
+
+
+def test_update_flavor_resets_platform_to_both_if_not_resent(tmp_path: Path) -> None:
+    # Same not-carried-forward convention as min_ram/min_vram (see below).
+    flavor = add_flavor(tmp_path, "fake-model", "GPU Flavor", platform=LlamaFlavorPlatform.GPU)
+    updated = update_flavor(tmp_path, "fake-model", flavor.id, "GPU Flavor (v2)")
+    assert updated.platform == LlamaFlavorPlatform.BOTH
 
 
 def test_update_flavor_strips_reserved_reasoning_cap_args(tmp_path: Path) -> None:
@@ -572,6 +656,57 @@ def test_get_effective_flavor_id_falls_back_when_active_selection_is_stale(tmp_p
     set_active_flavor(tmp_path, "fake-model", flavor.id)
     (tmp_path / "etc" / "local-llm-registry.json").unlink()
     assert get_effective_flavor_id(tmp_path, _BASE_ENTRY) == _DEFAULT_FLAVOR.id
+
+
+def test_get_effective_flavor_id_skips_platform_incompatible_flavor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A GPU-only flavor listed first must be skipped in favor of a
+    # Mac-compatible one further down, when auto-selecting a default on a
+    # (simulated) Mac host and no active flavor is set.
+    monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
+    entry = LocalLLMEntry(
+        name="platform-test",
+        kind="hardcoded_hf",
+        repo_id="acme/platform-test",
+        filename="platform-test.gguf",
+        flavors=(
+            LlamaFlavor(id="gpu-only", name="GPU Only", platform=LlamaFlavorPlatform.GPU),
+            LlamaFlavor(id="mac-only", name="Mac Only", platform=LlamaFlavorPlatform.MAC),
+        ),
+    )
+    assert get_effective_flavor_id(tmp_path, entry) == "mac-only"
+
+
+def test_get_effective_flavor_id_falls_back_to_first_when_none_compatible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every flavor targets the other platform — some (possibly broken)
+    # launch beats none, so the first available flavor is still returned.
+    monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
+    entry = LocalLLMEntry(
+        name="platform-test-2",
+        kind="hardcoded_hf",
+        repo_id="acme/platform-test-2",
+        filename="platform-test-2.gguf",
+        flavors=(
+            LlamaFlavor(id="gpu-only-a", name="GPU Only A", platform=LlamaFlavorPlatform.GPU),
+            LlamaFlavor(id="gpu-only-b", name="GPU Only B", platform=LlamaFlavorPlatform.GPU),
+        ),
+    )
+    assert get_effective_flavor_id(tmp_path, entry) == "gpu-only-a"
+
+
+def test_get_effective_flavor_id_explicit_choice_bypasses_platform_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An explicit set_active_flavor selection always wins, even if it names
+    # a flavor that isn't compatible with the current host.
+    monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
+    gpu_flavor = add_flavor(tmp_path, "fake-model", "GPU Only", platform=LlamaFlavorPlatform.GPU)
+    set_active_flavor(tmp_path, "fake-model", gpu_flavor.id)
+    entry = get_local_registry(tmp_path)["fake-model"]
+    assert get_effective_flavor_id(tmp_path, entry) == gpu_flavor.id
 
 
 def test_get_effective_flavor_id_empty_when_entry_has_no_flavors(tmp_path: Path) -> None:

@@ -29,7 +29,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
@@ -40,6 +42,7 @@ __all__ = [
     "REASONING_BUDGET_MESSAGE",
     "RESERVED_REASONING_CAP_ARGS",
     "LlamaFlavor",
+    "LlamaFlavorPlatform",
     "LocalLLMEntry",
     "add_flavor",
     "add_local_entry",
@@ -277,6 +280,49 @@ def local_thinking_default_tier(base_llm: str) -> str:
     return ""
 
 
+class LlamaFlavorPlatform(StrEnum):
+    """Which host platform(s) a :class:`LlamaFlavor` may be launched on.
+
+    A single-pool ("mac") vs. dual-pool ("gpu") launch config are often not
+    interchangeable — e.g. a huge YaRN-extended context flavor may only be
+    practical on Apple Silicon's unified memory, never on a discrete-GPU +
+    system-RAM split. This is a str :class:`Enum` (not two independent
+    booleans) so a flavor always declares exactly one of three states, and
+    so it serializes to/from JSON as a plain string via
+    :func:`_flavor_to_json`/:func:`_flavor_from_json`.
+
+    Values:
+        MAC: Only compatible with Apple Silicon (unified memory).
+        GPU: Only compatible with a Windows/Linux discrete-GPU PC.
+        BOTH: Compatible with either platform — the default for every
+            built-in flavor unless a docstring says otherwise.
+    """
+
+    MAC = "mac"
+    GPU = "gpu"
+    BOTH = "both"
+
+
+def current_host_platform() -> LlamaFlavorPlatform:
+    """The :class:`LlamaFlavorPlatform` bucket this kodo process is running on.
+
+    ``LlamaFlavorPlatform.MAC`` on macOS (Apple Silicon's unified-memory
+    pool), otherwise ``LlamaFlavorPlatform.GPU`` (Windows/Linux, a
+    discrete-GPU-plus-system-RAM PC) — mirrors the same ``sys.platform ==
+    "darwin"`` check :func:`kodo.llms.detect_vram_gb`/:func:`detect_ram_gb`
+    already use to distinguish the two hardware models. There is no
+    finer-grained detection (e.g. "actually has an NVIDIA GPU") — a non-Mac
+    host is always treated as the "gpu" bucket regardless of whether a
+    discrete GPU is actually present, matching the existing convention.
+    """
+    return LlamaFlavorPlatform.MAC if sys.platform == "darwin" else LlamaFlavorPlatform.GPU
+
+
+def _flavor_compatible_with_host(flavor: LlamaFlavor) -> bool:
+    """Whether *flavor* may be launched on :func:`current_host_platform`."""
+    return flavor.platform in (LlamaFlavorPlatform.BOTH, current_host_platform())
+
+
 @dataclass(frozen=True)
 class LlamaFlavor:
     """A named, alternate launch configuration for a :class:`LocalLLMEntry`.
@@ -309,10 +355,12 @@ class LlamaFlavor:
             custom flavors (see :func:`add_flavor`); hardcoded ones set it
             explicitly as a literal.
         name: Human-readable display name shown in the flavor dropdown.
-        mac: True if this flavor is compatible with Apple Silicon,
-            False otherwise.
-        gpu: True if this flavor is compatible with discrete GPU PCs,
-            False otherwise.
+        platform: Which host platform(s) this flavor may be launched on —
+            see :class:`LlamaFlavorPlatform`. Defaults to ``BOTH``. Used by
+            :func:`get_effective_flavor_id` to skip an incompatible flavor
+            when auto-selecting a default (no active flavor set yet); has no
+            effect on an *explicit* :func:`set_active_flavor` choice, which
+            is never overridden.
         description: Optional human-readable explanation.
         llama_args: CLI flags passed verbatim to ``llama-server`` while this
             flavor is active — the complete set, not "extras" layered on top
@@ -347,8 +395,7 @@ class LlamaFlavor:
 
     id: str
     name: str
-    mac: bool = False
-    gpu: bool = False
+    platform: LlamaFlavorPlatform = LlamaFlavorPlatform.BOTH
     description: str = ""
     llama_args: dict[str, str] = field(default_factory=dict)
     min_ram: int = 0
@@ -382,8 +429,7 @@ class LlamaFlavor:
         return LlamaFlavor(
             id="default",
             name="default",
-            mac=True,
-            gpu=True,
+            platform=LlamaFlavorPlatform.BOTH,
             description="Default flavor",
             llama_args={
                 "--cache-type-k": "q8_0",
@@ -400,8 +446,7 @@ class LlamaFlavor:
         return LlamaFlavor(
             id="default",
             name="default",
-            mac=True,
-            gpu=True,
+            platform=LlamaFlavorPlatform.BOTH,
             description="Default flavor",
             llama_args={
                 "--cache-type-k": "f16",
@@ -418,7 +463,7 @@ class LlamaFlavor:
         return LlamaFlavor(
             id=id,
             name=name,
-            mac=True,
+            platform=LlamaFlavorPlatform.MAC,
             description="Default flavor",
             llama_args={
                 "--ctx-size": "524288",
@@ -439,7 +484,7 @@ class LlamaFlavor:
         return LlamaFlavor(
             id=id,
             name=name,
-            mac=True,
+            platform=LlamaFlavorPlatform.MAC,
             description="Default flavor",
             llama_args={
                 "--ctx-size": "1048576",
@@ -460,7 +505,7 @@ class LlamaFlavor:
         return LlamaFlavor(
             id=id,
             name=name,
-            mac=True,
+            platform=LlamaFlavorPlatform.MAC,
             description="Default flavor",
             llama_args={
                 "--ctx-size": "524288",
@@ -481,7 +526,7 @@ class LlamaFlavor:
         return LlamaFlavor(
             id=id,
             name=name,
-            mac=True,
+            platform=LlamaFlavorPlatform.MAC,
             description="Default flavor",
             llama_args={
                 "--ctx-size": "1048576",
@@ -2635,6 +2680,19 @@ def _save_external(kodo_dir: Path, entries: list[LocalLLMEntry], override_path: 
 # ---------------------------------------------------------------------------
 
 
+def _parse_flavor_platform(raw: object) -> LlamaFlavorPlatform:
+    """Best-effort :class:`LlamaFlavorPlatform` parse for a persisted/wire value.
+
+    Falls back to ``BOTH`` ("no known restriction — runnable everywhere") for
+    anything missing or unrecognized, same permissive spirit as
+    :func:`kodo.server._app._parse_non_negative_int`.
+    """
+    try:
+        return LlamaFlavorPlatform(str(raw))
+    except ValueError:
+        return LlamaFlavorPlatform.BOTH
+
+
 def _flavor_from_json(raw: dict[str, object]) -> LlamaFlavor | None:
     flavor_id = str(raw.get("id", "")).strip()
     name = str(raw.get("name", "")).strip()
@@ -2647,6 +2705,7 @@ def _flavor_from_json(raw: dict[str, object]) -> LlamaFlavor | None:
         llama_args=parse_llama_args(raw.get("llama_args", {})),
         min_ram=int(cast(int, raw.get("min_ram", 0)) or 0),
         min_vram=int(cast(int, raw.get("min_vram", 0)) or 0),
+        platform=_parse_flavor_platform(raw.get("platform")),
     )
 
 
@@ -2658,6 +2717,7 @@ def _flavor_to_json(flavor: LlamaFlavor) -> dict[str, object]:
         "llama_args": flavor.llama_args,
         "min_ram": flavor.min_ram,
         "min_vram": flavor.min_vram,
+        "platform": flavor.platform.value,
     }
 
 
@@ -2740,6 +2800,7 @@ def add_flavor(
     llama_args: dict[str, str] | None = None,
     min_ram: int = 0,
     min_vram: int = 0,
+    platform: LlamaFlavorPlatform = LlamaFlavorPlatform.BOTH,
 ) -> LlamaFlavor:
     """Add a brand-new custom flavor to *entry_name*, auto-assigning its ``id`` from *name*.
 
@@ -2763,6 +2824,7 @@ def add_flavor(
         min_ram: See ``LlamaFlavor.min_ram``. Defaults to ``0`` (unknown/no
             requirement — the hardware-fit check stays inactive).
         min_vram: See ``LlamaFlavor.min_vram``. Same default as *min_ram*.
+        platform: See ``LlamaFlavor.platform``. Defaults to ``BOTH``.
 
     Returns:
         LlamaFlavor: The created flavor, with its assigned ``id``.
@@ -2801,6 +2863,7 @@ def add_flavor(
         llama_args=_strip_reasoning_cap_args(dict(llama_args or {})),
         min_ram=min_ram,
         min_vram=min_vram,
+        platform=platform,
     )
     data = _load_raw(kodo_dir)
     all_flavors = _all_custom_flavors(data)
@@ -2820,6 +2883,7 @@ def update_flavor(
     llama_args: dict[str, str] | None = None,
     min_ram: int = 0,
     min_vram: int = 0,
+    platform: LlamaFlavorPlatform = LlamaFlavorPlatform.BOTH,
 ) -> LlamaFlavor:
     """Overwrite an existing *custom* flavor's definition in place, keeping its ``id``.
 
@@ -2849,6 +2913,8 @@ def update_flavor(
             longer carries the original flavor's value forward automatically;
             the caller must resend it to keep it unchanged.
         min_vram: See ``LlamaFlavor.min_vram``. Same default as *min_ram*.
+        platform: See ``LlamaFlavor.platform``. Defaults to ``BOTH``, same
+            not-carried-forward caveat as *min_ram*/*min_vram*.
 
     Returns:
         LlamaFlavor: The updated flavor.
@@ -2884,6 +2950,7 @@ def update_flavor(
         llama_args=_strip_reasoning_cap_args(dict(llama_args or {})),
         min_ram=min_ram,
         min_vram=min_vram,
+        platform=platform,
     )
     data = _load_raw(kodo_dir)
     all_flavors = _all_custom_flavors(data)
@@ -3020,17 +3087,26 @@ def get_effective_flavor_id(kodo_dir: Path, entry: LocalLLMEntry) -> str:
     """The flavor id that would actually be launched for *entry* right now.
 
     - The active flavor (:func:`get_active_flavor`), if set and still
-      present among :func:`get_flavors`.
+      present among :func:`get_flavors` — an *explicit* choice is never
+      overridden by platform compatibility, even if it turns out to name a
+      flavor that isn't compatible with :func:`current_host_platform`.
     - Otherwise (unset, or a stale id whose definition was removed since it
-      was selected — "Default" in the UI) the first available flavor's id.
+      was selected — "Default" in the UI) the first available flavor that
+      is compatible with :func:`current_host_platform` (see
+      :func:`_flavor_compatible_with_host`) — e.g. on Apple Silicon, a
+      ``LlamaFlavorPlatform.GPU``-only flavor is skipped in favor of the
+      next compatible one. If *no* flavor is compatible (every one of
+      *entry*'s flavors targets the other platform), falls back to the
+      first available flavor regardless, same as before this check
+      existed — some (possibly broken) launch is preferable to none.
     - ``""`` if *entry* has no flavors at all.
 
     Callers that need to decide whether editing/removing a specific flavor
     id would change what's currently launched (e.g. whether to restart
     llama-server) compare against this, not the raw
     :func:`get_active_flavor` value — an *unset* active flavor still
-    resolves to a real one (the first available), so a change to that one
-    is effectively an active-flavor change too.
+    resolves to a real one (the first compatible, or first overall), so a
+    change to that one is effectively an active-flavor change too.
 
     Args:
         kodo_dir: User-level ``~/.kodo`` directory.
@@ -3043,7 +3119,19 @@ def get_effective_flavor_id(kodo_dir: Path, entry: LocalLLMEntry) -> str:
     flavor_id = get_active_flavor(kodo_dir, entry.name)
     if flavor_id and any(f.id == flavor_id for f in flavors):
         return flavor_id
-    return flavors[0].id if flavors else ""
+    if not flavors:
+        return ""
+    compatible = [f for f in flavors if _flavor_compatible_with_host(f)]
+    if not compatible:
+        _log.warning(
+            "No flavor of %r is compatible with the current platform (%s); "
+            "falling back to %r anyway",
+            entry.name,
+            current_host_platform().value,
+            flavors[0].id,
+        )
+        return flavors[0].id
+    return compatible[0].id
 
 
 def resolve_effective_llama_config(

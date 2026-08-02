@@ -227,13 +227,15 @@ merges the compiled-in tuple with the external collection persisted at
   "flavors": {
     "my-custom-model": [
       { "id": "default", "name": "default", "description": "Default flavor",
-        "llama_args": {"--cache-type-k": "q8_0"} }
+        "llama_args": {"--cache-type-k": "q8_0"}, "platform": "both" }
     ],
     "unsloth-qwen36-27b-q4-k-xl": [
       { "id": "1m-context", "name": "1M Context", "description": "...",
-        "llama_args": {"--ctx-size": "1048576", "--rope-scaling": "yarn", "--rope-scale": "4"} },
+        "llama_args": {"--ctx-size": "1048576", "--rope-scaling": "yarn", "--rope-scale": "4"},
+        "platform": "mac" },
       { "id": "default", "name": "Default (fp16 KV cache)", "description": "Override of the built-in default",
-        "llama_args": {"--cache-type-k": "fp16", "--cache-type-v": "fp16", "--ctx-size": "0", "--jinja": ""} }
+        "llama_args": {"--cache-type-k": "fp16", "--cache-type-v": "fp16", "--ctx-size": "0", "--jinja": ""},
+        "platform": "both" }
     ]
   },
   "active_flavors": {
@@ -593,6 +595,7 @@ flavors at once.
 class LlamaFlavor:
     id: str                                    # slug, unique per entry (predefined + custom)
     name: str                                   # display name
+    platform: LlamaFlavorPlatform = LlamaFlavorPlatform.BOTH  # see §4.6b
     description: str = ""
     llama_args: dict[str, str] = field(default_factory=dict)  # the complete CLI flag set
 ```
@@ -745,8 +748,8 @@ flavors):
 with the same `local_llm.registry_state` event as every other `local_llm.*`
 mutation — each entry in that payload's `local_registry` now carries
 `flavors: [...]` (each `{id, name, description, llama_args, predefined,
-min_ram, min_vram}`, §4.6a) and `active_flavor` (a flavor id, or `""` for
-unset/Default), so kodo-vsix never needs a separate fetch. `predefined`
+min_ram, min_vram, platform}`, §4.6a/§4.6b) and `active_flavor` (a flavor
+id, or `""` for unset/Default), so kodo-vsix never needs a separate fetch. `predefined`
 reflects whether `id` is one of `entry.flavors`' ids — it's what drives the
 "Manage flavors" modal disabling both "Remove" and "Submit" for that
 flavor client-side, mirroring `remove_flavor`/`update_flavor`'s own
@@ -794,11 +797,13 @@ split into two panes:
   server enforces the same rule independently, see above), description, a
   **multi-line** raw-text `llama_args` box — one `--flag value` per line,
   parsed server-side via `parse_llama_args_text`, unlike the single-line
-  client-parsed box the "Add local LLM" modals use, see §4 — and two number
+  client-parsed box the "Add local LLM" modals use, see §4 — two number
   inputs, "Minimum RAM (GB)" and "Minimum VRAM (GB)" (§4.6a's `min_ram`/
   `min_vram`; no context-window field, since that's now deduced per
-  `resolve_context_window` instead of being its own input), plus "Submit"
-  and "Close" buttons. "Submit" sends `add_flavor` when nothing is selected
+  `resolve_context_window` instead of being its own input), and a three-way
+  "Platform compatibility" radio group — "Mac only" / "GPU only" / "Both"
+  (§4.6b's `platform`, defaulting to "Both" for a brand-new flavor) — plus
+  "Submit" and "Close" buttons. "Submit" sends `add_flavor` when nothing is selected
   (the "Add" flow) or `update_flavor` with the selected flavor's id when
   editing an existing *custom* one. **Predefined flavors are read-only in
   this modal**: selecting one sets every field (`readonly`, so its text
@@ -898,6 +903,75 @@ re-pushes its (unchanged) state, which resets the sidebar's flavor
 `<select>` back to the real active flavor on the next render (the sidebar
 is the only live flavor-selection surface, per §4.6's kodo-vsix UI note —
 "Manage flavors" is CRUD-only, not a selection action, so it isn't gated).
+
+### 4.6b Per-flavor platform compatibility (`platform`)
+
+`LlamaFlavor` carries a third field beyond `llama_args`/`min_ram`/`min_vram`:
+
+```python
+class LlamaFlavorPlatform(StrEnum):
+    MAC = "mac"    # Apple Silicon only
+    GPU = "gpu"    # Windows/Linux discrete-GPU PC only
+    BOTH = "both"  # no restriction — the default
+
+platform: LlamaFlavorPlatform = LlamaFlavorPlatform.BOTH
+```
+
+Unlike `min_ram`/`min_vram` (§4.6a — a *hardware-fit* gate the user can
+override with "proceed anyway"), `platform` is a hard compile-time-style
+restriction: some launch configs simply don't make sense on the other
+platform at all — e.g. the built-in Qwen "512K"/"1M context" flavors
+(`make_qwen_512k_kv_q8`/`make_qwen_1m_kv_q8`/`make_qwen_moe_*` in
+`_local_registry.py`) set `platform=MAC`, since a context window that large
+only fits inside Apple Silicon's unified-memory pool — there is no
+equivalent discrete-GPU-plus-system-RAM configuration that makes sense at
+that size. Every other built-in flavor (the default q8/fp16 KV-cache ones)
+sets `platform=BOTH`.
+
+**This does not gate *manual* flavor selection** — `set_active_flavor`
+performs no platform check (same as it performs no hardware-fit check;
+that's `hardwareFitWarningForFlavor`'s job, §4.6a, and it's an
+independent, client-side-only concern). What `platform` *does* gate is
+**automatic default selection**: `get_effective_flavor_id(kodo_dir, entry)`
+(§4.6's fallback rule) now skips a flavor whose `platform` doesn't match
+`current_host_platform()` (`sys.platform == "darwin"` → `MAC`, else `GPU`
+— the same convention `kodo.llms.detect_vram_gb`/`detect_ram_gb` already
+use) when picking the first available flavor for an *unset* active
+selection. If every one of *entry*'s flavors targets the other platform,
+the very first one is still returned regardless (some, possibly
+non-functional, launch beats none) — this only ever changes which flavor
+is picked among several, never causes a "no launch" outcome. An *explicit*
+`set_active_flavor` choice is never second-guessed by this check, even if
+it names an incompatible flavor.
+
+**Wire shape**: `_flavors_payload` (`kodo/server/_app.py`) adds
+`platform: "mac" | "gpu" | "both"` to each flavor object in
+`local_registry[].flavors[]` (alongside `id`/`name`/`description`/
+`llama_args`/`predefined`/`min_ram`/`min_vram`) — mirrored in kodo-vsix's
+`LlamaFlavorInfo` (`src/llm-registry-types.ts`) and the settings webview's
+own duplicate `LocalFlavor` (`src/settings-webview/types.ts`).
+`_flavor_to_json`/`_flavor_from_json` round-trip the field (as its plain
+string value) through `~/.kodo/etc/local-llm-registry.json` for a custom
+flavor, falling back to `BOTH` for anything missing or unrecognized
+(`_parse_flavor_platform`, both in `_local_registry.py` for the JSON store
+and in `kodo/server/_app.py` for the WS payload).
+
+**Editable via the "Manage flavors" modal** (§4.6) — `add_flavor`/
+`update_flavor` both take a `platform` keyword param (WS payload field
+`platform`, parsed server-side, defaulting to `"both"` when absent/
+unrecognized), matching a three-way "Platform compatibility" radio group
+("Mac only" / "GPU only" / "Both") in the modal's right pane
+(`FlavorModal.tsx`). Since predefined flavors are read-only (§4.6), only a
+*custom* flavor's platform can ever be set this way. Like `min_ram`/
+`min_vram`, `update_flavor` does **not** carry the previous value forward
+when omitted — it resets to `"both"` — since the modal always resends its
+own radio group's current selection. The flavor list (left pane) shows a
+short badge next to a restricted flavor's name (" — Mac only" / " —
+GPU only"; nothing extra for "Both", since that's "no restriction," not
+worth calling out on every row) via `flavorPlatformBadge`
+(`src/settings-webview/localLlmUtils.ts`) — purely informational
+client-side; the platform-aware *default*-selection behavior itself is
+entirely server-side (`get_effective_flavor_id`, above).
 
 ---
 
