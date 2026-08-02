@@ -479,6 +479,50 @@ llama.cpp predates support for that model's architecture/quantization.
 `llm_author` carries no warning logic — it's display-only metadata (the org
 that produced the base model, e.g. `"Alibaba Cloud"`).
 
+**Pre-launch confirmation gate.** Unlike this section's older text below
+might suggest, these two entry-level warnings are no longer purely
+inline/non-blocking: `localLaunchWarnings(entry, detectedVramGb,
+detectedRamGb, installedLlamaCppVersion)` (`src/llm-registry-types.ts`) is a
+second, extension-host-importable copy of the same two rules (duplicated,
+not shared, since `ramWarning`/`llamacppVersionWarning` above live in the
+webview-only `settings-webview/localLlmUtils.ts` — keep both in sync by
+hand), consumed by `confirmLocalLlamaLaunch(openSettings)`
+(`src/extension/local-llm-registry.ts`). That gate fires before llama-server
+actually launches — from the sidebar's explicit ▶ Start/↺ Restart llama.cpp
+button (`startLlamaCpp`, `src/extension/llamacpp.ts`), and again from
+`SessionController._submitPrompt` (`src/session/controller.ts`, via the
+injected `SessionDeps.confirmLocalLaunch`) right before a local-mode prompt
+send that would trigger the engine's automatic launch (i.e. local mode and
+the running server, if any, isn't already serving the active model). If the
+active model has any outstanding warning (red *or* yellow), a native modal
+lists every one and offers "Start anyway", "Start anyway, don't ask again
+for this model", an implicit Cancel (Escape/dismiss), and — only when a
+`llamacpp_version` warning is present — "Update llama.cpp…", which opens
+Kōdo Settings' Local Inference tab
+(`vscode.commands.executeCommand('kodo.openSettings', 'local-inference')`
+from the session path, to dodge a circular import; a direct `openKodoSettings`
+call from the sidebar-button path) instead of starting. Like §4.6a's
+per-flavor gate below, this is a client-side UX gate only — nothing
+server-side blocks a launch on these fields either.
+
+**"Don't ask again."** Choosing that button calls
+`dismissLocalLaunchWarnings(entry.name)` (`src/extension/settings-io.ts`),
+which appends the registry entry's `name` to a new
+`dismissedLocalLaunchWarnings: string[]` field in `UiSettings`
+(`src/settings-panel/types.ts`), persisted in the same kodo-vsix-only
+`~/.kodo/etc/ui-settings.json` file `pinnedLocalModels` lives in (§4.4's wire
+shape is unaffected — this never touches the server). `confirmLocalLlamaLaunch`
+checks this list *before* computing any warnings, so once a quant is on it,
+every future launch attempt for that exact `name` skips the dialog entirely,
+regardless of which warnings apply at that later time (a newer, different
+warning does not re-arm the dialog). This is deliberately **one-way**: there
+is no button, setting, or command that removes a name from the list once
+added — an advanced user can only do so by hand-editing the JSON file. VS
+Code's native modal dialog (`showWarningMessage`) has no checkbox widget,
+so "don't ask again" is expressed as an extra button choice, not a literal
+checkbox next to "Start anyway" — consistent with every other confirmation
+dialog in kodo-vsix, all of which are native modals.
+
 **Download progress is not part of this payload** — see
 [LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md) §11. kodo-vsix polls
 `manager-state.json` directly off disk once a second instead, independent of
@@ -487,6 +531,8 @@ the WS connection.
 **Display convention: `name` is never shown to the user, `description` always is.** For a `hardcoded_hf` entry, `name` is an internal registry-key slug (e.g. `unsloth-qwen36-27b-q8-k-xl`); `description` is the human-readable label (e.g. "Qwen 3.6 27B UD-Q8_K_XL by Unsloth"). Every kodo-vsix surface that lists local models — the sidebar model-picker cards, the Local Inference Settings model cards, the "running: …" status line, the flavor-management modal title, and download-progress rows — titles itself off `entry.description`, falling back to `entry.name` only where `description` can legitimately be empty (a `custom_*` kind entry, where `name` is whatever display text the user typed when adding it, per §4). `name` still flows through the wire/DOM as a plain identifier (dataset keys, radio values, postMessage payload fields) — that's fine; the rule is only about user-visible text.
 
 Each sidebar model-picker card also shows two meta lines below its title: `Quant: <entry.quant_type>` (falling back to `"—"` for a `custom_*` entry, which never has one — see above) and `Context: <resolved size>`. The context figure is **not** `entry.context_window` verbatim — it's resolved the same way `resolve_context_window` resolves it server-side (§4.6), just computed client-side against the card's *currently selected* flavor: `resolveContextSize(entry, activeFlavor)` in `llm-registry-types.ts` calls `flavorContextSize(activeFlavor)` (mirroring `LlamaFlavor.get_context_size()` — scans that flavor's own `llama_args` for `--ctx-size`/`-c`) and falls back to `entry.context_window` when that's absent or `0` (including every built-in flavor's default `--ctx-size: "0"` "use the GGUF's own trained length" sentinel). Recomputed whenever the card's flavor `<select>` changes, so switching flavors updates the Context line without a server round trip. `sidebar-provider.ts`'s webview script can't import that TS module directly (it's a plain string-embedded `<script>`, not a bundled module — see §4.4's `_local_registry_payload` note), so it carries its own inline JS copy of the same two functions; keep them in sync by hand if either side's resolution rule changes.
+
+Each card also shows a ⚠ warning icon to the left of the pin/favorite star whenever `localLaunchWarnings` (this section, "Pre-launch confirmation gate" above) returns anything non-empty for that entry — red if any warning is `level: 'red'`, otherwise yellow; hovering it lists every outstanding warning's `text` (native `title` attribute, one line per warning). Unlike the Context-line functions above, this one is **not** duplicated as inline webview JS: `SidebarProvider._computeLocalWarnings` (`src/sidebar-provider.ts`) calls the real `localLaunchWarnings` on the extension-host side — it can, since it's plain TS, not a webview script — and ships the per-entry result as a new top-level `localWarnings: Record<name, LocalLaunchWarning[]>` field alongside every `update` postMessage (computed fresh from the post-merge state each time, not cached in `SidebarState`/`ui-settings.json`). The webview script just looks up `localWarnings[model.name]` and renders/skips the icon — no independent copy of the memory/version rules to keep in sync here, unlike the Context-line and confirm-dialog cases.
 
 ### 4.5 Thinking-tier families
 
@@ -825,8 +871,10 @@ min_vram: int = 0  # GB — discrete GPU VRAM (Windows/Linux); always 0 on Mac
 ```
 
 Unlike `LocalLLMEntry.min_memory`/`memory` (§4.4 — one **combined**
-VRAM+RAM figure, rendered as an inline yellow/red warning that never blocks
-anything), these are two **independent** thresholds, checked as separate
+VRAM+RAM figure; also gates an actual launch as of §4.4's "Pre-launch
+confirmation gate," but as one of possibly several warnings folded into that
+one dialog rather than its own dedicated confirmation), these are two
+**independent** thresholds, checked as separate
 pools, and gate an actual action: selecting a flavor whose requirement
 exceeds detected hardware pops a native "I understand the risk, proceed" /
 "Cancel" confirmation before kodo-vsix sends `set_active_flavor` — a flavor
@@ -891,7 +939,7 @@ body:
    is always answered with concrete numbers.
 
 **The gate** lives entirely in the extension host, not the webview:
-`_setActiveFlavor(name, flavorId)` (`src/extension.ts`) looks up the flavor
+`setActiveFlavor(name, flavorId)` (`src/extension/local-llm-registry.ts`) looks up the flavor
 from `localRegistryState`, runs the check, and — only if it returns a
 warning — awaits `vscode.window.showWarningMessage(warning, {modal: true},
 'I understand the risk, proceed')` before forwarding `set_active_flavor` to

@@ -211,6 +211,13 @@ older (see doc/LLM_REGISTRY.md §4.4). `llm_author` is display-only metadata
 (the org that produced the base model, e.g. `"Alibaba Cloud"`) and carries no
 warning logic.
 
+Both of these are also re-checked, extension-host-side, immediately before an
+actual `llama.start` — either the sidebar's explicit button or a local-mode
+`prompt.submit` about to trigger the engine's automatic launch — via
+`confirmLocalLlamaLaunch` (doc/LLM_REGISTRY.md §4.4, "Pre-launch confirmation
+gate"). This remains a client-side-only gate: the server performs no hardware
+or version check of its own before launching llama.cpp.
+
 A brand-new session (no `session_id` in the request) may also carry an optional `thinking_level` field — a tier slug valid for the currently-configured active local model's thinking family, seeding `state.thinking_level` (§5.1) instead of the family default. Silently ignored (falls back to the family default) if invalid, absent, or the request resumes an existing session. kodo-vsix never sends this; it exists for the validator's RVP judge session, whose `hello` fires before there is anywhere else to attach the tier its preceding `llm.select` (§7.6a) pinned (doc/VALIDATOR.md §9).
 
 Immediately after the ack the server **also pushes** a `state` event (§5.1) and, if the resumed session has history, a `session.history` event (§5.11). The redundant `state` keeps first-connect and reconnect on identical client logic.
