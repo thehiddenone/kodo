@@ -984,13 +984,13 @@ def test_resolve_selectors_ornith_toolchain_family() -> None:
     """The 12-language tictactoe_toolchain family resolves as one submodule."""
     from kodo.validator import scenarios as scn
 
-    expected_ids = {f"ornith10-35b.tictactoe_{slug}" for slug in _ORNITH_LANGUAGES}
+    expected_ids = {f"ornith10-35b-a3b.tictactoe_{slug}" for slug in _ORNITH_LANGUAGES}
     assert expected_ids <= set(scn.scenario_ids())
 
-    resolved = dict(scn.resolve_selectors(["ornith10-35b"]))
+    resolved = dict(scn.resolve_selectors(["ornith10-35b-a3b"]))
     assert set(resolved) == expected_ids
     for scenario in resolved.values():
-        assert scenario.llm_under_test == "deepreinforce-ornith10-35b-bf16"
+        assert scenario.llm_under_test == "deepreinforce-ornith10-35b-a3b-bf16"
         assert scenario.validation_llm == "unsloth-qwen36-27b-q8-k-xl"
     # Every scenario name and workspace root is distinct across the family.
     assert len({s.name for s in resolved.values()}) == len(resolved)
@@ -1002,7 +1002,7 @@ def test_ornith_toolchain_scenarios_share_prompts_and_vary_by_language() -> None
     from kodo.validator import scenarios as scn
     from kodo.validator.prompts import PROMPTS
 
-    resolved = dict(scn.resolve_selectors(["ornith10-35b"]))
+    resolved = dict(scn.resolve_selectors(["ornith10-35b-a3b"]))
     rvp = PROMPTS.get("tictactoe_toolchain/rvp")
     upp = PROMPTS.get("tictactoe_toolchain/upp")
     task_template = PROMPTS.get("tictactoe_toolchain/task")

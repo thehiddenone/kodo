@@ -127,6 +127,7 @@ class LocalLLMEntry:
     path: str = ""          # custom_file
     url: str = ""           # custom_server_url
     base_llm: str = ""      # hardcoded_hf only — e.g. "qwen36-27b"
+    llm_author: str = ""    # hardcoded_hf only — e.g. "Alibaba Cloud"
     quant_author: str = ""  # hardcoded_hf only — e.g. "Unsloth"
     quant_type: str = ""    # hardcoded_hf only — e.g. "UD_Q4_K_XL"
     size_hint: str = ""     # hardcoded_hf only — e.g. "28.6 GB"
@@ -143,17 +144,19 @@ class LocalLLMEntry:
                              # or M5 Pro/Max); a 48GB config is tight."
     min_memory: int = 0     # hardcoded_hf only — absolute minimum combined VRAM+RAM (GB); 0 = unknown
     memory: int = 0         # hardcoded_hf only — recommended combined VRAM+RAM (GB); 0 = unknown
+    llamacpp_version: int = 0  # hardcoded_hf only in practice — minimum llama.cpp build number; 0 = any version works
 ```
 
-`base_llm`/`quant_author`/`quant_type`/`size_hint`/`gpu_tip`/`mac_tip`/
-`min_memory`/`memory` are metadata-only (never read by `ensure_llama_running`
+`base_llm`/`llm_author`/`quant_author`/`quant_type`/`size_hint`/`gpu_tip`/`mac_tip`/
+`min_memory`/`memory`/`llamacpp_version` are metadata-only (never read by `ensure_llama_running`
 or the WS handlers) — they identify, respectively, the original unquantized
-model, who produced the quant, the quant spec, the GGUF file's on-disk size
+model, who produced that original model, who produced the quant, the quant spec, the GGUF file's on-disk size
 (as displayed on the model's HuggingFace file listing, hand-copied — not
 fetched at runtime), a hand-written discrete-GPU-plus-system-RAM
 recommendation, a hand-written MacBook Pro (Apple Silicon unified-memory)
-recommendation, and two hand-picked combined-memory thresholds (GB) used for
-the client-side hardware comparison below, for every compiled-in
+recommendation, two hand-picked combined-memory thresholds (GB) used for
+the client-side hardware comparison below, and the minimum llama.cpp build
+number the model needs (also compared client-side, §4.4), for every compiled-in
 `hardcoded_hf` entry in `_HARDCODED_LOCAL_MODELS`. `gpu_tip` and `mac_tip`
 are both rough estimates off the same underlying total-memory figure —
 weight size (`size_hint`) plus an approximated KV-cache footprint at 128K
@@ -178,10 +181,12 @@ to offload across, so it stays framed as one pool. Neither `gpu_tip` nor
 underlying total-memory estimate expressed as two plain integers instead of
 prose — combined VRAM + system RAM together, not VRAM alone — see §4.4 for
 how kodo-vsix compares them against `detected_vram_gb` + `detected_ram_gb`.
-All eight
+`llamacpp_version` is the same idea applied to the installed llama.cpp build
+number instead of memory — see §4.4.
+All ten
 fields are always `""`/`0` for `custom_hf`/`custom_file`/`custom_server_url`
 — none of the `local_llm.add_*` WS commands accept them, so a user-added
-entry can never populate them. All eight of
+entry can never populate them. All ten of
 these **are** included in
 `_local_registry_payload()`'s wire shape (§4.4), alongside the raw
 `context_window` field itself — added so kodo-vsix can render the sidebar's
@@ -435,6 +440,7 @@ caught and swallowed, since this must never block the `hello` handshake.
 field kodo-vsix needs — `name`, `kind`, `description`, `repo_id`, `filename`,
 `path`, `url`, `installed`, `installed_path`, `base_llm`, `quant_author`,
 `quant_type`, `size_hint`, `gpu_tip`, `mac_tip`, `min_memory`, `memory`,
+`llm_author`, `llamacpp_version`,
 `context_window` — plus
 top-level `llama_server_override_path`, `detected_vram_gb`,
 `detected_ram_gb`, and `thinking_families` (§4.5). `installed_path` is new: the absolute path to the
@@ -457,6 +463,20 @@ too, so there is no separate yellow branch to special-case. On macOS,
 `detected_vram_gb` alone — the single unified-memory figure Apple Silicon
 already reports in full.
 
+kodo-vsix runs an analogous check against `llamacpp_version`: it parses the
+numeric suffix off the installed llama.cpp build (`llamaCpp.installedVersion`
+in webview state, a `"b<N>"` string sourced from `hello.ack`'s
+`llama_version`/kept current via `llamacpp.version_info.ack`, §7.6 in
+WS_PROTOCOL.md) and compares it against the entry's `llamacpp_version` (`0`
+means "any version works — don't warn", same convention as `min_memory`/
+`memory`). If the installed build is older, the card shows a red
+"llama.cpp update required" warning — same visual treatment as the
+`min_memory` red case, but a distinct check: a machine can have plenty of
+RAM/VRAM for a model and still be unable to run it because the installed
+llama.cpp predates support for that model's architecture/quantization.
+`llm_author` carries no warning logic — it's display-only metadata (the org
+that produced the base model, e.g. `"Alibaba Cloud"`).
+
 **Download progress is not part of this payload** — see
 [LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md) §11. kodo-vsix polls
 `manager-state.json` directly off disk once a second instead, independent of
@@ -475,7 +495,7 @@ before it must answer. Two mechanisms exist, keyed off `base_llm` (never
 
 - **`qwen_reasoning_budget`** (6 tiers: `minimal`, `low`, `medium`, `high`,
   `huge`, `unlimited`) — `Qwen36-27B`, `Qwen36-35B-A3B`, `Qwen35-9B`,
-  `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith10-35B`
+  `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith10-35B-A3B`
   (`QWEN_REASONING_BUDGET_FAMILY` in `kodo/llms/_local_registry.py`; notably
   **not** `Qwen3-Coder-Next-80B`, which despite the name shares no thinking
   mechanism with the rest of the Qwen lineup — it has no thinking family at

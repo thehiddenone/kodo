@@ -315,7 +315,7 @@ both — the judge reads the process expectation from the task, not the rubric
 
 A prompt can also carry a `{placeholder}` a scenario file fills in with
 `str.format()` before handing it to `Scenario.prompts` — the variation doesn't
-always need a second `_task` file. The `ornith10-35b/` family (12 files,
+always need a second `_task` file. The `ornith10-35b-a3b/` family (12 files,
 `tictactoe_python.py` … `tictactoe_swift.py`) does this: all twelve pull the
 same `tictactoe_toolchain/task` and format in a different `language`, and all
 share one `tictactoe_toolchain/upp` and `tictactoe_toolchain/rvp`. This family

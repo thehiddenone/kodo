@@ -24,7 +24,7 @@ To keep its promises checkable, Kōdo currently sticks to backend software — l
 
 Kōdo treats a GGUF running under llama.cpp the same way it treats a hosted API — same agents, same tools, same approval gates — and does the unglamorous plumbing work that makes that actually true, rather than just asserting it:
 
-- **A curated model catalogue.** Two dozen ready-to-install builds across Qwen 3.6 (27B dense and 35B-A3B MoE), Qwen3-Coder-Next 80B, GPT-OSS 120B and 20B, Qwen 3.5 9B, Gemma 4 26B, and Ornith 1.0 35B — each entry carrying its quant spec, on-disk size, and hand-written hardware guidance for both discrete-GPU PCs and Apple Silicon Macs.
+- **A curated model catalogue.** Two dozen ready-to-install builds across Qwen 3.6 (27B dense and 35B-A3B MoE), Qwen3-Coder-Next 80B, GPT-OSS 120B and 20B, Qwen 3.5 9B, Gemma 4 26B, and Ornith 1.0 35B-A3B — each entry carrying its quant spec, on-disk size, and hand-written hardware guidance for both discrete-GPU PCs and Apple Silicon Macs.
 
 - **Hardware-fit detection.** Kōdo reads your GPU VRAM and system RAM and checks every catalogue entry against them *before* you download — a red warning when a build won't run on your machine, a yellow one when it'll crawl at large contexts. The sizing accounts for llama.cpp's ability to split a model between GPU and system RAM (per-layer offloading for dense models, expert offloading for MoE models), so a modest consumer GPU is judged by what it can actually run, not by VRAM alone.
 

@@ -751,7 +751,7 @@ class LlamaPlugin(LLMPlugin):
             messages=oai_messages,
             tools=oai_tools if oai_tools else openai.NOT_GIVEN,
             response_format=response_format if response_format is not None else openai.NOT_GIVEN,
-            extra_body=extra_body if extra_body else openai.NOT_GIVEN,
+            extra_body=extra_body if extra_body else None,
             stream=True,
             stream_options={"include_usage": True},
         )

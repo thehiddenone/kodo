@@ -161,6 +161,7 @@ The server replies with the current world plus local-model status:
         "base_llm": "qwen36-27b", "quant_author": "Unsloth", "quant_type": "UD_Q4_K_XL",
         "size_hint": "17.9 GB", "gpu_tip": "...", "mac_tip": "...",
         "min_memory": 24, "memory": 32,
+        "llm_author": "Alibaba Cloud", "llamacpp_version": 5092,
         "flavors": [], "active_flavor": "" }
     ],
     "llama_server_override_path": null,
@@ -199,6 +200,16 @@ computed live rather than cached. The Local Inference Settings webview sums
 `detected_vram_gb` + `detected_ram_gb` and compares that total against each
 local entry's `min_memory`/`memory` to show a red/yellow hardware-fit
 warning (see doc/LLM_REGISTRY.md §4.4).
+
+`llamacpp_version` is the minimum llama.cpp build number (matching the `b<N>`
+scheme in `llama_version`) required to run that entry; `0` means "any version
+works". The webview parses the numeric suffix off `llama_version` (state
+`llamaCpp.installedVersion`, kept current via `llamacpp.version_info.ack`,
+§7.6) and compares it against each entry's `llamacpp_version`, showing a red
+"llama.cpp update required" warning on the card when the installed build is
+older (see doc/LLM_REGISTRY.md §4.4). `llm_author` is display-only metadata
+(the org that produced the base model, e.g. `"Alibaba Cloud"`) and carries no
+warning logic.
 
 A brand-new session (no `session_id` in the request) may also carry an optional `thinking_level` field — a tier slug valid for the currently-configured active local model's thinking family, seeding `state.thinking_level` (§5.1) instead of the family default. Silently ignored (falls back to the family default) if invalid, absent, or the request resumes an existing session. kodo-vsix never sends this; it exists for the validator's RVP judge session, whose `hello` fires before there is anywhere else to attach the tier its preceding `llm.select` (§7.6a) pinned (doc/VALIDATOR.md §9).
 

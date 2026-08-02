@@ -88,7 +88,9 @@ QWEN_REASONING_BUDGET_FAMILY: frozenset[str] = frozenset(
         "Qwen35-9B",
         "Gemma4-26B-A4B",
         "Gemma4-31B",
-        "Ornith10-35B",
+        "Ornith10-35B-A3B",
+        "Ornith10-9B",
+        "Laguna-S-2.1",
     }
 )
 
@@ -109,7 +111,7 @@ _GPT_OSS_TIERS: tuple[str, ...] = ("low", "medium", "high")
 #: for ``--reasoning-budget-message`` to actually print (see doc/
 #: LOCAL_INFERENCE.md §2a). Best-effort starting point, not sourced from an
 #: official per-model spec — see doc/LLM_REGISTRY.md for the rationale behind
-#: each family's scale (e.g. Ornith10-35B's RL-trained thinking efficiency vs.
+#: each family's scale (e.g. Ornith10-35B-A3B's RL-trained thinking efficiency vs.
 #: Qwen35-9B's smaller/weaker-model verbosity). Expect these to be retuned
 #: after real usage.
 QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
@@ -153,13 +155,29 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "huge": 16384,
         "unlimited": 24576,
     },
-    "Ornith10-35B": {
+    "Ornith10-35B-A3B": {
         "minimal": 256,
         "low": 768,
         "medium": 1536,
         "high": 3072,
         "huge": 6144,
         "unlimited": 9216,
+    },
+    "Ornith10-9B": {
+        "minimal": 2048,
+        "low": 4096,
+        "medium": 8192,
+        "high": 16384,
+        "huge": 32768,
+        "unlimited": 49152,
+    },
+    "Laguna-S-2.1": {
+        "minimal": 512,
+        "low": 1536,
+        "medium": 4096,
+        "high": 8192,
+        "huge": 16384,
+        "unlimited": 24576,
     },
 }
 
@@ -291,6 +309,10 @@ class LlamaFlavor:
             custom flavors (see :func:`add_flavor`); hardcoded ones set it
             explicitly as a literal.
         name: Human-readable display name shown in the flavor dropdown.
+        mac: True if this flavor is compatible with Apple Silicon,
+            False otherwise.
+        gpu: True if this flavor is compatible with discrete GPU PCs,
+            False otherwise.
         description: Optional human-readable explanation.
         llama_args: CLI flags passed verbatim to ``llama-server`` while this
             flavor is active — the complete set, not "extras" layered on top
@@ -325,6 +347,8 @@ class LlamaFlavor:
 
     id: str
     name: str
+    mac: bool = False
+    gpu: bool = False
     description: str = ""
     llama_args: dict[str, str] = field(default_factory=dict)
     min_ram: int = 0
@@ -358,6 +382,8 @@ class LlamaFlavor:
         return LlamaFlavor(
             id="default",
             name="default",
+            mac=True,
+            gpu=True,
             description="Default flavor",
             llama_args={
                 "--cache-type-k": "q8_0",
@@ -374,6 +400,8 @@ class LlamaFlavor:
         return LlamaFlavor(
             id="default",
             name="default",
+            mac=True,
+            gpu=True,
             description="Default flavor",
             llama_args={
                 "--cache-type-k": "f16",
@@ -390,6 +418,7 @@ class LlamaFlavor:
         return LlamaFlavor(
             id=id,
             name=name,
+            mac=True,
             description="Default flavor",
             llama_args={
                 "--ctx-size": "524288",
@@ -410,6 +439,7 @@ class LlamaFlavor:
         return LlamaFlavor(
             id=id,
             name=name,
+            mac=True,
             description="Default flavor",
             llama_args={
                 "--ctx-size": "1048576",
@@ -430,6 +460,7 @@ class LlamaFlavor:
         return LlamaFlavor(
             id=id,
             name=name,
+            mac=True,
             description="Default flavor",
             llama_args={
                 "--ctx-size": "524288",
@@ -450,6 +481,7 @@ class LlamaFlavor:
         return LlamaFlavor(
             id=id,
             name=name,
+            mac=True,
             description="Default flavor",
             llama_args={
                 "--ctx-size": "1048576",
@@ -513,6 +545,9 @@ class LocalLLMEntry:
         base_llm: Slug identifying the original (unquantized) model this
             quant was created from, e.g. ``'qwen36-27b'``. ``hardcoded_hf``
             only — always ``""`` for every other kind.
+        llm_author: Company of Team who produced the original LLM, e.g.
+            ``'OpenAI'``. ``hardcoded_hf`` only — always ``""`` for every
+            other kind.
         quant_author: Team or person who produced the quantized GGUF, e.g.
             ``'Unsloth'``. ``hardcoded_hf`` only — always ``""`` for every
             other kind.
@@ -558,6 +593,9 @@ class LocalLLMEntry:
             short, the user is warned that performance may degrade sharply
             at large contexts. If set to 0, this value should be ignored.
             ``hardcoded_hf`` only — always ``0`` for every other kind.
+        llamacpp_version: Llama.cpp version required for this LLM to run.
+            All versions that are less than this one will likely to fail
+            with this LLM. ``0`` means any version will work.
     """
 
     name: str
@@ -570,6 +608,7 @@ class LocalLLMEntry:
     path: str = ""
     url: str = ""
     base_llm: str = ""
+    llm_author: str = ""
     quant_author: str = ""
     quant_type: str = ""
     size_hint: str = ""
@@ -577,6 +616,7 @@ class LocalLLMEntry:
     mac_tip: str = ""
     min_memory: int = 0
     memory: int = 0
+    llamacpp_version: int = 0
 
 
 # Compiled-in GGUFs — ported from the old flat registry, dropping `residence`.
@@ -599,6 +639,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
             LlamaFlavor.make_qwen_1m_kv_q8("atomicchat-qwen36-27b-q8-1m-kv-q8", "1M context size"),
         ),
         base_llm="Qwen36-27B",
+        llm_author="Alibaba Cloud",
         quant_author="AtomicChat",
         quant_type="Q8_0",
         size_hint="28.6 GB",
@@ -610,6 +651,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "a 48GB config is tight.",
         min_memory=32,
         memory=48,
+        llamacpp_version=3100,
     ),
     LocalLLMEntry(
         name="unsloth-qwen36-27b-q8-k-xl",
@@ -628,6 +670,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
             ),
         ),
         base_llm="Qwen36-27B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q8_K_XL",
         size_hint="35.8 GB",
@@ -638,6 +681,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "M4 Max or M5 Max gives more headroom.",
         min_memory=48,
         memory=64,
+        llamacpp_version=3100,
     ),
     LocalLLMEntry(
         name="unsloth-qwen36-27b-q6-k-xl",
@@ -656,6 +700,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
             ),
         ),
         base_llm="Qwen36-27B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q6_K_XL",
         size_hint="26.0 GB",
@@ -666,6 +711,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "a 48GB config is tight.",
         min_memory=32,
         memory=48,
+        llamacpp_version=3100,
     ),
     LocalLLMEntry(
         name="unsloth-qwen36-27b-q5-k-xl",
@@ -684,6 +730,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
             ),
         ),
         base_llm="Qwen36-27B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q5_K_XL",
         size_hint="20.4 GB",
@@ -692,6 +739,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~35GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
         min_memory=32,
         memory=48,
+        llamacpp_version=3100,
     ),
     LocalLLMEntry(
         name="unsloth-qwen36-27b-q4-k-xl",
@@ -710,6 +758,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
             ),
         ),
         base_llm="Qwen36-27B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q4_K_XL",
         size_hint="17.9 GB",
@@ -720,6 +769,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "or a 48GB config (M4 Pro/Max or M5 Pro/Max) comfortably.",
         min_memory=24,
         memory=32,
+        llamacpp_version=3100,
     ),
     #
     # Qwen36-35B-A3B
@@ -741,6 +791,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
             ),
         ),
         base_llm="Qwen36-35B-A3B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q8_K_XL",
         size_hint="39.1 GB",
@@ -752,6 +803,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "(M4 Pro/Max or M5 Pro/Max) is safer.",
         min_memory=48,
         memory=64,
+        llamacpp_version=3100,
     ),
     LocalLLMEntry(
         name="unsloth-qwen36-35b-a3b-q6-k-xl",
@@ -770,6 +822,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
             ),
         ),
         base_llm="Qwen36-35B-A3B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q6_K_XL",
         size_hint="32.6 GB",
@@ -779,6 +832,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~39GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
         min_memory=48,
         memory=48,
+        llamacpp_version=3100,
     ),
     LocalLLMEntry(
         name="unsloth-qwen36-35b-a3b-q5-k-xl",
@@ -797,6 +851,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
             ),
         ),
         base_llm="Qwen36-35B-A3B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q5_K_XL",
         size_hint="27.2 GB",
@@ -806,6 +861,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "tight.",
         min_memory=36,
         memory=48,
+        llamacpp_version=3100,
     ),
     LocalLLMEntry(
         name="unsloth-qwen36-35b-a3b-q4-k-xl",
@@ -824,6 +880,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
             ),
         ),
         base_llm="Qwen36-35B-A3B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q4_K_XL",
         size_hint="22.9 GB",
@@ -834,6 +891,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "the safe choice.",
         min_memory=32,
         memory=36,
+        llamacpp_version=3100,
     ),
     #
     # Qwen3-Coder-Next-80B
@@ -846,6 +904,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="UD-Q8_K_XL/Qwen3-Coder-Next-UD-Q8_K_XL-00001-of-00003.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q8_K_XL",
         size_hint="86.3 GB",
@@ -855,15 +914,17 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~90GB — comfortable on a 128GB MacBook Pro (M4 Max or M5 Max).",
         min_memory=128,
         memory=128,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-q8-0",
         kind="hardcoded_hf",
         description="Qwen 3 Coder 80B UD-Q8_0 by Unsloth",
         repo_id="unsloth/Qwen3-Coder-Next-GGUF",
-        filename="Q8_0/Qwen3-Coder-Next-UD-Q8_0-00001-of-00003.gguf",
+        filename="Q8_0/Qwen3-Coder-Next-Q8_0-00001-of-00003.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q8_0",
         size_hint="84.8 GB",
@@ -872,6 +933,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~89GB — comfortable on a 128GB MacBook Pro (M4 Max or M5 Max).",
         min_memory=128,
         memory=128,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-q6-k-xl",
@@ -881,6 +943,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="UD-Q6_K_XL/Qwen3-Coder-Next-UD-Q6_K_XL-00001-of-00003.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q6_K_XL",
         size_hint="73.1 GB",
@@ -889,6 +952,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~77GB — exceeds a 64GB MacBook Pro; a 128GB M4 Max or M5 Max is required.",
         min_memory=128,
         memory=128,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-q6-k",
@@ -898,6 +962,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="UD-Q6_K/Qwen3-Coder-Next-UD-Q6_K-00001-of-00003.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q6_K",
         size_hint="65.8 GB",
@@ -906,6 +971,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~70GB — exceeds a 64GB MacBook Pro; a 128GB M4 Max or M5 Max is required.",
         min_memory=128,
         memory=128,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-q5-k-xl",
@@ -915,6 +981,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="UD-Q5_K_XL/Qwen3-Coder-Next-UD-Q5_K_XL-00001-of-00003.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q5_K_XL",
         size_hint="59.5 GB",
@@ -924,6 +991,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "Max gives more headroom.",
         min_memory=64,
         memory=128,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-q5-k-s",
@@ -933,6 +1001,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="UD-Q5_K_S/Qwen3-Coder-Next-UD-Q5_K_S-00001-of-00003.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q5_K_S",
         size_hint="55.8 GB",
@@ -942,6 +1011,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "headroom.",
         min_memory=64,
         memory=64,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-q4-k-xl",
@@ -951,6 +1021,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="Qwen3-Coder-Next-UD-Q4_K_XL.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q4_K_XL",
         size_hint="49.6 GB",
@@ -961,6 +1032,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "safe choice.",
         min_memory=64,
         memory=64,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-mxfp4-moe",
@@ -970,6 +1042,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="Qwen3-Coder-Next-MXFP4_MOE.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="MXFP4_MOE",
         size_hint="48.0 GB",
@@ -980,6 +1053,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "headroom.",
         min_memory=64,
         memory=64,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-iq4-nl",
@@ -989,6 +1063,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="Qwen3-Coder-Next-UD-IQ4_NL.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-IQ4_NL",
         size_hint="39.2 GB",
@@ -999,6 +1074,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "a 48GB config is tight.",
         min_memory=48,
         memory=48,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-iq4-xs",
@@ -1008,6 +1084,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="Qwen3-Coder-Next-UD-IQ4_XS.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-IQ4_XS",
         size_hint="38.4 GB",
@@ -1018,6 +1095,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "a 48GB config is tight.",
         min_memory=48,
         memory=48,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-q3-k-xl",
@@ -1027,6 +1105,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="Qwen3-Coder-Next-UD-Q3_K_XL.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q3_K_XL",
         size_hint="36.3 GB",
@@ -1037,6 +1116,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "a 48GB config is tight.",
         min_memory=48,
         memory=64,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-iq3-s",
@@ -1046,6 +1126,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="Qwen3-Coder-Next-UD-IQ3_S.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-IQ3_S",
         size_hint="29.7 GB",
@@ -1055,6 +1136,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~34GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
         min_memory=32,
         memory=48,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-iq3-xxs",
@@ -1064,6 +1146,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="Qwen3-Coder-Next-UD-IQ3_XXS.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-IQ3_XXS",
         size_hint="28.5 GB",
@@ -1073,6 +1156,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~33GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
         min_memory=32,
         memory=48,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-q2-k-xl",
@@ -1082,6 +1166,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="Qwen3-Coder-Next-UD-Q2_K_XL.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q2_K_XL",
         size_hint="26.8 GB",
@@ -1092,6 +1177,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "or a 48GB config (M4 Pro/Max or M5 Pro/Max) comfortably.",
         min_memory=32,
         memory=32,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-iq2-m",
@@ -1101,6 +1187,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="Qwen3-Coder-Next-UD-IQ2_M.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-IQ2_M",
         size_hint="25 GB",
@@ -1109,6 +1196,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~29GB — fits a 32GB MacBook Pro (M4 or M5) comfortably.",
         min_memory=32,
         memory=48,
+        llamacpp_version=5092,
     ),
     LocalLLMEntry(
         name="unsloth-qwen3-coder-next-80b-iq2-xxs",
@@ -1118,6 +1206,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="Qwen3-Coder-Next-UD-IQ2_XXS.gguf",
         context_window=262_144,
         base_llm="Qwen3-Coder-Next-80B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-IQ2_XXS",
         size_hint="23.3 GB",
@@ -1127,6 +1216,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~27GB — fits a 32GB MacBook Pro (M4 or M5) comfortably.",
         min_memory=32,
         memory=48,
+        llamacpp_version=5092,
     ),
     #
     # Qwen35-9B
@@ -1146,6 +1236,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
             LlamaFlavor.make_qwen_1m_kv_q8("unsloth-qwen35-9b-q8-k-xl-kv-q8", "1M context size"),
         ),
         base_llm="Qwen35-9B",
+        llm_author="Alibaba Cloud",
         quant_author="Unsloth",
         quant_type="UD-Q8_K_XL",
         size_hint="13.2 GB",
@@ -1154,6 +1245,430 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~17GB — fits a 24GB MacBook Pro (M4, M4 Pro, M5, or M5 Pro) comfortably.",
         min_memory=24,
         memory=24,
+        llamacpp_version=5092,
+    ),
+    #
+    # Laguna-S-2.1
+    #
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-q8-k-xl",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-Q8_K_XL by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="UD-Q8_K_XL/Laguna-S-2.1-UD-Q8_K_XL-00001-of-00004.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-Q8_K_XL",
+        size_hint="128 GB",
+        gpu_tip="~165GB total at 128K context — the biggest Laguna-S-2.1 build. It's a sparse "
+        "MoE model, so a 16GB GPU (e.g. RTX 4080) still handles the always-on shared layers at "
+        "full speed while llama.cpp offloads the mostly-idle experts to a 192GB DDR5 "
+        "workstation kit.",
+        mac_tip="Needs ~165GB — beyond even the largest 128GB MacBook Pro; a Mac Studio "
+        "(M3 Ultra with 192GB+ unified memory) or a Linux/Windows workstation is the "
+        "realistic option.",
+        min_memory=192,
+        memory=192,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-q8-0",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-Q8_0 by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="Q8_0/Laguna-S-2.1-Q8_0-00001-of-00004.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-Q8_0",
+        size_hint="125 GB",
+        gpu_tip="~165GB total at 128K context. Same MoE-offload story as the UD-Q8_K_XL build: "
+        "a 16GB GPU (e.g. RTX 5080) keeps the shared layers fast, with the offloaded experts "
+        "spread across a 192GB DDR5 workstation kit.",
+        mac_tip="Needs ~165GB — exceeds a 128GB MacBook Pro; a Mac Studio (M3 Ultra) "
+        "or a workstation-class machine is required.",
+        min_memory=192,
+        memory=192,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-q6-k-xl",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-Q6_K_XL by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="UD-Q6_K_XL/Laguna-S-2.1-UD-Q6_K_XL-00001-of-00004.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-Q6_K_XL",
+        size_hint="107 GB",
+        gpu_tip="~120GB total at 128K context. A 16GB GPU (e.g. RTX 4070 Ti Super) handles the "
+        "shared layers, and llama.cpp's MoE offloading covers the rest with a 128GB DDR5 kit.",
+        mac_tip="Needs ~120GB — right at the edge of a 128GB MacBook Pro (M4 Max or M5 Max).",
+        min_memory=128,
+        memory=128,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-q6-k",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-Q6_K by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="UD-Q6_K/Laguna-S-2.1-UD-Q6_K-00001-of-00003.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-Q6_K",
+        size_hint="97.9 GB",
+        gpu_tip="~115GB total at 128K context. A 16GB GPU (e.g. RTX 4070 Ti Super) handles the "
+        "shared layers, and llama.cpp's MoE offloading covers the rest with a 128GB DDR5 kit.",
+        mac_tip="Needs ~115GB — fits a 128GB MacBook Pro (M4 Max or M5 Max), with little "
+        "headroom to spare.",
+        min_memory=128,
+        memory=128,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-q5-k-xl",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-Q5_K_XL by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="UD-Q5_K_XL/Laguna-S-2.1-UD-Q5_K_XL-00001-of-00003.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-Q5_K_XL",
+        size_hint="88.1 GB",
+        gpu_tip="~110GB total at 128K context. A 16GB GPU (e.g. RTX 5070 Ti) keeps the shared "
+        "layers fast, and llama.cpp's MoE offloading covers the rest with a 128GB DDR5 kit.",
+        mac_tip="Needs ~110GB — fits a 128GB MacBook Pro (M4 Max or M5 Max) comfortably.",
+        min_memory=128,
+        memory=128,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-q5-k-m",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-Q5_K_M by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="UD-Q5_K_M/Laguna-S-2.1-UD-Q5_K_M-00001-of-00003.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-Q5_K_M",
+        size_hint="87.9 GB",
+        gpu_tip="~110GB total at 128K context. Nearly identical footprint to the UD-Q5_K_XL "
+        "build: a 16GB GPU (e.g. RTX 5070 Ti) handles the shared layers, with llama.cpp's MoE "
+        "offloading covering the rest via a 128GB DDR5 kit.",
+        mac_tip="Needs ~110GB — fits a 128GB MacBook Pro (M4 Max or M5 Max) comfortably.",
+        min_memory=128,
+        memory=128,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-q5-k-s",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-Q5_K_S by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="UD-Q5_K_S/Laguna-S-2.1-UD-Q5_K_S-00001-of-00003.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-Q5_K_S",
+        size_hint="82.7 GB",
+        gpu_tip="~110GB total at 128K context. A 16GB GPU (e.g. RTX 4070 Ti Super) keeps the "
+        "shared layers fast, and llama.cpp's MoE offloading covers the rest with a 128GB DDR5 "
+        "kit.",
+        mac_tip="Needs ~110GB — fits a 128GB MacBook Pro (M4 Max or M5 Max) comfortably.",
+        min_memory=96,
+        memory=128,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-q4-k-xl",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-Q4_K_XL by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-Q4_K_XL",
+        size_hint="73.4 GB",
+        gpu_tip="~105GB total at 128K context. A 16GB GPU (e.g. RTX 4060 Ti 16GB) keeps the "
+        "shared layers fast while llama.cpp's MoE offloading absorbs the rest into a 128GB "
+        "DDR5 kit.",
+        mac_tip="Needs ~105GB — fits a 128GB MacBook Pro (M4 Max or M5 Max) comfortably.",
+        min_memory=96,
+        memory=128,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-mxfp4-moe",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 MXFP4_MOE by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="MXFP4_MOE/Laguna-S-2.1-MXFP4_MOE-00001-of-00003.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="MXFP4_MOE",
+        size_hint="71.1 GB",
+        gpu_tip="~105GB total at 128K context. A 16GB GPU (e.g. RTX 5070 Ti) handles the "
+        "always-on layers, and ~128GB of DDR5 system RAM covers the offloaded MXFP4 experts — "
+        "llama.cpp's native MXFP4 support keeps this close to a full-VRAM fit.",
+        mac_tip="Needs ~105GB — fits a 128GB MacBook Pro (M4 Max or M5 Max) comfortably.",
+        min_memory=96,
+        memory=128,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-q4-k-s",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-Q4_K_S by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="UD-Q4_K_S/Laguna-S-2.1-UD-Q4_K_S-00001-of-00003.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-Q4_K_S",
+        size_hint="68.6 GB",
+        gpu_tip="~105GB total at 128K context. A 16GB GPU (e.g. RTX 4070) handles the shared "
+        "layers, and llama.cpp's MoE offloading covers the rest with a 128GB DDR5 kit.",
+        mac_tip="Needs ~105GB — fits a 128GB MacBook Pro (M4 Max or M5 Max) comfortably.",
+        min_memory=96,
+        memory=128,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-iq4-nl",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-IQ4_NL by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="UD-IQ4_NL/Laguna-S-2.1-UD-IQ4_NL-00001-of-00003.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-IQ4_NL",
+        size_hint="58.7 GB",
+        gpu_tip="~80GB total at 128K context. A 16GB GPU (e.g. RTX 4060 Ti 16GB) keeps the "
+        "shared layers fast, and llama.cpp's MoE expert offloading covers the rest with a "
+        "96GB DDR5 kit.",
+        mac_tip="Needs ~80GB — fits a 96GB MacBook Pro configuration comfortably (M4 Max or "
+        "M5 Max).",
+        min_memory=64,
+        memory=96,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-iq4-xs",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-IQ4_XS by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="UD-IQ4_XS/Laguna-S-2.1-UD-IQ4_XS-00001-of-00003.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-IQ4_XS",
+        size_hint="57.6 GB",
+        gpu_tip="~80GB total at 128K context. A 16GB GPU (e.g. RTX 5070 Ti) keeps the shared "
+        "layers fast, and llama.cpp's MoE expert offloading covers the rest with a 96GB DDR5 "
+        "kit.",
+        mac_tip="Needs ~80GB — fits a 96GB MacBook Pro configuration comfortably (M4 Max or "
+        "M5 Max).",
+        min_memory=64,
+        memory=96,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-q3-k-xl",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-Q3_K_XL by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="UD-Q3_K_XL/Laguna-S-2.1-UD-Q3_K_XL-00001-of-00003.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-Q3_K_XL",
+        size_hint="54.1 GB",
+        gpu_tip="~80GB total at 128K context. An 8GB GPU (e.g. RTX 3060 Ti) plus a 96GB DDR5 "
+        "kit is enough — llama.cpp's MoE expert offloading keeps this large model fast "
+        "without a workstation card.",
+        mac_tip="Needs ~80GB — fits a 96GB MacBook Pro configuration comfortably (M4 Max or "
+        "M5 Max).",
+        min_memory=64,
+        memory=96,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-q3-k-m",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-Q3_K_M by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="UD-Q3_K_M/Laguna-S-2.1-UD-Q3_K_M-00001-of-00003.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-Q3_K_M",
+        size_hint="54 GB",
+        gpu_tip="~80GB total at 128K context. Nearly identical footprint to the UD-Q3_K_XL "
+        "build: an 8GB GPU (e.g. RTX 3060 Ti) plus a 96GB DDR5 kit covers it via llama.cpp's "
+        "MoE expert offloading.",
+        mac_tip="Needs ~80GB — fits a 96GB MacBook Pro configuration comfortably (M4 Max or "
+        "M5 Max).",
+        min_memory=64,
+        memory=96,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-iq3-s",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-IQ3_S by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="Laguna-S-2.1-UD-IQ3_S.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-IQ3_S",
+        size_hint="48.4 GB",
+        gpu_tip="~58GB total at 128K context. An 8GB GPU (e.g. RTX 3060 Ti) plus a 64GB DDR5 "
+        "kit is enough, with llama.cpp's MoE offloading handling the rest.",
+        mac_tip="Needs ~58GB — fits a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
+        min_memory=64,
+        memory=64,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-iq3-xxs",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-IQ3_XXS by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="Laguna-S-2.1-UD-IQ3_XXS.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-IQ3_XXS",
+        size_hint="44.3 GB",
+        gpu_tip="~56GB total at 128K context. An 8GB GPU (e.g. RTX 4060) plus a 64GB DDR5 kit "
+        "covers it, with llama.cpp's MoE offloading barely costing any speed.",
+        mac_tip="Needs ~56GB — fits a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
+        min_memory=64,
+        memory=64,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-q2-k-xl",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-Q2_K_XL by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="Laguna-S-2.1-UD-Q2_K_XL.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-Q2_K_XL",
+        size_hint="39.7 GB",
+        gpu_tip="~55GB total at 128K context. An 8GB GPU (e.g. RTX 5060) plus a 64GB DDR5 kit "
+        "is enough — llama.cpp's MoE expert offloading keeps this fast on modest hardware.",
+        mac_tip="Needs ~55GB — fits a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
+        min_memory=48,
+        memory=64,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-iq2-m",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-IQ2_M by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="Laguna-S-2.1-UD-IQ2_M.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-IQ2_M",
+        size_hint="37.3 GB",
+        gpu_tip="~53GB total at 128K context. An 8GB GPU (e.g. RX 7600) plus a 64GB DDR5 kit "
+        "covers it comfortably, with llama.cpp's MoE offloading doing the heavy lifting.",
+        mac_tip="Needs ~53GB — fits a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
+        min_memory=48,
+        memory=64,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-iq1-m",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-IQ1_M by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="Laguna-S-2.1-UD-IQ1_M.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-IQ1_M",
+        size_hint="35.6 GB",
+        gpu_tip="~43GB total at 128K context. An 8GB GPU (e.g. RTX 4060) plus a 48GB DDR5 kit "
+        "is enough, with llama.cpp's MoE offloading filling in the gap.",
+        mac_tip="Needs ~43GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
+        min_memory=48,
+        memory=48,
+        llamacpp_version=10087,
+    ),
+    LocalLLMEntry(
+        name="unsloth-laguna-s-2-1-iq1-s",
+        kind="hardcoded_hf",
+        description="Laguna-S-2.1 UD-IQ1_S by Unsloth",
+        repo_id="unsloth/Laguna-S-2.1-GGUF",
+        filename="Laguna-S-2.1-UD-IQ1_S.gguf",
+        flavors=(LlamaFlavor.make_default_kv_q8(),),
+        context_window=262_144,
+        base_llm="Laguna-S-2.1",
+        llm_author="Poolside",
+        quant_author="Unsloth",
+        quant_type="UD-IQ1_MS",
+        size_hint="33.8 GB",
+        gpu_tip="~42GB total at 128K context. An 8GB GPU (e.g. RTX 3060 Ti) plus a 48GB DDR5 "
+        "kit is enough — the smallest of the Laguna-S-2.1 builds, and llama.cpp's MoE "
+        "offloading keeps it fast even on modest hardware.",
+        mac_tip="Needs ~42GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
+        min_memory=48,
+        memory=48,
+        llamacpp_version=10087,
     ),
     #
     # GPT-OSS-120B
@@ -1167,6 +1682,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         flavors=(LlamaFlavor.make_default_kv_fp16(),),
         context_window=131_072,
         base_llm="GPT-OSS-120B",
+        llm_author="OpenAI",
         quant_author="Unsloth",
         quant_type="F16",
         size_hint="65.4 GB",
@@ -1178,6 +1694,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "at the edge even there.",
         min_memory=128,
         memory=128,
+        llamacpp_version=6098,
     ),
     LocalLLMEntry(
         name="unsloth-gpt-oss-120b-ud-q8-k-xl",
@@ -1187,6 +1704,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="UD-Q8_K_XL/gpt-oss-120b-UD-Q8_K_XL-00001-of-00002.gguf",
         context_window=131_072,
         base_llm="GPT-OSS-120B",
+        llm_author="OpenAI",
         quant_author="Unsloth",
         quant_type="UD-Q8_K_XL",
         size_hint="64.5 GB",
@@ -1198,6 +1716,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "at the edge even there.",
         min_memory=128,
         memory=128,
+        llamacpp_version=6098,
     ),
     #
     # GPT-OSS-20B
@@ -1211,6 +1730,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         flavors=(LlamaFlavor.make_default_kv_fp16(),),
         context_window=131_072,
         base_llm="GPT-OSS-20B",
+        llm_author="OpenAI",
         quant_author="Unsloth",
         quant_type="F16",
         size_hint="13.8 GB",
@@ -1221,6 +1741,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "tight.",
         min_memory=24,
         memory=32,
+        llamacpp_version=6098,
     ),
     LocalLLMEntry(
         name="unsloth-gpt-oss-20b-q8-k-xl",
@@ -1230,6 +1751,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gpt-oss-20b-UD-Q8_K_XL.gguf",
         context_window=131_072,
         base_llm="GPT-OSS-20B",
+        llm_author="OpenAI",
         quant_author="Unsloth",
         quant_type="UD-Q8_K_XL",
         size_hint="13.2 GB",
@@ -1239,6 +1761,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~16GB — fits a 24GB MacBook Pro comfortably; a 16GB M5 is tight.",
         min_memory=16,
         memory=24,
+        llamacpp_version=6098,
     ),
     LocalLLMEntry(
         name="unsloth-gpt-oss-20b-q8-0",
@@ -1248,6 +1771,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gpt-oss-20b-Q8_0.gguf",
         context_window=131_072,
         base_llm="GPT-OSS-20B",
+        llm_author="OpenAI",
         quant_author="Unsloth",
         quant_type="Q8_0",
         size_hint="12.1 GB",
@@ -1256,6 +1780,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~15GB — fits a 24GB MacBook Pro comfortably; a 16GB M5 is tight.",
         min_memory=16,
         memory=24,
+        llamacpp_version=6098,
     ),
     LocalLLMEntry(
         name="unsloth-gpt-oss-20b-q6-k-xl",
@@ -1265,6 +1790,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gpt-oss-20b-UD-Q6_K_XL.gguf",
         context_window=131_072,
         base_llm="GPT-OSS-20B",
+        llm_author="OpenAI",
         quant_author="Unsloth",
         quant_type="UD-Q6_K_XL",
         size_hint="12.0 GB",
@@ -1274,6 +1800,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~15GB — fits a 24GB MacBook Pro comfortably; a 16GB M5 is tight.",
         min_memory=16,
         memory=24,
+        llamacpp_version=6098,
     ),
     LocalLLMEntry(
         name="unsloth-gpt-oss-20b-q4-k-xl",
@@ -1283,6 +1810,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gpt-oss-20b-UD-Q4_K_XL.gguf",
         context_window=131_072,
         base_llm="GPT-OSS-20B",
+        llm_author="OpenAI",
         quant_author="Unsloth",
         quant_type="UD-Q4_K_XL",
         size_hint="11.9 GB",
@@ -1291,6 +1819,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~15GB — fits a 24GB MacBook Pro comfortably; a 16GB M5 is tight.",
         min_memory=16,
         memory=24,
+        llamacpp_version=6098,
     ),
     #
     # Gemma4-26B-A4B
@@ -1303,6 +1832,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-26B-A4B-it-UD-Q8_K_XL.gguf",
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-Q8_K_XL",
         size_hint="27.6 GB",
@@ -1313,6 +1843,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "a 32GB config is tight.",
         min_memory=32,
         memory=48,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-26b-a4b-ud-q6-k-xl",
@@ -1322,6 +1853,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf",
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-Q6_K_XL",
         size_hint="23.3 GB",
@@ -1332,6 +1864,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "or a 48GB config comfortably.",
         min_memory=32,
         memory=48,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-26b-a4b-ud-q5-k-xl",
@@ -1341,6 +1874,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-26B-A4B-it-UD-Q5_K_XL.gguf",
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-Q5_K_XL",
         size_hint="21.2 GB",
@@ -1350,6 +1884,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~24GB — fits a 32GB MacBook Pro (M4 or M5) comfortably.",
         min_memory=24,
         memory=32,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-26b-a4b-ud-q4-k-xl",
@@ -1359,6 +1894,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf",
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-Q4_K_XL",
         size_hint="17.0 GB",
@@ -1369,6 +1905,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "is tight.",
         min_memory=24,
         memory=32,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-26b-a4b-qat-ud-q4-k-xl",
@@ -1378,6 +1915,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="QAT-UD-Q4_K_XL",
         size_hint="14.2 GB",
@@ -1386,6 +1924,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~17GB — fits a 24GB MacBook Pro (M4, M4 Pro, M5, or M5 Pro) comfortably.",
         min_memory=24,
         memory=32,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-26b-a4b-ud-q3-k-xl",
@@ -1395,6 +1934,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf",
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-Q3_K_XL",
         size_hint="12.9 GB",
@@ -1403,6 +1943,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~16GB — fits a 24GB MacBook Pro comfortably; a 16GB M5 is tight.",
         min_memory=16,
         memory=24,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-26b-a4b-ud-q2-k-xl",
@@ -1412,6 +1953,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-26B-A4B-it-UD-Q2_K_XL.gguf",
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-Q2_K_XL",
         size_hint="10.5 GB",
@@ -1420,6 +1962,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~14GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
         min_memory=16,
         memory=16,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-26b-a4b-ud-iq4-xs",
@@ -1429,6 +1972,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-26B-A4B-it-UD-IQ4_XS.gguf",
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-IQ4_XS",
         size_hint="13.6 GB",
@@ -1437,6 +1981,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~17GB — fits a 24GB MacBook Pro comfortably; a 16GB M5 is tight.",
         min_memory=16,
         memory=24,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-26b-a4b-ud-iq3-xxs",
@@ -1446,6 +1991,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-26B-A4B-it-UD-IQ3_XXS.gguf",
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-IQ3_XXS",
         size_hint="11.4 GB",
@@ -1454,6 +2000,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~14GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
         min_memory=16,
         memory=16,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-26b-a4b-ud-iq2-xxs",
@@ -1463,6 +2010,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-26B-A4B-it-UD-IQ2_XXS.gguf",
         context_window=262_144,
         base_llm="Gemma4-26B-A4B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-IQ2_XXS",
         size_hint="9.9 GB",
@@ -1471,6 +2019,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~13GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
         min_memory=16,
         memory=16,
+        llamacpp_version=8720,
     ),
     #
     # Gemma4-31B
@@ -1483,6 +2032,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-31B-it-UD-Q8_K_XL.gguf",
         context_window=262_144,
         base_llm="Gemma4-31B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-Q8_K_XL",
         size_hint="35 GB",
@@ -1492,6 +2042,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "a 64GB config gives more headroom.",
         min_memory=48,
         memory=48,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-31b-q8-0",
@@ -1501,6 +2052,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-31B-it-Q8_0.gguf",
         context_window=262_144,
         base_llm="Gemma4-31B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="Q8_0",
         size_hint="32.6 GB",
@@ -1509,6 +2061,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~38GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
         min_memory=48,
         memory=48,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-31b-ud-q6-k-xl",
@@ -1518,6 +2071,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-31B-it-UD-Q6_K_XL.gguf",
         context_window=262_144,
         base_llm="Gemma4-31B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-Q6_K_XL",
         size_hint="27.5 GB",
@@ -1528,6 +2082,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "tight.",
         min_memory=32,
         memory=48,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-31b-ud-q5-k-xl",
@@ -1537,6 +2092,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-31B-it-UD-Q5_K_XL.gguf",
         context_window=262_144,
         base_llm="Gemma4-31B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-Q5_K_XL",
         size_hint="21.9 GB",
@@ -1546,6 +2102,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "headroom to spare.",
         min_memory=32,
         memory=48,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-31b-ud-q4-k-xl",
@@ -1555,6 +2112,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-31B-it-UD-Q4_K_XL.gguf",
         context_window=262_144,
         base_llm="Gemma4-31B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-Q4_K_XL",
         size_hint="18.8 GB",
@@ -1563,6 +2121,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~24GB — fits a 32GB MacBook Pro (M4 or M5) comfortably.",
         min_memory=24,
         memory=32,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-31b-ud-q3-k-xl",
@@ -1572,6 +2131,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-31B-it-UD-Q3_K_XL.gguf",
         context_window=262_144,
         base_llm="Gemma4-31B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-Q3_K_XL",
         size_hint="15.4 GB",
@@ -1581,6 +2141,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "is tight.",
         min_memory=24,
         memory=32,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-31b-ud-q2-k-xl",
@@ -1590,6 +2151,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-31B-it-UD-Q2_K_XL.gguf",
         context_window=262_144,
         base_llm="Gemma4-31B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-Q2_K_XL",
         size_hint="11.8 GB",
@@ -1598,6 +2160,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~17GB — fits a 24GB MacBook Pro comfortably; a 16GB M5 is tight.",
         min_memory=16,
         memory=16,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-31b-ud-iq3-xxs",
@@ -1607,6 +2170,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-31B-it-UD-IQ3_XXS.gguf",
         context_window=262_144,
         base_llm="Gemma4-31B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-IQ3_XXS",
         size_hint="11.8 GB",
@@ -1615,6 +2179,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~17GB — fits a 24GB MacBook Pro comfortably; a 16GB M5 is tight.",
         min_memory=16,
         memory=16,
+        llamacpp_version=8720,
     ),
     LocalLLMEntry(
         name="unsloth-gemma4-31b-ud-iq2-xxs",
@@ -1624,6 +2189,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         filename="gemma-4-31B-it-UD-IQ2_XXS.gguf",
         context_window=262_144,
         base_llm="Gemma4-31B",
+        llm_author="Google DeepMind",
         quant_author="Unsloth",
         quant_type="UD-IQ2_XXS",
         size_hint="8.5 GB",
@@ -1632,28 +2198,30 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~14GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
         min_memory=16,
         memory=16,
+        llamacpp_version=8720,
     ),
     #
-    # Ornith10-35B
+    # Ornith10-35B-A3B
     #
     LocalLLMEntry(
-        name="deepreinforce-ornith10-35b-bf16",
+        name="deepreinforce-ornith10-35b-a3b-bf16",
         kind="hardcoded_hf",
-        description="Ornith 1.0 35B BF16 by DeepReinforce",
+        description="Ornith 1.0 35B A3B BF16 by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-bf16.gguf",
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
             LlamaFlavor.make_qwen_moe_512k_kv_q8(
-                "deepreinforce-ornith10-35b-bf16-512k-kv-q8", "512K context size"
+                "deepreinforce-ornith10-35b-a3b-bf16-512k-kv-q8", "512K context size"
             ),
             LlamaFlavor.make_qwen_moe_1m_kv_q8(
-                "deepreinforce-ornith10-35b-bf16-1m-kv-q8", "1M context size"
+                "deepreinforce-ornith10-35b-a3b-bf16-1m-kv-q8", "1M context size"
             ),
         ),
-        base_llm="Ornith10-35B",
-        quant_author="DeepReinforce",
+        base_llm="Ornith10-35B-A3B",
+        llm_author="DeepReinforce AI",
+        quant_author="DeepReinforce AI",
         quant_type="BF16",
         size_hint="69.4 GB",
         gpu_tip="~103GB total at 128K context — the BF16 build is the heaviest way to run "
@@ -1664,25 +2232,27 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~103GB — tight on a 128GB M4 Max or M5 Max.",
         min_memory=128,
         memory=128,
+        llamacpp_version=9831,
     ),
     LocalLLMEntry(
-        name="deepreinforce-ornith10-35b-q8-0",
+        name="deepreinforce-ornith10-35b-a3b-q8-0",
         kind="hardcoded_hf",
-        description="Ornith 1.0 35B Q8_0 by DeepReinforce",
+        description="Ornith 1.0 35B A3B Q8_0 by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q8_0.gguf",
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
             LlamaFlavor.make_qwen_moe_512k_kv_q8(
-                "deepreinforce-ornith10-35b-q8-0-512k-kv-q8", "512K context size"
+                "deepreinforce-ornith10-35b-a3b-q8-0-512k-kv-q8", "512K context size"
             ),
             LlamaFlavor.make_qwen_moe_1m_kv_q8(
-                "deepreinforce-ornith10-35b-q8-0-1m-kv-q8", "1M context size"
+                "deepreinforce-ornith10-35b-a3b-q8-0-1m-kv-q8", "1M context size"
             ),
         ),
-        base_llm="Ornith10-35B",
-        quant_author="DeepReinforce",
+        base_llm="Ornith10-35B-A3B",
+        llm_author="DeepReinforce AI",
+        quant_author="DeepReinforce AI",
         quant_type="Q8_0",
         size_hint="36.9 GB",
         gpu_tip="~54GB total at 128K context. A 16GB GPU (e.g. RTX 4060 Ti 16GB) plus ~48GB of "
@@ -1692,25 +2262,27 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "safe choice.",
         min_memory=64,
         memory=128,
+        llamacpp_version=9831,
     ),
     LocalLLMEntry(
-        name="deepreinforce-ornith10-35b-q6-k",
+        name="deepreinforce-ornith10-35b-a3b-q6-k",
         kind="hardcoded_hf",
-        description="Ornith 1.0 35B Q6_K by DeepReinforce",
+        description="Ornith 1.0 35B A3B Q6_K by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q6_K.gguf",
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
             LlamaFlavor.make_qwen_moe_512k_kv_q8(
-                "deepreinforce-ornith10-35b-q6-k-512k-kv-q8", "512K context size"
+                "deepreinforce-ornith10-35b-a3b-q6-k-512k-kv-q8", "512K context size"
             ),
             LlamaFlavor.make_qwen_moe_1m_kv_q8(
-                "deepreinforce-ornith10-35b-q6-k-1m-kv-q8", "1M context size"
+                "deepreinforce-ornith10-35b-a3b-q6-k-1m-kv-q8", "1M context size"
             ),
         ),
-        base_llm="Ornith10-35B",
-        quant_author="DeepReinforce",
+        base_llm="Ornith10-35B-A3B",
+        llm_author="DeepReinforce AI",
+        quant_author="DeepReinforce AI",
         quant_type="Q6_K",
         size_hint="28.5 GB",
         gpu_tip="~45GB total at 128K context. An 8GB GPU (e.g. RTX 3060 Ti) plus ~48GB of DDR5 "
@@ -1720,25 +2292,27 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         "(M4 Pro/Max or M5 Pro/Max) is safer.",
         min_memory=48,
         memory=64,
+        llamacpp_version=9831,
     ),
     LocalLLMEntry(
-        name="deepreinforce-ornith10-35b-q5-k-m",
+        name="deepreinforce-ornith10-35b-a3b-q5-k-m",
         kind="hardcoded_hf",
-        description="Ornith 1.0 35B Q5_K by DeepReinforce",
+        description="Ornith 1.0 35B A3B Q5_K by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q5_K_M.gguf",
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
             LlamaFlavor.make_qwen_moe_512k_kv_q8(
-                "deepreinforce-ornith10-35b-q5-k-512k-kv-q8", "512K context size"
+                "deepreinforce-ornith10-35b-a3b-q5-k-512k-kv-q8", "512K context size"
             ),
             LlamaFlavor.make_qwen_moe_1m_kv_q8(
-                "deepreinforce-ornith10-35b-q5-k-1m-kv-q8", "1M context size"
+                "deepreinforce-ornith10-35b-a3b-q5-k-1m-kv-q8", "1M context size"
             ),
         ),
-        base_llm="Ornith10-35B",
-        quant_author="DeepReinforce",
+        base_llm="Ornith10-35B-A3B",
+        llm_author="DeepReinforce AI",
+        quant_author="DeepReinforce AI",
         quant_type="Q5_K_M",
         size_hint="24.7 GB",
         gpu_tip="~42GB total at 128K context. An 8GB GPU (e.g. RTX 5060) plus ~48GB of DDR5 "
@@ -1747,25 +2321,27 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~42GB — fits a 64GB MacBook Pro comfortably; a 48GB config is tight.",
         min_memory=48,
         memory=64,
+        llamacpp_version=9831,
     ),
     LocalLLMEntry(
-        name="deepreinforce-ornith10-35b-q4-k-m",
+        name="deepreinforce-ornith10-35b-a3b-q4-k-m",
         kind="hardcoded_hf",
-        description="Ornith 1.0 35B Q4_K by DeepReinforce",
+        description="Ornith 1.0 35B A3B Q4_K by DeepReinforce",
         repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
         filename="ornith-1.0-35b-Q4_K_M.gguf",
         context_window=262_144,
         flavors=(
             LlamaFlavor.make_default_kv_q8(),
             LlamaFlavor.make_qwen_moe_512k_kv_q8(
-                "deepreinforce-ornith10-35b-q4-k-512k-kv-q8", "512K context size"
+                "deepreinforce-ornith10-35b-a3b-q4-k-512k-kv-q8", "512K context size"
             ),
             LlamaFlavor.make_qwen_moe_1m_kv_q8(
-                "deepreinforce-ornith10-35b-q4-k-1m-kv-q8", "1M context size"
+                "deepreinforce-ornith10-35b-a3b-q4-k-1m-kv-q8", "1M context size"
             ),
         ),
-        base_llm="Ornith10-35B",
-        quant_author="DeepReinforce",
+        base_llm="Ornith10-35B-A3B",
+        llm_author="DeepReinforce AI",
+        quant_author="DeepReinforce AI",
         quant_type="Q4_K_M",
         size_hint="21.2 GB",
         gpu_tip="~38GB total at 128K context. An 8GB GPU (e.g. RX 7600) plus ~48GB of DDR5 "
@@ -1773,6 +2349,145 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = (
         mac_tip="Needs ~38GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
         min_memory=48,
         memory=48,
+        llamacpp_version=9831,
+    ),
+    #
+    # Ornith10-9B
+    #
+    LocalLLMEntry(
+        name="deepreinforce-ornith10-9b-bf16",
+        kind="hardcoded_hf",
+        description="Ornith 1.0 9B BF16 by DeepReinforce",
+        repo_id="deepreinforce-ai/Ornith-1.0-9B-GGUF",
+        filename="ornith-1.0-9b-bf16.gguf",
+        context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                "deepreinforce-ornith10-9b-bf16-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                "deepreinforce-ornith10-9b-bf16-1m-kv-q8", "1M context size"
+            ),
+        ),
+        base_llm="Ornith10-9B",
+        llm_author="DeepReinforce AI",
+        quant_author="DeepReinforce AI",
+        quant_type="BF16",
+        size_hint="17.9 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=24,
+        memory=24,
+        llamacpp_version=9831,
+    ),
+    LocalLLMEntry(
+        name="deepreinforce-ornith10-9b-q8-0",
+        kind="hardcoded_hf",
+        description="Ornith 1.0 9B Q8_0 by DeepReinforce",
+        repo_id="deepreinforce-ai/Ornith-1.0-9B-GGUF",
+        filename="ornith-1.0-9b-Q8_0.gguf",
+        context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                "deepreinforce-ornith10-9b-q8-0-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                "deepreinforce-ornith10-9b-q8-0-1m-kv-q8", "1M context size"
+            ),
+        ),
+        base_llm="Ornith10-9B",
+        llm_author="DeepReinforce AI",
+        quant_author="DeepReinforce AI",
+        quant_type="Q8_0",
+        size_hint="9.53 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=12,
+        memory=16,
+        llamacpp_version=9831,
+    ),
+    LocalLLMEntry(
+        name="deepreinforce-ornith10-9b-q6-k",
+        kind="hardcoded_hf",
+        description="Ornith 1.0 9B Q6_K by DeepReinforce",
+        repo_id="deepreinforce-ai/Ornith-1.0-9B-GGUF",
+        filename="ornith-1.0-9b-Q6_K.gguf",
+        context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                "deepreinforce-ornith10-9b-q6-k-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                "deepreinforce-ornith10-9b-q6-k-1m-kv-q8", "1M context size"
+            ),
+        ),
+        base_llm="Ornith10-9B",
+        llm_author="DeepReinforce AI",
+        quant_author="DeepReinforce AI",
+        quant_type="Q6_K",
+        size_hint="7.36 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=12,
+        memory=16,
+        llamacpp_version=9831,
+    ),
+    LocalLLMEntry(
+        name="deepreinforce-ornith10-9b-q5-k-m",
+        kind="hardcoded_hf",
+        description="Ornith 1.0 9B Q5_K_M by DeepReinforce",
+        repo_id="deepreinforce-ai/Ornith-1.0-9B-GGUF",
+        filename="ornith-1.0-9b-Q5_K_M.gguf",
+        context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                "deepreinforce-ornith10-9b-q5-k-m-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                "deepreinforce-ornith10-9b-q5-k-m-1m-kv-q8", "1M context size"
+            ),
+        ),
+        base_llm="Ornith10-9B",
+        llm_author="DeepReinforce AI",
+        quant_author="DeepReinforce AI",
+        quant_type="Q5_K_M",
+        size_hint="6.47 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=8,
+        memory=12,
+        llamacpp_version=9831,
+    ),
+    LocalLLMEntry(
+        name="deepreinforce-ornith10-9b-q4-k-m",
+        kind="hardcoded_hf",
+        description="Ornith 1.0 9B Q4_K_M by DeepReinforce",
+        repo_id="deepreinforce-ai/Ornith-1.0-9B-GGUF",
+        filename="ornith-1.0-9b-Q4_K_M.gguf",
+        context_window=262_144,
+        flavors=(
+            LlamaFlavor.make_default_kv_q8(),
+            LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                "deepreinforce-ornith10-9b-q4-k-m-512k-kv-q8", "512K context size"
+            ),
+            LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                "deepreinforce-ornith10-9b-q4-k-m-1m-kv-q8", "1M context size"
+            ),
+        ),
+        base_llm="Ornith10-9B",
+        llm_author="DeepReinforce AI",
+        quant_author="DeepReinforce AI",
+        quant_type="Q4_K_M",
+        size_hint="5.63 GB",
+        gpu_tip="",
+        mac_tip="",
+        min_memory=8,
+        memory=12,
+        llamacpp_version=9831,
     ),
 )
 

@@ -1502,6 +1502,55 @@ async def test_llama_plugin_raw_stream_cancel_stops_stream(
     assert "second part" not in token_texts
 
 
+@pytest.mark.asyncio
+async def test_llama_plugin_raw_stream_empty_extra_body_passes_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When there's no thinking-family extra_body, __raw_stream must pass
+    ``extra_body=None`` to ``create()``, not ``openai.NOT_GIVEN``.
+
+    Unlike ``tools``/``response_format`` (top-level params that the OpenAI
+    SDK omits entirely from the request when left ``NOT_GIVEN``),
+    ``extra_body`` is special-cased in ``openai._base_client`` via an
+    ``is not None`` check, so a ``NotGiven`` sentinel there is treated as a
+    *present* value and handed to ``_merge_mappings``, which blows up with
+    ``TypeError: 'NotGiven' object is not a mapping``. Regression test for
+    that crash.
+    """
+    import openai
+
+    from kodo.common._protocols import MessageSink
+
+    sink = MagicMock(spec=MessageSink)
+    plugin = LlamaPlugin(sink=sink, kodo_dir=tmp_path)
+    plugin._LlamaPlugin__client = MagicMock(spec=openai.AsyncOpenAI)
+
+    monkeypatch.setattr(
+        "kodo.llms.llamacpp._llama.get_local_registry",
+        MagicMock(return_value={}),
+    )
+
+    captured_kwargs: dict[str, Any] = {}
+
+    async def _fake_create(**kwargs: Any) -> Any:
+        captured_kwargs.update(kwargs)
+        return _FakeAsyncStream([_make_chunk(finish_reason="stop")])
+
+    plugin._LlamaPlugin__client.chat.completions.create = _fake_create
+
+    async for _ in plugin._LlamaPlugin__raw_stream(
+        cancel_event=_not_cancelled(),
+        model="test-model",
+        system="sys",
+        messages=[],
+        tools=[],
+    ):
+        pass
+
+    assert captured_kwargs["extra_body"] is None
+
+
 # ---------------------------------------------------------------------------
 # __ensure_running exception path (lines 615-621)
 # ---------------------------------------------------------------------------
