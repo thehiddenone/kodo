@@ -611,9 +611,9 @@ def _tool_by_name(specs: list[ToolSpec], name: str) -> ToolSpec:
 # ``run_subagent_specs`` only mints a tool for a *schema-bearing* sub-agent, and
 # the specs are a real global registry — so these fixtures reuse real agent
 # names (with controlled bodies) rather than invented ones.
-_REAL_WORKFLOW_AGENT = "architect"          # workflow stage, reviewed by a critic
-_REAL_CRITIC_AGENT = "architect_critic"     # its critic — never invocable
-_REAL_STANDALONE_AGENT = "investigator"     # standalone specialist, no critic
+_REAL_WORKFLOW_AGENT = "architect"  # workflow stage, reviewed by a critic
+_REAL_CRITIC_AGENT = "architect_critic"  # its critic — never invocable
+_REAL_STANDALONE_AGENT = "investigator"  # standalone specialist, no critic
 
 
 def _write_callee_fixture(tmp_path: Path) -> None:
@@ -660,8 +660,7 @@ def test_tool_description_states_workflow_vs_standalone(tmp_path: Path) -> None:
     _write_callee_fixture(tmp_path)
     specs = AgentRegistry(tmp_path).run_subagent_specs("caller")
     assert (
-        "workflow stage"
-        in _tool_by_name(specs, f"run_subagent_{_REAL_WORKFLOW_AGENT}").description
+        "workflow stage" in _tool_by_name(specs, f"run_subagent_{_REAL_WORKFLOW_AGENT}").description
     )
     assert (
         "standalone specialist"
@@ -757,8 +756,7 @@ def test_shipped_problem_solver_delegates_to_four_standalone_specialists() -> No
     registry = AgentRegistry(_REAL_AGENTS_DIR)
     specs = {s.name: s for s in registry.run_subagent_specs("problem_solver")}
     assert set(specs) == {
-        f"run_subagent_{n}"
-        for n in ("investigator", "planner", "developer", "toolchain_builder")
+        f"run_subagent_{n}" for n in ("investigator", "planner", "developer", "toolchain_builder")
     }
     for spec in specs.values():
         assert "standalone specialist" in spec.description

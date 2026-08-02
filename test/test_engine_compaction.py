@@ -34,7 +34,7 @@ def test_compaction_context_message_wraps_summary() -> None:
 
     assert msg.role == "user"
     assert "the gist of it" in msg.content
-    assert "compacted" in msg.content
+    assert "condensed" in msg.content
 
 
 def test_estimate_tokens_counts_string_content() -> None:
@@ -94,9 +94,80 @@ def test_render_transcript_renders_block_types() -> None:
 
 
 def test_render_transcript_skips_non_dict_blocks() -> None:
+    """A message left with nothing renderable emits no section at all."""
     messages = [Message(role="assistant", content=["not-a-dict"])]
     text = render_transcript(messages)
-    assert text == "## ASSISTANT\n"
+    assert text == ""
+
+
+def test_render_transcript_labels_tool_results_separately() -> None:
+    """Tool results must not wear ``## USER``.
+
+    The engine appends them as ``role="user"`` messages, but the compactor
+    preserves ``## USER`` blocks verbatim and treats them as turn boundaries
+    (subagent_compactor.md) — so only a real user prompt may carry that header.
+    """
+    messages = [
+        Message(role="user", content="do the thing"),
+        Message(role="user", content=[{"type": "tool_result", "content": "listing output"}]),
+    ]
+    text = render_transcript(messages)
+
+    assert "## USER\ndo the thing" in text
+    assert "## TOOL RESULTS\n[tool_result] listing output" in text
+    assert text.count("## USER") == 1
+
+
+def test_render_transcript_splits_mixed_user_message_results_first() -> None:
+    messages = [
+        Message(
+            role="user",
+            content=[
+                {"type": "tool_result", "content": "listing output"},
+                {"type": "text", "text": "and now do the next thing"},
+            ],
+        )
+    ]
+    text = render_transcript(messages)
+
+    assert text.index("## TOOL RESULTS") < text.index("## USER")
+    assert "and now do the next thing" in text
+
+
+def test_render_transcript_labels_leading_compaction_block() -> None:
+    """A prior compaction is re-compactable context, not a user prompt.
+
+    Labelled ``## USER`` it would be pinned verbatim by the compactor's
+    user-turn rule and the post-compaction floor would grow without bound.
+    """
+    messages = [
+        compaction_context_message("## USER\nearlier prompt\n\n## ASSISTANT\nearlier work"),
+        Message(role="user", content="the new prompt"),
+    ]
+    text = render_transcript(messages)
+
+    assert text.startswith("## PRIOR COMPACTED CONTEXT\n")
+    # The preamble is stripped; only the condensed transcript itself remains.
+    assert "stay within the context limit" not in text
+    assert "earlier work" in text
+    assert "## USER\nthe new prompt" in text
+
+
+def test_render_transcript_compaction_preamble_only_matches_first_message() -> None:
+    """Only the leading block is a prior compaction; a later look-alike is not.
+
+    ``load_main_messages`` rebuilds from the latest marker, so the synthetic
+    block is always first — anything further in is ordinary conversation
+    (a user could paste the preamble text verbatim).
+    """
+    messages = [
+        Message(role="user", content="first"),
+        compaction_context_message("pasted by the user"),
+    ]
+    text = render_transcript(messages)
+
+    assert "## PRIOR COMPACTED CONTEXT" not in text
+    assert text.count("## USER") == 2
 
 
 # ---------------------------------------------------------------------------

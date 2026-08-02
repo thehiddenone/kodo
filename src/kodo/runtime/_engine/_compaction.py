@@ -48,6 +48,29 @@ _COMPACTION_THRESHOLD = 0.9
 _COMPACTION_EXCERPT_LEN = 280
 
 
+# Transcript headers handed to the compactor. They exist because the raw
+# message ``role`` conflates three very different kinds of ``role="user"``
+# message, and the compactor's contract (subagent_compactor.md) turns on
+# telling them apart: it preserves real user prompts verbatim, folds tool
+# results into the agent turn that called them, and re-compacts a prior
+# compaction rather than freezing it.
+_HDR_USER = "## USER"
+_HDR_ASSISTANT = "## ASSISTANT"
+_HDR_TOOL_RESULTS = "## TOOL RESULTS"
+_HDR_PRIOR_CONTEXT = "## PRIOR COMPACTED CONTEXT"
+
+# Preamble wrapping a compaction's output when it becomes the live context.
+# Also the marker :func:`render_transcript` matches to recognise that block on
+# a *later* compaction, so keep the two in lockstep.
+_COMPACTION_PREAMBLE = (
+    "The conversation so far has been condensed to stay within the context "
+    "limit. Below is a condensed transcript of everything that happened "
+    "before this point — user turns verbatim, agent turns compressed but "
+    "factually complete. Treat it as your working memory and continue "
+    "seamlessly from it:\n\n"
+)
+
+
 def compaction_context_message(summary: str) -> Message:
     """Build the synthetic user message that replaces a compacted context.
 
@@ -56,15 +79,7 @@ def compaction_context_message(summary: str) -> Message:
     :meth:`~._history.HistoryProjector.load_main_messages`), so the in-memory
     context is identical in both paths.
     """
-    return Message(
-        role="user",
-        content=(
-            "The conversation so far has been compacted to stay within the "
-            "context limit. The following is a summary of everything that "
-            "happened before this point; treat it as your working memory and "
-            "continue seamlessly from it:\n\n" + summary
-        ),
-    )
+    return Message(role="user", content=_COMPACTION_PREAMBLE + summary)
 
 
 def estimate_tokens(messages: list[Message]) -> int:
@@ -90,17 +105,40 @@ def render_transcript(messages: list[Message]) -> str:
     Tool-use/`tool_result`/thinking blocks are rendered as labelled lines so
     the compactor sees the whole exchange as data without needing the tool
     schemas that a structured replay would require.
+
+    Headers carry meaning the raw ``role`` does not, because the engine sends
+    three different things as ``role="user"`` and the compactor treats each
+    differently (subagent_compactor.md):
+
+    - ``## USER`` — a real user prompt, which the compactor copies through
+      **verbatim**. Nothing else may wear this header, or it would be frozen
+      word-for-word into every future context.
+    - ``## TOOL RESULTS`` — a tool-result envelope, which the engine appends
+      as a user message (``_turns.py``/``_resume.py``). It is *not* a turn
+      boundary; the compactor folds it into the agent turn that called it.
+    - ``## PRIOR COMPACTED CONTEXT`` — the synthetic block a previous
+      compaction left behind (always first; see
+      :func:`compaction_context_message`). Already condensed, so it is spliced
+      onward and re-compacted. Labelling it as ``## USER`` would make the
+      verbatim rule pin it in place and grow the floor with every compaction.
+
+    A message mixing tool results with real user text (not produced today, but
+    legal) is split into both sections, results first, matching wire order.
     """
     out: list[str] = []
-    for msg in messages:
+    for index, msg in enumerate(messages):
         content = msg.content
-        header = f"## {msg.role.upper()}"
         is_assistant = msg.role == "assistant"
+        own_header = _HDR_ASSISTANT if is_assistant else _HDR_USER
         if isinstance(content, str):
+            if index == 0 and not is_assistant and content.startswith(_COMPACTION_PREAMBLE):
+                out.append(f"{_HDR_PRIOR_CONTEXT}\n{content[len(_COMPACTION_PREAMBLE) :]}")
+                continue
             text = strip_kodo_callouts(content) if is_assistant else content
-            out.append(f"{header}\n{text}")
+            out.append(f"{own_header}\n{text}")
             continue
         parts: list[str] = []
+        results: list[str] = []
         for block in content:
             if not isinstance(block, dict):
                 continue
@@ -117,8 +155,11 @@ def render_transcript(messages: list[Message]) -> str:
             elif btype == "tool_result":
                 raw = block.get("content")
                 body = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)
-                parts.append(f"[tool_result] {body}")
-        out.append(f"{header}\n" + "\n".join(parts))
+                results.append(f"[tool_result] {body}")
+        if results:
+            out.append(f"{_HDR_TOOL_RESULTS}\n" + "\n".join(results))
+        if parts:
+            out.append(f"{own_header}\n" + "\n".join(parts))
     return "\n\n".join(out)
 
 
@@ -409,13 +450,16 @@ class ContextCompactor:
         _log.info("Context compacted (%s): ~%d → ~%d tokens", reason, tokens_before, tokens_after)
 
     async def _generate_compaction_summary(self, force_model_key: str | None = None) -> str | None:
-        """Run one silent LLM call producing a compact briefing of the context.
+        """Run one silent LLM call producing a condensed transcript of the context.
 
         The current main message list is rendered to a plain-text transcript and
         handed to the ``compactor`` sub-agent as a single user message; the model
-        gets no tools. Like the titler, this streams nothing to the feed — only
-        the summary text is collected and the call's USD cost folded into the
-        running total.
+        gets no tools. What comes back is not a briefing but the same transcript
+        with its turn structure intact — user turns verbatim, agent turns
+        compressed — so the result is self-similar and can be re-compacted later
+        (see :func:`render_transcript` and ``subagent_compactor.md``). Like the
+        titler, this streams nothing to the feed — only the summary text is
+        collected and the call's USD cost folded into the running total.
 
         Args:
             force_model_key: When set, run on this exact model instead of the one
