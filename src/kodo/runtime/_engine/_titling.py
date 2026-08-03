@@ -87,16 +87,35 @@ class SessionTitler:
         still in flight (guards against a second prompt racing the first
         title generation before it lands).
         """
+        session_id = self._host._orch_session_id
         words = text.split()
         if not words:
+            _log.info("Session %s: titling skipped, blank/whitespace-only prompt", session_id)
             return
         if self._transient.is_session_named:
+            _log.info("Session %s: titling skipped, session is already named", session_id)
             return
         if self._naming_task is not None and not self._naming_task.done():
+            _log.info(
+                "Session %s: titling skipped, a previous naming task is still in flight",
+                session_id,
+            )
             return
         if len(words) <= _MAX_TITLE_WORDS:
+            _log.info(
+                "Session %s: prompt is %d words (<=%d) — using the short-prompt path (no LLM call)",
+                session_id,
+                len(words),
+                _MAX_TITLE_WORDS,
+            )
             self._naming_task = asyncio.create_task(self._report_short_title(text))
         else:
+            _log.info(
+                "Session %s: prompt is %d words (>%d) — routing to the titler LLM",
+                session_id,
+                len(words),
+                _MAX_TITLE_WORDS,
+            )
             self._naming_task = asyncio.create_task(self._generate_and_report(text))
 
     async def _report_short_title(self, text: str) -> None:
@@ -109,8 +128,15 @@ class SessionTitler:
         *model* output; a prompt's own words need no such gate.
         """
         title = self._sanitize_prompt_text(text)
+        session_id = self._host._orch_session_id
         if not title:
+            _log.info(
+                "Session %s: short-prompt title path produced no usable title "
+                "(prompt sanitized to nothing, e.g. all-punctuation) — session stays unnamed",
+                session_id,
+            )
             return
+        _log.info("Session %s: short-prompt title = %r", session_id, title)
         await self._apply_title(title)
 
     async def _generate_and_report(self, text: str) -> None:
@@ -124,23 +150,43 @@ class SessionTitler:
         nothing (e.g. blank text) does the session stay unnamed for the next
         prompt to try again.
         """
+        session_id = self._host._orch_session_id
+        _log.info("Session %s: requesting an LLM-generated title from the titler", session_id)
         await self._emitters.emit_session_naming(True)
         try:
             raw = await generate_title(text)
         except Exception:
-            _log.exception("Session title generation failed; falling back to leading words")
+            _log.exception(
+                "Session %s: generate_title() raised; falling back to leading words", session_id
+            )
             raw = None
         finally:
             await self._emitters.emit_session_naming(False)
 
+        if raw is None:
+            _log.info(
+                "Session %s: generate_title() returned None (titler server unavailable — see "
+                "kodo.titling logs above for why) — falling back to leading words",
+                session_id,
+            )
+        else:
+            _log.info("Session %s: titler raw output = %r", session_id, raw)
+
         title = self._sanitize_title(raw) if raw else None
         if not title or not self._is_acceptable_title(title):
             _log.info(
-                "Titler produced no acceptable title for session %s; falling back to leading words",
-                self._host._orch_session_id,
+                "Session %s: titler produced no acceptable title (sanitized=%r) — "
+                "falling back to leading words",
+                session_id,
+                title,
             )
             title = self._sanitize_prompt_text(text)
             if not title:
+                _log.info(
+                    "Session %s: leading-words fallback also produced no usable title — "
+                    "session stays unnamed",
+                    session_id,
+                )
                 return
 
         await self._apply_title(title)

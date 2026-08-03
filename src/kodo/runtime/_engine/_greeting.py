@@ -53,17 +53,38 @@ class SessionGreeter:
         when the session is created.
         """
         if self._task is not None and not self._task.done():
+            _log.info("SessionGreeter.start: skipped, a greeting generation is already in flight")
             return
+        _log.info("SessionGreeter.start: scheduling greeting generation")
         self._task = asyncio.create_task(self._generate_and_emit())
 
     async def _generate_and_emit(self) -> None:
         try:
             raw = await generate_greeting()
         except Exception:
-            _log.exception("Greeting generation failed; falling back to the default greeting")
+            _log.exception(
+                "SessionGreeter: generate_greeting() raised; falling back to the default greeting"
+            )
             raw = None
+        else:
+            if raw is None:
+                _log.info(
+                    "SessionGreeter: generate_greeting() returned None (titler server "
+                    "unavailable — see kodo.titling logs above for why) — falling back to the "
+                    "default greeting"
+                )
+            else:
+                _log.info("SessionGreeter: titler raw greeting = %r", raw)
 
         text = self._sanitize(raw) if raw else None
+        if raw and not text:
+            _log.info(
+                "SessionGreeter: raw greeting sanitized to nothing — falling back to the "
+                "default greeting"
+            )
+        _log.info(
+            "SessionGreeter: emitting greeting (source=%s)", "titler" if text else "default"
+        )
         await self._emitters.emit_greeting(text or _DEFAULT_GREETING)
 
     @staticmethod

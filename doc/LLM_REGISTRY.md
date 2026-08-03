@@ -482,28 +482,42 @@ that produced the base model, e.g. `"Alibaba Cloud"`).
 **Pre-launch confirmation gate.** Unlike this section's older text below
 might suggest, these two entry-level warnings are no longer purely
 inline/non-blocking: `localLaunchWarnings(entry, detectedVramGb,
-detectedRamGb, installedLlamaCppVersion)` (`src/llm-registry-types.ts`) is a
-second, extension-host-importable copy of the same two rules (duplicated,
-not shared, since `ramWarning`/`llamacppVersionWarning` above live in the
-webview-only `settings-webview/localLlmUtils.ts` — keep both in sync by
-hand), consumed by `confirmLocalLlamaLaunch(openSettings)`
+detectedRamGb, installedLlamaCppVersion, isMac)` (`src/llm-registry-types.ts`)
+is a second, extension-host-importable copy of the same two rules
+(duplicated, not shared, since `ramWarning`/`llamacppVersionWarning` above
+live in the webview-only `settings-webview/localLlmUtils.ts` — keep both in
+sync by hand) *plus* a third, platform-compatibility rule (§4.6b) that has
+no webview-inline equivalent above since it isn't hardware-detection-based,
+consumed by `confirmLocalLlamaLaunch(openSettings)`
 (`src/extension/local-llm-registry.ts`). That gate fires before llama-server
 actually launches — from the sidebar's explicit ▶ Start/↺ Restart llama.cpp
 button (`startLlamaCpp`, `src/extension/llamacpp.ts`), and again from
 `SessionController._submitPrompt` (`src/session/controller.ts`, via the
 injected `SessionDeps.confirmLocalLaunch`) right before a local-mode prompt
 send that would trigger the engine's automatic launch (i.e. local mode and
-the running server, if any, isn't already serving the active model). If the
-active model has any outstanding warning (red *or* yellow), a native modal
-lists every one and offers "Start anyway", "Start anyway, don't ask again
-for this model", an implicit Cancel (Escape/dismiss), and — only when a
-`llamacpp_version` warning is present — "Update llama.cpp…", which opens
-Kōdo Settings' Local Inference tab
+the running server, if any, isn't already serving the active model).
+
+If the active model has a `'platform'` warning (§4.6b — none of its flavors
+are compatible with this host), the gate shows a plain OK-only error
+(`vscode.window.showErrorMessage`, no "Start anyway") and unconditionally
+cancels — checked first, *before* consulting `dismissedLocalLaunchWarnings`
+below, since a platform mismatch isn't something "don't ask again" (meant
+for memory/version risk the user is willing to take) can paper over. This
+is also the one warning kind kodo's own `ensure_llama_running` independently
+refuses on server-side (§4.6b) — defense in depth for a caller that reaches
+`llama.start`/an auto-launch without going through this gate.
+
+Otherwise, if the active model has any outstanding memory/version warning
+(red *or* yellow), a native modal lists every one and offers "Start
+anyway", "Start anyway, don't ask again for this model", an implicit Cancel
+(Escape/dismiss), and — only when a `llamacpp_version` warning is present —
+"Update llama.cpp…", which opens Kōdo Settings' Local Inference tab
 (`vscode.commands.executeCommand('kodo.openSettings', 'local-inference')`
 from the session path, to dodge a circular import; a direct `openKodoSettings`
 call from the sidebar-button path) instead of starting. Like §4.6a's
-per-flavor gate below, this is a client-side UX gate only — nothing
-server-side blocks a launch on these fields either.
+per-flavor gate below, the memory/version half of this is a client-side UX
+gate only — nothing server-side blocks a launch on those two fields either
+(unlike the platform check, which kodo also enforces itself).
 
 **"Don't ask again."** Choosing that button calls
 `dismissLocalLaunchWarnings(entry.name)` (`src/extension/settings-io.ts`),
@@ -532,7 +546,7 @@ the WS connection.
 
 Each sidebar model-picker card also shows two meta lines below its title: `Quant: <entry.quant_type>` (falling back to `"—"` for a `custom_*` entry, which never has one — see above) and `Context: <resolved size>`. The context figure is **not** `entry.context_window` verbatim — it's resolved the same way `resolve_context_window` resolves it server-side (§4.6), just computed client-side against the card's *currently selected* flavor: `resolveContextSize(entry, activeFlavor)` in `llm-registry-types.ts` calls `flavorContextSize(activeFlavor)` (mirroring `LlamaFlavor.get_context_size()` — scans that flavor's own `llama_args` for `--ctx-size`/`-c`) and falls back to `entry.context_window` when that's absent or `0` (including every built-in flavor's default `--ctx-size: "0"` "use the GGUF's own trained length" sentinel). Recomputed whenever the card's flavor `<select>` changes, so switching flavors updates the Context line without a server round trip. `sidebar-provider.ts`'s webview script can't import that TS module directly (it's a plain string-embedded `<script>`, not a bundled module — see §4.4's `_local_registry_payload` note), so it carries its own inline JS copy of the same two functions; keep them in sync by hand if either side's resolution rule changes.
 
-Each card also shows a ⚠ warning icon to the left of the pin/favorite star whenever `localLaunchWarnings` (this section, "Pre-launch confirmation gate" above) returns anything non-empty for that entry — red if any warning is `level: 'red'`, otherwise yellow; hovering it lists every outstanding warning's `text` (native `title` attribute, one line per warning). Unlike the Context-line functions above, this one is **not** duplicated as inline webview JS: `SidebarProvider._computeLocalWarnings` (`src/sidebar-provider.ts`) calls the real `localLaunchWarnings` on the extension-host side — it can, since it's plain TS, not a webview script — and ships the per-entry result as a new top-level `localWarnings: Record<name, LocalLaunchWarning[]>` field alongside every `update` postMessage (computed fresh from the post-merge state each time, not cached in `SidebarState`/`ui-settings.json`). The webview script just looks up `localWarnings[model.name]` and renders/skips the icon — no independent copy of the memory/version rules to keep in sync here, unlike the Context-line and confirm-dialog cases.
+Each card also shows a ⚠ warning icon to the left of the pin/favorite star whenever `localLaunchWarnings` (this section, "Pre-launch confirmation gate" above) returns anything non-empty for that entry — red if any warning is `level: 'red'`, otherwise yellow; hovering it lists every outstanding warning's `text` (native `title` attribute, one line per warning). Unlike the Context-line functions above, this one is **not** duplicated as inline webview JS: `SidebarProvider._computeLocalWarnings` (`src/sidebar-provider.ts`) calls the real `localLaunchWarnings` on the extension-host side (passing `SidebarState.isMac`, set once at startup — §4.6b) — it can, since it's plain TS, not a webview script — and ships the per-entry result as a new top-level `localWarnings: Record<name, LocalLaunchWarning[]>` field alongside every `update` postMessage (computed fresh from the post-merge state each time, not cached in `SidebarState`/`ui-settings.json`). The webview script just looks up `localWarnings[model.name]` and renders/skips the icon — no independent copy of the memory/version/platform *warning* rules to keep in sync here, unlike the Context-line and confirm-dialog cases. The flavor `<select>`'s own compatibility *filter* is a separate concern with its own inline-JS duplicate (`flavorCompatibleWithHost` in the webview script — §4.6b) — the warning icon says "something's outstanding," the filter is what actually keeps an incompatible flavor from ever being offered.
 
 ### 4.5 Thinking-tier families
 
@@ -976,21 +990,66 @@ equivalent discrete-GPU-plus-system-RAM configuration that makes sense at
 that size. Every other built-in flavor (the default q8/fp16 KV-cache ones)
 sets `platform=BOTH`.
 
-**This does not gate *manual* flavor selection** — `set_active_flavor`
-performs no platform check (same as it performs no hardware-fit check;
-that's `hardwareFitWarningForFlavor`'s job, §4.6a, and it's an
-independent, client-side-only concern). What `platform` *does* gate is
-**automatic default selection**: `get_effective_flavor_id(kodo_dir, entry)`
-(§4.6's fallback rule) now skips a flavor whose `platform` doesn't match
-`current_host_platform()` (`sys.platform == "darwin"` → `MAC`, else `GPU`
-— the same convention `kodo.llms.detect_vram_gb`/`detect_ram_gb` already
-use) when picking the first available flavor for an *unset* active
-selection. If every one of *entry*'s flavors targets the other platform,
-the very first one is still returned regardless (some, possibly
-non-functional, launch beats none) — this only ever changes which flavor
-is picked among several, never causes a "no launch" outcome. An *explicit*
-`set_active_flavor` choice is never second-guessed by this check, even if
-it names an incompatible flavor.
+**This gates both manual selection and automatic default selection** — a
+flavor incompatible with `current_host_platform()` (`sys.platform ==
+"darwin"` → `MAC`, else `GPU` — the same convention
+`kodo.llms.detect_vram_gb`/`detect_ram_gb` already use) is never something
+this host can actually launch, so unlike `min_ram`/`min_vram` there is no
+"proceed anyway" escape hatch anywhere in the stack:
+
+- **Sidebar flavor picker** (the only live flavor-selection surface, per
+  §4.6's kodo-vsix UI note) — `flavorCompatibleWithHost(flavor, isMac)`
+  (`src/llm-registry-types.ts`, duplicated as plain-JS in
+  `sidebar-provider.ts`'s embedded webview script and again in
+  `src/settings-webview/localLlmUtils.ts` for the Local Inference model
+  card, below — three copies, same convention as `flavorContextSize`; keep
+  in sync by hand) filters `entry.flavors` down to compatible ones before
+  building the `<select>`'s `<option>`s. An incompatible flavor is not
+  merely discouraged, it is **never offered** — this is what actually fixes
+  the bug this mechanism was built around (a `GPU`-only flavor was
+  previously selectable and launchable from a Mac sidebar card). If zero
+  flavors are compatible, no picker renders at all for that card (same
+  `compatibleFlavors.length > 0` guard as the pre-existing
+  `custom_server_url`/no-flavors cases).
+- **`get_effective_flavor_id(kodo_dir, entry)`** (§4.6's resolution rule) —
+  for an *unset or stale* active selection, still picks the first
+  compatible flavor, skipping an incompatible one earlier in the list; if
+  *none* are compatible, permissively falls back to the first flavor
+  regardless (unchanged from before this section's rewrite — this
+  particular fallback only matters for *non-launch* callers now, see
+  below). For an *explicit* `set_active_flavor` choice that turns out to
+  name an incompatible flavor: if a compatible alternative exists among
+  *entry*'s other flavors, the explicit choice is overridden by (and
+  **persisted** as, via `set_active_flavor`) the first compatible one —
+  this is no longer "never second-guessed," which was the root cause of
+  the bug above (an explicit choice made while on one platform stayed
+  active, and launchable, after moving `~/.kodo` to the other). If the
+  platform is switched back later, the original choice is gone — it is
+  not remembered anywhere once overwritten, so it has to be re-picked by
+  hand. If *no* flavor is compatible, the explicit choice is returned
+  unchanged (nothing better to fall back to); this is the one case where
+  `get_effective_flavor_id` can still resolve to an incompatible flavor,
+  which is exactly why the actual launch path (next bullet) does its own,
+  independent check rather than trusting this function's return value.
+- **`ensure_llama_running(entry, kodo_dir)`** (`kodo/llms/llamacpp/
+  _manager.py`) — refuses outright (`RuntimeError`, same family as its
+  pre-existing "llama.cpp not installed"/"model not downloaded" checks) if
+  `has_compatible_flavor(kodo_dir, entry)` is `False`, i.e. *entry* has
+  flavors and every single one targets the other platform. Checked before
+  anything else (install lookup, model-file lookup) since nothing there
+  could make the launch possible anyway. This is the actual enforcement
+  point — reachable from all three real launch triggers
+  (`local_llm.start`'s handler, `_restart_llama_server_if_running`, and
+  `LlamaPlugin`'s auto-start-on-prompt path in `_llama.py`), so a caller
+  that bypasses kodo-vsix's own gate (below) — a raw WS client, the
+  validator, a future CLI path — still can't actually start an
+  incompatible launch. `has_compatible_flavor` returns `True` when *entry*
+  has no flavors at all (nothing to be incompatible about).
+- **kodo-vsix's `confirmLocalLlamaLaunch`** (§4.4's pre-launch gate) checks
+  this *first*, ahead of the memory/version warnings and the
+  `dismissedLocalLaunchWarnings` list, and — unlike those two, which offer
+  "Start anyway" — shows a plain OK-only error and unconditionally cancels.
+  See §4.4 for the full three-way gate.
 
 **Wire shape**: `_flavors_payload` (`kodo/server/_app.py`) adds
 `platform: "mac" | "gpu" | "both"` to each flavor object in
@@ -1002,7 +1061,17 @@ own duplicate `LocalFlavor` (`src/settings-webview/types.ts`).
 string value) through `~/.kodo/etc/local-llm-registry.json` for a custom
 flavor, falling back to `BOTH` for anything missing or unrecognized
 (`_parse_flavor_platform`, both in `_local_registry.py` for the JSON store
-and in `kodo/server/_app.py` for the WS payload).
+and in `kodo/server/_app.py` for the WS payload). `entry.active_flavor`
+itself is still sent as the raw persisted value (`get_active_flavor`, not
+`get_effective_flavor_id`) — kodo-vsix derives what's actually effective
+client-side (`active_flavor || flavors[0]`, now filtered through
+`flavorCompatibleWithHost`/`entryHasCompatibleFlavor` as above), same as it
+already did before this section's rewrite; a raw persisted value that's
+momentarily stale (an explicit-but-incompatible choice not yet corrected by
+a `get_effective_flavor_id` call) just isn't in the picker's option list, so
+the browser's native "value not in options" behavior shows the first
+(compatible) option selected until the next registry_state push catches up
+with the server-side persisted correction.
 
 **Editable via the "Manage flavors" modal** (§4.6) — `add_flavor`/
 `update_flavor` both take a `platform` keyword param (WS payload field
@@ -1017,9 +1086,12 @@ own radio group's current selection. The flavor list (left pane) shows a
 short badge next to a restricted flavor's name (" — Mac only" / " —
 GPU only"; nothing extra for "Both", since that's "no restriction," not
 worth calling out on every row) via `flavorPlatformBadge`
-(`src/settings-webview/localLlmUtils.ts`) — purely informational
-client-side; the platform-aware *default*-selection behavior itself is
-entirely server-side (`get_effective_flavor_id`, above).
+(`src/settings-webview/localLlmUtils.ts`) — purely informational. **This
+modal is deliberately not filtered** by platform compatibility, unlike the
+sidebar picker above — it lists every flavor (including incompatible ones,
+already badge-marked) since it's for defining/editing/copying flavor
+definitions, not choosing what launches; a predefined `GPU`-only flavor
+must stay visible/copyable here even when running on a Mac.
 
 ---
 

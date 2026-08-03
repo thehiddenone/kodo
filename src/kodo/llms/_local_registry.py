@@ -52,6 +52,7 @@ __all__ = [
     "get_flavors",
     "get_llama_server_override_path",
     "get_local_registry",
+    "has_compatible_flavor",
     "local_thinking_default_tier",
     "local_thinking_family",
     "local_thinking_tiers",
@@ -3083,22 +3084,63 @@ def resolve_context_window(entry: LocalLLMEntry, flavor: LlamaFlavor | None) -> 
     return entry.context_window
 
 
+def has_compatible_flavor(kodo_dir: Path, entry: LocalLLMEntry) -> bool:
+    """Whether *entry* has at least one flavor launchable on this host.
+
+    ``True`` when *entry* has no flavors at all (nothing to be incompatible
+    about — a flavor-less ``custom_*`` entry launches with its own bare
+    config, see :func:`resolve_effective_llama_config`) or when at least one
+    of :func:`get_flavors`' flavors is compatible with
+    :func:`current_host_platform` (:func:`_flavor_compatible_with_host`).
+    ``False`` only when *entry* has flavors and every single one targets the
+    other platform — the case :func:`kodo.llms.llamacpp.ensure_llama_running`
+    refuses to launch (doc/LLM_REGISTRY.md §4.6b).
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        entry: The entry to check.
+
+    Returns:
+        bool: Whether *entry* can run on this host at all.
+    """
+    flavors = get_flavors(kodo_dir, entry)
+    if not flavors:
+        return True
+    return any(_flavor_compatible_with_host(f) for f in flavors)
+
+
 def get_effective_flavor_id(kodo_dir: Path, entry: LocalLLMEntry) -> str:
     """The flavor id that would actually be launched for *entry* right now.
 
-    - The active flavor (:func:`get_active_flavor`), if set and still
-      present among :func:`get_flavors` — an *explicit* choice is never
-      overridden by platform compatibility, even if it turns out to name a
-      flavor that isn't compatible with :func:`current_host_platform`.
-    - Otherwise (unset, or a stale id whose definition was removed since it
-      was selected — "Default" in the UI) the first available flavor that
-      is compatible with :func:`current_host_platform` (see
+    - The active flavor (:func:`get_active_flavor`), if set, still present
+      among :func:`get_flavors`, and compatible with
+      :func:`current_host_platform` — returned as-is.
+    - An *explicit* active flavor that names a flavor incompatible with
+      :func:`current_host_platform` is no longer honored as-is: if a
+      compatible flavor exists among *entry*'s flavors, this both returns
+      and **persists** (:func:`set_active_flavor`) the first compatible one
+      — the same correction applied below for an unset/stale selection,
+      just also written back so kodo-vsix's sidebar picker and every other
+      reader of :func:`get_active_flavor` agree with what's actually
+      launched from here on. (If the platform is switched back later, the
+      original choice has to be re-picked by hand — it is not remembered
+      anywhere once overwritten.) If *no* flavor is compatible, the explicit
+      choice is returned unchanged — there's nothing better to fall back to.
+    - Unset, or a stale id whose definition was removed since it was
+      selected ("Default" in the UI): the first available flavor that is
+      compatible with :func:`current_host_platform` (see
       :func:`_flavor_compatible_with_host`) — e.g. on Apple Silicon, a
       ``LlamaFlavorPlatform.GPU``-only flavor is skipped in favor of the
       next compatible one. If *no* flavor is compatible (every one of
       *entry*'s flavors targets the other platform), falls back to the
       first available flavor regardless, same as before this check
-      existed — some (possibly broken) launch is preferable to none.
+      existed — some (possibly broken) launch is preferable to none for
+      *this* function; the actual launch path
+      (:func:`kodo.llms.llamacpp.ensure_llama_running`) independently
+      refuses to launch at all in that case (see
+      :func:`has_compatible_flavor`), so this permissive fallback only
+      still matters for other callers (context-window lookup, crash
+      messaging, "is this flavor still the effective one" comparisons).
     - ``""`` if *entry* has no flavors at all.
 
     Callers that need to decide whether editing/removing a specific flavor
@@ -3116,22 +3158,33 @@ def get_effective_flavor_id(kodo_dir: Path, entry: LocalLLMEntry) -> str:
         str: A flavor id from :func:`get_flavors`, or ``""``.
     """
     flavors = get_flavors(kodo_dir, entry)
-    flavor_id = get_active_flavor(kodo_dir, entry.name)
-    if flavor_id and any(f.id == flavor_id for f in flavors):
-        return flavor_id
     if not flavors:
         return ""
     compatible = [f for f in flavors if _flavor_compatible_with_host(f)]
-    if not compatible:
-        _log.warning(
-            "No flavor of %r is compatible with the current platform (%s); "
-            "falling back to %r anyway",
+    flavor_id = get_active_flavor(kodo_dir, entry.name)
+    if flavor_id and any(f.id == flavor_id for f in flavors):
+        if not compatible or any(f.id == flavor_id for f in compatible):
+            return flavor_id
+        _log.info(
+            "Active flavor %r of %r is not compatible with the current platform "
+            "(%s); switching to %r",
+            flavor_id,
             entry.name,
             current_host_platform().value,
-            flavors[0].id,
+            compatible[0].id,
         )
-        return flavors[0].id
-    return compatible[0].id
+        set_active_flavor(kodo_dir, entry.name, compatible[0].id)
+        return compatible[0].id
+    if compatible:
+        return compatible[0].id
+    _log.warning(
+        "No flavor of %r is compatible with the current platform (%s); "
+        "falling back to %r anyway",
+        entry.name,
+        current_host_platform().value,
+        flavors[0].id,
+    )
+    return flavors[0].id
 
 
 def resolve_effective_llama_config(

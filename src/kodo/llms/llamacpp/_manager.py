@@ -9,8 +9,10 @@ from pathlib import Path
 from kodo.llms import (
     REASONING_BUDGET_MESSAGE,
     LocalLLMEntry,
+    current_host_platform,
     get_effective_flavor_id,
     get_llama_server_override_path,
+    has_compatible_flavor,
     local_thinking_family,
     resolve_effective_llama_config,
 )
@@ -122,13 +124,21 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
         LlamaServer: The running server instance.
 
     Raises:
-        RuntimeError: If *entry* is a ``custom_server_url``, llama.cpp is not
-            installed, the model is not downloaded/present, or the server
-            fails to start.
+        RuntimeError: If *entry* is a ``custom_server_url``, none of *entry*'s
+            flavors are compatible with :func:`kodo.llms.current_host_platform`
+            (see :func:`kodo.llms.has_compatible_flavor`, doc/LLM_REGISTRY.md
+            §4.6b), llama.cpp is not installed, the model is not
+            downloaded/present, or the server fails to start.
     """
     if entry.kind == "custom_server_url":
         raise RuntimeError(
             "custom_server_url entries are not managed by kodo — connect to entry.url directly"
+        )
+
+    if not has_compatible_flavor(kodo_dir, entry):
+        raise RuntimeError(
+            f"{entry.description or entry.name} is not compatible with this platform "
+            f"({current_host_platform().value}) — none of its flavors support running here."
         )
 
     server = LlamaServer.get_active_llama_server()

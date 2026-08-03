@@ -239,12 +239,36 @@ def _is_pid_alive(pid: int) -> bool:
     if sys.platform == "win32":
         handle = ctypes.windll.kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
+            error = ctypes.windll.kernel32.GetLastError()
+            _log.info(
+                "_is_pid_alive: OpenProcess(pid=%d) returned a NULL handle (GetLastError=%d) — "
+                "treating as not alive",
+                pid,
+                error,
+            )
             return False
         try:
             exit_code = ctypes.wintypes.DWORD()
             if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                error = ctypes.windll.kernel32.GetLastError()
+                _log.info(
+                    "_is_pid_alive: GetExitCodeProcess(pid=%d, handle=%r) failed "
+                    "(GetLastError=%d) — treating as not alive",
+                    pid,
+                    handle,
+                    error,
+                )
                 return False
-            return exit_code.value == _STILL_ACTIVE
+            alive = exit_code.value == _STILL_ACTIVE
+            _log.info(
+                "_is_pid_alive: pid=%d handle=%r exit_code=%d (STILL_ACTIVE=%d) -> alive=%s",
+                pid,
+                handle,
+                exit_code.value,
+                _STILL_ACTIVE,
+                alive,
+            )
+            return alive
         finally:
             ctypes.windll.kernel32.CloseHandle(handle)
     try:
@@ -314,6 +338,7 @@ class _RunningTitler:
 def _find_running() -> _RunningTitler | None:
     path = _runtime_path()
     if not path.is_file():
+        _log.info("_find_running: no runtime file at %s", path)
         return None
     try:
         data = cast(dict[str, object], json.loads(path.read_text(encoding="utf-8")))
@@ -324,6 +349,7 @@ def _find_running() -> _RunningTitler | None:
         path.unlink(missing_ok=True)
         return None
     if _is_pid_alive(pid):
+        _log.info("_find_running: runtime file points at a live process pid=%d port=%d", pid, port)
         return _RunningTitler(pid=pid, port=port)
     _log.info("Stale titler llama-server runtime file (pid=%d no longer alive) — removing", pid)
     path.unlink(missing_ok=True)
@@ -376,7 +402,7 @@ class TitlerServer:
             raise RuntimeError("titler llama-server is already running")
 
         cmd = self.__build_command()
-        _log.debug("Starting titler llama-server: %s", shlex.join(cmd))
+        _log.info("Starting titler llama-server: %s", shlex.join(cmd))
 
         log_dir = self.__kodo_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -386,21 +412,35 @@ class TitlerServer:
                 *cmd, stdout=f, stderr=asyncio.subprocess.STDOUT
             )
         self.__pid = proc.pid
+        _log.info(
+            "Titler llama-server process spawned pid=%d — awaiting health check at %s/health",
+            self.__pid,
+            self.base_url,
+        )
 
         await self.__wait_ready(startup_log)
 
         _write_runtime(self.__pid, self.__port)
-        _log.info("Titler llama-server ready at %s (pid=%d)", self.base_url, self.__pid)
+        _log.info(
+            "Titler llama-server ready at %s (pid=%d) — runtime file written to %s",
+            self.base_url,
+            self.__pid,
+            _runtime_path(),
+        )
 
     async def stop(self) -> None:
         """Stop the managed titler llama-server process."""
         pid = self.__pid
         if pid is None or not _is_pid_alive(pid):
+            _log.info(
+                "TitlerServer.stop: pid=%s already not alive — clearing state without signaling",
+                pid,
+            )
             self.__pid = None
             _remove_runtime()
             return
 
-        _log.debug("Stopping titler llama-server (pid=%d)", pid)
+        _log.info("Stopping titler llama-server (pid=%d)", pid)
         _terminate_pid(pid)
 
         elapsed = 0.0
@@ -440,16 +480,41 @@ class TitlerServer:
     async def __wait_ready(self, startup_log: Path) -> None:
         url = f"{self.base_url}/health"
         elapsed = 0.0
+        last_logged_elapsed = 0.0
         async with aiohttp.ClientSession() as session:
             while elapsed < _HEALTH_TIMEOUT:
                 if not self.is_running:
+                    _log.info(
+                        "__wait_ready: pid=%s reported not running after %.1fs of health polling "
+                        "— aborting startup",
+                        self.__pid,
+                        elapsed,
+                    )
                     raise RuntimeError(self.__crashed_before_ready_message(startup_log))
                 try:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=1.0)) as resp:
                         if resp.status == 200:
+                            _log.info(
+                                "__wait_ready: pid=%s health check succeeded after %.1fs",
+                                self.__pid,
+                                elapsed,
+                            )
                             return
-                except Exception:
-                    pass
+                        _log.info(
+                            "__wait_ready: pid=%s health check returned status=%d at elapsed=%.1fs",
+                            self.__pid,
+                            resp.status,
+                            elapsed,
+                        )
+                except Exception as exc:
+                    if elapsed - last_logged_elapsed >= 5.0:
+                        _log.info(
+                            "__wait_ready: pid=%s health check request failed at elapsed=%.1fs: %r",
+                            self.__pid,
+                            elapsed,
+                            exc,
+                        )
+                        last_logged_elapsed = elapsed
                 await asyncio.sleep(_HEALTH_POLL_INTERVAL)
                 elapsed += _HEALTH_POLL_INTERVAL
 
@@ -493,34 +558,62 @@ async def start_titling(kodo_dir: Path) -> None:
         kodo_dir (Path): User-level ``~/.kodo`` directory.
     """
     global _active
+    _log.info("start_titling: called (kodo_dir=%s, current _active=%r)", kodo_dir, _active)
     async with _lock:
         if _active is not None and _active.is_running:
+            _log.info(
+                "start_titling: already running at %s — no-op",
+                _active.base_url,
+            )
             return
+        if _active is not None and not _active.is_running:
+            _log.info(
+                "start_titling: existing _active reference is no longer running "
+                "(is_running=False) — will attempt a fresh (re)start"
+            )
         try:
             install = find_installed(kodo_dir)
             if install is None:
-                _log.info("llama.cpp is not installed — titling unavailable")
+                _log.info("start_titling: llama.cpp is not installed — titling unavailable")
                 return
+            _log.info("start_titling: llama.cpp found at %s", install.executable)
 
             manager = _model_manager()
             model_path = manager.get_model_path(_MODEL_ID)
             if model_path is None:
-                _log.info("Downloading titler model %s/%s", _REPO_ID, _FILENAME)
+                _log.info("start_titling: downloading titler model %s/%s", _REPO_ID, _FILENAME)
                 await manager.download_model(_MODEL_ID, _REPO_ID, _FILENAME)
                 model_path = manager.get_model_path(_MODEL_ID)
+            else:
+                _log.info("start_titling: titler model already cached at %s", model_path)
             if model_path is None:
-                _log.warning("Titler model download did not complete — titling unavailable")
+                _log.warning(
+                    "start_titling: titler model download did not complete — titling unavailable"
+                )
                 return
 
             server = TitlerServer(install.executable, model_path, kodo_dir)
             running = _find_running()
             if running is not None:
+                _log.info(
+                    "start_titling: adopting existing titler process pid=%d port=%d",
+                    running.pid,
+                    running.port,
+                )
                 server.adopt(running)
             else:
+                _log.info("start_titling: no existing titler process found — spawning a new one")
                 await server.start()
             _active = server
+            _log.info(
+                "start_titling: _active is now set (is_running=%s, base_url=%s)",
+                _active.is_running,
+                _active.base_url,
+            )
         except Exception:
-            _log.exception("Failed to start titler llama-server; titling will be unavailable")
+            _log.exception(
+                "start_titling: failed to start titler llama-server; titling will be unavailable"
+            )
 
 
 async def stop_titling() -> None:
@@ -532,13 +625,44 @@ async def stop_titling() -> None:
     once the update finishes.
     """
     global _active
+    _log.info("stop_titling: called (current _active=%r)", _active)
     async with _lock:
         if _active is not None and _active.is_running:
             try:
                 await _active.stop()
             except Exception:
-                _log.exception("Failed to stop titler llama-server")
+                _log.exception("stop_titling: failed to stop titler llama-server")
+        elif _active is not None:
+            _log.info("stop_titling: _active present but already not running — clearing")
         _active = None
+
+
+def _server_or_log(capability: str) -> TitlerServer | None:
+    """Return the active titler server if it's usable, else log why and return ``None``.
+
+    This is the exact fork every ``generate_*`` call below falls back through,
+    so it's where a Windows-only "server is running but every call fails"
+    report needs its diagnostics: ``server is None`` means ``start_titling``
+    never got far enough to set ``_active`` at all; ``not server.is_running``
+    means it did, but the PID-liveness check (see :func:`_is_pid_alive`,
+    logged separately) currently disagrees with reality.
+    """
+    server = _active
+    if server is None:
+        _log.info(
+            "%s: titler server was never started successfully (_active is None) — unavailable",
+            capability,
+        )
+        return None
+    if not server.is_running:
+        _log.info(
+            "%s: titler server reference exists (base_url=%s) but is_running=False — "
+            "unavailable (see _is_pid_alive log above for why)",
+            capability,
+            server.base_url,
+        )
+        return None
+    return server
 
 
 async def generate_title(text: str) -> str | None:
@@ -559,8 +683,8 @@ async def generate_title(text: str) -> str | None:
         ``runtime._engine._titling.SessionTitler._sanitize_title``), or
         ``None`` on any failure.
     """
-    server = _active
-    if server is None or not server.is_running:
+    server = _server_or_log("generate_title")
+    if server is None:
         return None
     try:
         client = openai.AsyncOpenAI(api_key=_API_KEY, base_url=f"{server.base_url}/v1")
@@ -573,10 +697,13 @@ async def generate_title(text: str) -> str | None:
         )
         content = response.choices[0].message.content
         if not content:
+            _log.info("generate_title: chat completion returned empty content")
             return None
-        return _THINK_BLOCK_RE.sub("", content).strip() or None
+        result = _THINK_BLOCK_RE.sub("", content).strip() or None
+        _log.info("generate_title: succeeded, raw output=%r", result)
+        return result
     except Exception:
-        _log.exception("Titler chat completion failed")
+        _log.exception("generate_title: chat completion failed")
         return None
 
 
@@ -600,8 +727,8 @@ async def generate_project_name(text: str) -> str | None:
         the caller's job, same as title sanitization is
         ``runtime._engine._titling.SessionTitler``'s), or ``None`` on failure.
     """
-    server = _active
-    if server is None or not server.is_running:
+    server = _server_or_log("generate_project_name")
+    if server is None:
         return None
     try:
         client = openai.AsyncOpenAI(api_key=_API_KEY, base_url=f"{server.base_url}/v1")
@@ -614,10 +741,13 @@ async def generate_project_name(text: str) -> str | None:
         )
         content = response.choices[0].message.content
         if not content:
+            _log.info("generate_project_name: chat completion returned empty content")
             return None
-        return _THINK_BLOCK_RE.sub("", content).strip() or None
+        result = _THINK_BLOCK_RE.sub("", content).strip() or None
+        _log.info("generate_project_name: succeeded, raw output=%r", result)
+        return result
     except Exception:
-        _log.exception("Titler project-name completion failed")
+        _log.exception("generate_project_name: chat completion failed")
         return None
 
 
@@ -644,12 +774,13 @@ async def generate_greeting() -> str | None:
         caller's job, same as title sanitization is
         ``runtime._engine._titling.SessionTitler``'s), or ``None`` on failure.
     """
-    server = _active
-    if server is None or not server.is_running:
+    server = _server_or_log("generate_greeting")
+    if server is None:
         return None
     try:
         client = openai.AsyncOpenAI(api_key=_API_KEY, base_url=f"{server.base_url}/v1")
         theme = random.choice(GREETING_THEMES)
+        _log.info("generate_greeting: requesting a greeting for theme=%r", theme)
         response = await client.chat.completions.create(
             model=_MODEL_ID,
             messages=_build_greeting_messages(theme),  # type: ignore[arg-type]
@@ -659,8 +790,11 @@ async def generate_greeting() -> str | None:
         )
         content = response.choices[0].message.content
         if not content:
+            _log.info("generate_greeting: chat completion returned empty content")
             return None
-        return _THINK_BLOCK_RE.sub("", content).strip() or None
+        result = _THINK_BLOCK_RE.sub("", content).strip() or None
+        _log.info("generate_greeting: succeeded, raw output=%r", result)
+        return result
     except Exception:
-        _log.exception("Titler greeting completion failed")
+        _log.exception("generate_greeting: chat completion failed")
         return None

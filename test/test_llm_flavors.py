@@ -31,6 +31,7 @@ from kodo.llms._local_registry import (
     get_effective_flavor_id,
     get_flavors,
     get_local_registry,
+    has_compatible_flavor,
     parse_llama_args_text,
     remove_flavor,
     remove_local_entry,
@@ -697,16 +698,44 @@ def test_get_effective_flavor_id_falls_back_to_first_when_none_compatible(
     assert get_effective_flavor_id(tmp_path, entry) == "gpu-only-a"
 
 
-def test_get_effective_flavor_id_explicit_choice_bypasses_platform_check(
+def test_get_effective_flavor_id_overrides_explicit_choice_when_incompatible(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # An explicit set_active_flavor selection always wins, even if it names
-    # a flavor that isn't compatible with the current host.
+    # An explicit set_active_flavor selection that turns out to be
+    # incompatible with the current host is no longer honored as-is: it's
+    # overridden by (and persisted as) a compatible alternative, same as an
+    # unset/stale selection would resolve.
     monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
     gpu_flavor = add_flavor(tmp_path, "fake-model", "GPU Only", platform=LlamaFlavorPlatform.GPU)
     set_active_flavor(tmp_path, "fake-model", gpu_flavor.id)
     entry = get_local_registry(tmp_path)["fake-model"]
-    assert get_effective_flavor_id(tmp_path, entry) == gpu_flavor.id
+    assert get_effective_flavor_id(tmp_path, entry) == _DEFAULT_FLAVOR.id
+    # The correction is persisted, not just resolved in-memory for this call.
+    assert get_active_flavor(tmp_path, "fake-model") == _DEFAULT_FLAVOR.id
+
+
+def test_get_effective_flavor_id_keeps_explicit_choice_when_none_compatible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An explicit selection with no compatible alternative to fall back to is
+    # still returned unchanged — nothing better exists to switch to.
+    monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
+    only_gpu_entry = LocalLLMEntry(
+        name="platform-test-3",
+        kind="hardcoded_hf",
+        repo_id="acme/platform-test-3",
+        filename="platform-test-3.gguf",
+        flavors=(
+            LlamaFlavor(id="gpu-only-a", name="GPU Only A", platform=LlamaFlavorPlatform.GPU),
+            LlamaFlavor(id="gpu-only-b", name="GPU Only B", platform=LlamaFlavorPlatform.GPU),
+        ),
+    )
+    monkeypatch.setattr(_local_registry, "_HARDCODED_LOCAL_MODELS", (only_gpu_entry,))
+    set_active_flavor(tmp_path, "platform-test-3", "gpu-only-b")
+    entry = get_local_registry(tmp_path)["platform-test-3"]
+    assert get_effective_flavor_id(tmp_path, entry) == "gpu-only-b"
+    # Not persisted-over — there was nothing compatible to switch to.
+    assert get_active_flavor(tmp_path, "platform-test-3") == "gpu-only-b"
 
 
 def test_get_effective_flavor_id_empty_when_entry_has_no_flavors(tmp_path: Path) -> None:
@@ -716,6 +745,80 @@ def test_get_effective_flavor_id_empty_when_entry_has_no_flavors(tmp_path: Path)
     )
     entry = get_local_registry(tmp_path)["bare"]
     assert get_effective_flavor_id(tmp_path, entry) == ""
+
+
+# ---------------------------------------------------------------------------
+# has_compatible_flavor
+# ---------------------------------------------------------------------------
+
+
+def test_has_compatible_flavor_true_when_entry_has_no_flavors_at_all(tmp_path: Path) -> None:
+    add_local_entry(
+        tmp_path,
+        LocalLLMEntry(name="bare", kind="custom_hf", repo_id="me/bare", filename="bare.gguf"),
+    )
+    entry = get_local_registry(tmp_path)["bare"]
+    assert has_compatible_flavor(tmp_path, entry) is True
+
+
+def test_has_compatible_flavor_true_when_at_least_one_flavor_matches_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
+    entry = LocalLLMEntry(
+        name="platform-test-4",
+        kind="hardcoded_hf",
+        repo_id="acme/platform-test-4",
+        filename="platform-test-4.gguf",
+        flavors=(
+            LlamaFlavor(id="gpu-only", name="GPU Only", platform=LlamaFlavorPlatform.GPU),
+            LlamaFlavor(id="mac-only", name="Mac Only", platform=LlamaFlavorPlatform.MAC),
+        ),
+    )
+    assert has_compatible_flavor(tmp_path, entry) is True
+
+
+def test_has_compatible_flavor_false_when_every_flavor_targets_the_other_platform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
+    entry = LocalLLMEntry(
+        name="platform-test-5",
+        kind="hardcoded_hf",
+        repo_id="acme/platform-test-5",
+        filename="platform-test-5.gguf",
+        flavors=(
+            LlamaFlavor(id="gpu-only-a", name="GPU Only A", platform=LlamaFlavorPlatform.GPU),
+            LlamaFlavor(id="gpu-only-b", name="GPU Only B", platform=LlamaFlavorPlatform.GPU),
+        ),
+    )
+    assert has_compatible_flavor(tmp_path, entry) is False
+
+
+# ---------------------------------------------------------------------------
+# ensure_llama_running — platform-incompatibility refusal
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_llama_running_refuses_when_no_flavor_is_compatible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Raises before any of the llama.cpp-install/model-file checks run —
+    there is nothing installable that would make this launch possible."""
+    from kodo.llms.llamacpp import ensure_llama_running
+
+    monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
+    entry = LocalLLMEntry(
+        name="platform-test-6",
+        kind="hardcoded_hf",
+        repo_id="acme/platform-test-6",
+        filename="platform-test-6.gguf",
+        description="Platform Test 6",
+        flavors=(LlamaFlavor(id="gpu-only", name="GPU Only", platform=LlamaFlavorPlatform.GPU),),
+    )
+    with pytest.raises(RuntimeError, match="not compatible with this platform"):
+        await ensure_llama_running(entry, tmp_path)
 
 
 # ---------------------------------------------------------------------------
