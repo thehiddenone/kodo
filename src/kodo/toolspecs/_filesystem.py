@@ -37,8 +37,10 @@ _OPERATIONS = (
 _PATH_DESC = (
     "A logical path whose first segment is a bound root's name (see "
     "`get_root_paths`) — the rest resolves under that root — or an absolute "
-    "path, used as-is. Unless `temporary` is true, in which case every path "
-    "resolves under the session's scratch directory instead."
+    "path, used as-is. Unless `temporary` is true, in which case this must be "
+    "a relative path that resolves under the session's scratch directory "
+    "instead — an absolute path is going to fail, since that directory isn't "
+    "a path you're given."
 )
 
 
@@ -116,8 +118,9 @@ FILESYSTEM: ToolSpec = ToolSpec(
                 "description": (
                     "When true, every path this call touches (`path`, `source`, "
                     "`destination`) resolves under this session's private scratch "
-                    "directory instead of the project root — relative paths land "
-                    "inside it, absolute paths must already be inside it. Use this for "
+                    "directory instead of the project root, and each must be a "
+                    "relative path — you don't know where that directory lives on "
+                    "disk, so an absolute path is going to fail. Use this for "
                     "throwaway work you don't want in the project itself. Changes made "
                     "there are never captured by the project's checkpoint/rollback "
                     "mirror, and this call is always allowed without a permission "

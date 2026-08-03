@@ -67,9 +67,9 @@ GET_ROOT_PATHS: ToolSpec = ToolSpec(
                     "`find_text_in_files` resolve into when called with "
                     "`temporary: true`, and that `run_command` accepts as an "
                     "absolute `working_dir`. Use it to get that directory's "
-                    "absolute path — e.g. to pass as `run_command`'s "
-                    "`working_dir`, or to build an absolute path for another "
-                    "tool's `temporary: true` call. Default false."
+                    "absolute path to pass as `run_command`'s `working_dir` — those "
+                    "other tools' own `temporary: true` mode takes a relative path "
+                    "instead, not this absolute one. Default false."
                 ),
             },
         },

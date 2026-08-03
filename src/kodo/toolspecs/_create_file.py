@@ -62,8 +62,10 @@ CREATE_FILE: ToolSpec = ToolSpec(
                     "Path to the file: a logical path whose first segment is a bound "
                     "root's name (see `get_root_paths`) — the rest resolves under that "
                     "root — or an absolute path, used as-is. Unless `temporary` is true, "
-                    "in which case this resolves under the session's scratch directory "
-                    "instead."
+                    "in which case this must be a relative path that resolves under the "
+                    "session's scratch directory instead — an absolute path is going to "
+                    "fail, since that directory isn't a path you're given. To refer to "
+                    "the file again later, reuse the `path` from this call's output."
                 ),
             },
             "content": {
@@ -74,14 +76,14 @@ CREATE_FILE: ToolSpec = ToolSpec(
                 "type": "boolean",
                 "description": (
                     "When true, `path` resolves under this session's private scratch "
-                    "directory instead of the project root — relative paths land inside "
-                    "it, absolute paths must already be inside it. Use this for "
-                    "throwaway work you don't want in the project itself: scratch notes, "
-                    "intermediate working files, drafts you'll inspect and discard. "
-                    "Changes made there are never captured by the project's "
-                    "checkpoint/rollback mirror, and this call is always allowed without "
-                    "a permission prompt, regardless of Command Control posture. Default "
-                    "false."
+                    "directory instead of the project root. `path` must be relative — "
+                    "you don't know where that directory lives on disk, so an absolute "
+                    "`path` is going to fail. Use this for throwaway work you don't want "
+                    "in the project itself: scratch notes, intermediate working files, "
+                    "drafts you'll inspect and discard. Changes made there are never "
+                    "captured by the project's checkpoint/rollback mirror, and this call "
+                    "is always allowed without a permission prompt, regardless of "
+                    "Command Control posture. Default false."
                 ),
             },
         },
@@ -99,7 +101,14 @@ CREATE_FILE: ToolSpec = ToolSpec(
                     "when they declined with inline feedback (see `feedback`)."
                 ),
             },
-            "path": {"type": "string", "description": "The path that was (or would be) created."},
+            "path": {
+                "type": "string",
+                "description": (
+                    "The path that was (or would be) created, echoed back as given — "
+                    "reuse this to refer to the file again later, e.g. under "
+                    "`temporary: true` where the resolved location isn't otherwise known."
+                ),
+            },
             "feedback": {
                 "type": "array",
                 "description": (

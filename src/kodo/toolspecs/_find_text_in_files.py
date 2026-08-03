@@ -52,9 +52,10 @@ FIND_TEXT_IN_FILES: ToolSpec = ToolSpec(
                 "type": "string",
                 "description": (
                     "Absolute path to search under — a root from `get_root_paths` "
-                    "(or a subdirectory of one). When `temporary` is true, this instead "
-                    "resolves relative to the session's scratch directory (pass `.` to "
-                    "search the whole thing)."
+                    "(or a subdirectory of one). When `temporary` is true, this must "
+                    "instead be a relative path resolved under the session's scratch "
+                    "directory (pass `.` to search the whole thing) — an absolute path "
+                    "is going to fail, since that directory isn't a path you're given."
                 ),
             },
             "glob": {
@@ -92,10 +93,12 @@ FIND_TEXT_IN_FILES: ToolSpec = ToolSpec(
                 "type": "boolean",
                 "description": (
                     "When true, `root` resolves under this session's private scratch "
-                    "directory instead of requiring one of `get_root_paths`'s roots. "
-                    "Use this to search throwaway work you don't want in the project "
-                    "itself; this call is always allowed regardless of Command Control "
-                    "posture. Default false."
+                    "directory instead of requiring one of `get_root_paths`'s roots, "
+                    "and must be a relative path — you don't know where that directory "
+                    "lives on disk, so an absolute `root` is going to fail. Use this to "
+                    "search throwaway work you don't want in the project itself; this "
+                    "call is always allowed regardless of Command Control posture. "
+                    "Default false."
                 ),
             },
         },
