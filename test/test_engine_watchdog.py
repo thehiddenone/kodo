@@ -151,6 +151,13 @@ class _FakeGate:
         return StuckAlertResponse(action=action)
 
 
+class _FakeDispatcher:
+    """Minimal ToolDispatcher double — only ``returned_output`` is read."""
+
+    def __init__(self, returned_output: dict[str, object] | None = None) -> None:
+        self.returned_output = returned_output
+
+
 class _FakeRegistry:
     def get(self, name: str, autonomous: bool = False):
         return SimpleNamespace(display_name=name.replace("_", " ").title())
@@ -720,6 +727,115 @@ async def test_on_stall_subagent_stall_count_cap_gives_up_after_max_consecutive_
     assert [d.retry for d in decisions] == [True] * _MAX_CONSECUTIVE_NUDGES + [False]
     assert len(engine._transient.appended_sub) == _MAX_CONSECUTIVE_NUDGES
     assert engine._emitters.critical_messages == []
+
+
+# ---------------------------------------------------------------------------
+# Missing-`return_result` enforcement (doc/STUCK_DETECTION.md §2.8) — the
+# toolchain_builder incident (session 1785719012): a clean, non-stalled final
+# response that never called return_result at all.
+# ---------------------------------------------------------------------------
+
+
+async def test_on_stall_missing_return_result_nudges_once_then_fails() -> None:
+    engine = _watchdog_engine()  # default settings, autonomous=False
+    dispatcher = _FakeDispatcher(returned_output=None)
+    handler = engine._make_stall_handler(
+        agent_name="toolchain_builder",
+        routing=_LOCAL_ROUTING,
+        is_entry_turn=False,
+        subsession_id="sub-1",
+        dispatcher=dispatcher,
+    )
+    healthy = TurnSignal(
+        text="All scripts pass and the project tree is complete.",
+        thinking_text="",
+        stop_reason="end_turn",
+    )
+
+    first = await handler(healthy)
+    second = await handler(healthy)
+
+    # Exactly one nudge, then the turn is allowed to actually end — it's up
+    # to _drive_subsession's existing {schema_compliance: False} fallback to
+    # surface this as a failed subsession from there.
+    assert [first.retry, second.retry] == [True, False]
+    assert len(engine._transient.appended_sub) == 1
+    subsession_id, role, content, kind, detail = engine._transient.appended_sub[0]
+    assert (subsession_id, role, kind) == ("sub-1", "user", "agent_unstuck_nudge")
+    assert detail["reasons"] == ["missing_return_result"]
+    assert detail["mode"] == "auto"
+    assert "return_result" in content
+
+
+async def test_on_stall_missing_return_result_is_independent_of_stuck_detection_settings() -> None:
+    """Unlike every ordinary stall, this is a hard sub-agent contract, not a
+    heuristic — it must still fire even with stuck_detection off entirely."""
+    engine = _watchdog_engine(settings={"stuck_detection": {"active": "off"}})
+    dispatcher = _FakeDispatcher(returned_output=None)
+    handler = engine._make_stall_handler(
+        agent_name="toolchain_builder",
+        routing=_LOCAL_ROUTING,
+        is_entry_turn=False,
+        subsession_id="sub-1",
+        dispatcher=dispatcher,
+    )
+    healthy = TurnSignal(text="All done.", thinking_text="", stop_reason="end_turn")
+
+    decision = await handler(healthy)
+
+    assert decision.retry is True
+    assert len(engine._transient.appended_sub) == 1
+
+
+async def test_on_stall_skips_missing_return_result_nudge_once_return_result_is_set() -> None:
+    """A sub-agent that already called return_result never gets this nudge —
+    proves the well-behaved case is untouched."""
+    engine = _watchdog_engine()
+    dispatcher = _FakeDispatcher(returned_output={"schema_compliance": True})
+    handler = engine._make_stall_handler(
+        agent_name="toolchain_builder",
+        routing=_LOCAL_ROUTING,
+        is_entry_turn=False,
+        subsession_id="sub-1",
+        dispatcher=dispatcher,
+    )
+    healthy = TurnSignal(
+        text="All done, result submitted.", thinking_text="", stop_reason="end_turn"
+    )
+
+    decision = await handler(healthy)
+
+    assert decision.retry is False
+    assert engine._transient.appended_sub == []
+
+
+async def test_on_stall_missing_return_result_also_gates_the_stall_count_cap() -> None:
+    """The safety net applies uniformly: even after the generic stall-flag
+    retries are exhausted, the sub-agent still gets its one dedicated
+    return_result nudge before the turn is finally allowed to end."""
+    engine = _watchdog_engine(
+        autonomous=True,
+        settings={"stuck_detection": {"active": "local_only", "scope": "top_level_and_subagents"}},
+    )
+    dispatcher = _FakeDispatcher(returned_output=None)
+    handler = engine._make_stall_handler(
+        agent_name="investigator",
+        routing=_LOCAL_ROUTING,
+        is_entry_turn=False,
+        subsession_id="sub-1",
+        dispatcher=dispatcher,
+    )
+    stalled = TurnSignal(text="", thinking_text="", stop_reason="end_turn")
+
+    decisions = [await handler(stalled) for _ in range(_MAX_CONSECUTIVE_NUDGES + 2)]
+
+    # _MAX_CONSECUTIVE_NUDGES generic stall retries, then one more dedicated
+    # return_result retry, then the turn is finally allowed to end.
+    assert [d.retry for d in decisions] == [True] * (_MAX_CONSECUTIVE_NUDGES + 1) + [False]
+    all_reasons = [entry[4]["reasons"] for entry in engine._transient.appended_sub]
+    generic_reasons = ["empty_final_turn", "terse_final_response"]
+    assert all_reasons[:_MAX_CONSECUTIVE_NUDGES] == [generic_reasons] * _MAX_CONSECUTIVE_NUDGES
+    assert all_reasons[_MAX_CONSECUTIVE_NUDGES] == ["missing_return_result"]
 
 
 # ---------------------------------------------------------------------------

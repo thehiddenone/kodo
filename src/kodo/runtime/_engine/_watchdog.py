@@ -71,6 +71,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from kodo.llms import LLMRouting, Message
+from kodo.tools import ToolDispatcher
 
 from ._proto import EngineHost
 from ._shared import RedFlag, StallDecision, TurnSignal
@@ -96,6 +97,35 @@ _MAX_CONSECUTIVE_NUDGES = 2
 _NUDGE_LLM_TEXT = (
     "You stopped before finishing the task, without producing a final response "
     "or calling a tool. Continue from exactly where you left off."
+)
+
+# Sub-agent scope only (doc/STUCK_DETECTION.md §2.8): a subsession that ends
+# with a clean, non-stalled final response (no _DETECTORS flag matched) but
+# never called `return_result` at all has not actually finished its contract,
+# no matter how good that response reads — this is the exact shape of the
+# toolchain_builder incident that motivated this check (session 1785719012:
+# the sub-agent did all its real work correctly, then just wrote a prose
+# summary and stopped). Reuses the ordinary nudge machinery (_persist_nudge)
+# with this one synthetic flag, so persistence/replay/rendering are identical
+# to any other stall nudge; only the trigger and its own dedicated one-shot
+# cap (`return_result_nudged` in `_make_stall_handler`, deliberately separate
+# from `stall_count`/`_cycle_streak` — same reasoning as keeping those two
+# apart) are new. Deliberately independent of `stuck_detection` settings
+# entirely (unlike every other check in this module): this is a hard tool
+# contract, not a stall heuristic, so it must not go quiet just because a user
+# turned stuck-detection off or scoped it to entry-agent-only.
+_MISSING_RETURN_RESULT_FLAG = RedFlag(
+    code="missing_return_result",
+    hint="it finished without calling `return_result`, a hard requirement for sub-agents",
+)
+
+# Unlike _NUDGE_LLM_TEXT's generic "keep going", this must actually name the
+# missed tool — "continue from where you left off" tells a model that
+# genuinely finished its work nothing useful to do differently.
+_MISSING_RETURN_RESULT_LLM_TEXT = (
+    "You finished without calling `return_result`. This is a hard requirement: "
+    "the task is not done until you call it. Call `return_result` now with "
+    "your final result."
 )
 
 # Strike 1 of the mid-stream cyclic-thinking detector (kodo.runtime._cyclic_thinking):
@@ -233,6 +263,7 @@ class WatchdogMixin:
         routing: LLMRouting,
         is_entry_turn: bool,
         subsession_id: str | None = None,
+        dispatcher: ToolDispatcher | None = None,
     ) -> Callable[[TurnSignal], Awaitable[StallDecision]]:
         """Build the ``on_stall`` callback for one ``_run_agent_turn`` call.
 
@@ -250,8 +281,51 @@ class WatchdogMixin:
                 ``False`` for a sub-agent subsession.
             subsession_id: The owning subsession id when ``is_entry_turn`` is
                 ``False`` — routes the persisted nudge to the right log.
+            dispatcher: The subsession's :class:`~kodo.tools.ToolDispatcher`
+                when ``is_entry_turn`` is ``False`` — read-only here, used
+                only to check ``returned_output`` for the missing-
+                ``return_result`` gate (doc/STUCK_DETECTION.md §2.8). Never
+                passed for an entry-agent turn, which has no such contract.
         """
         stall_count = 0
+        return_result_nudged = False
+
+        async def _end_or_nudge_missing_return_result() -> StallDecision:
+            """One last ``return_result`` reminder before a sub-agent turn truly ends.
+
+            Called in place of every ``StallDecision(retry=False)`` a
+            sub-agent scope would otherwise return from ``_on_stall`` —
+            whether that turn looked like a clean completion, stuck_detection
+            doesn't apply, the generic stall retries are exhausted, or the
+            user declined a manual "Unstick it". Regardless of *why* the turn
+            is about to end, a sub-agent that never called ``return_result``
+            has not met its contract, so it gets exactly one more nudge
+            specifically about that — capped by ``return_result_nudged``,
+            deliberately its own counter so it always fires exactly once, on
+            top of whatever the generic stall machinery already tried. If it
+            still hasn't called ``return_result`` the next time this closure
+            runs, this falls through to an ordinary ``retry=False`` and
+            ``_drive_subsession``'s existing ``{schema_compliance: False}``
+            fallback correctly marks the subsession failed.
+            """
+            nonlocal return_result_nudged
+            if (
+                is_entry_turn
+                or dispatcher is None
+                or dispatcher.returned_output is not None
+                or return_result_nudged
+            ):
+                return StallDecision(retry=False)
+            return_result_nudged = True
+            message = await self._persist_nudge(
+                agent_name=agent_name,
+                subsession_id=subsession_id,
+                flags=[_MISSING_RETURN_RESULT_FLAG],
+                display_name=self._display_name(agent_name),
+                mode="auto",
+                llm_text=_MISSING_RETURN_RESULT_LLM_TEXT,
+            )
+            return StallDecision(retry=True, message=message)
 
         async def _on_stall(signal: TurnSignal) -> StallDecision:
             nonlocal stall_count
@@ -262,10 +336,10 @@ class WatchdogMixin:
                     # was building (if any) is over.
                     self._stuck_streak = False
                     self._cycle_streak = False
-                return StallDecision(retry=False)
+                return await _end_or_nudge_missing_return_result()
             cfg = _stuck_settings(self._get_settings())
             if not cfg.applies(residence=routing.residence, is_entry_turn=is_entry_turn):
-                return StallDecision(retry=False)
+                return await _end_or_nudge_missing_return_result()
 
             # Resolved only once a stall is actually going to be acted on —
             # every ordinary (non-stalled) turn skips the registry lookup
@@ -312,7 +386,7 @@ class WatchdogMixin:
             # Sub-agent scope: capped at _MAX_CONSECUTIVE_NUDGES inline
             # retries per call, exactly as before — no cross-turn streak.
             if stall_count >= _MAX_CONSECUTIVE_NUDGES:
-                return StallDecision(retry=False)
+                return await _end_or_nudge_missing_return_result()
 
             immediate = self._session.effective_autonomous or cfg.auto_unstuck_interactive
             if immediate:
@@ -334,7 +408,7 @@ class WatchdogMixin:
                 agent_name=agent_name, display_name=display_name, reasons=[f.hint for f in flags]
             )
             if response.action != "unstick":
-                return StallDecision(retry=False)
+                return await _end_or_nudge_missing_return_result()
             stall_count += 1
             message = await self._persist_nudge(
                 agent_name=agent_name,
@@ -380,6 +454,7 @@ class WatchdogMixin:
         flags: list[RedFlag],
         display_name: str,
         mode: str,
+        llm_text: str = _NUDGE_LLM_TEXT,
     ) -> Message:
         """Persist the nudge as a real, LLM-visible ``user`` turn with a client-only ``detail``.
 
@@ -390,6 +465,14 @@ class WatchdogMixin:
         ``kind="stopped_notice"``, doc/STATE_AND_LIFECYCLE.md §4.1). Also
         pushes :data:`~kodo.transport.EVT_AGENT_UNSTUCK_NUDGE` live, since the
         client has no local echo for a turn it never typed.
+
+        ``llm_text`` defaults to the generic "continue from where you left
+        off" wording every ordinary stall flag shares, but a caller whose
+        flag needs a specific instruction — e.g. the missing-``return_result``
+        gate (§2.8), which must actually name the tool, not just ask the
+        model to keep going — can override it. The user-facing ``note``
+        (built from ``flags`` regardless) still explains *why* a nudge fired;
+        only the text the model itself reads back changes.
         """
         note = _nudge_note(flags, display_name, mode)
         detail: dict[str, object] = {
@@ -408,20 +491,20 @@ class WatchdogMixin:
             self._transient.append_subsession_message(
                 subsession_id,
                 "user",
-                _NUDGE_LLM_TEXT,
+                llm_text,
                 kind="agent_unstuck_nudge",
                 detail=detail,
             )
         else:
             self._transient.append_message(
                 "user",
-                _NUDGE_LLM_TEXT,
+                llm_text,
                 entry_agent=agent_name,
                 kind="agent_unstuck_nudge",
                 detail=detail,
             )
         await self._emitters.emit_agent_unstuck_nudge(note, [flag.code for flag in flags], mode)
-        return Message(role="user", content=_NUDGE_LLM_TEXT)
+        return Message(role="user", content=llm_text)
 
     async def _persist_stuck_critical(
         self: EngineHost, *, agent_name: str, flags: list[RedFlag], display_name: str

@@ -490,10 +490,36 @@ is what every variant call is folded back to by
 
 Everything downstream of that line — the security gate, checkpoint
 prepare/commit, the tool-call logger, the tool-call card and its detail rows,
-result normalization, and crash-resume's re-dispatch ledger — stays keyed on
-the single catalog entry, so adding a sub-agent adds no work anywhere else.
-`max_rounds` is lifted *out* of the flattened input: it is the engine's loop
-budget, not part of the sub-agent's task.
+and crash-resume's re-dispatch ledger — stays keyed on the single catalog
+entry, so adding a sub-agent adds no work anywhere else. `max_rounds` is
+lifted *out* of the flattened input: it is the engine's loop budget, not part
+of the sub-agent's task.
+
+**One exception: the schema used for `schema_compliance`.** `RUN_SUBAGENT`'s
+own `output_schema` is a bare, propertyless placeholder (`{"type": "object",
+"description": ...}` — the real shape varies per sub-agent, see above), and
+`normalize_output` reports `compliant=True` unconditionally against a schema
+with no declared properties or required fields. Validating a sub-agent's raw
+result against that placeholder would silently launder a genuine
+`{schema_compliance: False}` — a sub-agent that never called `return_result`
+at all, see *An author's escalation* below and `_drive_subsession`'s fallback
+— into a compliant-looking, content-free result by the time it reaches the
+calling LLM, even though the `subsession_end` marker (and the red `<kodo_crit>`
+"subagent failed to complete the task" banner it drives in kodo-vsix)
+correctly recorded the subsession as failed. `_finalize_tool_result`
+(`_turns.py`) special-cases `tool_name == RUN_SUBAGENT.name`: it looks up the
+target's own `run_subagent_<name>` variant via
+`AgentRegistry.run_subagent_specs(agent_name)` — the exact schema that
+sub-agent's caller was shown, review-block-merged when it has a critic — and
+validates against that instead, falling back to the canonical placeholder only
+if the variant can't be found. (Traced in session `1785719012`: `toolchain_builder`
+did all its real work correctly, then ended its turn with a plain-text summary
+instead of calling `return_result`; the caller's tool result read
+`{"schema_compliance": true}` with none of the actual data, even though the
+subsession had already been marked `failed`. Fixed 2026-08-02; see also
+doc/STUCK_DETECTION.md §2.8 for the companion hardening that gives a sub-agent
+in exactly this situation one nudge to call `return_result` before the engine
+gives up on it.)
 
 ### A call may be a whole review loop
 

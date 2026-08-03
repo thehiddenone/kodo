@@ -733,6 +733,7 @@ class SubagentMixin:
                 routing=routing,
                 is_entry_turn=False,
                 subsession_id=subsession_id,
+                dispatcher=dispatcher,
             ),
             on_cyclic_thinking=self._make_cyclic_thinking_handler(
                 agent_name=name,

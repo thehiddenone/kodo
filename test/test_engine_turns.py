@@ -953,6 +953,102 @@ async def test_finalize_tool_result_noncompliant_output_emits_incompliant_event(
 
 
 # ---------------------------------------------------------------------------
+# _finalize_tool_result — run_subagent's schema resolves to the *specific*
+# sub-agent's own output_schema, not RUN_SUBAGENT's schema-less canonical
+# placeholder (regression coverage for the toolchain_builder incident,
+# session 1785719012: a sub-agent that never called return_result normalized
+# to {"schema_compliance": true} for the caller, silently inverting the
+# subsession_end marker's correctly-computed `failed: true`).
+# ---------------------------------------------------------------------------
+
+
+def _engine_with_toolchain_builder_variant() -> WorkflowEngine:
+    from kodo.toolspecs import build_run_subagent_spec
+
+    engine = _base_engine()
+    variant = build_run_subagent_spec(
+        subagent_name="toolchain_builder",
+        display_name="Toolchain Builder",
+        description="Sets up a project's build toolchain.",
+        input_schema={"type": "object", "properties": {}, "required": []},
+        output_schema={
+            "type": "object",
+            "properties": {"mode_used": {"type": "string"}, "summary": {"type": "string"}},
+            "required": ["mode_used", "summary"],
+        },
+        standalone=True,
+    )
+    engine._registry = SimpleNamespace(run_subagent_specs=lambda caller: [variant])
+    return engine
+
+
+async def test_finalize_tool_result_run_subagent_fallback_stays_noncompliant() -> None:
+    """The {"schema_compliance": False} fallback _drive_subsession synthesizes
+    when a sub-agent never calls return_result must still read as False here
+    — the exact bug: RUN_SUBAGENT's placeholder schema has no required
+    fields, so validating against it always reported True regardless."""
+    import json
+
+    engine = _engine_with_toolchain_builder_variant()
+
+    result = await engine._finalize_tool_result(
+        "tu_1",
+        "run_subagent",
+        {"name": "toolchain_builder", "task_input": {}},
+        json.dumps({"schema_compliance": False}),
+        agent_name="problem_solver",
+    )
+
+    parsed = json.loads(result)
+    assert parsed["schema_compliance"] is False
+    # The real per-agent schema's required fields are backfilled, not silently
+    # dropped — the caller sees *why* it's non-compliant.
+    assert parsed["mode_used"] == ""
+    assert parsed["summary"] == ""
+
+
+async def test_finalize_tool_result_run_subagent_real_result_stays_compliant() -> None:
+    import json
+
+    engine = _engine_with_toolchain_builder_variant()
+
+    result = await engine._finalize_tool_result(
+        "tu_1",
+        "run_subagent",
+        {"name": "toolchain_builder", "task_input": {}},
+        json.dumps({"mode_used": "bootstrap", "summary": "done", "schema_compliance": True}),
+        agent_name="problem_solver",
+    )
+
+    parsed = json.loads(result)
+    assert parsed["schema_compliance"] is True
+    assert parsed["mode_used"] == "bootstrap"
+
+
+async def test_finalize_tool_result_run_subagent_unknown_target_falls_back_to_canonical() -> None:
+    """Defensive: an unrecognized target name (or a registry lookup that
+    fails) must not crash — it just falls back to RUN_SUBAGENT's own schema,
+    same as before this fix."""
+    import json
+
+    engine = _engine_with_toolchain_builder_variant()
+
+    result = await engine._finalize_tool_result(
+        "tu_1",
+        "run_subagent",
+        {"name": "some_other_agent", "task_input": {}},
+        json.dumps({"schema_compliance": False}),
+        agent_name="problem_solver",
+    )
+
+    # No crash, and — same pre-existing (imperfect) behavior for a target
+    # this fix doesn't recognize — the schema-less canonical schema still
+    # reports compliant.
+    parsed = json.loads(result)
+    assert parsed["schema_compliance"] is True
+
+
+# ---------------------------------------------------------------------------
 # _make_dispatcher
 # ---------------------------------------------------------------------------
 

@@ -304,6 +304,7 @@ class EngineHost(Protocol):
         routing: LLMRouting,
         is_entry_turn: bool,
         subsession_id: str | None = None,
+        dispatcher: ToolDispatcher | None = None,
     ) -> Callable[[TurnSignal], Awaitable[StallDecision]]: ...
 
     def _make_progress_handler(self, *, is_entry_turn: bool) -> Callable[[], None] | None: ...
@@ -316,6 +317,7 @@ class EngineHost(Protocol):
         flags: list[RedFlag],
         display_name: str,
         mode: str,
+        llm_text: str = ...,
     ) -> Message: ...
 
     async def _persist_stuck_critical(

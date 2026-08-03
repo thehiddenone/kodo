@@ -41,11 +41,14 @@ from kodo.llms import (
     default_cache_breakpoints,
 )
 from kodo.state import render_tool_call_markdown
+from kodo.subagents import AgentLoadError
 from kodo.tools import ToolDispatcher, canonical_tool_call
 from kodo.toolspecs import (
     ALL_TOOLS,
+    RUN_SUBAGENT,
     build_detail_rows,
     normalize_output,
+    run_subagent_tool_name,
     tool_result_succeeded,
 )
 from kodo.transport import (
@@ -825,7 +828,24 @@ class TurnLoopMixin:
         ``tool_name`` is always the *canonical* name — a ``run_subagent_<name>``
         call was folded back to ``run_subagent`` by
         :meth:`_dispatch_tool_calls` before it got here — so the spec lookup and
-        every projection built from it stay keyed on the catalog.
+        every projection built from it (name, external name, security label,
+        detail rows) stay keyed on the catalog. The one exception is the
+        schema used for compliance: ``RUN_SUBAGENT.output_schema`` is a bare,
+        propertyless placeholder (the real shape varies per sub-agent), and
+        :func:`~kodo.toolspecs.normalize_output` reports ``compliant=True``
+        unconditionally against a schema with no declared properties or
+        required fields — so validating a sub-agent's raw result against it
+        would silently launder a genuine ``{schema_compliance: False}``
+        (a sub-agent that never called ``return_result``, see
+        ``_subagents.py``'s ``_drive_subsession`` fallback) into a compliant-
+        looking, content-free result by the time it reaches the calling LLM,
+        even though the same subsession's ``subsession_end`` marker correctly
+        recorded it as ``failed``. The target sub-agent's own declared output
+        schema — the exact one its ``run_subagent_<name>`` variant advertised
+        to the caller (:meth:`~kodo.subagents.AgentRegistry.run_subagent_specs`,
+        review-block-merged when it has a critic) — is looked up and used for
+        this one call instead, so the caller's compliance signal matches what
+        actually happened.
 
         A tool with no matching spec (none today) passes through unchanged.
         """
@@ -851,7 +871,20 @@ class TurnLoopMixin:
             raw["checkpoint_sha"] = checkpoint.sha
             raw["checkpoint_root"] = checkpoint.root
 
-        output, compliant = normalize_output(spec.output_schema, raw)
+        output_schema = spec.output_schema
+        if tool_name == RUN_SUBAGENT.name:
+            target = tool_input.get("name")
+            if isinstance(target, str):
+                variant_name = run_subagent_tool_name(target)
+                try:
+                    variants = self._registry.run_subagent_specs(agent_name)
+                except AgentLoadError:
+                    variants = []
+                variant = next((s for s in variants if s.name == variant_name), None)
+                if variant is not None:
+                    output_schema = variant.output_schema
+
+        output, compliant = normalize_output(output_schema, raw)
         content = json.dumps(output)
 
         markdown = render_tool_call_markdown(

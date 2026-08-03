@@ -1,6 +1,6 @@
 # Kodo — Stuck-Agent Detection & Remediation
 
-> Reference: [STATE_AND_LIFECYCLE.md](STATE_AND_LIFECYCLE.md) (turn/session lifecycle), [SETTINGS.md](SETTINGS.md) §2.6 (`stuck_detection`), [WS_PROTOCOL.md](WS_PROTOCOL.md) §5.9e/§6.8, [SECURITY.md](SECURITY.md) (sibling `prompt.*` gate precedent).
+> Reference: [STATE_AND_LIFECYCLE.md](STATE_AND_LIFECYCLE.md) (turn/session lifecycle), [SETTINGS.md](SETTINGS.md) §2.6 (`stuck_detection`), [WS_PROTOCOL.md](WS_PROTOCOL.md) §5.9e/§6.8, [SECURITY.md](SECURITY.md) (sibling `prompt.*` gate precedent), [TOOLS.md](TOOLS.md) §5A (`return_result`/`run_subagent` contract; §2.8 below is its companion hardening).
 
 ## 1. The failure this addresses
 
@@ -69,7 +69,7 @@ Three call sites build this closure, one per shape of turn:
 
 - `_turns.py`'s `_run_entry_agent` — `is_entry_turn=True` (the live main turn).
 - `_resume.py`'s `_resume_main_turn` — `is_entry_turn=True` (a crash-resumed continuation of the same shape of turn).
-- `_subagents.py`'s `_drive_subsession` — `is_entry_turn=False`, `subsession_id=<id>`.
+- `_subagents.py`'s `_drive_subsession` — `is_entry_turn=False`, `subsession_id=<id>`, `dispatcher=<the subsession's ToolDispatcher>` (§2.8 reads its `returned_output`; the two entry-agent call sites never pass this).
 
 `_make_stall_handler`'s closure holds one piece of *sub-agent-only* mutable state, `stall_count`, capped at `_MAX_CONSECUTIVE_NUDGES` (2) — a safety valve against a sub-agent that never recovers: after two consecutive inline retries within *one* `_run_agent_turn` call, the closure gives up and lets the turn end normally rather than looping forever. This cap only bites a sub-agent's inline-retry paths (immediate, or repeated manual "Unstick it"). Entry-agent scope does not use `stall_count` at all — see §2.4a.
 
@@ -149,6 +149,80 @@ Only the trailing ~1800 characters are ever inspected by either check, so the re
 
 **A pre-existing bug found and fixed on this same seam**: `_run_agent_turn`'s generic `persist` callback used to re-persist an `on_stall` retry's message a second time, untagged, because `persisted_upto` never learned that the closure (`_persist_nudge`, and now `_persist_cyclic_thinking_notice`) had already written it directly via a `kind`-tagged `TransientStore.append_message` call. Confirmed live in production for the ordinary nudge (the main entry-agent turn passes a real `persist=` callback) — a duplicate, untagged `role="user"` line landed in `session.jsonl`, rendering as a fake user-typed chat bubble and duplicating the nudge text in the LLM's context on any resume-after-nudge. Fixed by flushing the round's own message *before* invoking `on_stall`/`on_cyclic_thinking` (rather than after), and marking a closure-returned retry message as already-durable (`_mark_already_persisted()`) instead of flushing it a second time.
 
+### 2.8 Missing-`return_result` enforcement
+
+A third, unrelated failure mode shares this same `on_stall` seam: a sub-agent
+that produces a perfectly clean, non-stalled final response — no red flag
+from §2.1 fires — but never called `return_result` at all. `_drive_subsession`
+(`_subagents.py`) already had a fallback for this (a bare
+`{schema_compliance: False}` result, so the caller isn't left with nothing),
+but until this section's addition (2026-08-02) the engine never told the
+model it had missed a hard requirement, and never gave it a chance to fix it
+before the subsession was marked failed. Motivating incident: session
+`1785719012` — `toolchain_builder` did all its real work correctly (created
+every file, ran every verification command, even re-ran things twice to
+confirm idempotency), then just wrote a prose summary and stopped. The
+subsession correctly ended up `failed: true` (driving kodo-vsix's red
+`<kodo_crit>` "subagent failed to complete the task" banner), but the model
+was never told *why*, and never got a chance to actually finish the job by
+calling the one tool it forgot.
+
+**Deliberately independent of `stuck_detection` settings entirely** — the one
+place in this file where that isn't true. Every other check here is a
+heuristic ("this looks like it might be stuck"), gateable because a user might
+reasonably not want the overhead/interruption of guessing wrong. This is not
+a heuristic: every sub-agent's own `ToolDispatcher` is constructed with the
+target agent's `output_schema` (`_make_dispatcher`, `_turns.py`), so
+`return_result` is a hard contract, not a maybe. Gating it behind
+`stuck_detection.active`/`scope` would mean a user who turned stuck detection
+off (or scoped it to entry-agent-only) silently loses return_result
+enforcement too, which has nothing to do with why they turned that setting
+off. It also runs regardless of model residence (local or cloud) — the check
+itself costs nothing when a well-behaved model already called `return_result`,
+since that's exactly the condition it looks for before doing anything.
+
+**Trigger** — `_end_or_nudge_missing_return_result`, a closure built alongside
+`_on_stall` inside the same `_make_stall_handler` call (only when
+`is_entry_turn=False`; entry agents never call `return_result`, so `dispatcher`
+is never passed for them). It is invoked, uniformly, in place of *every*
+`StallDecision(retry=False)` a sub-agent-scope `_on_stall` would otherwise
+return — whether the turn looked clean (no §2.1 flags), stuck_detection
+doesn't apply to this turn at all, the ordinary `stall_count` retries are
+already exhausted, or the user declined a manual "Unstick it". Whatever the
+reason the turn is about to end, if `dispatcher.returned_output is None`, the
+sub-agent hasn't met its contract yet.
+
+**Cap** — exactly one nudge, tracked by `return_result_nudged`, a closure-local
+bool deliberately kept separate from `stall_count` and `_cycle_streak` (same
+reasoning as keeping those two apart, §2.7): a subsession that already burned
+its `stall_count` budget on unrelated stalls still gets its own, independent
+chance to hear specifically about `return_result` before the engine gives up
+on it. If `return_result` is still uncalled the next time this closure runs,
+it falls through to an ordinary `retry=False` and `_drive_subsession`'s
+pre-existing `{schema_compliance: False}` fallback takes over exactly as
+before — this section only changes what happens *before* that point, not the
+failure signal itself (see doc/TOOLS.md §5A for the companion fix to how that
+signal is normalized for the caller).
+
+**The nudge itself** reuses `_persist_nudge` verbatim — same persistence
+(`kind="agent_unstuck_nudge"`), same live event
+(`EVT_AGENT_UNSTUCK_NUDGE`/`agent.unstuck_nudge`), same kodo-vsix rendering
+(`SessionEntryView.tsx`'s existing `agent_unstuck_nudge` case) as any other
+stall nudge — so this needed zero new persistence/UI code. The one thing it
+overrides is the LLM-visible text: `_persist_nudge` gained an `llm_text`
+parameter (defaulting to the existing generic `_NUDGE_LLM_TEXT`, unchanged for
+every other caller) because that generic "continue from exactly where you
+left off" wording doesn't actually tell a model that finished its real work
+what it needs to do differently. `_MISSING_RETURN_RESULT_LLM_TEXT` names the
+tool explicitly: *"You finished without calling `return_result`. This is a
+hard requirement: the task is not done until you call it. Call `return_result`
+now with your final result."* The user-facing `note` (`_nudge_note`,
+via a new `_MISSING_RETURN_RESULT_FLAG` red-flag-shaped constant fed through
+the same formatting as any other reason) still reads generically ("Kōdo
+noticed X appeared to stop mid-task (it finished without calling
+`return_result`...) and continued it automatically") — only the text the
+model itself reads back is bespoke.
+
 ## 3. Known limitations / deliberate scope cuts
 
 - **`workflow_mode == "judge"` never gets the nudge's `kind`/`detail` tagging.** `_run_judge_with_input` doesn't accept `nudge_detail` (unlike `_run_guide_with_input`/`_run_problem_solver_with_input`) — a judge-session nudge would ride through as a plain untagged prompt. In practice this never surfaces: `kodo.validator._evaluate` always forces the judge session into autonomous mode (`MSG_MODE_SET, autonomous=True`), so remediation for a judge turn is always the immediate/inline path, which never touches the worker queue or `nudge_detail` at all.
@@ -156,3 +230,4 @@ Only the trailing ~1800 characters are ever inspected by either check, so the re
 - **Scope is `run_subagent_<name>`-spawned sub-agents only** (including the critics the engine spawns inside an author's review loop).** The internal *silent* tool-calling loops (`compactor`, `web_search`'s `_run_silent_tool_loop_turn`) don't go through `_run_agent_turn` at all and are out of scope — they already have their own "nudge the model to keep going" handling (`_run_silent_tool_loop_turn`'s own no-tool-calls branch).
 - **The one-nudge-then-critical escalation (§2.4a) is entry-agent scope only**, and `_stuck_streak` is in-memory, not persisted — a deliberate pair of scope cuts, not oversights. Sub-agent scope keeps its pre-existing `stall_count`/`_MAX_CONSECUTIVE_NUDGES` behavior unchanged (up to 2 inline retries, then a silent end with no critical notice).
 - **The cyclic-thinking detector (§2.7) only watches thinking blocks, not final-answer text** — the same repetition-collapse bug is also documented happening in constrained/final output, not just `<think>` blocks, but that's out of scope for this pass. Its exact-repeat check also only tries periods from 24 to 600 characters — a real loop whose period happens to fall outside that range (an unusually short or, more likely, unusually long repeated block) is left entirely to the fuzzy near-duplicate check, which may or may not catch it depending on how much the repeats vary. It is gated by the same `stuck_detection.active`/`scope` settings as ordinary stall detection, so — like the rest of this doc — it is off for cloud models by default too, consistent with this being a documented local-model failure mode.
+- **Missing-`return_result` enforcement (§2.8) is always immediate, never gated behind `fire_stuck_alert`/`auto_unstuck_interactive`.** Every other sub-agent-scope remediation in this file asks first when not in the immediate path (§2.4 step 6); this one does not, by deliberate choice — it's enforcing a hard tool contract the sub-agent already agreed to (not a "maybe it's stuck" heuristic a user might reasonably want a say in), and the caller's turn is already blocked waiting on this subsession either way, so there's no idle-state UX to protect by asking first.
