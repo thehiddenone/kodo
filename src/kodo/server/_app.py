@@ -30,7 +30,6 @@ from kodo.llms import (
     LLMRouting,
     LocalLLMEntry,
     Message,
-    SamplingParams,
     TokenDelta,
     TurnEnd,
     add_flavor,
@@ -381,7 +380,6 @@ def _flavors_payload(entry: LocalLLMEntry, kodo_dir: Path) -> list[dict[str, obj
             "min_ram": f.min_ram,
             "min_vram": f.min_vram,
             "platform": f.platform.value,
-            "sampling": f.sampling.to_json(),
         }
         for f in get_flavors(kodo_dir, entry)
     ]
@@ -1581,7 +1579,6 @@ async def _handle_local_llm_add_flavor(req: Request) -> None:
             min_ram=_parse_non_negative_int(payload.get("min_ram", 0)),
             min_vram=_parse_non_negative_int(payload.get("min_vram", 0)),
             platform=_parse_flavor_platform(payload.get("platform")),
-            sampling=SamplingParams.from_json(payload.get("sampling")),
         )
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
@@ -1611,7 +1608,6 @@ async def _handle_local_llm_update_flavor(req: Request) -> None:
             min_ram=_parse_non_negative_int(payload.get("min_ram", 0)),
             min_vram=_parse_non_negative_int(payload.get("min_vram", 0)),
             platform=_parse_flavor_platform(payload.get("platform")),
-            sampling=SamplingParams.from_json(payload.get("sampling")),
         )
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))

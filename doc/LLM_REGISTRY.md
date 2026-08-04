@@ -658,7 +658,6 @@ class LlamaFlavor:
     platform: LlamaFlavorPlatform = LlamaFlavorPlatform.BOTH  # see §4.6b
     description: str = ""
     llama_args: dict[str, str] = field(default_factory=dict)  # the complete CLI flag set
-    sampling: SamplingParams = field(default_factory=SamplingParams)  # request-level defaults, see §4.6c
 ```
 
 `llama_args` is the **complete** set of CLI flags passed to `llama-server`
@@ -1096,61 +1095,62 @@ must stay visible/copyable here even when running on a Mac.
 
 ---
 
-### 4.6c Per-flavor request-level sampling defaults (`sampling`)
+### 4.6c Flavor sampling shortcuts vs. session-level overrides
 
-A flavor carries **two independent sampling layers**, and the difference
-between them is the whole point:
+A flavor has no request-level sampling state of its own — `LlamaFlavor` only
+ever carries `llama_args`. What kodo-vsix's flavor editor shows as a
+structured "sampling defaults" form (Temperature, Top-K, …, curated +
+collapsed Advanced, same layout as the session modal) is a **shortcut for
+editing `llama_args` itself**: typing a value into one of those fields writes
+`--temp <value>` (etc., via each `SamplingParamSpec.cli_flags[0]`,
+`kodo/llms/_sampling.py`) into the flavor's launch-arguments text, and editing
+the launch-arguments text updates the structured fields back — kept in sync
+live, in both directions, entirely client-side (`FlavorModal.tsx`,
+`localLlmUtils.ts` in kodo-vsix). The server never receives a separate
+`sampling` payload for a flavor any more; `add_flavor`/`update_flavor` take
+`llama_args_text` only. This is deliberate: a flavor's sampling knobs always
+require restarting llama-server to take effect, exactly like every other
+launch arg, with no "hot" exception to keep straight.
 
-- `llama_args` — CLI flags fixed at launch (`--temp 0.6`, `--top-k 40`, …).
-  Changing one means editing the flavor **and restarting llama-server**.
-- `sampling` — a structured, all-optional `SamplingParams`
-  (`kodo/llms/_sampling.py`) sent on each `/v1/chat/completions` body.
-  Changing it takes effect on the **next request**, no restart.
+`min_keep` is the one sampling parameter with no CLI flag (`cli_flags: []`)
+— it can't be expressed as a launch arg, so the flavor editor never offers
+it. It remains available as a **session override only**.
 
-`sampling` is empty for every built-in flavor, so an untouched install sends
-no sampling fields at all and llama-server keeps whatever its launch args set.
+**The session's per-quant overrides** (`state.sampling`, WS_PROTOCOL.md
+§7.4f) are the only thing that is genuinely request-level and hot: edited
+from the ⚙ button in the chat footer, they ride the
+`POST /v1/chat/completions` body and take effect on the very next request,
+no restart. The engine's `_sampling_kwargs` reads this session state fresh on
+every local call — main turn, compaction, `web_search`'s tool loop — and
+splices it in when non-empty, exactly like `thinking_level`. Unlike §4.5's
+thinking level, these overrides are **session-scoped and keyed by entry**
+rather than global, so switching models and back restores each quant's own
+tuning rather than resetting it.
 
-**Why "unset" is a real state.** llama-server seeds each request's sampling
-config from its launch-time values and then overwrites only the fields present
-in the body. So omitting `temperature` against a server started with
-`--temp 0.6` runs that request at 0.6 — whereas sending llama.cpp's built-in
-0.8 because a form field was blank would silently defeat the flavor's own CLI
-arg. Every field is therefore optional and simply absent when unset;
-`SamplingParams` never materialises a default for one. Full detail and
-per-parameter guidance: [SAMPLING.md](SAMPLING.md).
-
-**Three layers, last wins**: the flavor's CLI args → the flavor's `sampling`
-defaults → the **session's** per-quant overrides (`state.sampling`,
-WS_PROTOCOL.md §7.4f), edited from the ⚙ button in the chat footer.
-`resolve_flavor_sampling(kodo_dir, entry)` resolves layer 2 through the same
-`get_effective_flavor_id` as `resolve_effective_llama_config`; the engine's
-`_sampling_kwargs` merges layer 3 on top per-parameter and splices the result
-into every local `stream_query` call — the main turn, compaction and
-`web_search`'s tool loop alike, exactly like `thinking_level`.
-
-Note the asymmetry with §4.5's thinking level: the flavor's defaults are
-**global** (one active flavor per entry, machine-wide) while the overrides are
-**session-scoped and keyed by entry**, so switching models and back restores
-each quant's own tuning rather than resetting it.
+**Why "unset" is still a real state at this layer.** llama-server seeds each
+request's sampling config from its launch-time values (i.e. the effective
+flavor's `llama_args`, sampling-form-derived or not) and then overwrites only
+the fields present in the body. So omitting `temperature` from a session
+override against a server started with `--temp 0.6` runs that request at
+0.6 — whereas sending llama.cpp's built-in 0.8 because a modal field was
+blank would silently defeat the flavor's CLI arg. Every field in
+`SamplingParams` is therefore optional and simply absent when unset; it never
+materialises a default for one. Full detail and per-parameter guidance:
+[SAMPLING.md](SAMPLING.md).
 
 **Reserved request fields.** `RESERVED_SAMPLING_FIELDS` (`_sampling.py`) is the
-request-level sibling of `RESERVED_REASONING_CAP_ARGS` above: `max_tokens`/
-`n_predict` (engine-computed from the thinking tier — a user value can starve
-the Qwen reasoning-budget mechanism of headroom), `json_schema` (already
-carried by `response_format`), `grammar` (collides with `--jinja`'s lazy
-tool-call grammar), `ignore_eos` (no turn would ever end cleanly), `logit_bias`
-(needs model-specific token IDs), and `n_probs`/`post_sampling_probs`
-(response-shape debugging kodo ignores). `SamplingParams.from_json` drops all
-of these, along with unknown and wrong-typed values, and clamps out-of-range
-numbers — untrusted input degrades to "fewer parameters sent", never to a
-crashed session.
-
-**Setting a knob in both layers is allowed but flagged.** A flavor may carry
-`--temp 0.6` *and* `temperature: 0.1`; the request-level value wins for kodo's
-own calls while the CLI value still governs any other client pointed at that
-server. It is almost always accidental, so `cli_flag_conflicts` finds such
-pairs and the flavor editor shows an inline warning naming them. Nothing is
-stripped or blocked — unlike `RESERVED_REASONING_CAP_ARGS`, which is.
+request-level sibling of `RESERVED_REASONING_CAP_ARGS` above — these can never
+be set as a session override (they don't gate the flavor editor's `llama_args`
+text at all, since that's free-form CLI text like any other flag):
+`max_tokens`/`n_predict` (engine-computed from the thinking tier — a user
+value can starve the Qwen reasoning-budget mechanism of headroom),
+`json_schema` (already carried by `response_format`), `grammar` (collides
+with `--jinja`'s lazy tool-call grammar), `ignore_eos` (no turn would ever end
+cleanly), `logit_bias` (needs model-specific token IDs), and
+`n_probs`/`post_sampling_probs` (response-shape debugging kodo ignores).
+`SamplingParams.from_json` drops all of these, along with unknown and
+wrong-typed values, and clamps out-of-range numbers — untrusted input
+degrades to "fewer parameters sent", never to a crashed session.
 
 ## 5. Settings schema
 

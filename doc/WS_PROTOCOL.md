@@ -680,7 +680,6 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                          "flavors": [ { "id": "1m-context", "name": "1M Context",
                                         "description": "...",
                                         "llama_args": {"--ctx-size": "1048576"},
-                                        "sampling": {"temperature": 0.1},
                                         "predefined": false } ],
                          "active_flavor": "1m-context",
                          "...": "..." } ],
@@ -709,9 +708,9 @@ flavor changes actual llama-server launch args and there is only one
 machine-wide llama-server process to launch them on. See doc/LLM_REGISTRY.md
 §4.6 and §7.6 below.
 
-Each flavor also carries `sampling` — its **request-level** sampling defaults (doc/SAMPLING.md §9), `{}` for every built-in flavor. Unlike `llama_args` these ride each `/v1/chat/completions` body rather than the launch command line, so editing them needs no llama-server restart; they seed the per-session, per-quant overrides the client edits via `sampling.set` (§7.4f).
+A flavor carries no separate sampling state any more — only `llama_args`. kodo-vsix's flavor editor still shows a structured "sampling defaults" sub-form (Temperature, Top-K, …), but it is a client-side shortcut for editing `llama_args` itself: a field's value is kept in sync, live and in both directions, with the corresponding `--flag` in the launch-arguments text (via each `sampling_specs` entry's `cli_flags`), so a flavor's sampling knobs always require restarting llama-server, exactly like every other launch arg (doc/SAMPLING.md §9). Neither `add_flavor` nor `update_flavor` (§7.6 below) accept a `sampling` field.
 
-`sampling_specs` is the server's table of every tunable request-level sampling parameter, in display order — one entry per `SAMPLING_PARAM_SPECS` row in `kodo/llms/_sampling.py`. Pushed rather than hardcoded client-side for the same reason `thinking_families` is: the table already exists server-side as the single source of truth for validation, so a client copy would drift. It is static for the life of the server, which is why it rides this registry payload instead of the per-session `state` event. kodo-vsix renders both the sampling modal and the flavor editor's defaults form from it, and derives the CLI-vs-request conflict warning from each entry's `cli_flags`.
+`sampling_specs` is the server's table of every tunable request-level sampling parameter, in display order — one entry per `SAMPLING_PARAM_SPECS` row in `kodo/llms/_sampling.py`. Pushed rather than hardcoded client-side for the same reason `thinking_families` is: the table already exists server-side as the single source of truth for validation, so a client copy would drift. It is static for the life of the server, which is why it rides this registry payload instead of the per-session `state` event. kodo-vsix renders both the session sampling modal and the flavor editor's launch-arg shortcuts from it — `cli_flags` doubles as validation input for `sampling.set` (§7.4f, session overrides — the only thing that is genuinely request-level and hot) and as the flag each flavor-editor field writes into `llama_args`.
 
 ### 5.12b `local_llm.updates_available` — reply to `local_llm.check_updates`
 

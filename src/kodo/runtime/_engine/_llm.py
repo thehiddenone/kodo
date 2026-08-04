@@ -31,7 +31,6 @@ from kodo.llms import (
     get_local_registry,
     local_thinking_default_tier,
     local_thinking_tiers,
-    resolve_flavor_sampling,
 )
 from kodo.llms.anthropic import ClaudePlugin
 from kodo.llms.llamacpp import LlamaPlugin
@@ -194,12 +193,13 @@ class LLMPlumbingMixin:
     def _sampling_kwargs(self: EngineHost, routing: LLMRouting) -> dict[str, object]:
         """``{"sampling": SamplingParams}`` to splice into a local ``stream_query`` call.
 
-        Resolves the two request-level layers for the session's currently
-        active local model (doc/SAMPLING.md §9): the effective flavor's
-        declared defaults, overlaid per-parameter by this session's own
-        overrides for that same entry. Both are read fresh each call, so
-        editing a flavor or moving a slider takes effect on the next request
-        with no llama-server restart.
+        This session's own per-quant sampling overrides for the currently
+        active local model (doc/SAMPLING.md §9) — read fresh each call, so
+        moving a slider in the chat footer's sampling modal takes effect on
+        the next request with no llama-server restart. A flavor's own
+        sampling knobs are not a separate layer any more: they are baked
+        into ``llama_args`` and take effect at launch, same as any other CLI
+        flag — see :func:`kodo.llms.resolve_effective_llama_config`.
 
         Applies to *every* local call this session makes — the main turn, the
         compactor, ``web_search``'s tool loop — for the same reason
@@ -208,9 +208,9 @@ class LLMPlumbingMixin:
 
         Returns:
             dict[str, object]: ``{}`` for a cloud call (``ClaudePlugin.
-            stream_query`` has no such parameter) or when nothing is set at
-            either layer, so an untouched install adds no request fields at
-            all.
+            stream_query`` has no such parameter) or when this session has no
+            override set for the active quant, so an untouched install adds
+            no request fields at all.
         """
         if routing.residence != "local":
             return {}
@@ -218,10 +218,8 @@ class LLMPlumbingMixin:
         entry = get_local_registry(kodo_user_dir()).get(model_key)
         if entry is None:
             return {}
-        defaults = resolve_flavor_sampling(kodo_user_dir(), entry)
         overrides = SamplingParams.from_json(self._session.sampling.get(entry.name))
-        resolved = defaults.merged_with(overrides)
-        return {} if resolved.is_empty else {"sampling": resolved}
+        return {} if overrides.is_empty else {"sampling": overrides}
 
     async def handle_sampling_set(
         self: EngineHost, model: str, values: dict[str, object]

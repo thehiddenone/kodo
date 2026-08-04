@@ -4,10 +4,10 @@ Every knob ``llama-server`` accepts in a ``POST /v1/chat/completions`` body
 that Kōdo lets a user tune, described **once** — in
 :data:`SAMPLING_PARAM_SPECS` — and consumed from there by everything else:
 JSON validation (:meth:`SamplingParams.from_json`), the request body
-(:meth:`SamplingParams.to_request_body`), the flavor editor's CLI-vs-request
-conflict warning (:func:`cli_flag_conflicts`), and the kodo-vsix sampling
-modal, which renders its fields from the spec table shipped over the wire
-rather than hardcoding a second copy of it.
+(:meth:`SamplingParams.to_request_body`), and the kodo-vsix sampling modal
+(session-scoped overrides) and flavor editor (launch-arg shortcuts), both of
+which render their fields from the spec table shipped over the wire — via
+each entry's ``cli_flags`` — rather than hardcoding a second copy of it.
 
 The central invariant, and the reason every field is optional:
 
@@ -22,8 +22,12 @@ therefore stores only the parameters that are genuinely set, and never
 materialises a default for one that isn't.
 
 See doc/SAMPLING.md for what each parameter does to generated text, and
-§9 there for the three-layer flavor-CLI → flavor-defaults → session-override
-model this file underpins.
+§9 there for the two-layer flavor-CLI-args → session-override model this
+file underpins. A flavor's own request-level defaults do not exist as a
+separate layer any more — the kodo-vsix flavor editor's sampling form is a
+structured shortcut for editing ``LlamaFlavor.llama_args`` itself (via each
+spec's ``cli_flags``), so a flavor's sampling knobs always take a
+llama-server restart to apply, exactly like every other launch arg.
 """
 
 from __future__ import annotations
@@ -38,7 +42,6 @@ __all__ = [
     "SAMPLING_PARAM_SPECS",
     "SamplingParamSpec",
     "SamplingParams",
-    "cli_flag_conflicts",
     "sampling_param_spec",
     "sampling_specs_to_json",
 ]
@@ -118,10 +121,13 @@ class SamplingParamSpec:
             Shown in the UI so "turn this off" is distinguishable from
             "leave it unset" — they are not the same thing (doc/SAMPLING.md
             §8a).
-        cli_flags: Equivalent ``llama-server`` CLI flags. Drives the flavor
-            editor's warning when the same knob is set both as a launch arg
-            and as a request-level default. Empty for ``min_keep``, which is
-            request-level only.
+        cli_flags: Equivalent ``llama-server`` CLI flags. ``cli_flags[0]`` is
+            what the kodo-vsix flavor editor's structured sampling form
+            writes into a flavor's ``llama_args`` when that field is set —
+            the form is a friendlier view of the same launch args, not a
+            separate stored value. Empty only for ``min_keep``, which has no
+            CLI equivalent and is therefore session-override only (never
+            offered in the flavor editor).
         help: One-line explanation, used as the UI field hint.
     """
 
@@ -508,13 +514,6 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
 
 _SPECS_BY_NAME: dict[str, SamplingParamSpec] = {s.name: s for s in SAMPLING_PARAM_SPECS}
 
-#: ``{cli_flag: request_field_name}`` for every flag with a request-level twin,
-#: derived from the spec table so the two can never drift apart. Used by
-#: :func:`cli_flag_conflicts`.
-_CLI_FLAG_TO_FIELD: dict[str, str] = {
-    flag: spec.name for spec in SAMPLING_PARAM_SPECS for flag in spec.cli_flags
-}
-
 
 def sampling_param_spec(name: str) -> SamplingParamSpec | None:
     """The :class:`SamplingParamSpec` for request field *name*, if tunable.
@@ -616,12 +615,11 @@ class SamplingParams:
     "everything, with defaults filled in" representation anywhere in this
     module; see the module docstring.
 
-    Instances are used in two places, with the same shape and different
-    lifetimes: as a flavor's request-level *defaults*
-    (``LlamaFlavor.sampling``, global, edited in the flavor editor) and as a
-    session's per-quant *overrides* (``SessionState.sampling``, session-scoped,
-    edited in the chat footer's sampling modal). :meth:`merged_with` combines
-    the two. See doc/SAMPLING.md §9.
+    Used for one thing: a session's per-quant *overrides*
+    (``SessionState.sampling``, session-scoped, edited in the chat footer's
+    sampling modal). A flavor's own launch-time defaults are not represented
+    by this class any more — they live entirely in ``LlamaFlavor.llama_args``,
+    see doc/SAMPLING.md §9.
 
     Attributes:
         values: ``{request_field_name: value}`` for set parameters only. Always
@@ -685,47 +683,7 @@ class SamplingParams:
         """
         return dict(self.values)
 
-    def merged_with(self, other: SamplingParams) -> SamplingParams:
-        """Self overlaid by *other*, per parameter — *other* wins.
-
-        Used to resolve a flavor's defaults (``self``) against a session's
-        per-quant overrides (*other*). Note this is a per-*field* merge, so a
-        flavor default survives unless the session overrides that exact
-        parameter.
-
-        Args:
-            other (SamplingParams): The higher-priority set.
-
-        Returns:
-            SamplingParams: The combined set.
-        """
-        return SamplingParams(values={**self.values, **other.values})
-
     @property
     def is_empty(self) -> bool:
         """``True`` when no parameter is set (so nothing goes on the wire)."""
         return not self.values
-
-
-def cli_flag_conflicts(llama_args: dict[str, str], sampling: SamplingParams) -> dict[str, str]:
-    """Knobs set both as a launch flag and as a request-level parameter.
-
-    Not an error — the request-level value simply wins for Kōdo's own calls,
-    while the CLI value still applies to any other client pointed at the same
-    server. It is almost always accidental though, so the flavor editor warns
-    on it (doc/SAMPLING.md §9).
-
-    Args:
-        llama_args (dict[str, str]): A flavor's CLI args, as stored.
-        sampling (SamplingParams): The same flavor's request-level defaults.
-
-    Returns:
-        dict[str, str]: ``{cli_flag: request_field_name}`` for each knob set in
-        both places. Empty when there is no overlap.
-    """
-    conflicts: dict[str, str] = {}
-    for flag in llama_args:
-        field_name = _CLI_FLAG_TO_FIELD.get(flag)
-        if field_name is not None and field_name in sampling.values:
-            conflicts[flag] = field_name
-    return conflicts

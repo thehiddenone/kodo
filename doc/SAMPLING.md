@@ -6,10 +6,10 @@
 > parameters, tuned live from the chat footer.
 
 Companion to [LLM_REGISTRY.md](LLM_REGISTRY.md) (§4.6 flavors — where CLI-level
-args and request-level defaults are declared), [LOCAL_INFERENCE.md](LOCAL_INFERENCE.md)
-(the launch flags Kōdo forces regardless of flavor), and
-[SESSIONS.md](SESSIONS.md) (session-scoped state, where the per-quant overrides
-live).
+args, including the ones a flavor's sampling-defaults form writes, are
+declared), [LOCAL_INFERENCE.md](LOCAL_INFERENCE.md) (the launch flags Kōdo
+forces regardless of flavor), and [SESSIONS.md](SESSIONS.md) (session-scoped
+state, where the per-quant overrides live).
 
 ---
 
@@ -571,27 +571,40 @@ beat all of the above — start there and adjust.
 
 ## 9. How Kōdo layers this
 
-Three layers, evaluated in order, last one wins:
+Two layers, evaluated in order, the second one wins:
 
 1. **The flavor's CLI args** (`LlamaFlavor.llama_args`, LLM_REGISTRY.md §4.6) —
    free-text `--flag value` lines. These become the server's launch-time
    defaults for every request that omits the field. Changing them requires
    editing the flavor and **restarting `llama-server`**.
-2. **The flavor's request-level defaults** (`LlamaFlavor.sampling`) — a
-   structured, all-optional block. These seed the modal the first time a quant
-   is used in a session. No built-in flavor sets any of them, so out of the box
-   every value is unset and nothing is sent.
-3. **The session's per-quant overrides** — what the user edits in the sampling
+
+   The flavor editor's structured sampling-defaults form (curated + advanced,
+   same grouping as the session modal) is **not** a second, request-level
+   layer — it is a friendlier way to edit a subset of `llama_args` itself.
+   Typing a value into "Temperature" writes `--temp <value>` into the launch
+   arguments text box, and vice versa: the two views are kept in sync live, in
+   both directions, so they can never disagree. This is why a flavor's
+   sampling knobs always require a llama-server restart, exactly like every
+   other launch arg — there is deliberately no "flavor default that applies
+   without restarting", since that would make some launch-config edits hot
+   and others cold for no principled reason. `min_keep` has no CLI
+   equivalent (`cli_flags: []`) and is therefore never offered in the flavor
+   editor — see the reserved table below.
+2. **The session's per-quant overrides** — what the user edits in the sampling
    modal (the ⚙ button in the chat footer, between attach and stop). Stored per
    session, keyed by local registry entry name, so switching models and
-   switching back restores what was set for that quant.
+   switching back restores what was set for that quant. These *are* genuinely
+   request-level and hot: moving a slider here takes effect on the very next
+   request, no restart, because it rides the `POST /v1/chat/completions` body
+   rather than the launch command line.
 
-**Unset means unset.** Any parameter left blank at layer 3 is omitted from the
-request body entirely, so layer 1 governs it. Clearing a field in the modal is
-therefore a real operation — it does not reset to "the flavor's number", it
-removes the field from the wire.
+**Unset means unset.** Any parameter left blank in the session modal is
+omitted from the request body entirely, so whatever the active flavor's
+`llama_args` launched the server with governs it. Clearing a field in the
+modal is therefore a real operation — it does not reset to "the flavor's
+number", it removes the field from the wire.
 
-**Reserved — never settable from a flavor or the modal:**
+**Reserved — never settable from the flavor editor or the session modal:**
 
 | Reserved | Why |
 |---|---|
@@ -601,21 +614,24 @@ removes the field from the wire.
 | `ignore_eos` | Would prevent any turn from ending cleanly |
 | `logit_bias` | Needs model-specific token IDs, not obtainable from the UI |
 | `n_probs`, `post_sampling_probs` | Response-shape debugging; Kōdo ignores the extra fields |
+| `min_keep` (flavor editor only) | No CLI flag exists, so a flavor-level value could never take effect — session-override only, where it rides the request body directly |
 | `--reasoning-budget`, `--reasoning-budget-message` | Existing `RESERVED_REASONING_CAP_ARGS`, stripped from any flavor's `llama_args` (LLM_REGISTRY.md §4.6) |
 
-**Same knob in both layers.** A flavor may set `--temp 0.6` in `llama_args`
-*and* `temperature` in its request-level defaults. This is allowed — the
-request-level value wins for Kōdo's own calls while the CLI value still applies
-to anything else pointed at that server — but it is almost always accidental,
-so the flavor editor shows an inline warning naming every knob set in both
-places. Nothing is stripped or blocked.
+**A session override on top of a flavor's CLI arg is not a conflict** — it is
+the intended mechanism. `llama-server` starts each request from its launch
+config and overwrites only the fields the request body sends, so the session
+override simply wins for as long as it is set, while the CLI value keeps
+governing any other client pointed at that server. Nothing here needs a
+warning, unlike the (removed) case of a flavor setting the same knob twice —
+that can no longer happen, since the flavor editor's two views of
+`llama_args` are always in sync.
 
 **Cloud models are unaffected.** These are `llama-server` parameters; the
 sampling button is not rendered at all while the session's active model is
 cloud-resident, and no sampling fields are ever added to an Anthropic request.
 
-**Scope within a session.** Like `thinking_level` (SESSIONS.md), the resolved
-sampling parameters apply to *every* local LLM call the session makes — the
+**Scope within a session.** Like `thinking_level` (SESSIONS.md), a session's
+sampling overrides apply to *every* local LLM call the session makes — the
 main turn, auto-compaction, and the `web_search` tool loop — not just the
 prompt the user typed. The session titler runs its own dedicated
 `llama-server` with its own fixed parameters and is unaffected.
