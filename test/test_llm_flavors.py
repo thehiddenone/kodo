@@ -349,9 +349,7 @@ def test_add_flavor_defaults_platform_to_both(tmp_path: Path) -> None:
 
 
 def test_add_flavor_can_set_platform(tmp_path: Path) -> None:
-    flavor = add_flavor(
-        tmp_path, "fake-model", "Mac Flavor", platform=LlamaFlavorPlatform.MAC
-    )
+    flavor = add_flavor(tmp_path, "fake-model", "Mac Flavor", platform=LlamaFlavorPlatform.MAC)
     assert flavor.platform == LlamaFlavorPlatform.MAC
 
 

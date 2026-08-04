@@ -24,15 +24,16 @@ from kodo.llms import (
 from kodo.state import TransientStore
 from kodo.transport import (
     EVT_AGENT_CYCLIC_THINKING_CRITICAL,
-    EVT_AGENT_CYCLIC_THINKING_NOTICE,
     EVT_AGENT_FINISHED,
     EVT_AGENT_STARTED,
     EVT_AGENT_STUCK_CRITICAL,
+    EVT_AGENT_THINK_IN_TOOL_CALL_CRITICAL,
+    EVT_AGENT_TOOL_CALL_CYCLIC_CRITICAL,
     EVT_AGENT_TOOL_CALL_IN_PROGRESS,
-    EVT_AGENT_UNSTUCK_NUDGE,
     EVT_CONTEXT_COMPACTING,
     EVT_CONTEXT_STATS,
     EVT_ERROR,
+    EVT_NUDGE,
     EVT_SECURITY_RULE_ADDED,
     EVT_SESSION_GREETING,
     EVT_SESSION_NAMING,
@@ -301,19 +302,26 @@ class EngineEmitters:
             )
         )
 
-    async def emit_agent_unstuck_nudge(self, note: str, reasons: list[str], mode: str) -> None:
-        """Push the client-only explanation for a just-injected stuck-agent nudge.
+    async def emit_nudge(self, ui_text: str, reasons: list[str], mode: str, source: str) -> None:
+        """Push the client-only rendering for a just-persisted :class:`~._shared.Nudge`.
 
-        Fired right after the nudge is persisted (doc/STUCK_DETECTION.md,
-        ``WatchdogMixin._persist_nudge`` and ``_run_entry_agent``'s deferred
-        path) — the nudge's actual ``content`` is a real LLM-facing turn the
-        agent's next streamed response follows on from, but the client never
-        typed it and has no local echo, so this event (not the message
-        content) is what the feed renders in its place.
+        Fired right after any watchdog detector persists a nudge
+        (doc/STUCK_DETECTION.md, ``WatchdogMixin._persist_nudge`` and
+        ``_run_entry_agent``'s deferred path) — the nudge's actual
+        ``llm_text`` is a real LLM-facing turn the agent's next streamed
+        response follows on from (or reads back, for the mid-stream
+        sources), but the client never typed it and has no local echo, so
+        this event (not the message content) is what the feed renders in its
+        place. ``source`` lets the client distinguish an ordinary
+        post-round nudge from a mid-stream one (cyclic-thinking,
+        think-in-tool-call, tool-call-cyclic) that needs to also flush a live
+        streaming buffer. No marker append here — persistence is via the
+        ``kind="nudge"``-tagged message itself.
         """
         await self._sink.send(
             Envelope.make_event(
-                EVT_AGENT_UNSTUCK_NUDGE, {"note": note, "reasons": reasons, "mode": mode}
+                EVT_NUDGE,
+                {"ui_text": ui_text, "reasons": reasons, "mode": mode, "source": source},
             )
         )
 
@@ -337,21 +345,6 @@ class EngineEmitters:
         )
         await self._sink.send(Envelope.make_event(EVT_AGENT_STUCK_CRITICAL, {"message": message}))
 
-    async def emit_cyclic_thinking_notice(self, message: str) -> None:
-        """Push the client-only rendering hint for a just-persisted cyclic-thinking notice.
-
-        Fired right after the notice is persisted (doc/STUCK_DETECTION.md
-        §2.7, ``WatchdogMixin._persist_cyclic_thinking_notice``) — mirrors
-        :meth:`emit_agent_unstuck_nudge`: the notice's actual ``content`` is
-        a real LLM-facing turn, but the client never typed it and has no
-        local echo, so this event is what the feed renders in its place. No
-        marker append here — persistence is via the ``kind``-tagged message
-        itself, exactly like the ordinary nudge.
-        """
-        await self._sink.send(
-            Envelope.make_event(EVT_AGENT_CYCLIC_THINKING_NOTICE, {"message": message})
-        )
-
     async def emit_cyclic_thinking_critical(self, message: str) -> None:
         """Push+persist a client-only notice that a second cyclic-thinking loop ended the turn.
 
@@ -372,6 +365,44 @@ class EngineEmitters:
         )
         await self._sink.send(
             Envelope.make_event(EVT_AGENT_CYCLIC_THINKING_CRITICAL, {"message": message})
+        )
+
+    async def emit_think_in_tool_call_critical(self, message: str) -> None:
+        """Push+persist a client-only notice that a second think-in-tool-call hit ended the turn.
+
+        Fired when the entry-agent hits a *second* ``<think>``-in-tool-call
+        detection since its last real response (doc/STUCK_DETECTION.md §2.9,
+        ``WatchdogMixin._persist_think_in_tool_call_critical``) — same shape
+        as :meth:`emit_agent_stuck_critical`/:meth:`emit_cyclic_thinking_critical`,
+        its own distinct event/marker type since the root cause differs.
+        """
+        self._append_marker(
+            {
+                "type": "agent_think_in_tool_call_critical",
+                "message": message,
+            }
+        )
+        await self._sink.send(
+            Envelope.make_event(EVT_AGENT_THINK_IN_TOOL_CALL_CRITICAL, {"message": message})
+        )
+
+    async def emit_tool_call_cyclic_critical(self, message: str) -> None:
+        """Push+persist a client-only notice that a second tool-call-repetition hit ended the turn.
+
+        Fired when the entry-agent hits a *second* tool-call-argument
+        repetition loop since its last real response (doc/STUCK_DETECTION.md
+        §2.10, ``WatchdogMixin._persist_tool_call_cyclic_critical``) — same
+        shape as the other critical emitters above, its own distinct
+        event/marker type since the root cause differs.
+        """
+        self._append_marker(
+            {
+                "type": "agent_tool_call_cyclic_critical",
+                "message": message,
+            }
+        )
+        await self._sink.send(
+            Envelope.make_event(EVT_AGENT_TOOL_CALL_CYCLIC_CRITICAL, {"message": message})
         )
 
     async def emit_agent_started(self, agent_name: str) -> None:

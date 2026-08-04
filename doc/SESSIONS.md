@@ -464,6 +464,44 @@ this: it resolves the entry agent's model key the same way `_resolve_plugin`
 does, then looks up its `base_llm` in the local registry — `""` for a cloud
 model or a local entry with none.
 
+## Sampling parameters
+
+The session's other per-request local-model knob (`SessionState.sampling`,
+`TransientStore.sampling`) — request-level `llama-server` sampling overrides
+such as `temperature`/`top_k`/`min_p`, edited from the ⚙ button in the chat
+footer. Full reference: [SAMPLING.md](SAMPLING.md).
+
+Shares thinking level's shape — per-session, server-owned, applied to *every*
+local LLM call the session makes (main turn, compaction, `web_search`'s tool
+loop), never to a cloud call — but differs on the two points that matter:
+
+- **Keyed by quant, not flat.** `sampling` is
+  `{entry_name: {parameter: value}}`, one override set per local registry
+  entry the session has tuned. Because each set is already scoped to the entry
+  it applies to, a model switch **does not reset it** the way it resets
+  `thinking_level` — the other entries' sets simply go dormant, and switching
+  back restores them. There is no `_sync_*_to_model` equivalent, and a resumed
+  session adopts the persisted map verbatim
+  (`WorkflowEngine.start`) rather than re-validating it against the current
+  model.
+- **Bad values degrade instead of failing.** `handle_sampling_set` accepts the
+  request and runs it through `SamplingParams.from_json`, which drops unknown,
+  reserved and wrong-typed parameters and clamps out-of-range numbers, then
+  echoes back what actually stuck (`sampling.accepted`, WS_PROTOCOL.md §7.4f).
+  Only an unknown `model` is rejected. Contrast `thinking_level.set`, which
+  rejects an invalid tier outright.
+
+Each `sampling.set` is a **full replace** for that one quant, not a patch: an
+absent parameter means "don't send this field", so llama-server falls back to
+whatever the flavor's launch args set it to. Clearing a field in the UI is
+therefore a real operation, not a reset to some default — see SAMPLING.md §1.
+
+`WorkflowEngine._sampling_kwargs` is the read side, resolving the active
+flavor's declared defaults (`resolve_flavor_sampling`) and overlaying this
+session's overrides for the same entry, per parameter. Both are read fresh per
+call, so editing a flavor or moving a slider lands on the next request with no
+llama-server restart.
+
 ## Resume
 
 Everything in this section is about a genuine server **process** restart

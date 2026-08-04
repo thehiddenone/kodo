@@ -88,6 +88,7 @@ class HistoryProjector:
         worth of content at a time. Every other marker kind (``usage``,
         ``compaction``, ``error``, ``security_rule_added``,
         ``agent_stuck_critical``, ``agent_cyclic_thinking_critical``,
+        ``agent_think_in_tool_call_critical``, ``agent_tool_call_cyclic_critical``,
         ``greeting`` — see :meth:`_marker_to_entries`) is rendered in its
         correct chronological position.
 
@@ -267,6 +268,20 @@ class HistoryProjector:
                     "message": str(line.get("message", "")),
                 }
             ]
+        if kind == "agent_think_in_tool_call_critical":
+            return [
+                {
+                    "type": "agent_think_in_tool_call_critical",
+                    "message": str(line.get("message", "")),
+                }
+            ]
+        if kind == "agent_tool_call_cyclic_critical":
+            return [
+                {
+                    "type": "agent_tool_call_cyclic_critical",
+                    "message": str(line.get("message", "")),
+                }
+            ]
         if kind == "usage":
             tokens = line.get("last_call_tokens")
             tokens = tokens if isinstance(tokens, dict) else {}
@@ -363,34 +378,56 @@ class HistoryProjector:
         if msg.get("kind") == "stopped_notice":
             out.append({"type": "interrupted"})
             return out
-        # The stuck-watchdog's continuation nudge (doc/STUCK_DETECTION.md) —
-        # a real, LLM-visible "please continue" turn, but replayed as a
-        # distinct feed entry (not a fake user-typed bubble) carrying the
-        # client-only explanation of *why* Kōdo sent it.
+        # Any watchdog course-correction (doc/STUCK_DETECTION.md §2.5) — a
+        # real, LLM-visible turn (an ordinary stall nudge, the missing-
+        # ``return_result`` reminder, or either mid-stream detector's
+        # notice), but replayed as a distinct feed entry (not a fake
+        # user-typed bubble) carrying the client-only ``ui_text`` explaining
+        # *why* Kōdo sent it. Every source is rendered identically here —
+        # ``source`` only matters live, for deciding whether a mid-stream
+        # buffer needs flushing (kodo-vsix's reducer); replay never has live
+        # streaming state to worry about.
+        if msg.get("kind") == "nudge":
+            detail = msg.get("detail")
+            detail = detail if isinstance(detail, dict) else {}
+            reasons = detail.get("reasons")
+            out.append(
+                {
+                    "type": "nudge",
+                    "uiText": str(detail.get("ui_text", "")),
+                    "reasons": [str(r) for r in reasons] if isinstance(reasons, list) else [],
+                    "mode": str(detail.get("mode", "")),
+                    "source": str(detail.get("source", "")),
+                }
+            )
+            return out
+        # Legacy kinds from before the 2026-08-03 Nudge unification — old
+        # session.jsonl files still carry these; reshape them into the same
+        # {"type": "nudge", ...} entry so old and new sessions render
+        # identically. Never written going forward.
         if msg.get("kind") == "agent_unstuck_nudge":
             detail = msg.get("detail")
             detail = detail if isinstance(detail, dict) else {}
             reasons = detail.get("reasons")
             out.append(
                 {
-                    "type": "agent_unstuck_nudge",
-                    "note": str(detail.get("note", "")),
+                    "type": "nudge",
+                    "uiText": str(detail.get("note", "")),
                     "reasons": [str(r) for r in reasons] if isinstance(reasons, list) else [],
                     "mode": str(detail.get("mode", "")),
+                    "source": "stall",
                 }
             )
             return out
-        # The mid-stream cyclic-thinking detector's strike-1 notice
-        # (doc/STUCK_DETECTION.md §2.7) — like the nudge above, a real,
-        # LLM-visible turn, replayed as a distinct feed entry. Unlike
-        # stopped_notice's fixed client-side string, the persisted content is
-        # passed straight through, so the wording stays single-sourced in
-        # WatchdogMixin._CYCLIC_THINKING_NOTICE rather than duplicated here.
         if msg.get("kind") == "cyclic_thinking_notice":
+            text = content if isinstance(content, str) else ""
             out.append(
                 {
-                    "type": "cyclic_thinking_notice",
-                    "message": content if isinstance(content, str) else "",
+                    "type": "nudge",
+                    "uiText": text,
+                    "reasons": ["cyclic_thinking"],
+                    "mode": "auto",
+                    "source": "cyclic_thinking",
                 }
             )
             return out

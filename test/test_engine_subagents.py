@@ -65,7 +65,9 @@ class _FakeTransient:
         self._rehydrate: dict[str, list[dict[str, object]]] = {}
         self.active_subsession: dict[str, object] | None = None
 
-    def append_subsession_message(self, subsession_id, role, content, kind=None) -> None:
+    def append_subsession_message(
+        self, subsession_id, role, content, kind=None, detail=None
+    ) -> None:
         self.subsession_messages.setdefault(subsession_id, []).append((role, content, kind))
 
     def append_marker(self, marker: dict[str, object]) -> None:
@@ -86,8 +88,10 @@ class _FakeTransient:
 class _FakeEmitters:
     def __init__(self) -> None:
         self.events: list[tuple] = []
-        self.cyclic_notices: list[str] = []
+        self.nudges: list[tuple[str, list[str], str, str]] = []
         self.cyclic_critical_messages: list[str] = []
+        self.think_in_tool_call_critical_messages: list[str] = []
+        self.tool_call_cyclic_critical_messages: list[str] = []
 
     async def emit_state(self) -> None:
         self.events.append(("state",))
@@ -104,11 +108,17 @@ class _FakeEmitters:
     async def emit_web_search_note(self, tool_call_id: str, text: str) -> None:
         self.events.append(("note", tool_call_id, text))
 
-    async def emit_cyclic_thinking_notice(self, message: str) -> None:
-        self.cyclic_notices.append(message)
+    async def emit_nudge(self, ui_text: str, reasons: list[str], mode: str, source: str) -> None:
+        self.nudges.append((ui_text, reasons, mode, source))
 
     async def emit_cyclic_thinking_critical(self, message: str) -> None:
         self.cyclic_critical_messages.append(message)
+
+    async def emit_think_in_tool_call_critical(self, message: str) -> None:
+        self.think_in_tool_call_critical_messages.append(message)
+
+    async def emit_tool_call_cyclic_critical(self, message: str) -> None:
+        self.tool_call_cyclic_critical_messages.append(message)
 
 
 class _FakeSink:
@@ -157,6 +167,8 @@ def _make_engine(
     engine._sink = _FakeSink()
     engine._compactor = _FakeCompactor()
     engine._cycle_streak = False
+    engine._think_tag_streak = False
+    engine._tool_call_cycle_streak = False
     engine._orch_session_id = "s1"
     # _make_cyclic_thinking_handler (doc/STUCK_DETECTION.md §2.7) reads
     # settings/routing.residence eagerly at construction time (unlike
@@ -632,7 +644,7 @@ async def test_drive_subsession_wires_on_cyclic_thinking_for_subagent_scope() ->
     assert [d.retry for d in decisions] == [True] * _MAX_CONSECUTIVE_NUDGES + [False]
     persisted = engine._transient.subsession_messages["sub-1"]
     assert len(persisted) == _MAX_CONSECUTIVE_NUDGES
-    assert all(kind == "cyclic_thinking_notice" for _, _, kind in persisted)
+    assert all(kind == "nudge" for _, _, kind in persisted)
     # Sub-agent scope never goes critical -- it just stops retrying silently.
     assert engine._emitters.cyclic_critical_messages == []
 

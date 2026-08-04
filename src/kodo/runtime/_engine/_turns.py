@@ -34,6 +34,7 @@ from kodo.llms import (
     ThinkingDelta,
     ThinkingSignature,
     TokenDelta,
+    ToolCallArgDelta,
     ToolCallEvent,
     ToolCallLogger,
     ToolSpec,
@@ -63,6 +64,7 @@ from .._agenttools import agent_tool_specs
 from .._attachments import MAX_ATTACHMENTS, AttachmentError, inject_attachments, load_attachment
 from .._checkpoints import CheckpointRef
 from .._cyclic_thinking import CyclicThinkingDetector
+from .._think_tag_guard import ThinkTagDetector
 from ._checkpointing import _GUIDED_STATE_TOOLS
 from ._proto import EngineHost
 from ._shared import (
@@ -159,8 +161,8 @@ class TurnLoopMixin:
         stuck-agent nudge (doc/STUCK_DETECTION.md,
         :meth:`~._watchdog.WatchdogMixin._schedule_entry_turn_alarm`): *text*
         is then the fixed continuation instruction, not something the user
-        typed, so it persists with ``kind="agent_unstuck_nudge"`` instead of
-        as an ordinary prompt bubble.
+        typed, so it persists with ``kind="nudge"`` instead of as an ordinary
+        prompt bubble.
         """
         # Marks the *current* entry-agent turn so a stale background watcher
         # from an earlier turn (doc/STUCK_DETECTION.md) can tell it has been
@@ -188,15 +190,16 @@ class TurnLoopMixin:
                 attachments=[
                     {"id": s["id"], "name": s["name"], "stored": s["stored"]} for s in stored
                 ],
-                kind="agent_unstuck_nudge" if nudge_detail is not None else None,
+                kind="nudge" if nudge_detail is not None else None,
                 detail=nudge_detail,
             )
             if nudge_detail is not None:
                 reasons = nudge_detail.get("reasons")
-                await self._emitters.emit_agent_unstuck_nudge(
-                    str(nudge_detail.get("note", "")),
+                await self._emitters.emit_nudge(
+                    str(nudge_detail.get("ui_text", "")),
                     [str(r) for r in reasons] if isinstance(reasons, list) else [],
                     str(nudge_detail.get("mode", "")),
+                    str(nudge_detail.get("source", "stall")),
                 )
                 # This is the deferred half of a stuck-agent nudge landing
                 # (doc/STUCK_DETECTION.md) — mark the streak now that the
@@ -250,6 +253,12 @@ class TurnLoopMixin:
             ),
             on_tool_calls=self._make_progress_handler(is_entry_turn=True),
             on_cyclic_thinking=self._make_cyclic_thinking_handler(
+                agent_name=agent_name, routing=routing, is_entry_turn=True
+            ),
+            on_think_in_tool_call=self._make_think_in_tool_call_handler(
+                agent_name=agent_name, is_entry_turn=True
+            ),
+            on_tool_call_cyclic=self._make_tool_call_cyclic_handler(
                 agent_name=agent_name, routing=routing, is_entry_turn=True
             ),
         )
@@ -342,6 +351,8 @@ class TurnLoopMixin:
         on_stall: Callable[[TurnSignal], Awaitable[StallDecision]] | None = None,
         on_tool_calls: Callable[[], None] | None = None,
         on_cyclic_thinking: Callable[[str], Awaitable[StallDecision]] | None = None,
+        on_think_in_tool_call: Callable[[str], Awaitable[StallDecision]] | None = None,
+        on_tool_call_cyclic: Callable[[str], Awaitable[StallDecision]] | None = None,
     ) -> tuple[list[Message], list[Path]]:
         """Run one LLM turn with tool-use loop until the model stops calling tools.
 
@@ -414,6 +425,22 @@ class TurnLoopMixin:
                 accumulated so far, in place of ``on_stall`` (never both —
                 see doc/STUCK_DETECTION.md §2.7). Its
                 ``StallDecision`` is honored exactly like ``on_stall``'s.
+            on_think_in_tool_call: Every streamed ``ToolCallArgDelta`` is fed
+                to a fresh :class:`~.._think_tag_guard.ThinkTagDetector` for
+                this round; the instant a literal ``<think>`` tag appears
+                inside the accumulated tool-call-argument text, the stream is
+                cancelled early and this callback is awaited with the tool
+                name, in place of ``on_stall``/``on_cyclic_thinking``
+                (doc/STUCK_DETECTION.md §2.9). Checked *before*
+                ``on_tool_call_cyclic`` on every fragment — a stray thinking
+                tag takes priority over ordinary repetition.
+            on_tool_call_cyclic: Every streamed ``ToolCallArgDelta`` is also
+                fed to a second, independent
+                :class:`~.._cyclic_thinking.CyclicThinkingDetector` instance
+                for this round; the instant it flags a repetition loop inside
+                the tool-call-argument text, the stream is cancelled early and
+                this callback is awaited with the accumulated argument text,
+                in place of ``on_stall`` (doc/STUCK_DETECTION.md §2.10).
 
         Returns:
             tuple[list[Message], list[Path]]: Updated messages and (unused) files.
@@ -454,6 +481,17 @@ class TurnLoopMixin:
             # block, never carried across rounds (doc/STUCK_DETECTION.md §2.7).
             cyclic_detector = CyclicThinkingDetector() if on_cyclic_thinking is not None else None
             cyclic_abort = False
+            # Fresh per round, same reasoning -- a stray thinking tag or a
+            # repetition loop inside tool-call arguments is scoped to the
+            # calls this one round makes (doc/STUCK_DETECTION.md §2.9/§2.10).
+            think_tag_detector = ThinkTagDetector() if on_think_in_tool_call is not None else None
+            tool_call_cyclic_detector = (
+                CyclicThinkingDetector() if on_tool_call_cyclic is not None else None
+            )
+            think_tag_abort = False
+            tool_call_cyclic_abort = False
+            think_tag_tool_name = ""
+            tool_call_arg_parts: list[str] = []
 
             # Set before the send (not after) so a reconnect racing this exact
             # instant already sees the true state if it reads `self._session`
@@ -477,6 +515,7 @@ class TurnLoopMixin:
                     tools=tools,
                     cache_breakpoints=default_cache_breakpoints(messages),
                     **self._thinking_kwargs(routing),
+                    **self._sampling_kwargs(routing),
                 ):
                     await self._emitters.handle_stream_event(event, stream_id)
                     if isinstance(event, TokenDelta):
@@ -494,6 +533,22 @@ class TurnLoopMixin:
                             break
                     elif isinstance(event, ThinkingSignature):
                         thinking_signature = event.signature
+                    elif isinstance(event, ToolCallArgDelta):
+                        think_tag_tool_name = event.tool_name or think_tag_tool_name
+                        if think_tag_detector is not None and think_tag_detector.feed(event.text):
+                            # A stray thinking tag takes priority over
+                            # ordinary repetition -- checked, and aborted,
+                            # before ever feeding the cyclic detector.
+                            think_tag_abort = True
+                            await llm.cancel(stream_id)
+                            break
+                        tool_call_arg_parts.append(event.text)
+                        if tool_call_cyclic_detector is not None and tool_call_cyclic_detector.feed(
+                            event.text
+                        ):
+                            tool_call_cyclic_abort = True
+                            await llm.cancel(stream_id)
+                            break
                     elif isinstance(event, ToolCallEvent):
                         tool_calls.append(event)
                     elif isinstance(event, TurnEnd):
@@ -588,7 +643,11 @@ class TurnLoopMixin:
                 # found, so there is nothing useful left to (re-)detect from
                 # the truncated, repeated text.
                 decision: StallDecision | None
-                if cyclic_abort and on_cyclic_thinking is not None:
+                if think_tag_abort and on_think_in_tool_call is not None:
+                    decision = await on_think_in_tool_call(think_tag_tool_name or "unknown tool")
+                elif tool_call_cyclic_abort and on_tool_call_cyclic is not None:
+                    decision = await on_tool_call_cyclic("".join(tool_call_arg_parts))
+                elif cyclic_abort and on_cyclic_thinking is not None:
                     decision = await on_cyclic_thinking(thinking_text)
                 elif on_stall is not None:
                     signal = TurnSignal(

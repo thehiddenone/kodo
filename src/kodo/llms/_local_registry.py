@@ -35,6 +35,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
+from ._sampling import SamplingParams
+
 __all__ = [
     "GPT_OSS_REASONING_EFFORT_FAMILY",
     "QWEN_REASONING_BUDGET_FAMILY",
@@ -62,6 +64,7 @@ __all__ = [
     "remove_local_entry",
     "resolve_context_window",
     "resolve_effective_llama_config",
+    "resolve_flavor_sampling",
     "set_active_flavor",
     "set_llama_server_override_path",
     "update_flavor",
@@ -392,6 +395,19 @@ class LlamaFlavor:
             check". If both ``min_ram`` and ``min_vram`` are ``0`` the
             hardware-fit check is inactive and the flavor is treated as
             runnable everywhere. Editable the same way as ``min_ram``.
+        sampling: Request-level sampling **defaults** for this flavor — the
+            starting values a session's sampling modal is seeded with the
+            first time this entry is used (see
+            :class:`kodo.llms.SamplingParams` and doc/SAMPLING.md §9). Unlike
+            ``llama_args``, these ride on every ``/v1/chat/completions`` body
+            rather than the launch command line, so changing them needs no
+            llama-server restart. Empty for every built-in flavor, which is
+            why an untouched install sends no sampling fields at all and
+            ``llama-server`` uses whatever ``llama_args`` launched it with. A
+            knob may legitimately be set here *and* as a CLI flag in
+            ``llama_args`` — the request-level value wins for kodo's own
+            calls; :func:`kodo.llms.cli_flag_conflicts` finds such pairs so
+            the flavor editor can warn about them.
     """
 
     id: str
@@ -401,6 +417,7 @@ class LlamaFlavor:
     llama_args: dict[str, str] = field(default_factory=dict)
     min_ram: int = 0
     min_vram: int = 0
+    sampling: SamplingParams = field(default_factory=SamplingParams)
 
     def get_context_size(self) -> int:
         """The context size (tokens) this flavor's launch args declare.
@@ -2707,6 +2724,11 @@ def _flavor_from_json(raw: dict[str, object]) -> LlamaFlavor | None:
         min_ram=int(cast(int, raw.get("min_ram", 0)) or 0),
         min_vram=int(cast(int, raw.get("min_vram", 0)) or 0),
         platform=_parse_flavor_platform(raw.get("platform")),
+        # Absent for every flavor persisted before request-level sampling
+        # existed; `from_json` turns that (and any malformed value) into an
+        # empty set, i.e. "send no sampling fields" — the same behaviour those
+        # flavors already had.
+        sampling=SamplingParams.from_json(raw.get("sampling")),
     )
 
 
@@ -2719,6 +2741,7 @@ def _flavor_to_json(flavor: LlamaFlavor) -> dict[str, object]:
         "min_ram": flavor.min_ram,
         "min_vram": flavor.min_vram,
         "platform": flavor.platform.value,
+        "sampling": flavor.sampling.to_json(),
     }
 
 
@@ -2802,6 +2825,7 @@ def add_flavor(
     min_ram: int = 0,
     min_vram: int = 0,
     platform: LlamaFlavorPlatform = LlamaFlavorPlatform.BOTH,
+    sampling: SamplingParams | None = None,
 ) -> LlamaFlavor:
     """Add a brand-new custom flavor to *entry_name*, auto-assigning its ``id`` from *name*.
 
@@ -2826,6 +2850,11 @@ def add_flavor(
             requirement — the hardware-fit check stays inactive).
         min_vram: See ``LlamaFlavor.min_vram``. Same default as *min_ram*.
         platform: See ``LlamaFlavor.platform``. Defaults to ``BOTH``.
+        sampling: See ``LlamaFlavor.sampling`` — request-level sampling
+            defaults. ``None`` (the default) means "none set", so the flavor
+            contributes no sampling fields to a request. Already-validated;
+            callers taking values off the wire should build it with
+            :meth:`kodo.llms.SamplingParams.from_json`.
 
     Returns:
         LlamaFlavor: The created flavor, with its assigned ``id``.
@@ -2865,6 +2894,7 @@ def add_flavor(
         min_ram=min_ram,
         min_vram=min_vram,
         platform=platform,
+        sampling=sampling or SamplingParams(),
     )
     data = _load_raw(kodo_dir)
     all_flavors = _all_custom_flavors(data)
@@ -2885,6 +2915,7 @@ def update_flavor(
     min_ram: int = 0,
     min_vram: int = 0,
     platform: LlamaFlavorPlatform = LlamaFlavorPlatform.BOTH,
+    sampling: SamplingParams | None = None,
 ) -> LlamaFlavor:
     """Overwrite an existing *custom* flavor's definition in place, keeping its ``id``.
 
@@ -2916,6 +2947,10 @@ def update_flavor(
         min_vram: See ``LlamaFlavor.min_vram``. Same default as *min_ram*.
         platform: See ``LlamaFlavor.platform``. Defaults to ``BOTH``, same
             not-carried-forward caveat as *min_ram*/*min_vram*.
+        sampling: See ``LlamaFlavor.sampling``. ``None`` clears every
+            request-level default — same not-carried-forward caveat as
+            *min_ram*/*min_vram*, so the flavor editor must resend the full
+            set on every save.
 
     Returns:
         LlamaFlavor: The updated flavor.
@@ -2952,6 +2987,7 @@ def update_flavor(
         min_ram=min_ram,
         min_vram=min_vram,
         platform=platform,
+        sampling=sampling or SamplingParams(),
     )
     data = _load_raw(kodo_dir)
     all_flavors = _all_custom_flavors(data)
@@ -3178,8 +3214,7 @@ def get_effective_flavor_id(kodo_dir: Path, entry: LocalLLMEntry) -> str:
     if compatible:
         return compatible[0].id
     _log.warning(
-        "No flavor of %r is compatible with the current platform (%s); "
-        "falling back to %r anyway",
+        "No flavor of %r is compatible with the current platform (%s); falling back to %r anyway",
         entry.name,
         current_host_platform().value,
         flavors[0].id,
@@ -3218,6 +3253,35 @@ def resolve_effective_llama_config(
     if flavor is None:
         return {}, entry.context_window
     return dict(flavor.llama_args), resolve_context_window(entry, flavor)
+
+
+def resolve_flavor_sampling(kodo_dir: Path, entry: LocalLLMEntry) -> SamplingParams:
+    """*entry*'s effective flavor's request-level sampling **defaults**.
+
+    The request-level twin of :func:`resolve_effective_llama_config`, split
+    out because the two are consumed at completely different times: the
+    launch args matter once, when ``ensure_llama_running`` starts the process,
+    while these are re-read per request and can change without a restart.
+    Resolves through the same :func:`get_effective_flavor_id`, so the defaults
+    always belong to the flavor actually in use.
+
+    These are only *defaults*. What ends up on a request is this, overlaid by
+    the session's own per-quant overrides (doc/SAMPLING.md §9) — see
+    ``WorkflowEngine._sampling_kwargs``.
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        entry: The entry to resolve for.
+
+    Returns:
+        SamplingParams: The active flavor's defaults, or an empty set when
+        *entry* has no flavors at all (the same flavor-less cases
+        :func:`resolve_effective_llama_config` returns ``{}`` for).
+    """
+    flavors = get_flavors(kodo_dir, entry)
+    flavor_id = get_effective_flavor_id(kodo_dir, entry)
+    flavor = next((f for f in flavors if f.id == flavor_id), None) if flavor_id else None
+    return flavor.sampling if flavor is not None else SamplingParams()
 
 
 # ---------------------------------------------------------------------------

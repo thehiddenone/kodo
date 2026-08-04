@@ -741,6 +741,17 @@ class SubagentMixin:
                 is_entry_turn=False,
                 subsession_id=subsession_id,
             ),
+            on_think_in_tool_call=self._make_think_in_tool_call_handler(
+                agent_name=name,
+                is_entry_turn=False,
+                subsession_id=subsession_id,
+            ),
+            on_tool_call_cyclic=self._make_tool_call_cyclic_handler(
+                agent_name=name,
+                routing=routing,
+                is_entry_turn=False,
+                subsession_id=subsession_id,
+            ),
         )
 
         # Safety net for a final round with zero deltas — see the matching

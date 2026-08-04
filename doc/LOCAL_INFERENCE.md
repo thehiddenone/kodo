@@ -6,8 +6,10 @@
 > stray `<think>` tags from reasoning.
 
 Companion to [LLM_REGISTRY.md](LLM_REGISTRY.md) (which local models exist and
-how they are configured), [LLM_GATEWAY.md](LLM_GATEWAY.md) (request routing),
-and [SECURITY.md](SECURITY.md) §9 (the user-facing confirmation for a recovered
+how they are configured), [SAMPLING.md](SAMPLING.md) (the sampling parameters
+sent alongside these launch flags, and why an omitted one is not the same as a
+default), [LLM_GATEWAY.md](LLM_GATEWAY.md) (request routing), and
+[SECURITY.md](SECURITY.md) §9 (the user-facing confirmation for a recovered
 call). All code lives under `kodo/llms/llamacpp/`.
 
 ---

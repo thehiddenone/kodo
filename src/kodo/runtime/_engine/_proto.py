@@ -43,7 +43,7 @@ from ._checkpointing import CheckpointCoordinator
 from ._compaction import ContextCompactor
 from ._events import EngineEmitters
 from ._services import _EngineServices
-from ._shared import _GUIDE_AGENT_NAME, RedFlag, StallDecision, TurnSignal
+from ._shared import _GUIDE_AGENT_NAME, Nudge, RedFlag, StallDecision, TurnSignal
 from ._titling import SessionTitler
 
 
@@ -80,6 +80,8 @@ class EngineHost(Protocol):
     _stuck_watchdog_task: asyncio.Task[None] | None
     _stuck_streak: bool
     _cycle_streak: bool
+    _think_tag_streak: bool
+    _tool_call_cycle_streak: bool
 
     # -- core helpers (defined in _core) ---------------------------------------
     def _agent_available(self, name: str) -> bool: ...
@@ -115,6 +117,12 @@ class EngineHost(Protocol):
     async def _sync_thinking_level_to_model(self) -> None: ...
 
     async def handle_thinking_level_set(self, value: str) -> bool: ...
+
+    def _sampling_kwargs(self, routing: LLMRouting) -> dict[str, object]: ...
+
+    async def handle_sampling_set(
+        self, model: str, values: dict[str, object]
+    ) -> tuple[bool, dict[str, float | int | list[str]]]: ...
 
     async def _run_silent_return_turn(
         self,
@@ -197,6 +205,8 @@ class EngineHost(Protocol):
         on_stall: Callable[[TurnSignal], Awaitable[StallDecision]] | None = None,
         on_tool_calls: Callable[[], None] | None = None,
         on_cyclic_thinking: Callable[[str], Awaitable[StallDecision]] | None = None,
+        on_think_in_tool_call: Callable[[str], Awaitable[StallDecision]] | None = None,
+        on_tool_call_cyclic: Callable[[str], Awaitable[StallDecision]] | None = None,
     ) -> tuple[list[Message], list[Path]]: ...
 
     @staticmethod
@@ -314,10 +324,8 @@ class EngineHost(Protocol):
         *,
         agent_name: str,
         subsession_id: str | None,
-        flags: list[RedFlag],
-        display_name: str,
-        mode: str,
-        llm_text: str = ...,
+        nudge: Nudge,
+        role: str,
     ) -> Message: ...
 
     async def _persist_stuck_critical(
@@ -338,10 +346,33 @@ class EngineHost(Protocol):
         subsession_id: str | None = None,
     ) -> Callable[[str], Awaitable[StallDecision]] | None: ...
 
-    async def _persist_cyclic_thinking_notice(
-        self, *, agent_name: str, subsession_id: str | None, preview: str
-    ) -> Message: ...
-
     async def _persist_cyclic_thinking_critical(
+        self, *, agent_name: str, display_name: str, preview: str
+    ) -> None: ...
+
+    # -- mid-stream think-in-tool-call detector (defined in _watchdog) ---------------
+    def _make_think_in_tool_call_handler(
+        self,
+        *,
+        agent_name: str,
+        is_entry_turn: bool,
+        subsession_id: str | None = None,
+    ) -> Callable[[str], Awaitable[StallDecision]]: ...
+
+    async def _persist_think_in_tool_call_critical(
+        self, *, agent_name: str, display_name: str, tool_name: str
+    ) -> None: ...
+
+    # -- mid-stream tool-call-argument cyclic detector (defined in _watchdog) --------
+    def _make_tool_call_cyclic_handler(
+        self,
+        *,
+        agent_name: str,
+        routing: LLMRouting,
+        is_entry_turn: bool,
+        subsession_id: str | None = None,
+    ) -> Callable[[str], Awaitable[StallDecision]] | None: ...
+
+    async def _persist_tool_call_cyclic_critical(
         self, *, agent_name: str, display_name: str, preview: str
     ) -> None: ...

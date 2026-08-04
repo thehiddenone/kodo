@@ -32,6 +32,7 @@ from ._interface import (
     ToolSpec,
     TurnEnd,
 )
+from ._sampling import SamplingParams
 
 __all__ = ["LoggingLLMPlugin"]
 
@@ -64,6 +65,7 @@ class LoggingLLMPlugin(LLMPlugin):
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
         thinking_level: str | None = None,
+        sampling: SamplingParams | None = None,
     ) -> AsyncIterator[StreamEvent]:
         n = next(_counter)
         return self._logged_stream(
@@ -75,6 +77,7 @@ class LoggingLLMPlugin(LLMPlugin):
             tools=tools,
             cache_breakpoints=cache_breakpoints,
             thinking_level=thinking_level,
+            sampling=sampling,
         )
 
     async def _logged_stream(
@@ -88,6 +91,7 @@ class LoggingLLMPlugin(LLMPlugin):
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
         thinking_level: str | None = None,
+        sampling: SamplingParams | None = None,
     ) -> AsyncIterator[StreamEvent]:
         self._log_dir.mkdir(parents=True, exist_ok=True)
         prefix = f"{n:04d}"
@@ -109,6 +113,10 @@ class LoggingLLMPlugin(LLMPlugin):
             ],
             "cache_breakpoints": cache_breakpoints,
             "thinking_level": thinking_level,
+            # Only the parameters actually being sent; `null` when the
+            # session has none set, which is not the same as "defaults"
+            # (doc/SAMPLING.md §1).
+            "sampling": None if sampling is None else sampling.to_json(),
         }
         request_path = self._log_dir / f"{prefix}_request.json"
         try:
@@ -118,12 +126,15 @@ class LoggingLLMPlugin(LLMPlugin):
 
         # Only forwarded when set: the base LLMPlugin interface (and
         # ClaudePlugin) has no such parameter at all, so passing it
-        # unconditionally would TypeError for a cloud call — thinking_level is
-        # non-None only when the caller already knows _inner is a LlamaPlugin
-        # (see LLMPlumbingMixin._thinking_kwargs, local-only).
-        extra: dict[str, object] = (
-            {} if thinking_level is None else {"thinking_level": thinking_level}
-        )
+        # unconditionally would TypeError for a cloud call — thinking_level
+        # and sampling are both non-None only when the caller already knows
+        # _inner is a LlamaPlugin (see LLMPlumbingMixin._thinking_kwargs /
+        # _sampling_kwargs, both local-only).
+        extra: dict[str, object] = {}
+        if thinking_level is not None:
+            extra["thinking_level"] = thinking_level
+        if sampling is not None:
+            extra["sampling"] = sampling
         events: list[dict[str, object]] = []
         try:
             async for event in self._inner.stream_query(

@@ -52,11 +52,22 @@ from ._local_registry import (
     remove_local_entry,
     resolve_context_window,
     resolve_effective_llama_config,
+    resolve_flavor_sampling,
     set_active_flavor,
     set_llama_server_override_path,
     update_flavor,
 )
 from ._logger import LoggingLLMPlugin
+from ._sampling import (
+    RESERVED_SAMPLING_FIELDS,
+    SAMPLER_NAMES,
+    SAMPLING_PARAM_SPECS,
+    SamplingParams,
+    SamplingParamSpec,
+    cli_flag_conflicts,
+    sampling_param_spec,
+    sampling_specs_to_json,
+)
 from ._sanitize import strip_kodo_callouts
 from ._tool_logger import ToolCallLogger
 
@@ -75,7 +86,12 @@ __all__ = [
     "QWEN_REASONING_BUDGET_FAMILY",
     "QWEN_TIER_TOKEN_BUDGETS",
     "REASONING_BUDGET_MESSAGE",
+    "RESERVED_SAMPLING_FIELDS",
     "RateLimited",
+    "SAMPLER_NAMES",
+    "SAMPLING_PARAM_SPECS",
+    "SamplingParamSpec",
+    "SamplingParams",
     "ThinkingDelta",
     "ThinkingSignature",
     "ToolCallLogger",
@@ -89,6 +105,7 @@ __all__ = [
     "add_flavor",
     "add_local_entry",
     "clear_llama_server_override_path",
+    "cli_flag_conflicts",
     "current_host_platform",
     "default_cache_breakpoints",
     "detect_ram_gb",
@@ -113,6 +130,9 @@ __all__ = [
     "remove_local_entry",
     "resolve_context_window",
     "resolve_effective_llama_config",
+    "resolve_flavor_sampling",
+    "sampling_param_spec",
+    "sampling_specs_to_json",
     "set_active_flavor",
     "set_llama_server_override_path",
     "strip_kodo_callouts",

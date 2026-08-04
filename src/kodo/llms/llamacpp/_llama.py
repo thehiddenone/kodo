@@ -25,6 +25,7 @@ from kodo.llms import (
     QWEN_TIER_TOKEN_BUDGETS,
     LLMPlugin,
     Message,
+    SamplingParams,
     StreamEvent,
     ThinkingDelta,
     TokenDelta,
@@ -527,6 +528,7 @@ class LlamaPlugin(LLMPlugin):
         cache_breakpoints: list[int],
         json_schema: dict[str, object] | None = None,
         thinking_level: str | None = None,
+        sampling: SamplingParams | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a llama-server response, starting the server if needed.
 
@@ -554,6 +556,14 @@ class LlamaPlugin(LLMPlugin):
                 (doc/WS_PROTOCOL.md §7.6b) uses this as a pure per-call
                 override so the validator's User-Proxy can pin e.g.
                 ``"minimal"`` for its ``ask_user`` answers.
+            sampling (SamplingParams | None): Request-level sampling
+                parameters, already resolved from the active flavor's
+                defaults and the session's own per-quant overrides
+                (``LLMPlumbingMixin._sampling_kwargs``). llama.cpp-only.
+                Only the parameters it actually carries go on the wire —
+                ``None`` and an empty set both mean "send no sampling
+                fields", leaving llama-server on the values its launch
+                args set (doc/SAMPLING.md §1).
 
         Yields:
             StreamEvent: Token deltas, tool calls, then :class:`TurnEnd`.
@@ -571,6 +581,7 @@ class LlamaPlugin(LLMPlugin):
             tools=tools,
             json_schema=json_schema,
             thinking_level=thinking_level,
+            sampling=sampling,
         ):
             yield event
 
@@ -665,6 +676,7 @@ class LlamaPlugin(LLMPlugin):
         tools: list[ToolSpec],
         json_schema: dict[str, object] | None = None,
         thinking_level: str | None = None,
+        sampling: SamplingParams | None = None,
     ) -> AsyncIterator[StreamEvent]:
         cancel_event = asyncio.Event()
         self.__cancel_events[stream_id] = cancel_event
@@ -677,6 +689,7 @@ class LlamaPlugin(LLMPlugin):
                 tools=tools,
                 json_schema=json_schema,
                 thinking_level=thinking_level,
+                sampling=sampling,
             ):
                 yield event
         finally:
@@ -692,6 +705,7 @@ class LlamaPlugin(LLMPlugin):
         tools: list[ToolSpec],
         json_schema: dict[str, object] | None = None,
         thinking_level: str | None = None,
+        sampling: SamplingParams | None = None,
     ) -> AsyncIterator[StreamEvent]:
         assert self.__client is not None
         oai_messages = _build_oai_messages(system, messages)
@@ -745,6 +759,16 @@ class LlamaPlugin(LLMPlugin):
             if entry
             else ({}, _DEFAULT_MAX_TOKENS)
         )
+        # Sampling rides `extra_body` wholesale rather than as named kwargs,
+        # even for the handful of knobs (temperature, top_p, seed, the two
+        # penalties) the OpenAI SDK has real parameters for: llama-server
+        # reads every one of them off the same JSON body regardless, and one
+        # uniform path means no second list to keep in step with
+        # SAMPLING_PARAM_SPECS. Merged *under* nothing — the thinking fields
+        # above and these are disjoint by construction, since max_tokens and
+        # the reasoning-budget keys are in RESERVED_SAMPLING_FIELDS.
+        if sampling is not None:
+            extra_body = {**extra_body, **sampling.to_request_body()}
         response = await self.__client.chat.completions.create(  # type: ignore[call-overload]
             model=model,
             max_tokens=max_tokens,

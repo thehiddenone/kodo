@@ -19,6 +19,7 @@ from kodo.llms import (
     LLMRouting,
     LoggingLLMPlugin,
     Message,
+    SamplingParams,
     ThinkingDelta,
     ThinkingSignature,
     TokenDelta,
@@ -30,6 +31,7 @@ from kodo.llms import (
     get_local_registry,
     local_thinking_default_tier,
     local_thinking_tiers,
+    resolve_flavor_sampling,
 )
 from kodo.llms.anthropic import ClaudePlugin
 from kodo.llms.llamacpp import LlamaPlugin
@@ -189,6 +191,78 @@ class LLMPlumbingMixin:
             return {}
         return {"thinking_level": self._session.thinking_level}
 
+    def _sampling_kwargs(self: EngineHost, routing: LLMRouting) -> dict[str, object]:
+        """``{"sampling": SamplingParams}`` to splice into a local ``stream_query`` call.
+
+        Resolves the two request-level layers for the session's currently
+        active local model (doc/SAMPLING.md §9): the effective flavor's
+        declared defaults, overlaid per-parameter by this session's own
+        overrides for that same entry. Both are read fresh each call, so
+        editing a flavor or moving a slider takes effect on the next request
+        with no llama-server restart.
+
+        Applies to *every* local call this session makes — the main turn, the
+        compactor, ``web_search``'s tool loop — for the same reason
+        :meth:`_thinking_kwargs` does: it is session-wide state, not a
+        per-call argument.
+
+        Returns:
+            dict[str, object]: ``{}`` for a cloud call (``ClaudePlugin.
+            stream_query`` has no such parameter) or when nothing is set at
+            either layer, so an untouched install adds no request fields at
+            all.
+        """
+        if routing.residence != "local":
+            return {}
+        model_key = self._resolve_model_key(self._entry_capability())
+        entry = get_local_registry(kodo_user_dir()).get(model_key)
+        if entry is None:
+            return {}
+        defaults = resolve_flavor_sampling(kodo_user_dir(), entry)
+        overrides = SamplingParams.from_json(self._session.sampling.get(entry.name))
+        resolved = defaults.merged_with(overrides)
+        return {} if resolved.is_empty else {"sampling": resolved}
+
+    async def handle_sampling_set(
+        self: EngineHost, model: str, values: dict[str, object]
+    ) -> tuple[bool, dict[str, float | int | list[str]]]:
+        """Replace this session's sampling overrides for one local entry.
+
+        A full replace rather than a merge — the modal always sends the
+        complete set it is showing, so a parameter the user cleared has to
+        disappear (an omitted parameter is not "the default", it is "don't
+        send this field"; doc/SAMPLING.md §1).
+
+        Unlike :meth:`handle_thinking_level_set`, individual bad parameters do
+        **not** fail the request: ``SamplingParams.from_json`` drops unknown,
+        reserved and wrong-typed entries and clamps out-of-range numbers, and
+        the accepted set is echoed back so the client can adopt whatever
+        actually stuck. Only an unknown *model* is rejected outright.
+
+        Args:
+            model: Local registry entry name the overrides apply to.
+            values: The complete override set for *model*, straight off the
+                wire (validated here, not by the caller).
+
+        Returns:
+            tuple[bool, dict[str, float | int | list[str]]]: ``(ok, stored)`` —
+            *stored* is the validated set now in effect, ``{}`` when the user
+            cleared everything.
+        """
+        if not model or model not in get_local_registry(kodo_user_dir()):
+            return False, {}
+        stored = SamplingParams.from_json(values).to_json()
+        # Clearing every parameter drops the entry outright rather than leaving
+        # an empty dict behind, so "never tuned" and "tuned, then reset" are
+        # the same state on the wire and on disk.
+        if stored:
+            self._session.sampling[model] = dict(stored)
+        else:
+            self._session.sampling.pop(model, None)
+        self._transient.set_sampling(model, dict(stored))
+        await self._emitters.emit_state()
+        return True, stored
+
     def _thinking_level_for_model(self: EngineHost, base_llm: str, prefer: str | None) -> str:
         """*prefer* if it is a valid thinking-tier value for *base_llm*, else the family default.
 
@@ -323,6 +397,7 @@ class LLMPlumbingMixin:
             tools=agent_tool_specs(self._registry, agent),
             cache_breakpoints=default_cache_breakpoints(messages),
             **self._thinking_kwargs(routing),
+            **self._sampling_kwargs(routing),
         ):
             if isinstance(event, TokenDelta):
                 text_parts.append(event.text)
@@ -415,6 +490,7 @@ class LLMPlumbingMixin:
                 tools=tools,
                 cache_breakpoints=default_cache_breakpoints(messages),
                 **self._thinking_kwargs(routing),
+                **self._sampling_kwargs(routing),
             ):
                 if isinstance(event, TokenDelta):
                     text_parts.append(event.text)
@@ -514,6 +590,7 @@ class LLMPlumbingMixin:
             tools=tools,
             cache_breakpoints=[0],
             **self._thinking_kwargs(routing),
+            **self._sampling_kwargs(routing),
         ):
             if isinstance(event, ToolCallEvent):
                 final_calls.append(event)

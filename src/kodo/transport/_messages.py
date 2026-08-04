@@ -202,6 +202,27 @@ MSG_COMMAND_CONTROL_SET = "command_control.set"
 # accepted", ok: true}` and follows with an updated EVT_STATE on success.
 MSG_THINKING_LEVEL_SET = "thinking_level.set"
 
+# Client → Server. Replace the session's request-level sampling overrides for
+# ONE local registry entry (doc/SAMPLING.md §9). Payload:
+# ``{model: str, sampling: {param: value}}`` — *model* is the local entry
+# ("quant") name the overrides belong to, and *sampling* is the COMPLETE set
+# the modal is showing, not a patch: a parameter the user cleared must be
+# absent so it stops being sent to llama-server at all (an omitted field falls
+# back to whatever the flavor's CLI args launched the server with, which is
+# not the same as sending llama.cpp's built-in default — doc/SAMPLING.md §1).
+# An empty ``sampling`` therefore means "back to flavor defaults only".
+#
+# Keyed by entry rather than held as one flat per-session set so switching
+# models and back restores what was configured for each. Unknown, reserved and
+# wrong-typed parameters are dropped server-side (``SamplingParams.from_json``)
+# rather than rejecting the request, so a client built against a different
+# llama.cpp still gets the parameters both sides do understand. Replies
+# ``{type: "sampling.accepted", ok: true, sampling: {...}}`` carrying the set
+# actually stored — the client should adopt that echo, since it may be a
+# subset of what was sent — and follows with an updated EVT_STATE. ``ok:
+# false`` only when *model* is blank or not a known local entry.
+MSG_SAMPLING_SET = "sampling.set"
+
 # Client → Server. Push the VS Code workspace folder map (logical name →
 # physical path) plus the physical root. Sent on connect and on every
 # workspace-folders change; the server rebuilds its WorkspaceLayout
@@ -585,8 +606,8 @@ SREQ_PROMPT_PERMISSION = "prompt.permission"
 # one). Client shows a permission-style panel (no rule checkboxes — there is
 # nothing to "always allow" here) with distinct Unstick/Dismiss actions; on
 # "unstick" the engine appends the same fixed continuation nudge either
-# immediately-nudge path uses, persisted with ``kind: "agent_unstuck_nudge"``
-# so it renders as a distinct feed entry, not a fake user-typed message.
+# immediately-nudge path uses, persisted with ``kind: "nudge"`` so it renders
+# as a distinct feed entry, not a fake user-typed message.
 SREQ_PROMPT_STUCK_ALERT = "prompt.stuck_alert"
 
 # Server → Client request. Fired by ``ToolDispatcher.__edit_review_gate``
@@ -768,51 +789,66 @@ EVT_ERROR = "error"
 # marker so it replays on reload (see ``EngineEmitters.emit_security_rule_added``).
 EVT_SECURITY_RULE_ADDED = "security.rule_added"
 
-# Server → Client event. Fired right after the stuck-agent watchdog
-# (doc/STUCK_DETECTION.md) injects its continuation nudge — immediately
-# (autonomous mode, or interactive with ``auto_unstuck_interactive``), or
-# once the user answers "unstick" on a ``prompt.stuck_alert``. The nudge
-# itself is a real ``user``-role turn the agent responds to (so the live
-# token stream that follows makes sense), but the client never typed it and
-# has no local echo, so this event carries what to show instead of the raw
-# instruction text: ``{note, reasons: [str, ...], mode: "auto" | "manual"}``.
-# Also persisted as an ``agent_unstuck_nudge``-kind message (not a bare
-# marker — it must round-trip into the live LLM context too) so it replays
-# on reload the same way (see ``HistoryProjector._message_to_entries``).
-EVT_AGENT_UNSTUCK_NUDGE = "agent.unstuck_nudge"
+# Server → Client event. Fired right after any watchdog detector
+# (doc/STUCK_DETECTION.md) injects a course-correction — an ordinary stall
+# nudge, the missing-``return_result`` reminder, or either mid-stream
+# detector below (§2.7/§2.9/§2.10) — immediately in most cases, or once the
+# user answers "unstick" on a ``prompt.stuck_alert`` for the deferred
+# entry-agent stall path. The nudge itself is a real ``user``- or
+# ``assistant``-role turn the agent responds to/reads back (so the live token
+# stream that follows makes sense), but the client never typed it and has no
+# local echo, so this event carries what to show instead of the raw
+# instruction text: ``{ui_text, reasons: [str, ...], mode: "auto" | "manual",
+# source: "stall" | "missing_return_result" | "cyclic_thinking" |
+# "think_in_tool_call" | "tool_call_cyclic"}``. ``source`` is what the client
+# uses to decide whether replaying this also needs to flush a live
+# mid-stream buffer (thinking/toolgen) — see ``kodo-vsix``'s reducer. Also
+# persisted as a ``nudge``-kind message (not a bare marker — it must
+# round-trip into the live LLM context too) so it replays on reload the same
+# way (see ``HistoryProjector._message_to_entries``). Replaces the former
+# ``agent.unstuck_nudge``/``agent.cyclic_thinking_notice`` pair — unified
+# 2026-08-03 since both carried the exact same ``{llm_text via content,
+# ui_text via detail}`` shape under different names; old ``session.jsonl``
+# files with the legacy ``kind``s still replay (see ``_history.py``).
+EVT_NUDGE = "agent.nudge"
 
 # Server → Client event. Fired when an entry-agent turn stalls for the
 # *second* consecutive time since its last real response — the first stall
-# already got one nudge (``EVT_AGENT_UNSTUCK_NUDGE``), and stalling again
-# right after means nudging is not working. Unlike the nudge, this ends the
-# turn instead of retrying or asking again: ``{message}`` is a single
-# user-facing sentence explaining what happened, client-only (never fed back
-# to the LLM). Also persisted as an ``agent_stuck_critical`` marker so it
-# replays on reload, mirroring ``EVT_ERROR``/``EngineEmitters.emit_error``.
+# already got one nudge (``EVT_NUDGE``), and stalling again right after
+# means nudging is not working. Unlike the nudge, this ends the turn instead
+# of retrying or asking again: ``{message}`` is a single user-facing sentence
+# explaining what happened, client-only (never fed back to the LLM). Also
+# persisted as an ``agent_stuck_critical`` marker so it replays on reload,
+# mirroring ``EVT_ERROR``/``EngineEmitters.emit_error``.
 EVT_AGENT_STUCK_CRITICAL = "agent.stuck_critical"
 
 # Server → Client event. Fired when the mid-stream cyclic-thinking detector
 # (kodo.runtime._cyclic_thinking, doc/STUCK_DETECTION.md §2.7) catches a
 # thinking block degenerating into a repetition loop and aborts the stream
 # (the first such hit since the entry-agent's last real response, or a
-# sub-agent's Nth inline retry). ``{message}`` is the same first-person
-# course-correction text the agent reads back next round, single-sourced
-# (unlike the nudge's fixed client-side string) so the callout shows exactly
-# what the model was told. Also persisted as a ``cyclic_thinking_notice``-kind
-# message (not a bare marker — like the nudge, it must round-trip into the
-# live LLM context too) so it replays on reload the same way (see
-# ``HistoryProjector._message_to_entries``).
-EVT_AGENT_CYCLIC_THINKING_NOTICE = "agent.cyclic_thinking_notice"
-
-# Server → Client event. Fired when the entry-agent's thinking hits a
-# *second* detected cyclic-thinking loop since its last real response — the
-# first one already got the notice above, and looping again means it isn't
-# working. Ends the turn instead of retrying again: ``{message}`` is a
-# single user-facing sentence, client-only (never fed back to the LLM). Also
-# persisted as an ``agent_cyclic_thinking_critical`` marker so it replays on
-# reload, mirroring ``EVT_AGENT_STUCK_CRITICAL`` — kept as a distinct event
-# (not reusing that one) since the root cause and message are different.
+# sub-agent's Nth inline retry). Ends the turn instead of retrying again:
+# ``{message}`` is a single user-facing sentence, client-only (never fed back
+# to the LLM). Also persisted as an ``agent_cyclic_thinking_critical`` marker
+# so it replays on reload, mirroring ``EVT_AGENT_STUCK_CRITICAL`` — kept as a
+# distinct event (not reusing that one) since the root cause and message are
+# different.
 EVT_AGENT_CYCLIC_THINKING_CRITICAL = "agent.cyclic_thinking_critical"
+
+# Server → Client event. Fired when the mid-stream think-in-tool-call
+# detector (kodo.runtime._think_tag_guard, doc/STUCK_DETECTION.md §2.9)
+# catches a literal ``<think>`` tag inside tool-call arguments for the
+# *second* consecutive time since the entry-agent's last real response.
+# Same client-only, turn-ending shape as ``EVT_AGENT_STUCK_CRITICAL``.
+# Persisted as an ``agent_think_in_tool_call_critical`` marker.
+EVT_AGENT_THINK_IN_TOOL_CALL_CRITICAL = "agent.think_in_tool_call_critical"
+
+# Server → Client event. Fired when the mid-stream tool-call-argument
+# cyclic detector (doc/STUCK_DETECTION.md §2.10) catches a repetition loop
+# inside tool-call arguments for the *second* consecutive time since the
+# entry-agent's last real response. Same client-only, turn-ending shape as
+# ``EVT_AGENT_STUCK_CRITICAL``. Persisted as an
+# ``agent_tool_call_cyclic_critical`` marker.
+EVT_AGENT_TOOL_CALL_CYCLIC_CRITICAL = "agent.tool_call_cyclic_critical"
 
 # Server → Client events. Drive the sidebar's llama.cpp/model controls only —
 # no workflow meaning. ``llamacpp.install.progress`` streams ``{percent,

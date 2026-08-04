@@ -82,9 +82,7 @@ class SessionGreeter:
                 "SessionGreeter: raw greeting sanitized to nothing — falling back to the "
                 "default greeting"
             )
-        _log.info(
-            "SessionGreeter: emitting greeting (source=%s)", "titler" if text else "default"
-        )
+        _log.info("SessionGreeter: emitting greeting (source=%s)", "titler" if text else "default")
         await self._emitters.emit_greeting(text or _DEFAULT_GREETING)
 
     @staticmethod

@@ -222,6 +222,7 @@ class TransientStore:
     __edit_control: str
     __command_control: str
     __thinking_level: str
+    __sampling: dict[str, dict[str, object]]
     __security_rules: frozenset[tuple[str, str]]
     __security_path_rules: frozenset[tuple[str, str]]
     __pending_prompt: dict[str, object] | None
@@ -252,6 +253,7 @@ class TransientStore:
         self.__edit_control = "smart"
         self.__command_control = "smart"
         self.__thinking_level = ""
+        self.__sampling = {}
         self.__security_rules = frozenset()
         self.__security_path_rules = frozenset()
         self.__pending_prompt = None
@@ -577,6 +579,48 @@ class TransientStore:
         ``WorkflowEngine.start``/doc/SESSIONS.md).
         """
         return self.__thinking_level
+
+    @property
+    def sampling(self) -> dict[str, dict[str, object]]:
+        """Persisted request-level sampling overrides, keyed by local entry name.
+
+        One inner dict per local registry entry ("quant") the session has
+        tuned, holding only the parameters the user actually set — an absent
+        parameter means "don't send that field" (doc/SAMPLING.md §1). Keyed by
+        entry rather than held as one flat set so switching models and back
+        restores what was configured for each, which is the behaviour the
+        sampling modal promises.
+
+        Not validated on load, for the same reason as ``thinking_level``: the
+        useful value set depends on the installed llama.cpp, so the engine
+        re-validates through ``SamplingParams.from_json`` when it builds a
+        request instead. Mutated only via :meth:`set_sampling`.
+
+        Returns:
+            dict[str, dict[str, object]]: A copy — mutating it does not
+            affect the store.
+        """
+        return {name: dict(values) for name, values in self.__sampling.items()}
+
+    def set_sampling(self, entry_name: str, values: dict[str, object]) -> None:
+        """Replace *entry_name*'s sampling overrides wholesale and persist.
+
+        A **full replace**, not a merge: the modal always sends the complete
+        set it is showing, so a parameter the user cleared must disappear
+        rather than survive from the previous save. An empty *values* drops
+        the entry's key entirely, returning it to "flavor defaults only".
+
+        Args:
+            entry_name (str): Local registry entry name the overrides belong to.
+            values (dict[str, object]): Validated overrides — pass
+                ``SamplingParams.to_json()`` output, not raw client input.
+        """
+        if values:
+            self.__sampling[entry_name] = dict(values)
+        else:
+            self.__sampling.pop(entry_name, None)
+        if self.__paths is not None:
+            self.__flush(self.__paths)
 
     @property
     def security_rules(self) -> frozenset[tuple[str, str]]:
@@ -929,8 +973,8 @@ class TransientStore:
                 instead of a fake user message. Never part of ``content``, so it
                 never reaches the LLM wire format on reload.
             detail (dict[str, object] | None): Optional client-only payload
-                alongside ``kind`` — e.g. ``kind="agent_unstuck_nudge"``
-                carries ``{"reasons", "note", "mode"}`` here
+                alongside ``kind`` — e.g. ``kind="nudge"`` carries
+                ``{"ui_text", "reasons", "mode", "source"}`` here
                 (doc/STUCK_DETECTION.md) so the feed can show *why* Kōdo
                 nudged the agent without that explanation ever reaching the
                 LLM (only ``role``/``content`` round-trip into the live
@@ -1008,12 +1052,12 @@ class TransientStore:
             kind (str | None): Optional entry discriminator. ``"subagent_task"``
                 tags the structured task the engine seeds a subsession with, so
                 history reconstruction renders it as a distinct *task brief*
-                rather than a user prompt bubble. ``"agent_unstuck_nudge"``
-                (doc/STUCK_DETECTION.md) tags the stuck-watchdog's continuation
-                nudge the same way. ``None`` for ordinary turns.
+                rather than a user prompt bubble. ``"nudge"``
+                (doc/STUCK_DETECTION.md) tags any watchdog course-correction
+                the same way. ``None`` for ordinary turns.
             detail (dict[str, object] | None): Optional client-only payload
                 alongside ``kind`` — see :meth:`append_message`'s twin
-                parameter for the shape ``kind="agent_unstuck_nudge"`` uses.
+                parameter for the shape ``kind="nudge"`` uses.
         """
         if self.__paths is None:
             return
@@ -1138,6 +1182,16 @@ class TransientStore:
                 command if command in ("defensive", "permissive", "smart") else "smart"
             )
             self.__thinking_level = str(data.get("thinking_level", ""))
+            raw_sampling = data.get("sampling")
+            self.__sampling = (
+                {
+                    str(entry_name): dict(overrides)
+                    for entry_name, overrides in raw_sampling.items()
+                    if isinstance(overrides, dict)
+                }
+                if isinstance(raw_sampling, dict)
+                else {}
+            )
             raw_rules = data.get("security_rules")
             self.__security_rules = (
                 frozenset(
@@ -1240,6 +1294,7 @@ class TransientStore:
             "edit_control": self.__edit_control,
             "command_control": self.__command_control,
             "thinking_level": self.__thinking_level,
+            "sampling": self.__sampling,
             "security_rules": sorted([list(rule) for rule in self.__security_rules]),
             "security_path_rules": sorted([list(rule) for rule in self.__security_path_rules]),
             "pending_prompt": self.__pending_prompt,

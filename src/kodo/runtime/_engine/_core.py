@@ -155,6 +155,8 @@ class WorkflowEngine(
     _stuck_watchdog_task: asyncio.Task[None] | None
     _stuck_streak: bool
     _cycle_streak: bool
+    _think_tag_streak: bool
+    _tool_call_cycle_streak: bool
 
     def __init__(
         self,
@@ -227,6 +229,12 @@ class WorkflowEngine(
         # _stuck_streak so an ordinary stall and a detected thinking loop
         # don't combine to trip either escalation's two-strike cap.
         self._cycle_streak = False
+        # Dedicated streaks for the two mid-stream tool-call-argument
+        # detectors (doc/STUCK_DETECTION.md §2.9/§2.10) -- same reasoning as
+        # _cycle_streak: kept independent of it and of each other so no two
+        # failure modes combine to trip a streak that isn't theirs.
+        self._think_tag_streak = False
+        self._tool_call_cycle_streak = False
         # The security layer judging every tool call (doc/SECURITY.md) —
         # deterministic heuristic rules, no LLM involved.
         self._security = SecurityLayer()
@@ -345,6 +353,13 @@ class WorkflowEngine(
             self._session.command_control = self._transient.command_control
             self._session.security_rules = self._transient.security_rules
             self._session.security_path_rules = self._transient.security_path_rules
+            # Adopted verbatim, unlike thinking_level below: each override set
+            # is already keyed by the entry it belongs to, so a model switch
+            # while this session was closed cannot make one apply to the wrong
+            # quant — it just goes dormant until that quant is selected again
+            # (doc/SAMPLING.md §9). Individual parameters are re-validated per
+            # request instead, in `_sampling_kwargs`.
+            self._session.sampling = self._transient.sampling
             # Re-validate against the *current* model rather than trusting the
             # persisted tier blindly — the shared local/cloud selection may
             # have changed while this session was closed (doc/SESSIONS.md).

@@ -30,6 +30,7 @@ from kodo.llms import (
     LLMRouting,
     LocalLLMEntry,
     Message,
+    SamplingParams,
     TokenDelta,
     TurnEnd,
     add_flavor,
@@ -51,6 +52,7 @@ from kodo.llms import (
     parse_llama_args_text,
     remove_flavor,
     remove_local_entry,
+    sampling_specs_to_json,
     set_active_flavor,
     set_llama_server_override_path,
     update_flavor,
@@ -124,6 +126,7 @@ from kodo.transport import (
     MSG_MODE_SET,
     MSG_PROJECT_CREATE,
     MSG_PROMPT_SUBMIT,
+    MSG_SAMPLING_SET,
     MSG_SECURITY_RULES_DELETE,
     MSG_SECURITY_RULES_LIST,
     MSG_SESSION_DELETE,
@@ -378,6 +381,7 @@ def _flavors_payload(entry: LocalLLMEntry, kodo_dir: Path) -> list[dict[str, obj
             "min_ram": f.min_ram,
             "min_vram": f.min_vram,
             "platform": f.platform.value,
+            "sampling": f.sampling.to_json(),
         }
         for f in get_flavors(kodo_dir, entry)
     ]
@@ -430,6 +434,12 @@ def _local_registry_payload() -> dict[str, object]:
         "detected_vram_gb": detect_vram_gb(),
         "detected_ram_gb": detect_ram_gb(),
         "thinking_families": _thinking_families_payload(registry),
+        # Static table, shipped with the registry rather than with every
+        # per-session `state` push (it is ~27 entries of help text and
+        # never changes at runtime). kodo-vsix renders the sampling modal
+        # from this instead of hardcoding a second copy — same reasoning as
+        # `thinking_families` above. See doc/SAMPLING.md.
+        "sampling_specs": sampling_specs_to_json(),
     }
 
 
@@ -726,6 +736,28 @@ async def _handle_thinking_level(req: Request) -> None:
         str(req.env.payload.get("thinking_level", "")).strip()
     )
     await req.reply({"type": "thinking_level.accepted", "ok": ok})
+
+
+async def _handle_sampling_set(req: Request) -> None:
+    """``sampling.set {model, sampling}`` (WS_PROTOCOL.md §7.x, doc/SAMPLING.md).
+
+    The reply echoes the set actually stored, which may be a strict subset
+    of what was sent: unknown/reserved/wrong-typed parameters are dropped
+    and out-of-range numbers clamped rather than failing the whole request,
+    so a client built against a different llama.cpp still gets the
+    parameters both sides understand. ``ok: false`` means only that
+    *model* is blank or not a known local entry.
+    """
+    session = await _require_session(req)
+    if session is None:
+        return
+    payload = req.env.payload
+    raw = payload.get("sampling")
+    ok, stored = await session.engine.handle_sampling_set(
+        str(payload.get("model", "")).strip(),
+        raw if isinstance(raw, dict) else {},
+    )
+    await req.reply({"type": "sampling.accepted", "ok": ok, "sampling": stored})
 
 
 async def _handle_workspace_folders(req: Request) -> None:
@@ -1549,6 +1581,7 @@ async def _handle_local_llm_add_flavor(req: Request) -> None:
             min_ram=_parse_non_negative_int(payload.get("min_ram", 0)),
             min_vram=_parse_non_negative_int(payload.get("min_vram", 0)),
             platform=_parse_flavor_platform(payload.get("platform")),
+            sampling=SamplingParams.from_json(payload.get("sampling")),
         )
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
@@ -1578,6 +1611,7 @@ async def _handle_local_llm_update_flavor(req: Request) -> None:
             min_ram=_parse_non_negative_int(payload.get("min_ram", 0)),
             min_vram=_parse_non_negative_int(payload.get("min_vram", 0)),
             platform=_parse_flavor_platform(payload.get("platform")),
+            sampling=SamplingParams.from_json(payload.get("sampling")),
         )
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
@@ -2005,6 +2039,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_EDIT_CONTROL_SET, _handle_edit_control)
     conn_registry.register_handler(MSG_COMMAND_CONTROL_SET, _handle_command_control)
     conn_registry.register_handler(MSG_THINKING_LEVEL_SET, _handle_thinking_level)
+    conn_registry.register_handler(MSG_SAMPLING_SET, _handle_sampling_set)
     conn_registry.register_handler(MSG_WORKSPACE_FOLDERS, _handle_workspace_folders)
     conn_registry.register_handler(MSG_PROJECT_CREATE, _handle_project_create)
     conn_registry.register_handler(MSG_STOP, _handle_stop)

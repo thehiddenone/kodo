@@ -289,6 +289,7 @@ The header toggles split into **two frozen** and **three never-frozen**:
 - `edit_control` — how file edits are handled: `review_all` (pause for sign-off) / `allow_all` / `smart` (default). Set via `edit_control.set` (§7.4a). **Enforced** for `create_file`/`edit_file` only — the dispatcher reads it live per call and a review-worthy call fires `prompt.edit_review` (§6.9); independent of and always evaluated after `command_control`'s security gate. **Client-owned**: the client keeps the user's selected posture and sends the **shown** value, which it forces to `allow_all` (and locks the toggle in the UI) while Autonomous mode is *in effect* — i.e. the frozen `effective_autonomous` during a turn, the live `autonomous` selection when idle — and restores the user's selection otherwise. The server simply mirrors whatever the client last sent, so its stored value is always exactly what the UI shows.
 - `command_control` — how much risky commands are restricted: `defensive` / `permissive` / `smart` (default). Set via `command_control.set` (§7.4b). **Enforced**: this is the security layer's posture — the dispatcher reads it live per tool call and an `ask` verdict fires `prompt.permission` (§6.7). See doc/SECURITY.md. **Client-owned**, same mirroring rule as `edit_control` (forced `permissive` under Autonomous).
 - `thinking_level` — the session's reasoning-tier slug for the currently active **local** model's thinking family (`kodo.llms.local_thinking_family`/`local_thinking_tiers`, doc/LLM_REGISTRY.md §4.5) — `""` on a cloud model or a local model with no thinking family. Set via `thinking_level.set` (§7.4e). **Server-owned**, unlike the two toggles above: the valid value set is model-dependent, so the engine validates every change against the active model rather than mirroring the client unconditionally, and re-derives it itself (no client request needed) whenever a brand-new session opens or the active model's thinking family changes mid-session (a `config.reload`-triggered model switch). doc/SESSIONS.md has the full session-lifecycle picture.
+- `sampling` — this session's request-level llama-server sampling overrides, keyed by local registry entry ("quant") name: `{entry_name: {parameter: value}}`, holding only the parameters the user actually set for each. `{}` for a session that has never opened the sampling modal, which is the normal case and means no sampling fields are sent at all. Set via `sampling.set` (§7.4f). **Server-owned**, like `thinking_level` — but unlike it, never reset by a model switch: each override set is already scoped to the entry it applies to, so switching models just makes the others dormant until you switch back. Sparse by design — an absent parameter is *omitted* from the request body, letting llama-server keep whatever the flavor's CLI args launched it with, which is **not** the same as sending llama.cpp's built-in default. See doc/SAMPLING.md.
 
 > **Not yet on the snapshot:** `cumulative_usd`, `pending_prompts`, and
 > `last_checkpoint_sha` are **⟪planned⟫** additions; today cost arrives via
@@ -559,15 +560,17 @@ Pushed right after a `prompt.permission` response grants a rule (§6.7) — the 
 
 `scope`/`executable`/`subcommand` are exactly the granted shape — same fields and same "resolved absolute path in `subcommand`" convention for a workspace-escape/path rule as `rule_offer` on `prompt.permission` (§6.7). One event per granted part: a compound command whose response grants more than one part's rule fires this once per grant, in the order `add_security_rule`/`add_security_path_rule` are called.
 
-### 5.9e `agent.unstuck_nudge` — the stuck-agent watchdog nudged an agent
+### 5.9e `agent.nudge` — a watchdog course-correction (doc/STUCK_DETECTION.md §2.5)
 
-Fired right after the stuck-agent watchdog (doc/STUCK_DETECTION.md) injects its fixed continuation nudge into an agent's turn — either immediately (autonomous mode, or interactive mode with `stuck_detection.auto_unstuck_interactive`), or once the user answers "unstick" on a `prompt.stuck_alert` (§6.8). The nudge itself is a real `user`-role turn the agent responds to (so the token stream that follows makes sense as a continuation), but the client never typed it and has no local echo, so this event — not the injected text — is what the feed renders in its place.
+Fired right after any watchdog detector injects a course-correction into an agent's turn: an ordinary stall nudge, the missing-`return_result` reminder, or either mid-stream detector's notice (cyclic-thinking §2.7, think-in-tool-call §2.9, tool-call-cyclic §2.10) — either immediately (autonomous mode, interactive mode with `stuck_detection.auto_unstuck_interactive`, or a mid-stream detector, which is always immediate), or once the user answers "unstick" on a `prompt.stuck_alert` (§6.8). The nudge itself is a real `user`- or `assistant`-role turn the agent responds to/reads back (so the token stream that follows makes sense as a continuation), but the client never typed it and has no local echo, so this event — not the injected text — is what the feed renders in its place.
 
 ```json
-{ "type": "agent.unstuck_nudge", "note": "Kōdo noticed the Problem Solver appeared to stop mid-task (its last turn ended with no tool call and no visible response) and continued it automatically.", "reasons": ["empty_final_turn"], "mode": "auto" }
+{ "type": "agent.nudge", "ui_text": "Kōdo noticed the Problem Solver appeared to stop mid-task (its last turn ended with no tool call and no visible response) and continued it automatically.", "reasons": ["empty_final_turn"], "mode": "auto", "source": "stall" }
 ```
 
-`note` is a ready-to-render, one-sentence explanation; `reasons` are the matched red-flag codes (`kodo.runtime._engine._watchdog.RedFlag.code` — extensible, see doc/STUCK_DETECTION.md); `mode` is `"auto"` (autonomous mode, or interactive with `auto_unstuck_interactive`) or `"manual"` (the user clicked "Unstick it"). Also persisted as an `agent_unstuck_nudge`-*kind* message (`{role: "user", content: <the fixed continuation text>, kind: "agent_unstuck_nudge", detail: {reasons, note, mode}}`) — not a bare marker, since it must round-trip into the live LLM context on resume too — so it replays via `session.history` (§5.11) the same way. Rendered as a non-context, informational feed entry (`exclude_from_context: true`) — the LLM-facing `content` never appears in the feed, only `note`/`reasons`/`mode`.
+`ui_text` is a ready-to-render, one-sentence explanation; `reasons` are the matched red-flag/detector codes (`kodo.runtime._engine._watchdog.RedFlag.code`, or a single source-specific code for the mid-stream detectors — extensible, see doc/STUCK_DETECTION.md); `mode` is `"auto"` (autonomous mode, or interactive with `auto_unstuck_interactive`) or `"manual"` (the user clicked "Unstick it"); `source` identifies which detector fired — one of `"stall"`, `"missing_return_result"`, `"cyclic_thinking"`, `"think_in_tool_call"`, `"tool_call_cyclic"` — and is what kodo-vsix's reducer switches on to decide whether replaying this also needs to flush a live mid-stream buffer (thinking or tool-call-argument display), since only the three mid-stream sources ever fire with one still populated. Also persisted as a `nudge`-*kind* message (`{role: "user" | "assistant", content: <the LLM-visible text>, kind: "nudge", detail: {ui_text, reasons, mode, source}}`) — not a bare marker, since it must round-trip into the live LLM context on resume too — so it replays via `session.history` (§5.11) the same way. Rendered as a non-context, informational feed entry (`exclude_from_context: true`) — the LLM-facing `content` never appears in the feed, only `ui_text`/`reasons`/`mode`/`source`. `role` is `"user"` for `"stall"`/`"missing_return_result"`, `"assistant"` for `"cyclic_thinking"`/`"tool_call_cyclic"` (first-person, read back as the model's own note).
+
+Unifies what used to be two separate events (`agent.unstuck_nudge`, `agent.cyclic_thinking_notice`) carrying the identical shape under different names and — worse — rendered inconsistently on the client (2026-08-03). Old sessions persisted under either legacy `kind` still replay correctly: `HistoryProjector` (`_history.py`) reshapes both into this same `{type: "nudge", ...}` entry.
 
 ### 5.9f `agent.stuck_critical` — the stuck-agent watchdog gave up on an entry-agent turn
 
@@ -577,27 +580,27 @@ Fired when an entry-agent turn stalls a *second* consecutive time since its last
 { "type": "agent.stuck_critical", "message": "Kōdo already nudged the Problem Solver once, but it stalled again right after (its last turn ended with no tool call and no visible response). Ending the turn instead of trying again — you may need to rephrase the prompt or step in." }
 ```
 
-`message` is a single ready-to-render sentence. Unlike the nudge, there is no LLM-facing turn behind this event — it is entirely client-only, mirroring `error` (§5.10) rather than `agent.unstuck_nudge`. Also persisted as a bare `agent_stuck_critical` marker (`{type: "agent_stuck_critical", message, ts}`, not a `kind`-tagged message) so it replays via `session.history` (§5.11).
+`message` is a single ready-to-render sentence. Unlike the nudge, there is no LLM-facing turn behind this event — it is entirely client-only, mirroring `error` (§5.10) rather than `agent.nudge`. Also persisted as a bare `agent_stuck_critical` marker (`{type: "agent_stuck_critical", message, ts}`, not a `kind`-tagged message) so it replays via `session.history` (§5.11).
 
-### 5.9g `agent.cyclic_thinking_notice` — the mid-stream cyclic-thinking detector aborted a runaway thinking block
+### 5.9g `agent.cyclic_thinking_critical` — a second cyclic-thinking loop ended the turn
 
-Fired when a thinking block degenerates into a repetition loop and the mid-stream cyclic-thinking detector (doc/STUCK_DETECTION.md §2.7) catches it — the stream is cancelled right then, before the model can burn through the rest of its thinking-token budget. This is the *first* such hit since the entry-agent's last real response (or a sub-agent's Nth inline retry, capped the same way ordinary sub-agent stalls are).
-
-```json
-{ "type": "agent.cyclic_thinking_notice", "message": "I noticed my own reasoning had fallen into a repetitive loop, generating the same thoughts over and over, and stopped it before it could burn through the rest of my thinking budget. I will not continue down that line of reasoning — let me reconsider a different approach to this task." }
-```
-
-`message` is the same first-person course-correction text the agent reads back as real context next round — single-sourced, unlike `agent.unstuck_nudge`'s separate `note`, so the callout shows exactly what the model was told. Also persisted as a `cyclic_thinking_notice`-*kind* message (`{role: "assistant", content: <message>, kind: "cyclic_thinking_notice"}`) — not a bare marker, since it must round-trip into the live LLM context on resume too — so it replays via `session.history` (§5.11) the same way.
-
-### 5.9h `agent.cyclic_thinking_critical` — a second cyclic-thinking loop ended the turn
-
-Fired when the entry-agent's thinking hits a *second* detected repetition loop since its last real response (doc/STUCK_DETECTION.md §2.7) — the notice above (§5.9g) did not stop it from looping again, so the turn ends instead of retrying a second time. Entry-agent scope only — a sub-agent hitting its retry cap ends silently, with no critical event at all.
+Fired when the entry-agent's thinking hits a *second* detected repetition loop since its last real response (doc/STUCK_DETECTION.md §2.7) — the notice already sent (§5.9e, `source: "cyclic_thinking"`) did not stop it from looping again, so the turn ends instead of retrying a second time. Entry-agent scope only — a sub-agent hitting its retry cap ends silently, with no critical event at all.
 
 ```json
 { "type": "agent.cyclic_thinking_critical", "message": "Kōdo detected the Problem Solver's reasoning fall into a repetitive, hallucinated thinking loop a second time and stopped it again. Ending the turn instead of trying again — you may need to rephrase the prompt or step in." }
 ```
 
 `message` is a single ready-to-render sentence. Like `agent.stuck_critical`, entirely client-only — no LLM-facing turn behind this event. Also persisted as a bare `agent_cyclic_thinking_critical` marker (`{type: "agent_cyclic_thinking_critical", message}`, not a `kind`-tagged message) so it replays via `session.history` (§5.11). Kept as a distinct event/marker type from `agent.stuck_critical` (not a reuse) since the root cause and message differ.
+
+### 5.9h `agent.think_in_tool_call_critical` / `agent.tool_call_cyclic_critical` — a second mid-stream tool-call-argument hit ended the turn
+
+Same shape as §5.9g, one event per mid-stream tool-call-argument detector (doc/STUCK_DETECTION.md §2.9/§2.10): fired when the entry-agent hits a *second* stray `<think>` tag (`agent.think_in_tool_call_critical`) or repetition loop (`agent.tool_call_cyclic_critical`) inside tool-call arguments since its last real response — the notice already sent (§5.9e, `source: "think_in_tool_call"` / `"tool_call_cyclic"`) did not stop it from happening again.
+
+```json
+{ "type": "agent.think_in_tool_call_critical", "message": "Kōdo already told the Problem Solver once not to think inside a tool call, but it did it again in a `run_subagent` call. Ending the turn instead of trying again — you may need to rephrase the prompt or step in." }
+```
+
+`message` is a single ready-to-render sentence, entirely client-only. Also persisted as a bare `agent_think_in_tool_call_critical` / `agent_tool_call_cyclic_critical` marker (not a `kind`-tagged message) so it replays via `session.history` (§5.11) — distinct event/marker types from §5.9f/§5.9g since the root cause and message differ.
 
 ### 5.9i `session.greeting` — a brand-new session's opening greeting
 
@@ -640,7 +643,7 @@ Pushed once after `hello.ack` when the resumed session has prior turns, so a fre
 
 **Hydration is one file at a time, never a server-side merge of several.** `entries` mirrors the main `session.jsonl` alone; `subsessions` maps every subsession referenced by an `entries` divider to that subsession's own entries, read from exactly its own `<id>.jsonl` (`HistoryProjector.full_history` — doc/SESSIONS.md). The client places each `subsessions[id]` array right after that subsession's `subsession_start` divider itself, in one deterministic pass — it never has to reconcile a flat, pre-merged array against whatever it already holds live by tool-call id (the source of several previous reconnect bugs — see doc/SESSIONS.md's "User experience (dividers)" section).
 
-Entries mirror the WebView's session model. `user_message`, `assistant_response`, and `tool_call` entries additionally carry `ts` — the persisted line's ISO-8601 UTC timestamp (`TransientStore.__append_line` stamps every line with one on write; `HistoryProjector._message_to_entries` passes it straight through). It exists solely for kodo-vsix's opt-in "Show Timestamps" display (its own `~/.kodo/etc/ui-settings.json`, never sent to or read by the server) — no other entry kind carries it, and nothing server-side reads it back. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers, now also carrying `subsessionId`) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed, as is `agent_unstuck_nudge` (`{note, reasons, mode}` — reconstructed from its `kind="agent_unstuck_nudge"` message the same way, §5.9e), `agent_stuck_critical` (`{message}` — reconstructed from its bare `agent_stuck_critical` marker, §5.9f), `cyclic_thinking_notice` (`{message}` — reconstructed from its `kind="cyclic_thinking_notice"` message, §5.9g), and `agent_cyclic_thinking_critical` (`{message}` — reconstructed from its bare `agent_cyclic_thinking_critical` marker, §5.9h). Other display-only entries (status) are still ephemeral and dropped on rehydrate.
+Entries mirror the WebView's session model. `user_message`, `assistant_response`, and `tool_call` entries additionally carry `ts` — the persisted line's ISO-8601 UTC timestamp (`TransientStore.__append_line` stamps every line with one on write; `HistoryProjector._message_to_entries` passes it straight through). It exists solely for kodo-vsix's opt-in "Show Timestamps" display (its own `~/.kodo/etc/ui-settings.json`, never sent to or read by the server) — no other entry kind carries it, and nothing server-side reads it back. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers, now also carrying `subsessionId`) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed, as is `nudge` (`{uiText, reasons, mode, source}` — reconstructed from its `kind="nudge"` message the same way, §5.9e; a legacy session persisted under either former `kind` — `agent_unstuck_nudge` or `cyclic_thinking_notice` — reshapes into this same entry, backward-compatibly), `agent_stuck_critical` (`{message}` — reconstructed from its bare `agent_stuck_critical` marker, §5.9f), `agent_cyclic_thinking_critical` (`{message}` — reconstructed from its bare `agent_cyclic_thinking_critical` marker, §5.9g), and `agent_think_in_tool_call_critical` / `agent_tool_call_cyclic_critical` (`{message}` — reconstructed the same way, §5.9h). Other display-only entries (status) are still ephemeral and dropped on rehydrate.
 
 A `web_search` `tool_call` entry additionally carries `webSearchNotes: string[]` — its live narration (§5.5e), read back from the best-effort sidecar file rather than from `session.jsonl` (empty if the run was aborted before it flushed, or for every non-`web_search` tool call).
 
@@ -677,6 +680,7 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                          "flavors": [ { "id": "1m-context", "name": "1M Context",
                                         "description": "...",
                                         "llama_args": {"--ctx-size": "1048576"},
+                                        "sampling": {"temperature": 0.1},
                                         "predefined": false } ],
                          "active_flavor": "1m-context",
                          "...": "..." } ],
@@ -689,7 +693,11 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                      "default": "unlimited" },
     "GPT-OSS-20B": { "family": "gpt_oss_reasoning_effort",
                       "tiers": ["low", "medium", "high"], "default": "medium" }
-  } }
+  },
+  "sampling_specs": [ { "name": "temperature", "kind": "float", "label": "Temperature",
+                        "advanced": false, "minimum": 0.0, "maximum": 4.0, "step": 0.05,
+                        "neutral": "1.0", "cli_flags": ["--temp", "--temperature"],
+                        "help": "Randomness. 0 is greedy/deterministic; …" } ] }
 ```
 
 Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. Does **not** carry download progress (see above) — that's read off disk, not this event. `thinking_families` is keyed by `base_llm` (only entries that support a thinking-tier control appear) and is the single source the client uses to decide which control (if any) to render and what tiers/default to offer — see doc/LLM_REGISTRY.md §4.5. The *current* tier selection is **not** in this payload and is **not** read off settings.json any more — thinking is a per-session server-tracked value (`state.thinking_level`, §5.1, doc/SESSIONS.md), not a global one keyed by `base_llm`.
@@ -700,6 +708,10 @@ level, a **global** per-entry selection — not session-scoped — since a
 flavor changes actual llama-server launch args and there is only one
 machine-wide llama-server process to launch them on. See doc/LLM_REGISTRY.md
 §4.6 and §7.6 below.
+
+Each flavor also carries `sampling` — its **request-level** sampling defaults (doc/SAMPLING.md §9), `{}` for every built-in flavor. Unlike `llama_args` these ride each `/v1/chat/completions` body rather than the launch command line, so editing them needs no llama-server restart; they seed the per-session, per-quant overrides the client edits via `sampling.set` (§7.4f).
+
+`sampling_specs` is the server's table of every tunable request-level sampling parameter, in display order — one entry per `SAMPLING_PARAM_SPECS` row in `kodo/llms/_sampling.py`. Pushed rather than hardcoded client-side for the same reason `thinking_families` is: the table already exists server-side as the single source of truth for validation, so a client copy would drift. It is static for the life of the server, which is why it rides this registry payload instead of the per-session `state` event. kodo-vsix renders both the sampling modal and the flavor editor's defaults form from it, and derives the CLI-vs-request conflict warning from each entry's `cli_flags`.
 
 ### 5.12b `local_llm.updates_available` — reply to `local_llm.check_updates`
 
@@ -933,7 +945,7 @@ Response payload:
 { "type": "prompt.stuck_alert.response", "action": "unstick" }
 ```
 
-`action` is `unstick` or `dismiss` (anything else is treated as `dismiss`). On **unstick** the engine injects the same fixed continuation nudge the immediate/auto path uses and fires `agent.unstuck_nudge` (§5.9e); on **dismiss**, or if the wait is cut short, nothing further happens — the turn (or session) simply stays as it was.
+`action` is `unstick` or `dismiss` (anything else is treated as `dismiss`). On **unstick** the engine injects the same fixed continuation nudge the immediate/auto path uses and fires `agent.nudge` (§5.9e); on **dismiss**, or if the wait is cut short, nothing further happens — the turn (or session) simply stays as it was.
 
 The panel is transient client-side, modeled on `prompt.permission`'s but with no rule-offer checkboxes (there is nothing here to "always allow") and distinct Unstick/Dismiss actions. No `pending_prompt`-style state is persisted server-side: unlike a gated tool call, nothing is left mid-dispatch if this wait is cut short by a crash — the alarm is simply dropped, and the next matching stall (if any) schedules a fresh one.
 
@@ -1287,6 +1299,27 @@ Response:
 ```
 
 A `state` event with the updated `thinking_level` field follows on success; on `ok: false` nothing changed. See doc/SESSIONS.md for the full session-lifecycle picture (new-session defaulting, resume reconciliation, model-switch reset).
+
+### 7.4f `sampling.set` — replace the session's sampling overrides for one quant
+
+```json
+{ "type": "sampling.set", "model": "llamacpp-qwen36-27b-q4-k-xl", "sampling": { "temperature": 0.1, "min_p": 0.05 } }
+```
+
+`model` is the local registry entry ("quant") the overrides belong to. `sampling` is the **complete** set the client is showing, **not a patch**: a parameter the user cleared must be absent, so it stops being sent to llama-server entirely. An empty `sampling` therefore means "back to the flavor's defaults only". Sending the full set every time is what makes clearing a field expressible at all — see doc/SAMPLING.md §1 for why omitting a parameter is meaningful rather than equivalent to sending a default.
+
+Keyed by entry rather than held as one flat per-session set so switching models and switching back restores each quant's own tuning.
+
+Response:
+
+```json
+{ "type": "sampling.accepted", "ok": true, "sampling": { "temperature": 0.1, "min_p": 0.05 } }
+{ "type": "sampling.accepted", "ok": false, "sampling": {} }
+```
+
+Unlike `thinking_level.set`, individual bad parameters do **not** fail the request: unknown, reserved (`max_tokens`, `json_schema`, `grammar`, `ignore_eos`, `logit_bias`, …) and wrong-typed entries are dropped and out-of-range numbers clamped, so a client built against a different llama.cpp still gets the parameters both sides understand. The reply therefore **echoes the set actually stored**, which may be a strict subset of what was sent — the client should adopt that echo rather than its own optimistic copy. `ok: false` means only that `model` was blank or is not a known local entry.
+
+A `state` event with the updated `sampling` map follows on success.
 
 ### 7.5 `config.reload` — apply settings.json changes
 

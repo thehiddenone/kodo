@@ -75,6 +75,18 @@ class SessionState:
             mid-session model switch to a different thinking family
             re-derives it the same way (``WorkflowEngine.
             _sync_thinking_level_to_model``).
+        sampling: Request-level ``llama-server`` sampling overrides, keyed by
+            local registry entry ("quant") name — ``{entry_name: {param:
+            value}}``, holding only the parameters the user actually set for
+            each (doc/SAMPLING.md §9). Per entry rather than one flat set so
+            switching models and back restores each quant's own tuning; empty
+            for a session that has never opened the sampling modal, which is
+            the normal case and means no sampling fields are sent at all.
+            Never frozen and never reset by a model switch — unlike
+            ``thinking_level``, whose valid values are model-dependent, an
+            override here is already scoped to the exact entry it applies to.
+            Mirrors ``TransientStore.sampling`` for crash-resume, the same
+            relationship ``security_rules`` has to its transient twin.
         security_rules: This session's Phase 2 "always allow" grants
             (doc/SECURITY_RULES_PLAN.md §2) — ``(executable, subcommand)``
             shapes the security layer's rule engine may silently allow
@@ -123,6 +135,7 @@ class SessionState:
     edit_control: str = "smart"
     command_control: str = "smart"
     thinking_level: str = ""
+    sampling: dict[str, dict[str, object]] = field(default_factory=dict)
     security_rules: frozenset[tuple[str, str]] = field(default_factory=frozenset)
     security_path_rules: frozenset[tuple[str, str]] = field(default_factory=frozenset)
     awaiting_first_chunk: bool = False
@@ -152,6 +165,7 @@ class SessionState:
             "edit_control": self.edit_control,
             "command_control": self.command_control,
             "thinking_level": self.thinking_level,
+            "sampling": self.sampling,
             "awaiting_first_chunk": self.awaiting_first_chunk,
             "workspace_connected": self.workspace_connected,
         }

@@ -103,6 +103,43 @@ class RedFlag:
     hint: str
 
 
+@dataclass(frozen=True)
+class Nudge:
+    """A course-correction sent mid-session: one message, two audiences
+    (doc/STUCK_DETECTION.md §2.5).
+
+    Every "keep going, but do X differently" moment the watchdog produces —
+    an ordinary stall, a missing ``return_result``, a mid-stream thinking
+    loop, or a mid-stream tool-call anomaly — is one of these. ``llm_text``
+    is what actually gets persisted as the message content and fed back to
+    the model (on this turn's retry and on any later resume); ``ui_text`` is
+    client-only, never sent to the LLM, and is what the transcript/UI shows.
+    Both are written to ``session.jsonl`` (:meth:`~._watchdog.WatchdogMixin._persist_nudge`)
+    so a reload replays the same thing a live session showed.
+
+    Attributes:
+        llm_text: The message content the model reads back.
+        ui_text: The user-facing sentence rendered in the transcript.
+        reasons: Machine-readable codes explaining why this nudge fired
+            (``RedFlag.code`` values, or a single source-specific code for
+            the mid-stream detectors) — carried for observability/detail,
+            not used for UI branching (see ``source``).
+        mode: ``"auto"`` or ``"manual"`` — how remediation was triggered.
+        source: Closed set identifying which detector produced this nudge:
+            ``"stall"``, ``"missing_return_result"``, ``"cyclic_thinking"``,
+            ``"think_in_tool_call"``, or ``"tool_call_cyclic"``. Unlike
+            ``reasons`` (open-ended — new red-flag codes can appear), this is
+            what kodo-vsix's reducer switches on to decide whether replaying
+            this nudge also needs to flush a live mid-stream buffer.
+    """
+
+    llm_text: str
+    ui_text: str
+    reasons: list[str]
+    mode: str
+    source: str
+
+
 def _slugify_project_name(name: str) -> str:
     """Derive a filesystem-safe directory slug from a human project name.
 

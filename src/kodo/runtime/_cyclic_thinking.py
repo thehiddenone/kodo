@@ -44,7 +44,13 @@ that -- memory and per-call cost stay bounded no matter how long a single
 thinking block runs.
 
 One instance is constructed fresh per LLM round -- a repetition loop is
-scoped to a single thinking block, never carried across rounds.
+scoped to a single thinking block, never carried across rounds. The same
+class is reused, unmodified, for the mid-stream tool-call-argument
+repetition detector (doc/STUCK_DETECTION.md §2.10,
+:mod:`kodo.runtime._engine._watchdog`'s ``_make_tool_call_cyclic_handler``)
+-- there is nothing thinking-specific about the algorithm, only about this
+module's name and docstring, so a second instance is simply fed
+``ToolCallArgDelta.text`` fragments instead of ``ThinkingDelta.text`` ones.
 """
 
 from __future__ import annotations
