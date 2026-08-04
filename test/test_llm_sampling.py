@@ -52,6 +52,47 @@ def test_spec_bounds_are_ordered() -> None:
             assert spec.minimum <= spec.maximum, spec.name
 
 
+def test_sensible_bounds_are_set_or_cleared_together() -> None:
+    """A half-declared band would render as a one-sided warning nobody meant."""
+    for spec in SAMPLING_PARAM_SPECS:
+        assert (spec.sensible_minimum is None) == (spec.sensible_maximum is None), spec.name
+
+
+def test_sensible_bounds_are_ordered_and_inside_the_hard_bounds() -> None:
+    """The advisory band is a *narrowing* of what the server will accept.
+
+    A recommended value the hard bounds would clamp away is incoherent
+    guidance — the UI would tell the user to pick something `from_json` then
+    silently rewrites. See doc/SAMPLING.md §8d.
+    """
+    for spec in SAMPLING_PARAM_SPECS:
+        low, high = spec.sensible_minimum, spec.sensible_maximum
+        if low is None or high is None:
+            continue
+        assert low <= high, spec.name
+        if spec.minimum is not None:
+            assert low >= spec.minimum, spec.name
+        if spec.maximum is not None:
+            assert high <= spec.maximum, spec.name
+
+
+def test_str_list_specs_declare_no_sensible_band() -> None:
+    """Nothing numeric to compare, so a band there could never be applied."""
+    for spec in SAMPLING_PARAM_SPECS:
+        if spec.kind == "str_list":
+            assert spec.sensible_minimum is None, spec.name
+            assert spec.sensible_maximum is None, spec.name
+
+
+def test_specs_to_json_carries_the_sensible_band() -> None:
+    """kodo-vsix marks out-of-band values from these two fields alone — if they
+    stop riding the wire, both modals silently lose the ⚠ entirely."""
+    payload = {p["name"]: p for p in sampling_specs_to_json()}
+    for spec in SAMPLING_PARAM_SPECS:
+        assert payload[spec.name]["sensible_minimum"] == spec.sensible_minimum
+        assert payload[spec.name]["sensible_maximum"] == spec.sensible_maximum
+
+
 def test_curated_and_advanced_sets_are_both_populated() -> None:
     """The modal's two-tier layout only makes sense if both tiers exist."""
     assert any(not s.advanced for s in SAMPLING_PARAM_SPECS)

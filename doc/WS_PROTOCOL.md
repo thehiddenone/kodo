@@ -694,7 +694,8 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                       "tiers": ["low", "medium", "high"], "default": "medium" }
   },
   "sampling_specs": [ { "name": "temperature", "kind": "float", "label": "Temperature",
-                        "advanced": false, "minimum": 0.0, "maximum": 4.0, "step": 0.05,
+                        "advanced": false, "minimum": 0.0, "maximum": 4.0,
+                        "sensible_minimum": 0.0, "sensible_maximum": 2.0, "step": 0.05,
                         "neutral": "1.0", "cli_flags": ["--temp", "--temperature"],
                         "help": "Randomness. 0 is greedy/deterministic; …" } ] }
 ```
@@ -711,6 +712,8 @@ machine-wide llama-server process to launch them on. See doc/LLM_REGISTRY.md
 A flavor carries no separate sampling state any more — only `llama_args`. kodo-vsix's flavor editor still shows a structured "sampling defaults" sub-form (Temperature, Top-K, …), but it is a client-side shortcut for editing `llama_args` itself: a field's value is kept in sync, live and in both directions, with the corresponding `--flag` in the launch-arguments text (via each `sampling_specs` entry's `cli_flags`), so a flavor's sampling knobs always require restarting llama-server, exactly like every other launch arg (doc/SAMPLING.md §9). Neither `add_flavor` nor `update_flavor` (§7.6 below) accept a `sampling` field.
 
 `sampling_specs` is the server's table of every tunable request-level sampling parameter, in display order — one entry per `SAMPLING_PARAM_SPECS` row in `kodo/llms/_sampling.py`. Pushed rather than hardcoded client-side for the same reason `thinking_families` is: the table already exists server-side as the single source of truth for validation, so a client copy would drift. It is static for the life of the server, which is why it rides this registry payload instead of the per-session `state` event. kodo-vsix renders both the session sampling modal and the flavor editor's launch-arg shortcuts from it — `cli_flags` doubles as validation input for `sampling.set` (§7.4f, session overrides — the only thing that is genuinely request-level and hot) and as the flag each flavor-editor field writes into `llama_args`.
+
+Each entry carries **two** ranges, which do different jobs. `minimum`/`maximum` are the hard validation bounds `SamplingParams.from_json` clamps against. `sensible_minimum`/`sensible_maximum` are the much narrower *recommended* band (`null`/`null` where no accepted value is unreasonable, or the parameter isn't numeric); nothing on the server enforces them — they exist so both kodo-vsix editors can mark an out-of-band value with a yellow ⚠ and a tooltip naming the band, while still submitting the value verbatim. See doc/SAMPLING.md §8d for every band and the reason for its endpoints, including why a parameter's `neutral` value is exempt from the mark. A client predating these two fields simply reads them as absent and renders no ⚠.
 
 ### 5.12b `local_llm.updates_available` — reply to `local_llm.check_updates`
 

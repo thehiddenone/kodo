@@ -107,7 +107,8 @@ mass the model is willing to move away from its top choice.
 | | |
 |---|---|
 | **Default** | `0.8` |
-| **Range** | `0.0` – `2.0` in practice (`>2.0` accepted but degenerates) |
+| **Sensible range** | `0.0` – `2.0` (§8d) |
+| **Accepted** | `0.0` – `4.0` |
 | **Disabled** | `1.0` (leaves the distribution untouched) |
 
 - `0.0` — **greedy**. Always the single highest-probability token. Every
@@ -140,7 +141,8 @@ entropy) it samples hot.
 | | |
 |---|---|
 | **Defaults** | `dynatemp_range 0.0`, `dynatemp_exponent 1.0` |
-| **Range** | `range` `0.0` – `~1.0`; `exponent` `0.0` – `~2.0` |
+| **Sensible range** | `range` `0.0` – `1.0`; `exponent` `0.0` – `2.0` (§8d) |
+| **Accepted** | `range` `0.0` – `4.0`; `exponent` `0.0` – `10.0` |
 | **Disabled** | `dynatemp_range 0.0` |
 
 `temperature 0.8` + `dynatemp_range 0.4` sweeps 0.4–1.2. The `exponent` biases
@@ -164,7 +166,8 @@ Keep only the `k` most probable tokens.
 | | |
 |---|---|
 | **Default** | `40` |
-| **Range** | `1` – `100` typical; up to vocabulary size |
+| **Sensible range** | `0` – `200` (§8d) |
+| **Accepted** | `0` – `1000000` (up to vocabulary size) |
 | **Disabled** | `0` |
 
 `1` is equivalent to greedy decoding. `20`–`50` is the conventional band. Its
@@ -180,7 +183,8 @@ Keep the smallest set of tokens whose cumulative probability reaches `p`.
 | | |
 |---|---|
 | **Default** | `0.95` |
-| **Range** | `0.5` – `1.0` |
+| **Sensible range** | `0.5` – `1.0` (§8d) |
+| **Accepted** | `0.0` – `1.0` |
 | **Disabled** | `1.0` |
 
 Adaptive where `top_k` is not: a confident position keeps 1–2 tokens, an
@@ -198,7 +202,8 @@ Keep tokens whose probability is at least `min_p × P(most likely token)`.
 | | |
 |---|---|
 | **Default** | `0.05` |
-| **Range** | `0.01` – `0.2` |
+| **Sensible range** | `0.01` – `0.2` (§8d) |
+| **Accepted** | `0.0` – `1.0` |
 | **Disabled** | `0.0` |
 
 The modern default choice, because the threshold is **relative to the model's
@@ -220,7 +225,8 @@ the boringly-obvious and the wildly-improbable.
 | | |
 |---|---|
 | **Default** | `1.0` |
-| **Range** | `0.2` – `1.0` |
+| **Sensible range** | `0.2` – `1.0` (§8d) |
+| **Accepted** | `0.0` – `1.0` |
 | **Disabled** | `1.0` |
 
 `0.9`–`0.95` reduces the "safe and dull" failure mode without opening the tail.
@@ -234,8 +240,9 @@ Keep tokens whose logit is within `n` standard deviations of the maximum logit.
 | | |
 |---|---|
 | **Default** | `-1.0` |
-| **Range** | `0.5` – `2.0` when enabled |
-| **Disabled** | `-1.0` (any negative value) |
+| **Sensible range** | `0.5` – `2.0` when enabled (§8d) |
+| **Accepted** | `-1.0` – `10.0` |
+| **Disabled** | `-1.0` (any negative value, but `-1.0` is the spelling to use) |
 
 Operates on **logits** rather than post-softmax probabilities, which makes the
 surviving candidate set largely **invariant to temperature** — the appealing
@@ -250,7 +257,8 @@ A floor on how many candidates any truncation sampler may leave.
 | | |
 |---|---|
 | **Default** | `0` |
-| **Range** | `0` – `10` |
+| **Sensible range** | `0` – `10` (§8d) |
+| **Accepted** | `0` – `100` |
 | **Disabled** | `0` |
 
 Request-level only — there is **no CLI flag**. Insurance against an aggressive
@@ -269,7 +277,8 @@ The classic penalty: divide the logit of any token that appeared in the last
 | | |
 |---|---|
 | **Defaults** | `repeat_penalty 1.0`, `repeat_last_n 64` |
-| **Range** | `penalty` `1.0` – `1.3`; `last_n` `0` – `2048`, or `-1` for the whole context |
+| **Sensible range** | `penalty` `1.0` – `1.2`; `last_n` `-1` – `2048` (§8d) |
+| **Accepted** | `penalty` `0.0` – `2.0`; `last_n` `-1` – `1000000` |
 | **Disabled** | `repeat_penalty 1.0`, or `repeat_last_n 0` |
 
 - `1.0` — off.
@@ -291,7 +300,8 @@ Flat additive penalty applied once to any token that has appeared at all.
 | | |
 |---|---|
 | **Default** | `0.0` |
-| **Range** | `-2.0` – `2.0` |
+| **Sensible range** | `-1.0` – `1.0` (§8d) |
+| **Accepted** | `-2.0` – `2.0` |
 | **Disabled** | `0.0` |
 
 `0.1`–`0.6` nudges toward introducing new vocabulary. Negative values encourage
@@ -305,7 +315,8 @@ Additive penalty **proportional to how many times** a token has appeared.
 | | |
 |---|---|
 | **Default** | `0.0` |
-| **Range** | `-2.0` – `2.0` |
+| **Sensible range** | `-1.0` – `1.0` (§8d) |
+| **Accepted** | `-2.0` – `2.0` |
 | **Disabled** | `0.0` |
 
 `0.1`–`0.8` for prose. Because it scales with count, it is the more aggressive
@@ -319,12 +330,12 @@ penalising individual tokens, it detects that the model is **replaying an
 n-gram it has already emitted** and penalises continuing that replay,
 exponentially in the length of the match.
 
-| Parameter | Default | Range | Notes |
+| Parameter | Default | Sensible range (§8d) | Notes |
 |---|---|---|---|
-| `dry_multiplier` | `0.0` | `0.0` – `~5.0` | Master switch; `0.0` disables the whole family |
+| `dry_multiplier` | `0.0` | `0.0` – `2.0` | Master switch; `0.0` disables the whole family |
 | `dry_base` | `1.75` | `1.0` – `4.0` | Exponential base — how fast the penalty grows with match length |
 | `dry_allowed_length` | `2` | `1` – `20` | Repeat runs up to this length are free |
-| `dry_penalty_last_n` | `-1` | `-1`, `0`, or a token count | Lookback window; `-1` = whole context, `0` = disabled |
+| `dry_penalty_last_n` | `-1` | `-1` – `131072` | Lookback window; `-1` = whole context, `0` = disabled |
 | `dry_sequence_breakers` | `["\n", ":", "\"", "*"]` | list of strings | Tokens that reset match tracking |
 
 Penalty for a repeat of length `L > allowed_length` grows as
@@ -357,7 +368,8 @@ running estimate.
 | | |
 |---|---|
 | **Defaults** | `adaptive_target -1.0`, `adaptive_decay 0.90` |
-| **Range** | `target` `0.0` – `1.0` when enabled; `decay` `0.0` – `0.99` |
+| **Sensible range** | `target` `0.05` – `0.95` when enabled; `decay` `0.5` – `0.99` (§8d) |
+| **Accepted** | `target` `-1.0` – `1.0`; `decay` `0.0` – `0.99` |
 | **Disabled** | `adaptive_target` negative |
 
 A recent addition — check that the installed llama.cpp build actually supports
@@ -377,7 +389,8 @@ continuation.
 | | |
 |---|---|
 | **Defaults** | `xtc_probability 0.0`, `xtc_threshold 0.1` |
-| **Range** | `probability` `0.0` – `1.0`; `threshold` `0.0` – `0.5` |
+| **Sensible range** | `probability` `0.0` – `0.5`; `threshold` `0.0` – `0.5` (§8d) |
+| **Accepted** | both `0.0` – `1.0` |
 | **Disabled** | `xtc_probability 0.0` (or `xtc_threshold > 0.5`) |
 
 `xtc_probability 0.5`, `xtc_threshold 0.1` is the usual creative-writing
@@ -395,7 +408,8 @@ hold surprise at `tau`.
 | | |
 |---|---|
 | **Defaults** | `mirostat 0`, `mirostat_tau 5.0`, `mirostat_eta 0.1` |
-| **Range** | `mirostat` `0`/`1`/`2`; `tau` `2.0` – `8.0`; `eta` `0.01` – `1.0` |
+| **Sensible range** | `tau` `2.0` – `8.0`; `eta` `0.01` – `1.0` (§8d) |
+| **Accepted** | `mirostat` `0`/`1`/`2`; `tau` `0.0` – `20.0`; `eta` `0.0` – `1.0` |
 | **Disabled** | `mirostat 0` |
 
 `1` is the original algorithm, `2` the simplified/faster one. Lower `tau` means
@@ -417,7 +431,8 @@ RNG seed for sampling.
 | | |
 |---|---|
 | **Default** | `-1` (random per request) |
-| **Range** | any non-negative integer, or `-1` |
+| **Sensible range** | *none — one seed is as reasonable as any other (§8d)* |
+| **Accepted** | `-1` – `2147483647` |
 
 A fixed seed makes generation reproducible **only** if the prompt, the model,
 the sampling parameters, the build, and the batching/slot conditions are all
@@ -489,6 +504,10 @@ To neutralise a sampler rather than remove the field:
 Note the difference from *omitting* the field: omitting it inherits the
 server's launch-time value (§1); sending the neutral value actively turns the
 sampler off even if the flavor's CLI args enabled it.
+
+These values are also the one exemption from the out-of-range ⚠ (§8d) — a
+sampler's off value frequently sits outside its useful active range, and
+flagging a deliberate "off" would be noise.
 
 ### 8b. Request field ↔ CLI flag
 
@@ -567,6 +586,84 @@ dry_multiplier 0.8   dry_base 1.75   dry_allowed_length 4
 The GGUF publisher's own recommended settings (usually in the HF model card)
 beat all of the above — start there and adjust.
 
+### 8d. Sensible ranges, and the ⚠ that enforces nothing
+
+Every numeric parameter carries a **sensible range** alongside its hard
+validation bounds — `sensible_minimum`/`sensible_maximum` in
+`SAMPLING_PARAM_SPECS` (`kodo/llms/_sampling.py`), shipped to kodo-vsix on
+`sampling_specs` like the rest of the table. Enter a value outside it and the
+field is marked with a yellow **⚠** whose tooltip names the recommended range.
+
+**Two different jobs, deliberately not merged:**
+
+| | `minimum`/`maximum` | `sensible_minimum`/`sensible_maximum` |
+|---|---|---|
+| Question answered | "will this be accepted?" | "is this a good idea?" |
+| Enforcement | `SamplingParams.from_json` **clamps** and logs | none — advisory only |
+| Width | generous, close to what llama.cpp tolerates | narrow, the band worth using |
+| Surfaced as | nothing (silent clamp) | yellow ⚠ + tooltip |
+
+An out-of-band value is submitted **verbatim**: nothing is blocked, clamped,
+or rewritten, and Apply/Submit stay enabled. The band is guidance for a user
+typing into a box full of unfamiliar Greek letters, not a second validator.
+The invariant tying them together is that the sensible range is always a
+*narrowing* of the hard one (`test_sensible_bounds_are_ordered_and_inside_the_hard_bounds`)
+— recommending a value the server would then clamp away would be incoherent.
+
+**What is exempt from the ⚠:**
+
+- **A blank field.** Unset means "inherit the launch args" (§1), not zero.
+- **Exactly the parameter's neutral/off value** (§8a), even when that value
+  sits outside the band. Several samplers disable *below* their useful active
+  range — `min_p` is worth using at `0.01`–`0.2` but turns off at `0.0` — and
+  marking a deliberate "off" as suspicious would be pure noise. Only the exact
+  neutral value is exempt, so `min_p 0.005` is still flagged.
+- **`str_list` parameters** (`samplers`, `dry_sequence_breakers`) and the two
+  parameters with no band at all (`seed`, `mirostat`), where every accepted
+  value is a legitimate choice.
+- **A half-typed number** (`0.`, `-`). The mark is recomputed per keystroke, so
+  flagging an intermediate parse would make it flicker while typing.
+
+**The ranges, and why these exact endpoints:**
+
+| Parameter | Sensible range | Why this range |
+|---|---|---|
+| `temperature` | `0.0` – `2.0` | `0.0` is greedy decoding, a real and useful choice, so the floor cannot be higher. Above `2.0` the softmax is flattened so far that the tail carries most of the mass; llama.cpp accepts up to `4.0`, but output there is incoherent unless an aggressive truncation sampler is removing the tail temperature is amplifying. |
+| `top_k` | `0` – `200` | `0` disables, `1` is greedy. `20`–`50` is conventional. Past ~200 the cutoff sits beyond every token carrying meaningful probability at essentially any position, so a larger K never binds — it is inert rather than more permissive, and a user setting it believes they configured something they did not. |
+| `top_p` | `0.5` – `1.0` | `1.0` disables. Below `~0.8` output is already noticeably repetitive; by `0.5` the nucleus collapses to one or two tokens at most positions, which is greedy decoding with extra steps. The parameter is a probability, so `1.0` is a hard ceiling anyway. |
+| `min_p` | `0.01` – `0.2` | The threshold is relative to the top token. Below `0.01` it admits essentially the entire tail and never binds. Above `0.2` at most five tokens can ever clear the bar and usually only one does, collapsing toward greedy. `0.0` disables and is exempt. |
+| `repeat_penalty` | `1.0` – `1.2` | `1.0` is off, and **below** `1.0` the penalty inverts into a repetition *reward* — a direct route to a degenerate loop. Above `1.2` it is actively harmful (§5): it is blind to whether repetition is correct, so on code it penalises `}`, `return`, and every token of a path being quoted back. |
+| `repeat_last_n` | `-1` – `2048` | `-1` (whole context) and `0` (off) are both meaningful. `64` is the default. Past ~2048 the window covers so much of an agentic transcript that legitimate reuse of identifiers and paths is penalised everywhere — and if the whole context really is wanted, `-1` says so directly. |
+| `presence_penalty` | `-1.0` – `1.0` | Additive on logits, where the gap between adjacent candidates is typically well under `1`. At `±1.0` the penalty is already a heavy thumb on the scale; llama.cpp accepts `±2.0`, but past `1.0` positive values push the model off correct tokens and negative ones drive it into loops. |
+| `frequency_penalty` | `-1.0` – `1.0` | Same additive scale as presence penalty, but it *compounds with occurrence count*, so it reaches the same distortion sooner — a token like `self` or `const` accumulates penalty fast on code. Stay near the bottom of the band. |
+| `seed` | *none* | Every accepted seed is exactly as reasonable as every other; there is nothing to advise. |
+| `typical_p` | `0.2` – `1.0` | `1.0` disables. Below `0.2` only tokens whose surprisal almost exactly matches the distribution's entropy survive, which discards the top candidates along with the tail and leaves an oddly specific handful. |
+| `top_n_sigma` | `0.5` – `2.0` | The *enabled* band; `1.0` is what the technique's authors suggest. Below `0.5` only tokens at essentially the maximum logit survive — greedy by another name. Any negative value disables, but `-1.0` is the canonical spelling and the only one exempt, so a stray `-0.5` is flagged as the likely typo for `0.5` that it is. |
+| `min_keep` | `0` – `10` | `0` disables. This is a floor of last resort, insurance against a threshold collapsing the candidate set at a position where that was not intended; `1`–`5` if used at all. Above ~10 it overrides whatever truncation sampler was configured at most positions, silently undoing it. |
+| `dynatemp_range` | `0.0` – `1.0` | `0.0` disables. The band swept is `temperature ± range`, so past `1.0` the cold end clamps at `0.0` (greedy) while the hot end clears `2.0` (incoherent) — the sweep spans both failure modes instead of interpolating between usable ones. |
+| `dynatemp_exponent` | `0.0` – `2.0` | Applied to a normalised entropy fraction in `[0, 1]`. `1.0` is linear; `>1.0` leans cold, `<1.0` leans hot. Past `2.0` the mapping pins to one end of the band for almost every token, degenerating into a fixed temperature offset — the opposite of the point. |
+| `xtc_probability` | `0.0` – `0.5` | `0.0` disables, and `0.5` is the usual creative-writing setting. Above that XTC fires on the majority of tokens, removing the model's top choice so often that coherence collapses. Never enable it at all for code or tool calls (§6). |
+| `xtc_threshold` | `0.0` – `0.5` | Two tokens cannot both hold more than `0.5` probability, so above `0.5` at most one candidate is ever eligible and XTC can never fire. That is a documented way to disable it, but `xtc_probability 0.0` says so far more clearly. |
+| `dry_multiplier` | `0.0` – `2.0` | `0.0` disables the whole DRY family; `0.8` is the standard starting point. The penalty is `multiplier × base^(L − allowed_length)`, so at `2.0` with the default base a five-token repeat is already impossible — beyond that only legitimate long verbatim content (a rewritten file, a base64 blob, a quoted table) is still being affected. |
+| `dry_base` | `1.0` – `4.0` | `1.0` makes the penalty length-independent, defeating DRY's entire premise of scaling with match length; `1.75` gives the intended smooth ramp. Above `4.0` the penalty explodes within one or two tokens of the allowed length, turning a graded discouragement into an on/off cliff. |
+| `dry_allowed_length` | `1` – `20` | `0` penalises every single repeated token, i.e. a blunter `repeat_penalty` with none of DRY's targeting. `2` is the default and `4`–`6` suits code, which repeats short sequences legitimately. Past ~20 no realistic loop is caught until it is already a paragraph long. |
+| `dry_penalty_last_n` | `-1` – `131072` | `-1` (whole context, the default) and `0` (off) are both meaningful. The upper end is a full modern context window; anything larger is indistinguishable from `-1`, which expresses that intent directly. |
+| `dry_sequence_breakers` | *none* | Not numeric. |
+| `mirostat` | *none* | An enum in numeric clothing — `0`, `1` and `2` are all valid choices, and the hard bounds already say everything there is to say. |
+| `mirostat_tau` | `2.0` – `8.0` | Target entropy in nats. Below `2.0` the controller drives toward near-greedy output and stalls on repetition; above `8.0` it demands more surprise than a typical next-token distribution contains, so its cutoff opens to the whole tail chasing a target it cannot reach. `5.0` is the default. |
+| `mirostat_eta` | `0.01` – `1.0` | The feedback learning rate. At `0.0` the loop never adapts, so mirostat does nothing beyond its initial guess — the parameter is on but inert. `0.1` (the default) converges within a few tokens; `1.0` is a hard ceiling, since the step cannot exceed the full error. |
+| `adaptive_target` | `0.05` – `0.95` | The *enabled* band; negative disables and `-1.0` is exempt. It is a target probability for the selected token, so `0.0` and `1.0` are unreachable targets that saturate the controller in opposite directions — permanently maximally-permissive or permanently greedy. |
+| `adaptive_decay` | `0.5` – `0.99` | The smoothing factor of an exponentially-weighted running estimate. Below `~0.5` the estimate is dominated by the last token or two, so the controller chases per-token noise instead of tracking a trend. `0.90` is the default; `0.99` is llama.cpp's own ceiling. |
+| `samplers` | *none* | Not numeric. Stage names are validated separately against `SAMPLER_NAMES` — an unknown one is dropped, because a single bad entry makes llama-server reject the whole request. |
+
+Two ranges are worth restating because they are the ones a user is most likely
+to trip and then dismiss: `repeat_penalty` above `1.2` and `top_p` below `0.5`
+both produce output that looks superficially fine and fails on structure. And
+note what the bands are *not*: they are general "this will not wreck your
+output" guidance, deliberately wider than §8c's agentic recommendations.
+`temperature 0.8` is unmarked because it is a perfectly normal value — just not
+the one you want for tool calling. The ⚠ is a guard rail, not a style guide.
+
 ---
 
 ## 9. How Kōdo layers this
@@ -603,6 +700,23 @@ omitted from the request body entirely, so whatever the active flavor's
 `llama_args` launched the server with governs it. Clearing a field in the
 modal is therefore a real operation — it does not reset to "the flavor's
 number", it removes the field from the wire.
+
+**Both layers get the same range guidance.** The yellow ⚠ described in §8d is
+rendered in *both* editors, from the same `sensible_minimum`/`sensible_maximum`
+fields of the same pushed spec table, so a value that is a bad idea is flagged
+identically whether it is being set as a launch arg or as a session override:
+
+- the session sampling modal (`kodo-vsix/src/webview/SamplingModal.tsx`) puts
+  the ⚠ between a parameter's label and its input, above that parameter's
+  full-width help text, with a divider closing each parameter's group; and
+- the flavor editor's sampling shortcuts
+  (`kodo-vsix/src/settings-webview/FlavorModal.tsx`) put it in the label cell
+  of its dense two-column grid, which has no room for a third column.
+
+Each keeps its own copy of the comparison (`samplingRangeWarning` in
+`src/llm-registry-types.ts` and in `src/settings-webview/localLlmUtils.ts`),
+following the same host/webview duplication convention as every other shared
+shape there. Neither blocks submission — see §8d.
 
 **Reserved — never settable from the flavor editor or the session modal:**
 

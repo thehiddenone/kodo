@@ -112,15 +112,32 @@ class SamplingParamSpec:
             as settable as a curated one.
         minimum: Hard lower bound, or ``None`` for unbounded. Deliberately
             generous: these are validation limits (a value outside them is
-            clamped and logged), not the "sensible range" guidance, which
-            lives in :attr:`help` and doc/SAMPLING.md.
+            clamped and logged), not the "sensible range" guidance — that is
+            :attr:`sensible_minimum`/:attr:`sensible_maximum`.
         maximum: Hard upper bound, or ``None`` for unbounded.
+        sensible_minimum: Lower end of the *recommended* band — the values a
+            user has a real reason to pick. Always inside
+            ``[minimum, maximum]``, and usually much narrower: the hard bounds
+            say "llama.cpp will accept this", these say "this will not wreck
+            your output". Purely advisory — nothing clamps or rejects against
+            them; kodo-vsix marks an out-of-band value with a yellow ⚠ and a
+            tooltip naming the band, in both the session sampling modal and
+            the flavor editor's launch-arg shortcuts. ``None`` (together with
+            :attr:`sensible_maximum`) means "no guidance for this parameter" —
+            used where no accepted value is unreasonable (``seed``,
+            ``mirostat``) or the parameter is not numeric. Every band, and the
+            reason for its exact endpoints, is documented in
+            doc/SAMPLING.md §8d.
+        sensible_maximum: Upper end of the recommended band, or ``None``.
         step: UI step size for a numeric input. Ignored for ``"str_list"``.
         neutral: The value that *disables* this sampler, as a display string
             (``""`` when the parameter has no such value, e.g. ``seed``).
             Shown in the UI so "turn this off" is distinguishable from
             "leave it unset" — they are not the same thing (doc/SAMPLING.md
-            §8a).
+            §8a). Also **exempt from the sensible-range warning**: several
+            samplers' off value sits outside their useful *active* band
+            (``min_p`` is useful at 0.02–0.2 but disabled at 0.0), and
+            flagging a deliberate "off" as suspicious would be pure noise.
         cli_flags: Equivalent ``llama-server`` CLI flags. ``cli_flags[0]`` is
             what the kodo-vsix flavor editor's structured sampling form
             writes into a flavor's ``llama_args`` when that field is set —
@@ -137,6 +154,8 @@ class SamplingParamSpec:
     advanced: bool
     minimum: float | None
     maximum: float | None
+    sensible_minimum: float | None
+    sensible_maximum: float | None
     step: float | None
     neutral: str
     cli_flags: tuple[str, ...]
@@ -160,6 +179,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=False,
         minimum=0.0,
         maximum=4.0,
+        sensible_minimum=0.0,
+        sensible_maximum=2.0,
         step=0.05,
         neutral="1.0",
         cli_flags=("--temp", "--temperature"),
@@ -173,6 +194,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=False,
         minimum=0,
         maximum=1000000,
+        sensible_minimum=0,
+        sensible_maximum=200,
         step=1,
         neutral="0",
         cli_flags=("--top-k",),
@@ -186,6 +209,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=False,
         minimum=0.0,
         maximum=1.0,
+        sensible_minimum=0.5,
+        sensible_maximum=1.0,
         step=0.01,
         neutral="1.0",
         cli_flags=("--top-p",),
@@ -199,6 +224,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=False,
         minimum=0.0,
         maximum=1.0,
+        sensible_minimum=0.01,
+        sensible_maximum=0.2,
         step=0.01,
         neutral="0.0",
         cli_flags=("--min-p",),
@@ -213,6 +240,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=False,
         minimum=0.0,
         maximum=2.0,
+        sensible_minimum=1.0,
+        sensible_maximum=1.2,
         step=0.01,
         neutral="1.0",
         cli_flags=("--repeat-penalty",),
@@ -226,6 +255,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=False,
         minimum=-1,
         maximum=1000000,
+        sensible_minimum=-1,
+        sensible_maximum=2048,
         step=1,
         neutral="0",
         cli_flags=("--repeat-last-n",),
@@ -239,6 +270,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=False,
         minimum=-2.0,
         maximum=2.0,
+        sensible_minimum=-1.0,
+        sensible_maximum=1.0,
         step=0.01,
         neutral="0.0",
         cli_flags=("--presence-penalty",),
@@ -252,6 +285,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=False,
         minimum=-2.0,
         maximum=2.0,
+        sensible_minimum=-1.0,
+        sensible_maximum=1.0,
         step=0.01,
         neutral="0.0",
         cli_flags=("--frequency-penalty",),
@@ -265,6 +300,9 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=False,
         minimum=-1,
         maximum=2147483647,
+        # No guidance: one seed is exactly as reasonable as any other.
+        sensible_minimum=None,
+        sensible_maximum=None,
         step=1,
         neutral="",
         cli_flags=("-s", "--seed"),
@@ -279,6 +317,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=0.0,
         maximum=1.0,
+        sensible_minimum=0.2,
+        sensible_maximum=1.0,
         step=0.01,
         neutral="1.0",
         cli_flags=("--typical", "--typical-p"),
@@ -293,6 +333,12 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=-1.0,
         maximum=10.0,
+        # The band is the *enabled* one. Any negative value disables the
+        # sampler, but -1.0 is the canonical spelling and the only negative
+        # exempted (it is `neutral`), so a stray -0.5 is flagged as the likely
+        # typo for 0.5 that it is. See doc/SAMPLING.md §8d.
+        sensible_minimum=0.5,
+        sensible_maximum=2.0,
         step=0.1,
         neutral="-1.0",
         cli_flags=("--top-nsigma", "--top-n-sigma"),
@@ -307,6 +353,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=0,
         maximum=100,
+        sensible_minimum=0,
+        sensible_maximum=10,
         step=1,
         neutral="0",
         cli_flags=(),
@@ -320,6 +368,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=0.0,
         maximum=4.0,
+        sensible_minimum=0.0,
+        sensible_maximum=1.0,
         step=0.05,
         neutral="0.0",
         cli_flags=("--dynatemp-range",),
@@ -333,6 +383,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=0.0,
         maximum=10.0,
+        sensible_minimum=0.0,
+        sensible_maximum=2.0,
         step=0.1,
         neutral="1.0",
         cli_flags=("--dynatemp-exp",),
@@ -346,6 +398,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=0.0,
         maximum=1.0,
+        sensible_minimum=0.0,
+        sensible_maximum=0.5,
         step=0.01,
         neutral="0.0",
         cli_flags=("--xtc-probability",),
@@ -360,6 +414,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=0.0,
         maximum=1.0,
+        sensible_minimum=0.0,
+        sensible_maximum=0.5,
         step=0.01,
         neutral="",
         cli_flags=("--xtc-threshold",),
@@ -373,6 +429,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=0.0,
         maximum=10.0,
+        sensible_minimum=0.0,
+        sensible_maximum=2.0,
         step=0.05,
         neutral="0.0",
         cli_flags=("--dry-multiplier",),
@@ -387,6 +445,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=1.0,
         maximum=10.0,
+        sensible_minimum=1.0,
+        sensible_maximum=4.0,
         step=0.05,
         neutral="",
         cli_flags=("--dry-base",),
@@ -399,6 +459,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=0,
         maximum=1000,
+        sensible_minimum=1,
+        sensible_maximum=20,
         step=1,
         neutral="",
         cli_flags=("--dry-allowed-length",),
@@ -412,6 +474,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=-1,
         maximum=1000000,
+        sensible_minimum=-1,
+        sensible_maximum=131072,
         step=1,
         neutral="0",
         cli_flags=("--dry-penalty-last-n",),
@@ -424,6 +488,9 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=None,
         maximum=None,
+        # Not numeric — nothing to range-check.
+        sensible_minimum=None,
+        sensible_maximum=None,
         step=None,
         neutral="",
         cli_flags=("--dry-sequence-breaker",),
@@ -437,6 +504,10 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=0,
         maximum=2,
+        # An enum in numeric clothing — all three accepted values are valid
+        # choices, so the hard bounds already say everything there is to say.
+        sensible_minimum=None,
+        sensible_maximum=None,
         step=1,
         neutral="0",
         cli_flags=("--mirostat",),
@@ -450,6 +521,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=0.0,
         maximum=20.0,
+        sensible_minimum=2.0,
+        sensible_maximum=8.0,
         step=0.1,
         neutral="",
         cli_flags=("--mirostat-ent",),
@@ -463,6 +536,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=0.0,
         maximum=1.0,
+        sensible_minimum=0.01,
+        sensible_maximum=1.0,
         step=0.01,
         neutral="",
         cli_flags=("--mirostat-lr",),
@@ -476,6 +551,9 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=-1.0,
         maximum=1.0,
+        # The *enabled* band; negative disables and -1.0 (`neutral`) is exempt.
+        sensible_minimum=0.05,
+        sensible_maximum=0.95,
         step=0.01,
         neutral="-1.0",
         cli_flags=("--adaptive-target",),
@@ -489,6 +567,8 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=0.0,
         maximum=0.99,
+        sensible_minimum=0.5,
+        sensible_maximum=0.99,
         step=0.01,
         neutral="",
         cli_flags=("--adaptive-decay",),
@@ -502,6 +582,9 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         advanced=True,
         minimum=None,
         maximum=None,
+        # Not numeric — nothing to range-check.
+        sensible_minimum=None,
+        sensible_maximum=None,
         step=None,
         neutral="",
         cli_flags=("--samplers",),
@@ -548,6 +631,8 @@ def sampling_specs_to_json() -> list[dict[str, object]]:
             "advanced": s.advanced,
             "minimum": s.minimum,
             "maximum": s.maximum,
+            "sensible_minimum": s.sensible_minimum,
+            "sensible_maximum": s.sensible_maximum,
             "step": s.step,
             "neutral": s.neutral,
             "cli_flags": list(s.cli_flags),
