@@ -1,7 +1,7 @@
 """Cloud LLM registry: a hardcoded, two-tier vendor → model tree.
 
 Tier one is the vendor (``"anthropic"``, ...); tier two is that vendor's
-models. Unlike the local registry (:mod:`kodo.llms._local_registry`), this
+models. Unlike the local registry (:mod:`kodo.llms.local_registry`), this
 catalogue is 100% compiled-in — there is no user-editable/external part, since
 adding a cloud vendor or model always requires a matching plugin/pricing table
 update anyway.

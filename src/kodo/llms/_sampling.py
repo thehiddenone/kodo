@@ -71,8 +71,9 @@ SAMPLER_NAMES: frozenset[str] = frozenset(
 #: reason each is off limits. Enforced by :meth:`SamplingParams.from_json`,
 #: which drops any of these keys before they can reach a request. The parallel
 #: CLI-side restriction is ``RESERVED_REASONING_CAP_ARGS``
-#: (``kodo/llms/_local_registry.py``); these two lists are deliberately
-#: separate — that one guards *launch* args, this one guards *request* fields.
+#: (``kodo/llms/local_registry/_thinking.py``); these two lists are
+#: deliberately separate — that one guards *launch* args, this one guards
+#: *request* fields.
 #: See doc/SAMPLING.md §9.
 RESERVED_SAMPLING_FIELDS: dict[str, str] = {
     "max_tokens": (

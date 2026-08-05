@@ -352,9 +352,9 @@ def _thinking_families_payload(registry: dict[str, LocalLLMEntry]) -> dict[str, 
     thinking-tier mechanism (see ``kodo.llms.local_thinking_family``).
 
     Server-computed rather than a second table hardcoded in kodo-vsix, since
-    family membership already lives in ``_local_registry.py`` as the single
-    source of truth (also needed there for the launch-time CLI flags) — a
-    duplicate client-side copy would risk drifting out of sync.
+    family membership already lives in ``kodo.llms.local_registry._thinking``
+    as the single source of truth (also needed there for the launch-time CLI
+    flags) — a duplicate client-side copy would risk drifting out of sync.
     """
     base_llms = {e.base_llm for e in registry.values() if e.base_llm}
     return {

@@ -1,4 +1,4 @@
-"""Behavioral tests for local-LLM flavors (:mod:`kodo.llms._local_registry`).
+"""Behavioral tests for local-LLM flavors (:mod:`kodo.llms.local_registry`).
 
 Flavors are the *only* source of llama-server launch args now (doc/
 LLM_REGISTRY.md §4.6) — no ``LocalLLMEntry`` carries its own ``llama_args``.
@@ -20,11 +20,13 @@ from pathlib import Path
 
 import pytest
 
-from kodo.llms import _local_registry
-from kodo.llms._local_registry import (
+from kodo.llms.llamacpp._llama_server import LlamaServer, LlamaServerConfig
+from kodo.llms.local_registry import (
     LlamaFlavor,
     LlamaFlavorPlatform,
     LocalLLMEntry,
+    _catalog,
+    _types,
     add_flavor,
     add_local_entry,
     get_active_flavor,
@@ -40,7 +42,6 @@ from kodo.llms._local_registry import (
     set_active_flavor,
     update_flavor,
 )
-from kodo.llms.llamacpp._llama_server import LlamaServer, LlamaServerConfig
 
 # A plain hardcoded entry with no explicit `flavors=` — gets exactly one
 # built-in flavor via the dataclass field's default factory, same as a real
@@ -80,7 +81,7 @@ def _fake_hardcoded_registry(monkeypatch: pytest.MonkeyPatch) -> None:
         context_window=131_072,
         flavors=(_PREDEFINED_FLAVOR,),
     )
-    monkeypatch.setattr(_local_registry, "_HARDCODED_LOCAL_MODELS", (_BASE_ENTRY, with_flavor))
+    monkeypatch.setattr(_catalog, "_HARDCODED_LOCAL_MODELS", (_BASE_ENTRY, with_flavor))
 
 
 # ---------------------------------------------------------------------------
@@ -663,7 +664,7 @@ def test_get_effective_flavor_id_skips_platform_incompatible_flavor(
     # A GPU-only flavor listed first must be skipped in favor of a
     # Mac-compatible one further down, when auto-selecting a default on a
     # (simulated) Mac host and no active flavor is set.
-    monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
+    monkeypatch.setattr(_types, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
     entry = LocalLLMEntry(
         name="platform-test",
         kind="hardcoded_hf",
@@ -682,7 +683,7 @@ def test_get_effective_flavor_id_falls_back_to_first_when_none_compatible(
 ) -> None:
     # Every flavor targets the other platform — some (possibly broken)
     # launch beats none, so the first available flavor is still returned.
-    monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
+    monkeypatch.setattr(_types, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
     entry = LocalLLMEntry(
         name="platform-test-2",
         kind="hardcoded_hf",
@@ -703,7 +704,7 @@ def test_get_effective_flavor_id_overrides_explicit_choice_when_incompatible(
     # incompatible with the current host is no longer honored as-is: it's
     # overridden by (and persisted as) a compatible alternative, same as an
     # unset/stale selection would resolve.
-    monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
+    monkeypatch.setattr(_types, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
     gpu_flavor = add_flavor(tmp_path, "fake-model", "GPU Only", platform=LlamaFlavorPlatform.GPU)
     set_active_flavor(tmp_path, "fake-model", gpu_flavor.id)
     entry = get_local_registry(tmp_path)["fake-model"]
@@ -717,7 +718,7 @@ def test_get_effective_flavor_id_keeps_explicit_choice_when_none_compatible(
 ) -> None:
     # An explicit selection with no compatible alternative to fall back to is
     # still returned unchanged — nothing better exists to switch to.
-    monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
+    monkeypatch.setattr(_types, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
     only_gpu_entry = LocalLLMEntry(
         name="platform-test-3",
         kind="hardcoded_hf",
@@ -728,7 +729,7 @@ def test_get_effective_flavor_id_keeps_explicit_choice_when_none_compatible(
             LlamaFlavor(id="gpu-only-b", name="GPU Only B", platform=LlamaFlavorPlatform.GPU),
         ),
     )
-    monkeypatch.setattr(_local_registry, "_HARDCODED_LOCAL_MODELS", (only_gpu_entry,))
+    monkeypatch.setattr(_catalog, "_HARDCODED_LOCAL_MODELS", (only_gpu_entry,))
     set_active_flavor(tmp_path, "platform-test-3", "gpu-only-b")
     entry = get_local_registry(tmp_path)["platform-test-3"]
     assert get_effective_flavor_id(tmp_path, entry) == "gpu-only-b"
@@ -762,7 +763,7 @@ def test_has_compatible_flavor_true_when_entry_has_no_flavors_at_all(tmp_path: P
 def test_has_compatible_flavor_true_when_at_least_one_flavor_matches_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
+    monkeypatch.setattr(_types, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
     entry = LocalLLMEntry(
         name="platform-test-4",
         kind="hardcoded_hf",
@@ -779,7 +780,7 @@ def test_has_compatible_flavor_true_when_at_least_one_flavor_matches_host(
 def test_has_compatible_flavor_false_when_every_flavor_targets_the_other_platform(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
+    monkeypatch.setattr(_types, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
     entry = LocalLLMEntry(
         name="platform-test-5",
         kind="hardcoded_hf",
@@ -806,7 +807,7 @@ async def test_ensure_llama_running_refuses_when_no_flavor_is_compatible(
     there is nothing installable that would make this launch possible."""
     from kodo.llms.llamacpp import ensure_llama_running
 
-    monkeypatch.setattr(_local_registry, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
+    monkeypatch.setattr(_types, "current_host_platform", lambda: LlamaFlavorPlatform.MAC)
     entry = LocalLLMEntry(
         name="platform-test-6",
         kind="hardcoded_hf",

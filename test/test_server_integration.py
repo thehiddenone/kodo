@@ -839,7 +839,7 @@ def _custom_flavor_ids(entry: dict[str, object]) -> list[str]:
 async def test_add_flavor_appears_in_registry_state(ws: aiohttp.ClientWebSocketResponse) -> None:
     # Query the pre-existing (predefined) flavors first rather than assuming
     # how many this hardcoded entry ships with — that count is an
-    # implementation detail of _local_registry.py, not this test's concern.
+    # implementation detail of kodo.llms.local_registry, not this test's concern.
     before = await _control_hello(ws)
     before_flavors = cast(
         "list[dict[str, object]]", _local_entry(before.payload, _FLAVOR_TEST_ENTRY)["flavors"]

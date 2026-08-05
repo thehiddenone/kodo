@@ -799,7 +799,7 @@ async def test_add_security_path_rule_unknown_scope_is_a_noop(tmp_path: Path) ->
 # thinking_level: _current_base_llm / handle_thinking_level_set / start() seeding
 # ---------------------------------------------------------------------------
 
-# Real hardcoded registry entries (kodo.llms._local_registry) covering both
+# Real hardcoded registry entries (kodo.llms.local_registry) covering both
 # thinking families plus a non-thinking model, so _current_base_llm() resolves
 # a genuine base_llm without mocking the registry.
 _QWEN_MODEL = "unsloth-qwen36-27b-q4-k-xl"  # base_llm=Qwen36-27B, 6 tiers

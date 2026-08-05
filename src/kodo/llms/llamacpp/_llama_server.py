@@ -161,7 +161,7 @@ class LlamaServerConfig:
     Deliberately holds nothing about the model's own llama.cpp launch
     behavior (context size, GPU offload, sampling/template flags, ...) — that
     is entirely the resolved flavor's job now (see :class:`LlamaFlavor` in
-    :mod:`kodo.llms._local_registry`), passed to :class:`LlamaServer`
+    :mod:`kodo.llms.local_registry`), passed to :class:`LlamaServer`
     separately as a plain ``dict[str, str]`` rather than stored on this
     dataclass, since it varies per launch while this config's fields don't.
 
@@ -378,7 +378,7 @@ class LlamaServer:
         ]
         # Everything model-specific (context size, GPU offload, KV cache
         # type, --jinja, ...) comes entirely from the resolved flavor — see
-        # LlamaFlavor/resolve_effective_llama_config in _local_registry.py.
+        # LlamaFlavor/resolve_effective_llama_config in kodo/llms/local_registry/.
         # No defaults are merged in here, so there is no risk of a flavor's
         # own flag appearing twice on the command line.
         for k, v in self.__llama_args.items():

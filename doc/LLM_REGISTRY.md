@@ -23,7 +23,7 @@ now two independent registries:
 - **Cloud registry** (`kodo/llms/_cloud_registry.py`) — a hardcoded, two-tier
   `vendor → CloudLLMEntry` tree. 100% compiled-in; there is no user-editable
   part, since adding a model always implies a matching plugin/pricing update.
-- **Local registry** (`kodo/llms/_local_registry.py`) — hardcoded GGUFs
+- **Local registry** (`kodo/llms/local_registry/`) — hardcoded GGUFs
   merged with a user-managed external collection persisted in
   `~/.kodo/etc/local-llm-registry.json`. Every entry here runs on llama.cpp;
   there is no `residence` field any more (it would always say `"local"`).
@@ -210,7 +210,7 @@ Four entry kinds:
 | `custom_file` | "Add local LLM from file" | file exists at `entry.path` | no — see below |
 | `custom_server_url` | "Add a link to local llama-server" | always installed | no |
 
-`kodo/llms/_local_registry.py` owns `get_local_registry(kodo_dir)`, which
+`kodo/llms/local_registry/` owns `get_local_registry(kodo_dir)`, which
 merges the compiled-in tuple with the external collection persisted at
 `~/.kodo/etc/local-llm-registry.json`:
 
@@ -257,7 +257,7 @@ itself. `flavors`/`active_flavors` are two more sibling top-level keys in
 this same file, unrelated to the `entries` list — see §4.6.
 
 This file is **owned entirely by the Python server** (read and written by
-`kodo/llms/_local_registry.py`); kodo-vsix never writes it directly, only
+`kodo/llms/local_registry/`); kodo-vsix never writes it directly, only
 through the `local_llm.*` WS commands (§7.6). `add_local_entry`/
 `remove_local_entry` reject duplicate names and reject removing a
 `hardcoded_hf` entry; `add_local_entry` also forces `entry.flavors` to `()`
@@ -558,7 +558,7 @@ before it must answer. Two mechanisms exist, keyed off `base_llm` (never
 - **`qwen_reasoning_budget`** (6 tiers: `minimal`, `low`, `medium`, `high`,
   `huge`, `unlimited`) — `Qwen36-27B`, `Qwen36-35B-A3B`, `Qwen35-9B`,
   `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith10-35B-A3B`
-  (`QWEN_REASONING_BUDGET_FAMILY` in `kodo/llms/_local_registry.py`; notably
+  (`QWEN_REASONING_BUDGET_FAMILY` in `kodo/llms/local_registry/`; notably
   **not** `Qwen3-Coder-Next-80B`, which despite the name shares no thinking
   mechanism with the rest of the Qwen lineup — it has no thinking family at
   all, same as any `custom_*` registry entry).
@@ -597,7 +597,7 @@ before it must answer. Two mechanisms exist, keyed off `base_llm` (never
 
 `kodo.llms.local_thinking_family(base_llm)` /
 `local_thinking_tiers(base_llm)` / `local_thinking_default_tier(base_llm)`
-(all in `_local_registry.py`) are the single source of truth for both the
+(all in `local_registry/`) are the single source of truth for both the
 launch-time flag injection and the per-request field construction — adding a
 model to a family is a one-line change to the relevant `frozenset`, never a
 per-quant `llama_args` edit.
@@ -677,7 +677,7 @@ merged together, so a flavor that wants another flavor's
 `--cache-type-k`/`--cache-type-v` (or anything else) must repeat them itself.
 
 **Two exceptions to "the complete set":** `RESERVED_REASONING_CAP_ARGS`
-(`_local_registry.py`) — `--reasoning-budget` and `--reasoning-budget-message`
+(`local_registry/`) — `--reasoning-budget` and `--reasoning-budget-message`
 — are the one pair of flags no flavor may ever set, regardless of family.
 `add_flavor`/`update_flavor` silently strip either key from user-supplied
 `llama_args` before a flavor is persisted (logging a warning when they
@@ -690,14 +690,14 @@ suppress the exhaustion message that tells the model — and the user — that
 its thinking got cut off. See doc/LOCAL_INFERENCE.md §2a.
 
 There is no separate `context_window` field on `LlamaFlavor` any more —
-`resolve_context_window(entry, flavor) -> int` (`kodo/llms/_local_registry.py`)
+`resolve_context_window(entry, flavor) -> int` (`kodo/llms/local_registry/`)
 deduces the effective context size from *flavor*'s own launch args instead:
 its `--ctx-size` value (checked first) or `-c` value, if either parses to a
 positive integer; otherwise falls back to `entry.context_window`. This is
 why the built-in default flavor's `--ctx-size 0` (telling llama.cpp to read
 the GGUF's own trained context length) resolves to the entry's nominal
 `context_window` for budgeting purposes rather than `0`. `resolve_effective_llama_config(kodo_dir, entry)
--> (llama_args, context_window)` (`kodo/llms/_local_registry.py`) is the
+-> (llama_args, context_window)` (`kodo/llms/local_registry/`) is the
 single place both resolutions are combined:
 
 1. The flavor resolved by `get_effective_flavor_id(kodo_dir, entry)` — the
@@ -984,7 +984,7 @@ override with "proceed anyway"), `platform` is a hard compile-time-style
 restriction: some launch configs simply don't make sense on the other
 platform at all — e.g. the built-in Qwen "512K"/"1M context" flavors
 (`make_qwen_512k_kv_q8`/`make_qwen_1m_kv_q8`/`make_qwen_moe_*` in
-`_local_registry.py`) set `platform=MAC`, since a context window that large
+`local_registry/`) set `platform=MAC`, since a context window that large
 only fits inside Apple Silicon's unified-memory pool — there is no
 equivalent discrete-GPU-plus-system-RAM configuration that makes sense at
 that size. Every other built-in flavor (the default q8/fp16 KV-cache ones)
@@ -1060,7 +1060,7 @@ own duplicate `LocalFlavor` (`src/settings-webview/types.ts`).
 `_flavor_to_json`/`_flavor_from_json` round-trip the field (as its plain
 string value) through `~/.kodo/etc/local-llm-registry.json` for a custom
 flavor, falling back to `BOTH` for anything missing or unrecognized
-(`_parse_flavor_platform`, both in `_local_registry.py` for the JSON store
+(`_parse_flavor_platform`, both in `local_registry/` for the JSON store
 and in `kodo/server/_app.py` for the WS payload). `entry.active_flavor`
 itself is still sent as the raw persisted value (`get_active_flavor`, not
 `get_effective_flavor_id`) — kodo-vsix derives what's actually effective

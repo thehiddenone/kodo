@@ -81,14 +81,14 @@ CLI-side counterpart to configure.
 
 `--reasoning-budget-message` is llama.cpp's own mechanism for injecting text
 right before the forced end-of-thinking tag once a finite budget is
-exhausted — `REASONING_BUDGET_MESSAGE` (`_local_registry.py`) is worded to
+exhausted — `REASONING_BUDGET_MESSAGE` (`local_registry/`) is worded to
 discourage the model from padding its reasoning out to fill the budget.
 
 **These two flags are forced, not defaulted.** `ensure_llama_running` plain-
 assigns both keys into the resolved `llama_args` dict *after* resolving the
 active flavor, overwriting anything a flavor happened to set — flavors are
 never allowed to touch either flag. This is enforced twice: `add_flavor`/
-`update_flavor` (`_local_registry.py`) silently drop any
+`update_flavor` (`local_registry/`) silently drop any
 `RESERVED_REASONING_CAP_ARGS` key (`--reasoning-budget`,
 `--reasoning-budget-message`) from user-supplied `llama_args` before a flavor
 is even persisted (logging a warning when they do), and `ensure_llama_running`
@@ -100,7 +100,7 @@ mechanism is the only knob (§4.5 doc/LLM_REGISTRY.md).
 **Per-request `max_tokens` is sized against the resolved thinking budget, not
 a flat constant.** Every finite Qwen-family tier — including `unlimited`,
 which is a real 1.5x-`huge` cap now, not the `-1`/no-limit sentinel it used to
-be (see `QWEN_TIER_TOKEN_BUDGETS`, `_local_registry.py`) — could otherwise
+be (see `QWEN_TIER_TOKEN_BUDGETS`, `local_registry/`) — could otherwise
 consume the *entire* per-request token budget on reasoning alone (e.g.
 Qwen36-27B's `high` tier is 8192, the same number the flat cap used to be),
 leaving llama-server no room to ever print `REASONING_BUDGET_MESSAGE` or

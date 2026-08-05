@@ -29,7 +29,7 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
     "active_cloud_vendor": "anthropic",
     # NOTE: the main-context token budget is no longer a global setting. It is
     # the *current model's* context window (the per-model `context_window` in
-    # kodo/llms/_cloud_registry.py or kodo/llms/_local_registry.py), so
+    # kodo/llms/_cloud_registry.py or kodo/llms/local_registry/), so
     # switching models changes the limit and the auto-compaction threshold.
     # See ContextCompactor.context_limit (runtime/_engine/_compaction.py) and
     # doc/STATE_AND_LIFECYCLE.md §4.5.

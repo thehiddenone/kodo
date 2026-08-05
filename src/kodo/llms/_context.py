@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ._cloud_registry import get_cloud_registry
-from ._local_registry import get_local_registry, resolve_effective_llama_config
+from .local_registry import get_local_registry, resolve_effective_llama_config
 
 __all__ = ["get_context_window"]
 
