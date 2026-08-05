@@ -146,6 +146,16 @@ class SamplingParamSpec:
             CLI equivalent and is therefore session-override only (never
             offered in the flavor editor).
         help: One-line explanation, used as the UI field hint.
+        valid_values: The exact set of accepted strings for a ``str_list``
+            parameter, or ``None`` when any string is acceptable (every
+            numeric parameter, and ``dry_sequence_breakers``, which accepts
+            arbitrary strings). Only ``samplers`` sets this (to
+            :data:`SAMPLER_NAMES`) — unlike the advisory sensible range, an
+            unknown entry here is a **hard** error: :meth:`from_json` drops
+            it rather than clamping, since one bad name makes llama-server
+            reject the whole request. Shipping the set lets kodo-vsix reject
+            an unknown name in the UI instead of silently dropping it only
+            after Apply (doc/SAMPLING.md §8d).
     """
 
     name: str
@@ -160,6 +170,7 @@ class SamplingParamSpec:
     neutral: str
     cli_flags: tuple[str, ...]
     help: str
+    valid_values: tuple[str, ...] | None = None
 
 
 #: Every tunable request-level sampling parameter, curated set first. Ordering
@@ -205,7 +216,7 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
     SamplingParamSpec(
         name="top_p",
         kind="float",
-        label="Top-P (nucleus)",
+        label="Top-P",
         advanced=False,
         minimum=0.0,
         maximum=1.0,
@@ -592,6 +603,7 @@ SAMPLING_PARAM_SPECS: tuple[SamplingParamSpec, ...] = (
         "truncation always sees raw probabilities. Valid names: "
         + ", ".join(sorted(SAMPLER_NAMES))
         + ".",
+        valid_values=tuple(sorted(SAMPLER_NAMES)),
     ),
 )
 
@@ -637,6 +649,7 @@ def sampling_specs_to_json() -> list[dict[str, object]]:
             "neutral": s.neutral,
             "cli_flags": list(s.cli_flags),
             "help": s.help,
+            "valid_values": list(s.valid_values) if s.valid_values is not None else None,
         }
         for s in SAMPLING_PARAM_SPECS
     ]
@@ -659,13 +672,15 @@ def _coerce(spec: SamplingParamSpec, raw: object) -> float | int | list[str] | N
             _log.warning("Sampling parameter %s expects a list, got %r — dropped", spec.name, raw)
             return None
         items = [str(item) for item in raw]
-        if spec.name == "samplers":
-            valid = [item for item in items if item in SAMPLER_NAMES]
+        if spec.valid_values is not None:
+            valid = [item for item in items if item in spec.valid_values]
             if len(valid) != len(items):
-                # One bad name makes llama-server reject the entire request,
-                # so unknown stages are dropped rather than forwarded.
+                # One bad name makes llama-server reject the entire request
+                # (true today only for `samplers`), so unknown entries are
+                # dropped rather than forwarded.
                 _log.warning(
-                    "Dropped unknown sampler name(s) %s from `samplers`",
+                    "Dropped unknown %s value(s) %s",
+                    spec.name,
                     sorted(set(items) - set(valid)),
                 )
             items = valid

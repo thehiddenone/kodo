@@ -93,6 +93,21 @@ def test_specs_to_json_carries_the_sensible_band() -> None:
         assert payload[spec.name]["sensible_maximum"] == spec.sensible_maximum
 
 
+def test_specs_to_json_carries_valid_values() -> None:
+    """kodo-vsix hard-blocks Apply on an unknown `samplers` entry using this
+    field alone — if it stops riding the wire, that check silently no-ops."""
+    payload = {p["name"]: p for p in sampling_specs_to_json()}
+    for spec in SAMPLING_PARAM_SPECS:
+        expected = list(spec.valid_values) if spec.valid_values is not None else None
+        assert payload[spec.name]["valid_values"] == expected
+
+
+def test_samplers_spec_valid_values_matches_sampler_names() -> None:
+    spec = sampling_param_spec("samplers")
+    assert spec is not None
+    assert set(spec.valid_values or ()) == SAMPLER_NAMES
+
+
 def test_curated_and_advanced_sets_are_both_populated() -> None:
     """The modal's two-tier layout only makes sense if both tiers exist."""
     assert any(not s.advanced for s in SAMPLING_PARAM_SPECS)

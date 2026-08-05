@@ -586,7 +586,7 @@ dry_multiplier 0.8   dry_base 1.75   dry_allowed_length 4
 The GGUF publisher's own recommended settings (usually in the HF model card)
 beat all of the above — start there and adjust.
 
-### 8d. Sensible ranges, and the ⚠ that enforces nothing
+### 8d. Sensible ranges, and the ⚠ that flags them
 
 Every numeric parameter carries a **sensible range** alongside its hard
 validation bounds — `sensible_minimum`/`sensible_maximum` in
@@ -594,23 +594,52 @@ validation bounds — `sensible_minimum`/`sensible_maximum` in
 `sampling_specs` like the rest of the table. Enter a value outside it and the
 field is marked with a yellow **⚠** whose tooltip names the recommended range.
 
+The band is also printed **in every field's label**, before anything is typed —
+`Temperature (0.0 to 2.0, 1.0 disables)` — together with the parameter's
+neutral/off value (§8a) when it has one. Both editors build that label from the
+same spec fields as the ⚠ (`samplingLabelText`, one copy per webview), so the
+guidance a user reads while typing and the tooltip they get for overshooting
+always quote the same numbers. Two spelling rules: the band uses the word "to"
+rather than a hyphen, because several bands start negative (`repeat_last_n` is
+`-1` – `2048`, the penalties are `-1.0` – `1.0`) where a hyphen reads as a minus
+sign; and a whole-numbered bound on a `float` parameter keeps its `.0`
+(`0.0 to 2.0`, not `0 to 2`, which would read as if only integers belonged in
+the box), while `int` parameters stay bare (`0 to 200`). A parameter with no
+band and no neutral value (`seed`) is labelled with its bare name.
+
 **Two different jobs, deliberately not merged:**
 
 | | `minimum`/`maximum` | `sensible_minimum`/`sensible_maximum` |
 |---|---|---|
 | Question answered | "will this be accepted?" | "is this a good idea?" |
-| Enforcement | `SamplingParams.from_json` **clamps** and logs | none — advisory only |
+| Enforcement | `SamplingParams.from_json` **clamps** and logs | none server-side — see below |
 | Width | generous, close to what llama.cpp tolerates | narrow, the band worth using |
 | Surfaced as | nothing (silent clamp) | yellow ⚠ + tooltip |
 
-An out-of-band value is submitted **verbatim**: nothing is blocked, clamped,
-or rewritten, and Apply/Submit stay enabled. The band is guidance for a user
-typing into a box full of unfamiliar Greek letters, not a second validator.
-The invariant tying them together is that the sensible range is always a
-*narrowing* of the hard one (`test_sensible_bounds_are_ordered_and_inside_the_hard_bounds`)
-— recommending a value the server would then clamp away would be incoherent.
+**The server** never blocks, clamps, or rewrites an out-of-band value —
+whatever a client does, if it reaches `SamplingParams.from_json` it is
+accepted and submitted verbatim, same as always. The band is guidance for a
+user typing into a box full of unfamiliar Greek letters, not a second
+server-side validator. The invariant tying the two ranges together is that
+the sensible range is always a *narrowing* of the hard one
+(`test_sensible_bounds_are_ordered_and_inside_the_hard_bounds`) —
+recommending a value the server would then clamp away would be incoherent.
 
-**What is exempt from the ⚠:**
+**Both editors gate on the flag**, not just show it. The session sampling
+modal (`SamplingModal.tsx`) disables **Apply** while any field is out of
+band, same as it does for the hard-drop case in §8e — deliberately treating
+"probably a bad idea" the same as "would be dropped," so a user who really
+does want `temperature 3.0` has to clear the field or accept the guidance,
+not just dismiss a tooltip. The flavor editor (`FlavorModal.tsx`) disables
+**Submit** the same way — a sampling field there writes straight into the
+`llama_args` textarea on every keystroke regardless (there's no per-field
+"apply" step to withhold), so the gate sits on the form's Submit button
+instead, stopping a flavor from being saved at all while a field is flagged.
+Both editors compute this one `samplingFieldIssue` per field (§8e) and render
+its result identically — a value is either clean or it isn't; nothing
+distinguishes "out of band" from "would be dropped" except the tooltip text.
+
+**What is exempt from the ⚠ — and therefore never blocks Apply/Submit either:**
 
 - **A blank field.** Unset means "inherit the launch args" (§1), not zero.
 - **Exactly the parameter's neutral/off value** (§8a), even when that value
@@ -654,7 +683,7 @@ The invariant tying them together is that the sensible range is always a
 | `mirostat_eta` | `0.01` – `1.0` | The feedback learning rate. At `0.0` the loop never adapts, so mirostat does nothing beyond its initial guess — the parameter is on but inert. `0.1` (the default) converges within a few tokens; `1.0` is a hard ceiling, since the step cannot exceed the full error. |
 | `adaptive_target` | `0.05` – `0.95` | The *enabled* band; negative disables and `-1.0` is exempt. It is a target probability for the selected token, so `0.0` and `1.0` are unreachable targets that saturate the controller in opposite directions — permanently maximally-permissive or permanently greedy. |
 | `adaptive_decay` | `0.5` – `0.99` | The smoothing factor of an exponentially-weighted running estimate. Below `~0.5` the estimate is dominated by the last token or two, so the controller chases per-token noise instead of tracking a trend. `0.90` is the default; `0.99` is llama.cpp's own ceiling. |
-| `samplers` | *none* | Not numeric. Stage names are validated separately against `SAMPLER_NAMES` — an unknown one is dropped, because a single bad entry makes llama-server reject the whole request. |
+| `samplers` | *none* | Not numeric. Stage names are validated separately against `SAMPLER_NAMES`, shipped as this spec's `valid_values` — see §8e. |
 
 Two ranges are worth restating because they are the ones a user is most likely
 to trip and then dismiss: `repeat_penalty` above `1.2` and `top_p` below `0.5`
@@ -663,6 +692,35 @@ note what the bands are *not*: they are general "this will not wreck your
 output" guidance, deliberately wider than §8c's agentic recommendations.
 `temperature 0.8` is unmarked because it is a perfectly normal value — just not
 the one you want for tool calling. The ⚠ is a guard rail, not a style guide.
+
+### 8e. `samplers`: dropped, not clamped — and the merged ⚠
+
+`samplers` has no sensible range (§8d) — its "wrong" is categorical, not a
+matter of degree, so it is checked by a different function from every
+numeric parameter, `samplingFieldError` (`src/llm-registry-types.ts`, and a
+duplicate in `src/settings-webview/localLlmUtils.ts`, same convention as
+`samplingRangeWarning`). The spec ships a `valid_values` field (the same set
+as `SAMPLER_NAMES` server-side); each editor splits the field's text on
+commas and checks every entry against it on each keystroke. The same
+function also catches a numeric field whose text contains a digit but still
+fails to parse (e.g. `1.2.3`) — the other case that used to be silently
+coerced to "unset" on Apply. A blank field, and the transient mid-typing
+states of a real number (`-`, `.`, `1.`), are not errors.
+
+Both this and §8d's out-of-band check ultimately answer the same practical
+question — "is this value fine to send as-is?" — so a single combinator,
+`samplingFieldIssue(spec, text)`, tries the hard-error check first and falls
+back to the range warning, and **both editors render its result as the same
+yellow ⚠**: nothing in the UI distinguishes "would be silently dropped" from
+"is a bad idea," only the tooltip text. Whichever one applies, the session
+sampling modal disables Apply and the flavor editor disables Submit, both
+for the whole form until the flagged field is fixed or cleared (§8d).
+
+This client-side check is a courtesy only: the server-side drop in `_coerce`
+is what actually protects a request, and still runs regardless — an older
+kodo-vsix build that predates `valid_values` just reads it as absent and
+performs no check, exactly like the sensible-range fields degrading on an
+old client.
 
 ---
 
@@ -701,10 +759,11 @@ omitted from the request body entirely, so whatever the active flavor's
 modal is therefore a real operation — it does not reset to "the flavor's
 number", it removes the field from the wire.
 
-**Both layers get the same range guidance.** The yellow ⚠ described in §8d is
-rendered in *both* editors, from the same `sensible_minimum`/`sensible_maximum`
-fields of the same pushed spec table, so a value that is a bad idea is flagged
-identically whether it is being set as a launch arg or as a session override:
+**Both layers get the same range guidance.** The in-label band and the yellow ⚠
+described in §8d are rendered in *both* editors, from the same
+`sensible_minimum`/`sensible_maximum` fields of the same pushed spec table, so a
+value that is a bad idea is advertised and flagged identically whether it is
+being set as a launch arg or as a session override:
 
 - the session sampling modal (`kodo-vsix/src/webview/SamplingModal.tsx`) puts
   the ⚠ between a parameter's label and its input, above that parameter's
@@ -713,10 +772,22 @@ identically whether it is being set as a launch arg or as a session override:
   (`kodo-vsix/src/settings-webview/FlavorModal.tsx`) put it in the label cell
   of its dense two-column grid, which has no room for a third column.
 
-Each keeps its own copy of the comparison (`samplingRangeWarning` in
-`src/llm-registry-types.ts` and in `src/settings-webview/localLlmUtils.ts`),
-following the same host/webview duplication convention as every other shared
-shape there. Neither blocks submission — see §8d.
+Each keeps its own copy of the label and the comparison (`samplingLabelText` /
+`sensibleRangeText` / `samplingRangeWarning` / `samplingFieldError` /
+`samplingFieldIssue`, in `src/llm-registry-types.ts` and in
+`src/settings-webview/localLlmUtils.ts`), following the same host/webview
+duplication convention as every other shared shape there.
+
+**Both editors gate their submit action on it, too** (§8d/§8e). Each computes
+`samplingFieldIssue` per field and renders the identical yellow ⚠ — the
+session sampling modal (`SamplingModal.tsx`) disables Apply while *any*
+field has one, whether that's an out-of-band number or a `samplers` entry
+outside `valid_values`; the flavor editor (`FlavorModal.tsx`) disables
+Submit the same way. They differ only in *when* a flagged value gets
+written: a sampling shortcut field in the flavor editor writes straight into
+the `llama_args` textarea on every keystroke regardless (there's no
+per-field "apply" to withhold), so gating there stops the whole *flavor*
+from being saved rather than stopping that one field from being sent.
 
 **Reserved — never settable from the flavor editor or the session modal:**
 
