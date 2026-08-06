@@ -845,11 +845,29 @@ split into two panes:
   first), each row selectable, inside a fixed-`height` (not `max-height`)
   scrollable list (`.flavor-list`, 360px) so the "Add"/"Remove" buttons below
   it stay pinned in place regardless of how many flavors exist, instead of
-  drifting down the modal as rows are added; "Add" (clears the right pane to
-  a blank form, deselecting) and "Remove" (deletes the selected flavor;
-  disabled when nothing is selected or the selection is predefined —
-  `predefined: true` in the payload, matching `remove_flavor`'s own
-  server-side rejection) buttons below the list.
+  drifting down the modal as rows are added; "Add" and "Remove" (deletes the
+  selected flavor; disabled when nothing is selected or the selection is
+  predefined — `predefined: true` in the payload, matching `remove_flavor`'s
+  own server-side rejection) buttons below the list. "Add" does **not** open
+  a blank form for the user to fill in — it sends `add_flavor` immediately
+  (`addFlavor`, `FlavorModal.tsx`) with a computed name/description/
+  `llama_args`: a unique display name starting from `"New flavor"` (appending
+  `" 2"`, `" 3"`, … against the entry's current flavor names, client-side
+  only — `add_flavor` itself still rejects an exact-name clash the same as
+  always, so a race against a concurrent add is still caught server-side),
+  description `"Custom flavor"`, and `llama_args` copied from the entry's
+  `"default"`-id flavor (predefined or the seeded custom one, whichever
+  `get_flavors` returns under that id — see §4.6's `flavors` field and
+  `_seed_default_flavor` above), or left empty if the entry currently has no
+  flavor with that id (e.g. a custom entry whose seeded `"default"` flavor
+  was since removed via "Remove"). `min_ram`/`min_vram`/`platform` are *not*
+  copied from that flavor — they start at their normal brand-new-flavor
+  defaults (`0`/`0`/`"both"`). The selected flavor briefly clears to the
+  blank/deselected state while the create round-trips, then selects the new
+  flavor once its server-assigned id shows up in the next
+  `local_llm.registry_state` push, so it's immediately visible and editable
+  (rename it, tweak its args, adjust hardware/platform fields) via the normal
+  "Submit" flow below.
 - **Right pane** — the selected flavor's parameters: name (with an inline
   error and a disabled "Submit" if it exact-matches another flavor of the
   same entry, mirroring the same-repo `nameTaken` check the "Add local LLM"
@@ -863,9 +881,13 @@ split into two panes:
   `resolve_context_window` instead of being its own input), and a three-way
   "Platform compatibility" radio group — "Mac only" / "GPU only" / "Both"
   (§4.6b's `platform`, defaulting to "Both" for a brand-new flavor) — plus
-  "Submit" and "Close" buttons. "Submit" sends `add_flavor` when nothing is selected
-  (the "Add" flow) or `update_flavor` with the selected flavor's id when
-  editing an existing *custom* one. **Predefined flavors are read-only in
+  "Submit" and "Close" buttons. "Submit" sends `update_flavor` with the
+  selected flavor's id, including for the flavor "Add" (above) just created —
+  it's selected automatically, so "Submit" here is for further edits, not the
+  creation itself. It still falls back to sending `add_flavor` on whatever is
+  in the form when nothing is selected, for the one case that can still reach
+  that state without going through "Add": an entry with zero flavors (every
+  one removed). **Predefined flavors are read-only in
   this modal**: selecting one sets every field (`readonly`, so its text
   remains selectable/copyable — the intended way to start a new flavor from
   a predefined one's config is to copy its values into a fresh "Add") and

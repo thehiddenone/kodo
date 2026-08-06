@@ -83,19 +83,19 @@ _log = logging.getLogger(__name__)
 # Model
 # ---------------------------------------------------------------------------
 
-# Qwen3 0.6B
-# _REPO_ID = "unsloth/Qwen3-0.6B-GGUF"
-# _FILENAME = "Qwen3-0.6B-UD-Q8_K_XL.gguf"
-# # Key within the titler's own LocalModelManager (rooted at titler_home_dir(),
-# # never the shared chat-model directory) — opaque, never surfaced to the user.
-# _MODEL_ID = "qwen3-0.6b-titler"
-
 # Qwen2.5 3B Instruct
-_REPO_ID = "Qwen/Qwen2.5-3B-Instruct-GGUF"
-_FILENAME = "qwen2.5-3b-instruct-q4_k_m.gguf"
+#_REPO_ID = "Qwen/Qwen2.5-3B-Instruct-GGUF"
+#_FILENAME = "qwen2.5-3b-instruct-q4_k_m.gguf"
 # Key within the titler's own LocalModelManager (rooted at titler_home_dir(),
 # never the shared chat-model directory) — opaque, never surfaced to the user.
-_MODEL_ID = "qwen25-3b-titler"
+#_MODEL_ID = "qwen25-3b-titler"
+
+# Qwen3.5 3B Instruct
+_REPO_ID = "unsloth/Qwen3.5-4B-GGUF"
+_FILENAME = "Qwen3.5-4B-UD-Q4_K_XL.gguf"
+# Key within the titler's own LocalModelManager (rooted at titler_home_dir(),
+# never the shared chat-model directory) — opaque, never surfaced to the user.
+_MODEL_ID = "qwen35-4b-titler"
 
 _HOST = "127.0.0.1"
 # Distinct from the main chat model's default port (8042, LlamaServerConfig)
@@ -109,6 +109,12 @@ _PORT = 8043
 _LLAMA_ARGS: tuple[str, ...] = (
     "--n-gpu-layers",
     "0",
+    "--temp",
+    "1.4",
+    "--min-p",
+    "0.1",
+    "--top-p",
+    "0.8",
     "--ctx-size",
     "8192",
     "--jinja",
