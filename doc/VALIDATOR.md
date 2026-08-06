@@ -271,6 +271,63 @@ downloads it into the global `~/.kodo` (through the clone's `llama.cpp` symlink)
 before that scenario prompts. Artifacts land under `~/.kodo-validation/runs` by
 default (`--out` overrides). Entry point: `python -m kodo.validator.scenarios`.
 
+### 8a.1 Pinning a flavor: validating **sampling parameters**
+
+`Scenario.flavor` names a flavor id of `llm_under_test` to make active before
+the first prompt. The harness sends `local_llm.set_active_flavor` over the
+WebSocket (never touching `local-llm-registry.json` directly — the harness
+drives the server only through the protocol the extension uses, §1), between
+`ensure_local_llms_installed` and the first prompt.
+
+That ordering is deliberate and worth understanding: at that moment
+`llama-server` has **not yet been launched** for the run — it starts lazily on
+the first prompt — and the server-side handler only restarts it when it is
+already running for the affected model. So the call is pure persistence, and
+the first launch picks the flavor's `llama_args` up as its initial launch
+config. No restart, no race.
+
+This is what makes sampling testable end to end. A flavor's `llama_args` *are*
+`llama-server`'s command line, so a pinned run exercises the **CLI-level**
+layer of [SAMPLING.md](SAMPLING.md) §9 — exactly what a user gets by choosing
+that flavor from the sidebar dropdown — rather than the request-level session
+overrides. Re-running one scenario with different `flavor=` values is the
+intended way to compare presets ([QUANT_SAMPLING.md](QUANT_SAMPLING.md) §7).
+`None` (the default) leaves whatever the registry already resolves to, so every
+pre-existing scenario is unaffected.
+
+Note that no scenario pins a **seed**: one deterministic run says nothing about
+robustness, so a preset comparison should run a scenario several times and read
+the pass rate rather than trusting a single score.
+
+### 8a.2 Prompt attachments
+
+`Scenario.attachments` is `{index into prompts: [source paths]}` — a dict
+rather than a per-prompt field, so `prompts` stays a plain `list[str]` and
+existing scenarios are untouched. Each source is copied into
+`<run_dir>/attachments/` by `ValidationHarness.stage_attachment` before the run
+starts (so a missing file fails immediately, not after a model download), and
+sent with its prompt.
+
+**No protocol change is involved.** Attachments are a *client-side* convention:
+the extension prepends one control line, `<!--KODO_ATTACHMENTS:["/abs/a.md"]-->`,
+to the prompt text, and the server parses and strips it before the LLM sees
+anything ([WS_PROTOCOL.md](WS_PROTOCOL.md) §7.1). The harness does the same,
+so `MSG_PROMPT_SUBMIT` still carries plain `text`. The `TurnResult.prompt`
+recorded in the transcript is the **clean** text without the marker — what the
+LLM was actually asked.
+
+Attachments are staged **outside** the simulated workspace on purpose. The
+point of attaching a file rather than seeding it into a root is that
+`read_attachment` — which requires reproducing the attachment's UUID verbatim
+from context — becomes the *only* way to reach it. A file inside a root would
+be reachable with `find_files`/`read_file`, letting a run pass without ever
+exercising that path.
+
+`RootSpec.files` (`{path relative to the root: content}`) is the companion for
+small inline fixtures, written after `seed_from` is applied. It keeps a
+scenario's input data in the same file as the expected results its RVP asserts,
+which is where a reviewer needs to see both.
+
 **HuggingFace cache across runs.** Every run's server child has `HOME`
 redirected to its throwaway home, which would otherwise push HuggingFace's
 default cache under that home. `ServerProcess` (`build_child_env`) instead pins

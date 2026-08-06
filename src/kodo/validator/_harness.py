@@ -22,7 +22,10 @@ Everything lives under a single ``run_dir``::
 
 from __future__ import annotations
 
+import json
 import logging
+import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
@@ -31,6 +34,7 @@ from typing import Literal, cast
 from kodo.transport import (
     MSG_COMMAND_CONTROL_SET,
     MSG_EDIT_CONTROL_SET,
+    MSG_LOCAL_LLM_SET_ACTIVE_FLAVOR,
     MSG_MODE_SET,
     MSG_PROMPT_SUBMIT,
     MSG_STOP,
@@ -167,11 +171,13 @@ class ValidationHarness:
         vllm_complete_timeout: float = DEFAULT_COMPLETE_TIMEOUT,
         user_proxy_thinking_level: str | None = None,
         result_validation_thinking_level: str | None = None,
+        flavor: str | None = None,
     ) -> None:
         self.__run_dir = run_dir.resolve()
         self.__run_dir.mkdir(parents=True, exist_ok=True)
         self.__llm_under_test = llm_under_test
         self.__validation_llm = validation_llm
+        self.__flavor = flavor
         self.__template_home = template_home
         self.__settings_overrides = settings_overrides
         self.__server_log_level = server_log_level
@@ -266,11 +272,42 @@ class ValidationHarness:
             },
         )
         await self.__ensure_llms_installed(kodo_dir, ack)
+        await self.__pin_flavor()
         if self.__proxy is not None:
             self.__proxy.bind(self.__client, self.__transcript)
         if self.__workspace.roots:
             await self.sync_workspace()
         _log.info("Validation run ready: %s (session %s)", self.__run_dir, self.session_id)
+
+    async def __pin_flavor(self) -> None:
+        """Select the scenario's flavor for the LLM under test, if one was named.
+
+        Sent as ``local_llm.set_active_flavor`` over the WebSocket rather than
+        written into the cloned home's ``local-llm-registry.json`` directly —
+        same rule the rest of the harness follows (it drives the server only
+        through the protocol the extension uses, so drift breaks loudly).
+
+        Ordering matters: this runs after the models are installed but before
+        any prompt, and therefore before ``llama-server`` has ever been
+        launched for this run. The server-side handler only restarts
+        ``llama-server`` when it is *already running* for the affected model,
+        so at this point the call is pure persistence — the first launch,
+        triggered by the first prompt, picks the flavor's ``llama_args`` up
+        from the registry as its initial launch config. No restart, no race.
+        """
+        if not self.__flavor:
+            return
+        await self.client.request(
+            MSG_LOCAL_LLM_SET_ACTIVE_FLAVOR,
+            name=self.__llm_under_test,
+            flavor_id=self.__flavor,
+        )
+        self.__transcript.record(
+            "note",
+            "lifecycle",
+            {"event": "flavor", "model": self.__llm_under_test, "flavor_id": self.__flavor},
+        )
+        _log.info("Pinned flavor %r for %r", self.__flavor, self.__llm_under_test)
 
     def __pin_llm_under_test(self, overrides: dict[str, object] | None) -> dict[str, object]:
         """Force ``mode``/``models.local`` onto *overrides* for the LLM under test.
@@ -368,10 +405,40 @@ class ValidationHarness:
     # Prompting
     # ------------------------------------------------------------------
 
+    def stage_attachment(self, source: Path) -> Path:
+        """Copy *source* into the run's ``attachments/`` directory and return the copy.
+
+        Attachments are staged **outside** the simulated workspace on purpose:
+        the whole point of attaching a file rather than seeding it into a root
+        is that the only way to read it is ``read_attachment`` (which requires
+        reproducing the attachment's UUID verbatim). A file sitting inside a
+        workspace root would be reachable with ``find_files``/``read_file``,
+        letting a run pass without ever exercising that path.
+
+        Args:
+            source (Path): File to stage (untouched).
+
+        Returns:
+            Path: Absolute path of the staged copy, for the
+            ``<!--KODO_ATTACHMENTS:[…]-->`` marker.
+
+        Raises:
+            FileNotFoundError: If *source* does not exist.
+        """
+        src = source.resolve()
+        if not src.is_file():
+            raise FileNotFoundError(f"Attachment source is not a file: {src}")
+        dest_dir = self.__run_dir / "attachments"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / src.name
+        shutil.copy2(src, dest)
+        return dest
+
     async def submit_prompt(
         self,
         text: str,
         *,
+        attachments: Sequence[Path] | None = None,
         turn_timeout: float = 900.0,
         settle_seconds: float = 2.0,
     ) -> TurnResult:
@@ -382,6 +449,16 @@ class ValidationHarness:
 
         Args:
             text (str): The prompt text.
+            attachments (Sequence[Path] | None): Absolute paths to attach to
+                this prompt — normally the return values of
+                :meth:`stage_attachment`. Sent exactly the way the VS Code
+                extension sends them: a single
+                ``<!--KODO_ATTACHMENTS:["/abs/a.md"]-->`` control line
+                prepended to *text* (WS_PROTOCOL.md §7.1), which the server
+                parses and strips before the LLM ever sees the prompt. No
+                separate wire field exists, so this needs no protocol change.
+                The recorded ``TurnResult.prompt`` is the **clean** text,
+                without the marker, matching what the LLM was actually asked.
             turn_timeout (float): Seconds to wait for the turn to finish.
             settle_seconds (float): Resting-phase stability window (see
                 :meth:`ValidatorClient.wait_turn_end`).
@@ -401,8 +478,17 @@ class ValidationHarness:
         if self.__proxy is not None:
             self.__proxy.set_task_prompt(text)
         self.__submitted_prompts.append(text)
+        wire_text = text
+        if attachments:
+            marker = json.dumps([str(Path(p).resolve()) for p in attachments])
+            wire_text = f"<!--KODO_ATTACHMENTS:{marker}-->\n{text}"
+            self.__transcript.record(
+                "note",
+                "lifecycle",
+                {"event": "attachments", "paths": [str(Path(p).resolve()) for p in attachments]},
+            )
         client.begin_turn()
-        await client.request(MSG_PROMPT_SUBMIT, text=text)
+        await client.request(MSG_PROMPT_SUBMIT, text=wire_text)
         final_phase = await client.wait_turn_end(
             timeout=turn_timeout, settle_seconds=settle_seconds
         )

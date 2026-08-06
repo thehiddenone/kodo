@@ -331,3 +331,147 @@ async def test_harness_session_id_property_after_start(
         )
         await harness.start()
         assert harness.session_id == "test-session"
+
+
+# ---------------------------------------------------------------------------
+# Flavor pinning (Scenario.flavor -> local_llm.set_active_flavor)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_harness_start_pins_flavor_when_set(
+    tmp_path: Path,
+    _mock_deps: dict[str, Any],
+) -> None:
+    """A flavor= harness sends local_llm.set_active_flavor during start()."""
+    import kodo.validator._harness as _harness
+
+    with (
+        patch.object(_harness, "clone_kodo_home", _mock_deps["clone_kodo_home"]),
+        patch.object(_harness, "ServerProcess", _mock_deps["ServerProcess"]),
+        patch.object(_harness, "ValidatorClient", _mock_deps["ValidatorClient"]),
+        patch.object(
+            _harness,
+            "ensure_local_llms_installed",
+            _mock_deps["ensure_local_llms_installed"],
+        ),
+    ):
+        harness = ValidationHarness(
+            tmp_path / "run",
+            llm_under_test="test-llm",
+            validation_llm="fake-val",
+            flavor="test-llm-strong-tail-cull",
+        )
+        await harness.start()
+
+    calls = _mock_deps["ValidatorClient"].return_value.request.await_args_list
+    flavor_calls = [c for c in calls if c.args and c.args[0] == "local_llm.set_active_flavor"]
+    assert len(flavor_calls) == 1
+    assert flavor_calls[0].kwargs == {
+        "name": "test-llm",
+        "flavor_id": "test-llm-strong-tail-cull",
+    }
+
+
+@pytest.mark.asyncio
+async def test_harness_start_skips_flavor_when_unset(
+    tmp_path: Path,
+    _mock_deps: dict[str, Any],
+) -> None:
+    """No flavor= means no set_active_flavor call at all (registry default wins)."""
+    import kodo.validator._harness as _harness
+
+    with (
+        patch.object(_harness, "clone_kodo_home", _mock_deps["clone_kodo_home"]),
+        patch.object(_harness, "ServerProcess", _mock_deps["ServerProcess"]),
+        patch.object(_harness, "ValidatorClient", _mock_deps["ValidatorClient"]),
+        patch.object(
+            _harness,
+            "ensure_local_llms_installed",
+            _mock_deps["ensure_local_llms_installed"],
+        ),
+    ):
+        harness = ValidationHarness(
+            tmp_path / "run",
+            llm_under_test="test-llm",
+            validation_llm="fake-val",
+        )
+        await harness.start()
+
+    calls = _mock_deps["ValidatorClient"].return_value.request.await_args_list
+    assert not [c for c in calls if c.args and c.args[0] == "local_llm.set_active_flavor"]
+
+
+# ---------------------------------------------------------------------------
+# Prompt attachments (staging + the KODO_ATTACHMENTS marker)
+# ---------------------------------------------------------------------------
+
+
+def test_stage_attachment_copies_outside_the_workspace(tmp_path: Path) -> None:
+    """Staged attachments land in run_dir/attachments, never inside a root."""
+    src = tmp_path / "spec.md"
+    src.write_text("the spec", encoding="utf-8")
+    harness = ValidationHarness(
+        tmp_path / "run", llm_under_test="test-llm", validation_llm="fake-val"
+    )
+    staged = harness.stage_attachment(src)
+
+    assert staged.is_file()
+    assert staged.read_text(encoding="utf-8") == "the spec"
+    assert staged.parent == harness.run_dir / "attachments"
+    # The whole point: unreachable from the simulated workspace, so
+    # read_attachment is the only way in.
+    assert harness.workspace.physical_root not in staged.parents
+
+
+def test_stage_attachment_missing_source_raises(tmp_path: Path) -> None:
+    harness = ValidationHarness(
+        tmp_path / "run", llm_under_test="test-llm", validation_llm="fake-val"
+    )
+    with pytest.raises(FileNotFoundError):
+        harness.stage_attachment(tmp_path / "nope.md")
+
+
+@pytest.mark.asyncio
+async def test_submit_prompt_prepends_attachment_marker(tmp_path: Path) -> None:
+    """Attachments ride the same control line the VS Code extension sends."""
+    import json as _json
+
+    harness = ValidationHarness(
+        tmp_path / "run", llm_under_test="test-llm", validation_llm="fake-val"
+    )
+    client = MagicMock()
+    client.request = AsyncMock()
+    client.wait_turn_end = AsyncMock(return_value="awaiting_user")
+    client.begin_turn = MagicMock()
+    harness._ValidationHarness__client = client  # type: ignore[attr-defined]
+
+    a = tmp_path / "spec.md"
+    a.write_text("x", encoding="utf-8")
+    staged = harness.stage_attachment(a)
+
+    turn = await harness.submit_prompt("do the thing", attachments=[staged])
+
+    sent = client.request.await_args.kwargs["text"]
+    first, _, rest = sent.partition("\n")
+    assert first.startswith("<!--KODO_ATTACHMENTS:") and first.endswith("-->")
+    assert _json.loads(first[len("<!--KODO_ATTACHMENTS:") : -len("-->")]) == [str(staged)]
+    assert rest == "do the thing"
+    # The recorded prompt stays clean -- it is what the LLM actually saw.
+    assert turn.prompt == "do the thing"
+
+
+@pytest.mark.asyncio
+async def test_submit_prompt_without_attachments_is_unchanged(tmp_path: Path) -> None:
+    harness = ValidationHarness(
+        tmp_path / "run", llm_under_test="test-llm", validation_llm="fake-val"
+    )
+    client = MagicMock()
+    client.request = AsyncMock()
+    client.wait_turn_end = AsyncMock(return_value="awaiting_user")
+    client.begin_turn = MagicMock()
+    harness._ValidationHarness__client = client  # type: ignore[attr-defined]
+
+    await harness.submit_prompt("plain prompt")
+
+    assert client.request.await_args.kwargs["text"] == "plain prompt"

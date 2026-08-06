@@ -34,10 +34,19 @@ class RootSpec:
     Attributes:
         name: Workspace-folder display name.
         seed_from: Optional file/directory whose content initializes the root.
+        files: Small inline text fixtures written into the root after
+            *seed_from* is applied, as ``{path relative to the root: content}``.
+            For the common case of a scenario needing one or two small input
+            files (a CSV of test data, a config) this keeps the fixture in the
+            scenario file next to the expected results the RVP asserts, which
+            is where a reviewer needs to see it — no fixture tree to ship and
+            keep in sync. Use *seed_from* instead for anything larger than a
+            handful of lines.
     """
 
     name: str
     seed_from: Path | None = None
+    files: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -82,6 +91,25 @@ class Scenario:
             session's own ``hello``'s ``thinking_level`` field as it opens —
             pins the judge's whole session to this tier. Ignored unless
             ``result_validation_prompt`` is also set.
+        flavor: When set, the ``llm_under_test`` flavor id to make active
+            before the first prompt (``local_llm.set_active_flavor``, see
+            :meth:`~kodo.validator._harness.ValidationHarness.start`). This is
+            how a scenario pins **sampling parameters**: a flavor's
+            ``llama_args`` are ``llama-server``'s launch config, so the run
+            exercises exactly what a user gets by picking that flavor from the
+            sidebar dropdown — the CLI-level layer of doc/SAMPLING.md §9, not
+            the request-level session overrides. ``None`` leaves whatever the
+            registry already resolves to (normally the entry's ``default``).
+        attachments: Files to attach to specific prompts, as
+            ``{index into ``prompts``: [source paths]}``. Each source is
+            staged into ``<run_dir>/attachments/`` — deliberately outside the
+            workspace, see
+            :meth:`~kodo.validator._harness.ValidationHarness.stage_attachment`
+            — and sent with that prompt via the same
+            ``<!--KODO_ATTACHMENTS:[…]-->`` marker line the VS Code extension
+            uses, so no protocol change is involved. A dict rather than a
+            per-prompt field so that ``prompts`` stays a plain ``list[str]``
+            and every existing scenario is untouched.
     """
 
     name: str
@@ -98,6 +126,8 @@ class Scenario:
     eval_timeout: float = 900.0
     user_proxy_thinking_level: str | None = None
     result_validation_thinking_level: str | None = None
+    flavor: str | None = None
+    attachments: dict[int, list[Path]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -152,17 +182,30 @@ async def run_scenario(
         result_validation_prompt=scenario.result_validation_prompt,
         user_proxy_thinking_level=scenario.user_proxy_thinking_level,
         result_validation_thinking_level=scenario.result_validation_thinking_level,
+        flavor=scenario.flavor,
     )
     for root in scenario.roots:
         harness.workspace.add_root(root.name, seed_from=root.seed_from)
+        for rel_path, content in root.files.items():
+            harness.workspace.write_file(root.name, rel_path, content)
+    # Staged before the run starts so a missing/unreadable attachment fails
+    # immediately, rather than after a model download and a first turn.
+    staged: dict[int, list[Path]] = {
+        index: [harness.stage_attachment(src) for src in sources]
+        for index, sources in scenario.attachments.items()
+    }
 
     turns: list[TurnResult] = []
     evaluation: EvaluationResult | None = None
     async with harness:
         await harness.apply_modes(scenario.modes)
-        for prompt in scenario.prompts:
+        for index, prompt in enumerate(scenario.prompts):
             _log.info("[%s] prompt: %s", scenario.name, prompt[:80])
-            turn = await harness.submit_prompt(prompt, turn_timeout=scenario.turn_timeout)
+            turn = await harness.submit_prompt(
+                prompt,
+                attachments=staged.get(index),
+                turn_timeout=scenario.turn_timeout,
+            )
             turns.append(turn)
             if turn.final_phase in ("error", "done"):
                 break

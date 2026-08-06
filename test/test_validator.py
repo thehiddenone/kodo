@@ -1089,3 +1089,94 @@ async def test_llm_complete_fails_cleanly_without_llama(client: ValidatorClient)
     assert resp["type"] == "llm.complete.done"
     assert resp["ok"] is False
     assert resp["error"]
+
+
+# ---------------------------------------------------------------------------
+# PromptRegistry.path() and the attachment_report scenario's ground truth
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_registry_path_returns_existing_file() -> None:
+    from kodo.validator.prompts import PROMPTS
+
+    path = PROMPTS.path("attachment_report/spec")
+    assert path.is_file()
+    assert path.name == "spec.md"
+    # Same content get() would hand back.
+    assert path.read_text(encoding="utf-8") == PROMPTS.get("attachment_report/spec")
+
+
+def test_prompt_registry_path_unknown_name_raises() -> None:
+    from kodo.validator.prompts import PROMPTS, PromptNotFoundError
+
+    with pytest.raises(PromptNotFoundError):
+        PROMPTS.path("attachment_report/does_not_exist")
+
+
+def test_prompt_registry_path_rejects_traversal() -> None:
+    from kodo.validator.prompts import PROMPTS, PromptNotFoundError
+
+    with pytest.raises(PromptNotFoundError):
+        PROMPTS.path("../../etc/passwd")
+
+
+def test_attachment_report_scenario_ground_truth_matches_its_fixture() -> None:
+    """The RVP's hardcoded expected numbers must match data.csv, or scoring is wrong.
+
+    The RVP grades against literal totals; the fixture is the only thing that
+    actually produces them. Nothing else keeps the two in sync, so this test
+    recomputes the fixture and asserts both the numbers and the above/below
+    split the RVP asserts.
+    """
+    import csv
+    import io
+    from collections import defaultdict
+
+    from kodo.validator.prompts import PROMPTS
+    from kodo.validator.scenarios import resolve_selectors
+
+    ((_, scenario),) = resolve_selectors(["laguna-s-2-1.attachment_report"])
+    rows = list(csv.DictReader(io.StringIO(scenario.roots[0].files["data.csv"])))
+
+    totals: dict[str, float] = defaultdict(float)
+    for row in rows:
+        totals[row["region"]] += int(row["units"]) * float(row["unit_price"])
+    totals = {k: round(v, 2) for k, v in totals.items()}
+    mean = round(sum(totals.values()) / len(totals), 2)
+
+    assert totals == {
+        "north": 758.00,
+        "south": 925.50,
+        "east": 677.50,
+        "west": 997.50,
+        "central": 1239.75,
+    }
+    assert mean == 919.65
+    assert sorted(k for k, v in totals.items() if v > mean) == ["central", "south", "west"]
+    assert sorted(k for k, v in totals.items() if v <= mean) == ["east", "north"]
+
+    # Every figure the RVP grades against must appear in it verbatim.
+    rvp = PROMPTS.get("attachment_report/rvp")
+    for token in ("758.00", "925.50", "677.50", "997.50", "1239.75", "919.65"):
+        assert token in rvp, f"RVP is missing the expected value {token}"
+
+    # The spec asks for a test distinguishing mean-of-region-totals from
+    # mean-of-rows; that test is only meaningful if the two actually differ.
+    row_mean = round(sum(int(r["units"]) * float(r["unit_price"]) for r in rows) / len(rows), 2)
+    assert abs(row_mean - mean) > 1.0
+
+
+def test_attachment_report_scenario_pins_an_existing_flavor() -> None:
+    """Scenario.flavor must name a real flavor of the pinned LUT."""
+    from kodo.llms.local_registry import _catalog
+    from kodo.validator.scenarios import resolve_selectors
+
+    ((_, scenario),) = resolve_selectors(["laguna-s-2-1.attachment_report"])
+    entries = {e.name: e for e in _catalog._HARDCODED_LOCAL_MODELS}
+
+    assert scenario.llm_under_test in entries
+    flavor_ids = {f.id for f in entries[scenario.llm_under_test].flavors}
+    assert scenario.flavor in flavor_ids, f"{scenario.flavor!r} not among {sorted(flavor_ids)}"
+    # The spec is attached to the first prompt only.
+    assert set(scenario.attachments) == {0}
+    assert scenario.attachments[0][0].is_file()

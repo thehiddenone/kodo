@@ -637,11 +637,25 @@ GGUFs use `make_default_kv_fp16` instead, for their KV cache type); a
 regular *custom* flavor, not baked into Python source) from its own "Add
 local LLM" form the moment it's created (`_seed_default_flavor`,
 `kodo/server/_app.py`) — see §4 above. Beyond that one, flavors are the
-mechanism behind two more use cases: extended-context variants (e.g. a "1M
+mechanism behind three more use cases: extended-context variants (e.g. a "1M
 Context" flavor using YaRN rope-scaling on a Qwen quant whose default
-`context_window` is 262144) and VRAM-fit variants (GPU-offload flags like
+`context_window` is 262144), VRAM-fit variants (GPU-offload flags like
 `--n-cpu-moe`/`--override-tensor`/`--tensor-split` tuned for a specific card,
-for the large models that "don't fit on GPU VRAM" as-is). Unlike thinking
+for the large models that "don't fit on GPU VRAM" as-is), and **sampling
+presets** — a flavor whose only difference from `default` is its sampling
+flags. The Laguna-S-2.1 catalog is the one family that currently ships these:
+each of its 20 quants gets `default` plus five presets — "Light/Medium/Strong
+tail cull", "Low temperature" and "Near-greedy" — built by `_quant_flavors`
+from the `_PRESETS` table in
+`kodo/llms/local_registry/_hardcoded_laguna_s_21.py`, with **identical values
+on every quant**. doc/QUANT_SAMPLING.md is the reasoning behind those values
+and the constraints on changing them; two are worth repeating here. "Full
+replace, not merge" (below) is why each preset repeats the whole
+`--cache-type-k/v`/`--ctx-size`/`--n-gpu-layers` block. And **no flavor may
+enable DRY or any other repetition penalty** — one did, and it made
+`read_attachment` fail, because penalising verbatim reproduction from context
+also penalises quoting back the attachment's UUID; loop handling belongs to
+the watchdog (doc/STUCK_DETECTION.md §2.7/§2.10). Unlike thinking
 level (§4.5, session-scoped, applied per-request), a flavor changes actual
 llama-server **launch** arguments, so it is a **global** concept — one active
 flavor per entry, shared by every open session/window, exactly like which

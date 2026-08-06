@@ -11,6 +11,11 @@ declared), [LOCAL_INFERENCE.md](LOCAL_INFERENCE.md) (the launch flags Kōdo
 forces regardless of flavor), and [SESSIONS.md](SESSIONS.md) (session-scoped
 state, where the per-quant overrides live).
 
+For *which* of these knobs to reach for on a heavily quantized GGUF, and how
+the recommended values shift as the bit width drops, see
+[QUANT_SAMPLING.md](QUANT_SAMPLING.md) — it applies this reference rather than
+duplicating it.
+
 ---
 
 ## 1. The two layers, and why both exist
@@ -585,6 +590,23 @@ dry_multiplier 0.8   dry_base 1.75   dry_allowed_length 4
 
 The GGUF publisher's own recommended settings (usually in the HF model card)
 beat all of the above — start there and adjust.
+
+**A lossy quant shifts these numbers.** The starting points above assume a
+model running near its original precision. Below roughly Q4, quantization noise
+starts reordering close candidates, and the fix is to **truncate harder** —
+raise `min_p`, or add `top_n_sigma` — rather than to change temperature, which
+scales the noise and the signal alike. [QUANT_SAMPLING.md](QUANT_SAMPLING.md)
+has the reasoning and a preset table; the Laguna-S-2.1 catalog entries ship
+those presets as predefined flavors.
+
+**Do not use DRY or `repeat_penalty` for agentic work at any bit width.** Both
+penalise reproducing a token sequence already in context — which is exactly
+what quoting back an attachment UUID, a file path, or an identifier requires.
+A DRY-enabled flavor shipped once and made `read_attachment` fail outright.
+Repetition loops are handled upstream by the watchdog instead
+([STUCK_DETECTION.md](STUCK_DETECTION.md) §2.7/§2.10), which sees blocks over
+rounds and can tell a loop from a legitimately repeated identifier.
+QUANT_SAMPLING.md §3f has the arithmetic.
 
 ### 8d. Sensible ranges, and the ⚠ that flags them
 

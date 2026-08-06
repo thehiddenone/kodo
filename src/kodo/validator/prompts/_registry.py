@@ -74,6 +74,37 @@ class PromptRegistry:
         self._cache[name] = text
         return text
 
+    def path(self, name: str) -> Path:
+        """Return the ``.md`` **file path** of the prompt named *name*.
+
+        The counterpart to :meth:`get` for the case where a scenario needs the
+        file itself rather than its text — specifically a prompt delivered as a
+        *prompt attachment* (``Scenario.attachments``), which the harness has
+        to stage on disk and hand to the server as an absolute path. Keeping
+        such a spec here rather than in a separate fixture tree means every
+        piece of scenario-authored prose stays in one registry.
+
+        Args:
+            name: Same form :meth:`get` accepts.
+
+        Returns:
+            Path: The resolved, existing ``.md`` file.
+
+        Raises:
+            PromptNotFoundError: If *name* is malformed or names no ``.md``
+                file — unlike :meth:`get`, existence is checked here rather
+                than surfacing later as a read error in the harness.
+        """
+        path = self._resolve(name)
+        if not path.is_file():
+            available = ", ".join(self.names()) or "(none)"
+            raise PromptNotFoundError(
+                f"No prompt {name!r} (looked for "
+                f"{path.relative_to(self._root)} under {self._root}). "
+                f"Available: {available}"
+            )
+        return path
+
     def names(self) -> list[str]:
         """Every available prompt name (its ``/``-joined path, no ``.md``), sorted."""
         return sorted(
