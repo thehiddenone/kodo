@@ -84,11 +84,11 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Qwen2.5 3B Instruct
-#_REPO_ID = "Qwen/Qwen2.5-3B-Instruct-GGUF"
-#_FILENAME = "qwen2.5-3b-instruct-q4_k_m.gguf"
+# _REPO_ID = "Qwen/Qwen2.5-3B-Instruct-GGUF"
+# _FILENAME = "qwen2.5-3b-instruct-q4_k_m.gguf"
 # Key within the titler's own LocalModelManager (rooted at titler_home_dir(),
 # never the shared chat-model directory) — opaque, never surfaced to the user.
-#_MODEL_ID = "qwen25-3b-titler"
+# _MODEL_ID = "qwen25-3b-titler"
 
 # Qwen3.5 3B Instruct
 _REPO_ID = "unsloth/Qwen3.5-4B-GGUF"

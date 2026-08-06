@@ -336,11 +336,7 @@ def _write_suite_report(result: SuiteResult) -> None:
         f"# Validation suite report — {result.suite.name}",
         "",
         f"- **Judge LLM:** {result.suite.judge_llm}"
-        + (
-            f" (flavor: {result.suite.judge_llm_flavor})"
-            if result.suite.judge_llm_flavor
-            else ""
-        ),
+        + (f" (flavor: {result.suite.judge_llm_flavor})" if result.suite.judge_llm_flavor else ""),
         f"- **Entries:** {len(result.entries)}",
         "",
         "## Per-entry scores",

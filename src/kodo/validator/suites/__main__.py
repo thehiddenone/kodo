@@ -201,8 +201,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "selectors",
         nargs="*",
         metavar="SELECTOR",
-        help="Suite id (e.g. full_regression), a submodule (all suites under "
-        "it), or 'all'.",
+        help="Suite id (e.g. full_regression), a submodule (all suites under it), or 'all'.",
     )
     parser.add_argument(
         "--out",

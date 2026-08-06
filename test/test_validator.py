@@ -898,8 +898,7 @@ def test_build_child_env_respects_existing_hf_home(
 # ---------------------------------------------------------------------------
 
 _FAKE_SCENARIO = (
-    "from kodo.validator import Scenario\n"
-    "SCENARIO = Scenario(name={name!r}, prompts=['p'])\n"
+    "from kodo.validator import Scenario\nSCENARIO = Scenario(name={name!r}, prompts=['p'])\n"
 )
 
 
@@ -1000,9 +999,9 @@ def test_toolchain_scenarios_share_prompts_and_vary_by_language() -> None:
 
     expected_ids = {f"toolchain_{slug}" for slug in _TOOLCHAIN_LANGUAGES}
     resolved = dict(scn.resolve_selectors(sorted(expected_ids)))
-    rvp = PROMPTS.get("tictactoe_toolchain/rvp")
-    upp = PROMPTS.get("tictactoe_toolchain/upp")
-    task_template = PROMPTS.get("tictactoe_toolchain/task")
+    rvp = PROMPTS.get("toolchain/rvp")
+    upp = PROMPTS.get("toolchain/upp")
+    task_template = PROMPTS.get("toolchain/task")
 
     tasks: dict[str, str] = {}
     for dotted_id, scenario in resolved.items():
@@ -1029,9 +1028,9 @@ def test_prompt_registry_resolution_and_guards() -> None:
         "tictactoe/sparse_task",
         "tictactoe/upp",
         "tictactoe/rvp",
-        "tictactoe_toolchain/task",
-        "tictactoe_toolchain/upp",
-        "tictactoe_toolchain/rvp",
+        "toolchain/task",
+        "toolchain/upp",
+        "toolchain/rvp",
     }
     # A missing prompt raises, and the message lists what is available.
     with pytest.raises(PromptNotFoundError, match="Available:"):

@@ -428,15 +428,16 @@ A prompt can also carry a `{placeholder}` a scenario file fills in with
 `str.format()` before handing it to `Scenario.prompts` — the variation doesn't
 always need a second `_task` file. The `toolchain_<language>` family (12
 files, `toolchain_c.py` … `toolchain_typescript.py`) does this: all twelve
-pull the same `tictactoe_toolchain/task` and format in a different
-`language`, and all share one `tictactoe_toolchain/upp` and
-`tictactoe_toolchain/rvp`. This family exercises **Problem Solver's toolchain
-triggers** (an explicit "write tests" + "set up the toolchain" ask), so a
-clean run spawns `toolchain_builder` for the named language; its `_rvp` is
-also the first to lean on the judge's `toolchain_build` capability (§9.2) to
-get real build/test evidence rather than inferring from a read-only pass, and
-explicitly excludes the computer opponent's playing strength/algorithm from
-scoring — only its legality.
+pull the same `toolchain/task` and format in a different `language`, and all
+share one `toolchain/upp` and `toolchain/rvp`. The task is a CLI Fibonacci
+number calculator (1-indexed, `N` as a command-line argument), with tests and
+a toolchain explicitly requested. This family exercises **Problem Solver's
+toolchain triggers** (an explicit "write tests" + "set up the toolchain"
+ask), so a clean run spawns `toolchain_builder` for the named language; its
+`_rvp` is also the first to lean on the judge's `toolchain_build` capability
+(§9.2) to get real build/test evidence rather than inferring from a
+read-only pass, and explicitly excludes big-number/overflow behavior from
+scoring — ordinary integer types are sufficient.
 
 ## 9. Phase 2 — the validation LLM in the loop
 

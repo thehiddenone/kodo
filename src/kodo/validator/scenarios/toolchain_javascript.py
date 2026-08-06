@@ -1,13 +1,11 @@
-"""Scenario: CLI Tic-Tac-Toe vs. computer, with tests + toolchain, in JavaScript.
+"""Scenario: CLI Fibonacci number calculator, with tests + toolchain, in JavaScript.
 
 Selector: ``toolchain_javascript`` (or ``all``).
 
-Part of the ``tictactoe_toolchain`` family (see
-``prompts/tictactoe_toolchain/``): a fully-specified CLI Tic-Tac-Toe-vs-computer
-task that explicitly asks for tests and a build toolchain, so Problem Solver's
-toolchain triggers fire and it spawns ``toolchain_builder`` for JavaScript. The
-computer opponent's strength/algorithm is deliberately left open (see the RVP)
-— only its legality is graded. This file is content-only (see
+Part of the ``toolchain`` family (see ``prompts/toolchain/``): a
+fully-specified CLI Fibonacci-calculator task that explicitly asks for tests
+and a build toolchain, so Problem Solver's toolchain triggers fire and it
+spawns ``toolchain_builder`` for JavaScript. This file is content-only (see
 :mod:`kodo.validator._scenario`) — the LLM under test and judge are pinned by
 whatever runs it (a suite, or ``--llm-under-test``/``--validation-llm``). A
 judge with ``toolchain_build`` access can actually run the generated toolchain
@@ -21,10 +19,10 @@ from kodo.validator.prompts import PROMPTS
 
 SCENARIO = Scenario(
     name="toolchain-javascript",
-    prompts=[PROMPTS.get("tictactoe_toolchain/task").format(language="JavaScript")],
-    user_proxy_prompt=PROMPTS.get("tictactoe_toolchain/upp"),
-    result_validation_prompt=PROMPTS.get("tictactoe_toolchain/rvp"),
-    roots=[RootSpec(name="tictactoe-javascript")],
+    prompts=[PROMPTS.get("toolchain/task").format(language="JavaScript")],
+    user_proxy_prompt=PROMPTS.get("toolchain/upp"),
+    result_validation_prompt=PROMPTS.get("toolchain/rvp"),
+    roots=[RootSpec(name="fibonacci-javascript")],
     # Interactive + problem-solving, friction-free gates: the task is fully
     # specified (no ask_user expected), and the explicit "write tests" +
     # "set up the toolchain" asks are what trigger Problem Solver to spawn
