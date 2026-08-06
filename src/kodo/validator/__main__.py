@@ -1,19 +1,28 @@
-"""Entry point for ``python -m kodo.validator`` — run validation scenarios.
+"""Entry point for ``python -m kodo.validator`` — run one or more scenarios
+against a single, externally-named LLM under test.
 
 Two ways to describe what to run:
 
 * **Scenario file** — ``--scenario path/to/file.py``: a plain Python file
   defining ``SCENARIO`` (a :class:`~kodo.validator.Scenario`) or
-  ``SCENARIOS`` (a list of them). This is the intended form once real
-  validation suites exist, since it can carry scripted users and seeds.
+  ``SCENARIOS`` (a list of them). Scenarios are content-only (no LLM named on
+  the file itself, see :mod:`kodo.validator._scenario`), so every scenario
+  this run resolves is executed against the same ``--llm-under-test``/
+  ``--validation-llm``/``--flavor``.
 * **Inline flags** — ``--prompt``/``--root``/``--workflow``/… for a quick
   ad-hoc run without writing a file.
+
+``--llm-under-test`` and ``--validation-llm`` are always mandatory (there is
+no meaningful default); ``--flavor`` defaults to ``"default"``. To validate
+*several* LLMs together (each potentially with its own scenarios and flavor)
+and get one final comparative summary, use a
+:class:`~kodo.validator.ValidationSuite` instead — see
+``python -m kodo.validator.suites``.
 
 Every run gets an isolated kodo home cloned from ``--template-home``
 (``bin/``, ``llama.cpp/``, and ``titler/`` symlinked, per-run state fresh,
 the rest copied), its own workspace directories, and a ``transcript.jsonl``
-+ ``summary.json`` under ``--out``. Scoring is phase 2: results print with
-``score=None`` for now.
++ ``summary.json`` under ``--out``.
 """
 
 from __future__ import annotations
@@ -51,11 +60,24 @@ def main(argv: list[str] | None = None) -> int:
     if not scenarios:
         print("Nothing to run: give --scenario FILE or at least one --prompt.", file=sys.stderr)
         return 2
+    if not args.llm_under_test or not args.validation_llm:
+        print("--llm-under-test and --validation-llm are required.", file=sys.stderr)
+        return 2
 
     template_home = _resolve_template_home(args.template_home)
     out_dir = Path(args.out).resolve()
 
-    results = asyncio.run(_run_all(scenarios, out_dir, template_home))
+    results = asyncio.run(
+        _run_all(
+            scenarios,
+            out_dir,
+            template_home,
+            llm_under_test=str(args.llm_under_test),
+            validation_llm=str(args.validation_llm),
+            flavor=str(args.flavor),
+            validation_llm_flavor=args.validation_llm_flavor,
+        )
+    )
     failed = 0
     for result in results:
         phases = [t.final_phase for t in result.turns]
@@ -69,7 +91,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 async def _run_all(
-    scenarios: list[Scenario], out_dir: Path, template_home: Path | None
+    scenarios: list[Scenario],
+    out_dir: Path,
+    template_home: Path | None,
+    *,
+    llm_under_test: str,
+    validation_llm: str,
+    flavor: str,
+    validation_llm_flavor: str | None,
 ) -> list[ScenarioResult]:
     """Run scenarios sequentially (each with its own server + home).
 
@@ -77,6 +106,10 @@ async def _run_all(
         scenarios (list[Scenario]): Scenarios to execute, in order.
         out_dir (Path): Parent artifact directory.
         template_home (Path | None): ``.kodo`` template to clone per run.
+        llm_under_test (str): Local registry name every scenario runs against.
+        validation_llm (str): Local registry name of the judge/proxy LLM.
+        flavor (str): ``llm_under_test`` flavor id.
+        validation_llm_flavor (str | None): ``validation_llm`` flavor id.
 
     Returns:
         list[ScenarioResult]: One result per scenario.
@@ -84,7 +117,17 @@ async def _run_all(
     results: list[ScenarioResult] = []
     for scenario in scenarios:
         _log.info("Running scenario %s", scenario.name)
-        results.append(await run_scenario(scenario, out_dir, template_home=template_home))
+        results.append(
+            await run_scenario(
+                scenario,
+                out_dir,
+                llm_under_test=llm_under_test,
+                validation_llm=validation_llm,
+                flavor=flavor,
+                validation_llm_flavor=validation_llm_flavor,
+                template_home=template_home,
+            )
+        )
     return results
 
 
@@ -129,20 +172,35 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Validator log level (default: INFO).",
     )
-    # Inline (ad-hoc) scenario flags:
-    parser.add_argument("--name", default="adhoc", help="Inline scenario name.")
+    # LLM(s) every resolved scenario runs against — mandatory regardless of
+    # whether the scenario(s) came from --scenario or inline flags, since a
+    # Scenario itself names no LLM (kodo.validator._scenario).
     parser.add_argument(
         "--llm-under-test",
         default=None,
         metavar="NAME",
-        help="Local registry name of the LLM to exercise (ad-hoc runs; mandatory).",
+        help="Local registry name of the LLM to exercise (mandatory).",
     )
     parser.add_argument(
         "--validation-llm",
         default=None,
         metavar="NAME",
-        help="Local registry name of the fixed validation/judge LLM (ad-hoc runs; mandatory).",
+        help="Local registry name of the fixed validation/judge LLM (mandatory).",
     )
+    parser.add_argument(
+        "--flavor",
+        default="default",
+        metavar="FLAVOR_ID",
+        help="llm_under_test flavor id to pin before the first prompt (default: 'default').",
+    )
+    parser.add_argument(
+        "--validation-llm-flavor",
+        default=None,
+        metavar="FLAVOR_ID",
+        help="validation_llm flavor id to pin the same way (default: leave as-is).",
+    )
+    # Inline (ad-hoc) scenario flags:
+    parser.add_argument("--name", default="adhoc", help="Inline scenario name.")
     parser.add_argument(
         "--prompt",
         action="append",
@@ -225,8 +283,6 @@ def _resolve_scenarios(args: argparse.Namespace) -> list[Scenario]:
         return _load_scenario_file(Path(args.scenario))
     if not args.prompt:
         return []
-    if not args.llm_under_test or not args.validation_llm:
-        raise SystemExit("--llm-under-test and --validation-llm are required for ad-hoc runs.")
     roots = [_parse_root(spec) for spec in cast(list[str], args.root)]
     modes = Modes(
         autonomous=bool(args.autonomous),
@@ -238,8 +294,6 @@ def _resolve_scenarios(args: argparse.Namespace) -> list[Scenario]:
         Scenario(
             name=str(args.name),
             prompts=list(args.prompt),
-            llm_under_test=str(args.llm_under_test),
-            validation_llm=str(args.validation_llm),
             roots=roots,
             modes=modes,
             turn_timeout=float(args.turn_timeout),

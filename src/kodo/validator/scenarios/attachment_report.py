@@ -1,12 +1,15 @@
 """Scenario: attachment-driven analysis + tests + toolchain, then a data-driven report.
 
-Selector: ``laguna-s-2-1.attachment_report`` (or ``laguna-s-2-1`` / ``all``).
+Selector: ``attachment_report`` (or ``all``).
 
-Built to validate **sampling parameters** (doc/QUANT_SAMPLING.md), which is why
-it is the first scenario to use ``Scenario.flavor``: the pinned flavor's
-``llama_args`` are ``llama-server``'s launch config, so a run measures exactly
-what a user gets by choosing that flavor from the sidebar. Re-run the same
-scenario with a different ``flavor=`` to compare presets.
+Built to validate **sampling parameters** (doc/QUANT_SAMPLING.md) — the first
+scenario built around this. This file is content-only (see
+:mod:`kodo.validator._scenario`); the LLM under test, its flavor, and the
+judge are pinned by whatever runs it — see :mod:`kodo.validator.suites` for a
+shipped pin. A flavor's ``llama_args`` are ``llama-server``'s launch config,
+so a run measures exactly what a user gets by choosing that flavor from the
+sidebar. Re-run the same scenario against a different ``LLMUnderTest.flavor``
+to compare presets.
 
 It chains the four things a lossy quant tends to break, in one pipeline:
 
@@ -72,12 +75,6 @@ SCENARIO = Scenario(
     attachments={0: [PROMPTS.path("attachment_report/spec")]},
     user_proxy_prompt=PROMPTS.get("attachment_report/upp"),
     result_validation_prompt=PROMPTS.get("attachment_report/rvp"),
-    llm_under_test="unsloth-laguna-s-2-1-mxfp4-moe",
-    validation_llm="unsloth-qwen36-27b-q8-k-xl",
-    # Swap this for another preset id to compare sampling settings; None would
-    # fall back to the entry's `default` flavor (llama.cpp's own sampling
-    # defaults).
-    flavor="unsloth-laguna-s-2-1-mxfp4-moe-light-tail-cull",
     roots=[RootSpec(name="revenue-analysis", files={"data.csv": _DATA_CSV})],
     # Interactive + problem-solving with friction-free gates: the spec is
     # complete (no ask_user expected — the UPP is a safety net that refuses to

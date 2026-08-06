@@ -449,8 +449,8 @@ of it was measured on Laguna weights — and the DRY incident (§3f) is precisel
 what that costs: a change that is correct in mechanism and catastrophic in
 practice. The scenario below exists to close that gap.
 
-**`hatch run validate laguna-s-2-1.attachment_report`**
-(`kodo/validator/scenarios/laguna-s-2-1/attachment_report.py`) chains the four
+**`hatch run validate attachment_report`**
+(`kodo/validator/scenarios/attachment_report.py`) chains the four
 things a lossy quant or a bad sampling setting tends to break:
 
 1. **Reading an attachment.** The whole task specification lives in an attached

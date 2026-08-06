@@ -8,6 +8,15 @@ with a ``result_validation_prompt`` the run ends with a judge session whose
 verdict fills :attr:`ScenarioResult.score` (0 = fail … 100 = perfect) and
 ``<run_dir>/report.md``. Without them, phase-1 behaviour is unchanged
 (scripted answers, ``score=None``).
+
+A ``Scenario`` is content-only: workspace, prompts, and behaviour under test —
+it names no LLM. **Which** LLM (and flavor) plays the LUT, and which plays the
+judge, is supplied by the caller of :func:`run_scenario` (mandatory
+``llm_under_test``/``validation_llm``, optional ``flavor``/
+``validation_llm_flavor``) or, for a batch, by a
+:class:`~kodo.validator._suite.ValidationSuite` (doc/VALIDATOR.md §8a/§10).
+This is what lets the same scenario content run against several LUTs without
+duplicating the file.
 """
 
 from __future__ import annotations
@@ -51,18 +60,11 @@ class RootSpec:
 
 @dataclass(frozen=True)
 class Scenario:
-    """A complete, repeatable validation recipe.
+    """A complete, repeatable validation recipe — content-only, no LLM pinned.
 
     Attributes:
         name: Scenario identifier (used for the run directory name).
         prompts: Prompt sequence, submitted one turn at a time.
-        llm_under_test: Local registry name of the model this run exercises
-            — the harness pins it as the active model and downloads it first
-            if missing. Mandatory: there is no meaningful default.
-        validation_llm: Local registry name of the fixed, capable model
-            reserved for the (not yet built) Phase 2 evaluator — ensured
-            present/downloaded but not otherwise invoked in phase 1.
-            Mandatory: there is no meaningful default.
         roots: Simulated workspace folders (one = single-root VS Code window,
             several = multi-root; for a ``guided`` workflow scenario these are
             the bound project roots too — Guided mode has no separate binding
@@ -91,15 +93,6 @@ class Scenario:
             session's own ``hello``'s ``thinking_level`` field as it opens —
             pins the judge's whole session to this tier. Ignored unless
             ``result_validation_prompt`` is also set.
-        flavor: When set, the ``llm_under_test`` flavor id to make active
-            before the first prompt (``local_llm.set_active_flavor``, see
-            :meth:`~kodo.validator._harness.ValidationHarness.start`). This is
-            how a scenario pins **sampling parameters**: a flavor's
-            ``llama_args`` are ``llama-server``'s launch config, so the run
-            exercises exactly what a user gets by picking that flavor from the
-            sidebar dropdown — the CLI-level layer of doc/SAMPLING.md §9, not
-            the request-level session overrides. ``None`` leaves whatever the
-            registry already resolves to (normally the entry's ``default``).
         attachments: Files to attach to specific prompts, as
             ``{index into ``prompts``: [source paths]}``. Each source is
             staged into ``<run_dir>/attachments/`` — deliberately outside the
@@ -114,8 +107,6 @@ class Scenario:
 
     name: str
     prompts: list[str]
-    llm_under_test: str = field(kw_only=True)
-    validation_llm: str = field(kw_only=True)
     roots: list[RootSpec] = field(default_factory=list)
     modes: Modes = field(default_factory=Modes)
     user: UserSimulator | None = None
@@ -126,7 +117,6 @@ class Scenario:
     eval_timeout: float = 900.0
     user_proxy_thinking_level: str | None = None
     result_validation_thinking_level: str | None = None
-    flavor: str | None = None
     attachments: dict[int, list[Path]] = field(default_factory=dict)
 
 
@@ -138,6 +128,14 @@ class ScenarioResult:
         scenario: The executed scenario.
         run_dir: Artifact directory (home, workspace, transcript, and —
             when evaluated — ``report.md`` + ``judge-transcript.jsonl``).
+        llm_under_test: Local registry name of the LLM this run actually
+            exercised (supplied by the caller of :func:`run_scenario` — the
+            scenario itself carries no LLM, see the module docstring).
+        validation_llm: Local registry name of the judge/proxy LLM this run
+            actually used.
+        flavor: The ``llm_under_test`` flavor id pinned for this run.
+        validation_llm_flavor: The ``validation_llm`` flavor id pinned for
+            this run, or None if it was left unpinned.
         turns: Per-prompt results, in order.
         score: The judge's 0–100 verdict. None when the scenario carried no
             ``result_validation_prompt`` or a turn ended in ``error`` (the
@@ -148,6 +146,10 @@ class ScenarioResult:
 
     scenario: Scenario
     run_dir: Path
+    llm_under_test: str
+    validation_llm: str
+    flavor: str
+    validation_llm_flavor: str | None
     turns: list[TurnResult]
     score: float | None = None
     evaluation: EvaluationResult | None = None
@@ -157,14 +159,35 @@ async def run_scenario(
     scenario: Scenario,
     out_dir: Path,
     *,
+    llm_under_test: str,
+    validation_llm: str,
+    flavor: str = "default",
+    validation_llm_flavor: str | None = None,
     template_home: Path | None = None,
 ) -> ScenarioResult:
-    """Execute one scenario in a fresh isolated harness.
+    """Execute one scenario in a fresh isolated harness against one named LLM.
+
+    A ``Scenario`` is content-only (module docstring); the LLM(s) it runs
+    against are supplied here, not on the scenario. This is also the
+    extension point a :class:`~kodo.validator._suite.ValidationSuite` uses to
+    run the same scenario against several LUTs.
 
     Args:
         scenario (Scenario): The recipe to run.
         out_dir (Path): Parent directory for run artifacts; the run itself
             lands in ``out_dir/<name>-<timestamp>/``.
+        llm_under_test (str): Local registry name of the model this run
+            exercises. Mandatory: there is no meaningful default.
+        validation_llm (str): Local registry name of the fixed, capable model
+            that answers UPP questions and judges the RVP. Mandatory: there
+            is no meaningful default.
+        flavor (str): ``llm_under_test`` flavor id to make active before the
+            first prompt (``local_llm.set_active_flavor``). Defaults to
+            ``"default"`` — every run pins a known, deterministic flavor
+            unless the caller names another.
+        validation_llm_flavor (str | None): ``validation_llm`` flavor id to
+            make active the same way. None (the default) leaves whatever the
+            registry already resolves to for it.
         template_home (Path | None): ``.kodo`` template for the isolated home.
 
     Returns:
@@ -173,8 +196,8 @@ async def run_scenario(
     run_dir = out_dir / f"{scenario.name}-{time.strftime('%Y%m%d-%H%M%S')}"
     harness = ValidationHarness(
         run_dir,
-        llm_under_test=scenario.llm_under_test,
-        validation_llm=scenario.validation_llm,
+        llm_under_test=llm_under_test,
+        validation_llm=validation_llm,
         template_home=template_home,
         user=scenario.user,
         settings_overrides=scenario.settings_overrides,
@@ -182,7 +205,8 @@ async def run_scenario(
         result_validation_prompt=scenario.result_validation_prompt,
         user_proxy_thinking_level=scenario.user_proxy_thinking_level,
         result_validation_thinking_level=scenario.result_validation_thinking_level,
-        flavor=scenario.flavor,
+        flavor=flavor,
+        validation_llm_flavor=validation_llm_flavor,
     )
     for root in scenario.roots:
         harness.workspace.add_root(root.name, seed_from=root.seed_from)
@@ -216,6 +240,10 @@ async def run_scenario(
     result = ScenarioResult(
         scenario=scenario,
         run_dir=run_dir,
+        llm_under_test=llm_under_test,
+        validation_llm=validation_llm,
+        flavor=flavor,
+        validation_llm_flavor=validation_llm_flavor,
         turns=turns,
         score=evaluation.score if evaluation is not None else None,
         evaluation=evaluation,
@@ -272,8 +300,9 @@ def _write_report(result: ScenarioResult, evaluation: EvaluationResult) -> None:
         f"# Validation report — {result.scenario.name}",
         "",
         f"- **Score:** {evaluation.score:g} / 100",
-        f"- **LLM under test:** {result.scenario.llm_under_test}",
-        f"- **Validation LLM:** {result.scenario.validation_llm}",
+        f"- **LLM under test:** {result.llm_under_test} (flavor: {result.flavor})",
+        f"- **Validation LLM:** {result.validation_llm}"
+        + (f" (flavor: {result.validation_llm_flavor})" if result.validation_llm_flavor else ""),
         f"- **Judge attempts:** {evaluation.attempts}",
         f"- **Judge session:** {evaluation.judge_session_id or 'n/a'}",
         "",

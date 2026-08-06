@@ -2,15 +2,22 @@
 
 Usage::
 
-    hatch run validate <selector> [<selector> ...]
-    hatch run validate all
+    hatch run validate <selector> [<selector> ...] --llm-under-test NAME --validation-llm NAME
+    hatch run validate all --llm-under-test NAME --validation-llm NAME
 
-Each *selector* is ``all``, a scenario (``qwen35-9b.tictactoe_console``), or a
-sub-directory whose scenarios are all included (``qwen35-9b``); see
-:mod:`kodo.validator.scenarios`. The runner:
+Each *selector* is ``all``, a scenario (``tictactoe_detailed_task``), or a
+sub-directory whose scenarios are all included; see
+:mod:`kodo.validator.scenarios`. Scenarios are content-only (no LLM named on
+the file itself, see :mod:`kodo.validator._scenario`), so every scenario this
+batch resolves runs against the **same** ``--llm-under-test``/
+``--validation-llm``/``--flavor``. To validate several LLMs together (each
+potentially with different scenarios/flavors) and get one final comparative
+summary, use a suite instead — see ``python -m kodo.validator.suites``.
+
+The runner:
 
 1. **resolves every selector first** into the full batch of scenarios;
-2. **verifies every LUT/VLLM is already installed** in the template home
+2. **verifies the LUT/VLLM are already installed** in the template home
    (``~/.kodo`` by default) — a pure disk check that **fails fast and never
    downloads** (per the project decision); and only then
 3. runs each scenario in its own isolated home/server, writing artifacts under
@@ -63,9 +70,12 @@ def main(argv: list[str] | None = None) -> int:
         _print_available()
         return 2
 
-    print(f"Selected {len(resolved)} scenario(s):")
-    for dotted_id, scenario in resolved:
-        print(f"  - {dotted_id}  (LUT={scenario.llm_under_test}, VLLM={scenario.validation_llm})")
+    print(
+        f"Selected {len(resolved)} scenario(s) "
+        f"(LUT={args.llm_under_test}, flavor={args.flavor}, VLLM={args.validation_llm}):"
+    )
+    for dotted_id, _scenario in resolved:
+        print(f"  - {dotted_id}")
 
     template_home = _resolve_template_home(args.template_home)
     if template_home is None:
@@ -77,10 +87,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     scenarios = [scenario for _, scenario in resolved]
-    _note_missing_models(scenarios, template_home)
+    _note_missing_models(args.llm_under_test, args.validation_llm, template_home)
 
     out_dir = args.out.resolve()
-    results = asyncio.run(_run_all(scenarios, out_dir, template_home))
+    results = asyncio.run(
+        _run_all(
+            scenarios,
+            out_dir,
+            template_home,
+            llm_under_test=args.llm_under_test,
+            validation_llm=args.validation_llm,
+            flavor=args.flavor,
+            validation_llm_flavor=args.validation_llm_flavor,
+        )
+    )
 
     failed = 0
     for result in results:
@@ -94,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if failed else 0
 
 
-def _note_missing_models(scenarios: list[Scenario], template_home: Path) -> None:
+def _note_missing_models(llm_under_test: str, validation_llm: str, template_home: Path) -> None:
     """Log which LUT/VLLM models will be downloaded during the run (no fail).
 
     The batch's models are checked against *template_home* with a pure disk
@@ -104,10 +124,11 @@ def _note_missing_models(scenarios: list[Scenario], template_home: Path) -> None
     downloads up front.
 
     Args:
-        scenarios (list[Scenario]): The resolved batch.
+        llm_under_test (str): The LLM every scenario in the batch runs against.
+        validation_llm (str): The judge/proxy LLM.
         template_home (Path): The ``.kodo`` used as the clone template.
     """
-    required = sorted({m for s in scenarios for m in (s.llm_under_test, s.validation_llm)})
+    required = sorted({llm_under_test, validation_llm})
     missing = missing_local_llms(template_home, required)
     if missing:
         _log.info(
@@ -123,7 +144,14 @@ def _note_missing_models(scenarios: list[Scenario], template_home: Path) -> None
 
 
 async def _run_all(
-    scenarios: list[Scenario], out_dir: Path, template_home: Path | None
+    scenarios: list[Scenario],
+    out_dir: Path,
+    template_home: Path | None,
+    *,
+    llm_under_test: str,
+    validation_llm: str,
+    flavor: str,
+    validation_llm_flavor: str | None,
 ) -> list[ScenarioResult]:
     """Run scenarios sequentially, each in its own isolated home/server.
 
@@ -131,6 +159,10 @@ async def _run_all(
         scenarios (list[Scenario]): Scenarios to execute, in order.
         out_dir (Path): Parent artifact directory.
         template_home (Path | None): ``.kodo`` template to clone per run.
+        llm_under_test (str): Local registry name every scenario runs against.
+        validation_llm (str): Local registry name of the judge/proxy LLM.
+        flavor (str): ``llm_under_test`` flavor id.
+        validation_llm_flavor (str | None): ``validation_llm`` flavor id.
 
     Returns:
         list[ScenarioResult]: One result per scenario.
@@ -138,7 +170,17 @@ async def _run_all(
     results: list[ScenarioResult] = []
     for scenario in scenarios:
         _log.info("Running scenario %s", scenario.name)
-        results.append(await run_scenario(scenario, out_dir, template_home=template_home))
+        results.append(
+            await run_scenario(
+                scenario,
+                out_dir,
+                llm_under_test=llm_under_test,
+                validation_llm=validation_llm,
+                flavor=flavor,
+                validation_llm_flavor=validation_llm_flavor,
+                template_home=template_home,
+            )
+        )
     return results
 
 
@@ -184,8 +226,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "selectors",
         nargs="*",
         metavar="SELECTOR",
-        help="Scenario id (e.g. qwen35-9b.tictactoe_console), a submodule "
-        "(qwen35-9b = all scenarios under it), or 'all'.",
+        help="Scenario id (e.g. tictactoe_detailed_task), a submodule "
+        "(all scenarios under a sub-directory), or 'all'.",
     )
     parser.add_argument(
         "--out",
@@ -212,12 +254,38 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="List available scenarios and exit.",
     )
+    parser.add_argument(
+        "--llm-under-test",
+        default=None,
+        metavar="NAME",
+        help="Local registry name every selected scenario runs against (mandatory).",
+    )
+    parser.add_argument(
+        "--validation-llm",
+        default=None,
+        metavar="NAME",
+        help="Local registry name of the fixed validation/judge LLM (mandatory).",
+    )
+    parser.add_argument(
+        "--flavor",
+        default="default",
+        metavar="FLAVOR_ID",
+        help="llm_under_test flavor id to pin before the first prompt (default: 'default').",
+    )
+    parser.add_argument(
+        "--validation-llm-flavor",
+        default=None,
+        metavar="FLAVOR_ID",
+        help="validation_llm flavor id to pin the same way (default: leave as-is).",
+    )
     args = parser.parse_args(argv)
     if args.list:
         _print_available()
         raise SystemExit(0)
     if not args.selectors:
         parser.error("give at least one SELECTOR (or 'all'); use --list to see them")
+    if not args.llm_under_test or not args.validation_llm:
+        parser.error("--llm-under-test and --validation-llm are required")
     return args
 
 

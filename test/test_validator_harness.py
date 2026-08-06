@@ -334,7 +334,7 @@ async def test_harness_session_id_property_after_start(
 
 
 # ---------------------------------------------------------------------------
-# Flavor pinning (Scenario.flavor -> local_llm.set_active_flavor)
+# Flavor pinning (flavor/validation_llm_flavor -> local_llm.set_active_flavor)
 # ---------------------------------------------------------------------------
 
 
@@ -400,6 +400,78 @@ async def test_harness_start_skips_flavor_when_unset(
 
     calls = _mock_deps["ValidatorClient"].return_value.request.await_args_list
     assert not [c for c in calls if c.args and c.args[0] == "local_llm.set_active_flavor"]
+
+
+@pytest.mark.asyncio
+async def test_harness_start_pins_both_flavors_independently(
+    tmp_path: Path,
+    _mock_deps: dict[str, Any],
+) -> None:
+    """flavor= and validation_llm_flavor= each pin their own model's flavor."""
+    import kodo.validator._harness as _harness
+
+    with (
+        patch.object(_harness, "clone_kodo_home", _mock_deps["clone_kodo_home"]),
+        patch.object(_harness, "ServerProcess", _mock_deps["ServerProcess"]),
+        patch.object(_harness, "ValidatorClient", _mock_deps["ValidatorClient"]),
+        patch.object(
+            _harness,
+            "ensure_local_llms_installed",
+            _mock_deps["ensure_local_llms_installed"],
+        ),
+    ):
+        harness = ValidationHarness(
+            tmp_path / "run",
+            llm_under_test="test-llm",
+            validation_llm="fake-val",
+            flavor="test-llm-strong-tail-cull",
+            validation_llm_flavor="fake-val-near-greedy",
+        )
+        await harness.start()
+
+    calls = _mock_deps["ValidatorClient"].return_value.request.await_args_list
+    flavor_calls = [c for c in calls if c.args and c.args[0] == "local_llm.set_active_flavor"]
+    assert len(flavor_calls) == 2
+    assert flavor_calls[0].kwargs == {
+        "name": "test-llm",
+        "flavor_id": "test-llm-strong-tail-cull",
+    }
+    assert flavor_calls[1].kwargs == {
+        "name": "fake-val",
+        "flavor_id": "fake-val-near-greedy",
+    }
+
+
+@pytest.mark.asyncio
+async def test_harness_start_skips_validation_llm_flavor_when_unset(
+    tmp_path: Path,
+    _mock_deps: dict[str, Any],
+) -> None:
+    """flavor= alone pins only the LUT — validation_llm_flavor defaults to no pin."""
+    import kodo.validator._harness as _harness
+
+    with (
+        patch.object(_harness, "clone_kodo_home", _mock_deps["clone_kodo_home"]),
+        patch.object(_harness, "ServerProcess", _mock_deps["ServerProcess"]),
+        patch.object(_harness, "ValidatorClient", _mock_deps["ValidatorClient"]),
+        patch.object(
+            _harness,
+            "ensure_local_llms_installed",
+            _mock_deps["ensure_local_llms_installed"],
+        ),
+    ):
+        harness = ValidationHarness(
+            tmp_path / "run",
+            llm_under_test="test-llm",
+            validation_llm="fake-val",
+            flavor="test-llm-strong-tail-cull",
+        )
+        await harness.start()
+
+    calls = _mock_deps["ValidatorClient"].return_value.request.await_args_list
+    flavor_calls = [c for c in calls if c.args and c.args[0] == "local_llm.set_active_flavor"]
+    assert len(flavor_calls) == 1
+    assert flavor_calls[0].kwargs["name"] == "test-llm"
 
 
 # ---------------------------------------------------------------------------

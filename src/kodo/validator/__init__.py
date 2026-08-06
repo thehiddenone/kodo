@@ -16,8 +16,17 @@ a judge session scores the finished run 0–100 into
 :attr:`ScenarioResult.score` and ``<run_dir>/report.md``. See
 doc/VALIDATOR.md §9.
 
-Entry point: ``python -m kodo.validator`` (see ``__main__.py``). Programmatic
-use starts at :class:`ValidationHarness` or :func:`run_scenario`.
+A :class:`Scenario` is content-only — it names no LLM. Which LLM(s) (each an
+:class:`LLMUnderTest`, a registry name + flavor) it runs against is supplied
+by the caller of :func:`run_scenario`, or by a :class:`ValidationSuite`
+(:func:`run_suite`) for batches that validate several LLMs and end with one
+judge-produced comparative summary across all of them. See doc/VALIDATOR.md
+§10.
+
+Entry point: ``python -m kodo.validator`` (single scenario, see
+``__main__.py``) or ``python -m kodo.validator.suites`` (a suite). Programmatic
+use starts at :class:`ValidationHarness`, :func:`run_scenario`, or
+:func:`run_suite`.
 """
 
 from ._client import ProtocolError, ValidatorClient
@@ -31,6 +40,14 @@ from ._models import (
 )
 from ._scenario import RootSpec, Scenario, ScenarioResult, run_scenario
 from ._server import ServerProcess, ServerStartError
+from ._suite import (
+    LLMUnderTest,
+    SuiteEntry,
+    SuiteEntryResult,
+    SuiteResult,
+    ValidationSuite,
+    run_suite,
+)
 from ._transcript import Transcript, TranscriptEntry
 from ._user import QuestionAnswer, ScriptedUser, UserSimulator
 from ._vllm import VLLMProxyError, VLLMUserProxy, answers_json_schema
@@ -41,6 +58,7 @@ __all__ = [
     "DEFAULT_SYMLINK_ENTRIES",
     "EvaluationError",
     "EvaluationResult",
+    "LLMUnderTest",
     "LocalModelUnavailableError",
     "Modes",
     "ProtocolError",
@@ -52,6 +70,9 @@ __all__ = [
     "ServerProcess",
     "ServerStartError",
     "SimulatedWorkspace",
+    "SuiteEntry",
+    "SuiteEntryResult",
+    "SuiteResult",
     "Transcript",
     "TranscriptEntry",
     "TurnResult",
@@ -59,6 +80,7 @@ __all__ = [
     "VLLMProxyError",
     "VLLMUserProxy",
     "ValidationHarness",
+    "ValidationSuite",
     "ValidatorClient",
     "WorkspaceRoot",
     "answers_json_schema",
@@ -67,4 +89,5 @@ __all__ = [
     "missing_local_llms",
     "run_evaluation",
     "run_scenario",
+    "run_suite",
 ]

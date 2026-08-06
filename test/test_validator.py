@@ -899,8 +899,7 @@ def test_build_child_env_respects_existing_hf_home(
 
 _FAKE_SCENARIO = (
     "from kodo.validator import Scenario\n"
-    "SCENARIO = Scenario(name={name!r}, prompts=['p'], "
-    "llm_under_test='lut-a', validation_llm='vllm-b')\n"
+    "SCENARIO = Scenario(name={name!r}, prompts=['p'])\n"
 )
 
 
@@ -936,12 +935,12 @@ def test_resolve_selectors_shipped_scenarios() -> None:
     from kodo.validator import scenarios as scn
 
     ids = scn.scenario_ids()
-    assert "qwen35-9b.tictactoe_console" in ids
-    assert "qwen36-27b.tictactoe_upp" in ids
+    assert "tictactoe_detailed_task" in ids
+    assert "tictactoe_sparse_task" in ids
     resolved = scn.resolve_selectors(["all"])
     assert {i for i, _ in resolved} == set(ids)
     names = {s.name for _, s in resolved}
-    assert {"tictactoe-console", "tictactoe-upp"} <= names
+    assert {"tictactoe-detailed-task", "tictactoe-sparse-task"} <= names
 
 
 def test_shipped_scenarios_share_prompts_via_registry() -> None:
@@ -950,8 +949,8 @@ def test_shipped_scenarios_share_prompts_via_registry() -> None:
     from kodo.validator.prompts import PROMPTS
 
     by_name = {s.name: s for _, s in scn.resolve_selectors(["all"])}
-    detailed = by_name["tictactoe-console"]
-    sparse = by_name["tictactoe-upp"]
+    detailed = by_name["tictactoe-detailed-task"]
+    sparse = by_name["tictactoe-sparse-task"]
 
     # One UPP and one RVP, shared verbatim across both variants.
     assert detailed.result_validation_prompt == sparse.result_validation_prompt
@@ -964,7 +963,7 @@ def test_shipped_scenarios_share_prompts_via_registry() -> None:
     assert detailed.prompts != sparse.prompts
 
 
-_ORNITH_LANGUAGES = {
+_TOOLCHAIN_LANGUAGES = {
     "c": "C",
     "cpp": "C++",
     "csharp": "C#",
@@ -980,29 +979,27 @@ _ORNITH_LANGUAGES = {
 }
 
 
-def test_resolve_selectors_ornith_toolchain_family() -> None:
-    """The 12-language tictactoe_toolchain family resolves as one submodule."""
+def test_resolve_selectors_toolchain_family() -> None:
+    """The 12-language toolchain family resolves as flat, individually-selected scenarios."""
     from kodo.validator import scenarios as scn
 
-    expected_ids = {f"ornith10-35b-a3b.tictactoe_{slug}" for slug in _ORNITH_LANGUAGES}
+    expected_ids = {f"toolchain_{slug}" for slug in _TOOLCHAIN_LANGUAGES}
     assert expected_ids <= set(scn.scenario_ids())
 
-    resolved = dict(scn.resolve_selectors(["ornith10-35b-a3b"]))
+    resolved = dict(scn.resolve_selectors(sorted(expected_ids)))
     assert set(resolved) == expected_ids
-    for scenario in resolved.values():
-        assert scenario.llm_under_test == "deepreinforce-ornith10-35b-a3b-bf16"
-        assert scenario.validation_llm == "unsloth-qwen36-27b-q8-k-xl"
     # Every scenario name and workspace root is distinct across the family.
     assert len({s.name for s in resolved.values()}) == len(resolved)
     assert len({r.name for s in resolved.values() for r in s.roots}) == len(resolved)
 
 
-def test_ornith_toolchain_scenarios_share_prompts_and_vary_by_language() -> None:
+def test_toolchain_scenarios_share_prompts_and_vary_by_language() -> None:
     """All 12 share one UPP/RVP and differ only by the formatted task language."""
     from kodo.validator import scenarios as scn
     from kodo.validator.prompts import PROMPTS
 
-    resolved = dict(scn.resolve_selectors(["ornith10-35b-a3b"]))
+    expected_ids = {f"toolchain_{slug}" for slug in _TOOLCHAIN_LANGUAGES}
+    resolved = dict(scn.resolve_selectors(sorted(expected_ids)))
     rvp = PROMPTS.get("tictactoe_toolchain/rvp")
     upp = PROMPTS.get("tictactoe_toolchain/upp")
     task_template = PROMPTS.get("tictactoe_toolchain/task")
@@ -1015,8 +1012,8 @@ def test_ornith_toolchain_scenarios_share_prompts_and_vary_by_language() -> None
         task = scenario.prompts[0]
         assert "{language}" not in task  # the placeholder was actually filled
         assert task != task_template  # not just the raw, unformatted template
-        slug = dotted_id.rsplit(".tictactoe_", 1)[1]
-        assert f"using **{_ORNITH_LANGUAGES[slug]}**" in task
+        slug = dotted_id.removeprefix("toolchain_")
+        assert f"using **{_TOOLCHAIN_LANGUAGES[slug]}**" in task
         tasks[dotted_id] = task
     # Twelve distinct, language-specific task prompts.
     assert len(set(tasks.values())) == len(resolved)
@@ -1135,7 +1132,7 @@ def test_attachment_report_scenario_ground_truth_matches_its_fixture() -> None:
     from kodo.validator.prompts import PROMPTS
     from kodo.validator.scenarios import resolve_selectors
 
-    ((_, scenario),) = resolve_selectors(["laguna-s-2-1.attachment_report"])
+    ((_, scenario),) = resolve_selectors(["attachment_report"])
     rows = list(csv.DictReader(io.StringIO(scenario.roots[0].files["data.csv"])))
 
     totals: dict[str, float] = defaultdict(float)
@@ -1166,17 +1163,27 @@ def test_attachment_report_scenario_ground_truth_matches_its_fixture() -> None:
     assert abs(row_mean - mean) > 1.0
 
 
-def test_attachment_report_scenario_pins_an_existing_flavor() -> None:
-    """Scenario.flavor must name a real flavor of the pinned LUT."""
-    from kodo.llms.local_registry import _catalog
+def test_attachment_report_scenario_has_its_spec_attached_to_the_first_prompt() -> None:
+    """The scenario itself is content-only: no LLM, just its attachment wiring."""
     from kodo.validator.scenarios import resolve_selectors
 
-    ((_, scenario),) = resolve_selectors(["laguna-s-2-1.attachment_report"])
-    entries = {e.name: e for e in _catalog._HARDCODED_LOCAL_MODELS}
+    ((_, scenario),) = resolve_selectors(["attachment_report"])
 
-    assert scenario.llm_under_test in entries
-    flavor_ids = {f.id for f in entries[scenario.llm_under_test].flavors}
-    assert scenario.flavor in flavor_ids, f"{scenario.flavor!r} not among {sorted(flavor_ids)}"
-    # The spec is attached to the first prompt only.
     assert set(scenario.attachments) == {0}
     assert scenario.attachments[0][0].is_file()
+
+
+def test_full_regression_suite_pins_an_existing_flavor_for_laguna() -> None:
+    """The suite's LLMUnderTest for attachment-report must name a real flavor."""
+    from kodo.llms.local_registry import _catalog
+    from kodo.validator.suites import resolve_selectors
+
+    ((_, suite),) = resolve_selectors(["full_regression"])
+    entries = {e.name: e for e in _catalog._HARDCODED_LOCAL_MODELS}
+
+    entry = next(e for e in suite.entries if e.scenario.name == "attachment-report")
+    lut = entry.llm_under_test
+
+    assert lut.llm in entries
+    flavor_ids = {f.id for f in entries[lut.llm].flavors}
+    assert lut.flavor in flavor_ids, f"{lut.flavor!r} not among {sorted(flavor_ids)}"

@@ -5,17 +5,19 @@ module-level ``SCENARIO`` (a :class:`kodo.validator.Scenario`); a file may also
 define ``SCENARIOS`` (a list) if it carries several. The file is just the
 wiring — the task / UPP / RVP *text* is not inlined but pulled by name from the
 :mod:`kodo.validator.prompts` package (``PROMPTS.get("family/name")``), so the
-same prompts can back several LLMs-under-test. Files can be nested in
-sub-directories to group them — e.g. by the model under test:
-``qwen35-9b/tictactoe_console.py``. Sub-directory names need not be valid Python
-identifiers (they are loaded by file path, not imported), so ``qwen35-9b`` is
-fine.
+same prompts can back several LLMs-under-test. Scenarios are content-only (see
+:mod:`kodo.validator._scenario`) and carry no LLM-under-test/judge pin of their
+own — pairing a scenario with models is a :mod:`kodo.validator.suites` concern
+— so files currently live flat in this package rather than grouped by model.
+Files *can* still be nested in sub-directories to group them (e.g. by task
+family); sub-directory names need not be valid Python identifiers (they are
+loaded by file path, not imported).
 
 A command-line **selector** is a dotted path under this package:
 
-* ``qwen35-9b.tictactoe_console`` → the one scenario in
-  ``qwen35-9b/tictactoe_console.py``;
-* ``qwen35-9b`` → every scenario file under ``qwen35-9b/`` (a "submodule");
+* ``toolchain_python`` → the one scenario in ``toolchain_python.py``;
+* a sub-directory name (if any scenarios use one) → every scenario file
+  nested under it (a "submodule");
 * ``all`` → every scenario file anywhere under this package.
 
 :func:`resolve_selectors` turns a list of selectors into an ordered,
@@ -70,8 +72,8 @@ def _dotted_id(path: Path) -> str:
         path (Path): A scenario file under this package.
 
     Returns:
-        str: e.g. ``qwen35-9b.tictactoe_console`` for
-        ``qwen35-9b/tictactoe_console.py``.
+        str: e.g. ``tictactoe_detailed_task`` for
+        ``tictactoe_detailed_task.py``.
     """
     return ".".join(path.relative_to(_SCENARIOS_DIR).with_suffix("").parts)
 

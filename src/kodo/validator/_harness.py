@@ -153,6 +153,14 @@ class ValidationHarness:
             session's own ``hello``'s ``thinking_level`` field as it opens —
             pins the judge's whole session to this tier. Ignored unless
             *result_validation_prompt* is also set.
+        flavor: ``llm_under_test`` flavor id to make active before the first
+            prompt (``local_llm.set_active_flavor``, see :meth:`__pin_flavor`).
+            Falsy (None or empty) skips the pin, leaving whatever the registry
+            already resolves to.
+        validation_llm_flavor: ``validation_llm`` flavor id, pinned the same
+            way and at the same time as *flavor* — independent of which
+            model is active when the pin happens, since flavor selection is
+            per registry entry, not a run-time setting.
     """
 
     def __init__(
@@ -172,12 +180,14 @@ class ValidationHarness:
         user_proxy_thinking_level: str | None = None,
         result_validation_thinking_level: str | None = None,
         flavor: str | None = None,
+        validation_llm_flavor: str | None = None,
     ) -> None:
         self.__run_dir = run_dir.resolve()
         self.__run_dir.mkdir(parents=True, exist_ok=True)
         self.__llm_under_test = llm_under_test
         self.__validation_llm = validation_llm
         self.__flavor = flavor
+        self.__validation_llm_flavor = validation_llm_flavor
         self.__template_home = template_home
         self.__settings_overrides = settings_overrides
         self.__server_log_level = server_log_level
@@ -280,7 +290,7 @@ class ValidationHarness:
         _log.info("Validation run ready: %s (session %s)", self.__run_dir, self.session_id)
 
     async def __pin_flavor(self) -> None:
-        """Select the scenario's flavor for the LLM under test, if one was named.
+        """Select the named flavor(s) for the LLM(s) under test, if given.
 
         Sent as ``local_llm.set_active_flavor`` over the WebSocket rather than
         written into the cloned home's ``local-llm-registry.json`` directly —
@@ -294,20 +304,35 @@ class ValidationHarness:
         so at this point the call is pure persistence — the first launch,
         triggered by the first prompt, picks the flavor's ``llama_args`` up
         from the registry as its initial launch config. No restart, no race.
+
+        ``llm_under_test`` and ``validation_llm`` are pinned independently
+        here — flavor selection lives on the registry entry, not on whichever
+        model is currently active, so both pins apply regardless of which one
+        ``llm.select`` later switches to.
         """
-        if not self.__flavor:
+        await self.__pin_one_flavor(self.__llm_under_test, self.__flavor)
+        await self.__pin_one_flavor(self.__validation_llm, self.__validation_llm_flavor)
+
+    async def __pin_one_flavor(self, model: str, flavor: str | None) -> None:
+        """Pin one model's active flavor, if *flavor* is truthy.
+
+        Args:
+            model (str): Local registry name to pin the flavor on.
+            flavor (str | None): Flavor id, or falsy to skip.
+        """
+        if not flavor:
             return
         await self.client.request(
             MSG_LOCAL_LLM_SET_ACTIVE_FLAVOR,
-            name=self.__llm_under_test,
-            flavor_id=self.__flavor,
+            name=model,
+            flavor_id=flavor,
         )
         self.__transcript.record(
             "note",
             "lifecycle",
-            {"event": "flavor", "model": self.__llm_under_test, "flavor_id": self.__flavor},
+            {"event": "flavor", "model": model, "flavor_id": flavor},
         )
-        _log.info("Pinned flavor %r for %r", self.__flavor, self.__llm_under_test)
+        _log.info("Pinned flavor %r for %r", flavor, model)
 
     def __pin_llm_under_test(self, overrides: dict[str, object] | None) -> dict[str, object]:
         """Force ``mode``/``models.local`` onto *overrides* for the LLM under test.
