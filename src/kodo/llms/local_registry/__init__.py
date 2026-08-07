@@ -5,8 +5,8 @@ Every entry here runs on llama.cpp — there is no ``residence`` field any more
 :mod:`kodo.llms._cloud_registry` now). Entries are discriminated by ``kind``:
 
 - ``hardcoded_hf`` — compiled-in HuggingFace GGUF, shipped with kodo. The
-  catalog is assembled in :mod:`._catalog` from one ``_hardcoded_<family>.py``
-  module per model family (e.g. :mod:`._hardcoded_qwen36_27b`), each
+  catalog is assembled in :mod:`._catalog` from one ``_local_llm_<family>.py``
+  module per model family (e.g. :mod:`._local_llm_qwen36_27b`), each
   exporting a ``*_entries() -> list[LocalLLMEntry]`` function — add a new
   hardcoded model by adding it to (or creating) the relevant family module.
 - ``custom_hf`` — user-added HuggingFace GGUF (same shape as ``hardcoded_hf``,
@@ -34,10 +34,12 @@ Submodules:
         in-package dependencies; everything else depends on this.
     ``_thinking`` — the Qwen-reasoning-budget / GPT-OSS-reasoning-effort
         thinking-tier families.
-    ``_hardcoded_<family>`` — one module per hardcoded model family, each a
+    ``_flavors_qwen`` — free functions building the Qwen-family YaRN
+        long-context :class:`LlamaFlavor`\\s (512K/1M, dense and MoE).
+    ``_local_llm_<family>`` — one module per hardcoded model family, each a
         pure list of :class:`LocalLLMEntry` literals.
     ``_catalog`` — assembles ``_HARDCODED_LOCAL_MODELS`` from every
-        ``_hardcoded_<family>`` module.
+        ``_local_llm_<family>`` module.
     ``_io`` — ``local-llm-registry.json`` file I/O and JSON (de)serialization.
     ``_flavors`` — flavor CRUD (custom flavors, active-flavor selection) and
         launch-config resolution. Depends on ``_entries``.

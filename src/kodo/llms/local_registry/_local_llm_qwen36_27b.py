@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ._flavors_qwen import make_qwen_1m_kv_q8, make_qwen_512k_kv_q8
 from ._types import LlamaFlavor, LocalLLMEntry
 
 
@@ -16,12 +17,8 @@ def qwen36_27b_entries() -> list[LocalLLMEntry]:
             context_window=262_144,
             flavors=(
                 LlamaFlavor.make_default_kv_q8(),
-                LlamaFlavor.make_qwen_512k_kv_q8(
-                    "atomicchat-qwen36-27b-q8-512k-kv-q8", "512K context size"
-                ),
-                LlamaFlavor.make_qwen_1m_kv_q8(
-                    "atomicchat-qwen36-27b-q8-1m-kv-q8", "1M context size"
-                ),
+                make_qwen_512k_kv_q8("atomicchat-qwen36-27b-q8-512k-kv-q8", "512K context size"),
+                make_qwen_1m_kv_q8("atomicchat-qwen36-27b-q8-1m-kv-q8", "1M context size"),
             ),
             base_llm="Qwen36-27B",
             llm_author="Alibaba Cloud",
@@ -47,12 +44,8 @@ def qwen36_27b_entries() -> list[LocalLLMEntry]:
             context_window=262_144,
             flavors=(
                 LlamaFlavor.make_default_kv_q8(),
-                LlamaFlavor.make_qwen_512k_kv_q8(
-                    "unsloth-qwen36-27b-q8-k-xl-512k-kv-q8", "512K context size"
-                ),
-                LlamaFlavor.make_qwen_1m_kv_q8(
-                    "unsloth-qwen36-27b-q8-k-xl-1m-kv-q8", "1M context size"
-                ),
+                make_qwen_512k_kv_q8("unsloth-qwen36-27b-q8-k-xl-512k-kv-q8", "512K context size"),
+                make_qwen_1m_kv_q8("unsloth-qwen36-27b-q8-k-xl-1m-kv-q8", "1M context size"),
             ),
             base_llm="Qwen36-27B",
             llm_author="Alibaba Cloud",
@@ -77,12 +70,8 @@ def qwen36_27b_entries() -> list[LocalLLMEntry]:
             context_window=262_144,
             flavors=(
                 LlamaFlavor.make_default_kv_q8(),
-                LlamaFlavor.make_qwen_512k_kv_q8(
-                    "unsloth-qwen36-27b-q6-k-xl-512k-kv-q8", "512K context size"
-                ),
-                LlamaFlavor.make_qwen_1m_kv_q8(
-                    "unsloth-qwen36-27b-q6-k-xl-1m-kv-q8", "1M context size"
-                ),
+                make_qwen_512k_kv_q8("unsloth-qwen36-27b-q6-k-xl-512k-kv-q8", "512K context size"),
+                make_qwen_1m_kv_q8("unsloth-qwen36-27b-q6-k-xl-1m-kv-q8", "1M context size"),
             ),
             base_llm="Qwen36-27B",
             llm_author="Alibaba Cloud",
@@ -107,12 +96,8 @@ def qwen36_27b_entries() -> list[LocalLLMEntry]:
             context_window=262_144,
             flavors=(
                 LlamaFlavor.make_default_kv_q8(),
-                LlamaFlavor.make_qwen_512k_kv_q8(
-                    "unsloth-qwen36-27b-q5-k-xl-512k-kv-q8", "512K context size"
-                ),
-                LlamaFlavor.make_qwen_1m_kv_q8(
-                    "unsloth-qwen36-27b-q5-k-xl-1m-kv-q8", "1M context size"
-                ),
+                make_qwen_512k_kv_q8("unsloth-qwen36-27b-q5-k-xl-512k-kv-q8", "512K context size"),
+                make_qwen_1m_kv_q8("unsloth-qwen36-27b-q5-k-xl-1m-kv-q8", "1M context size"),
             ),
             base_llm="Qwen36-27B",
             llm_author="Alibaba Cloud",
@@ -135,12 +120,8 @@ def qwen36_27b_entries() -> list[LocalLLMEntry]:
             context_window=262_144,
             flavors=(
                 LlamaFlavor.make_default_kv_q8(),
-                LlamaFlavor.make_qwen_512k_kv_q8(
-                    "unsloth-qwen36-27b-q4-k-xl-512k-kv-q8", "512K context size"
-                ),
-                LlamaFlavor.make_qwen_1m_kv_q8(
-                    "unsloth-qwen36-27b-q4-k-xl-1m-kv-q8", "1M context size"
-                ),
+                make_qwen_512k_kv_q8("unsloth-qwen36-27b-q4-k-xl-512k-kv-q8", "512K context size"),
+                make_qwen_1m_kv_q8("unsloth-qwen36-27b-q4-k-xl-1m-kv-q8", "1M context size"),
             ),
             base_llm="Qwen36-27B",
             llm_author="Alibaba Cloud",

@@ -39,7 +39,7 @@ moving, and they are worth moving separately:
 All five also set `top_k 0`, `top_p 1.0` and `repeat_penalty 1.0` — explicitly
 off, so `min_p` (plus `top_n_sigma` in the strongest preset) is the only
 truncation in play. These are exactly the flavors the Laguna-S-2.1 catalog
-ships (`kodo/llms/local_registry/_hardcoded_laguna_s_21.py`, §7 below), with
+ships (`kodo/llms/local_registry/_local_llm_laguna_s_21.py`, §7 below), with
 **identical values on every quant**. The rest of this document is why.
 
 **`0.8` is llama.cpp's default temperature and it is a perfectly good
@@ -381,9 +381,9 @@ Neither is a sampling parameter, and neither can be fixed by one.
 
 ## 7. How this is encoded in Kōdo
 
-The Laguna-S-2.1 catalog (`kodo/llms/local_registry/_hardcoded_laguna_s_21.py`)
-ships this document's recommendations as **predefined flavors** — six per
-quant, with **identical values on all 20 quants**:
+The Laguna-S-2.1 catalog (`kodo/llms/local_registry/_local_llm_laguna_s_21.py`)
+ships this document's recommendations as **predefined flavors** — eight per
+quant, with **identical sampling-preset values on all 20 quants**:
 
 | Flavor | id suffix | What it is |
 |---|---|---|
@@ -393,11 +393,16 @@ quant, with **identical values on all 20 quants**:
 | **Strong tail cull** | `-strong-tail-cull` | `min_p 0.12` plus `top_n_sigma 1.0` (§3c). |
 | **Low temperature** | `-low-temperature` | §3b: `temperature 0.3` at the mildest culling. |
 | **Near-greedy** | `-near-greedy` | `temperature 0.05`, `min_p 0.02`. |
+| **512K context size** | `-512k-kv-q8` | §6 "Context extension": YaRN `--rope-scale 2.0` off a 262144 `--yarn-orig-ctx`, `--override-kv laguna.context_length=int:524288`. `platform=MAC` only. Sampling unchanged from `default`. |
+| **1M context size** | `-1m-kv-q8` | Same recipe, `--rope-scale 4.0`, `--override-kv laguna.context_length=int:1048576`. `platform=MAC` only. |
 
-The five presets live in one `_PRESETS` table and are built by
+The five sampling presets live in one `_PRESETS` table and are built by
 `_quant_flavors(entry_name)`, which takes **no tier argument** — adding a
 Laguna quant is one `_quant_flavors("<name>")` call, and changing a
-recommendation means editing one `_PRESETS` row and this document.
+recommendation means editing one `_PRESETS` row and this document. The two
+context flavors are built by `_context_flavor`, appended after the presets —
+see LLM_REGISTRY.md §4.6 for the Qwen-family flavors (`_flavors_qwen.py`)
+this recipe was copied from.
 
 **The layout is the point.** The three culling presets are all at
 `temperature 0.8`, and the two temperature presets are all at `min_p 0.05`, so

@@ -645,10 +645,12 @@ for the large models that "don't fit on GPU VRAM" as-is), and **sampling
 presets** — a flavor whose only difference from `default` is its sampling
 flags. The Laguna-S-2.1 catalog is the one family that currently ships these:
 each of its 20 quants gets `default` plus five presets — "Light/Medium/Strong
-tail cull", "Low temperature" and "Near-greedy" — built by `_quant_flavors`
-from the `_PRESETS` table in
-`kodo/llms/local_registry/_hardcoded_laguna_s_21.py`, with **identical values
-on every quant**. doc/QUANT_SAMPLING.md is the reasoning behind those values
+tail cull", "Low temperature" and "Near-greedy" — plus the 512K/1M
+extended-context flavors (`_context_flavor`, same YaRN recipe as the Qwen
+family's, `laguna.context_length` as the `--override-kv` key) — built by
+`_quant_flavors` from the `_PRESETS` table in
+`kodo/llms/local_registry/_local_llm_laguna_s_21.py`, with **identical
+sampling-preset values on every quant**. doc/QUANT_SAMPLING.md is the reasoning behind those values
 and the constraints on changing them; two are worth repeating here. "Full
 replace, not merge" (below) is why each preset repeats the whole
 `--cache-type-k/v`/`--ctx-size`/`--n-gpu-layers` block. And **no flavor may

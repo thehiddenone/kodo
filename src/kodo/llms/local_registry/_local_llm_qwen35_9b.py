@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ._flavors_qwen import make_qwen_1m_kv_q8, make_qwen_512k_kv_q8
 from ._types import LlamaFlavor, LocalLLMEntry
 
 
@@ -16,12 +17,8 @@ def qwen35_9b_entries() -> list[LocalLLMEntry]:
             context_window=262_144,
             flavors=(
                 LlamaFlavor.make_default_kv_q8(),
-                LlamaFlavor.make_qwen_512k_kv_q8(
-                    "unsloth-qwen35-9b-q8-k-xl-512k-kv-q8", "512K context size"
-                ),
-                LlamaFlavor.make_qwen_1m_kv_q8(
-                    "unsloth-qwen35-9b-q8-k-xl-kv-q8", "1M context size"
-                ),
+                make_qwen_512k_kv_q8("unsloth-qwen35-9b-q8-k-xl-512k-kv-q8", "512K context size"),
+                make_qwen_1m_kv_q8("unsloth-qwen35-9b-q8-k-xl-kv-q8", "1M context size"),
             ),
             base_llm="Qwen35-9B",
             llm_author="Alibaba Cloud",

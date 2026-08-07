@@ -1,12 +1,23 @@
 """Hardcoded Laguna-S-2.1 GGUF catalog entries.
 
-Every entry ships the same six flavors: the shared ``default`` launch config,
-plus five sampling presets (:func:`_quant_flavors`) that move exactly one of
-two axes — how hard the tail is truncated, and how low the temperature is.
-The presets differ from ``default`` only in sampling flags; the KV-cache,
-context and offload args are identical, since switching flavors *replaces*
+Every entry ships eight flavors: the shared ``default`` launch config, five
+sampling presets (:func:`_quant_flavors`) that move exactly one of two axes —
+how hard the tail is truncated, and how low the temperature is — plus two
+YaRN-extended long-context flavors (512K/1M, :func:`_context_flavor`). The
+presets differ from ``default`` only in sampling flags; the KV-cache, context
+and offload args are identical, since switching flavors *replaces*
 ``llama_args`` wholesale rather than layering on top of it
 (:class:`~kodo.llms.local_registry.LlamaFlavor`).
+
+The 512K/1M flavors follow the same YaRN rope-scaling recipe as the Qwen
+family's (:mod:`._flavors_qwen`) — ``--rope-scale`` 2.0/4.0 off a
+262144-token ``--yarn-orig-ctx``, plus a ``--override-kv`` metadata override
+so llama.cpp doesn't cap the KV cache at the GGUF's own trained context
+length — with ``laguna.context_length`` as Laguna-S-2.1's architecture key
+(vs. Qwen's ``qwen35``/``qwen35moe``). ``platform=MAC`` only: the KV cache at
+these sizes, stacked on top of Laguna's already-large (64-192GB) weight
+footprint, is impractical to split across a discrete GPU's VRAM and system
+RAM.
 
 The values are **uniform across all 20 quants** — a preset name means the same
 numbers on ``UD-Q8_K_XL`` as on ``UD-IQ1_S``. An earlier revision tiered them
@@ -33,7 +44,11 @@ lands the user on a flagged field they then have to argue with.
 
 from __future__ import annotations
 
-from ._types import LlamaFlavor, LocalLLMEntry
+from ._types import LlamaFlavor, LlamaFlavorPlatform, LocalLLMEntry
+
+#: The token count :data:`_BASE_ARGS`' ``--ctx-size 0`` resolves to on every
+#: Laguna GGUF — the base for the 512K/1M flavors' ``--yarn-orig-ctx``.
+_NATIVE_CONTEXT = 8192
 
 #: Launch args every Laguna flavor shares — byte-identical to
 #: :meth:`LlamaFlavor.make_default_kv_q8`'s, so the five sampling presets
@@ -123,15 +138,43 @@ _PRESETS: tuple[tuple[str, str, str, dict[str, str]], ...] = (
 )
 
 
+def _context_flavor(
+    entry_name: str, suffix: str, name: str, ctx_size: int
+) -> LlamaFlavor:
+    """A YaRN-extended long-context flavor for *entry_name* (512K or 1M).
+
+    ``platform=MAC`` — see the module docstring for why long-context Laguna
+    is Apple-Silicon-only. Sampling is left at :data:`_BASE_ARGS`'
+    (llama.cpp's own defaults), same as ``default`` — only the context/rope
+    args change.
+    """
+    rope_scale = str(float(ctx_size) / float(_NATIVE_CONTEXT))
+    return LlamaFlavor(
+        id=f"{entry_name}-{suffix}",
+        name=name,
+        platform=LlamaFlavorPlatform.MAC,
+        description="Default flavor",
+        llama_args={
+            **_BASE_ARGS,
+            "--ctx-size": str(ctx_size),
+            "--rope-scaling": "yarn",
+            "--rope-scale": rope_scale,
+            "--yarn-orig-ctx": str(_NATIVE_CONTEXT),
+            "--override-kv": f"laguna.context_length=int:{ctx_size}",
+        },
+    )
+
+
 def _quant_flavors(entry_name: str) -> tuple[LlamaFlavor, ...]:
-    """``default`` plus the five sampling presets for *entry_name*.
+    """``default``, the five sampling presets, and the two context flavors for *entry_name*.
 
     Flavor ids are ``<entry_name>-<suffix>`` for each :data:`_PRESETS` entry,
     following the ``<entry-name>-<slug>`` convention the 512K/1M context
-    flavors already use. All are ``platform=BOTH`` and leave
+    flavors already use. The five presets are all ``platform=BOTH`` and leave
     ``min_ram``/``min_vram`` at ``0`` — they change no memory-relevant arg, so
     a preset is launchable exactly wherever ``default`` is, and the entry's
-    own ``min_memory``/``memory`` remain the only hardware gate.
+    own ``min_memory``/``memory`` remain the only hardware gate. The two
+    context flavors are ``platform=MAC`` (see :func:`_context_flavor`).
 
     Takes no tier argument: every Laguna quant gets identical preset values,
     deliberately (see the module docstring).
@@ -140,16 +183,23 @@ def _quant_flavors(entry_name: str) -> tuple[LlamaFlavor, ...]:
         entry_name: The :class:`LocalLLMEntry` name these flavors attach to.
 
     Returns:
-        tuple[LlamaFlavor, ...]: Six flavors, ``default`` first.
+        tuple[LlamaFlavor, ...]: Eight flavors, ``default`` first.
     """
-    return (LlamaFlavor.make_default_kv_q8(),) + tuple(
-        LlamaFlavor(
-            id=f"{entry_name}-{suffix}",
-            name=name,
-            description=description,
-            llama_args={**_BASE_ARGS, **_SAMPLING_OFF, **sampling},
+    return (
+        (LlamaFlavor.make_default_kv_q8(),)
+        + tuple(
+            LlamaFlavor(
+                id=f"{entry_name}-{suffix}",
+                name=name,
+                description=description,
+                llama_args={**_BASE_ARGS, **_SAMPLING_OFF, **sampling},
+            )
+            for suffix, name, description, sampling in _PRESETS
         )
-        for suffix, name, description, sampling in _PRESETS
+        + (
+            _context_flavor(entry_name, "512k-kv-q8", "512K context size", 524_288),
+            _context_flavor(entry_name, "1m-kv-q8", "1M context size", 1_048_576),
+        )
     )
 
 

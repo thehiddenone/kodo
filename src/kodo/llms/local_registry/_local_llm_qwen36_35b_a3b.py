@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ._flavors_qwen import make_qwen_moe_1m_kv_q8, make_qwen_moe_512k_kv_q8
 from ._types import LlamaFlavor, LocalLLMEntry
 
 
@@ -16,10 +17,10 @@ def qwen36_35b_a3b_entries() -> list[LocalLLMEntry]:
             context_window=262_144,
             flavors=(
                 LlamaFlavor.make_default_kv_q8(),
-                LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                make_qwen_moe_512k_kv_q8(
                     "unsloth-qwen36-35b-a3b-q8-k-xl-512k-kv-q8", "512K context size"
                 ),
-                LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                make_qwen_moe_1m_kv_q8(
                     "unsloth-qwen36-35b-a3b-q8-k-xl-1m-kv-q8", "1M context size"
                 ),
             ),
@@ -47,10 +48,10 @@ def qwen36_35b_a3b_entries() -> list[LocalLLMEntry]:
             context_window=262_144,
             flavors=(
                 LlamaFlavor.make_default_kv_q8(),
-                LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                make_qwen_moe_512k_kv_q8(
                     "unsloth-qwen36-35b-a3b-q6-k-xl-512k-kv-q8", "512K context size"
                 ),
-                LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                make_qwen_moe_1m_kv_q8(
                     "unsloth-qwen36-35b-a3b-q6-k-xl-1m-kv-q8", "1M context size"
                 ),
             ),
@@ -76,10 +77,10 @@ def qwen36_35b_a3b_entries() -> list[LocalLLMEntry]:
             context_window=262_144,
             flavors=(
                 LlamaFlavor.make_default_kv_q8(),
-                LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                make_qwen_moe_512k_kv_q8(
                     "unsloth-qwen36-35b-a3b-q5-k-xl-512k-kv-q8", "512K context size"
                 ),
-                LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                make_qwen_moe_1m_kv_q8(
                     "unsloth-qwen36-35b-a3b-q5-k-xl-1m-kv-q8", "1M context size"
                 ),
             ),
@@ -105,10 +106,10 @@ def qwen36_35b_a3b_entries() -> list[LocalLLMEntry]:
             context_window=262_144,
             flavors=(
                 LlamaFlavor.make_default_kv_q8(),
-                LlamaFlavor.make_qwen_moe_512k_kv_q8(
+                make_qwen_moe_512k_kv_q8(
                     "unsloth-qwen36-35b-a3b-q4-k-xl-512k-kv-q8", "512K context size"
                 ),
-                LlamaFlavor.make_qwen_moe_1m_kv_q8(
+                make_qwen_moe_1m_kv_q8(
                     "unsloth-qwen36-35b-a3b-q4-k-xl-1m-kv-q8", "1M context size"
                 ),
             ),

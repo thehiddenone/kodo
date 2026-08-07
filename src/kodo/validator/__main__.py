@@ -60,8 +60,11 @@ def main(argv: list[str] | None = None) -> int:
     if not scenarios:
         print("Nothing to run: give --scenario FILE or at least one --prompt.", file=sys.stderr)
         return 2
-    if not args.llm_under_test or not args.validation_llm:
-        print("--llm-under-test and --validation-llm are required.", file=sys.stderr)
+    if not args.llm_under_test:
+        print("--llm-under-test is required.", file=sys.stderr)
+        return 2
+    if not args.validation_llm:
+        print("--validation-llm is required.", file=sys.stderr)
         return 2
 
     template_home = _resolve_template_home(args.template_home)

@@ -1,6 +1,6 @@
 """Core data shapes: :class:`LocalLLMEntry`, :class:`LlamaFlavor`, host-platform matching.
 
-Every ``hardcoded_*`` catalog module (``_hardcoded_*.py``) and every other
+Every ``hardcoded_*`` catalog module (``_local_llm_*.py``) and every other
 module in this package imports from here — this module itself has no
 in-package dependencies.
 """
@@ -206,90 +206,6 @@ class LlamaFlavor:
                 "--cache-type-k": "f16",
                 "--cache-type-v": "f16",
                 "--ctx-size": "0",
-                "--n-gpu-layers": "-1",
-                "--reasoning-format": "auto",
-                "--jinja": "",
-            },
-        )
-
-    @staticmethod
-    def make_qwen_512k_kv_q8(id: str, name: str) -> LlamaFlavor:
-        return LlamaFlavor(
-            id=id,
-            name=name,
-            platform=LlamaFlavorPlatform.MAC,
-            description="Default flavor",
-            llama_args={
-                "--ctx-size": "524288",
-                "--rope-scaling": "yarn",
-                "--rope-scale": "2.0",
-                "--yarn-orig-ctx": "262144",
-                "--override-kv": "qwen35.context_length=int:524288",
-                "--cache-type-k": "q8_0",
-                "--cache-type-v": "q8_0",
-                "--n-gpu-layers": "-1",
-                "--reasoning-format": "auto",
-                "--jinja": "",
-            },
-        )
-
-    @staticmethod
-    def make_qwen_1m_kv_q8(id: str, name: str) -> LlamaFlavor:
-        return LlamaFlavor(
-            id=id,
-            name=name,
-            platform=LlamaFlavorPlatform.MAC,
-            description="Default flavor",
-            llama_args={
-                "--ctx-size": "1048576",
-                "--rope-scaling": "yarn",
-                "--rope-scale": "4.0",
-                "--yarn-orig-ctx": "262144",
-                "--override-kv": "qwen35.context_length=int:1048576",
-                "--cache-type-k": "q8_0",
-                "--cache-type-v": "q8_0",
-                "--n-gpu-layers": "-1",
-                "--reasoning-format": "auto",
-                "--jinja": "",
-            },
-        )
-
-    @staticmethod
-    def make_qwen_moe_512k_kv_q8(id: str, name: str) -> LlamaFlavor:
-        return LlamaFlavor(
-            id=id,
-            name=name,
-            platform=LlamaFlavorPlatform.MAC,
-            description="Default flavor",
-            llama_args={
-                "--ctx-size": "524288",
-                "--rope-scaling": "yarn",
-                "--rope-scale": "2.0",
-                "--yarn-orig-ctx": "262144",
-                "--override-kv": "qwen35moe.context_length=int:524288",
-                "--cache-type-k": "q8_0",
-                "--cache-type-v": "q8_0",
-                "--n-gpu-layers": "-1",
-                "--reasoning-format": "auto",
-                "--jinja": "",
-            },
-        )
-
-    @staticmethod
-    def make_qwen_moe_1m_kv_q8(id: str, name: str) -> LlamaFlavor:
-        return LlamaFlavor(
-            id=id,
-            name=name,
-            platform=LlamaFlavorPlatform.MAC,
-            description="Default flavor",
-            llama_args={
-                "--ctx-size": "1048576",
-                "--rope-scaling": "yarn",
-                "--rope-scale": "4.0",
-                "--yarn-orig-ctx": "262144",
-                "--override-kv": "qwen35moe.context_length=int:1048576",
-                "--cache-type-k": "q8_0",
-                "--cache-type-v": "q8_0",
                 "--n-gpu-layers": "-1",
                 "--reasoning-format": "auto",
                 "--jinja": "",
