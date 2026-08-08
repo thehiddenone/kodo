@@ -6,7 +6,7 @@ every :meth:`LlamaServer.start` call) so that, if the process exits before
 the health check passes, its own diagnostic output can be folded into the
 raised error — llama-server's ``--log-file`` only starts recording once its
 logger initializes, so an early failure (e.g. an unrecognized CLI flag from
-a bad flavor) never reaches it otherwise.
+a bad profile) never reaches it otherwise.
 
 On kodo restart, call :func:`find_running_server` to detect a surviving
 process, then pass the result to :meth:`LlamaServer.adopt`.
@@ -160,7 +160,8 @@ class LlamaServerConfig:
 
     Deliberately holds nothing about the model's own llama.cpp launch
     behavior (context size, GPU offload, sampling/template flags, ...) — that
-    is entirely the resolved flavor's job now (see :class:`LlamaFlavor` in
+    is entirely the active profile's job now (the knob-driven Default profile
+    or a user-defined :class:`~kodo.llms.LlmProfile`, see
     :mod:`kodo.llms.local_registry`), passed to :class:`LlamaServer`
     separately as a plain ``dict[str, str]`` rather than stored on this
     dataclass, since it varies per launch while this config's fields don't.
@@ -197,17 +198,17 @@ class LlamaServer:
 
     Args:
         config (LlamaServerConfig): Server-management configuration.
-        llama_args (dict[str, str]): The resolved flavor's CLI flags (see
+        llama_args (dict[str, str]): The resolved launch flags (see
             ``kodo.llms.resolve_effective_llama_config``) — the model's own
             launch behavior, kept separate from *config* since it varies with
-            the active flavor while *config* doesn't.
+            the active profile and knob selection while *config* doesn't.
     """
 
     __active_llama_server: LlamaServer | None = None
 
     __config: LlamaServerConfig
     __llama_args: dict[str, str]
-    __flavor_id: str
+    __profile_id: str
     __pid: int | None
     __active_host: str
     __active_port: int
@@ -216,26 +217,26 @@ class LlamaServer:
         self,
         config: LlamaServerConfig,
         llama_args: dict[str, str] | None = None,
-        flavor_id: str = "",
+        profile_id: str = "",
     ) -> None:
         """Initialise without starting the subprocess.
 
         Args:
             config (LlamaServerConfig): Server-management configuration.
-            llama_args (dict[str, str] | None): The resolved flavor's CLI
-                flags, verbatim ``{flag: value}`` pairs; a bare/valueless
-                flag is represented with an empty string value. ``None``
-                (default) is treated as no flags at all.
-            flavor_id (str): The id of the flavor *llama_args* was resolved
-                from (see :func:`kodo.llms.get_effective_flavor_id`). Used
-                only to tailor the crash message raised by :meth:`start`: if
-                the process exits before becoming ready and this is neither
-                ``""`` nor ``"default"``, the message suggests switching to
-                the default flavor.
+            llama_args (dict[str, str] | None): The resolved launch flags,
+                verbatim ``{flag: value}`` pairs; a bare/valueless flag is
+                represented with an empty string value. ``None`` (default) is
+                treated as no flags at all.
+            profile_id (str): The id of the user-defined profile *llama_args*
+                came from, or ``""`` for the knob-driven Default profile (see
+                :func:`kodo.llms.get_active_profile`). Used only to tailor the
+                crash message raised by :meth:`start`: if the process exits
+                before becoming ready with a user-defined profile active, the
+                message suggests switching back to the Default profile.
         """
         self.__config = config
         self.__llama_args = dict(llama_args) if llama_args else {}
-        self.__flavor_id = flavor_id
+        self.__profile_id = profile_id
         self.__pid = None
         self.__active_host = config.host
         self.__active_port = config.port
@@ -377,10 +378,10 @@ class LlamaServer:
             str(cfg.port),
         ]
         # Everything model-specific (context size, GPU offload, KV cache
-        # type, --jinja, ...) comes entirely from the resolved flavor — see
-        # LlamaFlavor/resolve_effective_llama_config in kodo/llms/local_registry/.
-        # No defaults are merged in here, so there is no risk of a flavor's
-        # own flag appearing twice on the command line.
+        # type, --jinja, ...) comes entirely from the resolved profile — see
+        # resolve_effective_llama_config in kodo/llms/local_registry/. No
+        # defaults are merged in here, so there is no risk of a resolved
+        # flag appearing twice on the command line.
         for k, v in self.__llama_args.items():
             cmd.append(k)
             if v:
@@ -413,19 +414,21 @@ class LlamaServer:
         """Build the ``RuntimeError`` message for an exit-before-ready crash.
 
         Folds in the tail of the startup log (see :meth:`start`) so the user
-        sees *why* llama-server exited, plus — if a non-default flavor was
-        in play — a nudge to try the default flavor, since a bad custom
-        flavor (typically a malformed or unsupported CLI flag) is the most
-        likely cause.
+        sees *why* llama-server exited, plus — if a user-defined profile was
+        in play — a nudge to switch back to the Default profile, since
+        hand-written launch args (typically a malformed or unsupported CLI
+        flag) are the most likely cause. The Default profile gets no such
+        nudge: its args come from knobs, which cannot produce an invalid
+        flag.
         """
         parts = [f"llama-server (pid={self.__pid}) exited before becoming ready"]
         output = _read_tail(self.__startup_log_path(), _STARTUP_LOG_MAX_CHARS)
         if output:
             parts.append(f"Output from llama-server:\n```\n{output}\n```")
-        if self.__flavor_id and self.__flavor_id != "default":
+        if self.__profile_id:
             parts.append(
-                f"This model is set to launch with the {self.__flavor_id!r} flavor — "
-                "try switching it to the default flavor and starting again."
+                f"This model is set to launch with the {self.__profile_id!r} profile — "
+                "try switching it back to the Default profile and starting again."
             )
         return "\n\n".join(parts)
 

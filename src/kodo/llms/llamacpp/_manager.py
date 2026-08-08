@@ -9,10 +9,8 @@ from pathlib import Path
 from kodo.llms import (
     REASONING_BUDGET_MESSAGE,
     LocalLLMEntry,
-    current_host_platform,
-    get_effective_flavor_id,
+    get_active_profile,
     get_llama_server_override_path,
-    has_compatible_flavor,
     local_thinking_family,
     resolve_effective_llama_config,
 )
@@ -80,11 +78,12 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
     """Start llama-server for *entry* if not already running.
 
     If a server is already running with the same model, return it immediately
-    — this does **not** re-check whether *entry*'s active flavor changed since
-    that server was launched, since flavors don't change ``entry.name``.
-    Callers that just changed the currently-running entry's active flavor
-    (``local_llm.set_active_flavor``'s handler) must explicitly stop the
-    server themselves before calling this, or the flavor change silently
+    — this does **not** re-check whether *entry*'s launch configuration
+    changed since that server was launched, since neither a profile switch nor
+    a knob change alters ``entry.name``. Callers that just changed the
+    currently-running entry's configuration (the ``local_llm.set_active_profile``
+    and ``local_llm.set_knobs`` handlers) must explicitly stop the server
+    themselves before calling this, or the change silently
     won't take effect until some other reason forces a restart. If a server
     is running with a different model, stop it first then start fresh. Not
     valid for ``custom_server_url`` entries — those are not managed by kodo
@@ -92,15 +91,15 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
     :class:`kodo.llms.llamacpp.LlamaPlugin`).
 
     Resolves *entry*'s effective ``llama_args`` fresh on every call via
-    :func:`kodo.llms.resolve_effective_llama_config` (applies the active
-    flavor, or the entry's first/default one — flavors are the only source
-    of launch args now, see :class:`kodo.llms.LlamaFlavor`) — so a restart
-    triggered for any other reason (a plain model switch, a crash recovery,
-    etc.) always launches with whatever flavor is currently selected, not a
-    stale snapshot. The resolved numeric ``context_window`` is not used
-    here — only :func:`kodo.llms.get_context_window` (compaction budgeting)
-    reads it; the actual launched context size lives inside ``llama_args``
-    itself (e.g. a flavor's own ``--ctx-size``).
+    :func:`kodo.llms.resolve_effective_llama_config` (the active user-defined
+    profile's args, or the Default profile's base args plus its current knob
+    selection — see doc/LLM_REGISTRY.md §4.6) — so a restart triggered for
+    any other reason (a plain model switch, a crash recovery, etc.) always
+    launches with whatever is currently selected, not a stale snapshot. The
+    resolved numeric ``context_window`` is not used here — only
+    :func:`kodo.llms.get_context_window` (compaction budgeting) reads it; the
+    actual launched context size lives inside ``llama_args`` itself (a context
+    knob's, or a profile's own, ``--ctx-size``).
 
     If a llama-server binary override is configured (see
     :func:`kodo.llms.set_llama_server_override_path`), it is used as the
@@ -108,11 +107,11 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
     generation in :class:`LlamaServerConfig`/:class:`LlamaServer` is unchanged
     either way.
 
-    Also resolves *entry*'s effective flavor id (:func:`kodo.llms.get_effective_flavor_id`)
-    and passes it to :class:`LlamaServer` purely for crash messaging: if the
-    process exits before becoming ready and the flavor isn't ``"default"``,
-    :class:`LlamaServer` suggests trying the default flavor, since a bad
-    custom flavor is the most likely cause.
+    Also passes *entry*'s active profile id (:func:`kodo.llms.get_active_profile`,
+    ``""`` for the Default profile) to :class:`LlamaServer` purely for crash
+    messaging: if the process exits before becoming ready while a user-defined
+    profile is active, :class:`LlamaServer` suggests switching back to the
+    Default profile, since hand-written launch args are the most likely cause.
 
     Args:
         entry (LocalLLMEntry): The local registry entry to serve — either a
@@ -124,21 +123,13 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
         LlamaServer: The running server instance.
 
     Raises:
-        RuntimeError: If *entry* is a ``custom_server_url``, none of *entry*'s
-            flavors are compatible with :func:`kodo.llms.current_host_platform`
-            (see :func:`kodo.llms.has_compatible_flavor`, doc/LLM_REGISTRY.md
-            §4.6b), llama.cpp is not installed, the model is not
-            downloaded/present, or the server fails to start.
+        RuntimeError: If *entry* is a ``custom_server_url``, llama.cpp is not
+            installed, the model is not downloaded/present, or the server
+            fails to start.
     """
     if entry.kind == "custom_server_url":
         raise RuntimeError(
             "custom_server_url entries are not managed by kodo — connect to entry.url directly"
-        )
-
-    if not has_compatible_flavor(kodo_dir, entry):
-        raise RuntimeError(
-            f"{entry.description or entry.name} is not compatible with this platform "
-            f"({current_host_platform().value}) — none of its flavors support running here."
         )
 
     server = LlamaServer.get_active_llama_server()
@@ -163,19 +154,20 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
     override = get_llama_server_override_path(kodo_dir)
     executable = Path(override) if override else install.executable
 
-    # entry's resolved flavor (active, or its first/default one) supplies the
-    # complete llama_args — see LlamaFlavor/resolve_effective_llama_config.
+    # The active profile — user-defined, or the knob-driven Default one —
+    # supplies the complete llama_args; see resolve_effective_llama_config.
     llama_args, _ = resolve_effective_llama_config(kodo_dir, entry)
-    flavor_id = get_effective_flavor_id(kodo_dir, entry)
+    profile_id = get_active_profile(kodo_dir, entry.name)
     if local_thinking_family(entry.base_llm) == "qwen_reasoning_budget":
         # Forced (plain assignment), not defaulted: -1 is mandatory here, not
         # just the default — it's what makes the per-request
         # `thinking_budget_tokens` override in _llama.py take effect at all,
-        # and any other explicit CLI value would lock it out. A flavor must
-        # never be able to override or lock this out — add_flavor/
-        # update_flavor already strip RESERVED_REASONING_CAP_ARGS before a
-        # flavor is even saved; this is the second, load-bearing line of
-        # defense for anything saved before that existed.
+        # and any other explicit CLI value would lock it out. A profile must
+        # never be able to override or lock this out — add_profile/
+        # update_profile already strip RESERVED_LLAMA_ARGS before a profile is
+        # even saved; this is the second, load-bearing line of defense for
+        # anything saved before that existed, and for the Default profile,
+        # whose knobs never write these flags in the first place.
         llama_args["--reasoning-budget"] = "-1"
         llama_args["--reasoning-budget-message"] = REASONING_BUDGET_MESSAGE
 
@@ -185,6 +177,6 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
         kodo_dir=kodo_dir,
         model_name=entry.name,
     )
-    server = LlamaServer(cfg, llama_args, flavor_id=flavor_id)
+    server = LlamaServer(cfg, llama_args, profile_id=profile_id)
     await server.start()
     return server

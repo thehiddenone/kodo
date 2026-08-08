@@ -17,7 +17,7 @@ a judge session scores the finished run 0–100 into
 doc/VALIDATOR.md §9.
 
 A :class:`Scenario` is content-only — it names no LLM. Which LLM(s) (each an
-:class:`LLMUnderTest`, a registry name + flavor) it runs against is supplied
+:class:`LLMUnderTest`, a registry name + knob selection) it runs against is supplied
 by the caller of :func:`run_scenario`, or by a :class:`ValidationSuite`
 (:func:`run_suite`) for batches that validate several LLMs and end with one
 judge-produced comparative summary across all of them. See doc/VALIDATOR.md

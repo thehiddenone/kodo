@@ -10,10 +10,10 @@ verdict fills :attr:`ScenarioResult.score` (0 = fail … 100 = perfect) and
 (scripted answers, ``score=None``).
 
 A ``Scenario`` is content-only: workspace, prompts, and behaviour under test —
-it names no LLM. **Which** LLM (and flavor) plays the LUT, and which plays the
+it names no LLM. **Which** LLM (and knob selection) plays the LUT, and which plays the
 judge, is supplied by the caller of :func:`run_scenario` (mandatory
-``llm_under_test``/``validation_llm``, optional ``flavor``/
-``validation_llm_flavor``) or, for a batch, by a
+``llm_under_test``/``validation_llm``, optional ``knobs``/
+``validation_llm_knobs``) or, for a batch, by a
 :class:`~kodo.validator._suite.ValidationSuite` (doc/VALIDATOR.md §8a/§10).
 This is what lets the same scenario content run against several LUTs without
 duplicating the file.
@@ -133,9 +133,10 @@ class ScenarioResult:
             scenario itself carries no LLM, see the module docstring).
         validation_llm: Local registry name of the judge/proxy LLM this run
             actually used.
-        flavor: The ``llm_under_test`` flavor id pinned for this run.
-        validation_llm_flavor: The ``validation_llm`` flavor id pinned for
-            this run, or None if it was left unpinned.
+        knobs: The ``llm_under_test`` knob selection pinned for this run,
+            ``{}`` if it was left at the registry's defaults.
+        validation_llm_knobs: The ``validation_llm`` knob selection pinned for
+            this run, ``{}`` if it was left unpinned.
         turns: Per-prompt results, in order.
         score: The judge's 0–100 verdict. None when the scenario carried no
             ``result_validation_prompt`` or a turn ended in ``error`` (the
@@ -148,11 +149,23 @@ class ScenarioResult:
     run_dir: Path
     llm_under_test: str
     validation_llm: str
-    flavor: str
-    validation_llm_flavor: str | None
+    knobs: dict[str, str]
+    validation_llm_knobs: dict[str, str]
     turns: list[TurnResult]
     score: float | None = None
     evaluation: EvaluationResult | None = None
+
+
+def _knob_suffix(knobs: dict[str, str]) -> str:
+    """``" (knobs: tail-culling=light)"`` for a non-empty selection, else ``""``.
+
+    Rendered into the run summary so a report says which configuration
+    produced it. An empty selection prints nothing rather than "(knobs: )" —
+    "the registry's defaults" is the normal case and needs no annotation.
+    """
+    if not knobs:
+        return ""
+    return " (knobs: " + ", ".join(f"{k}={v}" for k, v in sorted(knobs.items())) + ")"
 
 
 async def run_scenario(
@@ -161,8 +174,8 @@ async def run_scenario(
     *,
     llm_under_test: str,
     validation_llm: str,
-    flavor: str = "default",
-    validation_llm_flavor: str | None = None,
+    knobs: dict[str, str] | None = None,
+    validation_llm_knobs: dict[str, str] | None = None,
     template_home: Path | None = None,
 ) -> ScenarioResult:
     """Execute one scenario in a fresh isolated harness against one named LLM.
@@ -181,13 +194,16 @@ async def run_scenario(
         validation_llm (str): Local registry name of the fixed, capable model
             that answers UPP questions and judges the RVP. Mandatory: there
             is no meaningful default.
-        flavor (str): ``llm_under_test`` flavor id to make active before the
-            first prompt (``local_llm.set_active_flavor``). Defaults to
-            ``"default"`` — every run pins a known, deterministic flavor
-            unless the caller names another.
-        validation_llm_flavor (str | None): ``validation_llm`` flavor id to
-            make active the same way. None (the default) leaves whatever the
-            registry already resolves to for it.
+        knobs (dict[str, str] | None): ``llm_under_test`` knob selection to
+            apply before the first prompt (``local_llm.set_knobs``), e.g.
+            ``{"tail-culling": "light"}``. None/``{}`` (the default) leaves
+            the registry's own defaults in place, which is itself
+            deterministic — a knob nobody has moved always resolves the same
+            way. Only the Default profile is reachable: a scenario never
+            creates a user-defined profile, since those are user data.
+        validation_llm_knobs (dict[str, str] | None): ``validation_llm`` knob
+            selection, applied the same way. None (the default) leaves
+            whatever the registry already resolves to for it.
         template_home (Path | None): ``.kodo`` template for the isolated home.
 
     Returns:
@@ -205,8 +221,8 @@ async def run_scenario(
         result_validation_prompt=scenario.result_validation_prompt,
         user_proxy_thinking_level=scenario.user_proxy_thinking_level,
         result_validation_thinking_level=scenario.result_validation_thinking_level,
-        flavor=flavor,
-        validation_llm_flavor=validation_llm_flavor,
+        knobs=knobs,
+        validation_llm_knobs=validation_llm_knobs,
     )
     for root in scenario.roots:
         harness.workspace.add_root(root.name, seed_from=root.seed_from)
@@ -242,8 +258,8 @@ async def run_scenario(
         run_dir=run_dir,
         llm_under_test=llm_under_test,
         validation_llm=validation_llm,
-        flavor=flavor,
-        validation_llm_flavor=validation_llm_flavor,
+        knobs=dict(knobs or {}),
+        validation_llm_knobs=dict(validation_llm_knobs or {}),
         turns=turns,
         score=evaluation.score if evaluation is not None else None,
         evaluation=evaluation,
@@ -300,9 +316,9 @@ def _write_report(result: ScenarioResult, evaluation: EvaluationResult) -> None:
         f"# Validation report — {result.scenario.name}",
         "",
         f"- **Score:** {evaluation.score:g} / 100",
-        f"- **LLM under test:** {result.llm_under_test} (flavor: {result.flavor})",
+        f"- **LLM under test:** {result.llm_under_test}{_knob_suffix(result.knobs)}",
         f"- **Validation LLM:** {result.validation_llm}"
-        + (f" (flavor: {result.validation_llm_flavor})" if result.validation_llm_flavor else ""),
+        + _knob_suffix(result.validation_llm_knobs),
         f"- **Judge attempts:** {evaluation.attempts}",
         f"- **Judge session:** {evaluation.judge_session_id or 'n/a'}",
         "",

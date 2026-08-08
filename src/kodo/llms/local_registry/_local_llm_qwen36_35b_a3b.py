@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from ._flavors_qwen import make_qwen_moe_1m_kv_q8, make_qwen_moe_512k_kv_q8
-from ._types import LlamaFlavor, LocalLLMEntry
+from ._knobs_qwen import QWEN_MOE_CONTEXT_KNOB
+from ._knobs_shared import SHARED_KNOBS
+from ._types import LocalLLMEntry
 
 
 def qwen36_35b_a3b_entries() -> list[LocalLLMEntry]:
@@ -15,15 +16,7 @@ def qwen36_35b_a3b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
             filename="Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf",
             context_window=262_144,
-            flavors=(
-                LlamaFlavor.make_default_kv_q8(),
-                make_qwen_moe_512k_kv_q8(
-                    "unsloth-qwen36-35b-a3b-q8-k-xl-512k-kv-q8", "512K context size"
-                ),
-                make_qwen_moe_1m_kv_q8(
-                    "unsloth-qwen36-35b-a3b-q8-k-xl-1m-kv-q8", "1M context size"
-                ),
-            ),
+            knobs=SHARED_KNOBS + (QWEN_MOE_CONTEXT_KNOB,),
             base_llm="Qwen36-35B-A3B",
             llm_author="Alibaba Cloud",
             quant_author="Unsloth",
@@ -46,15 +39,7 @@ def qwen36_35b_a3b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
             filename="Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf",
             context_window=262_144,
-            flavors=(
-                LlamaFlavor.make_default_kv_q8(),
-                make_qwen_moe_512k_kv_q8(
-                    "unsloth-qwen36-35b-a3b-q6-k-xl-512k-kv-q8", "512K context size"
-                ),
-                make_qwen_moe_1m_kv_q8(
-                    "unsloth-qwen36-35b-a3b-q6-k-xl-1m-kv-q8", "1M context size"
-                ),
-            ),
+            knobs=SHARED_KNOBS + (QWEN_MOE_CONTEXT_KNOB,),
             base_llm="Qwen36-35B-A3B",
             llm_author="Alibaba Cloud",
             quant_author="Unsloth",
@@ -75,15 +60,7 @@ def qwen36_35b_a3b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
             filename="Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf",
             context_window=262_144,
-            flavors=(
-                LlamaFlavor.make_default_kv_q8(),
-                make_qwen_moe_512k_kv_q8(
-                    "unsloth-qwen36-35b-a3b-q5-k-xl-512k-kv-q8", "512K context size"
-                ),
-                make_qwen_moe_1m_kv_q8(
-                    "unsloth-qwen36-35b-a3b-q5-k-xl-1m-kv-q8", "1M context size"
-                ),
-            ),
+            knobs=SHARED_KNOBS + (QWEN_MOE_CONTEXT_KNOB,),
             base_llm="Qwen36-35B-A3B",
             llm_author="Alibaba Cloud",
             quant_author="Unsloth",
@@ -104,15 +81,7 @@ def qwen36_35b_a3b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
             filename="Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
             context_window=262_144,
-            flavors=(
-                LlamaFlavor.make_default_kv_q8(),
-                make_qwen_moe_512k_kv_q8(
-                    "unsloth-qwen36-35b-a3b-q4-k-xl-512k-kv-q8", "512K context size"
-                ),
-                make_qwen_moe_1m_kv_q8(
-                    "unsloth-qwen36-35b-a3b-q4-k-xl-1m-kv-q8", "1M context size"
-                ),
-            ),
+            knobs=SHARED_KNOBS + (QWEN_MOE_CONTEXT_KNOB,),
             base_llm="Qwen36-35B-A3B",
             llm_author="Alibaba Cloud",
             quant_author="Unsloth",

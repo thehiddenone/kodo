@@ -783,13 +783,13 @@ async def test_local_llm_check_updates_reports_only_stale_names(
     assert evt.payload["updatable"] == ["stale-model"]
 
 
-async def test_add_huggingface_seeds_a_default_flavor_from_its_llama_args(
+async def test_add_huggingface_keeps_its_llama_args_as_base_args(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
-    """Flavors are the only source of launch args — see doc/LLM_REGISTRY.md
-    §4.6 — so a freshly-added custom_hf entry's own `llama_args` field (still
-    collected by the "Add local LLM" modal) must end up seeding its first
-    (custom) flavor rather than being dropped on the floor."""
+    """A freshly-added custom_hf entry's own `llama_args` field (still collected
+    by the "Add local LLM" modal) becomes its Default profile's base args
+    rather than being dropped on the floor — see doc/LLM_REGISTRY.md §4.6. The
+    shared base args are merged underneath, so --jinja survives too."""
     req = _make_request(
         "local_llm.add_huggingface",
         name="test-model",
@@ -802,146 +802,182 @@ async def test_add_huggingface_seeds_a_default_flavor_from_its_llama_args(
     await ws.send_str(req.to_json())
     added = await _recv(ws)
     entry = _local_entry(added.payload, "test-model")
-    assert entry["active_flavor"] == ""
-    flavors = cast("list[dict[str, object]]", entry["flavors"])
-    assert len(flavors) == 1
-    assert flavors[0]["id"] == "default"
-    assert flavors[0]["llama_args"] == {"--cache-type-k": "q8_0"}
-    assert flavors[0]["predefined"] is False
+    assert entry["active_profile"] == ""
+    assert entry["profiles"] == []
+    args = cast("dict[str, str]", entry["default_profile_args"])
+    assert args["--cache-type-k"] == "q8_0"
+    assert args["--jinja"] == ""
 
 
-# ---------------------------------------------------------------------------
-# Flavors (local_llm.add_flavor / .update_flavor / .remove_flavor /
-# .set_active_flavor) —
-# see doc/LLM_REGISTRY.md §4.6. Uses a real hardcoded entry name (no download
-# needed — flavors don't touch the download manager) so add_flavor's own
-# entry-existence check passes without first adding a custom entry. Every
-# hardcoded entry ships a built-in "default" flavor (predefined=True), so
-# `flavors` always has at least that one even before any custom flavor is
-# added — the tests below account for it rather than assuming an empty list.
-# ---------------------------------------------------------------------------
-
-_FLAVOR_TEST_ENTRY = "unsloth-qwen35-9b-q8-k-xl"
-
-
-def _flavor_ids(entry: dict[str, object]) -> list[str]:
-    return [cast("dict[str, object]", f)["id"] for f in cast("list[object]", entry["flavors"])]
-
-
-def _custom_flavor_ids(entry: dict[str, object]) -> list[str]:
-    return [
-        cast("dict[str, object]", f)["id"]
-        for f in cast("list[object]", entry["flavors"])
-        if not cast("dict[str, object]", f)["predefined"]
-    ]
-
-
-async def test_add_flavor_appears_in_registry_state(ws: aiohttp.ClientWebSocketResponse) -> None:
-    # Query the pre-existing (predefined) flavors first rather than assuming
-    # how many this hardcoded entry ships with — that count is an
-    # implementation detail of kodo.llms.local_registry, not this test's concern.
-    before = await _control_hello(ws)
-    before_flavors = cast(
-        "list[dict[str, object]]", _local_entry(before.payload, _FLAVOR_TEST_ENTRY)["flavors"]
-    )
-
+async def test_add_huggingface_gets_the_shared_knobs(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """A user-added LLM is configurable exactly like a built-in one."""
     req = _make_request(
-        "local_llm.add_flavor",
-        name=_FLAVOR_TEST_ENTRY,
-        flavor_name="1M Context",
-        description="YaRN 1M",
+        "local_llm.add_huggingface",
+        name="test-model",
+        description="",
+        repo_id="acme/test-model",
+        filename="model.gguf",
+        context_window=32768,
+    )
+    await ws.send_str(req.to_json())
+    added = await _recv(ws)
+    entry = _local_entry(added.payload, "test-model")
+    knobs = cast("list[str]", entry["knobs"])
+    assert "tail-culling" in knobs and "temperature" in knobs
+    # Every knob it offers has a resolved selection — never sparse.
+    assert set(cast("dict[str, str]", entry["knob_selections"])) == set(knobs)
+
+
+# ---------------------------------------------------------------------------
+# Launch configuration (local_llm.add_profile / .update_profile /
+# .remove_profile / .set_active_profile / .set_knobs) — see
+# doc/LLM_REGISTRY.md §4.6. Uses a real hardcoded entry name (no download
+# needed — none of this touches the download manager) so add_profile's own
+# entry-existence check passes without first adding a custom entry.
+# ---------------------------------------------------------------------------
+
+_PROFILE_TEST_ENTRY = "unsloth-qwen35-9b-q8-k-xl"
+
+
+def _profile_ids(entry: dict[str, object]) -> list[str]:
+    return [cast("dict[str, object]", p)["id"] for p in cast("list[object]", entry["profiles"])]
+
+
+async def test_registry_state_ships_a_deduplicated_knob_def_table(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """Entries reference knobs by id; the definitions are sent once, centrally."""
+    ack = await _control_hello(ws)
+    knob_defs = cast("dict[str, object]", ack.payload["knob_defs"])
+    entry = _local_entry(ack.payload, _PROFILE_TEST_ENTRY)
+    for knob_id in cast("list[str]", entry["knobs"]):
+        assert knob_id in knob_defs
+    culling = cast("dict[str, object]", knob_defs["tail-culling"])
+    assert culling["kind"] == "dropdown"
+    assert [cast("dict[str, object]", o)["id"] for o in cast("list[object]", culling["options"])][
+        0
+    ] == "off"
+
+
+async def test_registry_state_ships_the_llama_arg_catalog(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    ack = await _control_hello(ws)
+    catalog = cast("list[dict[str, object]]", ack.payload["llama_arg_catalog"])
+    flags = {c["flag"] for c in catalog}
+    assert "--ctx-size" in flags and "--temp" in flags
+    # Reserved flags kodo sets itself are never offered.
+    assert "--port" not in flags and "--model" not in flags
+
+
+async def test_set_knobs_changes_the_default_profile_args(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    req = _make_request(
+        "local_llm.set_knobs",
+        name=_PROFILE_TEST_ENTRY,
+        knobs={"tail-culling": "medium"},
+    )
+    await ws.send_str(req.to_json())
+    resp = await _recv(ws)
+    assert resp.payload["type"] == "local_llm.registry_state"
+    entry = _local_entry(resp.payload, _PROFILE_TEST_ENTRY)
+    assert cast("dict[str, str]", entry["knob_selections"])["tail-culling"] == "medium"
+    assert cast("dict[str, str]", entry["default_profile_args"])["--min-p"] == "0.08"
+
+
+async def test_set_knobs_rejects_an_unknown_option(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    req = _make_request(
+        "local_llm.set_knobs", name=_PROFILE_TEST_ENTRY, knobs={"tail-culling": "nope"}
+    )
+    await ws.send_str(req.to_json())
+    err = await _recv(ws)
+    assert err.payload["type"] == "error"
+    assert err.payload["code"] == "local_llm_error"
+
+
+async def test_add_profile_appears_in_registry_state(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    req = _make_request(
+        "local_llm.add_profile",
+        name=_PROFILE_TEST_ENTRY,
+        profile_name="1M Context",
+        description="",
         llama_args_text="--ctx-size 1048576\n--rope-scaling yarn",
     )
     await ws.send_str(req.to_json())
     resp = await _recv(ws)
     assert resp.payload["type"] == "local_llm.registry_state"
-    entry = _local_entry(resp.payload, _FLAVOR_TEST_ENTRY)
-    assert entry["active_flavor"] == ""
-    flavors = cast("list[dict[str, object]]", entry["flavors"])
-    assert len(flavors) == len(before_flavors) + 1
-    assert flavors[: len(before_flavors)] == before_flavors
-    added_flavor = flavors[-1]
-    assert added_flavor["id"] == "1m-context"
-    assert added_flavor["name"] == "1M Context"
-    assert added_flavor["llama_args"] == {"--ctx-size": "1048576", "--rope-scaling": "yarn"}
-    assert added_flavor["predefined"] is False
-    # min_ram/min_vram weren't in this request — a brand-new custom flavor
-    # defaults to the hardware-fit check being inactive (see LlamaFlavor's
-    # docstring, doc/LLM_REGISTRY.md §4.6a).
-    assert added_flavor["min_ram"] == 0
-    assert added_flavor["min_vram"] == 0
+    entry = _local_entry(resp.payload, _PROFILE_TEST_ENTRY)
+    # Adding a profile does not select it — the Default profile stays active.
+    assert entry["active_profile"] == ""
+    profiles = cast("list[dict[str, object]]", entry["profiles"])
+    assert len(profiles) == 1
+    assert profiles[0]["id"] == "1m-context"
+    assert profiles[0]["name"] == "1M Context"
+    assert profiles[0]["llama_args"] == {"--ctx-size": "1048576", "--rope-scaling": "yarn"}
 
 
-async def test_add_flavor_can_set_min_ram_and_min_vram(
+async def test_add_profile_strips_reserved_args(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
     req = _make_request(
-        "local_llm.add_flavor",
-        name=_FLAVOR_TEST_ENTRY,
-        flavor_name="Mac Flavor",
-        min_ram=64,
-        min_vram=0,
+        "local_llm.add_profile",
+        name=_PROFILE_TEST_ENTRY,
+        profile_name="Sneaky",
+        llama_args_text="--ctx-size 4096\n--port 9999",
     )
     await ws.send_str(req.to_json())
     resp = await _recv(ws)
-    entry = _local_entry(resp.payload, _FLAVOR_TEST_ENTRY)
-    added_flavor = next(
-        cast("dict[str, object]", f)
-        for f in cast("list[object]", entry["flavors"])
-        if cast("dict[str, object]", f)["id"] == "mac-flavor"
-    )
-    assert added_flavor["min_ram"] == 64
-    assert added_flavor["min_vram"] == 0
+    entry = _local_entry(resp.payload, _PROFILE_TEST_ENTRY)
+    profiles = cast("list[dict[str, object]]", entry["profiles"])
+    assert profiles[0]["llama_args"] == {"--ctx-size": "4096"}
 
 
-async def test_update_flavor_on_a_custom_flavor_edits_it_in_place(
+async def test_update_profile_edits_it_in_place(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
     req = _make_request(
-        "local_llm.add_flavor",
-        name=_FLAVOR_TEST_ENTRY,
-        flavor_name="Tight VRAM",
-        min_ram=16,
-        min_vram=8,
+        "local_llm.add_profile",
+        name=_PROFILE_TEST_ENTRY,
+        profile_name="Tight VRAM",
+        llama_args_text="--n-gpu-layers 20",
     )
     await ws.send_str(req.to_json())
     added = await _recv(ws)
-    flavor_id = _custom_flavor_ids(_local_entry(added.payload, _FLAVOR_TEST_ENTRY))[0]
+    profile_id = _profile_ids(_local_entry(added.payload, _PROFILE_TEST_ENTRY))[0]
 
     req = _make_request(
-        "local_llm.update_flavor",
-        name=_FLAVOR_TEST_ENTRY,
-        flavor_id=flavor_id,
-        flavor_name="Tight VRAM (v2)",
-        description="updated",
-        llama_args_text="--n-cpu-moe 20",
-        min_ram=24,
-        min_vram=12,
+        "local_llm.update_profile",
+        name=_PROFILE_TEST_ENTRY,
+        profile_id=profile_id,
+        profile_name="Tight VRAM (v2)",
+        description="edited",
+        llama_args_text="--n-gpu-layers 10",
     )
     await ws.send_str(req.to_json())
     resp = await _recv(ws)
-    entry = _local_entry(resp.payload, _FLAVOR_TEST_ENTRY)
-    flavors = cast("list[dict[str, object]]", entry["flavors"])
-    updated = next(f for f in flavors if f["id"] == flavor_id)
+    entry = _local_entry(resp.payload, _PROFILE_TEST_ENTRY)
+    profiles = cast("list[dict[str, object]]", entry["profiles"])
+    updated = next(p for p in profiles if p["id"] == profile_id)
     assert updated["name"] == "Tight VRAM (v2)"
-    assert updated["description"] == "updated"
-    assert updated["llama_args"] == {"--n-cpu-moe": "20"}
-    assert updated["predefined"] is False
-    assert updated["min_ram"] == 24
-    assert updated["min_vram"] == 12
+    assert updated["description"] == "edited"
+    assert updated["llama_args"] == {"--n-gpu-layers": "10"}
 
 
-async def test_update_flavor_rejects_a_predefined_id(
+async def test_update_profile_rejects_unknown_profile_id(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
-    # Predefined flavors are strictly read-only — editing "default" (or any
-    # other predefined id) is rejected outright, no override created.
     req = _make_request(
-        "local_llm.update_flavor",
-        name=_FLAVOR_TEST_ENTRY,
-        flavor_id="default",
-        flavor_name="Default (edited)",
-        llama_args_text="--cache-type-k q8_0\n--cache-type-v q8_0\n--ctx-size 0\n--jinja",
+        "local_llm.update_profile",
+        name=_PROFILE_TEST_ENTRY,
+        profile_id="nonexistent",
+        profile_name="Whatever",
     )
     await ws.send_str(req.to_json())
     err = await _recv(ws)
@@ -949,22 +985,7 @@ async def test_update_flavor_rejects_a_predefined_id(
     assert err.payload["code"] == "local_llm_error"
 
 
-async def test_update_flavor_rejects_unknown_flavor_id(
-    ws: aiohttp.ClientWebSocketResponse,
-) -> None:
-    req = _make_request(
-        "local_llm.update_flavor",
-        name=_FLAVOR_TEST_ENTRY,
-        flavor_id="nonexistent",
-        flavor_name="Whatever",
-    )
-    await ws.send_str(req.to_json())
-    err = await _recv(ws)
-    assert err.payload["type"] == "error"
-    assert err.payload["code"] == "local_llm_error"
-
-
-async def test_add_flavor_rejects_custom_server_url_entry(
+async def test_add_profile_rejects_custom_server_url_entry(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
     req = _make_request(
@@ -973,41 +994,41 @@ async def test_add_flavor_rejects_custom_server_url_entry(
     await ws.send_str(req.to_json())
     await _recv(ws)  # add's own registry_state, not under test here
 
-    req = _make_request("local_llm.add_flavor", name="remote", flavor_name="whatever")
+    req = _make_request("local_llm.add_profile", name="remote", profile_name="whatever")
     await ws.send_str(req.to_json())
     err = await _recv(ws)
     assert err.payload["type"] == "error"
     assert err.payload["code"] == "local_llm_error"
 
 
-async def test_add_flavor_dedupes_id_when_different_names_share_a_slug(
+async def test_add_profile_dedupes_id_when_different_names_share_a_slug(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
-    # Compare the ids before/after instead of assuming what predefined ids
-    # this hardcoded entry ships with.
-    before = await _control_hello(ws)
-    before_ids = set(_flavor_ids(_local_entry(before.payload, _FLAVOR_TEST_ENTRY)))
-
     resp = None
-    for flavor_name in ("Tight VRAM", "tight vram"):
+    for profile_name in ("Tight VRAM", "tight vram"):
         req = _make_request(
-            "local_llm.add_flavor", name=_FLAVOR_TEST_ENTRY, flavor_name=flavor_name
+            "local_llm.add_profile", name=_PROFILE_TEST_ENTRY, profile_name=profile_name
         )
         await ws.send_str(req.to_json())
         resp = await _recv(ws)
     assert resp is not None
-    after_ids = set(_flavor_ids(_local_entry(resp.payload, _FLAVOR_TEST_ENTRY)))
-    assert after_ids - before_ids == {"tight-vram", "tight-vram-2"}
-    assert before_ids - after_ids == set()  # nothing pre-existing was removed
+    assert _profile_ids(_local_entry(resp.payload, _PROFILE_TEST_ENTRY)) == [
+        "tight-vram",
+        "tight-vram-2",
+    ]
 
 
-async def test_add_flavor_rejects_duplicate_name(
+async def test_add_profile_rejects_duplicate_name(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
-    req = _make_request("local_llm.add_flavor", name=_FLAVOR_TEST_ENTRY, flavor_name="Tight VRAM")
+    req = _make_request(
+        "local_llm.add_profile", name=_PROFILE_TEST_ENTRY, profile_name="Tight VRAM"
+    )
     await ws.send_str(req.to_json())
     await _recv(ws)
-    req = _make_request("local_llm.add_flavor", name=_FLAVOR_TEST_ENTRY, flavor_name="Tight VRAM")
+    req = _make_request(
+        "local_llm.add_profile", name=_PROFILE_TEST_ENTRY, profile_name="Tight VRAM"
+    )
     await ws.send_str(req.to_json())
     err = await _recv(ws)
     assert err.payload["type"] == "error"
@@ -1015,44 +1036,37 @@ async def test_add_flavor_rejects_duplicate_name(
     assert "already exists" in str(err.payload["message"])
 
 
-async def test_set_active_flavor_then_remove_resets_to_default(
-    ws: aiohttp.ClientWebSocketResponse,
-) -> None:
-    # Snapshot the predefined flavors up front rather than assuming this
-    # hardcoded entry ships with exactly one ("default") — removing the only
-    # custom flavor should leave the registry exactly as it was before.
-    before = await _control_hello(ws)
-    before_flavors = cast(
-        "list[dict[str, object]]", _local_entry(before.payload, _FLAVOR_TEST_ENTRY)["flavors"]
-    )
-
-    req = _make_request("local_llm.add_flavor", name=_FLAVOR_TEST_ENTRY, flavor_name="Tight VRAM")
-    await ws.send_str(req.to_json())
-    added = await _recv(ws)
-    flavor_id = _custom_flavor_ids(_local_entry(added.payload, _FLAVOR_TEST_ENTRY))[0]
-
-    req = _make_request("local_llm.set_active_flavor", name=_FLAVOR_TEST_ENTRY, flavor_id=flavor_id)
-    await ws.send_str(req.to_json())
-    active = await _recv(ws)
-    assert active.payload["type"] == "local_llm.registry_state"
-    assert _local_entry(active.payload, _FLAVOR_TEST_ENTRY)["active_flavor"] == flavor_id
-
-    req = _make_request("local_llm.remove_flavor", name=_FLAVOR_TEST_ENTRY, flavor_id=flavor_id)
-    await ws.send_str(req.to_json())
-    removed = await _recv(ws)
-    entry = _local_entry(removed.payload, _FLAVOR_TEST_ENTRY)
-    # Removing the only custom flavor leaves just the predefined ones, as
-    # they were before this test touched anything.
-    flavors = cast("list[dict[str, object]]", entry["flavors"])
-    assert flavors == before_flavors
-    assert entry["active_flavor"] == ""
-
-
-async def test_set_active_flavor_rejects_unknown_flavor_id(
+async def test_set_active_profile_then_remove_resets_to_default(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
     req = _make_request(
-        "local_llm.set_active_flavor", name=_FLAVOR_TEST_ENTRY, flavor_id="nonexistent"
+        "local_llm.add_profile", name=_PROFILE_TEST_ENTRY, profile_name="Tight VRAM"
+    )
+    await ws.send_str(req.to_json())
+    added = await _recv(ws)
+    profile_id = _profile_ids(_local_entry(added.payload, _PROFILE_TEST_ENTRY))[0]
+
+    req = _make_request(
+        "local_llm.set_active_profile", name=_PROFILE_TEST_ENTRY, profile_id=profile_id
+    )
+    await ws.send_str(req.to_json())
+    active = await _recv(ws)
+    assert active.payload["type"] == "local_llm.registry_state"
+    assert _local_entry(active.payload, _PROFILE_TEST_ENTRY)["active_profile"] == profile_id
+
+    req = _make_request("local_llm.remove_profile", name=_PROFILE_TEST_ENTRY, profile_id=profile_id)
+    await ws.send_str(req.to_json())
+    removed = await _recv(ws)
+    entry = _local_entry(removed.payload, _PROFILE_TEST_ENTRY)
+    assert entry["profiles"] == []
+    assert entry["active_profile"] == ""
+
+
+async def test_set_active_profile_rejects_unknown_profile_id(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    req = _make_request(
+        "local_llm.set_active_profile", name=_PROFILE_TEST_ENTRY, profile_id="nonexistent"
     )
     await ws.send_str(req.to_json())
     err = await _recv(ws)
@@ -1060,40 +1074,54 @@ async def test_set_active_flavor_rejects_unknown_flavor_id(
     assert err.payload["code"] == "local_llm_error"
 
 
-async def test_remove_flavor_rejects_unknown_flavor_id(
+async def test_remove_profile_rejects_unknown_profile_id(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
-    req = _make_request("local_llm.remove_flavor", name=_FLAVOR_TEST_ENTRY, flavor_id="nonexistent")
+    req = _make_request(
+        "local_llm.remove_profile", name=_PROFILE_TEST_ENTRY, profile_id="nonexistent"
+    )
     await ws.send_str(req.to_json())
     err = await _recv(ws)
     assert err.payload["type"] == "error"
     assert err.payload["code"] == "local_llm_error"
 
 
-async def test_set_active_flavor_for_currently_selected_model_does_not_crash_without_server(
+async def test_reconfiguring_the_currently_selected_model_does_not_crash_without_server(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
     """Exercises the restart-check path (_restart_llama_server_if_running) for
     the entry that IS the currently selected local model — it must no-op
     cleanly when nothing is actually running (llama.cpp isn't installed in
-    this sandboxed test environment), not raise. The actual subprocess
-    restart itself is out of scope here, same as llm.select's (untested
-    elsewhere in this file for the same reason)."""
-    # Persist models.local = _FLAVOR_TEST_ENTRY the same way llm.select does,
+    this sandboxed test environment), not raise. Covers both triggers, a
+    profile switch and a knob change. The actual subprocess restart itself is
+    out of scope here, same as llm.select's (untested elsewhere in this file
+    for the same reason)."""
+    # Persist models.local = _PROFILE_TEST_ENTRY the same way llm.select does,
     # without requiring a real llama-server process to actually start.
-    req = _make_request("llm.select", name=_FLAVOR_TEST_ENTRY)
+    req = _make_request("llm.select", name=_PROFILE_TEST_ENTRY)
     await ws.send_str(req.to_json())
     await _recv(ws)  # llama.state {running: false, error: "llama.cpp is not installed"}
     select_done = await _recv_response(ws, req.id)
     assert select_done.payload["ok"] is False
 
-    req = _make_request("local_llm.add_flavor", name=_FLAVOR_TEST_ENTRY, flavor_name="Tight VRAM")
-    await ws.send_str(req.to_json())
-    added = await _recv(ws)
-    flavor_id = _custom_flavor_ids(_local_entry(added.payload, _FLAVOR_TEST_ENTRY))[0]
-
-    req = _make_request("local_llm.set_active_flavor", name=_FLAVOR_TEST_ENTRY, flavor_id=flavor_id)
+    req = _make_request(
+        "local_llm.set_knobs", name=_PROFILE_TEST_ENTRY, knobs={"tail-culling": "strong"}
+    )
     await ws.send_str(req.to_json())
     resp = await _recv(ws)
     assert resp.payload["type"] == "local_llm.registry_state"
-    assert _local_entry(resp.payload, _FLAVOR_TEST_ENTRY)["active_flavor"] == flavor_id
+
+    req = _make_request(
+        "local_llm.add_profile", name=_PROFILE_TEST_ENTRY, profile_name="Tight VRAM"
+    )
+    await ws.send_str(req.to_json())
+    added = await _recv(ws)
+    profile_id = _profile_ids(_local_entry(added.payload, _PROFILE_TEST_ENTRY))[0]
+
+    req = _make_request(
+        "local_llm.set_active_profile", name=_PROFILE_TEST_ENTRY, profile_id=profile_id
+    )
+    await ws.send_str(req.to_json())
+    resp = await _recv(ws)
+    assert resp.payload["type"] == "local_llm.registry_state"
+    assert _local_entry(resp.payload, _PROFILE_TEST_ENTRY)["active_profile"] == profile_id

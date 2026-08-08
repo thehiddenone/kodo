@@ -1172,8 +1172,8 @@ def test_attachment_report_scenario_has_its_spec_attached_to_the_first_prompt() 
     assert scenario.attachments[0][0].is_file()
 
 
-def test_full_regression_suite_pins_an_existing_flavor_for_laguna() -> None:
-    """The suite's LLMUnderTest for attachment-report must name a real flavor."""
+def test_full_regression_suite_pins_real_knobs_for_laguna() -> None:
+    """The suite's LLMUnderTest for attachment-report must name real knobs and options."""
     from kodo.llms.local_registry import _catalog
     from kodo.validator.suites import resolve_selectors
 
@@ -1184,5 +1184,9 @@ def test_full_regression_suite_pins_an_existing_flavor_for_laguna() -> None:
     lut = entry.llm_under_test
 
     assert lut.llm in entries
-    flavor_ids = {f.id for f in entries[lut.llm].flavors}
-    assert lut.flavor in flavor_ids, f"{lut.flavor!r} not among {sorted(flavor_ids)}"
+    knobs = {k.id: k for k in entries[lut.llm].knobs}
+    assert lut.knobs, "the attachment-report LUT is meant to pin a sampling configuration"
+    for knob_id, option_id in lut.knobs.items():
+        assert knob_id in knobs, f"{knob_id!r} not among {sorted(knobs)}"
+        option_ids = {o.id for o in knobs[knob_id].options}
+        assert option_id in option_ids, f"{option_id!r} not among {sorted(option_ids)}"

@@ -25,36 +25,38 @@ from huggingface_hub.errors import GatedRepoError
 
 from kodo.binutils import ensure_all_utils
 from kodo.llms import (
-    LlamaFlavorPlatform,
     LLMGateway,
     LLMRouting,
     LocalLLMEntry,
     Message,
     TokenDelta,
     TurnEnd,
-    add_flavor,
     add_local_entry,
+    add_profile,
     clear_llama_server_override_path,
     detect_ram_gb,
     detect_vram_gb,
-    get_active_flavor,
+    get_active_profile,
     get_cloud_registry,
     get_cloud_vendor_display_name,
-    get_effective_flavor_id,
-    get_flavors,
+    get_knob_selections,
     get_llama_server_override_path,
     get_local_registry,
+    get_profiles,
+    llama_arg_catalog_to_json,
     local_thinking_default_tier,
     local_thinking_family,
     local_thinking_tiers,
     parse_llama_args,
     parse_llama_args_text,
-    remove_flavor,
     remove_local_entry,
+    remove_profile,
+    resolve_default_profile_args,
     sampling_specs_to_json,
-    set_active_flavor,
+    set_active_profile,
+    set_knobs,
     set_llama_server_override_path,
-    update_flavor,
+    update_profile,
 )
 from kodo.llms.llamacpp import (
     LlamaInstall,
@@ -109,19 +111,20 @@ from kodo.transport import (
     MSG_LLM_COMPLETE,
     MSG_LLM_SELECT,
     MSG_LOCAL_LLM_ADD_FILE,
-    MSG_LOCAL_LLM_ADD_FLAVOR,
     MSG_LOCAL_LLM_ADD_HUGGINGFACE,
+    MSG_LOCAL_LLM_ADD_PROFILE,
     MSG_LOCAL_LLM_ADD_SERVER_URL,
     MSG_LOCAL_LLM_CHECK_UPDATES,
     MSG_LOCAL_LLM_INSTALL,
     MSG_LOCAL_LLM_PAUSE,
     MSG_LOCAL_LLM_REMOVE,
-    MSG_LOCAL_LLM_REMOVE_FLAVOR,
+    MSG_LOCAL_LLM_REMOVE_PROFILE,
     MSG_LOCAL_LLM_RESUME,
-    MSG_LOCAL_LLM_SET_ACTIVE_FLAVOR,
+    MSG_LOCAL_LLM_SET_ACTIVE_PROFILE,
+    MSG_LOCAL_LLM_SET_KNOBS,
     MSG_LOCAL_LLM_UNINSTALL,
     MSG_LOCAL_LLM_UPDATE,
-    MSG_LOCAL_LLM_UPDATE_FLAVOR,
+    MSG_LOCAL_LLM_UPDATE_PROFILE,
     MSG_MODE_SET,
     MSG_PROJECT_CREATE,
     MSG_PROMPT_SUBMIT,
@@ -368,20 +371,58 @@ def _thinking_families_payload(registry: dict[str, LocalLLMEntry]) -> dict[str, 
     }
 
 
-def _flavors_payload(entry: LocalLLMEntry, kodo_dir: Path) -> list[dict[str, object]]:
-    predefined_ids = {f.id for f in entry.flavors}
+def _knob_defs_payload(registry: dict[str, LocalLLMEntry]) -> dict[str, object]:
+    """Every knob any entry offers, **deduplicated by id**.
+
+    Knobs are overwhelmingly shared — all 82 hardcoded entries offer the same
+    six, and the only per-family ones are the three YaRN context knobs — so
+    repeating each definition (five options, each with a paragraph of help
+    text) on every entry would dominate the payload. Entries carry a list of
+    knob ids instead and look them up here. ``_validate_catalog`` guarantees
+    two entries never disagree about what one id means, so this flattening is
+    lossless.
+    """
+    defs: dict[str, object] = {}
+    for entry in registry.values():
+        for knob in entry.knobs:
+            if knob.id in defs:
+                continue
+            defs[knob.id] = {
+                "id": knob.id,
+                "name": knob.name,
+                "description": knob.description,
+                "kind": knob.kind.value,
+                "advanced": knob.advanced,
+                "default": knob.resolved_default(),
+                "options": [
+                    {
+                        "id": option.id,
+                        "name": option.name,
+                        "description": option.description,
+                        "llama_args": option.llama_args,
+                    }
+                    for option in knob.options
+                ],
+                "flag": knob.flag,
+                "minimum": knob.minimum,
+                "maximum": knob.maximum,
+                "step": knob.step,
+                "unset_label": knob.unset_label,
+            }
+    return defs
+
+
+def _profiles_payload(entry: LocalLLMEntry, kodo_dir: Path) -> list[dict[str, object]]:
+    """*entry*'s user-defined profiles. Never includes the Default profile —
+    that one has no stored args (see ``default_profile_args`` instead)."""
     return [
         {
-            "id": f.id,
-            "name": f.name,
-            "description": f.description,
-            "llama_args": f.llama_args,
-            "predefined": f.id in predefined_ids,
-            "min_ram": f.min_ram,
-            "min_vram": f.min_vram,
-            "platform": f.platform.value,
+            "id": p.id,
+            "name": p.name,
+            "description": p.description,
+            "llama_args": p.llama_args,
         }
-        for f in get_flavors(kodo_dir, entry)
+        for p in get_profiles(kodo_dir, entry)
     ]
 
 
@@ -421,8 +462,17 @@ def _local_registry_payload() -> dict[str, object]:
             "llm_author": e.llm_author,
             "llamacpp_version": e.llamacpp_version,
             "context_window": e.context_window,
-            "flavors": _flavors_payload(e, kodo_dir),
-            "active_flavor": get_active_flavor(kodo_dir, e.name),
+            "knobs": [k.id for k in e.knobs],
+            "knob_selections": get_knob_selections(kodo_dir, e),
+            # What those selections currently resolve to. Sent so the client
+            # can show the effective context size (and the exact flags a knob
+            # change produced) without re-implementing knob composition or
+            # making a round trip — see doc/LLM_REGISTRY.md §4.6.
+            "default_profile_args": resolve_default_profile_args(kodo_dir, e)
+            if e.kind != "custom_server_url"
+            else {},
+            "profiles": _profiles_payload(e, kodo_dir),
+            "active_profile": get_active_profile(kodo_dir, e.name),
         }
         for e in registry.values()
     ]
@@ -432,12 +482,19 @@ def _local_registry_payload() -> dict[str, object]:
         "detected_vram_gb": detect_vram_gb(),
         "detected_ram_gb": detect_ram_gb(),
         "thinking_families": _thinking_families_payload(registry),
+        # Knob definitions, deduplicated across every entry — see
+        # _knob_defs_payload. Entries reference these by id.
+        "knob_defs": _knob_defs_payload(registry),
         # Static table, shipped with the registry rather than with every
         # per-session `state` push (it is ~27 entries of help text and
         # never changes at runtime). kodo-vsix renders the sampling modal
         # from this instead of hardcoding a second copy — same reasoning as
         # `thinking_families` above. See doc/SAMPLING.md.
         "sampling_specs": sampling_specs_to_json(),
+        # The curated llama-server flag table the user-defined profile editor's
+        # "Add argument" picker renders from (doc/LLM_REGISTRY.md §4.7). Static,
+        # shipped here for the same reason `sampling_specs` is.
+        "llama_arg_catalog": llama_arg_catalog_to_json(),
     }
 
 
@@ -1393,44 +1450,26 @@ async def _reply_local_llm_error(req: Request, message: str) -> None:
 
 def _parse_non_negative_int(raw: object) -> int:
     """Best-effort int parse for a numeric webview field — used for
-    ``context_window`` (add_huggingface/add_file) and ``min_ram``/``min_vram``
-    (add_flavor/update_flavor). Anything unparseable, missing, or falsy
-    collapses to ``0`` ("unset"/"unknown" in all four fields' semantics)."""
+    ``context_window`` (add_huggingface/add_file). Anything unparseable,
+    missing, or falsy collapses to ``0`` ("unset"/"unknown")."""
     try:
         return int(cast(int, raw) or 0)
     except (TypeError, ValueError):
         return 0
 
 
-def _parse_flavor_platform(raw: object) -> LlamaFlavorPlatform:
-    """Best-effort ``LlamaFlavorPlatform`` parse for the ``platform`` webview field
-    (add_flavor/update_flavor) — falls back to ``BOTH`` ("no known
-    restriction") for anything missing or unrecognized, same permissive
-    style as :func:`_parse_non_negative_int`."""
-    try:
-        return LlamaFlavorPlatform(str(raw))
-    except ValueError:
-        return LlamaFlavorPlatform.BOTH
+def _entry_base_args(payload: dict[str, object]) -> dict[str, str]:
+    """The ``base_llama_args`` for an entry being added from an "Add local LLM" modal.
 
-
-def _seed_default_flavor(kodo_dir: Path, entry: LocalLLMEntry, payload: dict[str, object]) -> None:
-    """Seed *entry*'s first (custom) flavor from an "Add local LLM" modal's own fields.
-
-    Flavors are the only source of launch args now (see :class:`LlamaFlavor`)
-    — a freshly-added ``custom_hf``/``custom_file`` entry has none of its own
-    (``entry.flavors == ()``), so without this it would launch with no CLI
-    args at all until the user visited "Manage flavors". Named/slugged
-    ``"default"`` to match the built-in flavor every ``hardcoded_hf`` entry
-    gets, but stored as a regular *custom* flavor (not baked into Python
-    source, and freely editable/removable like any other).
+    The launch args typed into that form are the one launch-arg input a
+    user-added entry contributes. They become its ``base_llama_args`` — the
+    floor its Default profile's knobs layer on top of — rather than a separate
+    profile, so the entry gets the same knob-driven Configure modal every
+    built-in LLM has. :func:`~kodo.llms.local_registry._entries._with_custom_entry_knobs`
+    merges the shared base args (``--jinja`` and friends) under these on load,
+    so an empty form still produces a working launch.
     """
-    add_flavor(
-        kodo_dir,
-        entry.name,
-        "default",
-        description="Default flavor",
-        llama_args=parse_llama_args(payload.get("llama_args", {})),
-    )
+    return parse_llama_args(payload.get("llama_args", {}))
 
 
 async def _handle_local_llm_add_huggingface(req: Request) -> None:
@@ -1442,6 +1481,7 @@ async def _handle_local_llm_add_huggingface(req: Request) -> None:
         repo_id=str(payload.get("repo_id", "")).strip(),
         filename=str(payload.get("filename", "")).strip(),
         context_window=_parse_non_negative_int(payload.get("context_window", 0)),
+        base_llama_args=_entry_base_args(payload),
     )
     if not entry.name or not entry.repo_id or not entry.filename:
         await _reply_local_llm_error(req, "name, repo_id, and filename are all required")
@@ -1452,7 +1492,6 @@ async def _handle_local_llm_add_huggingface(req: Request) -> None:
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
         return
-    _seed_default_flavor(kodo_dir, entry, payload)
     await _send_registry_state(req)
 
 
@@ -1464,6 +1503,7 @@ async def _handle_local_llm_add_file(req: Request) -> None:
         description=str(payload.get("description", "")),
         path=str(payload.get("path", "")).strip(),
         context_window=_parse_non_negative_int(payload.get("context_window", 0)),
+        base_llama_args=_entry_base_args(payload),
     )
     if not entry.name or not entry.path:
         await _reply_local_llm_error(req, "name and path are both required")
@@ -1474,7 +1514,6 @@ async def _handle_local_llm_add_file(req: Request) -> None:
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
         return
-    _seed_default_flavor(kodo_dir, entry, payload)
     await _send_registry_state(req)
 
 
@@ -1485,6 +1524,9 @@ async def _handle_local_llm_add_server_url(req: Request) -> None:
         kind="custom_server_url",
         description=str(payload.get("description", "")),
         url=str(payload.get("url", "")).strip(),
+        # Not a process kodo launches: no base args, no knobs, no profiles.
+        base_llama_args={},
+        knobs=(),
     )
     if not entry.name or not entry.url:
         await _reply_local_llm_error(req, "name and url are both required")
@@ -1531,15 +1573,16 @@ def _current_local_model_name() -> str:
 
 
 async def _restart_llama_server_if_running(req: Request, entry_name: str) -> None:
-    """Force a fresh llama-server launch for *entry_name* to pick up a just-changed flavor.
+    """Force a fresh llama-server launch for *entry_name* to pick up a config change.
 
     Only meaningful when llama-server is *actually currently running*
-    *entry_name* — a flavor change for a selected-but-not-started model has
-    nothing to restart. Stops it unconditionally first even though
+    *entry_name* — a profile switch or knob change for a
+    selected-but-not-started model has nothing to restart. Stops it
+    unconditionally first even though
     :func:`kodo.llms.llamacpp.ensure_llama_running` would normally treat a
-    same-name request as "already running, nothing to do" — flavor changes
-    don't change ``entry.name``, so that shortcut would otherwise mask the
-    new args entirely (see its docstring).
+    same-name request as "already running, nothing to do" — neither a profile
+    switch nor a knob change alters ``entry.name``, so that shortcut would
+    otherwise mask the new args entirely (see its docstring).
     """
     kodo_dir = kodo_user_dir()
     entry = get_local_registry(kodo_dir).get(entry_name)
@@ -1565,66 +1608,57 @@ async def _restart_llama_server_if_running(req: Request, entry_name: str) -> Non
     )
 
 
-async def _handle_local_llm_add_flavor(req: Request) -> None:
+async def _handle_local_llm_add_profile(req: Request) -> None:
     payload = req.env.payload
     entry_name = str(payload.get("name", "")).strip()
-    flavor_name = str(payload.get("flavor_name", "")).strip()
     try:
-        flavor = add_flavor(
+        profile = add_profile(
             kodo_user_dir(),
             entry_name,
-            flavor_name,
+            str(payload.get("profile_name", "")).strip(),
             description=str(payload.get("description", "")),
             llama_args=parse_llama_args_text(payload.get("llama_args_text", "")),
-            min_ram=_parse_non_negative_int(payload.get("min_ram", 0)),
-            min_vram=_parse_non_negative_int(payload.get("min_vram", 0)),
-            platform=_parse_flavor_platform(payload.get("platform")),
         )
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
         return
-    _log.info("Added flavor %r (%r) to %r", flavor.name, flavor.id, entry_name)
+    _log.info("Added profile %r (%r) to %r", profile.name, profile.id, entry_name)
     await _send_registry_state(req)
 
 
-async def _handle_local_llm_update_flavor(req: Request) -> None:
+async def _handle_local_llm_update_profile(req: Request) -> None:
     payload = req.env.payload
     entry_name = str(payload.get("name", "")).strip()
-    flavor_id = str(payload.get("flavor_id", "")).strip()
-    flavor_name = str(payload.get("flavor_name", "")).strip()
+    profile_id = str(payload.get("profile_id", "")).strip()
     kodo_dir = kodo_user_dir()
-    entry = get_local_registry(kodo_dir).get(entry_name)
-    was_effective_active = (
-        entry is not None and get_effective_flavor_id(kodo_dir, entry) == flavor_id
-    )
+    # Only a restart-worthy change if this profile is the one currently
+    # selected — editing an inactive profile changes nothing that is running.
+    was_active = get_active_profile(kodo_dir, entry_name) == profile_id
     try:
-        flavor = update_flavor(
+        profile = update_profile(
             kodo_dir,
             entry_name,
-            flavor_id,
-            flavor_name,
+            profile_id,
+            str(payload.get("profile_name", "")).strip(),
             description=str(payload.get("description", "")),
             llama_args=parse_llama_args_text(payload.get("llama_args_text", "")),
-            min_ram=_parse_non_negative_int(payload.get("min_ram", 0)),
-            min_vram=_parse_non_negative_int(payload.get("min_vram", 0)),
-            platform=_parse_flavor_platform(payload.get("platform")),
         )
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
         return
-    _log.info("Updated flavor %r (%r) on %r", flavor.name, flavor.id, entry_name)
-    if was_effective_active and entry_name == _current_local_model_name():
+    _log.info("Updated profile %r (%r) on %r", profile.name, profile.id, entry_name)
+    if was_active and entry_name == _current_local_model_name():
         await _restart_llama_server_if_running(req, entry_name)
     await _send_registry_state(req)
 
 
-async def _handle_local_llm_remove_flavor(req: Request) -> None:
+async def _handle_local_llm_remove_profile(req: Request) -> None:
     entry_name = str(req.env.payload.get("name", "")).strip()
-    flavor_id = str(req.env.payload.get("flavor_id", "")).strip()
+    profile_id = str(req.env.payload.get("profile_id", "")).strip()
     kodo_dir = kodo_user_dir()
-    was_active = get_active_flavor(kodo_dir, entry_name) == flavor_id
+    was_active = get_active_profile(kodo_dir, entry_name) == profile_id
     try:
-        remove_flavor(kodo_dir, entry_name, flavor_id)
+        remove_profile(kodo_dir, entry_name, profile_id)
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
         return
@@ -1633,17 +1667,48 @@ async def _handle_local_llm_remove_flavor(req: Request) -> None:
     await _send_registry_state(req)
 
 
-async def _handle_local_llm_set_active_flavor(req: Request) -> None:
+async def _handle_local_llm_set_active_profile(req: Request) -> None:
     entry_name = str(req.env.payload.get("name", "")).strip()
-    flavor_id = str(req.env.payload.get("flavor_id", "")).strip()
+    profile_id = str(req.env.payload.get("profile_id", "")).strip()
     kodo_dir = kodo_user_dir()
-    changed = get_active_flavor(kodo_dir, entry_name) != flavor_id
+    changed = get_active_profile(kodo_dir, entry_name) != profile_id
     try:
-        set_active_flavor(kodo_dir, entry_name, flavor_id)
+        set_active_profile(kodo_dir, entry_name, profile_id)
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
         return
     if changed and entry_name == _current_local_model_name():
+        await _restart_llama_server_if_running(req, entry_name)
+    await _send_registry_state(req)
+
+
+async def _handle_local_llm_set_knobs(req: Request) -> None:
+    """Apply the Configure modal's whole knob selection for one entry.
+
+    Restarts llama-server only when the knobs actually resolve to different
+    launch args *and* this entry is both the selected local model and the one
+    currently running — re-applying an unchanged selection (the user opened
+    Configure, changed nothing, hit Apply) must not interrupt a window that is
+    mid-generation. Compared on the resolved args rather than on the selection
+    map because the two are not equivalent: a selection can change from an
+    absent key to an explicit one that means the same thing.
+    """
+    entry_name = str(req.env.payload.get("name", "")).strip()
+    raw = req.env.payload.get("knobs")
+    selections = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+    kodo_dir = kodo_user_dir()
+    entry = get_local_registry(kodo_dir).get(entry_name)
+    before = resolve_default_profile_args(kodo_dir, entry) if entry is not None else {}
+    try:
+        set_knobs(kodo_dir, entry_name, selections)
+    except ValueError as exc:
+        await _reply_local_llm_error(req, str(exc))
+        return
+    after = resolve_default_profile_args(kodo_dir, entry) if entry is not None else {}
+    _log.info("Set knobs on %r: %s", entry_name, selections)
+    # A user-defined profile being active means the knobs aren't what launches.
+    on_default = get_active_profile(kodo_dir, entry_name) == ""
+    if on_default and before != after and entry_name == _current_local_model_name():
         await _restart_llama_server_if_running(req, entry_name)
     await _send_registry_state(req)
 
@@ -2060,12 +2125,13 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_LOCAL_LLM_ADD_HUGGINGFACE, _handle_local_llm_add_huggingface)
     conn_registry.register_handler(MSG_LOCAL_LLM_ADD_FILE, _handle_local_llm_add_file)
     conn_registry.register_handler(MSG_LOCAL_LLM_ADD_SERVER_URL, _handle_local_llm_add_server_url)
-    conn_registry.register_handler(MSG_LOCAL_LLM_ADD_FLAVOR, _handle_local_llm_add_flavor)
-    conn_registry.register_handler(MSG_LOCAL_LLM_UPDATE_FLAVOR, _handle_local_llm_update_flavor)
-    conn_registry.register_handler(MSG_LOCAL_LLM_REMOVE_FLAVOR, _handle_local_llm_remove_flavor)
+    conn_registry.register_handler(MSG_LOCAL_LLM_ADD_PROFILE, _handle_local_llm_add_profile)
+    conn_registry.register_handler(MSG_LOCAL_LLM_UPDATE_PROFILE, _handle_local_llm_update_profile)
+    conn_registry.register_handler(MSG_LOCAL_LLM_REMOVE_PROFILE, _handle_local_llm_remove_profile)
     conn_registry.register_handler(
-        MSG_LOCAL_LLM_SET_ACTIVE_FLAVOR, _handle_local_llm_set_active_flavor
+        MSG_LOCAL_LLM_SET_ACTIVE_PROFILE, _handle_local_llm_set_active_profile
     )
+    conn_registry.register_handler(MSG_LOCAL_LLM_SET_KNOBS, _handle_local_llm_set_knobs)
     conn_registry.register_handler(MSG_LLAMA_SERVER_OVERRIDE_SET, _handle_llama_server_override_set)
     conn_registry.register_handler(
         MSG_LLAMA_SERVER_OVERRIDE_REMOVE, _handle_llama_server_override_remove

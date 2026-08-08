@@ -8,13 +8,13 @@ Two ways to describe what to run:
   ``SCENARIOS`` (a list of them). Scenarios are content-only (no LLM named on
   the file itself, see :mod:`kodo.validator._scenario`), so every scenario
   this run resolves is executed against the same ``--llm-under-test``/
-  ``--validation-llm``/``--flavor``.
+  ``--validation-llm``/``--knob``.
 * **Inline flags** — ``--prompt``/``--root``/``--workflow``/… for a quick
   ad-hoc run without writing a file.
 
 ``--llm-under-test`` and ``--validation-llm`` are always mandatory (there is
-no meaningful default); ``--flavor`` defaults to ``"default"``. To validate
-*several* LLMs together (each potentially with its own scenarios and flavor)
+no meaningful default); ``--knob`` is optional and repeatable. To validate
+*several* LLMs together (each potentially with its own scenarios and knobs)
 and get one final comparative summary, use a
 :class:`~kodo.validator.ValidationSuite` instead — see
 ``python -m kodo.validator.suites``.
@@ -77,8 +77,8 @@ def main(argv: list[str] | None = None) -> int:
             template_home,
             llm_under_test=str(args.llm_under_test),
             validation_llm=str(args.validation_llm),
-            flavor=str(args.flavor),
-            validation_llm_flavor=args.validation_llm_flavor,
+            knobs=_parse_knobs(args.knob),
+            validation_llm_knobs=_parse_knobs(args.validation_llm_knob),
         )
     )
     failed = 0
@@ -100,8 +100,8 @@ async def _run_all(
     *,
     llm_under_test: str,
     validation_llm: str,
-    flavor: str,
-    validation_llm_flavor: str | None,
+    knobs: dict[str, str],
+    validation_llm_knobs: dict[str, str],
 ) -> list[ScenarioResult]:
     """Run scenarios sequentially (each with its own server + home).
 
@@ -111,8 +111,8 @@ async def _run_all(
         template_home (Path | None): ``.kodo`` template to clone per run.
         llm_under_test (str): Local registry name every scenario runs against.
         validation_llm (str): Local registry name of the judge/proxy LLM.
-        flavor (str): ``llm_under_test`` flavor id.
-        validation_llm_flavor (str | None): ``validation_llm`` flavor id.
+        knobs (dict[str, str]): ``llm_under_test`` knob selection.
+        validation_llm_knobs (dict[str, str]): ``validation_llm`` knob selection.
 
     Returns:
         list[ScenarioResult]: One result per scenario.
@@ -126,12 +126,34 @@ async def _run_all(
                 out_dir,
                 llm_under_test=llm_under_test,
                 validation_llm=validation_llm,
-                flavor=flavor,
-                validation_llm_flavor=validation_llm_flavor,
+                knobs=knobs,
+                validation_llm_knobs=validation_llm_knobs,
                 template_home=template_home,
             )
         )
     return results
+
+
+def _parse_knobs(pairs: list[str]) -> dict[str, str]:
+    """Turn repeated ``--knob knob_id=option_id`` values into a selection map.
+
+    Args:
+        pairs (list[str]): Raw ``KNOB_ID=OPTION_ID`` strings, in the order given.
+
+    Returns:
+        dict[str, str]: The selection map, later occurrences winning.
+
+    Raises:
+        SystemExit: If any value has no ``=`` in it — a silent skip here would
+            look like the knob simply had no effect.
+    """
+    knobs: dict[str, str] = {}
+    for pair in pairs:
+        key, sep, value = pair.partition("=")
+        if not sep or not key.strip():
+            raise SystemExit(f"--knob expects KNOB_ID=OPTION_ID, got {pair!r}")
+        knobs[key.strip()] = value.strip()
+    return knobs
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -191,16 +213,22 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Local registry name of the fixed validation/judge LLM (mandatory).",
     )
     parser.add_argument(
-        "--flavor",
-        default="default",
-        metavar="FLAVOR_ID",
-        help="llm_under_test flavor id to pin before the first prompt (default: 'default').",
+        "--knob",
+        action="append",
+        default=[],
+        metavar="KNOB_ID=OPTION_ID",
+        dest="knob",
+        help="llm_under_test knob to pin before the first prompt, e.g. "
+        "--knob tail-culling=light. Repeat for several. Default: the registry's "
+        "own defaults.",
     )
     parser.add_argument(
-        "--validation-llm-flavor",
-        default=None,
-        metavar="FLAVOR_ID",
-        help="validation_llm flavor id to pin the same way (default: leave as-is).",
+        "--validation-llm-knob",
+        action="append",
+        default=[],
+        metavar="KNOB_ID=OPTION_ID",
+        dest="validation_llm_knob",
+        help="validation_llm knob to pin the same way (default: leave as-is).",
     )
     # Inline (ad-hoc) scenario flags:
     parser.add_argument("--name", default="adhoc", help="Inline scenario name.")

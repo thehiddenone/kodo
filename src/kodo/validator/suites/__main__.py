@@ -9,7 +9,7 @@ Each *selector* is ``all``, a suite (e.g. ``full_regression``), or a
 sub-directory whose suites are all included; see :mod:`kodo.validator.suites`.
 Unlike ``hatch run validate`` (a single scenario/batch against one
 externally-named LLM, see :mod:`kodo.validator.scenarios.__main__`), a suite
-already carries every LLM-under-test (+ flavor) and judge it needs — no
+already carries every LLM-under-test (+ knobs) and judge it needs — no
 ``--llm-under-test``/``--validation-llm`` flags here.
 
 The runner:
@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         for e in result.entries:
             print(
-                f"    - {e.llm_under_test.llm} (flavor: {e.llm_under_test.flavor}) "
+                f"    - {e.llm_under_test.llm} (knobs: {e.llm_under_test.knobs}) "
                 f"/ {e.result.scenario.name}: score={e.result.score}"
             )
     return 1 if failed else 0

@@ -1,11 +1,21 @@
 """``~/.kodo/etc/local-llm-registry.json`` file I/O and JSON (de)serialization.
 
 The external collection (``custom_*`` entries) plus the global llama-server
-binary override path, and the two sibling ``flavors``/``active_flavors``
-top-level keys (see :mod:`kodo.llms.local_registry._flavors`) all live in
-this one file, owned (read + written) entirely by this package — the
-kodo-vsix extension only ever reads it indirectly, via the WS protocol (see
-doc/LLM_REGISTRY.md).
+binary override path, and the three sibling ``profiles``/``active_profiles``/
+``knob_selections`` top-level keys (see
+:mod:`kodo.llms.local_registry._profiles`) all live in this one file, owned
+(read + written) entirely by this package — the kodo-vsix extension only ever
+reads it indirectly, via the WS protocol (see doc/LLM_REGISTRY.md).
+
+The ``flavors``/``active_flavors`` keys this file used to carry are **gone**,
+not migrated: predefined flavors became knobs, and a custom flavor's raw arg
+set is exactly what an :class:`~kodo.llms.local_registry.LlmProfile` is, but
+matching them up automatically would have to guess which knob selection
+reproduces a hand-edited arg dict. A pre-existing file's old keys are left
+untouched on disk (:func:`_load_raw`/:func:`_save_raw` never drop keys they
+don't know about) and simply ignored — an install that had custom flavors
+starts fresh on the Default profile, with the old definitions recoverable by
+hand from the file if anyone wants them.
 """
 
 from __future__ import annotations
@@ -16,7 +26,7 @@ import re
 from pathlib import Path
 from typing import cast
 
-from ._types import LlamaFlavor, LlamaFlavorPlatform, LocalLLMEntry
+from ._types import LlmProfile, LocalLLMEntry
 
 __all__ = [
     "parse_llama_args",
@@ -46,7 +56,7 @@ def parse_llama_args(raw: object) -> dict[str, str]:
 
 
 def parse_llama_args_text(raw: object) -> dict[str, str]:
-    """Parse the "manage flavors" modal's raw multi-line text box into ``llama_args``.
+    """Parse the profile editor's raw multi-line text box into ``llama_args``.
 
     One flag per line, e.g. ``--ctx-size 1048576``. Each non-blank line is
     split on the first run of whitespace into ``(flag, value)``; a line with
@@ -89,7 +99,11 @@ def _entry_from_json(raw: dict[str, object]) -> LocalLLMEntry | None:
         repo_id=str(raw.get("repo_id", "")),
         filename=str(raw.get("filename", "")),
         context_window=int(cast(int, raw.get("context_window", 0)) or 0),
-        flavors=(),
+        base_llama_args=parse_llama_args(raw.get("base_llama_args", {})),
+        # Knobs are code, never persisted data — a custom entry's knob tuple is
+        # attached on load by _entries.get_local_registry(), which is also what
+        # lets a kodo upgrade change the shared knob set without a file rewrite.
+        knobs=(),
         path=str(raw.get("path", "")),
         url=str(raw.get("url", "")),
     )
@@ -103,6 +117,7 @@ def _entry_to_json(entry: LocalLLMEntry) -> dict[str, object]:
         "repo_id": entry.repo_id,
         "filename": entry.filename,
         "context_window": entry.context_window,
+        "base_llama_args": entry.base_llama_args,
         "path": entry.path,
         "url": entry.url,
     }
@@ -112,11 +127,13 @@ def _load_raw(kodo_dir: Path) -> dict[str, object]:
     """The whole ``local-llm-registry.json`` as a plain dict, ``{}`` if absent/unreadable.
 
     Shared low-level accessor for every top-level key in the file (``entries``,
-    ``llama_server_override_path``, ``flavors``, ``active_flavors``) — callers
-    that only care about one key still go through this so a round trip never
-    clobbers keys it doesn't know about (see :func:`_save_external`,
-    :func:`~kodo.llms.local_registry._flavors.add_flavor`, etc., all of which
-    load-modify-save the same dict).
+    ``llama_server_override_path``, ``profiles``, ``active_profiles``,
+    ``knob_selections``) — callers that only care about one key still go
+    through this so a round trip never clobbers keys it doesn't know about
+    (see :func:`_save_external`,
+    :func:`~kodo.llms.local_registry._profiles.add_profile`, etc., all of which
+    load-modify-save the same dict). That is also what preserves a legacy
+    ``flavors`` key rather than deleting it — see the module docstring.
     """
     path = _registry_file(kodo_dir)
     if not path.is_file():
@@ -158,93 +175,102 @@ def _save_external(kodo_dir: Path, entries: list[LocalLLMEntry], override_path: 
 
 
 # ---------------------------------------------------------------------------
-# Flavors: custom (user-added) definitions + active-flavor selection.
+# Profiles: user-defined definitions, active selection, and knob state.
 #
-# Stored as two sibling top-level keys in the same local-llm-registry.json,
-# both keyed by *entry name* (any kind except custom_server_url — a flavor is
-# meaningless for a server kodo doesn't launch): ``flavors: {entry_name:
-# [flavor...]}`` for custom flavor definitions, ``active_flavors: {entry_name:
-# flavor_id}`` for which one (if any) is currently selected. Predefined
-# flavors live in code instead, on the hardcoded entry's own ``flavors``
-# tuple — see LlamaFlavor and _flavors.get_flavors().
+# Three sibling top-level keys in the same local-llm-registry.json, all keyed
+# by *entry name* (any kind except custom_server_url — launch args are
+# meaningless for a server kodo doesn't launch):
+#
+#   profiles:        {entry_name: [profile...]}  user-defined arg sets
+#   active_profiles: {entry_name: profile_id}    "" / absent = Default profile
+#   knob_selections: {entry_name: {knob_id: selection}}  Default profile state
+#
+# knob_selections is stored sparsely — only knobs the user actually moved off
+# their default appear, so changing a knob's default in a later kodo release
+# takes effect for everyone who never touched it. See _profiles.set_knobs.
 # ---------------------------------------------------------------------------
 
 
-def _parse_flavor_platform(raw: object) -> LlamaFlavorPlatform:
-    """Best-effort :class:`LlamaFlavorPlatform` parse for a persisted/wire value.
-
-    Falls back to ``BOTH`` ("no known restriction — runnable everywhere") for
-    anything missing or unrecognized, same permissive spirit as
-    :func:`kodo.server._app._parse_non_negative_int`.
-    """
-    try:
-        return LlamaFlavorPlatform(str(raw))
-    except ValueError:
-        return LlamaFlavorPlatform.BOTH
-
-
-def _flavor_from_json(raw: dict[str, object]) -> LlamaFlavor | None:
-    flavor_id = str(raw.get("id", "")).strip()
+def _profile_from_json(raw: dict[str, object]) -> LlmProfile | None:
+    profile_id = str(raw.get("id", "")).strip()
     name = str(raw.get("name", "")).strip()
-    if not flavor_id or not name:
+    if not profile_id or not name:
         return None
-    return LlamaFlavor(
-        id=flavor_id,
+    return LlmProfile(
+        id=profile_id,
         name=name,
         description=str(raw.get("description", "")),
         llama_args=parse_llama_args(raw.get("llama_args", {})),
-        min_ram=int(cast(int, raw.get("min_ram", 0)) or 0),
-        min_vram=int(cast(int, raw.get("min_vram", 0)) or 0),
-        platform=_parse_flavor_platform(raw.get("platform")),
     )
 
 
-def _flavor_to_json(flavor: LlamaFlavor) -> dict[str, object]:
+def _profile_to_json(profile: LlmProfile) -> dict[str, object]:
     return {
-        "id": flavor.id,
-        "name": flavor.name,
-        "description": flavor.description,
-        "llama_args": flavor.llama_args,
-        "min_ram": flavor.min_ram,
-        "min_vram": flavor.min_vram,
-        "platform": flavor.platform.value,
+        "id": profile.id,
+        "name": profile.name,
+        "description": profile.description,
+        "llama_args": profile.llama_args,
     }
 
 
-def _all_custom_flavors(data: dict[str, object]) -> dict[str, list[LlamaFlavor]]:
-    raw = data.get("flavors")
-    result: dict[str, list[LlamaFlavor]] = {}
+def _all_profiles(data: dict[str, object]) -> dict[str, list[LlmProfile]]:
+    raw = data.get("profiles")
+    result: dict[str, list[LlmProfile]] = {}
     if not isinstance(raw, dict):
         return result
     for entry_name, raw_list in raw.items():
         if not isinstance(raw_list, list):
             continue
-        flavors = [
-            f
-            for f in (_flavor_from_json(item) for item in raw_list if isinstance(item, dict))
-            if f is not None
+        profiles = [
+            p
+            for p in (_profile_from_json(item) for item in raw_list if isinstance(item, dict))
+            if p is not None
         ]
-        if flavors:
-            result[str(entry_name)] = flavors
+        if profiles:
+            result[str(entry_name)] = profiles
     return result
 
 
-def _write_custom_flavors(
-    data: dict[str, object], all_flavors: dict[str, list[LlamaFlavor]]
-) -> None:
-    data["flavors"] = {
-        entry_name: [_flavor_to_json(f) for f in flavors]
-        for entry_name, flavors in all_flavors.items()
+def _write_profiles(data: dict[str, object], all_profiles: dict[str, list[LlmProfile]]) -> None:
+    data["profiles"] = {
+        entry_name: [_profile_to_json(p) for p in profiles]
+        for entry_name, profiles in all_profiles.items()
     }
 
 
-def _all_active_flavors(data: dict[str, object]) -> dict[str, str]:
-    raw = data.get("active_flavors")
+def _all_active_profiles(data: dict[str, object]) -> dict[str, str]:
+    raw = data.get("active_profiles")
     if not isinstance(raw, dict):
         return {}
     return {str(k): str(v) for k, v in raw.items() if isinstance(v, str) and v}
 
 
-def _slugify_flavor_id(name: str) -> str:
+def _all_knob_selections(data: dict[str, object]) -> dict[str, dict[str, str]]:
+    """``{entry_name: {knob_id: selection}}``, skipping anything malformed.
+
+    Values are plain strings whatever the knob's kind — an option id for a
+    checkbox/dropdown, the number as text for a NUMBER knob (see
+    :mod:`kodo.llms.local_registry._knobs`).
+    """
+    raw = data.get("knob_selections")
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for entry_name, selections in raw.items():
+        if not isinstance(selections, dict):
+            continue
+        parsed = {str(k): str(v) for k, v in selections.items() if isinstance(v, str)}
+        if parsed:
+            result[str(entry_name)] = parsed
+    return result
+
+
+def _write_knob_selections(
+    data: dict[str, object], all_selections: dict[str, dict[str, str]]
+) -> None:
+    data["knob_selections"] = all_selections
+
+
+def _slugify_profile_id(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
-    return slug or "flavor"
+    return slug or "profile"

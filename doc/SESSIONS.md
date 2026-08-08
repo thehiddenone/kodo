@@ -493,16 +493,17 @@ loop), never to a cloud call — but differs on the two points that matter:
 
 Each `sampling.set` is a **full replace** for that one quant, not a patch: an
 absent parameter means "don't send this field", so llama-server falls back to
-whatever the flavor's launch args set it to. Clearing a field in the UI is
+whatever the active configuration's launch args set it to. Clearing a field in the UI is
 therefore a real operation, not a reset to some default — see SAMPLING.md §1.
 
 `WorkflowEngine._sampling_kwargs` is the read side — it sends this session's
 own overrides for the active entry, read fresh on every call, so moving a
 slider in the sampling modal lands on the next request with no llama-server
-restart. A flavor's own sampling knobs are not a separate layer any more:
-they live in `LlamaFlavor.llama_args` and are already baked into whatever
-`llama-server` was launched with (SAMPLING.md §9), so editing them, unlike
-this session state, always requires a restart.
+restart. Launch-level sampling is not a separate layer: it reaches
+`llama-server`'s command line through the Default profile's sampling knobs or
+a user-defined profile's own flags, and is already baked into whatever the
+process was launched with (SAMPLING.md §9) — so editing it, unlike this
+session state, always requires a restart.
 
 ## Resume
 

@@ -334,16 +334,16 @@ async def test_harness_session_id_property_after_start(
 
 
 # ---------------------------------------------------------------------------
-# Flavor pinning (flavor/validation_llm_flavor -> local_llm.set_active_flavor)
+# Knob pinning (knobs/validation_llm_knobs -> local_llm.set_knobs)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_harness_start_pins_flavor_when_set(
+async def test_harness_start_pins_knobs_when_set(
     tmp_path: Path,
     _mock_deps: dict[str, Any],
 ) -> None:
-    """A flavor= harness sends local_llm.set_active_flavor during start()."""
+    """A knobs= harness sends local_llm.set_knobs during start()."""
     import kodo.validator._harness as _harness
 
     with (
@@ -360,25 +360,25 @@ async def test_harness_start_pins_flavor_when_set(
             tmp_path / "run",
             llm_under_test="test-llm",
             validation_llm="fake-val",
-            flavor="test-llm-strong-tail-cull",
+            knobs={"tail-culling": "strong"},
         )
         await harness.start()
 
     calls = _mock_deps["ValidatorClient"].return_value.request.await_args_list
-    flavor_calls = [c for c in calls if c.args and c.args[0] == "local_llm.set_active_flavor"]
-    assert len(flavor_calls) == 1
-    assert flavor_calls[0].kwargs == {
+    knob_calls = [c for c in calls if c.args and c.args[0] == "local_llm.set_knobs"]
+    assert len(knob_calls) == 1
+    assert knob_calls[0].kwargs == {
         "name": "test-llm",
-        "flavor_id": "test-llm-strong-tail-cull",
+        "knobs": {"tail-culling": "strong"},
     }
 
 
 @pytest.mark.asyncio
-async def test_harness_start_skips_flavor_when_unset(
+async def test_harness_start_skips_knobs_when_unset(
     tmp_path: Path,
     _mock_deps: dict[str, Any],
 ) -> None:
-    """No flavor= means no set_active_flavor call at all (registry default wins)."""
+    """No knobs= means no set_knobs call at all (the registry defaults win)."""
     import kodo.validator._harness as _harness
 
     with (
@@ -399,15 +399,15 @@ async def test_harness_start_skips_flavor_when_unset(
         await harness.start()
 
     calls = _mock_deps["ValidatorClient"].return_value.request.await_args_list
-    assert not [c for c in calls if c.args and c.args[0] == "local_llm.set_active_flavor"]
+    assert not [c for c in calls if c.args and c.args[0] == "local_llm.set_knobs"]
 
 
 @pytest.mark.asyncio
-async def test_harness_start_pins_both_flavors_independently(
+async def test_harness_start_pins_both_models_knobs_independently(
     tmp_path: Path,
     _mock_deps: dict[str, Any],
 ) -> None:
-    """flavor= and validation_llm_flavor= each pin their own model's flavor."""
+    """knobs= and validation_llm_knobs= each pin their own model's knobs."""
     import kodo.validator._harness as _harness
 
     with (
@@ -424,30 +424,30 @@ async def test_harness_start_pins_both_flavors_independently(
             tmp_path / "run",
             llm_under_test="test-llm",
             validation_llm="fake-val",
-            flavor="test-llm-strong-tail-cull",
-            validation_llm_flavor="fake-val-near-greedy",
+            knobs={"tail-culling": "strong"},
+            validation_llm_knobs={"temperature": "near-greedy"},
         )
         await harness.start()
 
     calls = _mock_deps["ValidatorClient"].return_value.request.await_args_list
-    flavor_calls = [c for c in calls if c.args and c.args[0] == "local_llm.set_active_flavor"]
-    assert len(flavor_calls) == 2
-    assert flavor_calls[0].kwargs == {
+    knob_calls = [c for c in calls if c.args and c.args[0] == "local_llm.set_knobs"]
+    assert len(knob_calls) == 2
+    assert knob_calls[0].kwargs == {
         "name": "test-llm",
-        "flavor_id": "test-llm-strong-tail-cull",
+        "knobs": {"tail-culling": "strong"},
     }
-    assert flavor_calls[1].kwargs == {
+    assert knob_calls[1].kwargs == {
         "name": "fake-val",
-        "flavor_id": "fake-val-near-greedy",
+        "knobs": {"temperature": "near-greedy"},
     }
 
 
 @pytest.mark.asyncio
-async def test_harness_start_skips_validation_llm_flavor_when_unset(
+async def test_harness_start_skips_validation_llm_knobs_when_unset(
     tmp_path: Path,
     _mock_deps: dict[str, Any],
 ) -> None:
-    """flavor= alone pins only the LUT — validation_llm_flavor defaults to no pin."""
+    """knobs= alone pins only the LUT — validation_llm_knobs defaults to no pin."""
     import kodo.validator._harness as _harness
 
     with (
@@ -464,14 +464,14 @@ async def test_harness_start_skips_validation_llm_flavor_when_unset(
             tmp_path / "run",
             llm_under_test="test-llm",
             validation_llm="fake-val",
-            flavor="test-llm-strong-tail-cull",
+            knobs={"tail-culling": "strong"},
         )
         await harness.start()
 
     calls = _mock_deps["ValidatorClient"].return_value.request.await_args_list
-    flavor_calls = [c for c in calls if c.args and c.args[0] == "local_llm.set_active_flavor"]
-    assert len(flavor_calls) == 1
-    assert flavor_calls[0].kwargs["name"] == "test-llm"
+    knob_calls = [c for c in calls if c.args and c.args[0] == "local_llm.set_knobs"]
+    assert len(knob_calls) == 1
+    assert knob_calls[0].kwargs["name"] == "test-llm"
 
 
 # ---------------------------------------------------------------------------

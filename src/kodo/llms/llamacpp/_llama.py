@@ -557,7 +557,7 @@ class LlamaPlugin(LLMPlugin):
                 override so the validator's User-Proxy can pin e.g.
                 ``"minimal"`` for its ``ask_user`` answers.
             sampling (SamplingParams | None): Request-level sampling
-                parameters, already resolved from the active flavor's
+                parameters, already resolved from the active profile's
                 defaults and the session's own per-quant overrides
                 (``LLMPlumbingMixin._sampling_kwargs``). llama.cpp-only.
                 Only the parameters it actually carries go on the wire —

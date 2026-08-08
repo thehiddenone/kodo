@@ -3,7 +3,7 @@
 **One suite == one ``.py`` file** under this package that defines a
 module-level ``SUITE`` (a :class:`kodo.validator.ValidationSuite`); a file may
 also define ``SUITES`` (a list) if it carries several. A suite file is the
-*wiring* — which :class:`~kodo.validator.LLMUnderTest` (LLM + flavor) pairs
+*wiring* — which :class:`~kodo.validator.LLMUnderTest` (LLM + knobs) pairs
 with which :class:`~kodo.validator.Scenario`, and which model judges the
 batch — built by importing scenario content from
 :mod:`kodo.validator.scenarios` (typically via

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from ._flavors_qwen import make_qwen_moe_1m_kv_q8, make_qwen_moe_512k_kv_q8
-from ._types import LlamaFlavor, LocalLLMEntry
+from ._knobs_qwen import QWEN_MOE_CONTEXT_KNOB
+from ._knobs_shared import SHARED_KNOBS
+from ._types import LocalLLMEntry
 
 
 def ornith10_35b_a3b_entries() -> list[LocalLLMEntry]:
@@ -15,15 +16,7 @@ def ornith10_35b_a3b_entries() -> list[LocalLLMEntry]:
             repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
             filename="ornith-1.0-35b-bf16.gguf",
             context_window=262_144,
-            flavors=(
-                LlamaFlavor.make_default_kv_q8(),
-                make_qwen_moe_512k_kv_q8(
-                    "deepreinforce-ornith10-35b-a3b-bf16-512k-kv-q8", "512K context size"
-                ),
-                make_qwen_moe_1m_kv_q8(
-                    "deepreinforce-ornith10-35b-a3b-bf16-1m-kv-q8", "1M context size"
-                ),
-            ),
+            knobs=SHARED_KNOBS + (QWEN_MOE_CONTEXT_KNOB,),
             base_llm="Ornith10-35B-A3B",
             llm_author="DeepReinforce AI",
             quant_author="DeepReinforce AI",
@@ -46,15 +39,7 @@ def ornith10_35b_a3b_entries() -> list[LocalLLMEntry]:
             repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
             filename="ornith-1.0-35b-Q8_0.gguf",
             context_window=262_144,
-            flavors=(
-                LlamaFlavor.make_default_kv_q8(),
-                make_qwen_moe_512k_kv_q8(
-                    "deepreinforce-ornith10-35b-a3b-q8-0-512k-kv-q8", "512K context size"
-                ),
-                make_qwen_moe_1m_kv_q8(
-                    "deepreinforce-ornith10-35b-a3b-q8-0-1m-kv-q8", "1M context size"
-                ),
-            ),
+            knobs=SHARED_KNOBS + (QWEN_MOE_CONTEXT_KNOB,),
             base_llm="Ornith10-35B-A3B",
             llm_author="DeepReinforce AI",
             quant_author="DeepReinforce AI",
@@ -76,15 +61,7 @@ def ornith10_35b_a3b_entries() -> list[LocalLLMEntry]:
             repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
             filename="ornith-1.0-35b-Q6_K.gguf",
             context_window=262_144,
-            flavors=(
-                LlamaFlavor.make_default_kv_q8(),
-                make_qwen_moe_512k_kv_q8(
-                    "deepreinforce-ornith10-35b-a3b-q6-k-512k-kv-q8", "512K context size"
-                ),
-                make_qwen_moe_1m_kv_q8(
-                    "deepreinforce-ornith10-35b-a3b-q6-k-1m-kv-q8", "1M context size"
-                ),
-            ),
+            knobs=SHARED_KNOBS + (QWEN_MOE_CONTEXT_KNOB,),
             base_llm="Ornith10-35B-A3B",
             llm_author="DeepReinforce AI",
             quant_author="DeepReinforce AI",
@@ -106,15 +83,7 @@ def ornith10_35b_a3b_entries() -> list[LocalLLMEntry]:
             repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
             filename="ornith-1.0-35b-Q5_K_M.gguf",
             context_window=262_144,
-            flavors=(
-                LlamaFlavor.make_default_kv_q8(),
-                make_qwen_moe_512k_kv_q8(
-                    "deepreinforce-ornith10-35b-a3b-q5-k-512k-kv-q8", "512K context size"
-                ),
-                make_qwen_moe_1m_kv_q8(
-                    "deepreinforce-ornith10-35b-a3b-q5-k-1m-kv-q8", "1M context size"
-                ),
-            ),
+            knobs=SHARED_KNOBS + (QWEN_MOE_CONTEXT_KNOB,),
             base_llm="Ornith10-35B-A3B",
             llm_author="DeepReinforce AI",
             quant_author="DeepReinforce AI",
@@ -135,15 +104,7 @@ def ornith10_35b_a3b_entries() -> list[LocalLLMEntry]:
             repo_id="deepreinforce-ai/Ornith-1.0-35B-GGUF",
             filename="ornith-1.0-35b-Q4_K_M.gguf",
             context_window=262_144,
-            flavors=(
-                LlamaFlavor.make_default_kv_q8(),
-                make_qwen_moe_512k_kv_q8(
-                    "deepreinforce-ornith10-35b-a3b-q4-k-512k-kv-q8", "512K context size"
-                ),
-                make_qwen_moe_1m_kv_q8(
-                    "deepreinforce-ornith10-35b-a3b-q4-k-1m-kv-q8", "1M context size"
-                ),
-            ),
+            knobs=SHARED_KNOBS + (QWEN_MOE_CONTEXT_KNOB,),
             base_llm="Ornith10-35B-A3B",
             llm_author="DeepReinforce AI",
             quant_author="DeepReinforce AI",

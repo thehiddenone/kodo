@@ -86,16 +86,14 @@ discourage the model from padding its reasoning out to fill the budget.
 
 **These two flags are forced, not defaulted.** `ensure_llama_running` plain-
 assigns both keys into the resolved `llama_args` dict *after* resolving the
-active flavor, overwriting anything a flavor happened to set — flavors are
-never allowed to touch either flag. This is enforced twice: `add_flavor`/
-`update_flavor` (`local_registry/`) silently drop any
-`RESERVED_REASONING_CAP_ARGS` key (`--reasoning-budget`,
-`--reasoning-budget-message`) from user-supplied `llama_args` before a flavor
-is even persisted (logging a warning when they do), and `ensure_llama_running`
-force-assigns the correct values again at launch regardless, covering any
-flavor saved before this restriction existed. A flavor that needs a specific
-reasoning cap has no way to set one — the per-session `thinking_level`
-mechanism is the only knob (§4.5 doc/LLM_REGISTRY.md).
+active configuration, overwriting anything it happened to set — neither a
+knob nor a profile is allowed to touch either flag. This is enforced twice:
+`add_profile`/`update_profile` (`local_registry/`) drop any
+`RESERVED_LLAMA_ARGS` key (including `--reasoning-budget` and
+`--reasoning-budget-message`) from user-supplied `llama_args` before a profile
+is saved, and no knob writes them at all; `ensure_llama_running` re-asserts
+both on every launch regardless, covering anything saved before that
+restriction existed.
 
 **Per-request `max_tokens` is sized against the resolved thinking budget, not
 a flat constant.** Every finite Qwen-family tier — including `unlimited`,

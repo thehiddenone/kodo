@@ -1,6 +1,6 @@
 """Behavioral tests for the reasoning-budget / thinking-tier mechanism.
 
-Covers three things the flavors refactor put at risk (see doc/
+Covers three things the launch-config refactor put at risk (see doc/
 LOCAL_INFERENCE.md §2a):
 
 1. ``QWEN_TIER_TOKEN_BUDGETS["unlimited"]`` is a real finite cap (1.5x
@@ -11,9 +11,9 @@ LOCAL_INFERENCE.md §2a):
    smaller than) the budget itself.
 3. ``ensure_llama_running`` (``kodo/llms/llamacpp/_manager.py``) force-
    assigns ``--reasoning-budget``/``--reasoning-budget-message`` at launch
-   regardless of what a flavor's own ``llama_args`` says — the second line of
-   defense behind ``add_flavor``/``update_flavor`` stripping them at save
-   time (covered in test_llm_flavors.py).
+   regardless of what a profile's own ``llama_args`` says — the second line
+   of defense behind ``add_profile``/``update_profile`` stripping them at save
+   time (covered in test_llm_profiles.py).
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ def test_invalid_override_tier_falls_back_to_family_default_budget() -> None:
 
 # ---------------------------------------------------------------------------
 # ensure_llama_running — forces the reasoning-cap args regardless of a
-# flavor's own (legacy, pre-restriction) llama_args
+# profile's own (legacy, pre-restriction) llama_args
 # ---------------------------------------------------------------------------
 
 
@@ -120,7 +120,7 @@ class _FakeLlamaServer:
 
     last_llama_args: dict[str, str] | None = None
 
-    def __init__(self, config: object, llama_args: dict[str, str], *, flavor_id: str = "") -> None:
+    def __init__(self, config: object, llama_args: dict[str, str], *, profile_id: str = "") -> None:
         type(self).last_llama_args = dict(llama_args)
         self.model_name = getattr(config, "model_name", "")
 
@@ -132,17 +132,17 @@ class _FakeLlamaServer:
         return None
 
 
-async def test_ensure_llama_running_forces_reasoning_cap_args_over_a_legacy_flavor(
+async def test_ensure_llama_running_forces_reasoning_cap_args_over_a_legacy_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Simulate a flavor saved before add_flavor/update_flavor stripped
-    # RESERVED_REASONING_CAP_ARGS — written directly to the registry file,
-    # bypassing add_flavor, the same technique test_llm_flavors.py uses to
-    # simulate other pre-restriction legacy data. Flavor/active-flavor
-    # storage is keyed purely by entry name (see get_flavors/
-    # get_effective_flavor_id, both kodo_dir + entry-attribute based, no
-    # registry lookup) — the entry passed to ensure_llama_running never has
-    # to be a real registered entry, only to share the same name.
+    # Simulate a profile saved before add_profile/update_profile stripped
+    # RESERVED_LLAMA_ARGS — written directly to the registry file, bypassing
+    # add_profile, the same technique test_llm_profiles.py uses to simulate
+    # other pre-restriction legacy data. Profile/active-profile storage is
+    # keyed purely by entry name (get_profiles/get_active_profile are both
+    # kodo_dir + entry-attribute based, no registry lookup) — the entry passed
+    # to ensure_llama_running never has to be a real registered entry, only to
+    # share the same name.
     model_path = tmp_path / "fake-model.gguf"
     model_path.write_text("fake gguf")
 
@@ -151,7 +151,7 @@ async def test_ensure_llama_running_forces_reasoning_cap_args_over_a_legacy_flav
     registry_file.write_text(
         json.dumps(
             {
-                "flavors": {
+                "profiles": {
                     "legacy-qwen": [
                         {
                             "id": "legacy",
@@ -164,7 +164,7 @@ async def test_ensure_llama_running_forces_reasoning_cap_args_over_a_legacy_flav
                         }
                     ]
                 },
-                "active_flavors": {"legacy-qwen": "legacy"},
+                "active_profiles": {"legacy-qwen": "legacy"},
             }
         )
     )
@@ -187,6 +187,6 @@ async def test_ensure_llama_running_forces_reasoning_cap_args_over_a_legacy_flav
     assert captured is not None
     assert captured["--reasoning-budget"] == "-1"
     assert captured["--reasoning-budget-message"] == REASONING_BUDGET_MESSAGE
-    # The flavor's own unrelated arg must still survive — only the two
+    # The profile's own unrelated arg must still survive — only the two
     # reserved keys are forced.
     assert captured["--n-gpu-layers"] == "20"

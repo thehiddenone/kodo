@@ -122,8 +122,10 @@ class LocalLLMEntry:
     description: str = ""
     repo_id: str = ""       # hardcoded_hf / custom_hf
     filename: str = ""      # hardcoded_hf / custom_hf
-    context_window: int = 0  # any llama-server kind — the active flavor's own -c/--ctx-size overrides it, see §4.6
-    flavors: tuple[LlamaFlavor, ...] = field(default_factory=LlamaFlavor.default_flavours_field)  # predefined; hardcoded_hf only — see §4.6
+    context_window: int = 0  # any llama-server kind — the resolved args' own -c/--ctx-size overrides it, see §4.6
+    base_llama_args: dict[str, str] = field(default_factory=lambda: dict(BASE_LLAMA_ARGS))  # the Default profile's floor — see §4.6
+    knobs: tuple[LlamaKnob, ...] = SHARED_KNOBS  # the Default profile's controls — see §4.6
+    knob_defaults: dict[str, str] = field(default_factory=dict)  # per-entry knob default overrides — see §4.6a
     path: str = ""          # custom_file
     url: str = ""           # custom_server_url
     base_llm: str = ""      # hardcoded_hf only — e.g. "qwen36-27b"
@@ -162,7 +164,7 @@ are both rough estimates off the same underlying total-memory figure —
 weight size (`size_hint`) plus an approximated KV-cache footprint at 128K
 context (scaled from each model family's known/assumed architecture: layer
 count, attention-head config, and the KV cache quantization each entry's
-default flavor requests — see §4.6). `gpu_tip` deliberately does **not** round that figure
+Default profile — see §4.6). `gpu_tip` deliberately does **not** round that figure
 to "a single GPU big enough to hold it all" — almost nobody owns a
 48GB+ workstation card. Instead it frames the figure as a modest 8-16GB
 consumer GPU (what most people actually own, e.g. RTX 4060/RTX 3060
@@ -190,15 +192,15 @@ entry can never populate them. All ten of
 these **are** included in
 `_local_registry_payload()`'s wire shape (§4.4), alongside the raw
 `context_window` field itself — added so kodo-vsix can render the sidebar's
-per-card "Context:" line (§4.4) — though its *effective, flavor-resolved*
+per-card "Context:" line (§4.4) — though its *effective, config-resolved*
 value is still never sent over the wire as its own field; that value is
 computed twice independently instead, server-side via
 `resolve_context_window` (§4.6, for auto-compaction budgeting) and
-client-side in kodo-vsix (`flavorContextSize`/`resolveContextSize` in
-`llm-registry-types.ts`, mirroring `LlamaFlavor.get_context_size`/
-`resolve_context_window` for display). `flavors` **is** sent to
+client-side in kodo-vsix (`llamaArgsContextSize`/`resolveContextSize` in
+`llm-registry-types.ts`, mirroring `LlmProfile.get_context_size`/
+`resolve_context_window` for display). The launch configuration **is** sent to
 kodo-vsix too — predefined entries plus any custom ones merged in, see §4.6
-— since flavors are the only source of llama-server launch args now: there
+— since it is the only source of llama-server launch args: there
 is no `llama_args` field on `LocalLLMEntry` at all any more.
 
 Four entry kinds:
@@ -224,60 +226,47 @@ merges the compiled-in tuple with the external collection persisted at
     { "name": "...", "kind": "custom_server_url", "url": "http://host:port", "description": "..." }
   ],
   "llama_server_override_path": null,
-  "flavors": {
-    "my-custom-model": [
-      { "id": "default", "name": "default", "description": "Default flavor",
-        "llama_args": {"--cache-type-k": "q8_0"}, "platform": "both" }
-    ],
+  "profiles": {
     "unsloth-qwen36-27b-q4-k-xl": [
-      { "id": "1m-context", "name": "1M Context", "description": "...",
-        "llama_args": {"--ctx-size": "1048576", "--rope-scaling": "yarn", "--rope-scale": "4"},
-        "platform": "mac" },
-      { "id": "default", "name": "Default (fp16 KV cache)", "description": "Override of the built-in default",
-        "llama_args": {"--cache-type-k": "fp16", "--cache-type-v": "fp16", "--ctx-size": "0", "--jinja": ""},
-        "platform": "both" }
+      { "id": "tight-vram", "name": "Tight VRAM", "description": "8GB card",
+        "llama_args": { "--ctx-size": "131072", "--n-cpu-moe": "24",
+                        "--cache-type-k": "q8_0", "--cache-type-v": "q8_0",
+                        "--jinja": "" } }
     ]
   },
-  "active_flavors": {
-    "unsloth-qwen36-27b-q4-k-xl": "1m-context"
+  "active_profiles": {
+    "unsloth-qwen36-27b-q4-k-xl": "tight-vram"
+  },
+  "knob_selections": {
+    "unsloth-qwen36-27b-q4-k-xl": { "tail-culling": "medium" }
   }
 }
 ```
 
-The second `unsloth-qwen36-27b-q4-k-xl` flavor above (`id: "default"`) is an
-**override** of that entry's built-in predefined `"default"` flavor — the
-user edited it via "Manage flavors" (§4.6), which stores the new definition
-here under the same id rather than mutating the hardcoded Python literal.
+Note that no `entries[]` object carries `llama_args` any more — a custom
+entry's "Add local LLM" form args are persisted as its `base_llama_args`
+instead (§4.6), which the Default profile's knobs layer over.
+`profiles`/`active_profiles`/`knob_selections` are three sibling top-level
+keys in this same file, unrelated to the `entries` list — see §4.6.
+`knob_selections` is deliberately **sparse** (only knobs moved off their
+default appear, so `tail-culling` above is the one thing this user changed);
+`active_profiles` omits an entry entirely when the Default profile is
+selected.
 
-Note that no `entries[]` object carries `llama_args` any more — flavors are
-the *only* source of it (§4.6); a `custom_hf`/`custom_file` entry's own
-initial args end up in `flavors["<name>"]` (its seeded `"default"` custom
-flavor, as shown for `my-custom-model` above) rather than on the entry
-itself. `flavors`/`active_flavors` are two more sibling top-level keys in
-this same file, unrelated to the `entries` list — see §4.6.
+The `flavors`/`active_flavors` keys a pre-knobs kodo wrote are **not
+migrated** — matching a hand-edited arg dict back to a knob selection would
+have to guess. They are left untouched on disk (`_load_raw`/`_save_raw` never
+drop keys they don't know about) and simply ignored: an install that had
+custom flavors starts fresh on the Default profile, with the old definitions
+recoverable by hand from the file.
 
-This file is **owned entirely by the Python server** (read and written by
-`kodo/llms/local_registry/`); kodo-vsix never writes it directly, only
-through the `local_llm.*` WS commands (§7.6). `add_local_entry`/
-`remove_local_entry` reject duplicate names and reject removing a
-`hardcoded_hf` entry; `add_local_entry` also forces `entry.flavors` to `()`
-regardless of what's passed in, so a stray predefined-looking literal can
-never shadow a same-id custom flavor added later (§4.6). `llama_args`/
-`context_window` are optional on the `local_llm.add_huggingface`/
-`local_llm.add_file` commands (never offered for `add_server_url`, which
-isn't a llama-server process kodo launches) — the kodo-vsix "Add local LLM"
-modals still collect `llama_args` as one space-separated `--flag value` line
-and parse it client-side into the wire dict shape, and `context_window`
-still defaults to `262144` in those modals, but neither sets a field on the
-entry any more: `_seed_default_flavor` (`kodo/server/_app.py`) uses them to
-create that entry's first (custom) flavor, named/slugged `"default"` to
-match the built-in flavor a `hardcoded_hf` entry gets, right after
-`add_local_entry` succeeds. `context_window` still falls back server-side to
-`get_context_window`'s default when zero/absent (that fallback lives in
-`resolve_effective_llama_config`/`get_context_window`, not the add handlers).
-(The "manage flavors" modal added in §4.6 uses a different, multi-line input
+`add_local_entry` forces `entry.knobs` to `()` before persisting — knobs are
+code, re-attached on every load (§4.6), which is what lets a kodo release
+change the shared knob set with no file migration.
+
+(The "Manage profiles" modal (§4.6) uses a different, multi-line input
 for the same `llama_args` shape — one flag per line, parsed **server-side**
-instead — since a flavor typically carries more flags than a base entry's
+instead — since a profile typically carries more flags than a base entry's
 initial one does.)
 
 **`custom_file` installed-state is special**: per design, kodo does not copy
@@ -497,7 +486,7 @@ injected `SessionDeps.confirmLocalLaunch`) right before a local-mode prompt
 send that would trigger the engine's automatic launch (i.e. local mode and
 the running server, if any, isn't already serving the active model).
 
-If the active model has a `'platform'` warning (§4.6b — none of its flavors
+If the active model had a `'platform'` warning (§4.6b — none of its flavors
 are compatible with this host), the gate shows a plain OK-only error
 (`vscode.window.showErrorMessage`, no "Start anyway") and unconditionally
 cancels — checked first, *before* consulting `dismissedLocalLaunchWarnings`
@@ -515,7 +504,7 @@ anyway", "Start anyway, don't ask again for this model", an implicit Cancel
 (`vscode.commands.executeCommand('kodo.openSettings', 'local-inference')`
 from the session path, to dodge a circular import; a direct `openKodoSettings`
 call from the sidebar-button path) instead of starting. Like §4.6a's
-per-flavor gate below, the memory/version half of this is a client-side UX
+per-flavor gate (removed, §4.6b), the memory/version half of this is a client-side UX
 gate only — nothing server-side blocks a launch on those two fields either
 (unlike the platform check, which kodo also enforces itself).
 
@@ -542,11 +531,11 @@ dialog in kodo-vsix, all of which are native modals.
 `manager-state.json` directly off disk once a second instead, independent of
 the WS connection.
 
-**Display convention: `name` is never shown to the user, `description` always is.** For a `hardcoded_hf` entry, `name` is an internal registry-key slug (e.g. `unsloth-qwen36-27b-q8-k-xl`); `description` is the human-readable label (e.g. "Qwen 3.6 27B UD-Q8_K_XL by Unsloth"). Every kodo-vsix surface that lists local models — the sidebar model-picker cards, the Local Inference Settings model cards, the "running: …" status line, the flavor-management modal title, and download-progress rows — titles itself off `entry.description`, falling back to `entry.name` only where `description` can legitimately be empty (a `custom_*` kind entry, where `name` is whatever display text the user typed when adding it, per §4). `name` still flows through the wire/DOM as a plain identifier (dataset keys, radio values, postMessage payload fields) — that's fine; the rule is only about user-visible text.
+**Display convention: `name` is never shown to the user, `description` always is.** For a `hardcoded_hf` entry, `name` is an internal registry-key slug (e.g. `unsloth-qwen36-27b-q8-k-xl`); `description` is the human-readable label (e.g. "Qwen 3.6 27B UD-Q8_K_XL by Unsloth"). Every kodo-vsix surface that lists local models — the sidebar model-picker cards, the Local Inference Settings model cards, the "running: …" status line, the Configure and Manage-profiles modal titles, and download-progress rows — titles itself off `entry.description`, falling back to `entry.name` only where `description` can legitimately be empty (a `custom_*` kind entry, where `name` is whatever display text the user typed when adding it, per §4). `name` still flows through the wire/DOM as a plain identifier (dataset keys, radio values, postMessage payload fields) — that's fine; the rule is only about user-visible text.
 
-Each sidebar model-picker card also shows two meta lines below its title: `Quant: <entry.quant_type>` (falling back to `"—"` for a `custom_*` entry, which never has one — see above) and `Context: <resolved size>`. The context figure is **not** `entry.context_window` verbatim — it's resolved the same way `resolve_context_window` resolves it server-side (§4.6), just computed client-side against the card's *currently selected* flavor: `resolveContextSize(entry, activeFlavor)` in `llm-registry-types.ts` calls `flavorContextSize(activeFlavor)` (mirroring `LlamaFlavor.get_context_size()` — scans that flavor's own `llama_args` for `--ctx-size`/`-c`) and falls back to `entry.context_window` when that's absent or `0` (including every built-in flavor's default `--ctx-size: "0"` "use the GGUF's own trained length" sentinel). Recomputed whenever the card's flavor `<select>` changes, so switching flavors updates the Context line without a server round trip. `sidebar-provider.ts`'s webview script can't import that TS module directly (it's a plain string-embedded `<script>`, not a bundled module — see §4.4's `_local_registry_payload` note), so it carries its own inline JS copy of the same two functions; keep them in sync by hand if either side's resolution rule changes.
+Each sidebar model-picker card also shows two meta lines below its title: `Quant: <entry.quant_type>` (falling back to `"—"` for a `custom_*` entry, which never has one — see above) and `Context: <resolved size>`. The context figure is **not** `entry.context_window` verbatim — it's resolved the same way `resolve_context_window` resolves it server-side (§4.6), just computed client-side against the card's *currently selected* profile: `resolveContextSize(entry, args)` in `llm-registry-types.ts` calls `llamaArgsContextSize(args)` (mirroring `LlmProfile.get_context_size()` — scans for `--ctx-size`/`-c`) and falls back to `entry.context_window` when that's absent or `0` (including the base args' `--ctx-size: "0"` "use the GGUF's own trained length" sentinel). The args come from the *selected* profile: a user-defined profile's own `llama_args`, or the server-computed `default_profile_args` for the Default profile — which is why the picker recomputes the line on `change` without a server round trip. `sidebar-provider.ts`'s webview script can't import that TS module directly (it's a plain string-embedded `<script>`, not a bundled module — see §4.4's `_local_registry_payload` note), so it carries its own inline JS copy of the same functions; keep them in sync by hand if either side's resolution rule changes.
 
-Each card also shows a ⚠ warning icon to the left of the pin/favorite star whenever `localLaunchWarnings` (this section, "Pre-launch confirmation gate" above) returns anything non-empty for that entry — red if any warning is `level: 'red'`, otherwise yellow; hovering it lists every outstanding warning's `text` (native `title` attribute, one line per warning). Unlike the Context-line functions above, this one is **not** duplicated as inline webview JS: `SidebarProvider._computeLocalWarnings` (`src/sidebar-provider.ts`) calls the real `localLaunchWarnings` on the extension-host side (passing `SidebarState.isMac`, set once at startup — §4.6b) — it can, since it's plain TS, not a webview script — and ships the per-entry result as a new top-level `localWarnings: Record<name, LocalLaunchWarning[]>` field alongside every `update` postMessage (computed fresh from the post-merge state each time, not cached in `SidebarState`/`ui-settings.json`). The webview script just looks up `localWarnings[model.name]` and renders/skips the icon — no independent copy of the memory/version/platform *warning* rules to keep in sync here, unlike the Context-line and confirm-dialog cases. The flavor `<select>`'s own compatibility *filter* is a separate concern with its own inline-JS duplicate (`flavorCompatibleWithHost` in the webview script — §4.6b) — the warning icon says "something's outstanding," the filter is what actually keeps an incompatible flavor from ever being offered.
+Each card also shows a ⚠ warning icon to the left of the pin/favorite star whenever `localLaunchWarnings` (this section, "Pre-launch confirmation gate" above) returns anything non-empty for that entry — red if any warning is `level: 'red'`, otherwise yellow; hovering it lists every outstanding warning's `text` (native `title` attribute, one line per warning). Unlike the Context-line functions above, this one is **not** duplicated as inline webview JS: `SidebarProvider._computeLocalWarnings` (`src/sidebar-provider.ts`) calls the real `localLaunchWarnings` on the extension-host side — it can, since it's plain TS, not a webview script — and ships the per-entry result as a new top-level `localWarnings: Record<name, LocalLaunchWarning[]>` field alongside every `update` postMessage (computed fresh from the post-merge state each time, not cached in `SidebarState`/`ui-settings.json`). The webview script just looks up `localWarnings[model.name]` and renders/skips the icon — no independent copy of the memory/version warning rules to keep in sync here, unlike the Context-line and confirm-dialog cases. There is no per-configuration compatibility filter any more (§4.6b).
 
 ### 4.5 Thinking-tier families
 
@@ -567,10 +556,11 @@ before it must answer. Two mechanisms exist, keyed off `base_llm` (never
   The CLI value must be exactly `-1` — llama.cpp only honors a per-request
   override when the launch-time budget is unrestricted; any other explicit
   CLI value locks the budget and per-request overrides are silently ignored.
-  Both flags are **force-assigned**, never merely defaulted: no flavor may
-  set either one itself (`RESERVED_REASONING_CAP_ARGS`, §4.6) — `add_flavor`/
-  `update_flavor` silently strip them from user-supplied `llama_args` before
-  a flavor is ever persisted, and `ensure_llama_running` re-asserts the
+  Both flags are **force-assigned**, never merely defaulted: no profile may
+  set either one itself (`RESERVED_LLAMA_ARGS`, §4.6) — `add_profile`/
+  `update_profile` strip them from user-supplied `llama_args` before
+  a profile is ever persisted, and no knob writes them at all;
+  `ensure_llama_running` re-asserts the
   correct values at launch regardless, as a second line of defense.
   Each chat request then sets the effective budget via a **top-level**
   `thinking_budget_tokens` field (`0` immediate end / `N>0` token budget —
@@ -624,571 +614,393 @@ invalid for `base_llm`. Entries with no thinking family (`base_llm == ""`,
 or a hardcoded model outside both families) get no `extra_body` at all — no
 behavior change.
 
-### 4.6 Flavors
+### 4.6 Launch configuration: knobs and profiles
 
-A **flavor** is a named launch configuration for one local registry entry —
-and, since `LocalLLMEntry` carries no launch args of its own, the **only**
-source of them. Every entry that runs through llama-server has at least one:
-a `hardcoded_hf` entry ships a built-in `"default"` flavor via
-`LlamaFlavor.default_flavours_field` (the dataclass field's default factory)
-unless it explicitly declares a different `flavors=` literal (e.g. the F16
-GGUFs use `make_default_kv_fp16` instead, for their KV cache type); a
-`custom_hf`/`custom_file` entry gets its `"default"` flavor **seeded** (as a
-regular *custom* flavor, not baked into Python source) from its own "Add
-local LLM" form the moment it's created (`_seed_default_flavor`,
-`kodo/server/_app.py`) — see §4 above. Beyond that one, flavors are the
-mechanism behind three more use cases: extended-context variants (e.g. a "1M
-Context" flavor using YaRN rope-scaling on a Qwen quant whose default
-`context_window` is 262144), VRAM-fit variants (GPU-offload flags like
-`--n-cpu-moe`/`--override-tensor`/`--tensor-split` tuned for a specific card,
-for the large models that "don't fit on GPU VRAM" as-is), and **sampling
-presets** — a flavor whose only difference from `default` is its sampling
-flags. The Laguna-S-2.1 catalog is the one family that currently ships these:
-each of its 20 quants gets `default` plus five presets — "Light/Medium/Strong
-tail cull", "Low temperature" and "Near-greedy" — plus the 512K/1M
-extended-context flavors (`_context_flavor`, same YaRN recipe as the Qwen
-family's, `laguna.context_length` as the `--override-kv` key) — built by
-`_quant_flavors` from the `_PRESETS` table in
-`kodo/llms/local_registry/_local_llm_laguna_s_21.py`, with **identical
-sampling-preset values on every quant**. doc/QUANT_SAMPLING.md is the reasoning behind those values
-and the constraints on changing them; two are worth repeating here. "Full
-replace, not merge" (below) is why each preset repeats the whole
-`--cache-type-k/v`/`--ctx-size`/`--n-gpu-layers` block. And **no flavor may
-enable DRY or any other repetition penalty** — one did, and it made
-`read_attachment` fail, because penalising verbatim reproduction from context
-also penalises quoting back the attachment's UUID; loop handling belongs to
-the watchdog (doc/STUCK_DETECTION.md §2.7/§2.10). Unlike thinking
-level (§4.5, session-scoped, applied per-request), a flavor changes actual
-llama-server **launch** arguments, so it is a **global** concept — one active
-flavor per entry, shared by every open session/window, exactly like which
-local model is active in the first place (`models.local`). llama-server is a
-machine-wide singleton process (`kodo/server/_app.py` module docstring), so
-there is no way for two sessions to run the same entry with two different
-flavors at once.
+A local registry entry is launched under one of exactly two things:
+
+- Its **Default profile** — never stored as a profile at all. Its
+  `llama_args` are *computed* from the entry's `base_llama_args` plus whatever
+  its **knobs** currently resolve to. Every launchable entry has one, it
+  cannot be deleted or renamed, and it is what an entry runs under until the
+  user picks something else.
+- One of zero or more **user-defined profiles** (`LlmProfile`) — raw
+  `{flag: value}` arg sets the user builds in the "Manage profiles" editor.
+  These have no knobs.
+
+This replaced the older **flavor** model, where every useful combination had
+to be enumerated as its own predefined `LlamaFlavor` literal in Python. The
+Laguna-S-2.1 catalog is the clearest illustration of why: each of its 20
+quants shipped eight flavors (`default`, five fixed sampling presets, and two
+extended-context variants), 160 objects that between them still could not
+express "strong tail culling *and* a low temperature", because nobody had
+written that particular pair down. The same coverage is now four dropdowns.
+
+Like the flavors it replaces — and unlike thinking level (§4.5, session-scoped
+and applied per-request) — a launch configuration changes actual llama-server
+**launch** arguments, so it is a **global** concept: one active configuration
+per entry, shared by every open session/window, exactly like which local model
+is active in the first place (`models.local`). llama-server is a machine-wide
+singleton process (`kodo/server/_app.py` module docstring), so two sessions
+can never run the same entry two different ways at once.
+
+#### Knobs
+
+A **knob** is a typed, declarative control on the Default profile that owns a
+fixed set of CLI flags. Knobs are **hardcoded in `kodo.llms.local_registry`** —
+there is no user-defined knob and no way to add one over the wire.
+
+```python
+class KnobKind(StrEnum):
+    CHECKBOX = "checkbox"   # exactly two options, ids "off"/"on"
+    DROPDOWN = "dropdown"   # two or more options
+    NUMBER   = "number"     # one flag, a numeric value the user types
+
+@dataclass(frozen=True)
+class KnobOption:
+    id: str                                                   # slug, unique within its knob
+    name: str                                                 # display name
+    description: str = ""                                     # what picking this state does
+    llama_args: dict[str, str] = field(default_factory=dict)  # what it contributes
+
+@dataclass(frozen=True)
+class LlamaKnob:
+    id: str                                    # GLOBAL id — deduplicated on the wire
+    name: str
+    description: str = ""
+    kind: KnobKind = KnobKind.DROPDOWN
+    advanced: bool = False                     # behind the modal's "Advanced" section
+    options: tuple[KnobOption, ...] = ()       # checkbox/dropdown only
+    default_option: str = ""                   # "" = the first option
+    flag: str = ""                             # NUMBER only — the single flag it writes
+    minimum / maximum / step: float | None     # NUMBER only, advisory
+    unset_label: str = ""                      # NUMBER only — placeholder for "not set"
+    default_value: str = ""                    # NUMBER only, "" = flag not emitted
+```
+
+**The load-bearing invariant: two knobs on the same entry may never own the
+same CLI flag.** `validate_knobs` enforces it and `_catalog._validate_catalog`
+runs it over every entry at import time, so a bad declaration is a hard
+startup failure rather than a mystery at launch. It is what lets knob args be
+composed with a plain `dict.update` — no precedence rules, no merge strategy,
+because a collision cannot exist. The comparison is over each knob's
+*reachable* flags (`knob_owned_flags`, the union across all of its options),
+not the flags its current selection happens to set: a collision only some
+option pairs would produce is still a collision.
+
+The shared knobs — offered by every launchable entry, `_knobs_shared.py`:
+
+| id | kind | options / range | flags |
+|----|------|-----------------|-------|
+| `kv-cache` | dropdown | `q8_0` (default), `f16` | `--cache-type-k`, `--cache-type-v` |
+| `tail-culling` | dropdown | `off` (default), `minimal`, `light`, `medium`, `strong` | `--top-k`, `--top-p`, `--min-p`, `--top-nsigma` |
+| `temperature` | dropdown | `default` (0.8), `low` (0.3), `near-greedy` (0.05) | `--temp` |
+| `gpu-layers` | number, advanced | default `-1` | `--n-gpu-layers` |
+| `cpu-moe` | number, advanced | unset by default | `--n-cpu-moe` |
+| `flash-attention` | dropdown, advanced | `auto` (default), `on`, `off` | `--flash-attn` |
+
+`kv-cache` is what replaced the `make_default_kv_q8` / `make_default_kv_fp16`
+pair of predefined flavors: an F16 GGUF now just declares
+`knob_defaults={"kv-cache": "f16"}` (§4.6a).
+
+`tail-culling` and `temperature` are deliberately **two** knobs rather than
+one "sampling preset" dropdown, and each holds the other's territory fixed:
+every culling option leaves `--temp` alone, and the temperature option writes
+nothing but `--temp`. That is the same "one axis moves at a time" rule the
+five predecessor preset flavors followed by convention (doc/QUANT_SAMPLING.md
+§4) — as knobs it is enforced structurally by the invariant above. Every
+active culling option also pins `--top-k 0`/`--top-p 1.0` so that min-p (plus
+top-n-sigma in the strongest state) is the *only* truncation stage in play;
+otherwise llama.cpp's own `top_k 40`/`top_p 0.95` defaults would still be
+silently cutting alongside it.
+
+**No knob enables a repetition penalty** — not DRY, not `--repeat-penalty`,
+not presence/frequency. One flavor once did, and it made `read_attachment`
+fail: penalising verbatim reproduction from context is exactly what quoting
+back an attachment's UUID requires. Loop handling belongs to the watchdog
+(doc/STUCK_DETECTION.md §2.7/§2.10, doc/QUANT_SAMPLING.md §3f). The rule binds
+what kodo *ships*, not what a user may do — a penalty is still reachable on a
+user-defined profile and as a per-session override, since hiding it in one of
+the two editors while offering it in the other would be arbitrary.
+
+**Private per-model knobs.** Anything needing model knowledge is built by the
+family module instead of being shared. The only ones today are the three YaRN
+long-context knobs (`_knobs_context.make_yarn_context_knob`), which need the
+model's architecture key and native context length:
+
+| knob id | arch key | native | options |
+|---------|----------|--------|---------|
+| `context-qwen35` | `qwen35` | 262144 | native (default), 512K, 1M |
+| `context-qwen35moe` | `qwen35moe` | 262144 | native (default), 512K, 1M |
+| `context-laguna` | `laguna` | 8192 | native (default), 512K, 1M |
+
+Each extended option writes `--ctx-size`, `--rope-scaling yarn`,
+`--rope-scale` (target ÷ native), `--yarn-orig-ctx` and
+`--override-kv <arch>.context_length=int:<size>`; the "native" option writes
+nothing at all, letting the base `--ctx-size 0` stand. `arch_key` is model
+knowledge — never derive it from the entry name.
+
+#### Composition
+
+```
+Default profile args  =  entry.base_llama_args  +  knob args (knob args win)
+```
+
+`base_llama_args` defaults to `BASE_LLAMA_ARGS` — `--ctx-size 0`,
+`--reasoning-format auto`, `--jinja` — which is what nearly every hardcoded
+entry wants. **Base args are the floor and knob args are layered on top**;
+that direction is fixed and is the only precedence rule in the system. It is
+what lets a context knob's `--ctx-size 524288` override the base `0`, which is
+the one place a knob legitimately owns a flag the base args also set (the
+"no two knobs share a flag" invariant is knob-vs-knob only).
+
+A `custom_hf`/`custom_file` entry contributes the launch args typed into its
+"Add local LLM" form as its `base_llama_args`, merged *over* `BASE_LLAMA_ARGS`
+so it still gets `--jinja` (without which tool calling does not work at all)
+unless the form deliberately overrode it. It gets `SHARED_KNOBS` and no
+private ones, so its Configure modal works exactly like a built-in LLM's.
+`custom_server_url` gets neither knobs nor base args — kodo does not launch
+that process.
+
+**Knobs are code, never stored data.** `add_local_entry` forces `knobs=()`
+before persisting a custom entry and `_with_custom_entry_knobs` re-attaches
+them on every load. That is what lets a kodo release add or change a shared
+knob and have it reach every existing custom entry with no file migration.
+
+#### Selections
+
+What the user picked is a flat `{knob_id: selection}` map per entry
+(`knob_selections` in `local-llm-registry.json`). The string means an option id
+for a checkbox/dropdown knob, or the value as text for a NUMBER knob — where
+`""` means "don't emit the flag at all", which is **not** a synonym for zero.
+
+Stored **sparsely**: `set_knobs` drops any selection equal to the knob's
+currently resolved default rather than writing it. That is what lets a later
+kodo release change a knob's default (or an entry's `knob_defaults`) and have
+it take effect for everyone who never deliberately moved that knob, while
+still respecting the choice of everyone who did.
+
+Read back **resolved**: `get_knob_selections` returns one entry per knob,
+never sparse, with a stored selection naming an option the knob no longer has
+replaced by the resolved default (and logged) — so the UI can bind a
+`<select>` straight to it and can never render a control with no matching
+option.
+
+#### User-defined profiles
 
 ```python
 @dataclass(frozen=True)
-class LlamaFlavor:
-    id: str                                    # slug, unique per entry (predefined + custom)
+class LlmProfile:
+    id: str                                    # slug, unique per entry; "" is reserved
     name: str                                   # display name
-    platform: LlamaFlavorPlatform = LlamaFlavorPlatform.BOTH  # see §4.6b
     description: str = ""
     llama_args: dict[str, str] = field(default_factory=dict)  # the complete CLI flag set
 ```
 
-`llama_args` is the **complete** set of CLI flags passed to `llama-server`
-while this flavor is active — not "extras" layered on top of some other
-default, since there is no other default any more. `LlamaServerConfig`
-(`kodo/llms/llamacpp/_llama_server.py`) only carries server-management fields
-(executable, model path, host, port, log paths); `LlamaServer.__build_command`
-appends whatever `llama_args` it was constructed with, verbatim, with nothing
-else merged in — including `--jinja`, which used to be unconditionally
-appended regardless of any flavor and now has to be part of a flavor's own
-`llama_args` like everything else (`make_default_kv_q8`/`make_default_kv_fp16`
-both include it).
+Every profile is user-defined — there is no `predefined` flag, no `platform`,
+and no `min_ram`/`min_vram`, because everything that used to be a predefined
+flavor is a knob now and per-configuration hardware/platform gating was
+removed with the flavor model (see §4.6a/§4.6b below). `update_profile`
+therefore has no read-only case to reject.
 
-**Full replace, not merge**: switching the active flavor **fully replaces**
-the previously-active flavor's `llama_args` — two flavors' args are never
-merged together, so a flavor that wants another flavor's
-`--cache-type-k`/`--cache-type-v` (or anything else) must repeat them itself.
+**Full replace, not merge**: selecting a profile **fully replaces** the
+Default profile's args. The two are never combined, so a profile that wants
+the Default profile's KV-cache flags must repeat them — which is why the
+"Manage profiles" editor seeds a new profile from
+`entry.default_profile_args` rather than from nothing.
 
-**Two exceptions to "the complete set":** `RESERVED_REASONING_CAP_ARGS`
-(`local_registry/`) — `--reasoning-budget` and `--reasoning-budget-message`
-— are the one pair of flags no flavor may ever set, regardless of family.
-`add_flavor`/`update_flavor` silently strip either key from user-supplied
-`llama_args` before a flavor is persisted (logging a warning when they
-actually drop something), and `ensure_llama_running` force-assigns the
-correct values again at launch time regardless — belt-and-suspenders against
-a flavor saved before this restriction existed. These two are the per-session
-reasoning-budget mechanism's launch-time half (§4.5); letting a flavor set
-them would silently lock out every session's `thinking_level`, or (worse)
-suppress the exhaustion message that tells the model — and the user — that
-its thinking got cut off. See doc/LOCAL_INFERENCE.md §2a.
+`active_profiles[entry_name]` holds the selected profile's id, with `""` (or
+an absent key) meaning the Default profile. A **stale** id — a profile removed
+since it was selected — resolves back to `""`, not to some other profile:
+falling through to an arbitrary neighbour is how the flavor model used to
+surprise people, and there is now always a real, always-valid configuration to
+fall back to.
 
-There is no separate `context_window` field on `LlamaFlavor` any more —
-`resolve_context_window(entry, flavor) -> int` (`kodo/llms/local_registry/`)
-deduces the effective context size from *flavor*'s own launch args instead:
-its `--ctx-size` value (checked first) or `-c` value, if either parses to a
-positive integer; otherwise falls back to `entry.context_window`. This is
-why the built-in default flavor's `--ctx-size 0` (telling llama.cpp to read
-the GGUF's own trained context length) resolves to the entry's nominal
-`context_window` for budgeting purposes rather than `0`. `resolve_effective_llama_config(kodo_dir, entry)
--> (llama_args, context_window)` (`kodo/llms/local_registry/`) is the
-single place both resolutions are combined:
+#### Resolution
 
-1. The flavor resolved by `get_effective_flavor_id(kodo_dir, entry)` — the
-   active flavor (`get_active_flavor`) if set and still present, otherwise
-   (unset, or a stale id whose definition was since removed — "Default" in
-   the UI) the first available flavor from `get_flavors` (predefined slots
-   first) — the entry's built-in `"default"` for `hardcoded_hf`, or the
-   oldest custom flavor for a `custom_*` entry (typically the one seeded
-   when it was added).
-2. If *entry* has no flavors at all (only reachable for a `custom_*` entry
-   whose sole flavor was since removed, or a `custom_server_url` entry,
-   which never actually launches this way), `({}, entry.context_window)`.
-3. Otherwise, `(flavor.llama_args, resolve_context_window(entry, flavor))`.
+`resolve_effective_llama_config(kodo_dir, entry) -> (llama_args, context_window)`
+is the single entry point:
 
-`ensure_llama_running` (`kodo/llms/llamacpp/_manager.py`) and
-`get_context_window` (`kodo/llms/_context.py`, used by auto-compaction
-budgeting) both call `resolve_effective_llama_config` instead of reading
-anything off `entry` directly — `ensure_llama_running` passes the resolved
-`llama_args` to `LlamaServer` as a constructor argument (not a
-`LlamaServerConfig` field, since it varies per launch while the rest of that
-config doesn't) and ignores the resolved `context_window` entirely (only
-`get_context_window` needs it). It also resolves `get_effective_flavor_id`
-and passes that too (see below), purely for crash messaging.
+- the active user-defined profile's args verbatim, if one is selected;
+- otherwise `resolve_default_profile_args` (base + knobs);
+- `({}, entry.context_window)` for `custom_server_url`.
 
-**Startup-crash diagnostics.** A bad custom flavor (typically a malformed or
-unsupported CLI flag in its `llama_args`) is the most likely way
-`LlamaServer.start` fails, so `start` redirects the child's stdout/stderr
-into a per-launch startup-log file (`~/.kodo/logs/llama-server-startup.log`,
-truncated on every call — separate from llama-server's own `--log-file`,
-which only starts recording once its logger initializes and so misses an
-early CLI-parse failure entirely). If the process exits before the health
-check passes, `LlamaServer.__wait_ready` folds the tail of that file (last
-4000 chars) into the raised `RuntimeError`, and — if `ensure_llama_running`
-passed a `flavor_id` that isn't `"default"` — appends a nudge to try the
-default flavor instead. Both are message-only: no new wire fields, and
-nothing changes for a process that starts successfully.
+`context_window` comes from `resolve_context_window`, which reads the resolved
+args' own `--ctx-size`/`-c` when positive and falls back to the entry's
+`context_window` otherwise (including the `--ctx-size 0` "use the GGUF's own
+trained length" sentinel). `LlamaServerConfig` carries only server-management
+fields (executable, model path, host, port, log paths);
+`LlamaServer.__build_command` appends the resolved args verbatim with nothing
+merged in.
 
-**Two flavor sources**, merged by `get_flavors(kodo_dir, entry) ->
-tuple[LlamaFlavor, ...]` (predefined slots first, then any extra custom
-flavors):
+**Reserved args.** `RESERVED_LLAMA_ARGS` (`local_registry/_reserved.py`) is the
+set of flags no user-defined profile may carry: the server-managed ones
+(`--model`/`-m`, `--host`, `--port`, `--alias`, `--log-file`,
+`--log-timestamps`), which `LlamaServerConfig` sets per launch, and
+`RESERVED_REASONING_CAP_ARGS` (`--reasoning-budget`,
+`--reasoning-budget-message`), which the Thinking Level control sets per
+session (§4.5). `add_profile`/`update_profile` strip them before persisting
+(logging what went), they are excluded from the argument catalog (§4.7), and
+`ensure_llama_running` force-assigns the reasoning-cap pair anyway for a
+`qwen_reasoning_budget` model — defense in depth for anything saved before
+that restriction existed. The Default profile never sets them at all, since
+no knob writes them.
 
-- **Predefined** — `LocalLLMEntry.flavors`, a tuple literal baked into
-  `_HARDCODED_LOCAL_MODELS` alongside the entry itself. `hardcoded_hf` only —
-  `add_local_entry` forces this to `()` for every `custom_*` kind regardless
-  of what's passed in, since a caller-supplied non-empty value would
-  otherwise silently shadow a same-id custom flavor added later. Every
-  hardcoded entry currently gets the single built-in `"default"` flavor (q8
-  or, for the two F16 GGUFs, fp16 KV cache); populating *real* predefined
-  variants (1M-context / VRAM-tight per model) beyond that one is tracked
-  separately from the mechanism built here.
-- **Custom** (user-added, via any local LLM entry — hardcoded or custom kind,
-  **except** `custom_server_url`, which isn't a process kodo launches) —
-  stored in two more sibling top-level keys of
-  `~/.kodo/etc/local-llm-registry.json` (see the JSON shape in §4), keyed by
-  *entry name*, not entry kind:
-  - `flavors: {entry_name: [flavor...]}` — custom flavor definitions. A
-    `custom_hf`/`custom_file` entry's first entry here is the one seeded at
-    creation time (§4); a `hardcoded_hf` entry only appears here once the
-    user adds one, or edits an existing one, via "Manage flavors".
-  - `active_flavors: {entry_name: flavor_id}` — the active flavor per entry;
-    an entry absent from this map (or the empty string) means "unset" —
-    resolved per the fallback rule above, not itself a distinct
-    `LlamaFlavor` object.
+#### Wire shape and UI
 
-  A custom flavor whose `id` matches a predefined one would be an
-  **override** — `get_flavors` uses its definition in place of the
-  predefined one, at the same list position, rather than dropping it. This
-  merge is kept purely for resilience against a same-id override written by
-  an older kodo version, before predefined flavors became read-only (below)
-  — nothing in the current public API can create a new one.
+Every `hello.ack`/`local_llm.registry_state` payload carries, per entry:
 
-  **Predefined flavors are strictly read-only.** `update_flavor` rejects
-  `flavor_id` outright if it names one of the entry's predefined flavors
-  (checked against `entry.flavors`, the hardcoded tuple — the same source
-  `remove_flavor` already checked); there is no override mechanism any
-  more. Anyone who wants a predefined flavor's config with different
-  values — a different `--n-gpu-layers`, a different `min_ram`/`min_vram`,
-  etc. — copies its `name`/`llama_args` into a brand-new custom flavor via
-  `add_flavor` and edits the copy; the predefined literal itself, and its
-  effective definition, can never be mutated in place.
+- `knobs: [knob_id, ...]` — the ids this entry offers, in display order;
+- `knob_selections: {knob_id: selection}` — **resolved, never sparse**;
+- `default_profile_args: {flag: value}` — what those selections resolve to
+  right now, so the client can show the effective context size (and the exact
+  flags a knob produced) without re-implementing knob composition or making a
+  round trip;
+- `profiles: [{id, name, description, llama_args}]` — user-defined only;
+- `active_profile` — a profile id, or `""` for the Default profile;
 
-  `add_flavor(kodo_dir, entry_name, name, ...)` always creates a **new**
-  flavor slot — it auto-generates `id` by slugifying `name` and
-  de-duplicating against every flavor (predefined or custom) the entry
-  already has (`my-flavor`, `my-flavor-2`, ...), so it can never collide
-  with (and therefore never overrides) an existing id. Both `add_flavor` and
-  `update_flavor` also reject a *name* that exact-matches (case-sensitive,
-  after trimming) another flavor `get_flavors` already returns for that
-  entry — two flavors of the same entry can share a slugified `id` prefix
-  (different names, e.g. "Tight VRAM" vs "tight vram"), but never the exact
-  same display name; `update_flavor` excludes the flavor being edited itself
-  from that check, so resubmitting a flavor under its own unchanged name
-  isn't flagged as a clash with itself. `update_flavor(kodo_dir,
-  entry_name, flavor_id, name, ...)` is the counterpart that overwrites an
-  **existing custom** flavor's definition in place, keeping its `id` — the
-  id passed in is never re-derived from `name`.
-  `remove_flavor`/`update_flavor`/`set_active_flavor` reject predefined
-  flavors (even a legacy overridden one, for `remove_flavor` — removing the
-  override would silently revert it to the hardcoded definition, which
-  isn't "removing a flavor" from the user's perspective) and unknown
-  entries/ids respectively; removing the active flavor resets that entry's
-  selection to unset (falls back to the first available flavor, per the
-  rule above). `remove_local_entry` also cleans up a removed custom entry's
-  own flavor data (both maps), since nothing else ever would.
+plus, once per payload rather than per entry:
 
-**WS surface** (`local_llm.add_flavor` / `local_llm.update_flavor` /
-`local_llm.remove_flavor` / `local_llm.set_active_flavor`, §7.6) all reply
-with the same `local_llm.registry_state` event as every other `local_llm.*`
-mutation — each entry in that payload's `local_registry` now carries
-`flavors: [...]` (each `{id, name, description, llama_args, predefined,
-min_ram, min_vram, platform}`, §4.6a/§4.6b) and `active_flavor` (a flavor
-id, or `""` for unset/Default), so kodo-vsix never needs a separate fetch. `predefined`
-reflects whether `id` is one of `entry.flavors`' ids — it's what drives the
-"Manage flavors" modal disabling both "Remove" and "Submit" for that
-flavor client-side, mirroring `remove_flavor`/`update_flavor`'s own
-server-side rejection.
+- `knob_defs: {knob_id: {...}}` — every knob definition any entry offers,
+  **deduplicated by id** (`_knob_defs_payload`). All 82 built-ins share the
+  same six knobs and only the three context knobs are per-family, so repeating
+  each definition (five options, each with a paragraph of help text) on every
+  entry would dominate the payload. `_validate_catalog` guarantees two entries
+  never disagree about what one id means, so the flattening is lossless.
+- `llama_arg_catalog: [...]` — see §4.7.
 
-**Restart semantics**: changing the active flavor (`set_active_flavor`), or
-editing the flavor that is currently in effect (`update_flavor` — compared
-via `get_effective_flavor_id`, not just the raw active-flavor selection,
-since an *unset* active flavor still effectively runs the first available
-one), only restarts llama-server when *entry_name* is the currently selected
-local model (`models.local`) — changing an inactive entry's flavor just
-persists the choice for whenever it is next selected. Even then, the
-restart is forced explicitly: `ensure_llama_running` treats "already running
-this entry name" as "nothing to do" (it has no way to know a flavor
-changed, since flavors don't change `entry.name`), so the handlers
-(`kodo/server/_app.py`, `_restart_llama_server_if_running`) stop the running
-server themselves first, then call `ensure_llama_running` again to relaunch
-with the freshly-resolved args — mirroring `llm.select`'s restart (§7.6a)
-but without a model-name change to trigger it naturally.
+Five client→server messages manage all of this (doc/WS_PROTOCOL.md §7.6):
+`local_llm.add_profile`, `.update_profile`, `.remove_profile`,
+`.set_active_profile`, and `.set_knobs`. All five reply with
+`local_llm.registry_state`. The last two restart llama-server immediately
+**only** if the entry is both the selected local model (`models.local`) and the
+one currently running — reconfiguring an inactive entry just persists the
+choice. `set_knobs` additionally compares the *resolved args* before and after
+and skips the restart when they are unchanged, so opening Configure, changing
+nothing and pressing Apply never interrupts a window mid-generation.
 
-**kodo-vsix UI**: flavor *selection* lives only in the sidebar (installed
-entries only) — a `<select>` per local LLM card listing every flavor
-`get_flavors` returns for that entry, falling back to the first flavor's id
-when `active_flavor` is `""` (mirroring `resolve_effective_llama_config`'s
-own fallback) and sending `set_active_flavor` immediately on change (no
-separate Apply step). The Local Inference Settings panel's cards carry no
-flavor dropdown at all — only a "Manage flavors" button (first in the
-card's button row, before "Show me local files"/"Uninstall"/"Remove") that
-opens a list-detail modal, twice the width of the panel's other modals and
-split into two panes:
+**kodo-vsix UI.** Three surfaces, in two places:
 
-- **Left pane** — every flavor `get_flavors` returns for that entry (predefined
-  first), each row selectable, inside a fixed-`height` (not `max-height`)
-  scrollable list (`.flavor-list`, 360px) so the "Add"/"Remove" buttons below
-  it stay pinned in place regardless of how many flavors exist, instead of
-  drifting down the modal as rows are added; "Add" and "Remove" (deletes the
-  selected flavor; disabled when nothing is selected or the selection is
-  predefined — `predefined: true` in the payload, matching `remove_flavor`'s
-  own server-side rejection) buttons below the list. "Add" does **not** open
-  a blank form for the user to fill in — it sends `add_flavor` immediately
-  (`addFlavor`, `FlavorModal.tsx`) with a computed name/description/
-  `llama_args`: a unique display name starting from `"New flavor"` (appending
-  `" 2"`, `" 3"`, … against the entry's current flavor names, client-side
-  only — `add_flavor` itself still rejects an exact-name clash the same as
-  always, so a race against a concurrent add is still caught server-side),
-  description `"Custom flavor"`, and `llama_args` copied from the entry's
-  `"default"`-id flavor (predefined or the seeded custom one, whichever
-  `get_flavors` returns under that id — see §4.6's `flavors` field and
-  `_seed_default_flavor` above), or left empty if the entry currently has no
-  flavor with that id (e.g. a custom entry whose seeded `"default"` flavor
-  was since removed via "Remove"). `min_ram`/`min_vram`/`platform` are *not*
-  copied from that flavor — they start at their normal brand-new-flavor
-  defaults (`0`/`0`/`"both"`). The selected flavor briefly clears to the
-  blank/deselected state while the create round-trips, then selects the new
-  flavor once its server-assigned id shows up in the next
-  `local_llm.registry_state` push, so it's immediately visible and editable
-  (rename it, tweak its args, adjust hardware/platform fields) via the normal
-  "Submit" flow below.
-- **Right pane** — the selected flavor's parameters: name (with an inline
-  error and a disabled "Submit" if it exact-matches another flavor of the
-  same entry, mirroring the same-repo `nameTaken` check the "Add local LLM"
-  modals already use for top-level entry names, client-side only; the
-  server enforces the same rule independently, see above), description, a
-  **multi-line** raw-text `llama_args` box — one `--flag value` per line,
-  parsed server-side via `parse_llama_args_text`, unlike the single-line
-  client-parsed box the "Add local LLM" modals use, see §4 — two number
-  inputs, "Minimum RAM (GB)" and "Minimum VRAM (GB)" (§4.6a's `min_ram`/
-  `min_vram`; no context-window field, since that's now deduced per
-  `resolve_context_window` instead of being its own input), and a three-way
-  "Platform compatibility" radio group — "Mac only" / "GPU only" / "Both"
-  (§4.6b's `platform`, defaulting to "Both" for a brand-new flavor) — plus
-  "Submit" and "Close" buttons. "Submit" sends `update_flavor` with the
-  selected flavor's id, including for the flavor "Add" (above) just created —
-  it's selected automatically, so "Submit" here is for further edits, not the
-  creation itself. It still falls back to sending `add_flavor` on whatever is
-  in the form when nothing is selected, for the one case that can still reach
-  that state without going through "Add": an entry with zero flavors (every
-  one removed). **Predefined flavors are read-only in
-  this modal**: selecting one sets every field (`readonly`, so its text
-  remains selectable/copyable — the intended way to start a new flavor from
-  a predefined one's config is to copy its values into a fresh "Add") and
-  disables both "Submit" and "Remove"; the client-side disable exists purely
-  for UX (immediate, no round trip) — `update_flavor`/`remove_flavor` both
-  reject a predefined `flavor_id` server-side regardless (see above), so
-  there's no path to an inconsistent state even if the client and server's
-  notion of `predefined` were ever to disagree.
+- The **sidebar** LLM card carries a profile picker (`Default` + each
+  user-defined profile) and, whenever `Default` is selected, a **Configure**
+  button. Changing the picker posts `set_active_profile` and updates the card's
+  Context line immediately from the pending profile's own args — no round trip.
+  Configure deep-links into Kōdo Settings (`openKodoSettings('local-inference',
+  name)` → `KodoSettingsPanel.configureLocalModel`), because a modal of knobs
+  with descriptions and an Advanced section does not fit a 300px sidebar built
+  as a plain-JS string-embedded script.
+- The **Configure modal** (`settings-webview/ConfigureModal.tsx`) renders one
+  block per knob — control, the knob's description, the selected option's own
+  description, and the exact flags that state produces — with the advanced
+  knobs behind a collapsible section that is collapsed every time the modal
+  opens. Edits are local until **Apply**, which sends the whole selection at
+  once; **Cancel** discards them. Deliberately unlike the profile editor, where
+  a field writes through immediately: a knob change can restart llama-server,
+  so "change three knobs, restart once" has to be possible.
+- The **Manage profiles modal** (`settings-webview/ProfileModal.tsx`) is the
+  user-defined-profile editor — see §4.7 for its argument picker. The settings
+  panel's Local LLMs card offers both buttons (Configure, Manage profiles).
 
-### 4.6a Per-flavor hardware-fit gate (`min_ram`, `min_vram`)
+### 4.6a Per-entry knob defaults (`knob_defaults`)
 
-`LlamaFlavor` carries two more fields beyond `llama_args`:
+An entry may override a knob's own default state:
 
 ```python
-min_ram: int = 0   # GB — system RAM (Windows/Linux), or unified memory on Mac
-min_vram: int = 0  # GB — discrete GPU VRAM (Windows/Linux); always 0 on Mac
+LocalLLMEntry(
+    name="unsloth-gpt-oss-120b-f16",
+    knob_defaults={"kv-cache": "f16"},
+    ...
+)
 ```
 
-Unlike `LocalLLMEntry.min_memory`/`memory` (§4.4 — one **combined**
-VRAM+RAM figure; also gates an actual launch as of §4.4's "Pre-launch
-confirmation gate," but as one of possibly several warnings folded into that
-one dialog rather than its own dedicated confirmation), these are two
-**independent** thresholds, checked as separate
-pools, and gate an actual action: selecting a flavor whose requirement
-exceeds detected hardware pops a native "I understand the risk, proceed" /
-"Cancel" confirmation before kodo-vsix sends `set_active_flavor` — a flavor
-often pins the model fully onto one pool (e.g. `--n-gpu-layers -1`), so a
-combined figure would hide a genuine single-pool shortfall the way it does
-for the entry-level warning.
+This is how one entry starts from a different position than the shared knob's
+own default, and it is what replaced the `make_default_kv_fp16` predefined
+flavor. `_validate_catalog` checks at import time that every `knob_defaults`
+key names a knob the entry actually offers and that its value is a real
+option.
 
-Both default to `0`, meaning "no known requirement — check inactive, treat
-as runnable everywhere"; this is still the default for every *predefined*
-flavor today (no hardcoded flavor sets real numbers yet — populating them
-per model/flavor is tracked separately from the mechanism built here, same
-as real predefined flavor variants in §4.6). If **either** is non-zero the
-check is active.
+Because selections are stored sparsely (§4.6), changing a `knob_defaults`
+value in a later release reaches every user who never deliberately moved that
+knob — the same property that makes changing a knob's own `default_option`
+safe.
 
-**Authoring convention** — since Apple Silicon has one unified memory pool
-(§4.3), a flavor expresses its target platform by *which* field is
-non-zero:
+### 4.6b What happened to the per-flavor hardware and platform gates
 
-- `min_vram = 0`, `min_ram > 0` — a Mac/unified-memory flavor; `min_ram` is
-  the unified-memory requirement.
-- `min_vram > 0`, `min_ram >= 0` — a Windows/Linux discrete-GPU flavor;
-  `min_vram` is the VRAM requirement, `min_ram` an optional additional
-  system-RAM requirement (e.g. for CPU-offloaded MoE experts).
+Both are **gone**. A flavor used to be able to declare `platform`
+(`mac`/`gpu`/`both`) and `min_ram`/`min_vram`, which drove a sidebar
+compatibility filter, an unconditional ⛔ "not compatible with this platform"
+launch block, and a "proceed anyway?" hardware-fit confirmation. A knob option
+carries none of that, so:
 
-**Wire shape**: `_flavors_payload` (`kodo/server/_app.py`) adds `min_ram`/
-`min_vram` to each flavor object in `local_registry[].flavors[]` (alongside
-`id`/`name`/`description`/`llama_args`/`predefined`, §4.6's WS surface) —
-mirrored in kodo-vsix's `LlamaFlavorInfo` (`src/llm-registry-types.ts`).
-`_flavor_to_json`/`_flavor_from_json` round-trip both fields through
-`~/.kodo/etc/local-llm-registry.json` for a custom flavor.
+- `LlamaFlavorPlatform`, `current_host_platform`, `_flavor_compatible_with_host`,
+  `has_compatible_flavor`, `get_effective_flavor_id` (Python) and
+  `flavorCompatibleWithHost`, `entryHasCompatibleFlavor`,
+  `hardwareFitWarningForFlavor`, `platformWarning` (TypeScript) **no longer
+  exist**;
+- `LocalLaunchWarning.kind` is now `'memory' | 'version'` — the `'platform'`
+  variant is gone, and `localLaunchWarnings` no longer takes an `isMac`
+  argument;
+- the entry-level `min_memory`/`memory` combined VRAM+RAM warning (§4.4) and
+  the llama.cpp-version warning are the **only** hardware checks left, applied
+  at launch time by `confirmLocalLlamaLaunch`.
 
-**Editable via the "Manage flavors" modal** (§4.6) — `add_flavor`/
-`update_flavor` both take `min_ram`/`min_vram` keyword params (WS payload
-fields `min_ram`/`min_vram`, parsed server-side by `_parse_non_negative_int`,
-defaulting to `0` when absent), matching two number inputs in the modal's
-right pane. Since predefined flavors are read-only (§4.6), only a *custom*
-flavor's thresholds can ever be set this way — a predefined flavor's
-`min_ram`/`min_vram` stay at whatever its hardcoded Python literal declares
-(`0` for every one today) unless/until real values are added there directly.
-Unlike the old (removed) carry-forward behavior, `update_flavor` does *not*
-preserve the previous values when the caller omits `min_ram`/`min_vram` —
-the modal always resends its own fields' current contents, so this only
-matters for a direct (non-UI) caller.
+The practical consequence: the 512K/1M context options on Laguna and Qwen are
+offered on every host, including a Windows/Linux discrete-GPU box where the KV
+cache at those sizes is impractical to split across VRAM and system RAM. Each
+extended option's own `description` says so, which is now the only place that
+guidance lives.
 
-**The check** — `hardwareFitWarningForFlavor(flavor, detectedVramGb,
-detectedRamGb, isMac)` (`src/llm-registry-types.ts`) returns `null` (no
-gate) or a message with real detected numbers for the confirmation dialog's
-body:
+### 4.7 The llama-server argument catalog
 
-1. Inactive (`min_ram <= 0 && min_vram <= 0`) → `null`.
-2. On Mac, `detected_ram_gb` is always `null` (§4.3 — `detected_vram_gb`
-   already reports the full unified pool there), so the "detected RAM"
-   figure used for comparison is `isMac ? detectedVramGb : detectedRamGb` —
-   otherwise a Mac flavor's `min_ram` could never be checked against
-   anything. `min_vram` always compares against `detectedVramGb` on both
-   platforms.
-3. If *both* detected figures are `null` (nothing could be detected at all)
-   → `null` — skip rather than gate on a guess. Otherwise a `null` figure is
-   treated as `0`.
-4. If detected < required on either pool → a message naming every non-zero
-   requirement/detected pair (not just the short one), so "VRAM and/or RAM"
-   is always answered with concrete numbers.
-
-**The gate** lives entirely in the extension host, not the webview:
-`setActiveFlavor(name, flavorId)` (`src/extension/local-llm-registry.ts`) looks up the flavor
-from `localRegistryState`, runs the check, and — only if it returns a
-warning — awaits `vscode.window.showWarningMessage(warning, {modal: true},
-'I understand the risk, proceed')` before forwarding `set_active_flavor` to
-kodo over WS. This is a client-side UX gate only — kodo's
-`set_active_flavor` WS handler performs no hardware check of its own, so a
-proceed-anyway selection reaches the server exactly like any other. If the
-user cancels/dismisses, the request is never sent and `sidebarProvider`
-re-pushes its (unchanged) state, which resets the sidebar's flavor
-`<select>` back to the real active flavor on the next render (the sidebar
-is the only live flavor-selection surface, per §4.6's kodo-vsix UI note —
-"Manage flavors" is CRUD-only, not a selection action, so it isn't gated).
-
-### 4.6b Per-flavor platform compatibility (`platform`)
-
-`LlamaFlavor` carries a third field beyond `llama_args`/`min_ram`/`min_vram`:
+`LLAMA_ARG_CATALOG` (`kodo/llms/_arg_catalog.py`) is a hand-maintained table
+of the `llama-server` flags worth exposing, shipped once per registry payload
+as `llama_arg_catalog` and rendered by the "Manage profiles" editor's "Add
+argument" picker.
 
 ```python
-class LlamaFlavorPlatform(StrEnum):
-    MAC = "mac"    # Apple Silicon only
-    GPU = "gpu"    # Windows/Linux discrete-GPU PC only
-    BOTH = "both"  # no restriction — the default
-
-platform: LlamaFlavorPlatform = LlamaFlavorPlatform.BOTH
+@dataclass(frozen=True)
+class LlamaArgSpec:
+    flag: str                  # long form, e.g. "--ctx-size" — the key written into llama_args
+    label: str
+    kind: Literal["str", "int", "float", "bool", "enum", "str_list"]
+    category: str              # picker grouping header, e.g. "Context & memory"
+    help: str
+    advanced: bool = False
+    minimum / maximum / step: float | None = None
+    choices: tuple[str, ...] = ()      # "enum" only
+    placeholder: str = ""              # "str" only
+    default: str = ""                  # what llama.cpp does without the flag, as display text
+    sensible_minimum / sensible_maximum: float | None = None   # sampling flags only
+    valid_values: tuple[str, ...] | None = None                # "--samplers" only
 ```
 
-Unlike `min_ram`/`min_vram` (§4.6a — a *hardware-fit* gate the user can
-override with "proceed anyway"), `platform` is a hard compile-time-style
-restriction: some launch configs simply don't make sense on the other
-platform at all — e.g. the built-in Qwen "512K"/"1M context" flavors
-(`make_qwen_512k_kv_q8`/`make_qwen_1m_kv_q8`/`make_qwen_moe_*` in
-`local_registry/`) set `platform=MAC`, since a context window that large
-only fits inside Apple Silicon's unified-memory pool — there is no
-equivalent discrete-GPU-plus-system-RAM configuration that makes sense at
-that size. Every other built-in flavor (the default q8/fp16 KV-cache ones)
-sets `platform=BOTH`.
+Deliberately **curated, not exhaustive** (~60 flags across four categories:
+Context & memory, GPU & performance, Model behaviour, Sampling).
+`llama-server --help` lists roughly two hundred, most irrelevant to running a
+coding agent, and transcribing all of them would create a table that silently
+rots against every llama.cpp release. Anything not in it is still reachable —
+the editor keeps a raw "one flag per line" box beside the picker.
 
-**This gates both manual selection and automatic default selection** — a
-flavor incompatible with `current_host_platform()` (`sys.platform ==
-"darwin"` → `MAC`, else `GPU` — the same convention
-`kodo.llms.detect_vram_gb`/`detect_ram_gb` already use) is never something
-this host can actually launch, so unlike `min_ram`/`min_vram` there is no
-"proceed anyway" escape hatch anywhere in the stack:
+Two things it is **not**: it is not validation (nothing here is enforced
+server-side; the bounds drive input widgets and an advisory ⚠), and it is not
+the knob framework (knobs are curated *combinations* chosen by kodo; this is
+individual flags chosen by the user).
 
-- **Sidebar flavor picker** (the only live flavor-selection surface, per
-  §4.6's kodo-vsix UI note) — `flavorCompatibleWithHost(flavor, isMac)`
-  (`src/llm-registry-types.ts`, duplicated as plain-JS in
-  `sidebar-provider.ts`'s embedded webview script and again in
-  `src/settings-webview/localLlmUtils.ts` for the Local Inference model
-  card, below — three copies, same convention as `flavorContextSize`; keep
-  in sync by hand) filters `entry.flavors` down to compatible ones before
-  building the `<select>`'s `<option>`s. An incompatible flavor is not
-  merely discouraged, it is **never offered** — this is what actually fixes
-  the bug this mechanism was built around (a `GPU`-only flavor was
-  previously selectable and launchable from a Mac sidebar card). If zero
-  flavors are compatible, no picker renders at all for that card (same
-  `compatibleFlavors.length > 0` guard as the pre-existing
-  `custom_server_url`/no-flavors cases).
-- **`get_effective_flavor_id(kodo_dir, entry)`** (§4.6's resolution rule) —
-  for an *unset or stale* active selection, still picks the first
-  compatible flavor, skipping an incompatible one earlier in the list; if
-  *none* are compatible, permissively falls back to the first flavor
-  regardless (unchanged from before this section's rewrite — this
-  particular fallback only matters for *non-launch* callers now, see
-  below). For an *explicit* `set_active_flavor` choice that turns out to
-  name an incompatible flavor: if a compatible alternative exists among
-  *entry*'s other flavors, the explicit choice is overridden by (and
-  **persisted** as, via `set_active_flavor`) the first compatible one —
-  this is no longer "never second-guessed," which was the root cause of
-  the bug above (an explicit choice made while on one platform stayed
-  active, and launchable, after moving `~/.kodo` to the other). If the
-  platform is switched back later, the original choice is gone — it is
-  not remembered anywhere once overwritten, so it has to be re-picked by
-  hand. If *no* flavor is compatible, the explicit choice is returned
-  unchanged (nothing better to fall back to); this is the one case where
-  `get_effective_flavor_id` can still resolve to an incompatible flavor,
-  which is exactly why the actual launch path (next bullet) does its own,
-  independent check rather than trusting this function's return value.
-- **`ensure_llama_running(entry, kodo_dir)`** (`kodo/llms/llamacpp/
-  _manager.py`) — refuses outright (`RuntimeError`, same family as its
-  pre-existing "llama.cpp not installed"/"model not downloaded" checks) if
-  `has_compatible_flavor(kodo_dir, entry)` is `False`, i.e. *entry* has
-  flavors and every single one targets the other platform. Checked before
-  anything else (install lookup, model-file lookup) since nothing there
-  could make the launch possible anyway. This is the actual enforcement
-  point — reachable from all three real launch triggers
-  (`local_llm.start`'s handler, `_restart_llama_server_if_running`, and
-  `LlamaPlugin`'s auto-start-on-prompt path in `_llama.py`), so a caller
-  that bypasses kodo-vsix's own gate (below) — a raw WS client, the
-  validator, a future CLI path — still can't actually start an
-  incompatible launch. `has_compatible_flavor` returns `True` when *entry*
-  has no flavors at all (nothing to be incompatible about).
-- **kodo-vsix's `confirmLocalLlamaLaunch`** (§4.4's pre-launch gate) checks
-  this *first*, ahead of the memory/version warnings and the
-  `dismissedLocalLaunchWarnings` list, and — unlike those two, which offer
-  "Start anyway" — shows a plain OK-only error and unconditionally cancels.
-  See §4.4 for the full three-way gate.
+The sampling half is **derived** from `SAMPLING_PARAM_SPECS`
+(`_sampling_arg_specs`, using each spec's `cli_flags[0]`), so the recommended
+bands, the `--samplers` whitelist and the help text stay single-sourced with
+the session sampling modal (doc/SAMPLING.md §8d/§8e) rather than drifting as a
+second copy. `min_keep` is skipped — it has no CLI flag and is session-override
+only. Every `RESERVED_LLAMA_ARGS` flag is excluded, checked at import time.
 
-**Wire shape**: `_flavors_payload` (`kodo/server/_app.py`) adds
-`platform: "mac" | "gpu" | "both"` to each flavor object in
-`local_registry[].flavors[]` (alongside `id`/`name`/`description`/
-`llama_args`/`predefined`/`min_ram`/`min_vram`) — mirrored in kodo-vsix's
-`LlamaFlavorInfo` (`src/llm-registry-types.ts`) and the settings webview's
-own duplicate `LocalFlavor` (`src/settings-webview/types.ts`).
-`_flavor_to_json`/`_flavor_from_json` round-trip the field (as its plain
-string value) through `~/.kodo/etc/local-llm-registry.json` for a custom
-flavor, falling back to `BOTH` for anything missing or unrecognized
-(`_parse_flavor_platform`, both in `local_registry/` for the JSON store
-and in `kodo/server/_app.py` for the WS payload). `entry.active_flavor`
-itself is still sent as the raw persisted value (`get_active_flavor`, not
-`get_effective_flavor_id`) — kodo-vsix derives what's actually effective
-client-side (`active_flavor || flavors[0]`, now filtered through
-`flavorCompatibleWithHost`/`entryHasCompatibleFlavor` as above), same as it
-already did before this section's rewrite; a raw persisted value that's
-momentarily stale (an explicit-but-incompatible choice not yet corrected by
-a `get_effective_flavor_id` call) just isn't in the picker's option list, so
-the browser's native "value not in options" behavior shows the first
-(compatible) option selected until the next registry_state push catches up
-with the server-side persisted correction.
-
-**Editable via the "Manage flavors" modal** (§4.6) — `add_flavor`/
-`update_flavor` both take a `platform` keyword param (WS payload field
-`platform`, parsed server-side, defaulting to `"both"` when absent/
-unrecognized), matching a three-way "Platform compatibility" radio group
-("Mac only" / "GPU only" / "Both") in the modal's right pane
-(`FlavorModal.tsx`). Since predefined flavors are read-only (§4.6), only a
-*custom* flavor's platform can ever be set this way. Like `min_ram`/
-`min_vram`, `update_flavor` does **not** carry the previous value forward
-when omitted — it resets to `"both"` — since the modal always resends its
-own radio group's current selection. The flavor list (left pane) shows a
-short badge next to a restricted flavor's name (" — Mac only" / " —
-GPU only"; nothing extra for "Both", since that's "no restriction," not
-worth calling out on every row) via `flavorPlatformBadge`
-(`src/settings-webview/localLlmUtils.ts`) — purely informational. **This
-modal is deliberately not filtered** by platform compatibility, unlike the
-sidebar picker above — it lists every flavor (including incompatible ones,
-already badge-marked) since it's for defining/editing/copying flavor
-definitions, not choosing what launches; a predefined `GPU`-only flavor
-must stay visible/copyable here even when running on a Mac.
-
----
-
-### 4.6c Flavor sampling shortcuts vs. session-level overrides
-
-A flavor has no request-level sampling state of its own — `LlamaFlavor` only
-ever carries `llama_args`. What kodo-vsix's flavor editor shows as a
-structured "sampling defaults" form (Temperature, Top-K, …, curated +
-collapsed Advanced, same layout as the session modal) is a **shortcut for
-editing `llama_args` itself**: typing a value into one of those fields writes
-`--temp <value>` (etc., via each `SamplingParamSpec.cli_flags[0]`,
-`kodo/llms/_sampling.py`) into the flavor's launch-arguments text, and editing
-the launch-arguments text updates the structured fields back — kept in sync
-live, in both directions, entirely client-side (`FlavorModal.tsx`,
-`localLlmUtils.ts` in kodo-vsix). The server never receives a separate
-`sampling` payload for a flavor any more; `add_flavor`/`update_flavor` take
-`llama_args_text` only. This is deliberate: a flavor's sampling knobs always
-require restarting llama-server to take effect, exactly like every other
-launch arg, with no "hot" exception to keep straight.
-
-`min_keep` is the one sampling parameter with no CLI flag (`cli_flags: []`)
-— it can't be expressed as a launch arg, so the flavor editor never offers
-it. It remains available as a **session override only**.
-
-**The session's per-quant overrides** (`state.sampling`, WS_PROTOCOL.md
-§7.4f) are the only thing that is genuinely request-level and hot: edited
-from the ⚙ button in the chat footer, they ride the
-`POST /v1/chat/completions` body and take effect on the very next request,
-no restart. The engine's `_sampling_kwargs` reads this session state fresh on
-every local call — main turn, compaction, `web_search`'s tool loop — and
-splices it in when non-empty, exactly like `thinking_level`. Unlike §4.5's
-thinking level, these overrides are **session-scoped and keyed by entry**
-rather than global, so switching models and back restores each quant's own
-tuning rather than resetting it.
-
-**Why "unset" is still a real state at this layer.** llama-server seeds each
-request's sampling config from its launch-time values (i.e. the effective
-flavor's `llama_args`, sampling-form-derived or not) and then overwrites only
-the fields present in the body. So omitting `temperature` from a session
-override against a server started with `--temp 0.6` runs that request at
-0.6 — whereas sending llama.cpp's built-in 0.8 because a modal field was
-blank would silently defeat the flavor's CLI arg. Every field in
-`SamplingParams` is therefore optional and simply absent when unset; it never
-materialises a default for one. Full detail and per-parameter guidance:
-[SAMPLING.md](SAMPLING.md).
-
-**Reserved request fields.** `RESERVED_SAMPLING_FIELDS` (`_sampling.py`) is the
-request-level sibling of `RESERVED_REASONING_CAP_ARGS` above — these can never
-be set as a session override (they don't gate the flavor editor's `llama_args`
-text at all, since that's free-form CLI text like any other flag):
-`max_tokens`/`n_predict` (engine-computed from the thinking tier — a user
-value can starve the Qwen reasoning-budget mechanism of headroom),
-`json_schema` (already carried by `response_format`), `grammar` (collides
-with `--jinja`'s lazy tool-call grammar), `ignore_eos` (no turn would ever end
-cleanly), `logit_bias` (needs model-specific token IDs), and
-`n_probs`/`post_sampling_probs` (response-shape debugging kodo ignores).
-`SamplingParams.from_json` drops all of these, along with unknown and
-wrong-typed values, and clamps out-of-range numbers — untrusted input
-degrades to "fewer parameters sent", never to a crashed session.
+**The editor.** `ProfileModal.tsx` offers two views of one string. The picker
+renders a typed row per flag present in the profile's args that the catalog
+knows about — label, an input matching the flag's kind, its help text and a
+remove button — and "Add argument" (grouped by `category`, with an "advanced"
+toggle) adds a row for a flag not yet present. Everything else lands in the raw
+box below. Neither is separate state: both read and write the one
+`llama_args_text`, so they can never disagree. Save is disabled while any row
+is marked ⚠ — an unknown `--samplers` stage name, unparseable text, or a value
+outside its recommended band — or while the name is blank or clashes.
 
 ## 5. Settings schema
 

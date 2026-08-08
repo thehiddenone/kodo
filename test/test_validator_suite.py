@@ -37,14 +37,14 @@ from kodo.validator._suite import (
 # ---------------------------------------------------------------------------
 
 
-def test_llm_under_test_defaults_to_default_flavor() -> None:
+def test_llm_under_test_defaults_to_no_knob_pins() -> None:
     lut = LLMUnderTest(llm="some-model")
-    assert lut.flavor == "default"
+    assert lut.knobs == {}
 
 
-def test_llm_under_test_explicit_flavor() -> None:
-    lut = LLMUnderTest(llm="some-model", flavor="some-model-near-greedy")
-    assert lut.flavor == "some-model-near-greedy"
+def test_llm_under_test_explicit_knobs() -> None:
+    lut = LLMUnderTest(llm="some-model", knobs={"temperature": "near-greedy"})
+    assert lut.knobs == {"temperature": "near-greedy"}
 
 
 def test_validation_suite_requires_judge_llm_and_summary_prompt() -> None:
@@ -52,9 +52,9 @@ def test_validation_suite_requires_judge_llm_and_summary_prompt() -> None:
         ValidationSuite(name="s", entries=[])  # type: ignore[call-arg]
 
 
-def test_validation_suite_judge_llm_flavor_defaults_none() -> None:
+def test_validation_suite_judge_llm_knobs_defaults_none() -> None:
     suite = ValidationSuite(name="s", entries=[], judge_llm="judge", summary_prompt="p")
-    assert suite.judge_llm_flavor is None
+    assert suite.judge_llm_knobs is None
 
 
 # ---------------------------------------------------------------------------
@@ -85,8 +85,8 @@ def _scenario_result(
         run_dir=run_dir,
         llm_under_test="lut-model",
         validation_llm="judge-model",
-        flavor="default",
-        validation_llm_flavor=None,
+        knobs={},
+        validation_llm_knobs={},
         turns=[TurnResult(prompt="do it", final_phase="done", assistant_text="ok")],
         score=score,
         evaluation=evaluation,
@@ -107,7 +107,7 @@ def test_render_summary_prompt_includes_every_entry_and_its_score(tmp_path: Path
             ),
         ),
         SuiteEntryResult(
-            llm_under_test=LLMUnderTest(llm="model-b", flavor="model-b-near-greedy"),
+            llm_under_test=LLMUnderTest(llm="model-b", knobs={"temperature": "near-greedy"}),
             result=_scenario_result(
                 _scenario("s2"), run_dir=tmp_path / "b", score=42.0, report="struggled"
             ),
@@ -115,7 +115,7 @@ def test_render_summary_prompt_includes_every_entry_and_its_score(tmp_path: Path
     ]
     prompt = _render_summary_prompt(entries)
     assert "model-a" in prompt and "s1" in prompt and "87.5" in prompt and "did well" in prompt
-    assert "model-b" in prompt and "model-b-near-greedy" in prompt
+    assert "model-b" in prompt and "temperature=near-greedy" in prompt
     assert "s2" in prompt and "42" in prompt and "struggled" in prompt
     assert "Do not call any tool" in prompt
 
@@ -137,14 +137,14 @@ def test_render_summary_prompt_notes_missing_evaluation(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _suite_result(tmp_path: Path, *, judge_llm_flavor: str | None = None) -> SuiteResult:
+def _suite_result(tmp_path: Path, *, judge_llm_knobs: dict[str, str] | None = None) -> SuiteResult:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     suite = ValidationSuite(
         name="demo-suite",
         entries=[],
         judge_llm="judge-model",
-        judge_llm_flavor=judge_llm_flavor,
+        judge_llm_knobs=judge_llm_knobs,
         summary_prompt="summarize",
     )
     entries = [
@@ -178,11 +178,11 @@ def test_write_suite_report_lists_every_entry_and_the_summary(tmp_path: Path) ->
     assert "model-a beat model-b overall." in text
 
 
-def test_write_suite_report_shows_judge_flavor_when_set(tmp_path: Path) -> None:
-    result = _suite_result(tmp_path, judge_llm_flavor="judge-model-near-greedy")
+def test_write_suite_report_shows_judge_knobs_when_set(tmp_path: Path) -> None:
+    result = _suite_result(tmp_path, judge_llm_knobs={"temperature": "near-greedy"})
     _write_suite_report(result)
     text = (result.run_dir / "suite-report.md").read_text(encoding="utf-8")
-    assert "judge-model-near-greedy" in text
+    assert "temperature=near-greedy" in text
 
 
 def test_write_suite_summary_json_records_every_entry(tmp_path: Path) -> None:
@@ -205,7 +205,7 @@ def test_write_suite_summary_json_records_every_entry(tmp_path: Path) -> None:
 async def test_run_suite_runs_every_entry_and_the_summary_round(tmp_path: Path) -> None:
     import kodo.validator._suite as _suite_module
 
-    lut_a = LLMUnderTest(llm="model-a", flavor="model-a-light-tail-cull")
+    lut_a = LLMUnderTest(llm="model-a", knobs={"tail-culling": "light"})
     lut_b = LLMUnderTest(llm="model-b")
     scenario_a = _scenario("s1")
     scenario_b = _scenario("s2")
@@ -216,7 +216,7 @@ async def test_run_suite_runs_every_entry_and_the_summary_round(tmp_path: Path) 
             SuiteEntry(llm_under_test=lut_b, scenario=scenario_b),
         ],
         judge_llm="judge-model",
-        judge_llm_flavor="judge-model-near-greedy",
+        judge_llm_knobs={"temperature": "near-greedy"},
         summary_prompt="summarize",
     )
 
@@ -231,8 +231,8 @@ async def test_run_suite_runs_every_entry_and_the_summary_round(tmp_path: Path) 
         *,
         llm_under_test: str,
         validation_llm: str,
-        flavor: str,
-        validation_llm_flavor: str | None,
+        knobs: dict[str, str] | None,
+        validation_llm_knobs: dict[str, str] | None,
         template_home: Path | None,
     ) -> ScenarioResult:
         return fake_results[scenario.name]
@@ -249,11 +249,11 @@ async def test_run_suite_runs_every_entry_and_the_summary_round(tmp_path: Path) 
     calls = fake_run_scenario_mock.await_args_list
     assert len(calls) == 2
     assert calls[0].kwargs["llm_under_test"] == "model-a"
-    assert calls[0].kwargs["flavor"] == "model-a-light-tail-cull"
+    assert calls[0].kwargs["knobs"] == {"tail-culling": "light"}
     assert calls[0].kwargs["validation_llm"] == "judge-model"
-    assert calls[0].kwargs["validation_llm_flavor"] == "judge-model-near-greedy"
+    assert calls[0].kwargs["validation_llm_knobs"] == {"temperature": "near-greedy"}
     assert calls[1].kwargs["llm_under_test"] == "model-b"
-    assert calls[1].kwargs["flavor"] == "default"
+    assert calls[1].kwargs["knobs"] == {}
 
     fake_summary.assert_awaited_once()
     assert result.summary == "the comparative summary"
@@ -289,8 +289,8 @@ def _mock_harness_deps(tmp_path: Path) -> dict[str, Any]:
     async def fake_request(
         msg_type: str, payload: dict[str, object] | None = None, **fields: object
     ) -> dict[str, object]:
-        if msg_type == "local_llm.set_active_flavor":
-            return {"type": "local_llm.set_active_flavor.done", "ok": True}
+        if msg_type == "local_llm.set_knobs":
+            return {"type": "local_llm.set_knobs.done", "ok": True}
         if msg_type == "llm.select":
             return {"type": "llm.select.done", "ok": True}
         assert msg_type == "llm.complete"
@@ -312,7 +312,7 @@ async def test_run_summary_round_selects_judge_then_completes(
         name="demo-suite",
         entries=[],
         judge_llm="judge-model",
-        judge_llm_flavor="judge-model-near-greedy",
+        judge_llm_knobs={"temperature": "near-greedy"},
         summary_prompt="summarize everything",
     )
     entries = [
@@ -348,9 +348,12 @@ async def test_run_summary_round_selects_judge_then_completes(
     assert complete_calls[0].kwargs["system"] == "summarize everything"
     assert "s1" in complete_calls[0].kwargs["prompt"]
 
-    flavor_calls = [c for c in calls if c.args and c.args[0] == "local_llm.set_active_flavor"]
-    assert len(flavor_calls) == 1
-    assert flavor_calls[0].kwargs == {"name": "judge-model", "flavor_id": "judge-model-near-greedy"}
+    knob_calls = [c for c in calls if c.args and c.args[0] == "local_llm.set_knobs"]
+    assert len(knob_calls) == 1
+    assert knob_calls[0].kwargs == {
+        "name": "judge-model",
+        "knobs": {"temperature": "near-greedy"},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -407,4 +410,4 @@ def test_full_regression_suite_covers_every_shipped_scenario_and_judge() -> None
     assert by_scenario["toolchain-python"].llm == "deepreinforce-ornith10-35b-a3b-bf16"
     laguna = by_scenario["attachment-report"]
     assert laguna.llm == "unsloth-laguna-s-2-1-mxfp4-moe"
-    assert laguna.flavor == "unsloth-laguna-s-2-1-mxfp4-moe-light-tail-cull"
+    assert laguna.knobs == {"tail-culling": "light", "temperature": "default"}

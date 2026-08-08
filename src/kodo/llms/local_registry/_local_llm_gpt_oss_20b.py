@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._types import LlamaFlavor, LocalLLMEntry
+from ._types import LocalLLMEntry
 
 
 def gpt_oss_20b_entries() -> list[LocalLLMEntry]:
@@ -13,7 +13,7 @@ def gpt_oss_20b_entries() -> list[LocalLLMEntry]:
             description="GPT OSS 20B F16 by Unsloth",
             repo_id="unsloth/gpt-oss-20b-GGUF",
             filename="gpt-oss-20b-F16.gguf",
-            flavors=(LlamaFlavor.make_default_kv_fp16(),),
+            knob_defaults={"kv-cache": "f16"},
             context_window=131_072,
             base_llm="GPT-OSS-20B",
             llm_author="OpenAI",

@@ -9,6 +9,7 @@ function below — nothing else in this package should construct
 
 from __future__ import annotations
 
+from ._knobs import validate_knobs
 from ._local_llm_gemma4_26b_a4b import gemma4_26b_a4b_entries
 from ._local_llm_gemma4_31b import gemma4_31b_entries
 from ._local_llm_gpt_oss_20b import gpt_oss_20b_entries
@@ -39,3 +40,45 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = tuple(
     )
     for entry in family_entries
 )
+
+
+def _validate_catalog() -> None:
+    """Import-time knob checks across the whole hardcoded catalog.
+
+    Two things, both hard failures at startup rather than mysteries at launch
+    time (see :func:`~kodo.llms.local_registry._knobs.validate_knobs`):
+
+    1. **Per entry** — no two of its knobs own the same llama-server flag,
+       every knob is structurally coherent, and every ``knob_defaults`` key
+       names a knob the entry actually offers whose value is a real option.
+    2. **Across entries** — two entries listing a knob under the same id must
+       list the identical knob. Knob definitions are deduplicated by id into
+       one table on the wire, so a same-id/different-definition pair would
+       make one entry's Configure modal silently render the other's options.
+    """
+    known: dict[str, object] = {}
+    for entry in _HARDCODED_LOCAL_MODELS:
+        validate_knobs(entry.knobs, context=entry.name)
+        by_id = {knob.id: knob for knob in entry.knobs}
+        for knob_id, selection in entry.knob_defaults.items():
+            knob = by_id.get(knob_id)
+            if knob is None:
+                raise ValueError(
+                    f"{entry.name}: knob_defaults names {knob_id!r}, which this entry "
+                    "does not offer"
+                )
+            if knob.options and knob.option(selection) is None:
+                raise ValueError(
+                    f"{entry.name}: knob_defaults sets {knob_id!r} to {selection!r}, "
+                    "which is not one of its options"
+                )
+        for knob in entry.knobs:
+            previous = known.setdefault(knob.id, knob)
+            if previous != knob:
+                raise ValueError(
+                    f"{entry.name}: knob {knob.id!r} differs from the definition another "
+                    "entry uses under the same id"
+                )
+
+
+_validate_catalog()

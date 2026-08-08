@@ -4,11 +4,12 @@ Selector: ``attachment_report`` (or ``all``).
 
 Built to validate **sampling parameters** (doc/QUANT_SAMPLING.md) — the first
 scenario built around this. This file is content-only (see
-:mod:`kodo.validator._scenario`); the LLM under test, its flavor, and the
+:mod:`kodo.validator._scenario`); the LLM under test, its knob selection, and the
 judge are pinned by whatever runs it — see :mod:`kodo.validator.suites` for a
-shipped pin. A flavor's ``llama_args`` are ``llama-server``'s launch config,
-so a run measures exactly what a user gets by choosing that flavor from the
-sidebar. Re-run the same scenario against a different ``LLMUnderTest.flavor``
+shipped pin. A knob selection resolves to ``llama-server``'s launch config,
+so a run measures exactly what a user gets by choosing those settings in the
+sidebar's Configure modal. Re-run the same scenario against a different
+``LLMUnderTest.knobs``
 to compare presets.
 
 It chains the four things a lossy quant tends to break, in one pipeline:
@@ -17,7 +18,7 @@ It chains the four things a lossy quant tends to break, in one pipeline:
    ``spec.md``, staged *outside* the workspace, so ``read_attachment`` is the
    only way to reach it — and that requires reproducing the attachment's UUID
    verbatim from context. This is the direct regression test for the DRY bug
-   (a DRY-enabled flavor made exactly this impossible; QUANT_SAMPLING.md §3f),
+   (DRY-enabled sampling made exactly this impossible; QUANT_SAMPLING.md §3f),
    and the RVP scores it as a pass/fail gate worth the whole run.
 2. **Building something with tests and a toolchain.** Multi-part enough to
    clear Problem Solver's small-ask fast path, so it should route through

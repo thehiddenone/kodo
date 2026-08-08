@@ -27,10 +27,13 @@ _QWEN35_9B = LLMUnderTest(llm="unsloth-qwen35-9b-q8-k-xl")
 # reliably uses it).
 _QWEN36_27B = LLMUnderTest(llm=_JUDGE)
 _ORNITH10_35B_A3B = LLMUnderTest(llm="deepreinforce-ornith10-35b-a3b-bf16")
-# The sampling preset this scenario was built to validate (doc/QUANT_SAMPLING.md).
+# The sampling configuration this scenario was built to validate
+# (doc/QUANT_SAMPLING.md). Light tail culling at llama.cpp's own default
+# temperature — what used to be the "light-tail-cull" preset flavor, now the
+# two shared sampling knobs set independently.
 _LAGUNA_S_2_1 = LLMUnderTest(
     llm="unsloth-laguna-s-2-1-mxfp4-moe",
-    flavor="unsloth-laguna-s-2-1-mxfp4-moe-light-tail-cull",
+    knobs={"tail-culling": "light", "temperature": "default"},
 )
 
 # Every ``toolchain_<language>`` scenario (grouped under the
@@ -56,7 +59,7 @@ def _entries_for(lut: LLMUnderTest, selectors: Sequence[str]) -> list[SuiteEntry
     """Every scenario the selectors resolve to, each paired with the same LUT.
 
     Args:
-        lut (LLMUnderTest): The LLM + flavor to pair with every match.
+        lut (LLMUnderTest): The LLM + knob selection to pair with every match.
         selectors (Sequence[str]): :mod:`kodo.validator.scenarios` selectors.
 
     Returns:

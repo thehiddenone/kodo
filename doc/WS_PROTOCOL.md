@@ -162,7 +162,8 @@ The server replies with the current world plus local-model status:
         "size_hint": "17.9 GB", "gpu_tip": "...", "mac_tip": "...",
         "min_memory": 24, "memory": 32,
         "llm_author": "Alibaba Cloud", "llamacpp_version": 5092,
-        "flavors": [], "active_flavor": "" }
+        "knobs": [], "knob_selections": {}, "default_profile_args": {},
+        "profiles": [], "active_profile": "" }
     ],
     "llama_server_override_path": null,
     "llama_installed": true,
@@ -289,7 +290,7 @@ The header toggles split into **two frozen** and **three never-frozen**:
 - `edit_control` — how file edits are handled: `review_all` (pause for sign-off) / `allow_all` / `smart` (default). Set via `edit_control.set` (§7.4a). **Enforced** for `create_file`/`edit_file` only — the dispatcher reads it live per call and a review-worthy call fires `prompt.edit_review` (§6.9); independent of and always evaluated after `command_control`'s security gate. **Client-owned**: the client keeps the user's selected posture and sends the **shown** value, which it forces to `allow_all` (and locks the toggle in the UI) while Autonomous mode is *in effect* — i.e. the frozen `effective_autonomous` during a turn, the live `autonomous` selection when idle — and restores the user's selection otherwise. The server simply mirrors whatever the client last sent, so its stored value is always exactly what the UI shows.
 - `command_control` — how much risky commands are restricted: `defensive` / `permissive` / `smart` (default). Set via `command_control.set` (§7.4b). **Enforced**: this is the security layer's posture — the dispatcher reads it live per tool call and an `ask` verdict fires `prompt.permission` (§6.7). See doc/SECURITY.md. **Client-owned**, same mirroring rule as `edit_control` (forced `permissive` under Autonomous).
 - `thinking_level` — the session's reasoning-tier slug for the currently active **local** model's thinking family (`kodo.llms.local_thinking_family`/`local_thinking_tiers`, doc/LLM_REGISTRY.md §4.5) — `""` on a cloud model or a local model with no thinking family. Set via `thinking_level.set` (§7.4e). **Server-owned**, unlike the two toggles above: the valid value set is model-dependent, so the engine validates every change against the active model rather than mirroring the client unconditionally, and re-derives it itself (no client request needed) whenever a brand-new session opens or the active model's thinking family changes mid-session (a `config.reload`-triggered model switch). doc/SESSIONS.md has the full session-lifecycle picture.
-- `sampling` — this session's request-level llama-server sampling overrides, keyed by local registry entry ("quant") name: `{entry_name: {parameter: value}}`, holding only the parameters the user actually set for each. `{}` for a session that has never opened the sampling modal, which is the normal case and means no sampling fields are sent at all. Set via `sampling.set` (§7.4f). **Server-owned**, like `thinking_level` — but unlike it, never reset by a model switch: each override set is already scoped to the entry it applies to, so switching models just makes the others dormant until you switch back. Sparse by design — an absent parameter is *omitted* from the request body, letting llama-server keep whatever the flavor's CLI args launched it with, which is **not** the same as sending llama.cpp's built-in default. See doc/SAMPLING.md.
+- `sampling` — this session's request-level llama-server sampling overrides, keyed by local registry entry ("quant") name: `{entry_name: {parameter: value}}`, holding only the parameters the user actually set for each. `{}` for a session that has never opened the sampling modal, which is the normal case and means no sampling fields are sent at all. Set via `sampling.set` (§7.4f). **Server-owned**, like `thinking_level` — but unlike it, never reset by a model switch: each override set is already scoped to the entry it applies to, so switching models just makes the others dormant until you switch back. Sparse by design — an absent parameter is *omitted* from the request body, letting llama-server keep whatever the launch args started it with, which is **not** the same as sending llama.cpp's built-in default. See doc/SAMPLING.md.
 
 > **Not yet on the snapshot:** `cumulative_usd`, `pending_prompts`, and
 > `last_checkpoint_sha` are **⟪planned⟫** additions; today cost arrives via
@@ -677,11 +678,24 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                          "base_llm": "...", "quant_author": "...", "quant_type": "...",
                          "size_hint": "...", "gpu_tip": "...", "mac_tip": "...",
                          "min_memory": 32, "memory": 48,
-                         "flavors": [ { "id": "1m-context", "name": "1M Context",
-                                        "description": "...",
-                                        "llama_args": {"--ctx-size": "1048576"},
-                                        "predefined": false } ],
-                         "active_flavor": "1m-context",
+                         "knobs": ["kv-cache", "tail-culling", "temperature",
+                                   "gpu-layers", "cpu-moe", "flash-attention",
+                                   "context-qwen35"],
+                         "knob_selections": { "kv-cache": "q8_0", "tail-culling": "medium",
+                                              "temperature": "default", "gpu-layers": "-1",
+                                              "cpu-moe": "", "flash-attention": "auto",
+                                              "context-qwen35": "native" },
+                         "default_profile_args": { "--ctx-size": "0", "--jinja": "",
+                                                   "--reasoning-format": "auto",
+                                                   "--cache-type-k": "q8_0",
+                                                   "--cache-type-v": "q8_0",
+                                                   "--top-k": "0", "--top-p": "1.0",
+                                                   "--min-p": "0.08", "--temp": "0.8",
+                                                   "--n-gpu-layers": "-1" },
+                         "profiles": [ { "id": "tight-vram", "name": "Tight VRAM",
+                                         "description": "...",
+                                         "llama_args": {"--ctx-size": "131072"} } ],
+                         "active_profile": "",
                          "...": "..." } ],
   "llama_server_override_path": "/usr/local/bin/llama-server-cuda" | null,
   "detected_vram_gb": 24 | null,
@@ -693,6 +707,23 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
     "GPT-OSS-20B": { "family": "gpt_oss_reasoning_effort",
                       "tiers": ["low", "medium", "high"], "default": "medium" }
   },
+  "knob_defs": { "tail-culling": { "id": "tail-culling", "name": "Tail culling",
+                                   "description": "How aggressively unlikely tokens are …",
+                                   "kind": "dropdown", "advanced": false, "default": "off",
+                                   "options": [ { "id": "off", "name": "llama.cpp defaults",
+                                                  "description": "…", "llama_args": {} },
+                                                { "id": "medium", "name": "Medium (min-p 0.08)",
+                                                  "description": "…",
+                                                  "llama_args": {"--top-k": "0", "--top-p": "1.0",
+                                                                 "--min-p": "0.08"} } ],
+                                   "flag": "", "minimum": null, "maximum": null,
+                                   "step": null, "unset_label": "" } },
+  "llama_arg_catalog": [ { "flag": "--ctx-size", "label": "Context size", "kind": "int",
+                           "category": "Context & memory", "help": "Context window in tokens. …",
+                           "advanced": false, "minimum": 0, "maximum": null, "step": 1024,
+                           "choices": [], "placeholder": "", "default": "0 (the GGUF's own …)",
+                           "sensible_minimum": null, "sensible_maximum": null,
+                           "valid_values": null } ],
   "sampling_specs": [ { "name": "temperature", "kind": "float", "label": "Temperature",
                         "advanced": false, "minimum": 0.0, "maximum": 4.0,
                         "sensible_minimum": 0.0, "sensible_maximum": 2.0, "step": 0.05,
@@ -703,18 +734,40 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
 
 Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. Does **not** carry download progress (see above) — that's read off disk, not this event. `thinking_families` is keyed by `base_llm` (only entries that support a thinking-tier control appear) and is the single source the client uses to decide which control (if any) to render and what tiers/default to offer — see doc/LLM_REGISTRY.md §4.5. The *current* tier selection is **not** in this payload and is **not** read off settings.json any more — thinking is a per-session server-tracked value (`state.thinking_level`, §5.1, doc/SESSIONS.md), not a global one keyed by `base_llm`.
 
-Each entry's `flavors` (predefined + custom, predefined first) and
-`active_flavor` (a flavor id, or `""` for Default) are, unlike thinking
-level, a **global** per-entry selection — not session-scoped — since a
-flavor changes actual llama-server launch args and there is only one
-machine-wide llama-server process to launch them on. See doc/LLM_REGISTRY.md
-§4.6 and §7.6 below.
+Each entry's launch configuration is, unlike thinking level, a **global**
+per-entry selection — not session-scoped — since it changes actual
+llama-server launch args and there is only one machine-wide llama-server
+process to launch them on. It arrives as five fields (doc/LLM_REGISTRY.md
+§4.6): `knobs` (the ids of the controls this entry's **Default profile**
+offers, in display order), `knob_selections` (the current selection for each,
+**resolved, never sparse** — an option id for a checkbox/dropdown knob, the
+value as text for a number knob, `""` meaning "flag not emitted"),
+`default_profile_args` (what those selections resolve to right now, so a
+client can show the effective context size without re-implementing knob
+composition), `profiles` (the entry's **user-defined** profiles — the Default
+profile is not among them, it has no stored args), and `active_profile` (a
+profile id, or `""` for the Default profile; a stale id is resolved back to
+`""` server-side).
 
-A flavor carries no separate sampling state any more — only `llama_args`. kodo-vsix's flavor editor still shows a structured "sampling defaults" sub-form (Temperature, Top-K, …), but it is a client-side shortcut for editing `llama_args` itself: a field's value is kept in sync, live and in both directions, with the corresponding `--flag` in the launch-arguments text (via each `sampling_specs` entry's `cli_flags`), so a flavor's sampling knobs always require restarting llama-server, exactly like every other launch arg (doc/SAMPLING.md §9). Neither `add_flavor` nor `update_flavor` (§7.6 below) accept a `sampling` field.
+`knob_defs` is the payload-level table of every knob definition any entry
+offers, keyed by id and **deduplicated** — all 82 built-in entries share the
+same six knobs and only the three YaRN context knobs are per-family, so
+repeating each definition (options, each with a paragraph of help text) on
+every entry would dominate the payload. Two entries can never disagree about
+what one knob id means; the server validates that at import time, so the
+flattening is lossless. Clients look each id in `knobs` up here.
 
-`sampling_specs` is the server's table of every tunable request-level sampling parameter, in display order — one entry per `SAMPLING_PARAM_SPECS` row in `kodo/llms/_sampling.py`. Pushed rather than hardcoded client-side for the same reason `thinking_families` is: the table already exists server-side as the single source of truth for validation, so a client copy would drift. It is static for the life of the server, which is why it rides this registry payload instead of the per-session `state` event. kodo-vsix renders both the session sampling modal and the flavor editor's launch-arg shortcuts from it — `cli_flags` doubles as validation input for `sampling.set` (§7.4f, session overrides — the only thing that is genuinely request-level and hot) and as the flag each flavor-editor field writes into `llama_args`.
+`llama_arg_catalog` is the curated `llama-server` flag table the user-defined
+profile editor's "Add argument" picker renders from (doc/LLM_REGISTRY.md
+§4.7) — one entry per `LLAMA_ARG_CATALOG` row in `kodo/llms/_arg_catalog.py`.
+Static for the life of the server, like `sampling_specs`, and shipped here for
+the same reason. Its sampling half is derived from `SAMPLING_PARAM_SPECS`, so
+the recommended bands and the `--samplers` whitelist stay single-sourced.
+Flags kodo sets per launch (`RESERVED_LLAMA_ARGS`) are never in it.
 
-Each entry carries **two** ranges, which do different jobs. `minimum`/`maximum` are the hard validation bounds `SamplingParams.from_json` clamps against. `sensible_minimum`/`sensible_maximum` are the much narrower *recommended* band (`null`/`null` where no accepted value is unreasonable, or the parameter isn't numeric); nothing on the **server** enforces them — an out-of-band value that reaches `SamplingParams.from_json` is still accepted and submitted verbatim, same as always. **kodo-vsix**, though, marks it with a yellow ⚠ and a tooltip naming the band in both editors, and both gate their submit action on it: the session sampling modal disables Apply and the flavor editor disables Submit while any field is flagged. See doc/SAMPLING.md §8d for every band and the reason for its endpoints, including why a parameter's `neutral` value is exempt from the mark. A client predating these two fields simply reads them as absent and renders no ⚠.
+`sampling_specs` is the server's table of every tunable request-level sampling parameter, in display order — one entry per `SAMPLING_PARAM_SPECS` row in `kodo/llms/_sampling.py`. Pushed rather than hardcoded client-side for the same reason `thinking_families` is: the table already exists server-side as the single source of truth for validation, so a client copy would drift. It is static for the life of the server, which is why it rides this registry payload instead of the per-session `state` event. kodo-vsix renders the session sampling modal from it, and `llama_arg_catalog`'s sampling half is derived from it server-side — `cli_flags` doubles as validation input for `sampling.set` (§7.4f, session overrides — the only thing that is genuinely request-level and hot) and as the flag each catalog row carries.
+
+Each entry carries **two** ranges, which do different jobs. `minimum`/`maximum` are the hard validation bounds `SamplingParams.from_json` clamps against. `sensible_minimum`/`sensible_maximum` are the much narrower *recommended* band (`null`/`null` where no accepted value is unreasonable, or the parameter isn't numeric); nothing on the **server** enforces them — an out-of-band value that reaches `SamplingParams.from_json` is still accepted and submitted verbatim, same as always. **kodo-vsix**, though, marks it with a yellow ⚠ and a tooltip naming the band in both editors, and both gate their submit action on it: the session sampling modal disables Apply and the profile editor disables Save while any field is flagged. See doc/SAMPLING.md §8d for every band and the reason for its endpoints, including why a parameter's `neutral` value is exempt from the mark. A client predating these two fields simply reads them as absent and renders no ⚠.
 
 `valid_values` is the exact set of accepted strings for a `str_list` parameter, or `null` when any string is acceptable (every numeric parameter, and `dry_sequence_breakers`). Only `samplers` sets it, to `SAMPLER_NAMES`. Unlike the sensible range, this one **is** enforced server-side: `SamplingParams.from_json` drops an unknown entry rather than clamping it, because one bad stage name makes llama-server reject the whole request. kodo-vsix flags it with the *same* yellow ⚠ as an out-of-band value (`samplingFieldIssue` combines both checks, hard error first) rather than a distinct mark — nothing in the UI distinguishes "would be silently dropped" from "is a bad idea," only the tooltip text does — and both editors gate their submit action on it exactly like the sensible-range case, so a typo is caught before it silently vanishes instead of only being logged server-side (doc/SAMPLING.md §8d/§8e). A client predating this field simply reads it as absent and performs no such check, same fallback as the sensible-range fields.
 
@@ -1311,7 +1364,7 @@ A `state` event with the updated `thinking_level` field follows on success; on `
 { "type": "sampling.set", "model": "llamacpp-qwen36-27b-q4-k-xl", "sampling": { "temperature": 0.1, "min_p": 0.05 } }
 ```
 
-`model` is the local registry entry ("quant") the overrides belong to. `sampling` is the **complete** set the client is showing, **not a patch**: a parameter the user cleared must be absent, so it stops being sent to llama-server entirely. An empty `sampling` therefore means "back to the flavor's defaults only". Sending the full set every time is what makes clearing a field expressible at all — see doc/SAMPLING.md §1 for why omitting a parameter is meaningful rather than equivalent to sending a default.
+`model` is the local registry entry ("quant") the overrides belong to. `sampling` is the **complete** set the client is showing, **not a patch**: a parameter the user cleared must be absent, so it stops being sent to llama-server entirely. An empty `sampling` therefore means "back to the launch args only". Sending the full set every time is what makes clearing a field expressible at all — see doc/SAMPLING.md §1 for why omitting a parameter is meaningful rather than equivalent to sending a default.
 
 Keyed by entry rather than held as one flat per-session set so switching models and switching back restores each quant's own tuning.
 
@@ -1348,7 +1401,7 @@ These drive the Local Inference Settings webview and the sidebar's llama.cpp
 controls. Full semantics (entry kinds, installed-state rules, the
 llama-server override) are in [LLM_REGISTRY.md](LLM_REGISTRY.md).
 `local_llm.install`/`.resume`/`.pause`/`.update`/`.uninstall`/`.remove`/
-`add_*`, the three flavor commands below, and the `llama_server_override.*`
+`add_*`, the five launch-config commands below, and the `llama_server_override.*`
 pair all reply with §5.12a `local_llm.registry_state`; none of them stream
 progress over the wire — a download's live byte progress is read by polling
 `manager-state.json` off disk instead (doc/LOCAL_MODEL_MANAGER.md §11).
@@ -1444,64 +1497,74 @@ settles.
 respectively; `latest_version` is `null` only when the GitHub Releases fetch
 failed, in which case `error` carries the reason.
 
-`add_huggingface`/`add_file`'s `llama_args`/`context_window` no longer set a
-field on the entry itself (`LocalLLMEntry` carries no `llama_args` at all) —
-flavors are the only source of launch args now (doc/LLM_REGISTRY.md §4.6), so
-these two seed that entry's first (custom) flavor, named/slugged `"default"`
-to match the built-in flavor a `hardcoded_hf` entry gets.
+`add_huggingface`/`add_file`'s `llama_args` is stored as the new entry's
+`base_llama_args` — the floor its Default profile's knobs layer on top of
+(doc/LLM_REGISTRY.md §4.6), merged over the shared base args so the entry
+still gets `--jinja` unless the form deliberately overrode it. A user-added
+entry gets the shared knobs and no user-defined profiles, so its Configure
+modal works exactly like a built-in LLM's.
 
-**Flavors** (doc/LLM_REGISTRY.md §4.6) — a named, alternate llama-server
-launch config for one local registry entry, e.g. a "1M context" or
-"VRAM-tight" variant of the same GGUF. `name` below is the *local registry
-entry* name in all four, not the flavor's own name/id.
+**Launch configuration** (doc/LLM_REGISTRY.md §4.6) — an entry runs under
+either its knob-driven **Default profile** or one of zero or more
+**user-defined profiles**, raw arg sets that fully replace it. `name` below is
+the *local registry entry* name in all five, never a profile's own name/id.
 
 ```json
-{ "type": "local_llm.add_flavor", "name": "qwen36-27b", "flavor_name": "1M Context",
-  "description": "YaRN rope-scaling for a 1M-token context window.",
-  "llama_args_text": "--ctx-size 1048576\n--rope-scaling yarn\n--rope-scale 4",
-  "min_ram": 0, "min_vram": 24, "platform": "mac" }
-{ "type": "local_llm.update_flavor", "name": "qwen36-27b", "flavor_id": "1m-context",
-  "flavor_name": "1M Context (tuned)",
-  "description": "YaRN rope-scaling for a 1M-token context window.",
-  "llama_args_text": "--ctx-size 1048576\n--rope-scaling yarn\n--rope-scale 4.5",
-  "min_ram": 0, "min_vram": 24, "platform": "mac" }
-{ "type": "local_llm.remove_flavor", "name": "qwen36-27b", "flavor_id": "1m-context" }
-{ "type": "local_llm.set_active_flavor", "name": "qwen36-27b", "flavor_id": "1m-context" }
+{ "type": "local_llm.add_profile", "name": "qwen36-27b", "profile_name": "Tight VRAM",
+  "description": "Tuned for an 8GB card.",
+  "llama_args_text": "--ctx-size 131072\n--n-cpu-moe 24\n--jinja" }
+{ "type": "local_llm.update_profile", "name": "qwen36-27b", "profile_id": "tight-vram",
+  "profile_name": "Tight VRAM (tuned)",
+  "description": "Tuned for an 8GB card.",
+  "llama_args_text": "--ctx-size 98304\n--n-cpu-moe 28\n--jinja" }
+{ "type": "local_llm.remove_profile", "name": "qwen36-27b", "profile_id": "tight-vram" }
+{ "type": "local_llm.set_active_profile", "name": "qwen36-27b", "profile_id": "tight-vram" }
+{ "type": "local_llm.set_knobs", "name": "qwen36-27b",
+  "knobs": { "kv-cache": "q8_0", "tail-culling": "medium", "temperature": "default",
+             "gpu-layers": "-1", "cpu-moe": "", "flash-attention": "auto",
+             "context-qwen35": "512k" } }
 ```
 
-`add_flavor`/`update_flavor`'s `llama_args_text` is the **raw multi-line
-textbox content** from the "manage flavors" modal (one `--flag value` per
+`add_profile`/`update_profile`'s `llama_args_text` is the **raw multi-line
+textbox content** from the "Manage profiles" modal (one `--flag value` per
 line) — parsed server-side by `parse_llama_args_text`, unlike
-`add_huggingface`/`add_file` above, whose single-line `llama_args` is
-already a parsed dict by the time it reaches the wire (client-parsed).
-`min_ram`/`min_vram` (GB, doc/LLM_REGISTRY.md §4.6a) are optional and
-default to `0` ("no known requirement") when omitted — `update_flavor` does
-**not** carry the previous value forward for an omitted field, unlike
-`llama_args_text`'s implicit full-replace semantics; the modal always
-resends both fields' current contents. `platform` (`"mac" | "gpu" | "both"`,
-doc/LLM_REGISTRY.md §4.6b) is likewise optional, defaults to `"both"` when
-omitted/unrecognized, and is not carried forward by `update_flavor` either —
-it restricts which host(s) the flavor may be launched on and, unlike
-`min_ram`/`min_vram`, is only ever consulted for *automatic* default-flavor
-selection (`get_effective_flavor_id`), never as a selection gate. `add_flavor`
-always creates a
-**new** flavor (auto-generated id from `flavor_name`); `update_flavor`
-overwrites an **existing custom** flavor's definition in place, keeping
-`flavor_id` fixed. **Predefined flavors are strictly read-only**:
-`update_flavor` and `remove_flavor` both reject a predefined `flavor_id`
-outright (doc/LLM_REGISTRY.md §4.6) — there is no override mechanism;
-copy a predefined flavor's values into a new one via `add_flavor` instead
-of trying to edit it in place. `flavor_id` in `set_active_flavor` is `""` for
-unset/Default — resolved to the entry's first available flavor (see
-`resolve_effective_llama_config`, doc/LLM_REGISTRY.md §4.6), not a distinct
-args-free state, since every entry that reaches this command already has at
-least one real flavor.
-`set_active_flavor`/`remove_flavor`/`update_flavor` restart llama-server
-**only** when `name` is the currently selected local model (`models.local`)
-**and** llama-server is actually running it (for `update_flavor`, only when
-the edited `flavor_id` is the one actually in effect — see
-`get_effective_flavor_id`, doc/LLM_REGISTRY.md §4.6) — changing an inactive
-entry's flavor, or editing a flavor that isn't the effective one, just
+`add_huggingface`/`add_file` above, whose single-line `llama_args` is already
+a parsed dict by the time it reaches the wire (client-parsed). It carries the
+editor's argument-picker rows too: the picker and the raw box are two views of
+one string, not two fields. Flags kodo sets per launch
+(`RESERVED_LLAMA_ARGS` — `--model`/`-m`, `--host`, `--port`, `--alias`,
+`--log-file`, `--log-timestamps`, `--reasoning-budget`,
+`--reasoning-budget-message`) are dropped before the profile is persisted.
+
+`add_profile` always creates a **new** profile (id auto-generated by
+slugifying `profile_name`, de-duplicated against the entry's existing ones);
+`update_profile` overwrites an existing one in place, keeping `profile_id`
+fixed. There is no read-only variant to reject — every profile is
+user-defined, since everything that used to be a *predefined flavor* is a knob
+now. `profile_id` in `set_active_profile` is `""` for the **Default profile**,
+which is a real, always-present configuration rather than an args-free
+fallback state.
+
+`set_knobs` applies a whole knob selection to the entry's **Default profile**
+— the Configure modal's Apply button. **Bulk, not per-knob**: it replaces the
+entry's entire selection, so a knob absent from `knobs` is reset to its
+default. That is what stops a modal opened before another window changed
+something from resurrecting half the old state. Each value is an option id for
+a checkbox/dropdown knob, or the value as text for a number knob (`""` =
+"don't emit the flag"). A key naming a knob the entry doesn't offer is ignored
+with a log line; an unknown *option*, or a non-numeric value for a number
+knob, is an error. Selections are persisted **sparsely** — anything equal to
+the knob's current default is not written at all, so a later kodo release can
+change a default and have it reach everyone who never moved that knob.
+
+`set_active_profile`/`remove_profile`/`update_profile`/`set_knobs` restart
+llama-server **only** when `name` is the currently selected local model
+(`models.local`) **and** llama-server is actually running it — for
+`update_profile`/`remove_profile` only when the affected profile is the active
+one, and for `set_knobs` only when the knobs actually resolve to *different*
+launch args (opening Configure, changing nothing and pressing Apply must not
+interrupt a window mid-generation) and no user-defined profile is active
+(knobs aren't what launches then). Reconfiguring an inactive entry just
 persists the change. A restart, when it happens, also emits a fresh
 `llama.state` (§5.12) on the same connection, same as
 `llama.start`/`llm.select`.

@@ -1,206 +1,47 @@
 """Hardcoded Laguna-S-2.1 GGUF catalog entries.
 
-Every entry ships eight flavors: the shared ``default`` launch config, five
-sampling presets (:func:`_quant_flavors`) that move exactly one of two axes —
-how hard the tail is truncated, and how low the temperature is — plus two
-YaRN-extended long-context flavors (512K/1M, :func:`_context_flavor`). The
-presets differ from ``default`` only in sampling flags; the KV-cache, context
-and offload args are identical, since switching flavors *replaces*
-``llama_args`` wholesale rather than layering on top of it
-(:class:`~kodo.llms.local_registry.LlamaFlavor`).
+Every entry offers the shared knobs plus one private one: a YaRN-extended
+:data:`LAGUNA_CONTEXT_KNOB` reaching 512K or 1M tokens.
 
-The 512K/1M flavors follow the same YaRN rope-scaling recipe as the Qwen
-family's (:mod:`._flavors_qwen`) — ``--rope-scale`` 2.0/4.0 off a
-262144-token ``--yarn-orig-ctx``, plus a ``--override-kv`` metadata override
-so llama.cpp doesn't cap the KV cache at the GGUF's own trained context
-length — with ``laguna.context_length`` as Laguna-S-2.1's architecture key
-(vs. Qwen's ``qwen35``/``qwen35moe``). ``platform=MAC`` only: the KV cache at
-these sizes, stacked on top of Laguna's already-large (64-192GB) weight
-footprint, is impractical to split across a discrete GPU's VRAM and system
-RAM.
+This module used to carry a lot more. Each of its twenty quants shipped eight
+predefined flavors — ``default``, five fixed sampling presets, and two context
+variants — which between them enumerated the handful of combinations someone
+had thought to write down. All eight are gone: the sampling presets became the
+shared :data:`~kodo.llms.local_registry._knobs_shared.TAIL_CULLING_KNOB` and
+:data:`~kodo.llms.local_registry._knobs_shared.TEMPERATURE_KNOB` (two
+independent axes now, so "strong culling at a low temperature" — a combination
+no preset offered — is simply two dropdowns), and the context variants became
+the knob below. ``doc/QUANT_SAMPLING.md`` still explains which sampling
+settings suit which quant; it is guidance, not something baked into per-quant
+values, and never was (an earlier revision tiered the presets by quantization
+severity, which was speculative and unmeasured, and was removed).
 
-The values are **uniform across all 20 quants** — a preset name means the same
-numbers on ``UD-Q8_K_XL`` as on ``UD-IQ1_S``. An earlier revision tiered them
-by quantization severity; that was speculative, unmeasured, and produced a
-temperature (``0.1``) low enough to be a downgrade in practice, so the tiering
-was removed rather than re-guessed. Which preset suits which quant is guidance
-in ``doc/QUANT_SAMPLING.md`` §4, not something baked into the values.
-
-**No preset enables DRY, or any other repetition penalty.** Repetition control
-at the sampler level is structurally incompatible with agentic work: DRY
-penalises reproducing a token sequence that is already in context, which is
-exactly what quoting back an attachment UUID, a file path, or an identifier
-requires. It broke ``read_attachment`` in practice. Loop detection is handled
-upstream instead, by the watchdog's
-:class:`~kodo.runtime._cyclic_thinking.CyclicThinkingDetector` and the
-tool-call cycle detectors (doc/STUCK_DETECTION.md §2.7/§2.10). See
-``doc/QUANT_SAMPLING.md`` §3f.
-
-``doc/QUANT_SAMPLING.md`` is the reasoning behind the numbers. Every value
-here also sits inside its ``sensible_minimum``/``sensible_maximum`` band
-(doc/SAMPLING.md §8d) so that copying a preset into a custom flavor never
-lands the user on a flagged field they then have to argue with.
+The context knob's YaRN recipe mirrors the Qwen families'
+(:mod:`._knobs_qwen`) but keys its ``--override-kv`` metadata override on
+``laguna.context_length``, Laguna-S-2.1's architecture name. Both come off a
+native context of :data:`_NATIVE_CONTEXT` tokens.
 """
 
 from __future__ import annotations
 
-from ._types import LlamaFlavor, LlamaFlavorPlatform, LocalLLMEntry
+from ._knobs_context import make_yarn_context_knob
+from ._knobs_shared import SHARED_KNOBS
+from ._types import LocalLLMEntry
 
-#: The token count :data:`_BASE_ARGS`' ``--ctx-size 0`` resolves to on every
-#: Laguna GGUF — the base for the 512K/1M flavors' ``--yarn-orig-ctx``.
+#: Laguna-S-2.1's trained context length — the base ``--yarn-orig-ctx`` and
+#: the divisor for each extended option's ``--rope-scale`` (64.0 at 512K,
+#: 128.0 at 1M).
 _NATIVE_CONTEXT = 8192
 
-#: Launch args every Laguna flavor shares — byte-identical to
-#: :meth:`LlamaFlavor.make_default_kv_q8`'s, so the five sampling presets
-#: differ from ``default`` *only* in their sampling flags. Always splatted
-#: into a fresh dict; never handed to a flavor directly.
-_BASE_ARGS: dict[str, str] = {
-    "--cache-type-k": "q8_0",
-    "--cache-type-v": "q8_0",
-    "--ctx-size": "0",
-    "--n-gpu-layers": "-1",
-    "--reasoning-format": "auto",
-    "--jinja": "",
-}
-
-#: Sampling flags shared by every preset, on top of :data:`_BASE_ARGS`.
-#: All three are neutral/off values, set **explicitly** rather than left to
-#: llama.cpp's defaults (``top_k 40``, ``top_p 0.95``) so that each preset's
-#: remaining flags are the whole story: ``min_p`` — plus ``top_n_sigma`` in
-#: the strongest preset — is the only truncation stage in play, and no
-#: repetition penalty is active. Exempt from the §8d ⚠ as neutral values.
-_SAMPLING_OFF: dict[str, str] = {
-    "--top-k": "0",
-    "--top-p": "1.0",
-    "--repeat-penalty": "1.0",
-}
-
-#: The five presets, as ``(id_suffix, name, description, sampling_args)``.
-#: Ordered mildest-first within each axis, tail culling before temperature —
-#: this is the order they appear in the flavor dropdown, after ``default``.
-#:
-#: The three culling presets all sit at llama.cpp's own default temperature
-#: (``0.8``), so a comparison between them isolates truncation; the two
-#: temperature presets all sit at the mildest culling (``min_p 0.05``), so a
-#: comparison between *those* isolates temperature. Keeping one axis fixed per
-#: group is the point of the layout — a preset that moved both at once could
-#: not tell you which one mattered.
-_PRESETS: tuple[tuple[str, str, str, dict[str, str]], ...] = (
-    (
-        "light-tail-cull",
-        "Light tail cull",
-        "llama.cpp's own default temperature, with min-p as the only truncation "
-        "stage: a token needs 5% of the top token's probability to survive, which "
-        "is enough to cut the noise floor a 4-bit-and-below quant leaves in the "
-        "tail. The mildest preset — start here and tighten only if you see a "
-        "problem.",
-        {"--temp": "0.8", "--min-p": "0.05"},
-    ),
-    (
-        "medium-tail-cull",
-        "Medium tail cull",
-        "The same default temperature with a tighter noise floor (min-p 0.08), "
-        "for a quant that produces the occasional wrong-but-plausible token. "
-        "Reach for this before reaching for a lower temperature — it removes the "
-        "bad candidates rather than merely making them less likely.",
-        {"--temp": "0.8", "--min-p": "0.08"},
-    ),
-    (
-        "strong-tail-cull",
-        "Strong tail cull",
-        "The most aggressive truncation: min-p 0.12 plus top-n-sigma 1.0, which "
-        "cuts in logit space — the units quantization error is actually in — and "
-        "is temperature-invariant, so it does not re-tune itself if you change "
-        "--temp. For heavily quantized builds that still wander under medium "
-        "culling.",
-        {"--temp": "0.8", "--min-p": "0.12", "--top-nsigma": "1.0"},
-    ),
-    (
-        "low-temperature",
-        "Low temperature",
-        "Keeps the mildest culling and lowers temperature to 0.3 instead. "
-        "Temperature scales the quantization error along with the signal, so "
-        "lowering it attenuates the noise floor rather than truncating it. The "
-        "right first move when format correctness is what's failing — JSON "
-        "tool-call arguments, strict syntax, an exact identifier copied from "
-        "context.",
-        {"--temp": "0.3", "--min-p": "0.05"},
-    ),
-    (
-        "near-greedy",
-        "Near-greedy",
-        "Almost deterministic: temperature 0.05, at which a token essentially "
-        "cannot win unless it was already the top candidate. Maximum format "
-        "reliability, at the cost of variety — and of any chance to escape a bad "
-        "opening token by retrying, since the output barely varies between runs.",
-        {"--temp": "0.05", "--min-p": "0.02"},
-    ),
+#: Laguna-S-2.1's long-context knob. ``laguna`` is the architecture key the
+#: GGUF records its context length under; it is model knowledge, not something
+#: derived from the entry name.
+LAGUNA_CONTEXT_KNOB = make_yarn_context_knob(
+    knob_id="context-laguna",
+    arch_key="laguna",
+    native_context=_NATIVE_CONTEXT,
+    sizes=(524_288, 1_048_576),
 )
-
-
-def _context_flavor(
-    entry_name: str, suffix: str, name: str, ctx_size: int
-) -> LlamaFlavor:
-    """A YaRN-extended long-context flavor for *entry_name* (512K or 1M).
-
-    ``platform=MAC`` — see the module docstring for why long-context Laguna
-    is Apple-Silicon-only. Sampling is left at :data:`_BASE_ARGS`'
-    (llama.cpp's own defaults), same as ``default`` — only the context/rope
-    args change.
-    """
-    rope_scale = str(float(ctx_size) / float(_NATIVE_CONTEXT))
-    return LlamaFlavor(
-        id=f"{entry_name}-{suffix}",
-        name=name,
-        platform=LlamaFlavorPlatform.MAC,
-        description="Default flavor",
-        llama_args={
-            **_BASE_ARGS,
-            "--ctx-size": str(ctx_size),
-            "--rope-scaling": "yarn",
-            "--rope-scale": rope_scale,
-            "--yarn-orig-ctx": str(_NATIVE_CONTEXT),
-            "--override-kv": f"laguna.context_length=int:{ctx_size}",
-        },
-    )
-
-
-def _quant_flavors(entry_name: str) -> tuple[LlamaFlavor, ...]:
-    """``default``, the five sampling presets, and the two context flavors for *entry_name*.
-
-    Flavor ids are ``<entry_name>-<suffix>`` for each :data:`_PRESETS` entry,
-    following the ``<entry-name>-<slug>`` convention the 512K/1M context
-    flavors already use. The five presets are all ``platform=BOTH`` and leave
-    ``min_ram``/``min_vram`` at ``0`` — they change no memory-relevant arg, so
-    a preset is launchable exactly wherever ``default`` is, and the entry's
-    own ``min_memory``/``memory`` remain the only hardware gate. The two
-    context flavors are ``platform=MAC`` (see :func:`_context_flavor`).
-
-    Takes no tier argument: every Laguna quant gets identical preset values,
-    deliberately (see the module docstring).
-
-    Args:
-        entry_name: The :class:`LocalLLMEntry` name these flavors attach to.
-
-    Returns:
-        tuple[LlamaFlavor, ...]: Eight flavors, ``default`` first.
-    """
-    return (
-        (LlamaFlavor.make_default_kv_q8(),)
-        + tuple(
-            LlamaFlavor(
-                id=f"{entry_name}-{suffix}",
-                name=name,
-                description=description,
-                llama_args={**_BASE_ARGS, **_SAMPLING_OFF, **sampling},
-            )
-            for suffix, name, description, sampling in _PRESETS
-        )
-        + (
-            _context_flavor(entry_name, "512k-kv-q8", "512K context size", 524_288),
-            _context_flavor(entry_name, "1m-kv-q8", "1M context size", 1_048_576),
-        )
-    )
 
 
 def laguna_s_21_entries() -> list[LocalLLMEntry]:
@@ -211,7 +52,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-Q8_K_XL by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="UD-Q8_K_XL/Laguna-S-2.1-UD-Q8_K_XL-00001-of-00004.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-q8-k-xl"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -235,7 +76,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-Q8_0 by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="Q8_0/Laguna-S-2.1-Q8_0-00001-of-00004.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-q8-0"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -257,7 +98,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-Q6_K_XL by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="UD-Q6_K_XL/Laguna-S-2.1-UD-Q6_K_XL-00001-of-00004.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-q6-k-xl"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -277,7 +118,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-Q6_K by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="UD-Q6_K/Laguna-S-2.1-UD-Q6_K-00001-of-00003.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-q6-k"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -298,7 +139,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-Q5_K_XL by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="UD-Q5_K_XL/Laguna-S-2.1-UD-Q5_K_XL-00001-of-00003.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-q5-k-xl"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -318,7 +159,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-Q5_K_M by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="UD-Q5_K_M/Laguna-S-2.1-UD-Q5_K_M-00001-of-00003.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-q5-k-m"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -339,7 +180,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-Q5_K_S by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="UD-Q5_K_S/Laguna-S-2.1-UD-Q5_K_S-00001-of-00003.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-q5-k-s"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -360,7 +201,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-Q4_K_XL by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-q4-k-xl"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -381,7 +222,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 MXFP4_MOE by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="MXFP4_MOE/Laguna-S-2.1-MXFP4_MOE-00001-of-00003.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-mxfp4-moe"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -402,7 +243,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-Q4_K_S by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="UD-Q4_K_S/Laguna-S-2.1-UD-Q4_K_S-00001-of-00003.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-q4-k-s"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -422,7 +263,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-IQ4_NL by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="UD-IQ4_NL/Laguna-S-2.1-UD-IQ4_NL-00001-of-00003.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-iq4-nl"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -444,7 +285,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-IQ4_XS by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="UD-IQ4_XS/Laguna-S-2.1-UD-IQ4_XS-00001-of-00003.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-iq4-xs"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -466,7 +307,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-Q3_K_XL by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="UD-Q3_K_XL/Laguna-S-2.1-UD-Q3_K_XL-00001-of-00003.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-q3-k-xl"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -488,7 +329,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-Q3_K_M by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="UD-Q3_K_M/Laguna-S-2.1-UD-Q3_K_M-00001-of-00003.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-q3-k-m"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -510,7 +351,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-IQ3_S by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="Laguna-S-2.1-UD-IQ3_S.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-iq3-s"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -530,7 +371,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-IQ3_XXS by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="Laguna-S-2.1-UD-IQ3_XXS.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-iq3-xxs"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -550,7 +391,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-Q2_K_XL by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="Laguna-S-2.1-UD-Q2_K_XL.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-q2-k-xl"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -570,7 +411,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-IQ2_M by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="Laguna-S-2.1-UD-IQ2_M.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-iq2-m"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -590,7 +431,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-IQ1_M by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="Laguna-S-2.1-UD-IQ1_M.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-iq1-m"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",
@@ -610,7 +451,7 @@ def laguna_s_21_entries() -> list[LocalLLMEntry]:
             description="Laguna-S-2.1 UD-IQ1_S by Unsloth",
             repo_id="unsloth/Laguna-S-2.1-GGUF",
             filename="Laguna-S-2.1-UD-IQ1_S.gguf",
-            flavors=_quant_flavors("unsloth-laguna-s-2-1-iq1-s"),
+            knobs=SHARED_KNOBS + (LAGUNA_CONTEXT_KNOB,),
             context_window=262_144,
             base_llm="Laguna-S-2.1",
             llm_author="Poolside",

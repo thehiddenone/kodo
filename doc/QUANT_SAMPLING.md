@@ -38,7 +38,7 @@ moving, and they are worth moving separately:
 
 All five also set `top_k 0`, `top_p 1.0` and `repeat_penalty 1.0` — explicitly
 off, so `min_p` (plus `top_n_sigma` in the strongest preset) is the only
-truncation in play. These are exactly the flavors the Laguna-S-2.1 catalog
+truncation in play. These are exactly the knob options the shared sampling knobs
 ships (`kodo/llms/local_registry/_local_llm_laguna_s_21.py`, §7 below), with
 **identical values on every quant**. The rest of this document is why.
 
@@ -265,7 +265,7 @@ earlier," fundamentally cannot.
 If you still want DRY for non-agentic use (creative writing with no tool
 calls), the conventional settings are `dry_multiplier 0.8`, `dry_base 1.75`,
 `dry_allowed_length 4`+, and `dry_penalty_last_n` bounded to `4096`–`8192`
-rather than llama.cpp's whole-context `-1`. No Kōdo flavor ships it.
+rather than llama.cpp's whole-context `-1`. No Kōdo knob ships it.
 
 ### 3g. `repeat_penalty` — off, at every bit width
 
@@ -297,7 +297,7 @@ additive on logits, both blind to correctness. Keep at `0.0`.
 
 This is **guidance, not encoded values** — the §7 presets are identical on
 every quant. An earlier revision of this document baked a per-quant tier table
-into the flavors themselves; that was speculative, unmeasured, and produced a
+into the values themselves; that was speculative, unmeasured, and produced a
 temperature low enough to hurt. Which preset suits a given build is a judgement
 call informed by the tier below and settled by actually running it.
 
@@ -363,7 +363,7 @@ Two launch args interact with quantization quality and are worth checking
 before blaming the sampler:
 
 **KV-cache quantization** (`--cache-type-k`, `--cache-type-v`). Every Kōdo
-flavor here uses `q8_0` for both, which roughly halves KV memory at a quality
+`kv-cache` knob defaults to `q8_0` for both, which roughly halves KV memory at a quality
 cost that is small but *cumulative over context length* — it degrades long
 sessions specifically. If a model is fine early in a session and unreliable
 20K tokens in, test `f16` before touching any sampler. `--cache-type-v` is the
@@ -372,7 +372,7 @@ reasonable middle ground where memory allows.
 
 **Context extension** (`--rope-scaling yarn` and friends). Running a model past
 its trained context length degrades it independently of quantization, and the
-two compound. If you are using a 512K/1M flavor on an already-lossy quant,
+two compound. If you are using a 512K/1M context option on an already-lossy quant,
 attribute quality problems there first.
 
 Neither is a sampling parameter, and neither can be fixed by one.
@@ -381,69 +381,75 @@ Neither is a sampling parameter, and neither can be fixed by one.
 
 ## 7. How this is encoded in Kōdo
 
-The Laguna-S-2.1 catalog (`kodo/llms/local_registry/_local_llm_laguna_s_21.py`)
-ships this document's recommendations as **predefined flavors** — eight per
-quant, with **identical sampling-preset values on all 20 quants**:
+This document's recommendations ship as **knobs on every LLM's Default
+profile** (LLM_REGISTRY.md §4.6), not as a fixed list of presets. Two shared
+dropdowns, one per axis, defined in
+`kodo/llms/local_registry/_knobs_shared.py`:
 
-| Flavor | id suffix | What it is |
+| Knob | Option | Flags |
 |---|---|---|
-| `default` | *(shared `"default"`)* | Unchanged: `LlamaFlavor.make_default_kv_q8()`, no sampling flags at all, so llama.cpp's own defaults apply. Always first. |
-| **Light tail cull** | `-light-tail-cull` | §3a at `temperature 0.8`: `min_p 0.05`, the mildest preset. |
-| **Medium tail cull** | `-medium-tail-cull` | Same, `min_p 0.08`. |
-| **Strong tail cull** | `-strong-tail-cull` | `min_p 0.12` plus `top_n_sigma 1.0` (§3c). |
-| **Low temperature** | `-low-temperature` | §3b: `temperature 0.3` at the mildest culling. |
-| **Near-greedy** | `-near-greedy` | `temperature 0.05`, `min_p 0.02`. |
-| **512K context size** | `-512k-kv-q8` | §6 "Context extension": YaRN `--rope-scale 2.0` off a 262144 `--yarn-orig-ctx`, `--override-kv laguna.context_length=int:524288`. `platform=MAC` only. Sampling unchanged from `default`. |
-| **1M context size** | `-1m-kv-q8` | Same recipe, `--rope-scale 4.0`, `--override-kv laguna.context_length=int:1048576`. `platform=MAC` only. |
+| **Tail culling** | `off` *(default)* | *(none — llama.cpp's own `top_k 40`/`top_p 0.95` apply)* |
+| | `minimal` | `--top-k 0 --top-p 1.0 --min-p 0.02` |
+| | `light` | `--top-k 0 --top-p 1.0 --min-p 0.05` — §3a, the mildest explicit cull |
+| | `medium` | `--top-k 0 --top-p 1.0 --min-p 0.08` |
+| | `strong` | `--top-k 0 --top-p 1.0 --min-p 0.12 --top-nsigma 1.0` — §3c |
+| **Temperature** | `default` *(default)* | `--temp 0.8`, llama.cpp's own |
+| | `low` | `--temp 0.3` — §3b |
+| | `near-greedy` | `--temp 0.05` |
 
-The five sampling presets live in one `_PRESETS` table and are built by
-`_quant_flavors(entry_name)`, which takes **no tier argument** — adding a
-Laguna quant is one `_quant_flavors("<name>")` call, and changing a
-recommendation means editing one `_PRESETS` row and this document. The two
-context flavors are built by `_context_flavor`, appended after the presets —
-see LLM_REGISTRY.md §4.6 for the Qwen-family flavors (`_flavors_qwen.py`)
-this recipe was copied from.
+Long-context extension is its own private per-model knob (§6 "Context
+extension"): Laguna's `context-laguna` offers native (8192) / 512K / 1M, each
+extended option writing `--rope-scaling yarn`, `--rope-scale` (target ÷
+native), `--yarn-orig-ctx 8192` and
+`--override-kv laguna.context_length=int:<size>`. KV-cache precision is the
+shared `kv-cache` knob, `q8_0` by default.
 
-**The layout is the point.** The three culling presets are all at
-`temperature 0.8`, and the two temperature presets are all at `min_p 0.05`, so
-each group varies exactly one axis. A preset that moved both at once could not
-tell you which one mattered — which is precisely how the earlier revision went
-wrong.
+**Two knobs, not one preset list — that is the point.** The Laguna-S-2.1
+catalog used to ship this table as five predefined *flavors* per quant
+("Light/Medium/Strong tail cull", "Low temperature", "Near-greedy"), laid out
+so that the three culling presets shared a temperature and the two temperature
+presets shared a `min_p`: each group varied exactly one axis, because a preset
+that moved both at once could not tell you which one mattered. As two
+independent knobs that layout is no longer a convention someone has to
+maintain — it is structural, since the framework rejects two knobs that own the
+same flag (LLM_REGISTRY.md §4.6). It also makes combinations reachable that
+the fixed presets never offered, such as strong culling *at* a low temperature.
 
-Four constraints on any change to those presets:
+Four constraints on any change to these values:
 
-1. **Flavors replace, they do not merge** (LLM_REGISTRY.md §4.6). Each preset
-   therefore repeats the whole `--cache-type-k/v`, `--ctx-size`,
-   `--n-gpu-layers`, `--reasoning-format`, `--jinja` block — that is what
-   `_BASE_ARGS` is, and it is byte-identical to `make_default_kv_q8()`'s so
-   that a preset differs from `default` in sampling flags *only*.
+1. **Composition is by knob, and knobs cannot collide.** A knob option lists
+   only the flags its own axis owns; the shared base args
+   (`--ctx-size 0`, `--reasoning-format auto`, `--jinja`) and every other
+   knob's flags are merged in around it. This is why the culling options carry
+   `--top-k 0`/`--top-p 1.0` but never `--temp`, and the temperature options
+   carry nothing but `--temp`.
 2. **Every value must stay inside its sensible band** (SAMPLING.md §8d). Both
    Kōdo editors flag out-of-band values with a yellow ⚠ and disable
-   Apply/Submit; a shipped preset that trips its own guard rail would be
-   incoherent, and a user copying it into a custom flavor would be unable to
-   save. A neutral/off value (`top_p 1.0`, `repeat_penalty 1.0`, `top_k 0`) is
-   exempt from the ⚠ by §8a and is used deliberately here to make "this
-   sampler is off on purpose" explicit rather than implicit.
-3. **No preset may enable a repetition penalty** — not DRY, not
+   Apply/Save; a shipped option that trips its own guard rail would be
+   incoherent, and a user copying it into a profile would be unable to save. A
+   neutral/off value (`top_p 1.0`, `top_k 0`) is exempt from the ⚠ by §8a and
+   is used deliberately here to make "this sampler is off on purpose" explicit
+   rather than implicit.
+3. **No knob may enable a repetition penalty** — not DRY, not
    `repeat_penalty`, not the presence/frequency pair (§3f). This is a hard
    rule, not a default: one of them shipped once and broke `read_attachment`
    outright. Loop handling belongs to the watchdog (STUCK_DETECTION.md
    §2.7/§2.10), which can tell a loop from a legitimately repeated identifier.
-   Note also that `llama_args` is a `dict[str, str]`, so a flag cannot repeat —
-   custom `--dry-sequence-breaker` sets are structurally impossible here
-   anyway, since llama.cpp expects one flag per breaker.
-4. **These are launch args, so they are cold.** Changing a flavor's sampling
-   requires restarting `llama-server` (SAMPLING.md §9). For per-session
-   experimentation use the sampling modal (the ⚙ in the chat footer), whose
-   overrides are request-level, hot, and stored per quant — that is the right
-   place to *find* good values, and a flavor is the right place to keep them.
+   A test asserts no shared knob's reachable flags include any of them. The
+   rule binds what Kōdo *ships*: a user may still set one on their own profile
+   or as a session override, since offering it in one editor and hiding it in
+   the other would be arbitrary.
+4. **These are launch args, so they are cold.** Changing a knob restarts
+   `llama-server` (SAMPLING.md §9). For per-session experimentation use the
+   sampling modal (the ⚙ in the chat footer), whose overrides are
+   request-level, hot, and stored per quant — that is the right place to
+   *find* good values, and a knob is the right place to keep them.
 
-Other model families still ship only `default` (plus context-extension
-flavors). Nothing here is Laguna-specific in substance — §3's reasoning applies
-to any GGUF — but the presets have not been extended to other catalogs, so
-`_quant_flavors` is deliberately module-local rather than a
-`LlamaFlavor.make_*` staticmethod. Promoting it to `_types.py` is the right
-move if and when a second family adopts the same scheme.
+The values are **uniform across every quant and every model family**. An
+earlier revision tiered them by quantization severity; that was speculative,
+unmeasured, and produced a temperature (`0.1`) low enough to be a downgrade in
+practice, so the tiering was removed rather than re-guessed. Which setting
+suits which quant is guidance in §4, not something baked into the values.
 
 ---
 
@@ -479,16 +485,15 @@ totals 758.00 / 925.50 / 677.50 / 997.50 / 1239.75, mean 919.65, above =
 judge taste. A test asserts the RVP's hardcoded expectations still match the
 fixture, so the two cannot drift.
 
-**To compare presets**, re-run the scenario with a different `flavor=`
+**To compare configurations**, re-run the scenario with different `knobs=`
 (VALIDATOR.md §8a.1). Two cautions:
 
 - **No seed is pinned, deliberately.** A single deterministic run tells you
   nothing about robustness — the failure modes here are intermittent. Run each
   preset several times and read the pass rate, not one score.
-- **Change one preset at a time**, which is what the §7 layout is for. The
-  three culling presets share a temperature and the two temperature presets
-  share a `min_p`, so a difference between two runs is attributable to one
-  axis.
+- **Change one axis at a time**, which is what the two-knob split is for
+  (§7). Move `tail-culling` or `temperature`, not both, so a difference
+  between two runs is attributable to one of them.
 
 ---
 
@@ -497,7 +502,9 @@ fixture, so the two cannot drift.
 - [SAMPLING.md](SAMPLING.md) — the parameter reference: mechanics, the sampler
   chain, neutral values, CLI-flag mapping, sensible bands, and how the two
   Kōdo layers stack.
-- [LLM_REGISTRY.md](LLM_REGISTRY.md) §4.6 — flavors: storage, the
-  replace-not-merge rule, predefined vs. custom, and the "Manage flavors" UI.
+- [LLM_REGISTRY.md](LLM_REGISTRY.md) §4.6 — knobs and profiles: the knob
+  framework and its no-two-knobs-share-a-flag invariant, base-args
+  composition, the replace-not-merge rule for profiles, and the Configure /
+  Manage-profiles UI.
 - [LOCAL_INFERENCE.md](LOCAL_INFERENCE.md) — how Kōdo launches and talks to
-  `llama-server`, including the reasoning-budget args flavors may not set.
+  `llama-server`, including the reserved args no profile may set.

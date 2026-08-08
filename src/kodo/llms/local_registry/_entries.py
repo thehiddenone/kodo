@@ -16,14 +16,17 @@ from pathlib import Path
 from . import _catalog
 from ._io import (
     _CUSTOM_KINDS,
-    _all_active_flavors,
-    _all_custom_flavors,
+    _all_active_profiles,
+    _all_knob_selections,
+    _all_profiles,
     _load_external,
     _load_raw,
     _save_external,
     _save_raw,
-    _write_custom_flavors,
+    _write_knob_selections,
+    _write_profiles,
 )
+from ._knobs_shared import BASE_LLAMA_ARGS, SHARED_KNOBS
 from ._types import LocalLLMEntry
 
 _log = logging.getLogger(__name__)
@@ -36,6 +39,35 @@ __all__ = [
     "remove_local_entry",
     "set_llama_server_override_path",
 ]
+
+
+def _with_custom_entry_knobs(entry: LocalLLMEntry) -> LocalLLMEntry:
+    """Attach the shared knobs (and the shared base args) to a user-added entry.
+
+    A ``custom_*`` entry has no knob declaration of its own — nothing in
+    ``local-llm-registry.json`` stores knobs, deliberately, since knobs are
+    code and a persisted copy would freeze whatever set existed when the entry
+    was added. Instead every launchable custom entry gets
+    :data:`~kodo.llms.local_registry._knobs_shared.SHARED_KNOBS` here, on load,
+    so a kodo release that adds or changes a shared knob reaches existing
+    custom entries with no file migration.
+
+    Its ``base_llama_args`` — the args typed into the "Add local LLM" form —
+    are layered *over*
+    :data:`~kodo.llms.local_registry._knobs_shared.BASE_LLAMA_ARGS` so the
+    entry still gets ``--jinja``/``--reasoning-format`` (without which tool
+    calling does not work at all) unless the form deliberately overrode them.
+
+    ``custom_server_url`` is left alone: kodo does not launch that process, so
+    it has neither knobs nor base args.
+    """
+    if entry.kind == "custom_server_url":
+        return entry
+    return replace(
+        entry,
+        base_llama_args={**BASE_LLAMA_ARGS, **entry.base_llama_args},
+        knobs=SHARED_KNOBS,
+    )
 
 
 def get_local_registry(kodo_dir: Path) -> dict[str, LocalLLMEntry]:
@@ -53,23 +85,20 @@ def get_local_registry(kodo_dir: Path) -> dict[str, LocalLLMEntry]:
         if entry.name in merged:
             _log.warning("Custom local LLM %r shadows a hardcoded entry — skipping", entry.name)
             continue
-        merged[entry.name] = entry
+        merged[entry.name] = _with_custom_entry_knobs(entry)
     return merged
 
 
 def add_local_entry(kodo_dir: Path, entry: LocalLLMEntry) -> None:
     """Add a custom entry to the external collection.
 
-    Forces ``entry.flavors`` to ``()`` regardless of what the caller passed
-    in — a custom entry's dataclass field default would otherwise silently
-    attach the built-in ``"default"`` :class:`~kodo.llms.local_registry.LlamaFlavor`
-    (meant for ``hardcoded_hf`` entries that don't override it), which would
-    then shadow (and permanently hide) any *custom* flavor later added under
-    the same ``"default"`` id — see
-    :func:`~kodo.llms.local_registry._flavors.get_flavors`'s predefined-wins
-    collision rule. This is the single enforcement point for that
-    invariant; every ``local_llm.add_*`` handler in ``kodo/server/_app.py``
-    relies on it rather than repeating ``flavors=()`` itself.
+    Forces ``entry.knobs`` to ``()`` before persisting, regardless of what the
+    caller passed in: knobs are code, never stored data. They are re-attached
+    on every load by :func:`_with_custom_entry_knobs`, which is what lets a
+    later kodo release change the shared knob set without rewriting anyone's
+    ``local-llm-registry.json``. ``entry.base_llama_args`` — the args from the
+    "Add local LLM" form — *is* persisted, and is the one launch-arg input a
+    custom entry contributes.
 
     Args:
         kodo_dir: User-level ``~/.kodo`` directory.
@@ -83,8 +112,8 @@ def add_local_entry(kodo_dir: Path, entry: LocalLLMEntry) -> None:
         raise ValueError(f"Cannot add a local LLM entry of kind {entry.kind!r}")
     if entry.name in get_local_registry(kodo_dir):
         raise ValueError(f"A local LLM named {entry.name!r} already exists")
-    if entry.flavors:
-        entry = replace(entry, flavors=())
+    if entry.knobs:
+        entry = replace(entry, knobs=())
     external, override = _load_external(kodo_dir)
     external.append(entry)
     _save_external(kodo_dir, external, override)
@@ -96,8 +125,8 @@ def remove_local_entry(kodo_dir: Path, name: str) -> None:
     Does not touch any downloaded GGUF file on disk — callers that want to
     free disk space should uninstall first via
     :func:`kodo.llms.llamacpp.get_local_model_manager`'s ``uninstall`` method
-    before removing. Also drops any custom flavors and active-flavor
-    selection stored for *name* — they would otherwise be permanently
+    before removing. Also drops every profile, active-profile selection and
+    knob selection stored for *name* — they would otherwise be permanently
     orphaned (nothing else ever cleans them up, and a future custom entry
     added under the same name would silently inherit them).
 
@@ -117,14 +146,18 @@ def remove_local_entry(kodo_dir: Path, name: str) -> None:
     _save_external(kodo_dir, remaining, override)
 
     data = _load_raw(kodo_dir)
-    all_flavors = _all_custom_flavors(data)
-    active = _all_active_flavors(data)
+    all_profiles = _all_profiles(data)
+    active = _all_active_profiles(data)
+    selections = _all_knob_selections(data)
     changed = False
-    if all_flavors.pop(name, None) is not None:
-        _write_custom_flavors(data, all_flavors)
+    if all_profiles.pop(name, None) is not None:
+        _write_profiles(data, all_profiles)
         changed = True
     if active.pop(name, None) is not None:
-        data["active_flavors"] = active
+        data["active_profiles"] = active
+        changed = True
+    if selections.pop(name, None) is not None:
+        _write_knob_selections(data, selections)
         changed = True
     if changed:
         _save_raw(kodo_dir, data)

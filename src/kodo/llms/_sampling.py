@@ -4,10 +4,11 @@ Every knob ``llama-server`` accepts in a ``POST /v1/chat/completions`` body
 that Kōdo lets a user tune, described **once** — in
 :data:`SAMPLING_PARAM_SPECS` — and consumed from there by everything else:
 JSON validation (:meth:`SamplingParams.from_json`), the request body
-(:meth:`SamplingParams.to_request_body`), and the kodo-vsix sampling modal
-(session-scoped overrides) and flavor editor (launch-arg shortcuts), both of
-which render their fields from the spec table shipped over the wire — via
-each entry's ``cli_flags`` — rather than hardcoding a second copy of it.
+(:meth:`SamplingParams.to_request_body`), the kodo-vsix session sampling modal
+(session-scoped overrides), and the ``llama-server`` argument catalog
+(:mod:`kodo.llms._arg_catalog`) that drives the user-defined profile editor —
+all of which render their fields from this table (shipped over the wire, via
+each entry's ``cli_flags``) rather than hardcoding a second copy of it.
 
 The central invariant, and the reason every field is optional:
 
@@ -17,17 +18,18 @@ The central invariant, and the reason every field is optional:
 process was *launched* with and then overwrites only the fields the request
 body actually contains. So omitting ``temperature`` against a server started
 with ``--temp 0.6`` runs that request at 0.6, whereas sending llama.cpp's
-built-in 0.8 would silently defeat the flavor's CLI arg. :class:`SamplingParams`
+built-in 0.8 would silently defeat the launch CLI arg. :class:`SamplingParams`
 therefore stores only the parameters that are genuinely set, and never
 materialises a default for one that isn't.
 
 See doc/SAMPLING.md for what each parameter does to generated text, and
-§9 there for the two-layer flavor-CLI-args → session-override model this
-file underpins. A flavor's own request-level defaults do not exist as a
-separate layer any more — the kodo-vsix flavor editor's sampling form is a
-structured shortcut for editing ``LlamaFlavor.llama_args`` itself (via each
-spec's ``cli_flags``), so a flavor's sampling knobs always take a
-llama-server restart to apply, exactly like every other launch arg.
+§9 there for the two-layer launch-args → session-override model this file
+underpins. There is no request-level defaults layer attached to a launch
+configuration: sampling reaches ``llama-server``'s command line either through
+the shared ``Tail culling``/``Temperature`` knobs on the Default profile or as
+an ordinary flag on a user-defined profile, so a change there always takes a
+llama-server restart, exactly like every other launch arg. Only a *session's*
+overrides are request-level and hot.
 """
 
 from __future__ import annotations
@@ -67,7 +69,7 @@ SAMPLER_NAMES: frozenset[str] = frozenset(
     }
 )
 
-#: Request-body fields a flavor or a session override may never set, with the
+#: Request-body fields a profile or a session override may never set, with the
 #: reason each is off limits. Enforced by :meth:`SamplingParams.from_json`,
 #: which drops any of these keys before they can reach a request. The parallel
 #: CLI-side restriction is ``RESERVED_REASONING_CAP_ARGS``
@@ -102,7 +104,7 @@ class SamplingParamSpec:
     Attributes:
         name: The request-body key, spelled exactly as ``llama-server``
             expects it. Also the key used in :attr:`SamplingParams.values`
-            and in the JSON persisted on a flavor or a session.
+            and in the JSON persisted on a session.
         kind: ``"float"``, ``"int"``, or ``"str_list"`` — drives both
             coercion in :meth:`SamplingParams.from_json` and which control
             kodo-vsix renders.
@@ -123,7 +125,7 @@ class SamplingParamSpec:
             your output". Purely advisory — nothing clamps or rejects against
             them; kodo-vsix marks an out-of-band value with a yellow ⚠ and a
             tooltip naming the band, in both the session sampling modal and
-            the flavor editor's launch-arg shortcuts. ``None`` (together with
+            the profile editor's argument rows. ``None`` (together with
             :attr:`sensible_maximum`) means "no guidance for this parameter" —
             used where no accepted value is unreasonable (``seed``,
             ``mirostat``) or the parameter is not numeric. Every band, and the
@@ -140,12 +142,12 @@ class SamplingParamSpec:
             (``min_p`` is useful at 0.02–0.2 but disabled at 0.0), and
             flagging a deliberate "off" as suspicious would be pure noise.
         cli_flags: Equivalent ``llama-server`` CLI flags. ``cli_flags[0]`` is
-            what the kodo-vsix flavor editor's structured sampling form
-            writes into a flavor's ``llama_args`` when that field is set —
-            the form is a friendlier view of the same launch args, not a
-            separate stored value. Empty only for ``min_keep``, which has no
-            CLI equivalent and is therefore session-override only (never
-            offered in the flavor editor).
+            the flag this parameter contributes to
+            :data:`kodo.llms.LLAMA_ARG_CATALOG`, i.e. what a user-defined
+            profile writes into its ``llama_args`` when the field is set.
+            Empty only for ``min_keep``, which has no CLI equivalent and is
+            therefore session-override only (never offered in the profile
+            editor).
         help: One-line explanation, used as the UI field hint.
         valid_values: The exact set of accepted strings for a ``str_list``
             parameter, or ``None`` when any string is acceptable (every
@@ -712,13 +714,13 @@ class SamplingParams:
 
     Holds **only** the parameters that are actually set — an absent key means
     "don't send this field", which lets ``llama-server`` fall back to whatever
-    the flavor's CLI args launched it with. There is deliberately no
+    the launch CLI args started it with. There is deliberately no
     "everything, with defaults filled in" representation anywhere in this
     module; see the module docstring.
 
     Used for one thing: a session's per-quant *overrides*
     (``SessionState.sampling``, session-scoped, edited in the chat footer's
-    sampling modal). A flavor's own launch-time defaults are not represented
+    sampling modal). The launch-time values are not represented
     by this class any more — they live entirely in ``LlamaFlavor.llama_args``,
     see doc/SAMPLING.md §9.
 
@@ -736,7 +738,7 @@ class SamplingParams:
 
         Unknown keys, :data:`RESERVED_SAMPLING_FIELDS`, wrong-typed values and
         ``None``\\ s are dropped; out-of-range numbers are clamped. Never
-        raises — a malformed persisted flavor or a stale client should degrade
+        raises — a malformed persisted profile or a stale client should degrade
         to "fewer parameters sent", never to a crashed session.
 
         Args:

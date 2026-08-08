@@ -34,7 +34,7 @@ from typing import Literal, cast
 from kodo.transport import (
     MSG_COMMAND_CONTROL_SET,
     MSG_EDIT_CONTROL_SET,
-    MSG_LOCAL_LLM_SET_ACTIVE_FLAVOR,
+    MSG_LOCAL_LLM_SET_KNOBS,
     MSG_MODE_SET,
     MSG_PROMPT_SUBMIT,
     MSG_STOP,
@@ -153,14 +153,17 @@ class ValidationHarness:
             session's own ``hello``'s ``thinking_level`` field as it opens —
             pins the judge's whole session to this tier. Ignored unless
             *result_validation_prompt* is also set.
-        flavor: ``llm_under_test`` flavor id to make active before the first
-            prompt (``local_llm.set_active_flavor``, see :meth:`__pin_flavor`).
+        knobs: ``llm_under_test`` knob selection to apply before the first
+            prompt (``local_llm.set_knobs``, see :meth:`__pin_knobs`) —
+            ``{knob_id: option_id}``, e.g. ``{"tail-culling": "light"}``.
             Falsy (None or empty) skips the pin, leaving whatever the registry
-            already resolves to.
-        validation_llm_flavor: ``validation_llm`` flavor id, pinned the same
-            way and at the same time as *flavor* — independent of which
-            model is active when the pin happens, since flavor selection is
-            per registry entry, not a run-time setting.
+            already resolves to. Only the Default profile is reachable this
+            way; a scenario never creates a user-defined profile, since those
+            are user data (doc/VALIDATOR.md §3a).
+        validation_llm_knobs: ``validation_llm`` knob selection, applied the
+            same way and at the same time as *knobs* — independent of which
+            model is active when the pin happens, since knob state is per
+            registry entry, not a run-time setting.
     """
 
     def __init__(
@@ -179,15 +182,15 @@ class ValidationHarness:
         vllm_complete_timeout: float = DEFAULT_COMPLETE_TIMEOUT,
         user_proxy_thinking_level: str | None = None,
         result_validation_thinking_level: str | None = None,
-        flavor: str | None = None,
-        validation_llm_flavor: str | None = None,
+        knobs: dict[str, str] | None = None,
+        validation_llm_knobs: dict[str, str] | None = None,
     ) -> None:
         self.__run_dir = run_dir.resolve()
         self.__run_dir.mkdir(parents=True, exist_ok=True)
         self.__llm_under_test = llm_under_test
         self.__validation_llm = validation_llm
-        self.__flavor = flavor
-        self.__validation_llm_flavor = validation_llm_flavor
+        self.__knobs = knobs
+        self.__validation_llm_knobs = validation_llm_knobs
         self.__template_home = template_home
         self.__settings_overrides = settings_overrides
         self.__server_log_level = server_log_level
@@ -282,19 +285,19 @@ class ValidationHarness:
             },
         )
         await self.__ensure_llms_installed(kodo_dir, ack)
-        await self.__pin_flavor()
+        await self.__pin_knobs()
         if self.__proxy is not None:
             self.__proxy.bind(self.__client, self.__transcript)
         if self.__workspace.roots:
             await self.sync_workspace()
         _log.info("Validation run ready: %s (session %s)", self.__run_dir, self.session_id)
 
-    async def __pin_flavor(self) -> None:
-        """Select the named flavor(s) for the LLM(s) under test, if given.
+    async def __pin_knobs(self) -> None:
+        """Apply the requested knob selection(s) for the LLM(s) under test.
 
-        Sent as ``local_llm.set_active_flavor`` over the WebSocket rather than
-        written into the cloned home's ``local-llm-registry.json`` directly —
-        same rule the rest of the harness follows (it drives the server only
+        Sent as ``local_llm.set_knobs`` over the WebSocket rather than written
+        into the cloned home's ``local-llm-registry.json`` directly — same
+        rule the rest of the harness follows (it drives the server only
         through the protocol the extension uses, so drift breaks loudly).
 
         Ordering matters: this runs after the models are installed but before
@@ -302,37 +305,40 @@ class ValidationHarness:
         launched for this run. The server-side handler only restarts
         ``llama-server`` when it is *already running* for the affected model,
         so at this point the call is pure persistence — the first launch,
-        triggered by the first prompt, picks the flavor's ``llama_args`` up
-        from the registry as its initial launch config. No restart, no race.
+        triggered by the first prompt, resolves the Default profile's
+        ``llama_args`` from these knobs as its initial launch config. No
+        restart, no race.
 
         ``llm_under_test`` and ``validation_llm`` are pinned independently
-        here — flavor selection lives on the registry entry, not on whichever
-        model is currently active, so both pins apply regardless of which one
+        here — knob state lives on the registry entry, not on whichever model
+        is currently active, so both pins apply regardless of which one
         ``llm.select`` later switches to.
         """
-        await self.__pin_one_flavor(self.__llm_under_test, self.__flavor)
-        await self.__pin_one_flavor(self.__validation_llm, self.__validation_llm_flavor)
+        await self.__pin_one_model_knobs(self.__llm_under_test, self.__knobs)
+        await self.__pin_one_model_knobs(self.__validation_llm, self.__validation_llm_knobs)
 
-    async def __pin_one_flavor(self, model: str, flavor: str | None) -> None:
-        """Pin one model's active flavor, if *flavor* is truthy.
+    async def __pin_one_model_knobs(self, model: str, knobs: dict[str, str] | None) -> None:
+        """Apply one model's knob selection, if *knobs* is non-empty.
 
         Args:
-            model (str): Local registry name to pin the flavor on.
-            flavor (str | None): Flavor id, or falsy to skip.
+            model (str): Local registry name to configure.
+            knobs (dict[str, str] | None): ``{knob_id: option_id}``, or falsy
+                to skip. Sent whole: ``set_knobs`` replaces the entry's entire
+                selection, so a knob omitted here resets to its default.
         """
-        if not flavor:
+        if not knobs:
             return
         await self.client.request(
-            MSG_LOCAL_LLM_SET_ACTIVE_FLAVOR,
+            MSG_LOCAL_LLM_SET_KNOBS,
             name=model,
-            flavor_id=flavor,
+            knobs=dict(knobs),
         )
         self.__transcript.record(
             "note",
             "lifecycle",
-            {"event": "flavor", "model": model, "flavor_id": flavor},
+            {"event": "knobs", "model": model, "knobs": dict(knobs)},
         )
-        _log.info("Pinned flavor %r for %r", flavor, model)
+        _log.info("Pinned knobs %r for %r", knobs, model)
 
     def __pin_llm_under_test(self, overrides: dict[str, object] | None) -> dict[str, object]:
         """Force ``mode``/``models.local`` onto *overrides* for the LLM under test.

@@ -2,13 +2,13 @@
 
 > What every `llama-server` sampling parameter does, what it does to generated
 > text, the range of values worth trying, and how Kōdo exposes the two layers:
-> **CLI-level** parameters, fixed at launch by a flavor, and **request-level**
+> **CLI-level** parameters, fixed at launch by the active profile, and **request-level**
 > parameters, tuned live from the chat footer.
 
-Companion to [LLM_REGISTRY.md](LLM_REGISTRY.md) (§4.6 flavors — where CLI-level
-args, including the ones a flavor's sampling-defaults form writes, are
+Companion to [LLM_REGISTRY.md](LLM_REGISTRY.md) (§4.6 knobs and profiles — where
+CLI-level args, including the ones the sampling knobs write, are
 declared), [LOCAL_INFERENCE.md](LOCAL_INFERENCE.md) (the launch flags Kōdo
-forces regardless of flavor), and [SESSIONS.md](SESSIONS.md) (session-scoped
+forces regardless of profile), and [SESSIONS.md](SESSIONS.md) (session-scoped
 state, where the per-quant overrides live).
 
 For *which* of these knobs to reach for on a heavily quantized GGUF, and how
@@ -46,7 +46,7 @@ Two consequences that matter for Kōdo:
    optional (`None`) and is **dropped from the request body entirely** when
    unset, rather than being sent as some stand-in value. Sending
    `"temperature": 0.8` because the user left the box empty would silently
-   defeat a flavor's `--temp 0.6`.
+   defeat a launch-time `--temp 0.6`.
 2. **A knob set in both places is not a conflict the server resolves oddly** —
    the request-level value simply wins, every time, for as long as it is sent.
    The CLI value still governs any client that does *not* send the field
@@ -61,7 +61,7 @@ not "what Kōdo sends".
 
 `params_from_json_cmpl` looks up keys it knows and ignores everything else. A
 parameter introduced in a newer llama.cpp than the installed build is silently
-ignored rather than rejected, so a flavor or session override naming one is
+ignored rather than rejected, so a profile or session override naming one is
 harmless — it just has no effect until the user updates their llama.cpp. There
 is no error and no warning; if a knob appears to do nothing, an out-of-date
 `llama-server` is the first thing to check
@@ -462,7 +462,7 @@ turn runs to `max_tokens` and no turn ever ends cleanly.
 Per-token additive bias, as `[[token_id, bias], …]`. Requires token IDs from
 the specific model's tokenizer, which differ between models and are not
 discoverable from Kōdo's UI. **Not exposed by Kōdo** (§9); reachable as a CLI
-flag in a flavor if you know the IDs.
+flag in a profile if you know the IDs.
 
 ### `grammar` (CLI `--grammar`, `--grammar-file`) and `json_schema` (CLI `-j`, `--json-schema`)
 
@@ -508,7 +508,7 @@ To neutralise a sampler rather than remove the field:
 
 Note the difference from *omitting* the field: omitting it inherits the
 server's launch-time value (§1); sending the neutral value actively turns the
-sampler off even if the flavor's CLI args enabled it.
+sampler off even if the launch args enabled it.
 
 These values are also the one exemption from the out-of-range ⚠ (§8d) — a
 sampler's off value frequently sits outside its useful active range, and
@@ -597,12 +597,12 @@ starts reordering close candidates, and the fix is to **truncate harder** —
 raise `min_p`, or add `top_n_sigma` — rather than to change temperature, which
 scales the noise and the signal alike. [QUANT_SAMPLING.md](QUANT_SAMPLING.md)
 has the reasoning and a preset table; the Laguna-S-2.1 catalog entries ship
-those presets as predefined flavors.
+those presets as knob options.
 
 **Do not use DRY or `repeat_penalty` for agentic work at any bit width.** Both
 penalise reproducing a token sequence already in context — which is exactly
 what quoting back an attachment UUID, a file path, or an identifier requires.
-A DRY-enabled flavor shipped once and made `read_attachment` fail outright.
+A DRY-enabled sampling preset shipped once and made `read_attachment` fail outright.
 Repetition loops are handled upstream by the watchdog instead
 ([STUCK_DETECTION.md](STUCK_DETECTION.md) §2.7/§2.10), which sees blocks over
 rounds and can tell a loop from a legitimately repeated identifier.
@@ -652,11 +652,11 @@ modal (`SamplingModal.tsx`) disables **Apply** while any field is out of
 band, same as it does for the hard-drop case in §8e — deliberately treating
 "probably a bad idea" the same as "would be dropped," so a user who really
 does want `temperature 3.0` has to clear the field or accept the guidance,
-not just dismiss a tooltip. The flavor editor (`FlavorModal.tsx`) disables
+not just dismiss a tooltip. The profile editor (`ProfileModal.tsx`) disables
 **Submit** the same way — a sampling field there writes straight into the
 `llama_args` textarea on every keystroke regardless (there's no per-field
 "apply" step to withhold), so the gate sits on the form's Submit button
-instead, stopping a flavor from being saved at all while a field is flagged.
+instead, stopping a profile from being saved at all while a field is flagged.
 Both editors compute this one `samplingFieldIssue` per field (§8e) and render
 its result identically — a value is either clean or it isn't; nothing
 distinguishes "out of band" from "would be dropped" except the tooltip text.
@@ -735,7 +735,7 @@ question — "is this value fine to send as-is?" — so a single combinator,
 back to the range warning, and **both editors render its result as the same
 yellow ⚠**: nothing in the UI distinguishes "would be silently dropped" from
 "is a bad idea," only the tooltip text. Whichever one applies, the session
-sampling modal disables Apply and the flavor editor disables Submit, both
+sampling modal disables Apply and the profile editor disables Save, both
 for the whole form until the flagged field is fixed or cleared (§8d).
 
 This client-side check is a courtesy only: the server-side drop in `_coerce`
@@ -750,23 +750,28 @@ old client.
 
 Two layers, evaluated in order, the second one wins:
 
-1. **The flavor's CLI args** (`LlamaFlavor.llama_args`, LLM_REGISTRY.md §4.6) —
-   free-text `--flag value` lines. These become the server's launch-time
-   defaults for every request that omits the field. Changing them requires
-   editing the flavor and **restarting `llama-server`**.
+1. **The active launch configuration's CLI args** (LLM_REGISTRY.md §4.6).
+   These become the server's launch-time defaults for every request that omits
+   the field. Changing them **restarts `llama-server`**.
 
-   The flavor editor's structured sampling-defaults form (curated + advanced,
-   same grouping as the session modal) is **not** a second, request-level
-   layer — it is a friendlier way to edit a subset of `llama_args` itself.
-   Typing a value into "Temperature" writes `--temp <value>` into the launch
-   arguments text box, and vice versa: the two views are kept in sync live, in
-   both directions, so they can never disagree. This is why a flavor's
-   sampling knobs always require a llama-server restart, exactly like every
-   other launch arg — there is deliberately no "flavor default that applies
-   without restarting", since that would make some launch-config edits hot
-   and others cold for no principled reason. `min_keep` has no CLI
-   equivalent (`cli_flags: []`) and is therefore never offered in the flavor
-   editor — see the reserved table below.
+   Sampling reaches that command line one of two ways, and neither is a
+   separate request-level layer:
+
+   - On the **Default profile**, via the two shared sampling knobs —
+     `tail-culling` (`--top-k`/`--top-p`/`--min-p`/`--top-nsigma`) and
+     `temperature` (`--temp`). They are two knobs rather than one preset
+     dropdown so that exactly one axis moves at a time, and the framework's
+     "no two knobs own the same flag" invariant enforces that structurally
+     rather than by convention (LLM_REGISTRY.md §4.6, doc/QUANT_SAMPLING.md §4).
+   - On a **user-defined profile**, as ordinary flags picked from the argument
+     catalog (LLM_REGISTRY.md §4.7), whose sampling half is derived from
+     `SAMPLING_PARAM_SPECS` so the recommended bands and the `--samplers`
+     whitelist are single-sourced with this document.
+
+   There is deliberately no "launch default that applies without restarting" —
+   that would make some launch-config edits hot and others cold for no
+   principled reason. `min_keep` has no CLI equivalent (`cli_flags: []`) and is
+   therefore never offered at this layer at all — see the reserved table below.
 2. **The session's per-quant overrides** — what the user edits in the sampling
    modal (the ⚙ button in the chat footer, between attach and stop). Stored per
    session, keyed by local registry entry name, so switching models and
@@ -776,9 +781,9 @@ Two layers, evaluated in order, the second one wins:
    rather than the launch command line.
 
 **Unset means unset.** Any parameter left blank in the session modal is
-omitted from the request body entirely, so whatever the active flavor's
+omitted from the request body entirely, so whatever the active profile's
 `llama_args` launched the server with governs it. Clearing a field in the
-modal is therefore a real operation — it does not reset to "the flavor's
+modal is therefore a real operation — it does not reset to "the profile's
 number", it removes the field from the wire.
 
 **Both layers get the same range guidance.** The in-label band and the yellow ⚠
@@ -790,13 +795,15 @@ being set as a launch arg or as a session override:
 - the session sampling modal (`kodo-vsix/src/webview/SamplingModal.tsx`) puts
   the ⚠ between a parameter's label and its input, above that parameter's
   full-width help text, with a divider closing each parameter's group; and
-- the flavor editor's sampling shortcuts
-  (`kodo-vsix/src/settings-webview/FlavorModal.tsx`) put it in the label cell
-  of its dense two-column grid, which has no room for a third column.
+- the profile editor's argument rows
+  (`kodo-vsix/src/settings-webview/ProfileModal.tsx`) put it at the start of
+  each row's label, before the flag's own name, with the flag and its help
+  text on the line below.
 
-Each keeps its own copy of the label and the comparison (`samplingLabelText` /
-`sensibleRangeText` / `samplingRangeWarning` / `samplingFieldError` /
-`samplingFieldIssue`, in `src/llm-registry-types.ts` and in
+Each keeps its own copy of the label and the comparison
+(`samplingLabelText`/`sensibleRangeText`/`samplingRangeWarning`/
+`samplingFieldError`/`samplingFieldIssue` in `src/llm-registry-types.ts`;
+`argRangeText`/`argRangeWarning`/`argFieldError`/`argIssue` in
 `src/settings-webview/localLlmUtils.ts`), following the same host/webview
 duplication convention as every other shared shape there.
 
@@ -804,14 +811,14 @@ duplication convention as every other shared shape there.
 `samplingFieldIssue` per field and renders the identical yellow ⚠ — the
 session sampling modal (`SamplingModal.tsx`) disables Apply while *any*
 field has one, whether that's an out-of-band number or a `samplers` entry
-outside `valid_values`; the flavor editor (`FlavorModal.tsx`) disables
+outside `valid_values`; the profile editor (`ProfileModal.tsx`) disables
 Submit the same way. They differ only in *when* a flagged value gets
-written: a sampling shortcut field in the flavor editor writes straight into
+written: an argument row in the profile editor writes straight into
 the `llama_args` textarea on every keystroke regardless (there's no
-per-field "apply" to withhold), so gating there stops the whole *flavor*
+per-field "apply" to withhold), so gating there stops the whole *profile*
 from being saved rather than stopping that one field from being sent.
 
-**Reserved — never settable from the flavor editor or the session modal:**
+**Reserved — never settable from the profile editor or the session modal:**
 
 | Reserved | Why |
 |---|---|
@@ -821,16 +828,16 @@ from being saved rather than stopping that one field from being sent.
 | `ignore_eos` | Would prevent any turn from ending cleanly |
 | `logit_bias` | Needs model-specific token IDs, not obtainable from the UI |
 | `n_probs`, `post_sampling_probs` | Response-shape debugging; Kōdo ignores the extra fields |
-| `min_keep` (flavor editor only) | No CLI flag exists, so a flavor-level value could never take effect — session-override only, where it rides the request body directly |
-| `--reasoning-budget`, `--reasoning-budget-message` | Existing `RESERVED_REASONING_CAP_ARGS`, stripped from any flavor's `llama_args` (LLM_REGISTRY.md §4.6) |
+| `min_keep` (profile editor only) | No CLI flag exists, so a launch-level value could never take effect — session-override only, where it rides the request body directly |
+| `--reasoning-budget`, `--reasoning-budget-message` | Part of `RESERVED_LLAMA_ARGS`, stripped from any profile's `llama_args` and written by no knob (LLM_REGISTRY.md §4.6) |
 
-**A session override on top of a flavor's CLI arg is not a conflict** — it is
+**A session override on top of a launch CLI arg is not a conflict** — it is
 the intended mechanism. `llama-server` starts each request from its launch
 config and overwrites only the fields the request body sends, so the session
 override simply wins for as long as it is set, while the CLI value keeps
 governing any other client pointed at that server. Nothing here needs a
-warning, unlike the (removed) case of a flavor setting the same knob twice —
-that can no longer happen, since the flavor editor's two views of
+warning, unlike the (removed) case of one configuration setting the same knob twice —
+that can no longer happen, since the profile editor's two views of
 `llama_args` are always in sync.
 
 **Cloud models are unaffected.** These are `llama-server` parameters; the

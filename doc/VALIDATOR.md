@@ -5,7 +5,7 @@
 > agent's questions with the **validation LLM** (User Proxy Prompt), and can
 > score the finished run with a judge session (Result Validation Prompt) into
 > `ScenarioResult.score` + `report.md` — see §9. A `Scenario` is **content
-> only**: which LLM(s) (+ flavor) exercise it is supplied by the caller of
+> only**: which LLM(s) (+ knob selection) exercise it is supplied by the caller of
 > `run_scenario` (§3a) or by a `ValidationSuite` (§10) — a batch of
 > LLM-under-test/scenario pairs, one fixed judge, and a final judge-produced
 > comparative summary across every LLM the suite validated. The curated suite
@@ -118,12 +118,12 @@ or a `ValidationSuite` for a batch that validates several LUTs at once (§10).
 This is what lets the same scenario content run, unmodified, against several
 different LLMs.
 
-Both `llm_under_test` and `validation_llm` also take an optional **flavor**
-id (`ValidationHarness.flavor`/`validation_llm_flavor`, `run_scenario`'s
-`flavor`/`validation_llm_flavor` params, `LLMUnderTest.flavor` in a suite) —
-see §8a.1. `run_scenario`'s `flavor` defaults to `"default"` so every run pins
-a known, deterministic flavor unless the caller names another; a suite's
-`judge_llm_flavor` defaults to `None` (leave the judge's current flavor as-is).
+Both `llm_under_test` and `validation_llm` also take an optional **knob
+selection** (`ValidationHarness.knobs`/`validation_llm_knobs`,
+`run_scenario`'s `knobs`/`validation_llm_knobs` params, `LLMUnderTest.knobs`
+in a suite) — see §8a.1. All default to empty, which leaves the registry's own
+knob defaults in place; those are themselves deterministic, so a run is
+reproducible either way.
 
 Both `llm_under_test` and `validation_llm` are always local (GGUF/llama.cpp)
 models — cloud models are API-based and have no "download" step, so they're
@@ -239,7 +239,7 @@ uv run kodo-validator \
   --template-home ~/.kodo \
   --llm-under-test llamacpp-qwen36-27b-q4-k-xl \
   --validation-llm llamacpp-qwen36-27b-q8 \
-  --flavor default \
+  --knob tail-culling=light \
   --root app=/path/to/seed-project --root lib \
   --workflow problem_solving --command-control permissive \
   --prompt "Find and fix the failing test" \
@@ -256,8 +256,8 @@ uv run kodo-validator --scenario suites/smoke.py \
 `--llm-under-test`/`--validation-llm` are **always** mandatory — whether the
 scenario(s) came from `--scenario FILE` or inline flags, since a `Scenario`
 names no LLM (§3a); every scenario `main()` resolves for one run executes
-against the same pair. `--flavor` (default `"default"`) and
-`--validation-llm-flavor` (default: leave as-is) pin flavors the same way
+against the same pair. `--knob KNOB_ID=OPTION_ID` (repeatable) and
+`--validation-llm-knob` (same shape) pin knobs the same way
 (§8a.1). `--upp-file`/`--rvp-file` (optional, independent) enable the §9
 machinery for ad-hoc runs; a scenario file sets
 `user_proxy_prompt`/`result_validation_prompt` directly.
@@ -266,7 +266,7 @@ machinery for ad-hoc runs; a scenario file sets
 completed with no `error`-phase turn. Each scenario gets a fresh home + server.
 
 To validate **several** LLMs together (each potentially with different
-scenarios and its own flavor) and get one final comparative summary across
+scenarios and its own knobs) and get one final comparative summary across
 all of them, use a `ValidationSuite` instead (§10) —
 `python -m kodo.validator.suites` / `hatch run validate-suite`.
 
@@ -287,7 +287,7 @@ hatch run validate --list                         # show available scenarios
 (a `Scenario`); a file may define `SCENARIOS` (a list) instead. The file is
 **content-only** — modes, roots, timeouts, UPP/RVP text — and names no LLM
 (§3a); every scenario this invocation resolves runs against the **same**
-`--llm-under-test`/`--validation-llm`/`--flavor`. Task / UPP / RVP text itself
+`--llm-under-test`/`--validation-llm`/`--knob`. Task / UPP / RVP text itself
 lives in the `kodo.validator.prompts` package (§8b) and the scenario pulls it
 by name, so the same prompts can back several LLMs-under-test. Files live flat
 in the `kodo.validator.scenarios` package — no per-model sub-directories,
@@ -317,36 +317,46 @@ shipped scenario families exist — a weak LUT for one task, a strong one for
 another) — use a `ValidationSuite` (§10) instead of this per-invocation,
 uniform-LUT runner.
 
-### 8a.1 Pinning a flavor: validating **sampling parameters**
+### 8a.1 Pinning knobs: validating **sampling parameters**
 
-`run_scenario`'s `flavor` (default `"default"`) names a flavor id of
-`llm_under_test` to make active before the first prompt;
-`validation_llm_flavor` (default `None` = leave as-is) does the same for
-`validation_llm`. In a `ValidationSuite`, these live on `LLMUnderTest.flavor`
-(also defaults `"default"`) and `ValidationSuite.judge_llm_flavor` (defaults
-`None`) respectively — see §10. Either way, the harness sends
-`local_llm.set_active_flavor` over the WebSocket for each named model (never
-touching `local-llm-registry.json` directly — the harness drives the server
-only through the protocol the extension uses, §1), between
+`run_scenario`'s `knobs` (default `None`/`{}`) is a `{knob_id: option_id}` map
+applied to `llm_under_test`'s **Default profile** before the first prompt —
+e.g. `{"tail-culling": "light", "temperature": "default"}`;
+`validation_llm_knobs` (default `None` = leave as-is) does the same for
+`validation_llm`. In a `ValidationSuite`, these live on `LLMUnderTest.knobs`
+and `ValidationSuite.judge_llm_knobs` respectively — see §10. Either way, the
+harness sends `local_llm.set_knobs` over the WebSocket for each named model
+(never touching `local-llm-registry.json` directly — the harness drives the
+server only through the protocol the extension uses, §1), between
 `ensure_local_llms_installed` and the first prompt.
+
+Only the Default profile is reachable this way, deliberately: a **user-defined
+profile** is user data, and a scenario that had to create one first would be
+testing the profile editor rather than the model. Knobs cover everything the
+predefined *flavors* they replaced ever expressed (LLM_REGISTRY.md §4.6).
 
 That ordering is deliberate and worth understanding: at that moment
 `llama-server` has **not yet been launched** for the run — it starts lazily on
 the first prompt — and the server-side handler only restarts it when it is
 already running for the affected model. So the call is pure persistence, and
-the first launch picks the flavor's `llama_args` up as its initial launch
-config. No restart, no race. `llm_under_test` and `validation_llm` are pinned
-independently of each other and of which one is "active" — flavor selection
-lives on the registry entry, not on run-time state.
+the first launch resolves the Default profile's `llama_args` from those knobs
+as its initial launch config. No restart, no race. `llm_under_test` and
+`validation_llm` are pinned independently of each other and of which one is
+"active" — knob state lives on the registry entry, not on run-time state.
 
-This is what makes sampling testable end to end. A flavor's `llama_args` *are*
+Because `set_knobs` replaces the entry's **whole** selection, a knob omitted
+from `knobs` is reset to its default. That is a feature here: a run is
+reproducible from the map alone, with no dependence on what a previous run
+happened to leave behind.
+
+This is what makes sampling testable end to end. The resolved args *are*
 `llama-server`'s command line, so a pinned run exercises the **CLI-level**
 layer of [SAMPLING.md](SAMPLING.md) §9 — exactly what a user gets by choosing
-that flavor from the sidebar dropdown — rather than the request-level session
-overrides. Re-running one scenario against a different `flavor=`/
-`LLMUnderTest.flavor` is the intended way to compare presets
-([QUANT_SAMPLING.md](QUANT_SAMPLING.md) §7). The `"default"` default pins a
-known, deterministic flavor unless the caller names another.
+those settings in the sidebar's Configure modal — rather than the
+request-level session overrides. Re-running one scenario against different
+`knobs=`/`LLMUnderTest.knobs` is the intended way to compare configurations
+([QUANT_SAMPLING.md](QUANT_SAMPLING.md) §7). An empty map is itself
+deterministic: a knob nobody has moved always resolves the same way.
 
 Note that no scenario pins a **seed**: one deterministic run says nothing about
 robustness, so a preset comparison should run a scenario several times and read
@@ -617,7 +627,7 @@ log).
 ## 10. Validation suites (`_suite.py`)
 
 A `Scenario` is content-only (§3a) — nothing on it says which LLM(s) run it.
-A **`ValidationSuite`** is the thing that says which LLM(s) (+ flavor) exercise
+A **`ValidationSuite`** is the thing that says which LLM(s) (+ knobs) exercise
 which scenarios, and which model judges all of them, so a batch can validate
 **several** LUTs in one invocation and end with one comparative report.
 
@@ -630,7 +640,7 @@ SUITE = ValidationSuite(
         SuiteEntry(llm_under_test=LLMUnderTest(llm="model-a"), scenario=scenario_1),
         SuiteEntry(llm_under_test=LLMUnderTest(llm="model-a"), scenario=scenario_2),
         SuiteEntry(
-            llm_under_test=LLMUnderTest(llm="model-b", flavor="model-b-near-greedy"),
+            llm_under_test=LLMUnderTest(llm="model-b", knobs={"temperature": "near-greedy"}),
             scenario=scenario_1,
         ),
     ],
@@ -640,8 +650,8 @@ SUITE = ValidationSuite(
 ```
 
 - **`LLMUnderTest`** — one LUT identity: `llm` (a local registry name,
-  mandatory) + `flavor` (defaults `"default"` — every registry entry ships an
-  `id == "default"` flavor, so a suite's runs are deterministic unless a
+  mandatory) + `knobs` (defaults `{}` — the registry's own knob defaults,
+  themselves deterministic, so a suite's runs are reproducible unless a
   preset is named explicitly).
 - **`SuiteEntry`** — one `(LLMUnderTest, Scenario)` pair to validate.
 - **`ValidationSuite.entries`** is a **flat, explicit list** of entries — not
@@ -652,7 +662,7 @@ SUITE = ValidationSuite(
   cross join would run nonsensical combinations. The common "these N scenarios
   against this one LUT" case is just a list comprehension in the suite file —
   see `kodo.validator.suites.full_regression`'s `_entries_for` helper.
-- **`judge_llm`** (mandatory) / **`judge_llm_flavor`** (optional, default
+- **`judge_llm`** (mandatory) / **`judge_llm_knobs`** (optional, default
   `None` = leave as-is) — the model that answers every entry's UPP, judges
   every entry's RVP, *and* produces the final cross-entry summary (§10.2).
   There is exactly one judge per suite, not one per entry.
@@ -665,8 +675,8 @@ SUITE = ValidationSuite(
 1. **Each entry runs through `run_scenario` exactly as a standalone scenario
    would** — its own fresh isolated harness/home/server/workspace
    (`llm_under_test=entry.llm_under_test.llm`,
-   `validation_llm=suite.judge_llm`, `flavor=entry.llm_under_test.flavor`,
-   `validation_llm_flavor=suite.judge_llm_flavor`), landing under the suite's
+   `validation_llm=suite.judge_llm`, `knobs=entry.llm_under_test.knobs`,
+   `validation_llm_knobs=suite.judge_llm_knobs`), landing under the suite's
    `run_dir`. A suite is "the same isolated runs, just batched and reported
    together" — every LUT gets its own separate workspace, exactly like §3a's
    ordinary per-scenario isolation, entry by entry, never shared.
@@ -694,11 +704,11 @@ the same primitive the UPP proxy uses (§9.1) — on a lightweight harness whose
 only job is getting `judge_llm` serving:
 
 1. A `ValidationHarness` is opened with `llm_under_test=validation_llm=
-   suite.judge_llm` and `flavor=suite.judge_llm_flavor` (no workspace roots),
+   suite.judge_llm` and `knobs=suite.judge_llm_knobs` (no workspace roots),
    under `<run_dir>/summary/`.
 2. `llm.select(judge_llm)` confirms it is actually serving (mirroring the UPP
    proxy's own switch-then-call sequence, §9.1).
-3. `llm.complete(system=summary_prompt, prompt=<every entry's LLM+flavor,
+3. `llm.complete(system=summary_prompt, prompt=<every entry's LLM+knobs,
    scenario name, score, and full report text>)` — no `json_schema`; the
    summary is free-form markdown prose, not a structured verdict, so there is
    no tool-call channel to read it off (contrast §9.2's `submit_evaluation`).
@@ -725,7 +735,7 @@ hatch run validate-suite --list            # show available suites
 ```
 
 Unlike `hatch run validate` (§8a), there are **no** `--llm-under-test`/
-`--validation-llm` flags here — a suite already carries every LUT (+ flavor)
+`--validation-llm` flags here — a suite already carries every LUT (+ knobs)
 and judge it needs. The runner resolves every selector first, disk-checks the
 template home for the union of every suite's LUTs + judge (logged, not fatal,
 same as §8a), then runs each suite in turn. Artifacts land under

@@ -1,10 +1,10 @@
-"""Validation suites: several LLMs (+ flavors) under test, run and compared.
+"""Validation suites: several LLMs (+ knob selections) under test, run and compared.
 
 A :class:`ValidationSuite` is the decoupled replacement for pinning
-``llm_under_test``/``validation_llm``/``flavor`` directly on a
+``llm_under_test``/``validation_llm``/``knobs`` directly on a
 :class:`~kodo.validator._scenario.Scenario` (the scenario is content-only,
 see its module docstring): a suite is the thing that says which LLM(s) —
-each an :class:`LLMUnderTest`, a registry name plus a flavor id — exercise
+each an :class:`LLMUnderTest`, a registry name plus a knob selection — exercise
 which scenarios, and which model judges all of them.
 
 Execution is a flat, **explicit** list of :class:`SuiteEntry` pairs
@@ -35,7 +35,7 @@ from pathlib import Path
 from kodo.transport import MSG_LLM_COMPLETE, MSG_LLM_SELECT
 
 from ._harness import ValidationHarness
-from ._scenario import Scenario, ScenarioResult, run_scenario
+from ._scenario import Scenario, ScenarioResult, _knob_suffix, run_scenario
 
 __all__ = [
     "DEFAULT_SUMMARY_SWITCH_TIMEOUT",
@@ -58,19 +58,21 @@ DEFAULT_SUMMARY_SWITCH_TIMEOUT = 600.0
 
 @dataclass(frozen=True)
 class LLMUnderTest:
-    """One LLM-under-test identity: a local registry name plus its flavor.
+    """One LLM-under-test identity: a local registry name plus its knob selection.
 
     Attributes:
         llm: Local registry name (``kodo/doc/LLM_REGISTRY.md``).
-        flavor: Flavor id to make active before the first prompt
-            (``local_llm.set_active_flavor``). Defaults to ``"default"`` —
-            every registry entry ships an ``id == "default"`` flavor, so a
-            suite's runs are deterministic unless a preset is named
-            explicitly (doc/VALIDATOR.md §8a.1).
+        knobs: Knob selection to apply to ``llm``'s Default profile before the
+            first prompt (``local_llm.set_knobs``), e.g.
+            ``{"tail-culling": "light"}``. Defaults to ``{}`` — the registry's
+            own defaults, which are themselves deterministic, so a suite's runs
+            are reproducible unless a selection is named explicitly
+            (doc/VALIDATOR.md §8a.1). Two entries differing only in ``knobs``
+            are how a suite compares configurations of the same GGUF.
     """
 
     llm: str
-    flavor: str = "default"
+    knobs: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -78,7 +80,7 @@ class SuiteEntry:
     """One (LLM-under-test, scenario) pair to validate.
 
     Attributes:
-        llm_under_test: The LLM + flavor this entry exercises.
+        llm_under_test: The LLM + knob selection this entry exercises.
         scenario: The content-only scenario to run against it.
     """
 
@@ -100,9 +102,9 @@ class ValidationSuite:
         judge_llm: Local registry name of the model that answers every
             entry's UPP, judges every entry's RVP, and produces the final
             cross-entry summary. Mandatory: there is no meaningful default.
-        judge_llm_flavor: Flavor id to make active for ``judge_llm``, the
-            same way as :attr:`LLMUnderTest.flavor`. None (the default)
-            leaves whatever the registry already resolves to for it.
+        judge_llm_knobs: Knob selection to apply for ``judge_llm``, the same
+            way as :attr:`LLMUnderTest.knobs`. None (the default) leaves
+            whatever the registry already resolves to for it.
         summary_prompt: Instructions (system prompt) for the final round —
             given every entry's score/report, produce a detailed comparative
             summary of every LLM the suite validated. Mandatory: comparing
@@ -117,7 +119,7 @@ class ValidationSuite:
     name: str
     entries: list[SuiteEntry]
     judge_llm: str = field(kw_only=True)
-    judge_llm_flavor: str | None = None
+    judge_llm_knobs: dict[str, str] | None = None
     summary_prompt: str = field(kw_only=True)
     summary_timeout: float = DEFAULT_SUMMARY_TIMEOUT
     summary_thinking_level: str | None = None
@@ -128,7 +130,7 @@ class SuiteEntryResult:
     """One entry's outcome within a suite run.
 
     Attributes:
-        llm_under_test: The LLM + flavor that was exercised.
+        llm_under_test: The LLM + knob selection that was exercised.
         result: The standalone :func:`~kodo.validator._scenario.run_scenario`
             outcome for this entry (its own isolated ``run_dir``).
     """
@@ -181,19 +183,19 @@ async def run_suite(
     entries: list[SuiteEntryResult] = []
     for entry in suite.entries:
         _log.info(
-            "[%s] entry: %s @ %s (flavor=%s)",
+            "[%s] entry: %s @ %s (knobs=%s)",
             suite.name,
             entry.scenario.name,
             entry.llm_under_test.llm,
-            entry.llm_under_test.flavor,
+            entry.llm_under_test.knobs,
         )
         scenario_result = await run_scenario(
             entry.scenario,
             run_dir,
             llm_under_test=entry.llm_under_test.llm,
             validation_llm=suite.judge_llm,
-            flavor=entry.llm_under_test.flavor,
-            validation_llm_flavor=suite.judge_llm_flavor,
+            knobs=entry.llm_under_test.knobs,
+            validation_llm_knobs=suite.judge_llm_knobs,
             template_home=template_home,
         )
         entries.append(
@@ -245,7 +247,7 @@ async def _run_summary_round(
         llm_under_test=suite.judge_llm,
         validation_llm=suite.judge_llm,
         template_home=template_home,
-        flavor=suite.judge_llm_flavor,
+        knobs=suite.judge_llm_knobs,
     )
     async with harness:
         client = harness.client
@@ -282,7 +284,7 @@ def _render_summary_prompt(entries: list[SuiteEntryResult]) -> str:
     for entry in entries:
         result = entry.result
         header = (
-            f"### {entry.llm_under_test.llm} (flavor: {entry.llm_under_test.flavor}) "
+            f"### {entry.llm_under_test.llm}{_knob_suffix(entry.llm_under_test.knobs)} "
             f"— scenario: {result.scenario.name}"
         )
         if result.evaluation is not None:
@@ -308,12 +310,12 @@ def _write_suite_summary(result: SuiteResult) -> None:
     summary: dict[str, object] = {
         "suite": result.suite.name,
         "judge_llm": result.suite.judge_llm,
-        "judge_llm_flavor": result.suite.judge_llm_flavor,
+        "judge_llm_knobs": result.suite.judge_llm_knobs or {},
         "summary_session_id": result.summary_session_id,
         "entries": [
             {
                 "llm": e.llm_under_test.llm,
-                "flavor": e.llm_under_test.flavor,
+                "knobs": e.llm_under_test.knobs,
                 "scenario": e.result.scenario.name,
                 "score": e.result.score,
                 "run_dir": str(e.result.run_dir),
@@ -336,7 +338,7 @@ def _write_suite_report(result: SuiteResult) -> None:
         f"# Validation suite report — {result.suite.name}",
         "",
         f"- **Judge LLM:** {result.suite.judge_llm}"
-        + (f" (flavor: {result.suite.judge_llm_flavor})" if result.suite.judge_llm_flavor else ""),
+        + _knob_suffix(result.suite.judge_llm_knobs or {}),
         f"- **Entries:** {len(result.entries)}",
         "",
         "## Per-entry scores",
@@ -345,7 +347,7 @@ def _write_suite_report(result: SuiteResult) -> None:
     for e in result.entries:
         score = f"{e.result.score:g}" if e.result.score is not None else "n/a"
         lines.append(
-            f"- `{e.llm_under_test.llm}` (flavor: `{e.llm_under_test.flavor}`) — "
+            f"- `{e.llm_under_test.llm}`{_knob_suffix(e.llm_under_test.knobs)} — "
             f"{e.result.scenario.name}: **{score}** / 100 ({e.result.run_dir.name})"
         )
     lines += [

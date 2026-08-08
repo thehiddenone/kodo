@@ -468,48 +468,61 @@ MSG_LOCAL_LLM_ADD_SERVER_URL = "local_llm.add_server_url"
 MSG_LOCAL_LLM_UNINSTALL = "local_llm.uninstall"
 MSG_LOCAL_LLM_REMOVE = "local_llm.remove"
 
-# Client → Server. Flavor management (doc/LLM_REGISTRY.md §4.6) — a flavor is
-# a named, alternate llama-server launch config (CLI args) for one local
-# registry entry, e.g. a "1M context" or "VRAM-tight" variant of the same
-# GGUF. Predefined flavors ship on the hardcoded entry itself and are
-# strictly read-only; these four messages manage the *custom* (user-added)
-# ones and select which one (if any) is active. All four reply with
-# ``local_llm.registry_state`` like every other ``local_llm.*`` mutation.
-#   local_llm.add_flavor        {name, flavor_name, description?,
-#                                 llama_args_text?, min_ram?, min_vram?} —
-#                                 always creates a *new* flavor slot
-#                                 (auto-generated id from flavor_name);
-#                                 llama_args_text is the raw multi-line
-#                                 "--flag value" text box content, parsed
-#                                 server-side (parse_llama_args_text);
-#                                 min_ram/min_vram (GB) default to 0.
-#   local_llm.update_flavor     {name, flavor_id, flavor_name, description?,
-#                                 llama_args_text?, min_ram?, min_vram?} —
-#                                 overwrites an *existing custom* flavor's
-#                                 definition in place, keeping its id;
-#                                 rejected outright if flavor_id names a
-#                                 predefined flavor (read-only — copy it into
-#                                 a new flavor via add_flavor instead).
-#   local_llm.remove_flavor     {name, flavor_id} — predefined flavors are
-#                                 rejected; if flavor_id was active for
-#                                 ``name``, the active selection resets to
-#                                 Default ("").
-#   local_llm.set_active_flavor {name, flavor_id} — flavor_id "" selects
-#                                 Default (the entry's own launch config).
-#                                 Restarts llama-server immediately *only* if
-#                                 ``name`` is the currently selected local
-#                                 model (``models.local``) — changing an
-#                                 inactive entry's flavor just persists the
-#                                 choice for next time it's selected, since
-#                                 llama-server is one machine-wide singleton
-#                                 process shared by every open session/window
-#                                 (doc/LLM_REGISTRY.md §4.6), and restarting it
-#                                 unprompted would interrupt whichever window
-#                                 is mid-generation.
-MSG_LOCAL_LLM_ADD_FLAVOR = "local_llm.add_flavor"
-MSG_LOCAL_LLM_UPDATE_FLAVOR = "local_llm.update_flavor"
-MSG_LOCAL_LLM_REMOVE_FLAVOR = "local_llm.remove_flavor"
-MSG_LOCAL_LLM_SET_ACTIVE_FLAVOR = "local_llm.set_active_flavor"
+# Client → Server. Launch-configuration management (doc/LLM_REGISTRY.md §4.6).
+# A local registry entry runs under one of two things: its **Default profile**
+# — computed from the entry's base args plus its *knobs*, the hardcoded
+# checkbox/dropdown/number controls kodo ships — or one of zero or more
+# **user-defined profiles**, which are raw ``{flag: value}`` arg sets. Selecting
+# a profile fully replaces the Default profile's args; the two are never merged.
+# All five messages reply with ``local_llm.registry_state`` like every other
+# ``local_llm.*`` mutation.
+#   local_llm.add_profile        {name, profile_name, description?,
+#                                  llama_args_text?} — always creates a *new*
+#                                  profile (auto-generated id slugged from
+#                                  profile_name); llama_args_text is the raw
+#                                  multi-line "--flag value" text box content,
+#                                  parsed server-side (parse_llama_args_text).
+#                                  Reserved flags kodo sets per launch
+#                                  (RESERVED_LLAMA_ARGS) are dropped.
+#   local_llm.update_profile     {name, profile_id, profile_name, description?,
+#                                  llama_args_text?} — overwrites an existing
+#                                  profile's definition in place, keeping its
+#                                  id. Every profile is user-defined and
+#                                  therefore editable; there is no read-only
+#                                  variant any more (what used to be a
+#                                  predefined flavor is a knob now).
+#   local_llm.remove_profile     {name, profile_id} — if profile_id was active
+#                                  for ``name``, the selection resets to the
+#                                  Default profile ("").
+#   local_llm.set_active_profile {name, profile_id} — profile_id "" selects the
+#                                  Default profile.
+#   local_llm.set_knobs          {name, knobs: {knob_id: selection}} — applies a
+#                                  whole knob selection for ``name``'s Default
+#                                  profile (the Configure modal's Apply button).
+#                                  Bulk, not per-knob: a knob missing from the
+#                                  map is reset to its default, so a modal
+#                                  opened before another window changed
+#                                  something cannot resurrect half the old
+#                                  state. ``selection`` is an option id for a
+#                                  checkbox/dropdown knob, or the value as text
+#                                  ("" = unset) for a number knob. Stored
+#                                  sparsely — anything equal to the knob's
+#                                  current default is not written at all, so a
+#                                  later kodo release can change a default and
+#                                  have it reach everyone who never moved that
+#                                  knob.
+#
+# The last two restart llama-server immediately *only* if ``name`` is the
+# currently selected local model (``models.local``) — reconfiguring an inactive
+# entry just persists the choice for next time it's selected, since llama-server
+# is one machine-wide singleton process shared by every open session/window
+# (doc/LLM_REGISTRY.md §4.6), and restarting it unprompted would interrupt
+# whichever window is mid-generation.
+MSG_LOCAL_LLM_ADD_PROFILE = "local_llm.add_profile"
+MSG_LOCAL_LLM_UPDATE_PROFILE = "local_llm.update_profile"
+MSG_LOCAL_LLM_REMOVE_PROFILE = "local_llm.remove_profile"
+MSG_LOCAL_LLM_SET_ACTIVE_PROFILE = "local_llm.set_active_profile"
+MSG_LOCAL_LLM_SET_KNOBS = "local_llm.set_knobs"
 
 # Client → Server. Global llama-server binary override (doc/LLM_REGISTRY.md) —
 # not a model, a replacement for the executable kodo launches for every local
@@ -877,10 +890,15 @@ EVT_LLAMA_STATE = "llama.state"
 # Payload: ``{local_registry: [...], llama_server_override_path}`` — the full
 # merged registry (hardcoded + custom, each with ``installed``) so the webview
 # can just replace its whole card list rather than patching it. Each entry in
-# ``local_registry`` also carries ``flavors: [...]`` (predefined + custom,
-# each ``{id, name, description, llama_args, predefined}``) and
-# ``active_flavor`` (a flavor id, or ``""`` for Default) — see
-# doc/LLM_REGISTRY.md §4.6.
+# ``local_registry`` also carries its launch configuration (doc/LLM_REGISTRY.md
+# §4.6): ``knobs: [knob_id, ...]`` (ids into the payload-level ``knob_defs``
+# table, which carries each definition exactly once rather than repeating it on
+# all 82 entries), ``knob_selections: {knob_id: selection}`` (resolved, never
+# sparse — every knob the entry offers has an entry), ``default_profile_args``
+# (what those selections currently resolve to, so the client can show the
+# effective context size without a round trip), ``profiles: [...]`` (the
+# user-defined ones, each ``{id, name, description, llama_args}``) and
+# ``active_profile`` (a profile id, or ``""`` for the Default profile).
 EVT_LOCAL_LLM_REGISTRY_STATE = "local_llm.registry_state"
 
 # Server → Client event. Reply to MSG_LOCAL_LLM_CHECK_UPDATES, sent once the

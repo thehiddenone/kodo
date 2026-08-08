@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from ._flavors_qwen import make_qwen_1m_kv_q8, make_qwen_512k_kv_q8
-from ._types import LlamaFlavor, LocalLLMEntry
+from ._knobs_qwen import QWEN_CONTEXT_KNOB
+from ._knobs_shared import SHARED_KNOBS
+from ._types import LocalLLMEntry
 
 
 def qwen35_9b_entries() -> list[LocalLLMEntry]:
@@ -15,11 +16,7 @@ def qwen35_9b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
             filename="Qwen3.5-9B-UD-Q8_K_XL.gguf",
             context_window=262_144,
-            flavors=(
-                LlamaFlavor.make_default_kv_q8(),
-                make_qwen_512k_kv_q8("unsloth-qwen35-9b-q8-k-xl-512k-kv-q8", "512K context size"),
-                make_qwen_1m_kv_q8("unsloth-qwen35-9b-q8-k-xl-kv-q8", "1M context size"),
-            ),
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
             base_llm="Qwen35-9B",
             llm_author="Alibaba Cloud",
             quant_author="Unsloth",

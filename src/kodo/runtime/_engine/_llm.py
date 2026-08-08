@@ -196,7 +196,7 @@ class LLMPlumbingMixin:
         This session's own per-quant sampling overrides for the currently
         active local model (doc/SAMPLING.md §9) — read fresh each call, so
         moving a slider in the chat footer's sampling modal takes effect on
-        the next request with no llama-server restart. A flavor's own
+        the next request with no llama-server restart. A profile's own
         sampling knobs are not a separate layer any more: they are baked
         into ``llama_args`` and take effect at launch, same as any other CLI
         flag — see :func:`kodo.llms.resolve_effective_llama_config`.

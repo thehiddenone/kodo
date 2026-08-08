@@ -25,7 +25,7 @@ def get_context_window(model_key: str, kodo_dir: Path) -> int:
     """Return the maximum context window (in tokens) for *model_key*.
 
     Checks the cloud registry (by ``model_id``) first, then the local
-    registry (by name) — for a local entry, its *active flavor*'s
+    registry (by name) — for a local entry, its *active configuration*'s
     ``context_window`` takes precedence over the entry's own (see
     :func:`kodo.llms.resolve_effective_llama_config`), since that is the
     context size actually launched. Falls back to
