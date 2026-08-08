@@ -391,18 +391,26 @@ dropdowns, one per axis, defined in
 | **Tail culling** | `off` *(default)* | *(none — llama.cpp's own `top_k 40`/`top_p 0.95` apply)* |
 | | `minimal` | `--top-k 0 --top-p 1.0 --min-p 0.02` |
 | | `light` | `--top-k 0 --top-p 1.0 --min-p 0.05` — §3a, the mildest explicit cull |
+| | `light-medium` | `--top-k 0 --top-p 1.0 --min-p 0.065` |
 | | `medium` | `--top-k 0 --top-p 1.0 --min-p 0.08` |
+| | `medium-strong` | `--top-k 0 --top-p 1.0 --min-p 0.10` |
 | | `strong` | `--top-k 0 --top-p 1.0 --min-p 0.12 --top-nsigma 1.0` — §3c |
 | **Temperature** | `default` *(default)* | `--temp 0.8`, llama.cpp's own |
+| | `moderate` | `--temp 0.5` |
 | | `low` | `--temp 0.3` — §3b |
+| | `very-low` | `--temp 0.15` |
 | | `near-greedy` | `--temp 0.05` |
 
 Long-context extension is its own private per-model knob (§6 "Context
-extension"): Laguna's `context-laguna` offers native (8192) / 512K / 1M, each
-extended option writing `--rope-scaling yarn`, `--rope-scale` (target ÷
-native), `--yarn-orig-ctx 8192` and
-`--override-kv laguna.context_length=int:<size>`. KV-cache precision is the
-shared `kv-cache` knob, `q8_0` by default.
+extension"): Laguna's `context-laguna` offers 256K (default) / 512K / 1M.
+Unlike the Qwen context knobs, Laguna's default isn't an unscaled "native"
+option — every Laguna-S-2.1 GGUF ships with YaRN scaling already baked into
+its own metadata, defaulting to 256K (rope-scale 32 over the model's real 8K
+training context) with no launch args at all, and the model never runs at
+that unscaled 8K length. The 512K/1M options write explicit
+`--rope-scaling yarn`, `--rope-scale` (target ÷ 8192), `--yarn-orig-ctx 8192`
+and `--override-kv laguna.context_length=int:<size>`. KV-cache precision is
+the shared `kv-cache` knob, `q8_0` by default.
 
 **Two knobs, not one preset list — that is the point.** The Laguna-S-2.1
 catalog used to ship this table as five predefined *flavors* per quant

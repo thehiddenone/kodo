@@ -146,6 +146,16 @@ TAIL_CULLING_KNOB = LlamaKnob(
             llama_args={"--top-k": "0", "--top-p": "1.0", "--min-p": "0.05"},
         ),
         KnobOption(
+            id="light-medium",
+            name="Light-medium (min-p 0.065)",
+            description=(
+                "Between Light and Medium: reach for this when Light's 5% floor still lets an "
+                "occasional wrong token through but Medium's 8% feels like more cut than the "
+                "quant needs."
+            ),
+            llama_args={"--top-k": "0", "--top-p": "1.0", "--min-p": "0.065"},
+        ),
+        KnobOption(
             id="medium",
             name="Medium (min-p 0.08)",
             description=(
@@ -153,6 +163,16 @@ TAIL_CULLING_KNOB = LlamaKnob(
                 "wrong-but-plausible token."
             ),
             llama_args={"--top-k": "0", "--top-p": "1.0", "--min-p": "0.08"},
+        ),
+        KnobOption(
+            id="medium-strong",
+            name="Medium-strong (min-p 0.10)",
+            description=(
+                "The last stop before Strong's logit-space cutoff: still pure min-p, tightened "
+                "to a 10% floor for a quant that keeps wandering under Medium but does not yet "
+                "need top-n-sigma's extra machinery."
+            ),
+            llama_args={"--top-k": "0", "--top-p": "1.0", "--min-p": "0.10"},
         ),
         KnobOption(
             id="strong",
@@ -197,6 +217,16 @@ TEMPERATURE_KNOB = LlamaKnob(
             llama_args={"--temp": "0.8"},
         ),
         KnobOption(
+            id="moderate",
+            name="Moderate (0.5)",
+            description=(
+                "A middle ground between the default and Low: takes some of the edge off "
+                "without giving up as much variety, for when the default occasionally "
+                "misformats but Low feels like overcorrecting."
+            ),
+            llama_args={"--temp": "0.5"},
+        ),
+        KnobOption(
             id="low",
             name="Low (0.3)",
             description=(
@@ -204,6 +234,15 @@ TEMPERATURE_KNOB = LlamaKnob(
                 "opening token. The usual answer to malformed tool calls."
             ),
             llama_args={"--temp": "0.3"},
+        ),
+        KnobOption(
+            id="very-low",
+            name="Very low (0.15)",
+            description=(
+                "Between Low and Near-greedy: for a model that still drifts on strict-format "
+                "output at 0.3 but does not need Near-greedy's near-total loss of variety."
+            ),
+            llama_args={"--temp": "0.15"},
         ),
         KnobOption(
             id="near-greedy",

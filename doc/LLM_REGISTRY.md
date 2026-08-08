@@ -692,8 +692,8 @@ The shared knobs — offered by every launchable entry, `_knobs_shared.py`:
 | id | kind | options / range | flags |
 |----|------|-----------------|-------|
 | `kv-cache` | dropdown | `q8_0` (default), `f16` | `--cache-type-k`, `--cache-type-v` |
-| `tail-culling` | dropdown | `off` (default), `minimal`, `light`, `medium`, `strong` | `--top-k`, `--top-p`, `--min-p`, `--top-nsigma` |
-| `temperature` | dropdown | `default` (0.8), `low` (0.3), `near-greedy` (0.05) | `--temp` |
+| `tail-culling` | dropdown | `off` (default), `minimal`, `light`, `light-medium`, `medium`, `medium-strong`, `strong` | `--top-k`, `--top-p`, `--min-p`, `--top-nsigma` |
+| `temperature` | dropdown | `default` (0.8), `moderate` (0.5), `low` (0.3), `very-low` (0.15), `near-greedy` (0.05) | `--temp` |
 | `gpu-layers` | number, advanced | default `-1` | `--n-gpu-layers` |
 | `cpu-moe` | number, advanced | unset by default | `--n-cpu-moe` |
 | `flash-attention` | dropdown, advanced | `auto` (default), `on`, `off` | `--flash-attn` |
@@ -723,21 +723,30 @@ user-defined profile and as a per-session override, since hiding it in one of
 the two editors while offering it in the other would be arbitrary.
 
 **Private per-model knobs.** Anything needing model knowledge is built by the
-family module instead of being shared. The only ones today are the three YaRN
-long-context knobs (`_knobs_context.make_yarn_context_knob`), which need the
-model's architecture key and native context length:
+family module instead of being shared. The two Qwen ones are the YaRN
+long-context knobs built by `_knobs_context.make_yarn_context_knob`, which
+need the model's architecture key and native context length:
 
 | knob id | arch key | native | options |
 |---------|----------|--------|---------|
 | `context-qwen35` | `qwen35` | 262144 | native (default), 512K, 1M |
 | `context-qwen35moe` | `qwen35moe` | 262144 | native (default), 512K, 1M |
-| `context-laguna` | `laguna` | 8192 | native (default), 512K, 1M |
 
 Each extended option writes `--ctx-size`, `--rope-scaling yarn`,
 `--rope-scale` (target ÷ native), `--yarn-orig-ctx` and
 `--override-kv <arch>.context_length=int:<size>`; the "native" option writes
 nothing at all, letting the base `--ctx-size 0` stand. `arch_key` is model
 knowledge — never derive it from the entry name.
+
+**Laguna is the exception** and does *not* use `make_yarn_context_knob`.
+Every Unsloth Laguna-S-2.1 GGUF ships with YaRN scaling already baked into its
+own metadata, defaulting to 256K (rope-scale 32 over the model's real 8K
+training context) with no launch args at all — unlike Qwen, this model never
+runs at its unscaled native length, so there is no "native" option to offer.
+`context-laguna` (hand-built in `_local_llm_laguna_s_21.py`) instead offers
+`256k` (default, no args — relies on the GGUF's own baked-in scaling) / `512k`
+/ `1m`, where the latter two write the same explicit YaRN args as the Qwen
+knobs, computed off the real native context of 8192.
 
 #### Composition
 
