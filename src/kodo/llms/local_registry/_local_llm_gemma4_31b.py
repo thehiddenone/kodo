@@ -1,4 +1,4 @@
-"""Hardcoded Gemma4-31B GGUF catalog entries."""
+"""Gemma4-31B GGUF catalog entries."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Hardcoded Ornith10-35B-A3B GGUF catalog entries."""
+"""Ornith10-35B-A3B GGUF catalog entries."""
 
 from __future__ import annotations
 

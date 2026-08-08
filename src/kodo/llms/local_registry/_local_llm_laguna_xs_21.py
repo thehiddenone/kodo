@@ -1,0 +1,246 @@
+"""Laguna-XS-2.1 GGUF catalog entries."""
+
+from __future__ import annotations
+
+from ._knobs_shared import SHARED_KNOBS
+from ._types import LocalLLMEntry
+
+
+def laguna_xs_21_entries() -> list[LocalLLMEntry]:
+    return [
+        LocalLLMEntry(
+            name="poolside-laguna-xs-2-1-bf16",
+            kind="hardcoded_hf",
+            description="Laguna-XS-2.1 BF16 by Poolside",
+            repo_id="poolside/Laguna-XS-2.1-GGUF",
+            filename="Laguna-XS-2.1-BF16.gguf",
+            knobs=SHARED_KNOBS,
+            context_window=262_144,
+            base_llm="Laguna-XS-2.1",
+            llm_author="Poolside",
+            quant_author="Poolside",
+            quant_type="BF16",
+            size_hint="66.9 GB",
+            gpu_tip="~74GB total at 128K context — the BF16 build is the heaviest way to run "
+            "Laguna XS 2.1, but it's still a sparse 3B-active MoE, so most of those weights sit "
+            "idle on any given token. A 16GB GPU (e.g. RTX 4080) keeps the always-on "
+            "attention/shared layers at full speed while llama.cpp offloads the inactive experts "
+            "to a 96GB DDR5 kit.",
+            mac_tip="Needs ~74GB — fits a 96GB MacBook Pro (M4 Max/M5 Max) comfortably.",
+            min_memory=96,
+            memory=96,
+            llamacpp_version=10087,
+        ),
+        LocalLLMEntry(
+            name="bartowski-laguna-xs-2-1-q8_0",
+            kind="hardcoded_hf",
+            description="Laguna-XS-2.1 Q8_0 by bartowski",
+            repo_id="bartowski/Laguna-XS-2.1-GGUF",
+            filename="Laguna-XS-2.1-Q8_0.gguf",
+            knobs=SHARED_KNOBS,
+            context_window=262_144,
+            base_llm="Laguna-XS-2.1",
+            llm_author="Poolside",
+            quant_author="bartowski",
+            quant_type="Q8_0",
+            size_hint="35.6 GB",
+            gpu_tip="~43GB total at 128K context. A 16GB GPU (e.g. RTX 4060 Ti 16GB) plus a 48GB "
+            "DDR5 kit covers it — llama.cpp's MoE offloading keeps this close to full-GPU speed "
+            "without needing the BF16 build's memory footprint.",
+            mac_tip="Needs ~43GB — fits a 48GB MacBook Pro comfortably.",
+            min_memory=48,
+            memory=48,
+            llamacpp_version=10087,
+        ),
+        LocalLLMEntry(
+            name="bartowski-laguna-xs-2-1-q6_k_l",
+            kind="hardcoded_hf",
+            description="Laguna-XS-2.1 Q6_K_L by bartowski",
+            repo_id="bartowski/Laguna-XS-2.1-GGUF",
+            filename="Laguna-XS-2.1-Q6_K_L.gguf",
+            knobs=SHARED_KNOBS,
+            context_window=262_144,
+            base_llm="Laguna-XS-2.1",
+            llm_author="Poolside",
+            quant_author="bartowski",
+            quant_type="Q6_K_L",
+            size_hint="29.1 GB",
+            gpu_tip="~36GB total at 128K context. An 8GB GPU (e.g. RTX 3060 Ti) keeps the "
+            "shared/attention layers at full speed while llama.cpp offloads the inactive experts "
+            "to a 32GB DDR5 kit.",
+            mac_tip="Needs ~36GB — fits a 48GB MacBook Pro comfortably; a 32GB M4 Pro/M5 Pro is "
+            "tight.",
+            min_memory=32,
+            memory=48,
+            llamacpp_version=10087,
+        ),
+        LocalLLMEntry(
+            name="bartowski-laguna-xs-2-1-q5_k_l",
+            kind="hardcoded_hf",
+            description="Laguna-XS-2.1 Q5_K_L by bartowski",
+            repo_id="bartowski/Laguna-XS-2.1-GGUF",
+            filename="Laguna-XS-2.1-Q5_K_L.gguf",
+            knobs=SHARED_KNOBS,
+            context_window=262_144,
+            base_llm="Laguna-XS-2.1",
+            llm_author="Poolside",
+            quant_author="bartowski",
+            quant_type="Q5_K_L",
+            size_hint="24.1 GB",
+            gpu_tip="~31GB total at 128K context. An 8GB GPU (e.g. RTX 5060) plus a 32GB DDR5 kit "
+            "is enough — the sparse MoE architecture means offloading the inactive experts barely "
+            "costs any speed.",
+            mac_tip="Needs ~31GB — a 32GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) is right at the "
+            "limit; a 36GB config is safer if available.",
+            min_memory=32,
+            memory=32,
+            llamacpp_version=10087,
+        ),
+        LocalLLMEntry(
+            name="bartowski-laguna-xs-2-1-q5_k_l",
+            kind="hardcoded_hf",
+            description="Laguna-XS-2.1 Q5_K_L by bartowski",
+            repo_id="bartowski/Laguna-XS-2.1-GGUF",
+            filename="Laguna-XS-2.1-Q5_K_L.gguf",
+            knobs=SHARED_KNOBS,
+            context_window=262_144,
+            base_llm="Laguna-XS-2.1",
+            llm_author="Poolside",
+            quant_author="bartowski",
+            quant_type="Q5_K_L",
+            size_hint="24.1 GB",
+            gpu_tip="~31GB total at 128K context. An 8GB GPU (e.g. RTX 5060) plus a 32GB DDR5 kit "
+            "is enough — the sparse MoE architecture means offloading the inactive experts barely "
+            "costs any speed.",
+            mac_tip="Needs ~31GB — a 32GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) is right at the "
+            "limit; a 36GB config is safer if available.",
+            min_memory=32,
+            memory=32,
+            llamacpp_version=10087,
+        ),
+        LocalLLMEntry(
+            name="bartowski-laguna-xs-2-1-q4_k_l",
+            kind="hardcoded_hf",
+            description="Laguna-XS-2.1 Q4_K_L by bartowski",
+            repo_id="bartowski/Laguna-XS-2.1-GGUF",
+            filename="Laguna-XS-2.1-Q4_K_L.gguf",
+            knobs=SHARED_KNOBS,
+            context_window=262_144,
+            base_llm="Laguna-XS-2.1",
+            llm_author="Poolside",
+            quant_author="bartowski",
+            quant_type="Q4_K_L",
+            size_hint="20.7 GB",
+            gpu_tip="~28GB total at 128K context. An 8GB GPU (e.g. RTX 4060) plus a 24GB DDR5 kit "
+            "covers it via llama.cpp's expert offloading.",
+            mac_tip="Needs ~28GB — fits a 32GB MacBook Pro comfortably; a 24GB M4 Pro/M5 Pro is "
+            "tight.",
+            min_memory=24,
+            memory=32,
+            llamacpp_version=10087,
+        ),
+        LocalLLMEntry(
+            name="bartowski-laguna-xs-2-1-q4_k_s",
+            kind="hardcoded_hf",
+            description="Laguna-XS-2.1 Q4_K_S by bartowski",
+            repo_id="bartowski/Laguna-XS-2.1-GGUF",
+            filename="Laguna-XS-2.1-Q4_K_S.gguf",
+            knobs=SHARED_KNOBS,
+            context_window=262_144,
+            base_llm="Laguna-XS-2.1",
+            llm_author="Poolside",
+            quant_author="bartowski",
+            quant_type="Q4_K_S",
+            size_hint="19.8 GB",
+            gpu_tip="~27GB total at 128K context. An 8GB GPU (e.g. RX 7600) plus a 24GB DDR5 kit "
+            "handles it comfortably, with llama.cpp offloading the inactive experts.",
+            mac_tip="Needs ~27GB — fits a 32GB MacBook Pro comfortably; a 24GB M4 Pro/M5 Pro is "
+            "tight.",
+            min_memory=24,
+            memory=32,
+            llamacpp_version=10087,
+        ),
+        LocalLLMEntry(
+            name="bartowski-laguna-xs-2-1-q3_k_xl",
+            kind="hardcoded_hf",
+            description="Laguna-XS-2.1 Q3_K_XL by bartowski",
+            repo_id="bartowski/Laguna-XS-2.1-GGUF",
+            filename="Laguna-XS-2.1-Q3_K_XL.gguf",
+            knobs=SHARED_KNOBS,
+            context_window=262_144,
+            base_llm="Laguna-XS-2.1",
+            llm_author="Poolside",
+            quant_author="bartowski",
+            quant_type="Q3_K_XL",
+            size_hint="16.3 GB",
+            gpu_tip="~23GB total at 128K context. An 8GB GPU (e.g. RTX 3060 Ti) plus a 24GB DDR5 "
+            "kit is enough to run this comfortably.",
+            mac_tip="Needs ~23GB — fits a 24GB MacBook Pro (M4 Pro/M5 Pro), though it's close to "
+            "the limit.",
+            min_memory=24,
+            memory=24,
+            llamacpp_version=10087,
+        ),
+        LocalLLMEntry(
+            name="bartowski-laguna-xs-2-1-q3_k_m",
+            kind="hardcoded_hf",
+            description="Laguna-XS-2.1 Q3_K_M by bartowski",
+            repo_id="bartowski/Laguna-XS-2.1-GGUF",
+            filename="Laguna-XS-2.1-Q3_K_M.gguf",
+            knobs=SHARED_KNOBS,
+            context_window=262_144,
+            base_llm="Laguna-XS-2.1",
+            llm_author="Poolside",
+            quant_author="bartowski",
+            quant_type="Q3_K_M",
+            size_hint="15.6 GB",
+            gpu_tip="~23GB total at 128K context. An 8GB GPU (e.g. RTX 5060) plus a 24GB DDR5 kit "
+            "covers it, with llama.cpp keeping the always-on layers at full speed.",
+            mac_tip="Needs ~23GB — a 24GB MacBook Pro (M4 Pro/M5 Pro) covers it, but there's "
+            "little headroom.",
+            min_memory=24,
+            memory=24,
+            llamacpp_version=10087,
+        ),
+        LocalLLMEntry(
+            name="bartowski-laguna-xs-2-1-q3_k_s",
+            kind="hardcoded_hf",
+            description="Laguna-XS-2.1 Q3_K_S by bartowski",
+            repo_id="bartowski/Laguna-XS-2.1-GGUF",
+            filename="Laguna-XS-2.1-Q3_K_S.gguf",
+            knobs=SHARED_KNOBS,
+            context_window=262_144,
+            base_llm="Laguna-XS-2.1",
+            llm_author="Poolside",
+            quant_author="bartowski",
+            quant_type="Q3_K_S",
+            size_hint="14.9 GB",
+            gpu_tip="~22GB total at 128K context. An 8GB GPU (e.g. RTX 4060) plus a 24GB DDR5 kit "
+            "handles it comfortably.",
+            mac_tip="Needs ~22GB — fits a 24GB MacBook Pro (M4 Pro/M5 Pro) comfortably.",
+            min_memory=24,
+            memory=24,
+            llamacpp_version=10087,
+        ),
+        LocalLLMEntry(
+            name="bartowski-laguna-xs-2-1-q2_k_l",
+            kind="hardcoded_hf",
+            description="Laguna-XS-2.1 Q2_K_L by bartowski",
+            repo_id="bartowski/Laguna-XS-2.1-GGUF",
+            filename="Laguna-XS-2.1-Q2_K_L.gguf",
+            knobs=SHARED_KNOBS,
+            context_window=262_144,
+            base_llm="Laguna-XS-2.1",
+            llm_author="Poolside",
+            quant_author="bartowski",
+            quant_type="Q2_K_L",
+            size_hint="12.4 GB",
+            gpu_tip="~19GB total at 128K context. An 8GB GPU (e.g. RX 7600) plus a 16GB DDR5 kit "
+            "is enough — the smallest way to run Laguna XS 2.1 locally.",
+            mac_tip="Needs ~19GB — fits a 24GB MacBook Pro comfortably; a 16GB MacBook Pro (M4/M5) "
+            "is tight.",
+            min_memory=16,
+            memory=24,
+            llamacpp_version=10087,
+        ),
+    ]

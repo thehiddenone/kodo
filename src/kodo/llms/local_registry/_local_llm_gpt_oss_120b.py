@@ -1,4 +1,4 @@
-"""Hardcoded GPT-OSS-120B GGUF catalog entries."""
+"""GPT-OSS-120B GGUF catalog entries."""
 
 from __future__ import annotations
 

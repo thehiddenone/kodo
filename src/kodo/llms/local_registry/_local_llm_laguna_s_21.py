@@ -1,4 +1,4 @@
-"""Hardcoded Laguna-S-2.1 GGUF catalog entries.
+"""Laguna-S-2.1 GGUF catalog entries.
 
 Every entry offers the shared knobs plus one private one:
 :data:`LAGUNA_CONTEXT_KNOB`, reaching 512K or 1M tokens on top of a 256K
@@ -66,7 +66,7 @@ LAGUNA_CONTEXT_KNOB = LlamaKnob(
     options=(
         KnobOption(
             id="256k",
-            name="256K (default, YaRN ×32)",
+            name="256K (default)",
             description=(
                 "The context every Laguna-S-2.1 quant ships pre-scaled to, via YaRN "
                 "rope-scaling baked into the GGUF's own metadata (factor 32 over the 8K "

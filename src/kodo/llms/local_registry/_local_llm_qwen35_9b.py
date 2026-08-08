@@ -1,4 +1,4 @@
-"""Hardcoded Qwen35-9B GGUF catalog entries."""
+"""Qwen35-9B GGUF catalog entries."""
 
 from __future__ import annotations
 
@@ -9,6 +9,28 @@ from ._types import LocalLLMEntry
 
 def qwen35_9b_entries() -> list[LocalLLMEntry]:
     return [
+        LocalLLMEntry(
+            name="unsloth-qwen35-9b-bf16",
+            kind="hardcoded_hf",
+            description="Qwen 3.5 9B BF16 by Unsloth",
+            repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
+            filename="Qwen3.5-9B-BF16.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen35-9B",
+            llm_author="Alibaba Cloud",
+            quant_author="Unsloth",
+            quant_type="BF16",
+            size_hint="17.9 GB",
+            gpu_tip="~22GB total at 128K context. An 8GB GPU (e.g. RTX 4060 Ti) plus a 24GB "
+            "DDR5 kit covers it — llama.cpp splits this dense model layer-by-layer between GPU "
+            "and CPU, so even the BF16 build doesn't need a workstation card.",
+            mac_tip="Needs ~22GB — fits a 24GB MacBook Pro (M4, M4 Pro, M5, or M5 Pro) "
+            "comfortably.",
+            min_memory=24,
+            memory=24,
+            llamacpp_version=5092,
+        ),
         LocalLLMEntry(
             name="unsloth-qwen35-9b-q8-k-xl",
             kind="hardcoded_hf",
@@ -26,8 +48,109 @@ def qwen35_9b_entries() -> list[LocalLLMEntry]:
             "DDR5 kit is plenty — this one barely needs the offloading trick at all.",
             mac_tip="Needs ~17GB — fits a 24GB MacBook Pro (M4, M4 Pro, M5, or M5 Pro) "
             "comfortably.",
-            min_memory=24,
+            min_memory=16,
             memory=24,
+            llamacpp_version=5092,
+        ),
+        LocalLLMEntry(
+            name="unsloth-qwen35-9b-q6-k-xl",
+            kind="hardcoded_hf",
+            description="Qwen 3.5 9B UD-Q6_K_XL by Unsloth",
+            repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
+            filename="Qwen3.5-9B-UD-Q6_K_XL.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen35-9B",
+            llm_author="Alibaba Cloud",
+            quant_author="Unsloth",
+            quant_type="UD-Q6_K_XL",
+            size_hint="8.76 GB",
+            gpu_tip="~13GB total at 128K context. Any 8GB GPU (e.g. RTX 3060 Ti) plus a 16GB "
+            "DDR5 kit covers it comfortably, with llama.cpp's layer offloading filling in the "
+            "gap.",
+            mac_tip="Needs ~13GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
+            min_memory=12,
+            memory=16,
+            llamacpp_version=5092,
+        ),
+        LocalLLMEntry(
+            name="unsloth-qwen35-9b-q5-k-xl",
+            kind="hardcoded_hf",
+            description="Qwen 3.5 9B UD-Q5_K_XL by Unsloth",
+            repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
+            filename="Qwen3.5-9B-UD-Q5_K_XL.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen35-9B",
+            llm_author="Alibaba Cloud",
+            quant_author="Unsloth",
+            quant_type="UD-Q5_K_XL",
+            size_hint="6.74 GB",
+            gpu_tip="~11GB total at 128K context. Any 8GB GPU (e.g. RX 7600) plus a 16GB DDR5 "
+            "kit is plenty.",
+            mac_tip="Needs ~11GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
+            min_memory=12,
+            memory=16,
+            llamacpp_version=5092,
+        ),
+        LocalLLMEntry(
+            name="unsloth-qwen35-9b-q4-k-xl",
+            kind="hardcoded_hf",
+            description="Qwen 3.5 9B UD-Q4_K_XL by Unsloth",
+            repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
+            filename="Qwen3.5-9B-UD-Q4_K_XL.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen35-9B",
+            llm_author="Alibaba Cloud",
+            quant_author="Unsloth",
+            quant_type="UD-Q4_K_XL",
+            size_hint="5.97 GB",
+            gpu_tip="~10GB total at 128K context. Any 8GB GPU (e.g. RTX 4060) plus a 16GB DDR5 "
+            "kit covers it comfortably.",
+            mac_tip="Needs ~10GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
+            min_memory=8,
+            memory=12,
+            llamacpp_version=5092,
+        ),
+        LocalLLMEntry(
+            name="unsloth-qwen35-9b-q3-k-xl",
+            kind="hardcoded_hf",
+            description="Qwen 3.5 9B UD-Q3_K_XL by Unsloth",
+            repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
+            filename="Qwen3.5-9B-UD-Q3_K_XL.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen35-9B",
+            llm_author="Alibaba Cloud",
+            quant_author="Unsloth",
+            quant_type="UD-Q3_K_XL",
+            size_hint="5.05 GB",
+            gpu_tip="~9GB total at 128K context. Any 8GB GPU (e.g. RTX 3060 Ti) plus a 16GB "
+            "DDR5 kit handles this easily.",
+            mac_tip="Needs ~9GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
+            min_memory=8,
+            memory=8,
+            llamacpp_version=5092,
+        ),
+        LocalLLMEntry(
+            name="unsloth-qwen35-9b-q2-k-xl",
+            kind="hardcoded_hf",
+            description="Qwen 3.5 9B UD-Q2_K_XL by Unsloth",
+            repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
+            filename="Qwen3.5-9B-UD-Q2_K_XL.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen35-9B",
+            llm_author="Alibaba Cloud",
+            quant_author="Unsloth",
+            quant_type="UD-Q2_K_XL",
+            size_hint="4.12 GB",
+            gpu_tip="~8GB total at 128K context. Any 8GB GPU (e.g. RTX 5060) plus a 16GB DDR5 "
+            "kit handles this, the smallest of the Qwen 3.5 9B builds.",
+            mac_tip="Needs ~8GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
+            min_memory=8,
+            memory=8,
             llamacpp_version=5092,
         ),
     ]

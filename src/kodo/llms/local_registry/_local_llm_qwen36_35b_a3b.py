@@ -1,4 +1,4 @@
-"""Hardcoded Qwen36-35B-A3B GGUF catalog entries."""
+"""Qwen36-35B-A3B GGUF catalog entries."""
 
 from __future__ import annotations
 
