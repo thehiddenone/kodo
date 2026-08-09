@@ -546,7 +546,8 @@ before it must answer. Two mechanisms exist, keyed off `base_llm` (never
 
 - **`qwen_reasoning_budget`** (6 tiers: `minimal`, `low`, `medium`, `high`,
   `huge`, `unlimited`) — `Qwen36-27B`, `Qwen36-35B-A3B`, `Qwen35-9B`,
-  `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith10-35B-A3B`
+  `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith10-35B-A3B`, `Ornith10-9B`,
+  `Laguna-S-2.1`, `Laguna-XS-2.1`
   (`QWEN_REASONING_BUDGET_FAMILY` in `kodo/llms/local_registry/`; notably
   **not** `Qwen3-Coder-Next-80B`, which despite the name shares no thinking
   mechanism with the rest of the Qwen lineup — it has no thinking family at
@@ -569,7 +570,7 @@ before it must answer. Two mechanisms exist, keyed off `base_llm` (never
   the `-1`/no-limit sentinel it used to be). Default tier is `unlimited`.
   `Qwen35-9B` additionally needs
   `chat_template_kwargs: {"enable_thinking": true}` on every request, since
-  its chat template has thinking off by default (the other five family
+  its chat template has thinking off by default (the other family
   members think by default). Per-request `max_tokens` is no longer a flat
   constant either: `_build_thinking_extra_body` (`_llama.py`) sizes it as the
   resolved tier's budget plus a fixed 8192-token headroom
@@ -691,27 +692,36 @@ The shared knobs — offered by every launchable entry, `_knobs_shared.py`:
 
 | id | kind | options / range | flags |
 |----|------|-----------------|-------|
-| `kv-cache` | dropdown | `q8_0` (default), `f16` | `--cache-type-k`, `--cache-type-v` |
-| `tail-culling` | dropdown | `off` (default), `minimal`, `light`, `light-medium`, `medium`, `medium-strong`, `strong` | `--top-k`, `--top-p`, `--min-p`, `--top-nsigma` |
-| `temperature` | dropdown | `default` (0.8), `moderate` (0.5), `low` (0.3), `very-low` (0.15), `near-greedy` (0.05) | `--temp` |
+| `kv-cache` | dropdown | `q8_0` (default), `q4_0`, `f16` | `--cache-type-k`, `--cache-type-v` |
+| `tail-culling` | dropdown | `off` (default), `minimal`, `light`, `light-medium`, `medium`, `medium-strong`, `strong` | `--min-p`, `--top-nsigma` |
+| `temperature` | dropdown | 13 rungs, `very-high` (1.5) down to `near-greedy` (0.05); `default` (0.8) — full table in QUANT_SAMPLING.md §7 | `--temp` |
 | `gpu-layers` | number, advanced | default `-1` | `--n-gpu-layers` |
 | `cpu-moe` | number, advanced | unset by default | `--n-cpu-moe` |
-| `flash-attention` | dropdown, advanced | `auto` (default), `on`, `off` | `--flash-attn` |
+| `nucleus-sampling` | dropdown, advanced | `off` (default), `top-p 1.00` .. `top-p 0.80` in steps of `0.05` | `--top-k`, `--top-p` |
 
 `kv-cache` is what replaced the `make_default_kv_q8` / `make_default_kv_fp16`
-pair of predefined flavors: an F16 GGUF now just declares
-`knob_defaults={"kv-cache": "f16"}` (§4.6a).
+pair of predefined flavors: an F16/BF16 GGUF now just declares
+`knob_defaults=KV_CACHE_F16_DEFAULT` (§4.6a), a shared constant
+(`_knobs_shared.py`) rather than a hand-typed `{"kv-cache": "f16"}` literal,
+so every unquantized-weight entry stays in sync with the knob's own `f16`
+option id. `q4_0` is the more aggressive quantized option below `q8_0`, for
+when context length is the binding constraint and `q8_0` alone doesn't leave
+enough headroom.
 
-`tail-culling` and `temperature` are deliberately **two** knobs rather than
-one "sampling preset" dropdown, and each holds the other's territory fixed:
-every culling option leaves `--temp` alone, and the temperature option writes
-nothing but `--temp`. That is the same "one axis moves at a time" rule the
-five predecessor preset flavors followed by convention (doc/QUANT_SAMPLING.md
-§4) — as knobs it is enforced structurally by the invariant above. Every
-active culling option also pins `--top-k 0`/`--top-p 1.0` so that min-p (plus
-top-n-sigma in the strongest state) is the *only* truncation stage in play;
-otherwise llama.cpp's own `top_k 40`/`top_p 0.95` defaults would still be
-silently cutting alongside it.
+`tail-culling`, `nucleus-sampling` and `temperature` are deliberately
+**three** knobs rather than one "sampling preset" dropdown, and each holds
+the others' territory fixed: culling only ever writes `--min-p`/`--top-nsigma`,
+nucleus sampling only `--top-k`/`--top-p`, and temperature only `--temp`.
+That is the same "one axis moves at a time" rule the five predecessor preset
+flavors followed by convention (doc/QUANT_SAMPLING.md §4) — as knobs it is
+enforced structurally by the invariant above. `nucleus-sampling` is `off` by
+default, so unless a rung is picked, llama.cpp's own `top_k 40`/`top_p 0.95`
+defaults apply alongside whatever `tail-culling` is doing; picking a rung
+also forces `--top-k 0` so `--top-p` is the only truncation that knob applies
+(flash attention was previously a shared knob here too, but was removed —
+modern llama.cpp always uses it when the build/hardware support it, so
+forcing it on or off is no longer offered as a Default-profile control; it
+remains reachable via `kodo.llms._arg_catalog` on a user-defined profile).
 
 **No knob enables a repetition penalty** — not DRY, not `--repeat-penalty`,
 not presence/frequency. One flavor once did, and it made `read_attachment`
@@ -916,7 +926,7 @@ An entry may override a knob's own default state:
 ```python
 LocalLLMEntry(
     name="unsloth-gpt-oss-120b-f16",
-    knob_defaults={"kv-cache": "f16"},
+    knob_defaults=KV_CACHE_F16_DEFAULT,
     ...
 )
 ```
@@ -926,6 +936,16 @@ own default, and it is what replaced the `make_default_kv_fp16` predefined
 flavor. `_validate_catalog` checks at import time that every `knob_defaults`
 key names a knob the entry actually offers and that its value is a real
 option.
+
+`KV_CACHE_F16_DEFAULT` (`_knobs_shared.py`, `{"kv-cache": "f16"}`) is the one
+existing convention use of this mechanism: every hardcoded entry whose
+`quant_type` is `"F16"`/`"BF16"` (unquantized weights) sets
+`knob_defaults=KV_CACHE_F16_DEFAULT` so the KV cache defaults to full
+precision there instead of the knob's own `q8_0` default — a quantized-only
+cache would otherwise be the least precise thing in an unquantized-weight
+pipeline. As of this writing that's the `gpt-oss-120b`/`gpt-oss-20b` F16
+entries and the `laguna-xs-2.1`/`qwen35-9b`/`ornith10-9b`/`ornith10-35b-a3b`
+BF16 entries — any new F16/BF16 entry should set it too.
 
 Because selections are stored sparsely (§4.6), changing a `knob_defaults`
 value in a later release reaches every user who never deliberately moved that

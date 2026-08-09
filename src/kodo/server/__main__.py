@@ -17,7 +17,7 @@ from ._lifecycle import Lifecycle
 _log = logging.getLogger(__name__)
 
 # Idle period with zero connected windows before the singleton self-reaps.
-_IDLE_SHUTDOWN_SECONDS: float = 30.0
+_IDLE_SHUTDOWN_SECONDS: float = 5.0
 
 
 def main(argv: list[str] | None = None) -> None:

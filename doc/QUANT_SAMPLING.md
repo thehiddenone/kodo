@@ -33,7 +33,7 @@ moving, and they are worth moving separately:
 | **Light tail cull** | `0.8` | `0.05` | — | Default starting point |
 | **Medium tail cull** | `0.8` | `0.08` | — | Occasional wrong-but-plausible tokens |
 | **Strong tail cull** | `0.8` | `0.12` | `1.0` | Still wandering under medium |
-| **Low temperature** | `0.3` | `0.05` | — | Format correctness failing |
+| **Strict temperature** | `0.3` | `0.05` | — | Format correctness failing |
 | **Near-greedy** | `0.05` | `0.02` | — | Maximum format reliability |
 
 All five also set `top_k 0`, `top_p 1.0` and `repeat_penalty 1.0` — explicitly
@@ -140,9 +140,9 @@ mistake:
 
 Reach for it when you have a specific symptom that points at it — format
 correctness failing (malformed JSON tool-call arguments, broken syntax, an
-identifier that must be copied exactly from context). That is what the "Low
-temperature" (`0.3`) and "Near-greedy" (`0.05`) presets are for, and both keep
-truncation mild so the two axes stay separable.
+identifier that must be copied exactly from context). That is what the
+Temperature knob's "Strict" (`0.3`) and "Near-greedy" (`0.05`) options are for,
+and both keep truncation mild so the two axes stay separable.
 
 `temperature 0.0` (greedy) is a legitimate choice for tool-call-heavy work. Its
 real cost is that a wrong first token cannot be escaped by retrying, since the
@@ -286,7 +286,7 @@ additive on logits, both blind to correctness. Keep at `0.0`.
 | Parameter | Why not, on a lossy quant |
 |---|---|
 | `xtc_probability` | XTC *removes the top candidates* by design. On a quant whose top candidates are the only part of the distribution still trustworthy (§2), this deletes the signal and keeps the noise. Never enable for code or tool calls at any bit width. |
-| `temperature > 1.0` | Amplifies the quantization noise floor relative to the signal (§3b). |
+| `temperature > 1.0` | Amplifies the quantization noise floor relative to the signal (§3b). Offered as explicit Temperature knob options (`t10`/`high`/`very-high` — "Loose"/"Very loose"/"Extremely loose", §7) for creative/open-ended use, not agentic or tool-call work. |
 | `mirostat` | Targets a fixed output entropy by adjusting its cutoff per token. A quant's entropy is already inflated by noise, so the controller reads that inflation as real surprise and truncates *more* — but it is chasing a number, not the noise, and its behaviour becomes hard to reason about. It also bypasses the rest of the sampler chain. Prefer the direct truncation knobs. |
 | `dynatemp_range` | Raises temperature where the model is uncertain — exactly the positions where a lossy quant is least trustworthy. It is the opposite of the §2 conclusion. |
 | `top_p < 0.9` | Repetitive output that looks fine and fails on structure (SAMPLING.md §8d). |
@@ -342,7 +342,7 @@ re-run the same prompt.
 | Symptom | Likely cause | Move |
 |---|---|---|
 | Occasional wrong-but-plausible token; code that almost compiles | Noise floor being sampled | **Medium** → **Strong tail cull** (raise `min_p`) |
-| Malformed JSON / broken tool-call arguments | Same, at positions with exactly one correct token | **Low temperature**, then **Near-greedy** |
+| Malformed JSON / broken tool-call arguments | Same, at positions with exactly one correct token | **Strict** (`0.3`), then **Near-greedy** (`0.05`) |
 | A UUID, path, or identifier copied back wrong | A repetition penalty is active | Turn DRY / `repeat_penalty` **off** (§3f). No amount of retrying fixes this |
 | Verbatim loops, repeated paragraphs | Flat distribution + context copying | Let the watchdog handle it (§3f). If it persists, *raise* temperature — do **not** add a repetition penalty |
 | Rambling, wandering off task | Too much tail admitted | **Strong tail cull** (adds `top_n_sigma`) |
@@ -368,7 +368,11 @@ cost that is small but *cumulative over context length* — it degrades long
 sessions specifically. If a model is fine early in a session and unreliable
 20K tokens in, test `f16` before touching any sampler. `--cache-type-v` is the
 more sensitive of the two; keeping V at `f16` while K stays `q8_0` is a
-reasonable middle ground where memory allows.
+reasonable middle ground where memory allows. On an F16/BF16 (unquantized-weight)
+GGUF the knob defaults to `f16` instead, since a quantized cache would
+otherwise be the least precise thing in the pipeline (§7). `q4_0` is also
+available, a step below `q8_0`, for when context length is the binding
+constraint.
 
 **Context extension** (`--rope-scaling yarn` and friends). Running a model past
 its trained context length degrades it independently of quantization, and the
@@ -382,24 +386,57 @@ Neither is a sampling parameter, and neither can be fixed by one.
 ## 7. How this is encoded in Kōdo
 
 This document's recommendations ship as **knobs on every LLM's Default
-profile** (LLM_REGISTRY.md §4.6), not as a fixed list of presets. Two shared
-dropdowns, one per axis, defined in
+profile** (LLM_REGISTRY.md §4.6), not as a fixed list of presets. Three
+shared dropdowns, one per axis, defined in
 `kodo/llms/local_registry/_knobs_shared.py`:
 
 | Knob | Option | Flags |
 |---|---|---|
-| **Tail culling** | `off` *(default)* | *(none — llama.cpp's own `top_k 40`/`top_p 0.95` apply)* |
-| | `minimal` | `--top-k 0 --top-p 1.0 --min-p 0.02` |
-| | `light` | `--top-k 0 --top-p 1.0 --min-p 0.05` — §3a, the mildest explicit cull |
-| | `light-medium` | `--top-k 0 --top-p 1.0 --min-p 0.065` |
-| | `medium` | `--top-k 0 --top-p 1.0 --min-p 0.08` |
-| | `medium-strong` | `--top-k 0 --top-p 1.0 --min-p 0.10` |
-| | `strong` | `--top-k 0 --top-p 1.0 --min-p 0.12 --top-nsigma 1.0` — §3c |
-| **Temperature** | `default` *(default)* | `--temp 0.8`, llama.cpp's own |
-| | `moderate` | `--temp 0.5` |
-| | `low` | `--temp 0.3` — §3b |
-| | `very-low` | `--temp 0.15` |
-| | `near-greedy` | `--temp 0.05` |
+| **Tail culling** | `off` *(default)* | *(none — llama.cpp's own `top_k 40`/`top_p 0.95` apply, unless Nucleus sampling below overrides them)* |
+| | `minimal` | `--min-p 0.02` |
+| | `light` | `--min-p 0.05` — §3a, the mildest explicit cull |
+| | `light-medium` | `--min-p 0.065` |
+| | `medium` | `--min-p 0.08` |
+| | `medium-strong` | `--min-p 0.10` |
+| | `strong` | `--min-p 0.12 --top-nsigma 1.0` — §3c |
+| **Temperature** | `very-high` — "Extremely loose (1.5)" | `--temp 1.5` |
+| | `high` — "Very loose (1.2)" | `--temp 1.2` |
+| | `t10` — "Loose (1.0)" | `--temp 1.0` |
+| | `default` *(default)* — "Default (0.8)" | `--temp 0.8`, llama.cpp's own |
+| | `t07` — "Focused (0.7)" | `--temp 0.7` |
+| | `t06` — "Very focused (0.6)" | `--temp 0.6` |
+| | `moderate` — "Tight (0.5)" | `--temp 0.5` |
+| | `t04` — "Very tight (0.4)" | `--temp 0.4` |
+| | `low` — "Strict (0.3)" | `--temp 0.3` — §3b |
+| | `t02` — "Very strict (0.2)" | `--temp 0.2` |
+| | `very-low` — "Rigid (0.15)" | `--temp 0.15` |
+| | `t01` — "Very rigid (0.1)" | `--temp 0.1` |
+| | `near-greedy` — "Near-greedy (0.05)" | `--temp 0.05` |
+| **Nucleus sampling** *(advanced)* | `off` *(default)* | *(none)* |
+| | `top-p 1.00` … `top-p 0.80`, step `0.05` | `--top-k 0 --top-p <value>` |
+
+The Temperature column lists each option's id *and* its display name because
+the two deliberately no longer echo one another. The names are one monotone
+ladder — loose above the default, then focused → tight → strict → rigid →
+near-greedy below it, each family optionally qualified with "Very", with the
+value repeated in parentheses. The ids predate that ladder and are the
+persisted wire values (they appear in saved profiles, per-session overrides and
+validator configs), so `moderate` is "Tight (0.5)" and `low` is "Strict (0.3)".
+Display names may be reworded freely; an id may not be renamed without
+invalidating stored selections.
+
+Nucleus sampling is its own knob rather than folded into Tail culling: it
+owns `--top-k`/`--top-p` exclusively, so it stacks independently on top of
+whatever Tail culling's min-p/top-n-sigma is doing, and defaults to `off` so
+it never changes behaviour unless deliberately picked. It is `advanced`
+because min-p (Tail culling) is the better first tool for quantization
+noise — reach for a fixed nucleus cutoff only when reproducing an external
+recipe or chasing an exact cutoff min-p's relative-to-the-top-token framing
+does not express. (A `flash-attention` knob previously lived alongside these
+on the Default profile; it was removed because modern llama.cpp builds
+enable flash attention on their own whenever the hardware supports it, so
+forcing it on/off is no longer offered there — it remains reachable via
+`kodo.llms._arg_catalog` on a user-defined profile.)
 
 Long-context extension is its own private per-model knob (§6 "Context
 extension"): Laguna's `context-laguna` offers 256K (default) / 512K / 1M.
@@ -428,16 +465,18 @@ Four constraints on any change to these values:
 1. **Composition is by knob, and knobs cannot collide.** A knob option lists
    only the flags its own axis owns; the shared base args
    (`--ctx-size 0`, `--reasoning-format auto`, `--jinja`) and every other
-   knob's flags are merged in around it. This is why the culling options carry
-   `--top-k 0`/`--top-p 1.0` but never `--temp`, and the temperature options
-   carry nothing but `--temp`.
+   knob's flags are merged in around it. This is why the tail-culling options
+   carry only `--min-p` (plus `--top-nsigma` at the strongest rung), the
+   nucleus-sampling options carry only `--top-k 0`/`--top-p`, and the
+   temperature options carry nothing but `--temp` — none of the three ever
+   touches another's flags.
 2. **Every value must stay inside its sensible band** (SAMPLING.md §8d). Both
    Kōdo editors flag out-of-band values with a yellow ⚠ and disable
    Apply/Save; a shipped option that trips its own guard rail would be
    incoherent, and a user copying it into a profile would be unable to save. A
-   neutral/off value (`top_p 1.0`, `top_k 0`) is exempt from the ⚠ by §8a and
-   is used deliberately here to make "this sampler is off on purpose" explicit
-   rather than implicit.
+   neutral/off value (`top_p 1.0`, `top_k 0`) is exempt from the ⚠ by §8a —
+   nucleus sampling's `off` option relies on this by leaving both unset
+   entirely rather than writing them explicitly.
 3. **No knob may enable a repetition penalty** — not DRY, not
    `repeat_penalty`, not the presence/frequency pair (§3f). This is a hard
    rule, not a default: one of them shipped once and broke `read_attachment`

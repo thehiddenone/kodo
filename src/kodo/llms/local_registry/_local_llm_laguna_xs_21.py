@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._knobs_shared import SHARED_KNOBS
+from ._knobs_shared import KV_CACHE_F16_DEFAULT, SHARED_KNOBS
 from ._types import LocalLLMEntry
 
 
@@ -15,6 +15,7 @@ def laguna_xs_21_entries() -> list[LocalLLMEntry]:
             repo_id="poolside/Laguna-XS-2.1-GGUF",
             filename="Laguna-XS-2.1-BF16.gguf",
             knobs=SHARED_KNOBS,
+            knob_defaults=KV_CACHE_F16_DEFAULT,
             context_window=262_144,
             base_llm="Laguna-XS-2.1",
             llm_author="Poolside",

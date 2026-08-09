@@ -2046,6 +2046,12 @@ async def _stop_background(app: web.Application) -> None:
     await app[_MANAGER_KEY].shutdown()
 
 
+async def _release_llama_gpu() -> None:
+    server = LlamaServer.get_active_llama_server()
+    if server is not None and server.is_running:
+        await server.stop()
+
+
 async def _ws_endpoint(request: web.Request) -> web.WebSocketResponse:
     return await request.app[CONNECTION_REGISTRY_KEY].run_ws(request)
 
@@ -2076,6 +2082,7 @@ def create_app(config: Config) -> web.Application:
         layout=layout,
     )
     conn_registry = ConnectionRegistry(manager)
+    conn_registry.set_gpu_release_hook(_release_llama_gpu)
 
     conn_registry.register_handler(MSG_HELLO, _make_hello_handler(config))
     conn_registry.register_handler(MSG_SESSION_LIST, _handle_session_list)

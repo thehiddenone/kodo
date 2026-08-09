@@ -611,7 +611,7 @@ Fired once per brand-new session (never for a resumed one), from a background ta
 { "type": "session.greeting", "text": "Hello! Ready to help you build something today — think of it like tuning an orchestra before the first note." }
 ```
 
-`text` is a short, varied greeting written by `kodo.titling.generate_greeting` — a chat-completion call against the same dedicated titler llama-server §5.9a's summarizer uses (doc/INTERNALS.md §10c), with its own prompt: no input text, a `temperature` of `0.9` (unlike title/project-name's deterministic `0.0`) and a theme picked at random from `kodo.titling._greeting_themes.GREETING_THEMES` (64 entries — mood, industry, historical invention, an unsolved CS/math problem, a quantum-mechanics paradox, ...) on every call, so consecutive brand-new sessions don't open with the same line. If the titler isn't up (not installed, still starting, download in progress, ...) or the completion call fails, falls back to the same fixed default line kodo-vsix used to hardcode, rather than leaving the feed empty.
+`text` is a short, varied greeting written by `kodo.titling.generate_greeting` — a chat-completion call against the same dedicated titler llama-server §5.9a's summarizer uses (doc/INTERNALS.md §10c), with its own prompt: no input text, a `temperature` of `0.9` (unlike title/project-name's deterministic `0.0`) and a theme picked at random from `kodo.titling._greeting_themes.GREETING_THEMES` (72 entries — mood, industry, historical invention, an unsolved CS/math problem, a quantum-mechanics paradox, a corner of the cosmos, ...) on every call, so consecutive brand-new sessions don't open with the same line. If the titler isn't up (not installed, still starting, download in progress, ...) or the completion call fails, falls back to the same fixed default line kodo-vsix used to hardcode, rather than leaving the feed empty.
 
 The titler's own llama-server is started as early as possible in kodo's own startup (`server/_app._start_background`, before the `ensure_all_utils` await) precisely so it has the best chance of being warm by the time the very first `hello` arrives — but this is a best-effort head start, not a guarantee, which is exactly why the fallback above exists.
 
@@ -679,17 +679,16 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                          "size_hint": "...", "gpu_tip": "...", "mac_tip": "...",
                          "min_memory": 32, "memory": 48,
                          "knobs": ["kv-cache", "tail-culling", "temperature",
-                                   "gpu-layers", "cpu-moe", "flash-attention",
+                                   "gpu-layers", "cpu-moe", "nucleus-sampling",
                                    "context-qwen35"],
                          "knob_selections": { "kv-cache": "q8_0", "tail-culling": "medium",
                                               "temperature": "default", "gpu-layers": "-1",
-                                              "cpu-moe": "", "flash-attention": "auto",
+                                              "cpu-moe": "", "nucleus-sampling": "off",
                                               "context-qwen35": "native" },
                          "default_profile_args": { "--ctx-size": "0", "--jinja": "",
                                                    "--reasoning-format": "auto",
                                                    "--cache-type-k": "q8_0",
                                                    "--cache-type-v": "q8_0",
-                                                   "--top-k": "0", "--top-p": "1.0",
                                                    "--min-p": "0.08", "--temp": "0.8",
                                                    "--n-gpu-layers": "-1" },
                          "profiles": [ { "id": "tight-vram", "name": "Tight VRAM",
@@ -714,8 +713,7 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                                                   "description": "…", "llama_args": {} },
                                                 { "id": "medium", "name": "Medium (min-p 0.08)",
                                                   "description": "…",
-                                                  "llama_args": {"--top-k": "0", "--top-p": "1.0",
-                                                                 "--min-p": "0.08"} } ],
+                                                  "llama_args": {"--min-p": "0.08"} } ],
                                    "flag": "", "minimum": null, "maximum": null,
                                    "step": null, "unset_label": "" } },
   "llama_arg_catalog": [ { "flag": "--ctx-size", "label": "Context size", "kind": "int",
@@ -1521,7 +1519,7 @@ the *local registry entry* name in all five, never a profile's own name/id.
 { "type": "local_llm.set_active_profile", "name": "qwen36-27b", "profile_id": "tight-vram" }
 { "type": "local_llm.set_knobs", "name": "qwen36-27b",
   "knobs": { "kv-cache": "q8_0", "tail-culling": "medium", "temperature": "default",
-             "gpu-layers": "-1", "cpu-moe": "", "flash-attention": "auto",
+             "gpu-layers": "-1", "cpu-moe": "", "nucleus-sampling": "off",
              "context-qwen35": "512k" } }
 ```
 

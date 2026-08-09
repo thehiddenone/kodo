@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ._knobs_qwen import QWEN_MOE_CONTEXT_KNOB
-from ._knobs_shared import SHARED_KNOBS
+from ._knobs_shared import KV_CACHE_F16_DEFAULT, SHARED_KNOBS
 from ._types import LocalLLMEntry
 
 
@@ -17,6 +17,7 @@ def ornith10_9b_entries() -> list[LocalLLMEntry]:
             filename="ornith-1.0-9b-bf16.gguf",
             context_window=262_144,
             knobs=SHARED_KNOBS + (QWEN_MOE_CONTEXT_KNOB,),
+            knob_defaults=KV_CACHE_F16_DEFAULT,
             base_llm="Ornith10-9B",
             llm_author="DeepReinforce AI",
             quant_author="DeepReinforce AI",

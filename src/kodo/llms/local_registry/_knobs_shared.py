@@ -1,7 +1,7 @@
 """The shared knobs — offered on the Default profile of *every* llama-server entry.
 
 Shared knobs are the ones whose meaning does not depend on which GGUF is
-loaded: KV-cache precision, the two sampling axes, and the offload/attention
+loaded: KV-cache precision, the three sampling axes, and the offload
 controls. Anything that needs per-model knowledge (a YaRN recipe needs the
 model's architecture key and native context length) is a *private* knob built
 by the family module instead — see :mod:`._knobs_context`.
@@ -11,18 +11,20 @@ it has; a user-added (``custom_*``) entry gets :data:`SHARED_KNOBS` alone, on
 top of the launch args typed into its "Add local LLM" form (which become its
 ``base_llama_args``).
 
-Two sampling axes, never one
-----------------------------
+Three sampling axes, never conflated
+------------------------------------
 
-:data:`TAIL_CULLING_KNOB` and :data:`TEMPERATURE_KNOB` are deliberately
-separate controls, and each holds the other's territory fixed: every culling
-option leaves ``--temp`` alone, and the temperature option writes nothing but
+:data:`TAIL_CULLING_KNOB`, :data:`NUCLEUS_SAMPLING_KNOB` and
+:data:`TEMPERATURE_KNOB` are deliberately separate controls, each fixed to
+its own flags: tail culling only ever writes ``--min-p``/``--top-nsigma``,
+nucleus sampling only ``--top-k``/``--top-p``, and temperature only
 ``--temp``. This is the same "one axis moves at a time" rule the five
 predecessor sampling *flavors* followed by convention (doc/QUANT_SAMPLING.md
 §4) — as knobs it is enforced structurally, since
 :func:`~kodo.llms.local_registry._knobs.validate_knobs` rejects two knobs that
 own the same flag. Splitting them also makes combinations reachable that the
-old fixed presets never offered (strong culling *and* a low temperature).
+old fixed presets never offered (strong tail culling *and* a low temperature,
+or either of those layered on top of a fixed nucleus cutoff).
 
 **No knob enables a repetition penalty** — not DRY, not ``--repeat-penalty``,
 not presence/frequency. Penalising a token sequence already in context is
@@ -42,9 +44,10 @@ from ._knobs import KnobKind, KnobOption, LlamaKnob
 
 __all__ = [
     "CPU_MOE_KNOB",
-    "FLASH_ATTENTION_KNOB",
     "GPU_LAYERS_KNOB",
+    "KV_CACHE_F16_DEFAULT",
     "KV_CACHE_KNOB",
+    "NUCLEUS_SAMPLING_KNOB",
     "SHARED_KNOBS",
     "TAIL_CULLING_KNOB",
     "TEMPERATURE_KNOB",
@@ -63,7 +66,8 @@ BASE_LLAMA_ARGS: dict[str, str] = {
 
 #: KV-cache precision. Replaces the old ``make_default_kv_q8`` /
 #: ``make_default_kv_fp16`` pair of predefined flavors: an entry that used to
-#: ship the fp16 variant now just declares ``knob_defaults={"kv-cache": "f16"}``.
+#: ship the fp16 variant now just declares
+#: ``knob_defaults=KV_CACHE_F16_DEFAULT`` (below).
 KV_CACHE_KNOB = LlamaKnob(
     id="kv-cache",
     name="KV cache precision",
@@ -85,6 +89,16 @@ KV_CACHE_KNOB = LlamaKnob(
             llama_args={"--cache-type-k": "q8_0", "--cache-type-v": "q8_0"},
         ),
         KnobOption(
+            id="q4_0",
+            name="q4_0 (4-bit)",
+            description=(
+                "4-bit keys and values — a quarter of the memory of f16, half of q8_0. Noticeably "
+                "more quality loss than q8_0, so reach for this only when context length is the "
+                "binding constraint and q8_0 still doesn't leave enough room."
+            ),
+            llama_args={"--cache-type-k": "q4_0", "--cache-type-v": "q4_0"},
+        ),
+        KnobOption(
             id="f16",
             name="f16 (full precision)",
             description=(
@@ -98,12 +112,19 @@ KV_CACHE_KNOB = LlamaKnob(
     default_option="q8_0",
 )
 
-#: How hard the probability tail is truncated. Every active option pins
-#: ``--top-k 0``/``--top-p 1.0`` so that min-p (plus top-n-sigma in the
-#: strongest state) is the *only* truncation stage in play — otherwise
-#: llama.cpp's own ``top_k 40``/``top_p 0.95`` defaults would still be
-#: silently cutting alongside it and the option's numbers would not be the
-#: whole story.
+#: Per-entry :attr:`~kodo.llms.local_registry.LocalLLMEntry.knob_defaults`
+#: override for an F16/BF16 (unquantized-weight) GGUF, where :data:`KV_CACHE_KNOB`
+#: should default to ``f16`` instead of its own global ``q8_0`` default — see
+#: that knob's ``f16`` option above for why. Every hardcoded entry whose
+#: ``quant_type`` is ``"F16"``/``"BF16"`` should set
+#: ``knob_defaults=KV_CACHE_F16_DEFAULT``.
+KV_CACHE_F16_DEFAULT: dict[str, str] = {"kv-cache": "f16"}
+
+#: How hard the probability tail is truncated via min-p (plus top-n-sigma in
+#: the strongest state). This knob only ever writes ``--min-p``/``--top-nsigma``
+#: — it leaves ``--top-k``/``--top-p`` alone entirely, so it always stacks on
+#: top of whatever :data:`NUCLEUS_SAMPLING_KNOB` (or, if that is off,
+#: llama.cpp's own ``top-k 40``/``top-p 0.95`` defaults) is doing.
 TAIL_CULLING_KNOB = LlamaKnob(
     id="tail-culling",
     name="Tail culling",
@@ -120,9 +141,8 @@ TAIL_CULLING_KNOB = LlamaKnob(
             id="off",
             name="llama.cpp defaults",
             description=(
-                "No explicit truncation settings — llama.cpp's own top-k 40 and top-p 0.95 "
-                "apply. Fine for an 8-bit or larger quant, where there is little tail noise to "
-                "cut in the first place."
+                "No explicit min-p or top-n-sigma settings. Fine for an 8-bit or larger quant, "
+                "where there is little tail noise to cut in the first place."
             ),
         ),
         KnobOption(
@@ -133,7 +153,7 @@ TAIL_CULLING_KNOB = LlamaKnob(
                 "survive. Pairs with a near-greedy temperature, where the tail is already "
                 "suppressed and heavy culling would leave nothing to choose between."
             ),
-            llama_args={"--top-k": "0", "--top-p": "1.0", "--min-p": "0.02"},
+            llama_args={"--min-p": "0.02"},
         ),
         KnobOption(
             id="light",
@@ -143,7 +163,7 @@ TAIL_CULLING_KNOB = LlamaKnob(
                 "noise floor a 4-bit-and-below quant leaves in the tail. Start here and tighten "
                 "only if you actually see a problem."
             ),
-            llama_args={"--top-k": "0", "--top-p": "1.0", "--min-p": "0.05"},
+            llama_args={"--min-p": "0.05"},
         ),
         KnobOption(
             id="light-medium",
@@ -153,7 +173,7 @@ TAIL_CULLING_KNOB = LlamaKnob(
                 "occasional wrong token through but Medium's 8% feels like more cut than the "
                 "quant needs."
             ),
-            llama_args={"--top-k": "0", "--top-p": "1.0", "--min-p": "0.065"},
+            llama_args={"--min-p": "0.065"},
         ),
         KnobOption(
             id="medium",
@@ -162,7 +182,7 @@ TAIL_CULLING_KNOB = LlamaKnob(
                 "A tighter noise floor, for a quant that produces the occasional "
                 "wrong-but-plausible token."
             ),
-            llama_args={"--top-k": "0", "--top-p": "1.0", "--min-p": "0.08"},
+            llama_args={"--min-p": "0.08"},
         ),
         KnobOption(
             id="medium-strong",
@@ -172,7 +192,7 @@ TAIL_CULLING_KNOB = LlamaKnob(
                 "to a 10% floor for a quant that keeps wandering under Medium but does not yet "
                 "need top-n-sigma's extra machinery."
             ),
-            llama_args={"--top-k": "0", "--top-p": "1.0", "--min-p": "0.10"},
+            llama_args={"--min-p": "0.10"},
         ),
         KnobOption(
             id="strong",
@@ -183,12 +203,7 @@ TAIL_CULLING_KNOB = LlamaKnob(
                 "temperature-invariant, so it does not re-tune itself when you change the "
                 "temperature. For heavily quantized builds that still wander under Medium."
             ),
-            llama_args={
-                "--top-k": "0",
-                "--top-p": "1.0",
-                "--min-p": "0.12",
-                "--top-nsigma": "1.0",
-            },
+            llama_args={"--min-p": "0.12", "--top-nsigma": "1.0"},
         ),
     ),
     default_option="off",
@@ -197,6 +212,16 @@ TAIL_CULLING_KNOB = LlamaKnob(
 #: Temperature only. The default option writes llama.cpp's own default value
 #: explicitly rather than nothing, so that the flag list the Configure modal
 #: shows is always the complete story of what the sampler will do.
+#:
+#: The option *names* are a single monotone ladder — "loose" above the default,
+#: then focused → tight → strict → rigid → near-greedy below it, each family
+#: optionally qualified with "Very" — with the value repeated in parentheses so
+#: the ordering is never in doubt. The option *ids* are older than that ladder
+#: and deliberately no longer echo it (``moderate`` is "Tight (0.5)",
+#: ``low`` is "Strict (0.3)", ``very-low`` is "Rigid (0.15)"): an id is the
+#: persisted wire value that appears in saved profiles, per-session overrides
+#: and validator configs, so renaming one would silently invalidate a stored
+#: selection. Rename a display name freely; never rename an id.
 TEMPERATURE_KNOB = LlamaKnob(
     id="temperature",
     name="Temperature",
@@ -211,46 +236,127 @@ TEMPERATURE_KNOB = LlamaKnob(
     kind=KnobKind.DROPDOWN,
     options=(
         KnobOption(
+            id="very-high",
+            name="Extremely loose (1.5)",
+            description=(
+                "The widest sampling on offer: maximum variety and the fewest verbatim repeats, "
+                "at the cost of noticeably less reliable formatting. For creative or open-ended "
+                "prompts, not agentic or tool-call work."
+            ),
+            llama_args={"--temp": "1.5"},
+        ),
+        KnobOption(
+            id="high",
+            name="Very loose (1.2)",
+            description=(
+                "Well above the default: more variety in wording and approach, and a smaller "
+                "hit to formatting than 1.5. Still too loose for strict-format output."
+            ),
+            llama_args={"--temp": "1.2"},
+        ),
+        KnobOption(
+            id="t10",
+            name="Loose (1.0)",
+            description=(
+                "Just above the default: a little more variety in phrasing and word choice, with "
+                "formatting largely intact. The mildest way to shake a model out of repetitive "
+                "output."
+            ),
+            llama_args={"--temp": "1.0"},
+        ),
+        KnobOption(
             id="default",
             name="Default (0.8)",
-            description="llama.cpp's own default. Works well for agentic work on most builds.",
+            description=(
+                "llama.cpp's own default. Works well for agentic work on most builds — start "
+                "here and move only once you have a symptom that points somewhere else."
+            ),
             llama_args={"--temp": "0.8"},
         ),
         KnobOption(
-            id="moderate",
-            name="Moderate (0.5)",
+            id="t07",
+            name="Focused (0.7)",
             description=(
-                "A middle ground between the default and Low: takes some of the edge off "
-                "without giving up as much variety, for when the default occasionally "
-                "misformats but Low feels like overcorrecting."
+                "A light tightening: phrasing gets more consistent run to run, with essentially "
+                "no loss of the model's ability to recover from a bad opening token."
+            ),
+            llama_args={"--temp": "0.7"},
+        ),
+        KnobOption(
+            id="t06",
+            name="Very focused (0.6)",
+            description=(
+                "Visibly steadier than the default while still sampling freely among genuinely "
+                "plausible tokens. A reasonable resting point for long agentic runs that only "
+                "occasionally misformat."
+            ),
+            llama_args={"--temp": "0.6"},
+        ),
+        KnobOption(
+            id="moderate",
+            name="Tight (0.5)",
+            description=(
+                "Takes real weight off the tail: unlikely tokens still exist but rarely win. The "
+                "first value worth trying when strict syntax breaks now and then and the default "
+                "feels too permissive."
             ),
             llama_args={"--temp": "0.5"},
         ),
         KnobOption(
-            id="low",
-            name="Low (0.3)",
+            id="t04",
+            name="Very tight (0.4)",
             description=(
-                "Noticeably more deterministic while still leaving room to recover from a bad "
-                "opening token. The usual answer to malformed tool calls."
+                "A step further for a model that still slips on strict syntax at 0.5. Variety in "
+                "ordinary prose is noticeably reduced."
+            ),
+            llama_args={"--temp": "0.4"},
+        ),
+        KnobOption(
+            id="low",
+            name="Strict (0.3)",
+            description=(
+                "Substantially more deterministic, while still leaving enough probability "
+                "elsewhere to escape a bad opening token on a retry. The usual answer to "
+                "malformed tool calls."
             ),
             llama_args={"--temp": "0.3"},
         ),
         KnobOption(
-            id="very-low",
-            name="Very low (0.15)",
+            id="t02",
+            name="Very strict (0.2)",
             description=(
-                "Between Low and Near-greedy: for a model that still drifts on strict-format "
-                "output at 0.3 but does not need Near-greedy's near-total loss of variety."
+                "Below the point where wording varies much between runs: the same prompt returns "
+                "near-identical output, and only genuinely close calls are still decided by "
+                "sampling."
+            ),
+            llama_args={"--temp": "0.2"},
+        ),
+        KnobOption(
+            id="very-low",
+            name="Rigid (0.15)",
+            description=(
+                "For a model that still drifts on strict-format output at 0.3: the distribution "
+                "is sharp enough that a non-top token needs a near-tie to win. Repetition and "
+                "loops get more likely from here down."
             ),
             llama_args={"--temp": "0.15"},
+        ),
+        KnobOption(
+            id="t01",
+            name="Very rigid (0.1)",
+            description=(
+                "Almost the greedy path, with a sliver of variety left for retries. Pick this "
+                "over 0.05 when you want that retry to have some chance of coming out different."
+            ),
+            llama_args={"--temp": "0.1"},
         ),
         KnobOption(
             id="near-greedy",
             name="Near-greedy (0.05)",
             description=(
-                "Almost deterministic — a token essentially cannot win unless it was already the "
-                "top candidate. Maximum format reliability, at the cost of variety, and of any "
-                "chance to escape a bad opening token by retrying."
+                "Effectively deterministic — a token essentially cannot win unless it was "
+                "already the top candidate. Maximum format reliability, at the cost of variety, "
+                "and of any chance to escape a bad opening token by retrying."
             ),
             llama_args={"--temp": "0.05"},
         ),
@@ -300,42 +406,58 @@ CPU_MOE_KNOB = LlamaKnob(
     unset_label="off",
 )
 
-#: Flash attention. Three-state (llama.cpp's own flag is ``on|off|auto``, not
-#: a boolean), so this is a dropdown rather than a checkbox — the default
-#: option writes nothing and lets llama.cpp decide per build.
-FLASH_ATTENTION_KNOB = LlamaKnob(
-    id="flash-attention",
-    name="Flash attention",
+#: Nucleus sampling: a hard cutoff in cumulative-probability space, layered
+#: independently on top of :data:`TAIL_CULLING_KNOB`'s min-p/top-n-sigma
+#: (see the module docstring on why these are separate axes). Every active
+#: option also pins ``--top-k 0`` so top-p is the only thing this knob's
+#: cutoff depends on — otherwise llama.cpp's own ``top-k 40`` would silently
+#: prune the candidate set before top-p ever saw it. Advanced because tail
+#: culling (min-p) is the better first tool for quantization noise; this is
+#: for reproducing a specific external nucleus-sampling recipe or chasing an
+#: exact cutoff tail-culling's percentile framing does not express.
+_NUCLEUS_SAMPLING_STEPS: tuple[str, ...] = (
+    "1.00",
+    "0.95",
+    "0.90",
+    "0.85",
+    "0.80",
+)
+
+NUCLEUS_SAMPLING_KNOB = LlamaKnob(
+    id="nucleus-sampling",
+    name="Nucleus sampling (top-p)",
     description=(
-        "A faster, more memory-efficient attention kernel. llama.cpp decides for itself by "
-        "default, enabling it wherever the build and hardware support it; force it on or off "
-        "only to work around a specific problem."
+        "A hard cutoff on the candidate token set: only the smallest group of tokens whose "
+        "probabilities add up to at least top-p is kept, and top-k is disabled so top-p is the "
+        "only truncation this knob applies. Independent of Tail culling above, and stacks with "
+        "it — reach for this when you want a fixed, reproducible cutoff rather than the "
+        "min-p-relative-to-the-top-token shape Tail culling uses."
     ),
     kind=KnobKind.DROPDOWN,
     advanced=True,
     options=(
         KnobOption(
-            id="auto",
-            name="Auto (llama.cpp decides)",
-            description="Leaves the flag unset. The right choice unless you are debugging.",
-        ),
-        KnobOption(
-            id="on",
-            name="Always on",
-            description="Forces the flash-attention kernel even where llama.cpp would not pick it.",
-            llama_args={"--flash-attn": "on"},
-        ),
-        KnobOption(
             id="off",
-            name="Always off",
+            name="llama.cpp defaults",
             description=(
-                "Disables it. Worth trying if you hit garbled output or a crash that looks "
-                "backend-specific."
+                "No explicit top-k/top-p settings — llama.cpp's own top-k 40 and top-p 0.95 "
+                "apply (or whatever else is otherwise in effect)."
             ),
-            llama_args={"--flash-attn": "off"},
+        ),
+        *(
+            KnobOption(
+                id=f"p{value.replace('.', '')}",
+                name=f"top-p {value}",
+                description=(
+                    f"Keeps the smallest set of tokens whose cumulative probability reaches "
+                    f"{value}, with top-k disabled."
+                ),
+                llama_args={"--top-k": "0", "--top-p": value},
+            )
+            for value in _NUCLEUS_SAMPLING_STEPS
         ),
     ),
-    default_option="auto",
+    default_option="off",
 )
 
 #: Every shared knob, in Configure-modal display order (non-advanced first —
@@ -349,5 +471,5 @@ SHARED_KNOBS: tuple[LlamaKnob, ...] = (
     TEMPERATURE_KNOB,
     GPU_LAYERS_KNOB,
     CPU_MOE_KNOB,
-    FLASH_ATTENTION_KNOB,
+    NUCLEUS_SAMPLING_KNOB,
 )

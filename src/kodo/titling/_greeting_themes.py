@@ -5,9 +5,9 @@ speak of ..." in the greeter's system prompt — one is picked at random per
 call (:func:`random.choice`) so consecutive brand-new sessions don't all get
 the same flavor of opening line. Deliberately broad and a little whimsical
 (mood, industry, historical invention, an unsolved problem in computer
-science, a quantum-mechanics paradox, ...) — the greeting is a one-off
-pleasantry, not a claim the model actually knows deep physics or is about to
-start lecturing on it.
+science, a quantum-mechanics paradox, a corner of the cosmos, ...) — the
+greeting is a one-off pleasantry, not a claim the model actually knows deep
+physics or is about to start lecturing on it.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ GREETING_THEMES: tuple[str, ...] = (
     "the halting problem, and the proof that some questions can never be answered in general",
     "the traveling salesman problem, deceptively simple and stubbornly hard",
     "the Collatz conjecture, an arithmetic riddle no one has managed to crack",
-    "the Riemann hypothesis, quietly guarding the secrets of prime numbers",
+    "the Navier-Stokes equations, and whether a smooth flow can tear itself apart",
     "the question of whether P equals NP, still open after half a century",
     "the twin prime conjecture, and the primes that keep almost proving it",
     "the graph isomorphism problem, sitting in its own curious limbo",
@@ -61,6 +61,15 @@ GREETING_THEMES: tuple[str, ...] = (
     "Heisenberg's uncertainty principle, where knowing one thing means not knowing another",
     "quantum tunneling, where particles slip through walls they shouldn't cross",
     "the many-worlds interpretation, where every choice quietly forks the universe",
+    # Cosmology, other planets, and space
+    "the cosmic microwave background, the oldest light anyone will ever see",
+    "dark matter, known only by the way it tugs on everything else",
+    "the Fermi paradox, and the silence where the neighbors ought to be",
+    "Jupiter's Great Red Spot, a storm older than every weather record on Earth",
+    "the ice plumes of Enceladus and the ocean hiding beneath its shell",
+    "the methane lakes of Titan, where the rain isn't water",
+    "the dry riverbeds of Mars and the question of where the water went",
+    "the Voyager probes, still carrying a golden record out into the dark",
     # Nature and natural phenomena
     "the patient architecture of a spider's web at dawn",
     "the improbable navigation of a monarch butterfly's migration",

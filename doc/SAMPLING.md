@@ -757,12 +757,13 @@ Two layers, evaluated in order, the second one wins:
    Sampling reaches that command line one of two ways, and neither is a
    separate request-level layer:
 
-   - On the **Default profile**, via the two shared sampling knobs —
-     `tail-culling` (`--top-k`/`--top-p`/`--min-p`/`--top-nsigma`) and
-     `temperature` (`--temp`). They are two knobs rather than one preset
-     dropdown so that exactly one axis moves at a time, and the framework's
-     "no two knobs own the same flag" invariant enforces that structurally
-     rather than by convention (LLM_REGISTRY.md §4.6, doc/QUANT_SAMPLING.md §4).
+   - On the **Default profile**, via the three shared sampling knobs —
+     `tail-culling` (`--min-p`/`--top-nsigma`), `nucleus-sampling`
+     (`--top-k`/`--top-p`, advanced, off by default) and `temperature`
+     (`--temp`). They are separate knobs rather than one preset dropdown so
+     that exactly one axis moves at a time, and the framework's "no two knobs
+     own the same flag" invariant enforces that structurally rather than by
+     convention (LLM_REGISTRY.md §4.6, doc/QUANT_SAMPLING.md §4).
    - On a **user-defined profile**, as ordinary flags picked from the argument
      catalog (LLM_REGISTRY.md §4.7), whose sampling half is derived from
      `SAMPLING_PARAM_SPECS` so the recommended bands and the `--samplers`

@@ -36,6 +36,7 @@ QWEN_REASONING_BUDGET_FAMILY: frozenset[str] = frozenset(
         "Ornith10-35B-A3B",
         "Ornith10-9B",
         "Laguna-S-2.1",
+        "Laguna-XS-2.1",
     }
 )
 
@@ -117,6 +118,14 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "unlimited": 49152,
     },
     "Laguna-S-2.1": {
+        "minimal": 512,
+        "low": 1536,
+        "medium": 4096,
+        "high": 8192,
+        "huge": 16384,
+        "unlimited": 24576,
+    },
+    "Laguna-XS-2.1": {
         "minimal": 512,
         "low": 1536,
         "medium": 4096,

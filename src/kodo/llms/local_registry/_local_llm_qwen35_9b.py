@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ._knobs_qwen import QWEN_CONTEXT_KNOB
-from ._knobs_shared import SHARED_KNOBS
+from ._knobs_shared import KV_CACHE_F16_DEFAULT, SHARED_KNOBS
 from ._types import LocalLLMEntry
 
 
@@ -17,6 +17,7 @@ def qwen35_9b_entries() -> list[LocalLLMEntry]:
             filename="Qwen3.5-9B-BF16.gguf",
             context_window=262_144,
             knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            knob_defaults=KV_CACHE_F16_DEFAULT,
             base_llm="Qwen35-9B",
             llm_author="Alibaba Cloud",
             quant_author="Unsloth",

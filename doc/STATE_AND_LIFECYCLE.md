@@ -10,12 +10,19 @@
 > otherwise it deletes the stale file and claims it. The VS Code launcher mirrors
 > this: it reuses a live server (port busy / pid alive) and only spawns when the
 > file is absent or stale; a lost launch race (server exit 1) is expected and the
-> client just connects to the winner. The singleton **self-reaps** ~30 s after the
-> last window disconnects (and removes the discovery file) — unless a turn is
-> still mid-flight (any engine in phase `running`), in which case the reap is
+> client just connects to the winner. The singleton **self-reaps** ~5 s
+> (`_IDLE_SHUTDOWN_SECONDS` in `kodo.server.__main__`) after the last window
+> disconnects (and removes the discovery file) — unless a turn is still
+> mid-flight (any engine in phase `running`), in which case the reap is
 > deferred another grace period so a reloading window can reconnect and resume
-> the live turn. Per-window ownership and the disconnect grace window are
-> covered in [SESSIONS.md](SESSIONS.md); cross-session LLM scheduling in
+> the live turn. **GPU release is decoupled from that grace period**: the
+> moment the last window disconnects, `ConnectionRegistry` also fires an
+> immediate (no-grace) hook — wired in `kodo.server._app.create_app` via
+> `set_gpu_release_hook` — that stops the active `LlamaServer` right away (same
+> "unless a turn is mid-flight" guard), so the model's GPU memory is freed
+> without waiting on the lightweight process-teardown grace window. Per-window
+> ownership and the disconnect grace window are covered in
+> [SESSIONS.md](SESSIONS.md); cross-session LLM scheduling in
 > [LLM_GATEWAY.md](LLM_GATEWAY.md).
 
 This document covers how Kodo represents, persists, and recovers state across cold starts, interruptions, and normal operation. It assumes the file-native model from [CLAUDE.md](../CLAUDE.md) — sub-agents read and write the project's **real files** directly via `filesystem`/`edit_file`/`create_file`/`create_directory`/`read_file`; a per-file, append-only `.jsonl` evolution log (`kodo.guided_state`) tracks each document's revision/review history, with status always derived from the last line.

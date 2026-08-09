@@ -71,6 +71,7 @@ class ConnectionRegistry:
         self.__idle_cb: Callable[[], None] | None = None
         self.__idle_grace = 0.0
         self.__idle_timer: asyncio.TimerHandle | None = None
+        self.__gpu_release_cb: Callable[[], Awaitable[None]] | None = None
 
     @property
     def manager(self) -> SessionManager:
@@ -96,6 +97,21 @@ class ConnectionRegistry:
         self.__idle_cb = callback
         self.__idle_grace = grace_seconds
         self.__arm_idle()
+
+    def set_gpu_release_hook(self, callback: Callable[[], Awaitable[None]]) -> None:
+        """Free local-inference GPU memory as soon as the last window leaves.
+
+        Unlike :meth:`set_idle_shutdown` (which keeps the lightweight process
+        around for a grace period in case a window reconnects), *callback* is
+        invoked immediately — no grace period — since a loaded model is by far
+        the most expensive thing to keep around while idle. Skipped if a turn
+        is still streaming (e.g. every window is mid-reload), so a
+        reconnecting window doesn't lose in-flight work.
+
+        Args:
+            callback: Awaitable that stops the local inference server.
+        """
+        self.__gpu_release_cb = callback
 
     async def run_ws(self, request: web.Request) -> web.WebSocketResponse:
         """Accept one WebSocket upgrade and process its frames until it closes."""
@@ -123,6 +139,8 @@ class ConnectionRegistry:
             self.__active -= 1
             if self.__active <= 0:
                 self.__arm_idle()
+                if self.__gpu_release_cb is not None:
+                    asyncio.create_task(self.__release_gpu_if_idle())
             _log.info("WebSocket disconnected (conn=%s)", conn.id[:8])
 
         return ws
@@ -155,6 +173,14 @@ class ConnectionRegistry:
             return
         _log.info("No clients for %.0fs — self-reaping singleton server", self.__idle_grace)
         self.__idle_cb()
+
+    async def __release_gpu_if_idle(self) -> None:
+        # Re-checked here (not just at schedule time) since this runs as a
+        # separate task: a new window may have connected, or a turn may have
+        # started, in between scheduling and now.
+        if self.__active > 0 or self.__manager.any_running() or self.__gpu_release_cb is None:
+            return
+        await self.__gpu_release_cb()
 
     async def __dispatch(self, conn: Connection, raw: str) -> None:
         try:

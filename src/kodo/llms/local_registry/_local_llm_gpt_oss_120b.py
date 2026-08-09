@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ._knobs_shared import KV_CACHE_F16_DEFAULT
 from ._types import LocalLLMEntry
 
 
@@ -13,7 +14,7 @@ def gpt_oss_120b_entries() -> list[LocalLLMEntry]:
             description="GPT OSS 120B F16 by Unsloth",
             repo_id="unsloth/gpt-oss-120b-GGUF",
             filename="gpt-oss-120b-F16.gguf",
-            knob_defaults={"kv-cache": "f16"},
+            knob_defaults=KV_CACHE_F16_DEFAULT,
             context_window=131_072,
             base_llm="GPT-OSS-120B",
             llm_author="OpenAI",
