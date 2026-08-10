@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from ._knobs_qwen import QWEN_MOE_CONTEXT_KNOB
 from ._knobs_shared import KV_CACHE_F16_DEFAULT, SHARED_KNOBS
 from ._types import LocalLLMEntry
 

@@ -37,6 +37,7 @@ QWEN_REASONING_BUDGET_FAMILY: frozenset[str] = frozenset(
         "Ornith10-9B",
         "Laguna-S-2.1",
         "Laguna-XS-2.1",
+        "Nanbeige4.2-3B",
     }
 )
 
@@ -133,9 +134,17 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "huge": 16384,
         "unlimited": 24576,
     },
+    "Nanbeige4.2-3B": {
+        "minimal": 2048,
+        "low": 4096,
+        "medium": 8192,
+        "high": 16384,
+        "huge": 32768,
+        "unlimited": 49152,
+    },
 }
 
-_QWEN_DEFAULT_TIER = "unlimited"
+_QWEN_DEFAULT_TIER = "high"
 _GPT_OSS_DEFAULT_TIER = "medium"
 
 #: Injected before the end-of-thinking tag whenever a finite Qwen-family

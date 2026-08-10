@@ -795,11 +795,13 @@ def _make_housekeeper_llm_get_handler(config: Config) -> HandlerFn:
     async def _handle_housekeeper_llm_get(req: Request) -> None:
         settings = config.reload_settings()
         selected = _valid_housekeeper_llm_id(settings.get("housekeeper_llm"))
-        await req.reply({
-            "type": "housekeeper_llm.get.ack",
-            "selected": selected,
-            "options": _housekeeper_llm_options_payload(),
-        })
+        await req.reply(
+            {
+                "type": "housekeeper_llm.get.ack",
+                "selected": selected,
+                "options": _housekeeper_llm_options_payload(),
+            }
+        )
 
     return _handle_housekeeper_llm_get
 

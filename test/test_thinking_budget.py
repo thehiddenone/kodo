@@ -28,6 +28,7 @@ from kodo.llms import (
     QWEN_TIER_TOKEN_BUDGETS,
     REASONING_BUDGET_MESSAGE,
     LocalLLMEntry,
+    local_thinking_default_tier,
 )
 from kodo.llms.llamacpp import _manager
 from kodo.llms.llamacpp._llama import _DEFAULT_MAX_TOKENS, _build_thinking_extra_body
@@ -98,7 +99,8 @@ def test_no_thinking_family_keeps_flat_max_tokens() -> None:
 
 def test_invalid_override_tier_falls_back_to_family_default_budget() -> None:
     extra_body, max_tokens = _build_thinking_extra_body("Qwen36-27B", override_tier="not-a-tier")
-    default_budget = QWEN_TIER_TOKEN_BUDGETS["Qwen36-27B"]["unlimited"]
+    default_tier = local_thinking_default_tier("Qwen36-27B")
+    default_budget = QWEN_TIER_TOKEN_BUDGETS["Qwen36-27B"][default_tier]
     assert extra_body["thinking_budget_tokens"] == default_budget
     assert max_tokens == default_budget + 8192
 

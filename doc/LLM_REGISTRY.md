@@ -468,6 +468,23 @@ llama.cpp predates support for that model's architecture/quantization.
 `llm_author` carries no warning logic — it's display-only metadata (the org
 that produced the base model, e.g. `"Alibaba Cloud"`).
 
+**Available-quants visibility filter.** Independent of the pre-launch gate
+below, the "Local Inference" tab's "Available local LLM quants" list
+(`LocalLlmsSection.tsx`) hides any entry with a red or yellow `ramWarning`
+(the same rule as above — `llamacppVersionWarning` is *not* checked here,
+this filter is scoped to RAM/VRAM only) unless the entry is already
+`installed`; installed entries always show, regardless of warning status.
+This is opt-out: a "Show all LLM quants including those that will not run on
+this system due to insufficient RAM/VRAM" checkbox just above the list
+defaults to unchecked (i.e. the filtered view, on cold start) and is backed
+by a new `showAllLocalLlmQuants: boolean` field on `UiSettings`
+(`src/settings-panel/types.ts`), persisted the same way
+`pinnedLocalModels`/`dismissedLocalLaunchWarnings` are (below) — same
+`~/.kodo/etc/ui-settings.json` file, same `set_ui_settings`
+`KodoSettingsMessage` round trip, no new WS message. Toggling it re-filters
+the `base_llm` grouping live; a group left with zero visible entries is
+omitted entirely rather than shown with a "(0)" count.
+
 **Pre-launch confirmation gate.** Unlike this section's older text below
 might suggest, these two entry-level warnings are no longer purely
 inline/non-blocking: `localLaunchWarnings(entry, detectedVramGb,
@@ -547,7 +564,7 @@ before it must answer. Two mechanisms exist, keyed off `base_llm` (never
 - **`qwen_reasoning_budget`** (6 tiers: `minimal`, `low`, `medium`, `high`,
   `huge`, `unlimited`) — `Qwen36-27B`, `Qwen36-35B-A3B`, `Qwen35-9B`,
   `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith10-35B-A3B`, `Ornith10-9B`,
-  `Laguna-S-2.1`, `Laguna-XS-2.1`
+  `Laguna-S-2.1`, `Laguna-XS-2.1`, `Nanbeige4.2-3B`
   (`QWEN_REASONING_BUDGET_FAMILY` in `kodo/llms/local_registry/`; notably
   **not** `Qwen3-Coder-Next-80B`, which despite the name shares no thinking
   mechanism with the rest of the Qwen lineup — it has no thinking family at

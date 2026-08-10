@@ -1070,8 +1070,8 @@ def test_build_thinking_extra_body_no_family_returns_default() -> None:
     assert max_tokens == _DEFAULT_MAX_TOKENS
 
 
-def test_build_thinking_extra_body_qwen_reasoning_budget_default_tier() -> None:
-    """Qwen36-27B with default tier 'unlimited' gets thinking_budget_tokens=24576 and headroom."""
+def test_build_thinking_extra_body_qwen_reasoning_budget_unlimited_tier() -> None:
+    """Qwen36-27B with explicit 'unlimited' tier gets thinking_budget_tokens=24576 and headroom."""
     from kodo.llms.llamacpp._llama import (
         _QWEN_MAX_TOKENS_HEADROOM,
         _build_thinking_extra_body,
@@ -1103,14 +1103,16 @@ def test_build_thinking_extra_body_qwen35_9b_forces_chat_template_kwargs() -> No
 
 def test_build_thinking_extra_body_invalid_override_falls_back_to_default_tier() -> None:
     """When override_tier is not in tiers, falls back to the model's default tier."""
+    from kodo.llms import QWEN_TIER_TOKEN_BUDGETS, local_thinking_default_tier
     from kodo.llms.llamacpp._llama import _build_thinking_extra_body
 
-    # Qwen36-27B default tier is 'unlimited' with budget 24576
+    default_tier = local_thinking_default_tier("Qwen36-27B")
+    default_budget = QWEN_TIER_TOKEN_BUDGETS["Qwen36-27B"][default_tier]
     extra_body, max_tokens = _build_thinking_extra_body(
         "Qwen36-27B", override_tier="nonexistent_tier"
     )
-    assert extra_body == {"thinking_budget_tokens": 24576}
-    assert max_tokens == 24576 + 8192  # _QWEN_MAX_TOKENS_HEADROOM
+    assert extra_body == {"thinking_budget_tokens": default_budget}
+    assert max_tokens == default_budget + 8192  # _QWEN_MAX_TOKENS_HEADROOM
 
 
 def test_build_thinking_extra_body_gpt_oss_reasoning_effort() -> None:
@@ -1133,10 +1135,13 @@ def test_build_thinking_extra_body_gpt_oss_default_tier() -> None:
 
 def test_build_thinking_extra_body_none_override_falls_back_to_default() -> None:
     """When override_tier is None, falls back to default tier."""
+    from kodo.llms import QWEN_TIER_TOKEN_BUDGETS, local_thinking_default_tier
     from kodo.llms.llamacpp._llama import _build_thinking_extra_body
 
+    default_tier = local_thinking_default_tier("Qwen36-27B")
+    default_budget = QWEN_TIER_TOKEN_BUDGETS["Qwen36-27B"][default_tier]
     extra_body, max_tokens = _build_thinking_extra_body("Qwen36-27B", override_tier=None)
-    assert extra_body == {"thinking_budget_tokens": 24576}
+    assert extra_body == {"thinking_budget_tokens": default_budget}
 
 
 def test_build_thinking_extra_body_gemma4_26b_qwen_family() -> None:
