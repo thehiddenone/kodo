@@ -9,6 +9,7 @@ script exactly like ``test_llama_server.py`` does for the main chat model's
 
 from __future__ import annotations
 
+import asyncio
 import os
 import socket
 import stat
@@ -34,10 +35,26 @@ from kodo.titling._server import (
 
 @pytest.fixture(autouse=True)
 def _reset_active_server() -> None:
-    """Every test starts with a clean module-level singleton."""
+    """Every test starts with a clean set of module-level singletons."""
     _server._active = None
+    _server._background_downloads.clear()
     yield
     _server._active = None
+    _server._background_downloads.clear()
+
+
+async def _drain_background_tasks() -> None:
+    """Await every task scheduled via ``asyncio.create_task`` during the test so far.
+
+    ``start_titling``'s fallback path fires off a background download with
+    ``asyncio.create_task`` rather than awaiting it directly (that's the
+    whole point — it must not block titling on the download). Tests that
+    care about the outcome of that background download need it to have
+    actually run before asserting on it.
+    """
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if pending:
+        await asyncio.gather(*pending)
 
 
 def _make_fake_executable(tmp_path: Path, script: str) -> Path:
@@ -204,6 +221,25 @@ class _FakeManager:
         self.download_calls.append((model_id, repo_id, filename))
 
 
+class _PerModelFakeManager:
+    """Like :class:`_FakeManager`, but readiness is tracked per ``model_id``.
+
+    Needed for the fallback tests below, where some catalog entries are
+    "already downloaded" and others aren't — :class:`_FakeManager` can't
+    express that since it returns the same path for every ``model_id``.
+    """
+
+    def __init__(self, paths: dict[str, Path]) -> None:
+        self._paths = dict(paths)
+        self.download_calls: list[tuple[str, str, str]] = []
+
+    def get_model_path(self, model_id: str) -> Path | None:
+        return self._paths.get(model_id)
+
+    async def download_model(self, model_id: str, repo_id: str, filename: str) -> None:
+        self.download_calls.append((model_id, repo_id, filename))
+
+
 async def test_start_titling_is_a_no_op_when_llamacpp_not_installed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -320,6 +356,146 @@ async def test_start_titling_switches_to_a_different_housekeeper_model(
     assert not first.is_running
 
     await _server.stop_titling()
+
+
+async def test_start_titling_keeps_current_model_running_when_switch_target_not_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Selecting a housekeeper LLM that isn't downloaded yet, while a
+    different one is already running, leaves the running one serving titles
+    instead of being torn down for a swap that would leave titling dark for
+    the whole download — the requested model is downloaded in the background
+    instead, with no swap once it finishes (see start_titling's docstring)."""
+    executable = _make_fake_executable(tmp_path, _HEALTH_SERVER_SCRIPT)
+    running_path = tmp_path / "running-model.gguf"
+    running_path.write_text("weights")
+
+    install = LlamaInstall(build=1, install_dir=tmp_path, executable=executable)
+    monkeypatch.setattr(_server, "find_installed", lambda kodo_dir: install)
+    monkeypatch.setattr(_server, "_PORT", _free_port())
+
+    running_id = "qwen35-4b-titler"
+    requested_id = "phi4-mini-titler"
+    manager = _PerModelFakeManager({running_id: running_path})
+    monkeypatch.setattr(_server, "_model_manager", lambda: manager)
+
+    await _server.start_titling(tmp_path, running_id)
+    first = _server._active
+    assert first is not None
+    assert first.model_id == running_id
+    assert first.is_running
+
+    await _server.start_titling(tmp_path, requested_id)
+
+    assert _server._active is first
+    assert first.is_running
+
+    await _drain_background_tasks()
+    requested_option = _server.HOUSEKEEPER_LLM_OPTIONS[requested_id]
+    assert manager.download_calls == [
+        (requested_option.model_id, requested_option.repo_id, requested_option.filename)
+    ]
+
+    await _server.stop_titling()
+
+
+async def test_start_titling_falls_back_to_a_ready_model_on_cold_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cold start (nothing running yet) requesting a not-yet-downloaded
+    housekeeper model serves whichever other catalog option IS already
+    downloaded instead of blocking titling on a fresh download, and
+    downloads the actually-requested model in the background for a future
+    start_titling call to pick up."""
+    executable = _make_fake_executable(tmp_path, _HEALTH_SERVER_SCRIPT)
+    ready_path = tmp_path / "ready-model.gguf"
+    ready_path.write_text("weights")
+
+    install = LlamaInstall(build=1, install_dir=tmp_path, executable=executable)
+    monkeypatch.setattr(_server, "find_installed", lambda kodo_dir: install)
+    monkeypatch.setattr(_server, "_PORT", _free_port())
+
+    requested_id = "phi4-mini-titler"
+    ready_id = "qwen25-3b-titler"
+    manager = _PerModelFakeManager({ready_id: ready_path})
+    monkeypatch.setattr(_server, "_model_manager", lambda: manager)
+
+    await _server.start_titling(tmp_path, requested_id)
+
+    assert _server._active is not None
+    assert _server._active.model_id == ready_id
+    assert _server._active.is_running
+
+    await _drain_background_tasks()
+    requested_option = _server.HOUSEKEEPER_LLM_OPTIONS[requested_id]
+    assert manager.download_calls == [
+        (requested_option.model_id, requested_option.repo_id, requested_option.filename)
+    ]
+
+    await _server.stop_titling()
+
+
+async def test_start_titling_blocks_on_download_when_nothing_is_ready_to_fall_back_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No housekeeper model downloaded at all (fresh install, nothing to fall
+    back to) preserves the pre-fallback behavior: block on downloading the
+    requested model synchronously rather than starting nothing."""
+    executable = _make_fake_executable(tmp_path, _HEALTH_SERVER_SCRIPT)
+    model_path = tmp_path / "model.gguf"
+    model_path.write_text("weights")
+
+    install = LlamaInstall(build=1, install_dir=tmp_path, executable=executable)
+    monkeypatch.setattr(_server, "find_installed", lambda kodo_dir: install)
+    monkeypatch.setattr(_server, "_PORT", _free_port())
+
+    manager = _PerModelFakeManager({})
+
+    async def _download_and_land(model_id: str, repo_id: str, filename: str) -> None:
+        manager.download_calls.append((model_id, repo_id, filename))
+        manager._paths[model_id] = model_path
+
+    manager.download_model = _download_and_land  # type: ignore[method-assign]
+    monkeypatch.setattr(_server, "_model_manager", lambda: manager)
+
+    requested_id = "phi4-mini-titler"
+    await _server.start_titling(tmp_path, requested_id)
+
+    requested_option = _server.HOUSEKEEPER_LLM_OPTIONS[requested_id]
+    assert manager.download_calls == [
+        (requested_option.model_id, requested_option.repo_id, requested_option.filename)
+    ]
+    assert _server._active is not None
+    assert _server._active.model_id == requested_id
+    assert _server._active.is_running
+
+    await _server.stop_titling()
+
+
+async def test_schedule_background_download_dedupes_concurrent_calls_for_same_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    option = _server.HOUSEKEEPER_LLM_OPTIONS[_server.DEFAULT_HOUSEKEEPER_LLM_ID]
+    calls: list[str] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowManager:
+        async def download_model(self, model_id: str, repo_id: str, filename: str) -> None:
+            calls.append(model_id)
+            started.set()
+            await release.wait()
+
+    monkeypatch.setattr(_server, "_model_manager", _SlowManager)
+
+    _server._schedule_background_download(option)
+    await started.wait()
+    _server._schedule_background_download(option)  # already in flight — must not double-download
+
+    release.set()
+    await _drain_background_tasks()
+
+    assert calls == [option.model_id]
 
 
 async def test_start_titling_falls_back_to_default_for_unknown_housekeeper_llm_id(

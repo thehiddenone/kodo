@@ -638,6 +638,13 @@ class TitlerServer:
 _active: TitlerServer | None = None
 _lock = asyncio.Lock()
 
+# Model ids currently being downloaded in the background as a "keep it ready
+# for next time" side effect of start_titling falling back to a different,
+# already-downloaded housekeeper model (see _schedule_background_download).
+# Guards against firing a second concurrent download_model() call for the
+# same model_id, which would race over the same .part file.
+_background_downloads: set[str] = set()
+
 
 def _model_manager() -> LocalModelManager:
     return LocalModelManager(titler_home_dir())
@@ -655,6 +662,72 @@ def _resolve_housekeeper_option(housekeeper_llm_id: str | None) -> HousekeeperLl
     return HOUSEKEEPER_LLM_OPTIONS[DEFAULT_HOUSEKEEPER_LLM_ID]
 
 
+def _find_ready_fallback(
+    manager: LocalModelManager, *, exclude_model_id: str
+) -> HousekeeperLlmOption | None:
+    """First catalog option (other than *exclude_model_id*) whose model is already downloaded.
+
+    Catalog order (``HOUSEKEEPER_LLM_OPTIONS`` insertion order) is the only
+    tie-break — there's no "most recently used" tracking across restarts.
+    Used by :func:`start_titling` so the titler can serve *something*
+    immediately when the requested option isn't downloaded yet, rather than
+    leaving titling dark for the whole download.
+    """
+    for candidate in HOUSEKEEPER_LLM_OPTIONS.values():
+        if candidate.model_id == exclude_model_id:
+            continue
+        if manager.get_model_path(candidate.model_id) is not None:
+            return candidate
+    return None
+
+
+def _schedule_background_download(option: HousekeeperLlmOption) -> None:
+    """Fire-and-forget download of *option*'s model, deduped by model_id.
+
+    Called when :func:`start_titling` falls back to a different,
+    already-ready housekeeper model instead of the one actually requested —
+    this quietly finishes the requested model's download in the background
+    so a *future* start_titling call (next kodo restart, or the user
+    re-selecting it in the Kōdo Settings panel) is more likely to find it
+    ready. Deliberately does not swap the titler over once the download
+    completes: reconciling a stray background completion against whatever's
+    active by then (a newer selection, a stop_titling shutdown, ...) isn't
+    worth the added complexity for this "nice to have" subsystem — the next
+    explicit start_titling call picks it up instead.
+    """
+    if option.model_id in _background_downloads:
+        _log.info(
+            "_schedule_background_download: %r is already downloading in the background — no-op",
+            option.model_id,
+        )
+        return
+    _background_downloads.add(option.model_id)
+
+    async def _run() -> None:
+        try:
+            _log.info(
+                "_schedule_background_download: downloading %s/%s for %r",
+                option.repo_id,
+                option.filename,
+                option.model_id,
+            )
+            await _model_manager().download_model(option.model_id, option.repo_id, option.filename)
+            _log.info(
+                "_schedule_background_download: finished downloading %r — available to a future "
+                "start_titling call",
+                option.model_id,
+            )
+        except Exception:
+            _log.exception(
+                "_schedule_background_download: failed to download %r in the background",
+                option.model_id,
+            )
+        finally:
+            _background_downloads.discard(option.model_id)
+
+    asyncio.create_task(_run())
+
+
 async def start_titling(kodo_dir: Path, housekeeper_llm_id: str | None = None) -> None:
     """Ensure the titler's llama-server is running *option*, downloading its model first if needed.
 
@@ -667,10 +740,30 @@ async def start_titling(kodo_dir: Path, housekeeper_llm_id: str | None = None) -
     ``asyncio.create_task`` — callers are not expected to await this before
     proceeding.
 
-    If a *different* housekeeper model is already running, it is stopped
-    first and the requested one started in its place — this is how
-    ``housekeeper_llm.set`` (doc/WS_PROTOCOL.md §7.6f) "silently restarts"
-    the titler when the user picks a new model in the Kōdo Settings panel.
+    If a *different* housekeeper model is already running and the requested
+    one is already downloaded, the running one is stopped first and the
+    requested one started in its place — this is how ``housekeeper_llm.set``
+    (doc/WS_PROTOCOL.md §7.6f) "silently restarts" the titler when the user
+    picks a new model in the Kōdo Settings panel.
+
+    Falls back to an already-downloaded housekeeper model when the requested
+    one isn't downloaded yet (e.g. it's mid-download, or was never fetched):
+
+    * If a *different* model is already running, it is left running as-is
+      rather than torn down for a swap that would leave titling dark for the
+      whole download.
+    * If nothing is running yet (a cold start), :data:`HOUSEKEEPER_LLM_OPTIONS`
+      is scanned in catalog order for any other option that's already
+      downloaded, and that one is started instead.
+    * Either way, the requested model is downloaded in the background
+      (:func:`_schedule_background_download`) so a *future* call — the next
+      kodo restart, or the user re-selecting it — is more likely to find it
+      ready. There is deliberately no automatic swap once that background
+      download finishes; only a fresh :func:`start_titling` call for that
+      same id activates it.
+    * Only when *no* housekeeper model is downloaded at all (nothing to fall
+      back to) does this block on downloading the requested one synchronously
+      — the same as the pre-fallback behavior.
 
     Args:
         kodo_dir (Path): User-level ``~/.kodo`` directory.
@@ -700,6 +793,17 @@ async def start_titling(kodo_dir: Path, housekeeper_llm_id: str | None = None) -
                     _active.base_url,
                 )
                 return
+            manager = _model_manager()
+            if manager.get_model_path(option.model_id) is None:
+                _log.info(
+                    "start_titling: requested %r isn't downloaded yet — keeping %r running as a "
+                    "fallback and downloading %r in the background for a future call",
+                    option.model_id,
+                    _active.model_id,
+                    option.model_id,
+                )
+                _schedule_background_download(option)
+                return
             _log.info(
                 "start_titling: switching housekeeper model %r -> %r — stopping current server",
                 _active.model_id,
@@ -720,13 +824,30 @@ async def start_titling(kodo_dir: Path, housekeeper_llm_id: str | None = None) -
             _log.info("start_titling: llama.cpp found at %s", install.executable)
 
             manager = _model_manager()
+            run_option = option
             model_path = manager.get_model_path(option.model_id)
             if model_path is None:
-                _log.info(
-                    "start_titling: downloading titler model %s/%s", option.repo_id, option.filename
-                )
-                await manager.download_model(option.model_id, option.repo_id, option.filename)
-                model_path = manager.get_model_path(option.model_id)
+                fallback = _find_ready_fallback(manager, exclude_model_id=option.model_id)
+                if fallback is not None:
+                    _log.info(
+                        "start_titling: %r isn't downloaded yet — falling back to already-ready "
+                        "%r and downloading %r in the background for a future call",
+                        option.model_id,
+                        fallback.model_id,
+                        option.model_id,
+                    )
+                    _schedule_background_download(option)
+                    run_option = fallback
+                    model_path = manager.get_model_path(fallback.model_id)
+                else:
+                    _log.info(
+                        "start_titling: downloading titler model %s/%s "
+                        "(no ready fallback available)",
+                        option.repo_id,
+                        option.filename,
+                    )
+                    await manager.download_model(option.model_id, option.repo_id, option.filename)
+                    model_path = manager.get_model_path(option.model_id)
             else:
                 _log.info("start_titling: titler model already cached at %s", model_path)
             if model_path is None:
@@ -735,9 +856,9 @@ async def start_titling(kodo_dir: Path, housekeeper_llm_id: str | None = None) -
                 )
                 return
 
-            server = TitlerServer(install.executable, model_path, kodo_dir, option.model_id)
+            server = TitlerServer(install.executable, model_path, kodo_dir, run_option.model_id)
             running = _find_running()
-            if running is not None and running.model_id == option.model_id:
+            if running is not None and running.model_id == run_option.model_id:
                 _log.info(
                     "start_titling: adopting existing titler process pid=%d port=%d model_id=%r",
                     running.pid,
@@ -749,14 +870,15 @@ async def start_titling(kodo_dir: Path, housekeeper_llm_id: str | None = None) -
                 if running is not None:
                     # Runtime file points at a survivor running a *different*
                     # (or unrecorded, pre-catalog) model than requested —
-                    # can't adopt it as serving option.model_id, and leaving
-                    # it alive would leak the process and squat on _PORT.
+                    # can't adopt it as serving run_option.model_id, and
+                    # leaving it alive would leak the process and squat on
+                    # _PORT.
                     _log.info(
                         "start_titling: existing titler process pid=%d runs model_id=%r, not the "
                         "requested %r — terminating it before starting fresh",
                         running.pid,
                         running.model_id,
-                        option.model_id,
+                        run_option.model_id,
                     )
                     _terminate_pid(running.pid)
                     elapsed = 0.0
