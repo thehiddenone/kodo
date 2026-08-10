@@ -78,6 +78,23 @@ def test_titler_home_dir_is_under_kodo_user_dir(
 
 
 # ---------------------------------------------------------------------------
+# HOUSEKEEPER_LLM_OPTIONS catalog
+# ---------------------------------------------------------------------------
+
+
+def test_housekeeper_llm_options_catalog_entries_are_self_consistent() -> None:
+    assert _server.DEFAULT_HOUSEKEEPER_LLM_ID in _server.HOUSEKEEPER_LLM_OPTIONS
+    for key, option in _server.HOUSEKEEPER_LLM_OPTIONS.items():
+        # The dict key doubles as the wire id / settings.json value / model
+        # cache key (HousekeeperLlmOption.model_id docstring) — must match.
+        assert option.model_id == key
+        assert option.display_name
+        assert option.description
+        assert option.repo_id
+        assert option.filename
+
+
+# ---------------------------------------------------------------------------
 # Guardrailed prompt
 # ---------------------------------------------------------------------------
 
@@ -129,7 +146,9 @@ async def test_start_becomes_ready_and_stop_terminates(
     # developer's machine — same rationale as test_llama_server.py's
     # _free_port for the main chat model.
     monkeypatch.setattr(_server, "_PORT", port)
-    server = TitlerServer(executable, tmp_path / "model.gguf", tmp_path / "kodo")
+    server = TitlerServer(
+        executable, tmp_path / "model.gguf", tmp_path / "kodo", "qwen35-4b-titler"
+    )
 
     await server.start()
     try:
@@ -149,7 +168,9 @@ async def test_start_raises_with_crash_output_when_process_exits_early(
         "import sys\nprint('boom: bad flag', file=sys.stderr)\nsys.exit(1)\n",
     )
     monkeypatch.setattr(_server, "_PORT", _free_port())
-    server = TitlerServer(executable, tmp_path / "model.gguf", tmp_path / "kodo")
+    server = TitlerServer(
+        executable, tmp_path / "model.gguf", tmp_path / "kodo", "qwen35-4b-titler"
+    )
 
     with pytest.raises(RuntimeError) as exc_info:
         await server.start()
@@ -159,7 +180,9 @@ async def test_start_raises_with_crash_output_when_process_exits_early(
 
 
 async def test_stop_is_a_no_op_when_never_started(tmp_path: Path) -> None:
-    server = TitlerServer(tmp_path / "exe", tmp_path / "model.gguf", tmp_path / "kodo")
+    server = TitlerServer(
+        tmp_path / "exe", tmp_path / "model.gguf", tmp_path / "kodo", "qwen35-4b-titler"
+    )
     await server.stop()  # must not raise
     assert not server.is_running
 
@@ -213,7 +236,10 @@ async def test_start_titling_downloads_model_when_missing(
 
     await _server.start_titling(tmp_path)
 
-    assert manager.download_calls == [(_server._MODEL_ID, _server._REPO_ID, _server._FILENAME)]
+    default_option = _server.HOUSEKEEPER_LLM_OPTIONS[_server.DEFAULT_HOUSEKEEPER_LLM_ID]
+    assert manager.download_calls == [
+        (default_option.model_id, default_option.repo_id, default_option.filename)
+    ]
     assert _server._active is not None
     assert _server._active.is_running
 
@@ -262,6 +288,114 @@ async def test_start_titling_is_idempotent(tmp_path: Path, monkeypatch: pytest.M
     await _server.stop_titling()
 
 
+async def test_start_titling_switches_to_a_different_housekeeper_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Selecting a different housekeeper LLM stops the currently-running one
+    and starts the newly requested model in its place — the "silently
+    restart" behavior ``housekeeper_llm.set`` relies on (doc/WS_PROTOCOL.md
+    §7.6f)."""
+    executable = _make_fake_executable(tmp_path, _HEALTH_SERVER_SCRIPT)
+    model_path = tmp_path / "model.gguf"
+    model_path.write_text("weights")
+
+    install = LlamaInstall(build=1, install_dir=tmp_path, executable=executable)
+    monkeypatch.setattr(_server, "find_installed", lambda kodo_dir: install)
+    monkeypatch.setattr(_server, "_PORT", _free_port())
+    monkeypatch.setattr(_server, "_model_manager", lambda: _FakeManager(model_path))
+
+    await _server.start_titling(tmp_path, "qwen35-4b-titler")
+    first = _server._active
+    assert first is not None
+    assert first.model_id == "qwen35-4b-titler"
+    assert first.is_running
+
+    await _server.start_titling(tmp_path, "qwen25-3b-titler")
+    second = _server._active
+
+    assert second is not None
+    assert second is not first
+    assert second.model_id == "qwen25-3b-titler"
+    assert second.is_running
+    assert not first.is_running
+
+    await _server.stop_titling()
+
+
+async def test_start_titling_falls_back_to_default_for_unknown_housekeeper_llm_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = _make_fake_executable(tmp_path, _HEALTH_SERVER_SCRIPT)
+    model_path = tmp_path / "model.gguf"
+    model_path.write_text("weights")
+
+    install = LlamaInstall(build=1, install_dir=tmp_path, executable=executable)
+    monkeypatch.setattr(_server, "find_installed", lambda kodo_dir: install)
+    monkeypatch.setattr(_server, "_PORT", _free_port())
+    monkeypatch.setattr(_server, "_model_manager", lambda: _FakeManager(model_path))
+
+    await _server.start_titling(tmp_path, "not-a-real-housekeeper-llm")
+
+    assert _server._active is not None
+    assert _server._active.model_id == _server.DEFAULT_HOUSEKEEPER_LLM_ID
+
+    await _server.stop_titling()
+
+
+async def test_start_titling_terminates_mismatched_orphan_before_spawning_fresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A runtime file pointing at a survivor running a *different* (or
+    pre-catalog/unrecorded) housekeeper model than requested is not adopted
+    — the orphan is terminated first and a fresh process spawned for the
+    requested model instead, rather than being left running and leaking the
+    process / squatting on ``_PORT``.
+    """
+    executable = _make_fake_executable(tmp_path, _HEALTH_SERVER_SCRIPT)
+    model_path = tmp_path / "model.gguf"
+    model_path.write_text("weights")
+    install = LlamaInstall(build=1, install_dir=tmp_path, executable=executable)
+    monkeypatch.setattr(_server, "find_installed", lambda kodo_dir: install)
+    monkeypatch.setattr(_server, "_PORT", _free_port())
+    monkeypatch.setattr(_server, "_model_manager", lambda: _FakeManager(model_path))
+
+    # Not a real process — deliberately never signalled for real. Liveness is
+    # faked below rather than using an actual PID, since the mismatch branch
+    # under test unconditionally terminates whatever pid _find_running hands
+    # back.
+    orphan_pid = 999_999_1
+    _server._write_runtime(orphan_pid, 12345, "qwen25-3b-titler")
+
+    real_is_pid_alive = _server._is_pid_alive
+    orphan_alive = True
+
+    def _fake_is_pid_alive(pid: int) -> bool:
+        if pid == orphan_pid:
+            return orphan_alive
+        return real_is_pid_alive(pid)
+
+    monkeypatch.setattr(_server, "_is_pid_alive", _fake_is_pid_alive)
+
+    terminated: list[int] = []
+
+    def _fake_terminate(pid: int) -> None:
+        nonlocal orphan_alive
+        terminated.append(pid)
+        if pid == orphan_pid:
+            orphan_alive = False
+
+    monkeypatch.setattr(_server, "_terminate_pid", _fake_terminate)
+
+    await _server.start_titling(tmp_path, "qwen35-4b-titler")
+
+    assert terminated == [orphan_pid]
+    assert _server._active is not None
+    assert _server._active.model_id == "qwen35-4b-titler"
+    assert _server._active.is_running
+
+    await _server.stop_titling()
+
+
 async def test_start_titling_adopts_a_surviving_process_instead_of_spawning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -282,7 +416,7 @@ async def test_start_titling_adopts_a_surviving_process_instead_of_spawning(
     monkeypatch.setattr(_server, "find_installed", lambda kodo_dir: install)
     monkeypatch.setattr(_server, "_model_manager", lambda: _FakeManager(model_path))
 
-    _server._write_runtime(os.getpid(), 12345)
+    _server._write_runtime(os.getpid(), 12345, _server.DEFAULT_HOUSEKEEPER_LLM_ID)
 
     adopted: list[_server._RunningTitler] = []
     started = 0
@@ -387,6 +521,7 @@ class _FakeAsyncOpenAI:
 class _FakeRunningServer:
     is_running = True
     base_url = "http://127.0.0.1:1"
+    model_id = "qwen35-4b-titler"
 
 
 def _install_fake_server_and_client(

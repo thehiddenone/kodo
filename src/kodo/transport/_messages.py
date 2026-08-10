@@ -324,6 +324,31 @@ MSG_STUCK_DETECTION_GET = "stuck_detection.get"
 # so the panel can refresh from the response alone.
 MSG_STUCK_DETECTION_SET = "stuck_detection.set"
 
+# Client → Server. Control connection only. Read the housekeeper-LLM catalog
+# and the currently selected option (doc/SETTINGS.md §2.7,
+# kodo.titling.HOUSEKEEPER_LLM_OPTIONS) — backs the Kōdo Settings panel's
+# "General" section's "Housekeeper LLM" subsection. No payload. Replies
+# ``housekeeper_llm.get.ack`` ``{selected: "qwen35-4b-titler", options:
+# [{id, name, description}, ...]}`` — ``options`` mirrors
+# ``HOUSEKEEPER_LLM_OPTIONS`` verbatim (in dict order) so the panel renders
+# one radio button per catalog entry with no id hardcoded client-side; adding
+# a new entry to that dict is the only change needed for a new radio button
+# to appear.
+MSG_HOUSEKEEPER_LLM_GET = "housekeeper_llm.get"
+
+# Client → Server. Control connection only. Select which catalog entry backs
+# session titling/greeting. Payload: ``{id: "qwen25-3b-titler"}``. Persists
+# ``housekeeper_llm`` into settings.json, then silently (no progress event)
+# stops the titler's own llama-server if running and restarts it on the
+# newly selected model in the background (``kodo.titling.start_titling``) —
+# the reply does not wait for that swap to finish, since a first pick of a
+# not-yet-downloaded model can take a while and titling is a "nice to have"
+# that must never block the settings panel. Replies
+# ``housekeeper_llm.set.ack`` ``{ok: true, selected}`` once persisted, or
+# ``{ok: false, error}`` if ``id`` isn't a known catalog entry (nothing is
+# persisted or restarted in that case).
+MSG_HOUSEKEEPER_LLM_SET = "housekeeper_llm.set"
+
 # Client → Server. Manually trigger context compaction for this session. Honoured
 # only when the entry agent is idle (``state.phase == "awaiting_user"``) and
 # there is context to compact; otherwise ignored. Drives the same path as the

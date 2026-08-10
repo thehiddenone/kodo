@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass, field
 
 from kodo.project import WorkspaceLayout
+from kodo.titling import DEFAULT_HOUSEKEEPER_LLM_ID
 
 __all__ = ["Config"]
 
@@ -65,6 +66,11 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
         # regardless of this flag.
         "auto_unstuck_interactive": False,
     },
+    # Which small local model backs session titling/greeting (kodo.titling,
+    # doc/INTERNALS.md §10c). A key into kodo.titling.HOUSEKEEPER_LLM_OPTIONS
+    # — exposed in the Kōdo Settings webview panel's "General" section via
+    # the housekeeper_llm.get/.set WS commands (doc/WS_PROTOCOL.md §7.6f).
+    "housekeeper_llm": DEFAULT_HOUSEKEEPER_LLM_ID,
 }
 
 _log = logging.getLogger(__name__)

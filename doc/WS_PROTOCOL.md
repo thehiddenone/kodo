@@ -1785,6 +1785,52 @@ trash icon for a session that's currently `taken` (live in another window)
 rather than sending this while it's live, to avoid orphaning that session's
 open tab.
 
+### 7.6f `housekeeper_llm.get` / `housekeeper_llm.set` — session titling/greeting model
+
+Control connection only, same framing as §7.6c — backs the **Kōdo Settings**
+webview panel's "General" section's "Housekeeper LLM" subsection (kodo-vsix
+`GeneralSection.tsx`). Reads and writes the `housekeeper_llm` settings.json
+key (doc/SETTINGS.md §2.7), which selects which small local model backs
+session titling/greeting (`kodo.titling`, doc/INTERNALS.md §10c) out of the
+fixed catalog `kodo.titling.HOUSEKEEPER_LLM_OPTIONS`.
+
+```json
+{ "type": "housekeeper_llm.get" }
+```
+
+→ `housekeeper_llm.get.ack` `{ "selected": "qwen35-4b-titler", "options": [
+  { "id": "qwen35-4b-titler", "name": "Qwen3.5 4B", "description": "..." },
+  { "id": "qwen25-3b-titler", "name": "Qwen2.5 3B", "description": "..." },
+  { "id": "nanbeige42-3b-titler", "name": "Nanbeige4.2 3B", "description": "..." }
+] }` — `options` mirrors `HOUSEKEEPER_LLM_OPTIONS` verbatim, in catalog order;
+the panel renders one radio button per entry, so adding a new dict entry is
+the only server-side change needed for a new radio button to appear.
+`selected` defensively falls back to the compiled-in default
+(`DEFAULT_HOUSEKEEPER_LLM_ID`) if the persisted value is missing or no longer
+a known catalog id.
+
+```json
+{ "type": "housekeeper_llm.set", "id": "qwen25-3b-titler" }
+```
+
+→ `housekeeper_llm.set.ack` `{ "ok": true, "selected": "qwen25-3b-titler" }`,
+or `{ "ok": false, "error": "..." }` if `id` isn't a known catalog entry
+(nothing is persisted or restarted in that case).
+
+Unlike `stuck_detection.set`, a successful `.set` has a real side effect
+beyond the settings write: it silently restarts the titler's own
+llama-server on the newly selected model in the background
+(`kodo.titling.start_titling`, stopping whatever is currently running first
+if it's a different model) — the `.ack` fires as soon as the selection is
+persisted and does **not** wait for that swap to finish, since a first pick
+of a not-yet-downloaded model can take a while and titling is a "nice to
+have" that must never make the settings panel wait on it. There is no
+progress event for this swap (unlike `llamacpp.install`'s
+`llamacpp.install.progress`) — titling silently becomes unavailable for the
+handful of seconds/minutes the swap takes, same as any other titler
+start/restart, and callers already tolerate `generate_title`/
+`generate_greeting` returning `None`.
+
 ### 7.7 ⟪planned⟫ — standalone rules management, credential push
 
 Persistent user-defined allow rules (FR-SEC-07) — generalized `(executable,

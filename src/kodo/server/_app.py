@@ -82,7 +82,12 @@ from kodo.runtime import (
     list_global_security_rules,
 )
 from kodo.subagents import AgentRegistry
-from kodo.titling import start_titling, stop_titling
+from kodo.titling import (
+    DEFAULT_HOUSEKEEPER_LLM_ID,
+    HOUSEKEEPER_LLM_OPTIONS,
+    start_titling,
+    stop_titling,
+)
 from kodo.transport import (
     EVT_ERROR,
     EVT_HF_TOKEN_REVOKE,
@@ -100,6 +105,8 @@ from kodo.transport import (
     MSG_CONFIG_RELOAD,
     MSG_EDIT_CONTROL_SET,
     MSG_HELLO,
+    MSG_HOUSEKEEPER_LLM_GET,
+    MSG_HOUSEKEEPER_LLM_SET,
     MSG_LLAMA_SERVER_OVERRIDE_REMOVE,
     MSG_LLAMA_SERVER_OVERRIDE_SET,
     MSG_LLAMA_START,
@@ -717,6 +724,108 @@ async def _handle_stuck_detection_set(req: Request) -> None:
 
 
 # ------------------------------------------------------------------
+# housekeeper_llm.get / housekeeper_llm.set (doc/WS_PROTOCOL.md §7.6f,
+# doc/SETTINGS.md §2.7) — which small local model backs session
+# titling/greeting (kodo.titling). Same "General" section as stuck_detection
+# above, same raw-file read-modify-write persistence shape.
+# ------------------------------------------------------------------
+
+
+def _housekeeper_llm_options_payload() -> list[dict[str, object]]:
+    """``HOUSEKEEPER_LLM_OPTIONS`` shaped for the wire, in catalog order.
+
+    One radio button per entry — adding a new entry to the dict is the only
+    change needed for a new radio button to appear in the Kōdo Settings panel.
+    """
+    return [
+        {"id": option.model_id, "name": option.display_name, "description": option.description}
+        for option in HOUSEKEEPER_LLM_OPTIONS.values()
+    ]
+
+
+def _valid_housekeeper_llm_id(raw: object) -> str:
+    """Coerce a settings.json value to a known catalog id, or the default."""
+    if isinstance(raw, str) and raw in HOUSEKEEPER_LLM_OPTIONS:
+        return raw
+    return DEFAULT_HOUSEKEEPER_LLM_ID
+
+
+def _current_housekeeper_llm_id() -> str:
+    """The persisted ``housekeeper_llm`` selection from settings.json.
+
+    Falls back to :data:`DEFAULT_HOUSEKEEPER_LLM_ID` if unset, unreadable, or
+    naming an id no longer in the catalog — same defensive shape as
+    ``_current_local_model_name``. Read directly off the raw file (not
+    ``config.reload_settings()``) so the ``start_titling`` call sites below
+    (startup, llamacpp install/update) don't need a ``Config`` in scope.
+    """
+    path = WorkspaceLayout().settings_json
+    if not path.exists():
+        return DEFAULT_HOUSEKEEPER_LLM_ID
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return DEFAULT_HOUSEKEEPER_LLM_ID
+    selected = data.get("housekeeper_llm") if isinstance(data, dict) else None
+    return _valid_housekeeper_llm_id(selected)
+
+
+def _persist_housekeeper_llm(option_id: str) -> None:
+    """Write the ``housekeeper_llm`` key into settings.json.
+
+    Patches the raw user file (not the merged defaults view), so unrelated
+    keys the user never set stay absent — same read-modify-write shape as
+    ``_persist_stuck_detection``.
+    """
+    path = WorkspaceLayout().settings_json
+    data: dict[str, object] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except (json.JSONDecodeError, OSError) as exc:
+            _log.warning("Rewriting unreadable settings file %s: %s", path, exc)
+    data["housekeeper_llm"] = option_id
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _make_housekeeper_llm_get_handler(config: Config) -> HandlerFn:
+    async def _handle_housekeeper_llm_get(req: Request) -> None:
+        settings = config.reload_settings()
+        selected = _valid_housekeeper_llm_id(settings.get("housekeeper_llm"))
+        await req.reply({
+            "type": "housekeeper_llm.get.ack",
+            "selected": selected,
+            "options": _housekeeper_llm_options_payload(),
+        })
+
+    return _handle_housekeeper_llm_get
+
+
+async def _handle_housekeeper_llm_set(req: Request) -> None:
+    option_id = str(req.env.payload.get("id", "")).strip()
+    if option_id not in HOUSEKEEPER_LLM_OPTIONS:
+        await req.reply(
+            {
+                "type": "housekeeper_llm.set.ack",
+                "ok": False,
+                "error": f"Unknown housekeeper LLM: {option_id!r}",
+            }
+        )
+        return
+    _persist_housekeeper_llm(option_id)
+    # Fire-and-forget, same as the llamacpp-install/startup call sites below
+    # — a first pick of a not-yet-downloaded model can take a while, and
+    # titling is a "nice to have" that must never make the settings panel
+    # wait on it. start_titling stops whatever's currently running (if a
+    # different model) before starting the newly selected one.
+    asyncio.create_task(start_titling(kodo_user_dir(), option_id))
+    await req.reply({"type": "housekeeper_llm.set.ack", "ok": True, "selected": option_id})
+
+
+# ------------------------------------------------------------------
 # Session-scoped engine handlers
 # ------------------------------------------------------------------
 
@@ -1041,8 +1150,10 @@ async def _handle_llamacpp_install(req: Request) -> None:
     if ok:
         # "installation procedure calls start titling" (doc/INTERNALS.md
         # §10c) — fire-and-forget so a first-run model download/subprocess
-        # spin-up never delays this response.
-        asyncio.create_task(start_titling(kodo_user_dir()))
+        # spin-up never delays this response. Resolves the user's persisted
+        # housekeeper-LLM pick rather than always the compiled-in default, so
+        # a previously-selected model survives a llama.cpp reinstall.
+        asyncio.create_task(start_titling(kodo_user_dir(), _current_housekeeper_llm_id()))
 
 
 def _parse_build_number(raw: object) -> int | None:
@@ -1121,7 +1232,7 @@ async def _handle_llamacpp_update(req: Request) -> None:
 
     ok = await _stream_llamacpp_progress(req, _update)
     if ok:
-        asyncio.create_task(start_titling(kodo_dir))
+        asyncio.create_task(start_titling(kodo_dir, _current_housekeeper_llm_id()))
 
 
 async def _handle_llamacpp_uninstall(req: Request) -> None:
@@ -2010,7 +2121,7 @@ async def _start_background(app: web.Application) -> None:
     # until this finishes, same as before.
     llama_install = find_installed(user_dir)
     if llama_install is not None:
-        asyncio.create_task(start_titling(user_dir))
+        asyncio.create_task(start_titling(user_dir, _current_housekeeper_llm_id()))
 
     # Ensure the bundled third-party utils (uv, ripgrep, fd) are present under
     # ~/.kodo/bin. Best-effort and idempotent: a no-op once already present,
@@ -2101,6 +2212,10 @@ def create_app(config: Config) -> web.Application:
         MSG_STUCK_DETECTION_GET, _make_stuck_detection_get_handler(config)
     )
     conn_registry.register_handler(MSG_STUCK_DETECTION_SET, _handle_stuck_detection_set)
+    conn_registry.register_handler(
+        MSG_HOUSEKEEPER_LLM_GET, _make_housekeeper_llm_get_handler(config)
+    )
+    conn_registry.register_handler(MSG_HOUSEKEEPER_LLM_SET, _handle_housekeeper_llm_set)
     conn_registry.register_handler(MSG_PROMPT_SUBMIT, _handle_prompt)
     conn_registry.register_handler(MSG_MODE_SET, _handle_mode)
     conn_registry.register_handler(MSG_WORKFLOW_SET, _handle_workflow)

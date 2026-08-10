@@ -98,6 +98,37 @@ Governs the stuck-agent watchdog (doc/STUCK_DETECTION.md) — detects a turn tha
 { "stuck_detection": { "active": "local_only", "scope": "top_level", "auto_unstuck_interactive": false } }
 ```
 
+### 2.7 `housekeeper_llm`
+
+Which small local model backs session titling and the opening greeting
+(`kodo.titling`, doc/INTERNALS.md §10c) — the dedicated `llama-server`
+instance that turns a first prompt into a short session title, invents a
+short project name, and writes a brand-new session's opening greeting. A key
+into the fixed catalog `kodo.titling.HOUSEKEEPER_LLM_OPTIONS`, each entry
+carrying a HuggingFace `repo_id`/`filename` to download plus a customer-facing
+`display_name`/`description`. Exposed in the Kōdo Settings webview panel's
+"General" section as a "Housekeeper LLM" radio group via the
+`housekeeper_llm.get`/`.set` WS commands (WS_PROTOCOL.md §7.6f); picking a
+different option persists the change here and silently restarts the titler's
+own `llama-server` on the newly selected model.
+
+| Value | Meaning |
+|---|---|
+| `"qwen35-4b-titler"` | Qwen3.5 4B (Alibaba) — the default; best balance of title/greeting quality and speed for most machines. |
+| `"qwen25-3b-titler"` | Qwen2.5 3B (Alibaba) — lighter/faster, smaller download and memory footprint. |
+| `"nanbeige42-3b-titler"` | Nanbeige4.2 3B (Nanbeige) — another compact option, a different model family. |
+
+```json
+{ "housekeeper_llm": "qwen35-4b-titler" }
+```
+
+A missing or unrecognised value (e.g. hand-edited to an id no longer in the
+catalog) falls back to the compiled-in default,
+`kodo.titling.DEFAULT_HOUSEKEEPER_LLM_ID`. Adding a new option is a code
+change to `kodo.titling.HOUSEKEEPER_LLM_OPTIONS` (`kodo/titling/_server.py`)
+— unlike the local chat-model registry (§2.2), there is no live "add a
+housekeeper LLM" webview action.
+
 ---
 
 ## 3. Default user settings

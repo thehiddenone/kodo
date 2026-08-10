@@ -22,9 +22,20 @@ active, on its own fixed port.
 
 Public surface:
 
+* :data:`HOUSEKEEPER_LLM_OPTIONS` / :class:`HousekeeperLlmOption` /
+  :data:`DEFAULT_HOUSEKEEPER_LLM_ID` — the catalog of small instruction-tuned
+  models this module can run as "the housekeeper LLM" (titler + greeter),
+  each with a customer-facing name/description. *Which* one is active is a
+  user setting (``housekeeper_llm`` in ``~/.kodo/etc/settings.json``,
+  doc/SETTINGS.md §2.7) owned and persisted by ``server/_app.py`` — this
+  module only knows how to run whichever option id it's given.
 * :func:`start_titling` / :func:`stop_titling` — server lifecycle. Called by
-  ``server/_app.py`` at startup (if llama.cpp is already installed) and around
-  a llama.cpp install/update (doc/INTERNALS.md §10c, §10).
+  ``server/_app.py`` at startup (if llama.cpp is already installed), around a
+  llama.cpp install/update (doc/INTERNALS.md §10c, §10), and whenever the
+  user picks a different housekeeper LLM in the Kōdo Settings panel
+  (``housekeeper_llm.set``, doc/WS_PROTOCOL.md §7.6f) — the latter passes an
+  explicit ``housekeeper_llm_id`` and relies on :func:`start_titling` to swap
+  a currently-running server over to the newly selected model.
 * :func:`generate_title` — the actual per-prompt summarization call, used by
   ``runtime._engine._titling.SessionTitler``. Returns ``None`` if the titler
   server isn't up for any reason; callers fall back to the prompt's own
@@ -70,7 +81,11 @@ from kodo.project import kodo_user_dir
 from ._greeting_themes import GREETING_THEMES
 
 __all__ = [
+    "DEFAULT_HOUSEKEEPER_LLM_ID",
+    "HOUSEKEEPER_LLM_OPTIONS",
+    "HousekeeperLlmOption",
     "generate_greeting",
+    "generate_project_name",
     "generate_title",
     "start_titling",
     "stop_titling",
@@ -80,22 +95,83 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Model
+# Model catalog — the "housekeeper LLM" choices offered in the Kōdo Settings
+# panel's "General" section (housekeeper_llm.get/.set, doc/WS_PROTOCOL.md
+# §7.6f). All three are small instruction-tuned GGUFs suitable for the same
+# CPU-only, low-context titling/greeting workload (see _LLAMA_ARGS below) —
+# swapping between them only ever changes which model file is loaded, never
+# the launch args or port.
 # ---------------------------------------------------------------------------
 
-# Qwen2.5 3B Instruct
-# _REPO_ID = "Qwen/Qwen2.5-3B-Instruct-GGUF"
-# _FILENAME = "qwen2.5-3b-instruct-q4_k_m.gguf"
-# Key within the titler's own LocalModelManager (rooted at titler_home_dir(),
-# never the shared chat-model directory) — opaque, never surfaced to the user.
-# _MODEL_ID = "qwen25-3b-titler"
 
-# Qwen3.5 4B
-_REPO_ID = "unsloth/Qwen3.5-4B-GGUF"
-_FILENAME = "Qwen3.5-4B-UD-Q4_K_XL.gguf"
-# Key within the titler's own LocalModelManager (rooted at titler_home_dir(),
-# never the shared chat-model directory) — opaque, never surfaced to the user.
-_MODEL_ID = "qwen35-4b-titler"
+@dataclass(frozen=True)
+class HousekeeperLlmOption:
+    """One selectable housekeeper LLM: where to fetch it and how to show it.
+
+    ``model_id`` doubles as the catalog key (see :data:`HOUSEKEEPER_LLM_OPTIONS`),
+    the :class:`~kodo.llms.local.LocalModelManager` cache key, and the
+    wire-level id used in ``housekeeper_llm.get``/``.set`` payloads and the
+    persisted ``housekeeper_llm`` settings.json value — one id, no separate
+    aliasing.
+    """
+
+    repo_id: str
+    filename: str
+    model_id: str
+    display_name: str
+    description: str
+
+
+HOUSEKEEPER_LLM_OPTIONS: dict[str, HousekeeperLlmOption] = {
+    "qwen25-3b-titler": HousekeeperLlmOption(
+        repo_id="Qwen/Qwen2.5-3B-Instruct-GGUF",
+        filename="qwen2.5-3b-instruct-q4_k_m.gguf",
+        model_id="qwen25-3b-titler",
+        display_name="Qwen2.5 3B",
+        description=(
+            "Alibaba's Qwen2.5, 3B parameters. A lighter, faster alternative to "
+            "Qwen3.5 4B — a smaller download and less memory, at a small cost to "
+            "title/greeting nuance."
+        ),
+    ),
+    "qwen35-4b-titler": HousekeeperLlmOption(
+        repo_id="unsloth/Qwen3.5-4B-GGUF",
+        filename="Qwen3.5-4B-UD-Q4_K_XL.gguf",
+        model_id="qwen35-4b-titler",
+        display_name="Qwen3.5 4B",
+        description=(
+            "Alibaba's Qwen3.5, 4B parameters. The best balance of title/greeting "
+            "quality and speed for most machines — the default housekeeper model."
+        ),
+    ),
+    "phi4-mini-titler": HousekeeperLlmOption(
+        repo_id="unsloth/Phi-4-mini-instruct-GGUF",
+        filename="Phi-4-mini-instruct-Q4_K_M.gguf",
+        model_id="phi4-mini-titler",
+        display_name="Phi-4 mini 3.8B",
+        description=(
+            "Microsoft's Phi 4 mini, 3B parameters. A compact language model that "
+            "delivers high-performance, cost-effective reasoning for titles and greetings."
+        ),
+    ),
+    "nanbeige42-3b-titler": HousekeeperLlmOption(
+        repo_id="bartowski/Nanbeige_Nanbeige4.2-3B-GGUF",
+        filename="Nanbeige_Nanbeige4.2-3B-Q4_K_L.gguf",
+        model_id="nanbeige42-3b-titler",
+        display_name="Nanbeige4.2 3B",
+        description=(
+            "Nanbeige's Nanbeige4.2, 3B parameters. Another compact option sized "
+            "like Qwen2.5 3B, from a different model family with its own phrasing "
+            "style for titles and greetings."
+        ),
+    ),
+}
+
+# Preserves the pre-catalog behavior (this was the one hardcoded model) for
+# both the compiled-in settings.json default (kodo.server._config) and any
+# caller that doesn't pass an explicit housekeeper_llm_id to start_titling.
+DEFAULT_HOUSEKEEPER_LLM_ID = "qwen25-3b-titler"
+
 
 _HOST = "127.0.0.1"
 # Distinct from the main chat model's default port (8042, LlamaServerConfig)
@@ -325,10 +401,11 @@ def _runtime_path() -> Path:
     return titler_home_dir() / "llama-server.json"
 
 
-def _write_runtime(pid: int, port: int) -> None:
+def _write_runtime(pid: int, port: int, model_id: str) -> None:
     p = _runtime_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({"pid": pid, "port": port}, indent=2), encoding="utf-8")
+    payload = {"pid": pid, "port": port, "model_id": model_id}
+    p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def _remove_runtime() -> None:
@@ -339,6 +416,10 @@ def _remove_runtime() -> None:
 class _RunningTitler:
     pid: int
     port: int
+    # Absent on a runtime file written before the housekeeper-LLM catalog
+    # existed (upgrade-in-place across a kodo update) — treated as "unknown
+    # model", which start_titling refuses to adopt (see its call site).
+    model_id: str | None
 
 
 def _find_running() -> _RunningTitler | None:
@@ -350,13 +431,20 @@ def _find_running() -> _RunningTitler | None:
         data = cast(dict[str, object], json.loads(path.read_text(encoding="utf-8")))
         pid = int(cast(int, data["pid"]))
         port = int(cast(int, data["port"]))
+        model_id = data.get("model_id")
+        model_id = str(model_id) if isinstance(model_id, str) else None
     except Exception:
         _log.warning("Could not parse titler llama-server runtime file — removing")
         path.unlink(missing_ok=True)
         return None
     if _is_pid_alive(pid):
-        _log.info("_find_running: runtime file points at a live process pid=%d port=%d", pid, port)
-        return _RunningTitler(pid=pid, port=port)
+        _log.info(
+            "_find_running: runtime file points at a live process pid=%d port=%d model_id=%r",
+            pid,
+            port,
+            model_id,
+        )
+        return _RunningTitler(pid=pid, port=port, model_id=model_id)
     _log.info("Stale titler llama-server runtime file (pid=%d no longer alive) — removing", pid)
     path.unlink(missing_ok=True)
     return None
@@ -379,10 +467,11 @@ class TitlerServer:
     chat model's server.
     """
 
-    def __init__(self, executable: Path, model_path: Path, kodo_dir: Path) -> None:
+    def __init__(self, executable: Path, model_path: Path, kodo_dir: Path, model_id: str) -> None:
         self.__executable = executable
         self.__model_path = model_path
         self.__kodo_dir = kodo_dir
+        self.__model_id = model_id
         self.__pid: int | None = None
         self.__port = _PORT
 
@@ -393,6 +482,11 @@ class TitlerServer:
     @property
     def base_url(self) -> str:
         return f"http://{_HOST}:{self.__port}"
+
+    @property
+    def model_id(self) -> str:
+        """The :class:`HousekeeperLlmOption` catalog id this instance runs."""
+        return self.__model_id
 
     def adopt(self, running: _RunningTitler) -> None:
         """Take ownership of a titler llama-server surviving a kodo restart."""
@@ -426,7 +520,7 @@ class TitlerServer:
 
         await self.__wait_ready(startup_log)
 
-        _write_runtime(self.__pid, self.__port)
+        _write_runtime(self.__pid, self.__port, self.__model_id)
         _log.info(
             "Titler llama-server ready at %s (pid=%d) — runtime file written to %s",
             self.base_url,
@@ -549,30 +643,71 @@ def _model_manager() -> LocalModelManager:
     return LocalModelManager(titler_home_dir())
 
 
-async def start_titling(kodo_dir: Path) -> None:
-    """Ensure the titler's llama-server is running, downloading its model first if needed.
+def _resolve_housekeeper_option(housekeeper_llm_id: str | None) -> HousekeeperLlmOption:
+    if housekeeper_llm_id is not None and housekeeper_llm_id in HOUSEKEEPER_LLM_OPTIONS:
+        return HOUSEKEEPER_LLM_OPTIONS[housekeeper_llm_id]
+    if housekeeper_llm_id is not None:
+        _log.warning(
+            "_resolve_housekeeper_option: unknown housekeeper_llm_id=%r — falling back to %r",
+            housekeeper_llm_id,
+            DEFAULT_HOUSEKEEPER_LLM_ID,
+        )
+    return HOUSEKEEPER_LLM_OPTIONS[DEFAULT_HOUSEKEEPER_LLM_ID]
 
-    Idempotent and best-effort: a no-op if already running; every failure
-    (llama.cpp not installed, download failure, subprocess crash, ...) is
-    logged and swallowed rather than raised, since titling is a "nice to
-    have" that must never affect kodo startup or the main chat session (see
-    the requirement this satisfies in doc/INTERNALS.md §10c). Safe to call
-    from a fire-and-forget ``asyncio.create_task`` — callers are not expected
-    to await this before proceeding.
+
+async def start_titling(kodo_dir: Path, housekeeper_llm_id: str | None = None) -> None:
+    """Ensure the titler's llama-server is running *option*, downloading its model first if needed.
+
+    Idempotent and best-effort: a no-op if the requested option is already
+    running; every failure (llama.cpp not installed, download failure,
+    subprocess crash, ...) is logged and swallowed rather than raised, since
+    titling is a "nice to have" that must never affect kodo startup or the
+    main chat session (see the requirement this satisfies in
+    doc/INTERNALS.md §10c). Safe to call from a fire-and-forget
+    ``asyncio.create_task`` — callers are not expected to await this before
+    proceeding.
+
+    If a *different* housekeeper model is already running, it is stopped
+    first and the requested one started in its place — this is how
+    ``housekeeper_llm.set`` (doc/WS_PROTOCOL.md §7.6f) "silently restarts"
+    the titler when the user picks a new model in the Kōdo Settings panel.
 
     Args:
         kodo_dir (Path): User-level ``~/.kodo`` directory.
+        housekeeper_llm_id (str | None): A key into
+            :data:`HOUSEKEEPER_LLM_OPTIONS`, or ``None``/unrecognised to fall
+            back to :data:`DEFAULT_HOUSEKEEPER_LLM_ID` — callers that don't
+            care which housekeeper model is active (llama.cpp
+            install/update, kodo startup) are expected to instead resolve
+            the user's persisted ``housekeeper_llm`` setting themselves
+            (``server/_app.py``'s ``_current_housekeeper_llm_id``) and pass
+            it through explicitly.
     """
     global _active
-    _log.info("start_titling: called (kodo_dir=%s, current _active=%r)", kodo_dir, _active)
+    option = _resolve_housekeeper_option(housekeeper_llm_id)
+    _log.info(
+        "start_titling: called (kodo_dir=%s, model_id=%r, current _active=%r)",
+        kodo_dir,
+        option.model_id,
+        _active,
+    )
     async with _lock:
         if _active is not None and _active.is_running:
+            if _active.model_id == option.model_id:
+                _log.info(
+                    "start_titling: already running %r at %s — no-op",
+                    option.model_id,
+                    _active.base_url,
+                )
+                return
             _log.info(
-                "start_titling: already running at %s — no-op",
-                _active.base_url,
+                "start_titling: switching housekeeper model %r -> %r — stopping current server",
+                _active.model_id,
+                option.model_id,
             )
-            return
-        if _active is not None and not _active.is_running:
+            await _active.stop()
+            _active = None
+        elif _active is not None:
             _log.info(
                 "start_titling: existing _active reference is no longer running "
                 "(is_running=False) — will attempt a fresh (re)start"
@@ -585,11 +720,13 @@ async def start_titling(kodo_dir: Path) -> None:
             _log.info("start_titling: llama.cpp found at %s", install.executable)
 
             manager = _model_manager()
-            model_path = manager.get_model_path(_MODEL_ID)
+            model_path = manager.get_model_path(option.model_id)
             if model_path is None:
-                _log.info("start_titling: downloading titler model %s/%s", _REPO_ID, _FILENAME)
-                await manager.download_model(_MODEL_ID, _REPO_ID, _FILENAME)
-                model_path = manager.get_model_path(_MODEL_ID)
+                _log.info(
+                    "start_titling: downloading titler model %s/%s", option.repo_id, option.filename
+                )
+                await manager.download_model(option.model_id, option.repo_id, option.filename)
+                model_path = manager.get_model_path(option.model_id)
             else:
                 _log.info("start_titling: titler model already cached at %s", model_path)
             if model_path is None:
@@ -598,21 +735,43 @@ async def start_titling(kodo_dir: Path) -> None:
                 )
                 return
 
-            server = TitlerServer(install.executable, model_path, kodo_dir)
+            server = TitlerServer(install.executable, model_path, kodo_dir, option.model_id)
             running = _find_running()
-            if running is not None:
+            if running is not None and running.model_id == option.model_id:
                 _log.info(
-                    "start_titling: adopting existing titler process pid=%d port=%d",
+                    "start_titling: adopting existing titler process pid=%d port=%d model_id=%r",
                     running.pid,
                     running.port,
+                    running.model_id,
                 )
                 server.adopt(running)
             else:
-                _log.info("start_titling: no existing titler process found — spawning a new one")
+                if running is not None:
+                    # Runtime file points at a survivor running a *different*
+                    # (or unrecorded, pre-catalog) model than requested —
+                    # can't adopt it as serving option.model_id, and leaving
+                    # it alive would leak the process and squat on _PORT.
+                    _log.info(
+                        "start_titling: existing titler process pid=%d runs model_id=%r, not the "
+                        "requested %r — terminating it before starting fresh",
+                        running.pid,
+                        running.model_id,
+                        option.model_id,
+                    )
+                    _terminate_pid(running.pid)
+                    elapsed = 0.0
+                    while elapsed < _STOP_GRACE and _is_pid_alive(running.pid):
+                        await asyncio.sleep(0.5)
+                        elapsed += 0.5
+                    if _is_pid_alive(running.pid):
+                        _kill_pid(running.pid)
+                    _remove_runtime()
+                _log.info("start_titling: no adoptable titler process found — spawning a new one")
                 await server.start()
             _active = server
             _log.info(
-                "start_titling: _active is now set (is_running=%s, base_url=%s)",
+                "start_titling: _active is now set (model_id=%r, is_running=%s, base_url=%s)",
+                _active.model_id,
                 _active.is_running,
                 _active.base_url,
             )
@@ -695,7 +854,7 @@ async def generate_title(text: str) -> str | None:
     try:
         client = openai.AsyncOpenAI(api_key=_API_KEY, base_url=f"{server.base_url}/v1")
         response = await client.chat.completions.create(
-            model=_MODEL_ID,
+            model=server.model_id,
             messages=_build_title_messages(text),  # type: ignore[arg-type]
             max_tokens=48,
             temperature=0.0,
@@ -739,7 +898,7 @@ async def generate_project_name(text: str) -> str | None:
     try:
         client = openai.AsyncOpenAI(api_key=_API_KEY, base_url=f"{server.base_url}/v1")
         response = await client.chat.completions.create(
-            model=_MODEL_ID,
+            model=server.model_id,
             messages=_build_project_name_messages(text),  # type: ignore[arg-type]
             max_tokens=16,
             temperature=0.0,
@@ -788,7 +947,7 @@ async def generate_greeting() -> str | None:
         theme = random.choice(GREETING_THEMES)
         _log.info("generate_greeting: requesting a greeting for theme=%r", theme)
         response = await client.chat.completions.create(
-            model=_MODEL_ID,
+            model=server.model_id,
             messages=_build_greeting_messages(theme),  # type: ignore[arg-type]
             max_tokens=128,
             temperature=0.9,
