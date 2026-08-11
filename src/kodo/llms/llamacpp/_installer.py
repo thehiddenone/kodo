@@ -16,6 +16,7 @@ import json
 import logging
 import platform
 import re
+import ssl
 import subprocess
 import tarfile
 import urllib.request
@@ -24,6 +25,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
+
+import certifi
 
 __all__ = [
     "LlamaInstall",
@@ -43,6 +46,12 @@ _GITHUB_RELEASES_LATEST = "https://api.github.com/repos/ggml-org/llama.cpp/relea
 _RELEASE_BASE = "https://github.com/ggml-org/llama.cpp/releases/download"
 _USER_AGENT = "kodo-llm-utils/0.1 (github.com/thehiddenone/kodo)"
 _META_FILE = "llama-meta.json"
+
+# Some Windows Python builds (notably uv-managed interpreters) don't wire the
+# stdlib ssl module up to the Windows certificate store, so the default
+# context finds no trusted CAs at all. Pin it to certifi's bundle explicitly
+# rather than relying on OS trust-store discovery.
+_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 # Asset filename templates per platform. {N} is replaced with the build number.
 _ASSET_NAMES: dict[str, str] = {
@@ -158,7 +167,7 @@ def fetch_latest_build_number() -> int:
             "Accept": "application/vnd.github+json",
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=30, context=_SSL_CONTEXT) as resp:
         data: object = json.loads(resp.read())
     tag = str(cast(dict[str, object], data)["tag_name"])
     match = re.match(r"^b(\d+)$", tag)
@@ -187,7 +196,7 @@ def _url_accessible(url: str) -> bool:
         headers={"User-Agent": _USER_AGENT},
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CONTEXT) as resp:
             return bool(200 <= int(resp.status) < 300)
     except Exception:
         return False
@@ -202,7 +211,7 @@ def _download(
 ) -> None:
     _log.info(f"Starting download from {url}")
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    with urllib.request.urlopen(req, timeout=600) as resp:
+    with urllib.request.urlopen(req, timeout=600, context=_SSL_CONTEXT) as resp:
         content_length = resp.headers.get("Content-Length")
         total = int(content_length) if content_length else 0
         downloaded = 0

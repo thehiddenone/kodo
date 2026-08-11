@@ -46,12 +46,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import ssl
 import time
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
 import aiohttp
+import certifi
 
 from ._types import DownloadError, DownloadPausedError
 
@@ -62,6 +64,13 @@ _DEFAULT_PARALLELISM = 8
 _USER_AGENT = "kodo-llm-manager/1.0 (github.com/thehiddenone/kodo)"
 _SIDECAR_SUFFIX = ".chunks"
 _SIDECAR_FLUSH_INTERVAL = 1.0
+
+# Unlike `requests`/`huggingface_hub` (which default to certifi's CA bundle),
+# aiohttp's default ssl=True falls back to the stdlib ssl module's own trust
+# discovery. Some Windows Python builds (notably uv-managed interpreters)
+# don't wire that up to the Windows certificate store, so verification fails
+# with "unable to get local issuer certificate". Pin it to certifi explicitly.
+_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
 def _sidecar_path(part_path: Path) -> Path:
@@ -206,7 +215,7 @@ async def _download_sequential(
     downloaded = resume_from
     try:
         async with (
-            aiohttp.ClientSession() as session,
+            aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=_SSL_CONTEXT)) as session,
             session.get(
                 url, headers=req_headers, timeout=aiohttp.ClientTimeout(total=timeout)
             ) as response,
@@ -343,7 +352,10 @@ async def _download_parallel(
 
     try:
         try:
-            async with aiohttp.ClientSession() as session, asyncio.TaskGroup() as tg:
+            async with (
+                aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=_SSL_CONTEXT)) as session,
+                asyncio.TaskGroup() as tg,
+            ):
                 for _ in range(min(parallelism, len(remaining))):
                     tg.create_task(worker(session))
         except* DownloadError as eg:

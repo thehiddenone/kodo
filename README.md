@@ -5,6 +5,7 @@
 </p>
 
 [![Kodo CI](https://github.com/thehiddenone/kodo/actions/workflows/ci.yml/badge.svg)](https://github.com/thehiddenone/kodo/actions/workflows/ci.yml)
+[![VS Code Marketplace](https://vsmarketplacebadges.dev/version/StanislavMorozov.vs-kodo.svg)](https://marketplace.visualstudio.com/items?itemName=StanislavMorozov.vs-kodo)
 
 **Kōdo** (コード) is a build system that converts natural language into working code through a multi-agent LLM workflow — designed from the ground up to run on your own hardware, model included. That's the pitch. How much of it actually holds up today, versus how much is still a plan with code attached, is spelled out plainly in [Status](#status) at the bottom — read that before you get your hopes up.
 
@@ -114,24 +115,12 @@ The list below describes what's implemented, not a review score of how well each
 
 ## Building the project
 
-The project uses [hatch](https://hatch.pypa.io) for environment and build management.
-The version scheme is `major.minor.build` (e.g. `0.1.7`) — there's no separate patch
-slot, the build number *is* the third component. It lives in the `build_number` file,
-gets stamped into `pyproject.toml` and `__init__.py` at build time, and is
-auto-incremented after a successful `hatch run build`. Pushing that incremented
-`build_number` to `main` is what actually ships a release, via two chained GitHub
+The project uses [hatch](https://hatch.pypa.io) for environment and build management. The version scheme is `major.minor.build` (e.g. `0.1.7`) — there's no separate patch slot, the build number *is* the third component. It lives in the `build_number` file, gets stamped into `pyproject.toml` and `__init__.py` at build time, and is auto-incremented after a successful `hatch run build`. Pushing that incremented `build_number` to `main` is what actually ships a release, via two chained GitHub
+
 Actions workflows:
 
-1. [`ci.yml`](.github/workflows/ci.yml) runs `hatch run check` on every push and PR to
-   `main` — this is the badge at the top of this README. A second job in the same
-   workflow, gated on that check passing, diffs the push against its previous commit;
-   only if `build_number` changed does it `hatch build` the wheel and upload it as an
-   artifact. One check per push either way — a plain push and a release push both run
-   `hatch run check` exactly once.
-2. [`publish-kodo.yml`](.github/workflows/publish-kodo.yml) triggers on completion of
-   `ci.yml`. If that run failed, or succeeded without producing an artifact (i.e. it
-   wasn't a `build_number` push), there is nothing to publish and it's a no-op.
-   Otherwise it downloads the artifact and publishes it to PyPI.
+1. [`ci.yml`](.github/workflows/ci.yml) runs `hatch run check` on every push and PR to `main` — this is the badge at the top of this README. A second job in the same workflow, gated on that check passing, diffs the push against its previous commit; only if `build_number` changed does it `hatch build` the wheel and upload it as an artifact. One check per push either way — a plain push and a release push both run `hatch run check` exactly once.
+2. [`publish-kodo.yml`](.github/workflows/publish-kodo.yml) triggers on completion of `ci.yml`. If that run failed, or succeeded without producing an artifact (i.e. it wasn't a `build_number` push), there is nothing to publish and it's a no-op. Otherwise it downloads the artifact and publishes it to PyPI.
 
 There's no separate manual "now go publish" step — bumping the file *is* the trigger,
 which is a little unsettling if you think about it too hard, so it's best not to.
@@ -153,22 +142,17 @@ code change  →  build  →  test  →  commit  →  hatch run build  →  push
 | `hatch run check-version` | Sync `__version__` in `__init__.py` from `pyproject.toml`. |
 | `hatch run build` | Full release pipeline: stamp version, fmt, lint, typecheck, test, build, post-increment `build_number`. |
 
-The `build_number` file contains the build number for the work currently in progress.
-Commit your changes *before* running `hatch run build` — this way the committed source matches
-the build number recorded in the repository. `hatch run build` is intended to be the final step
-once code changes are done, tests are green, and everything is committed. It produces a numbered
-wheel, then advances `build_number` so the repository is already pointing at the next iteration.
+The `build_number` file contains the build number for the work currently in progress. Commit your changes *before* running `hatch run build` — this way the committed source matches the build number recorded in the repository. `hatch run build` is intended to be the final step once code changes are done, tests are green, and everything is committed. It produces a numbered wheel, then advances `build_number` so the repository is already pointing at the next iteration.
 
-If a `kodo-vsix` checkout sits alongside this repo (`../kodo-vsix`), `scripts/post_build.py` also
-pins its `package.json` `version` to the `py-kodo` version just built — `kodo-vsix` installs
-`py-kodo` from PyPI pinned to its own extension version (see `kodo-vsix/src/uv-setup.ts`), so the
-two must always move together. No-op if that checkout isn't present.
+If a `kodo-vsix` checkout sits alongside this repo (`../kodo-vsix`), `scripts/post_build.py` also pins its `package.json` `version` to the `py-kodo` version just built — `kodo-vsix` installs `py-kodo` from PyPI pinned to its own extension version (see `kodo-vsix/src/uv-setup.ts`), so the two must always move together. No-op if that checkout isn't present.
+
+This lockstep pinning is also what the extension's runtime upgrade check relies on: on every activation where a venv already exists from a previous run, `kodo-vsix` compares the installed `py-kodo` version against its own and upgrades it to match if the extension is now ahead (e.g. after a VS Code Marketplace auto-update) — see `ensureKodoEnvironment`/`maybeUpgradeKodo` in `kodo-vsix/src/uv-setup.ts`. A failed upgrade never blocks startup; the server just launches on whatever `py-kodo` version is already installed.
 
 ## Status
 
 Early-stage, and that word is carrying its actual meaning here, not the usual GitHub-README hedge that means "basically done, but legally we have to say this."
 
-Kōdo is on PyPI: **[`pip install py-kodo`](https://pypi.org/project/py-kodo/)**. Don't read anything into that. Installing it today gets you a package with no exposed interface and nothing directly useful to point at — there's no polished console mode yet. One is planned, but it's genuinely TBD, not a polite way of saying "basically done." The real reason this is published at all right now is so the VS Code extension has something to `pip install` when it provisions `kodo-server` in the background. If you're a human deciding whether to `pip install py-kodo` yourself: not yet, there's nothing here for you directly.
+Kōdo is on PyPI: **[`pip install py-kodo`](https://pypi.org/project/py-kodo/)**. Don't read anything into that. Installing it today gets you a package with no exposed interface and nothing directly useful to point at — there's no polished console mode yet. One is planned, but it's genuinely TBD, not a polite way of saying "basically done." The real reason this is published at all right now is so the VS Code extension has something to `pip install` when it provisions `kodo-server` in the background. If you're a human deciding whether to `pip install py-kodo` yourself: not yet, there's nothing here for you directly — what you want instead is the [Kōdo extension on the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=StanislavMorozov.vs-kodo), which installs and provisions this package for you.
 
 Guided mode — the full staged pipeline described above — is mostly untested end-to-end and, as of this writing, has not produced a delivery good enough to point at and say "see, this is why you'd use it." The plumbing is real: the stages run, the gates work, the checkpoints land. What's missing is proof that chaining all of it together on a real, non-trivial project produces something worth the ceremony. That's not fine print, that's the current state of the thing, stated as plainly as it can be stated.
 

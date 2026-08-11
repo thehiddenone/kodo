@@ -58,6 +58,20 @@ Every method that transfers bytes (`download_model`, `resume_download`,
 `download_mmproj`) is a genuine coroutine — no worker thread anywhere in this
 package (see §9).
 
+`_http.py`'s `aiohttp.ClientSession()`s are built with an explicit
+`TCPConnector(ssl=...)` pinned to `ssl.create_default_context(cafile=
+certifi.where())`, not aiohttp's default `ssl=True`. Unlike `requests`
+(used for the metadata calls in `_hf.py` via `huggingface_hub`, which
+already defaults to certifi), aiohttp's default falls back to the stdlib
+`ssl` module's own trust discovery — which some Windows Python builds
+(notably uv-managed interpreters, how kodo's own server runs) don't wire up
+to the Windows certificate store, causing every download to fail with
+`CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`. The
+same fix is applied to the other two raw-`urllib`/`aiohttp` HTTPS call sites
+in the codebase: `kodo.binutils._utils` (uv/ripgrep/fd) and
+`kodo.llms.llamacpp._installer` (the llama.cpp binary itself) — any new raw
+HTTPS call site added anywhere in kodo needs the same treatment.
+
 ---
 
 ## 2. Package layout

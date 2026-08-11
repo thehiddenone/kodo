@@ -32,6 +32,7 @@ import json
 import logging
 import platform
 import shutil
+import ssl
 import stat
 import tarfile
 import tempfile
@@ -40,6 +41,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
+
+import certifi
 
 __all__ = [
     "UtilInstall",
@@ -55,6 +58,12 @@ _log = logging.getLogger(__name__)
 _USER_AGENT = "kodo-util-manager/0.1 (github.com/thehiddenone/kodo)"
 
 _IS_WINDOWS = platform.system() == "Windows"
+
+# Some Windows Python builds (notably uv-managed interpreters) don't wire the
+# stdlib ssl module up to the Windows certificate store, so the default
+# context finds no trusted CAs at all. Pin it to certifi's bundle explicitly
+# rather than relying on OS trust-store discovery.
+_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +258,10 @@ def _write_manifest(kodo_dir: Path, name: str, version: str, path: Path, url: st
 def _download(url: str, dest: Path) -> None:
     _log.info("Downloading %s", url)
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    with urllib.request.urlopen(req, timeout=600) as resp, dest.open("wb") as f:
+    with (
+        urllib.request.urlopen(req, timeout=600, context=_SSL_CONTEXT) as resp,
+        dest.open("wb") as f,
+    ):
         shutil.copyfileobj(resp, f)
 
 
