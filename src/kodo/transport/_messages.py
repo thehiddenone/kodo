@@ -430,6 +430,24 @@ MSG_LOCAL_LLM_UPDATE = "local_llm.update"
 MSG_LLAMA_START = "llama.start"
 MSG_LLAMA_STOP = "llama.stop"
 
+# Client → Server. Shut the singleton server process down NOW, taking every
+# llama-server it owns (the chat model's and the titler's) with it —
+# ``{reason?: str}``, ``reason`` being free text logged server-side.  Replies
+# ``server.shutdown.ack {ok, pid}`` and *then* triggers the same graceful stop
+# path a SIGTERM or the idle self-reap takes, so ``on_shutdown``
+# (``kodo.server._app._stop_background``) still stops both llama-servers and
+# the SessionManager before the process exits.  The ack therefore means
+# "shutdown accepted", not "everything is down" — the client's real completion
+# signal is the process disappearing (WS_PROTOCOL.md §7.6g).
+#
+# Unconditional by design: it does not refuse while other windows are
+# connected or a turn is streaming.  Its one caller is kodo-vsix's startup
+# path, which must get the server off the shared ``~/.kodo/venv`` before
+# upgrading ``py-kodo`` in place; a deferred shutdown there means an extension
+# that never manages to update its own backend.  Other windows reconnect to
+# the freshly-launched server on their own.
+MSG_SERVER_SHUTDOWN = "server.shutdown"
+
 # Client → Server. Fire-and-forget, sent by kodo-vsix's Local Inference
 # Settings panel every time it's opened, carrying every currently-installed
 # ``hardcoded_hf``/``custom_hf`` model name: ``{names: [str, ...]}``. No reply

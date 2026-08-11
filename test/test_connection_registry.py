@@ -7,6 +7,9 @@ not (as before this fix) on the Connection object itself, which no longer
 owns any pending-future state at all (see kodo.transport._connection and
 doc/SECURITY.md §7 / WS_PROTOCOL.md §8).
 
+Also covers `request_shutdown` — the client-requested stop backing the
+`server.shutdown` command (WS_PROTOCOL.md §7.6g).
+
 Uses a duck-typed fake manager/session rather than a real SessionManager —
 ConnectionRegistry only ever calls `manager.session_for_connection(conn.id)`
 and reads `session.channel`, so a full engine/gateway stack would be
@@ -15,6 +18,7 @@ incidental weight here.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -113,3 +117,34 @@ async def test_two_connections_each_resolve_only_their_own_session() -> None:
 
     assert channel_a.resolved == [("req-a", {"action": "allow"})]
     assert channel_b.resolved == [("req-b", {"action": "allow"})]
+
+
+# ---------------------------------------------------------------------------
+# request_shutdown — the `server.shutdown` command's trigger
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_request_shutdown_invokes_the_stop_callback() -> None:
+    stopped: list[bool] = []
+    registry = ConnectionRegistry(_FakeManager())  # type: ignore[arg-type]
+    # A grace period long enough that the idle self-reap can never be what
+    # fires here — only request_shutdown can.
+    registry.set_idle_shutdown(lambda: stopped.append(True), 3600.0)
+
+    registry.request_shutdown("py-kodo upgrade")
+
+    assert stopped == [], "must not fire synchronously — the ack has to leave the socket first"
+    await asyncio.sleep(0.3)
+    assert stopped == [True]
+
+
+@pytest.mark.asyncio
+async def test_request_shutdown_without_a_stop_callback_is_a_no_op() -> None:
+    """Nothing wires a stop callback outside `kodo.server.__main__` (tests and
+    the validator's in-process app included), so this must not raise."""
+    registry = ConnectionRegistry(_FakeManager())  # type: ignore[arg-type]
+
+    registry.request_shutdown("no callback set")
+
+    await asyncio.sleep(0.3)

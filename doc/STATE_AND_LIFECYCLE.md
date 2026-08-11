@@ -24,6 +24,19 @@
 > ownership and the disconnect grace window are covered in
 > [SESSIONS.md](SESSIONS.md); cross-session LLM scheduling in
 > [LLM_GATEWAY.md](LLM_GATEWAY.md).
+>
+> **Client-requested shutdown (2026-08-10).** Self-reaping is no longer the
+> only way the singleton stops: the `server.shutdown` command
+> ([WS_PROTOCOL.md §7.6g](WS_PROTOCOL.md)) triggers the same graceful stop
+> path on demand, and takes both llama-servers with it through the ordinary
+> `on_shutdown` teardown. It exists for one caller — kodo-vsix upgrading
+> `py-kodo` in `~/.kodo/venv` after an extension auto-update, which cannot
+> proceed while a server is running Python out of that venv (on Windows it
+> holds OS-level locks on the files uv must replace). It is unconditional: it
+> does not wait for other windows or for in-flight turns, since deferring
+> means an extension that never manages to update its backend. Windows whose
+> server vanished under them reconnect to the freshly launched one via the
+> normal reconnect path.
 
 This document covers how Kodo represents, persists, and recovers state across cold starts, interruptions, and normal operation. It assumes the file-native model from [CLAUDE.md](../CLAUDE.md) — sub-agents read and write the project's **real files** directly via `filesystem`/`edit_file`/`create_file`/`create_directory`/`read_file`; a per-file, append-only `.jsonl` evolution log (`kodo.guided_state`) tracks each document's revision/review history, with status always derived from the last line.
 

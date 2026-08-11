@@ -146,7 +146,9 @@ The `build_number` file contains the build number for the work currently in prog
 
 If a `kodo-vsix` checkout sits alongside this repo (`../kodo-vsix`), `scripts/post_build.py` also pins its `package.json` `version` to the `py-kodo` version just built — `kodo-vsix` installs `py-kodo` from PyPI pinned to its own extension version (see `kodo-vsix/src/uv-setup.ts`), so the two must always move together. No-op if that checkout isn't present.
 
-This lockstep pinning is also what the extension's runtime upgrade check relies on: on every activation where a venv already exists from a previous run, `kodo-vsix` compares the installed `py-kodo` version against its own and upgrades it to match if the extension is now ahead (e.g. after a VS Code Marketplace auto-update) — see `ensureKodoEnvironment`/`maybeUpgradeKodo` in `kodo-vsix/src/uv-setup.ts`. A failed upgrade never blocks startup; the server just launches on whatever `py-kodo` version is already installed.
+This lockstep pinning is also what the extension's runtime upgrade check relies on: on every activation where a venv already exists from a previous run, `kodo-vsix` compares the installed `py-kodo` version against its own and upgrades it to match if the extension is now ahead (e.g. after a VS Code Marketplace auto-update) — see `planKodoUpgrade`/`ensureKodoEnvironment`/`maybeUpgradeKodo` in `kodo-vsix/src/uv-setup.ts`. A failed upgrade never blocks startup; the server just launches on whatever `py-kodo` version is already installed.
+
+The check runs *before* the launcher decides to reuse an already-running singleton server, because that server is the obstacle: it runs Python out of the very venv being upgraded. When an upgrade is due, `kodo-vsix` sends the `server.shutdown` command ([doc/WS_PROTOCOL.md §7.6g](doc/WS_PROTOCOL.md)), waits for the process to exit, upgrades, and launches a fresh server on the new backend. Other windows reconnect to it on their own.
 
 ## Status
 

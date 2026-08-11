@@ -12,6 +12,7 @@ otherwise reach a real model resolution / API-key round-trip.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import cast
@@ -367,6 +368,26 @@ async def test_stop_returns_accepted(ws: aiohttp.ClientWebSocketResponse) -> Non
     await ws.send_str(req.to_json())
     resp = await _recv_response(ws, req.id)
     assert resp.payload["type"] == "stop.accepted"
+
+
+async def test_server_shutdown_acks_with_this_processes_pid(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """`server.shutdown` (WS_PROTOCOL.md §7.6g) acks before it stops.
+
+    The ack carries the PID precisely so kodo-vsix can then watch that process
+    disappear — which is its real "shutdown finished" signal, since the ack
+    only means "accepted". Nothing actually stops here: the stop callback is
+    wired in `kodo.server.__main__`, not `create_app`, so this in-process test
+    server takes the no-op branch of `ConnectionRegistry.request_shutdown`
+    (covered in test_connection_registry.py) and survives the request.
+    """
+    req = _make_request("server.shutdown", reason="py-kodo upgrade")
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+    assert resp.payload["type"] == "server.shutdown.ack"
+    assert resp.payload["ok"] is True
+    assert resp.payload["pid"] == os.getpid()
 
 
 async def test_session_delete_closes_socket_and_drops_listing(server: TestServer) -> None:

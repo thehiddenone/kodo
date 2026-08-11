@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import logging.handlers
+import os
 import re
 import shutil
 import sys
@@ -138,6 +139,7 @@ from kodo.transport import (
     MSG_SAMPLING_SET,
     MSG_SECURITY_RULES_DELETE,
     MSG_SECURITY_RULES_LIST,
+    MSG_SERVER_SHUTDOWN,
     MSG_SESSION_DELETE,
     MSG_SESSION_DELETE_BY_ID,
     MSG_SESSION_LIST,
@@ -1905,6 +1907,27 @@ async def _handle_llama_stop(req: Request) -> None:
     )
 
 
+def _make_server_shutdown_handler(conn_registry: ConnectionRegistry) -> HandlerFn:
+    """Build the ``server.shutdown`` handler (doc/WS_PROTOCOL.md §7.6g).
+
+    Acks first, then hands off to
+    :meth:`ConnectionRegistry.request_shutdown`, which takes the ordinary
+    graceful-stop path — so the llama-server teardown the caller cares about
+    is :func:`_stop_background` (``on_shutdown``), not code duplicated here.
+    Keeping it there means one teardown path for SIGTERM, the idle self-reap
+    and this command alike; if you ever stop tearing llama-servers down in
+    ``_stop_background``, this command stops covering them too.
+    """
+
+    async def _handle_server_shutdown(req: Request) -> None:
+        reason = str(req.env.payload.get("reason") or "client request")
+        _log.info("Client requested server shutdown: %s", reason)
+        await req.reply({"type": "server.shutdown.ack", "ok": True, "pid": os.getpid()})
+        conn_registry.request_shutdown(reason)
+
+    return _handle_server_shutdown
+
+
 # ------------------------------------------------------------------
 # Synchronous model selection + one-shot completion (doc/WS_PROTOCOL.md
 # §7.6a/§7.6b) — built for kodo.validator's LUT↔VLLM swaps, usable by any
@@ -2262,6 +2285,9 @@ def create_app(config: Config) -> web.Application:
     )
     conn_registry.register_handler(MSG_LLAMA_START, _make_llama_start_handler(config))
     conn_registry.register_handler(MSG_LLAMA_STOP, _handle_llama_stop)
+    conn_registry.register_handler(
+        MSG_SERVER_SHUTDOWN, _make_server_shutdown_handler(conn_registry)
+    )
     conn_registry.register_handler(MSG_LLM_SELECT, _handle_llm_select)
     conn_registry.register_handler(MSG_LLM_COMPLETE, _make_llm_complete_handler(config, gateway))
 

@@ -231,6 +231,8 @@ After `hello.ack` the client re-syncs the project's persisted session preference
 
 Either side may close the WebSocket. The server closes it on graceful shutdown (FR-SRV-07). The client closes it when the VS Code window closes. Neither side sends a protocol-level "goodbye" frame; closing the WS is sufficient.
 
+Closing the socket never stops the server — it is a singleton shared by every window and reaps itself on its own idle timeout. The one way a client can stop it on purpose is the `server.shutdown` command (§7.6g), which exists for a single job: getting the server off `~/.kodo/venv` so `py-kodo` can be upgraded in place.
+
 ---
 
 ## 5. Visibility events (server → client)
@@ -1830,6 +1832,58 @@ progress event for this swap (unlike `llamacpp.install`'s
 handful of seconds/minutes the swap takes, same as any other titler
 start/restart, and callers already tolerate `generate_title`/
 `generate_greeting` returning `None`.
+
+### 7.6g `server.shutdown` — stop the singleton server (and its llama-servers)
+
+Control connection only. Shuts the whole singleton server process down now,
+taking every llama-server it owns with it.
+
+```json
+{ "type": "server.shutdown", "reason": "py-kodo upgrade to 0.1.11" }
+```
+
+→ `server.shutdown.ack` `{ "ok": true, "pid": 12345 }`
+
+`reason` is optional free text, logged server-side (it is how the server log
+explains an otherwise unexplained restart). `pid` is the server process's own
+PID.
+
+**The ack means "accepted", not "everything is down."** The handler replies
+first, then triggers the same graceful stop path SIGTERM and the idle
+self-reap take: `runner.cleanup()` → `on_shutdown` →
+`kodo.server._app._stop_background`, which stops the chat llama-server, stops
+the titler's llama-server (`kodo.titling.stop_titling`) and shuts the
+`SessionManager` down, after which the discovery file is removed and the
+process exits. The client's real completion signal is therefore the **process
+disappearing** — which is exactly what its one caller needs to observe anyway
+(see below). The stop fires ~100 ms after the ack so the frame leaves the
+socket before the transport is torn down under it.
+
+**It never refuses.** Not when other windows are connected, not when a turn is
+streaming. That is deliberate, and it is a consequence of the only thing that
+sends it: kodo-vsix's startup path, when the extension has auto-updated past
+the `py-kodo` installed in `~/.kodo/venv`. The server *is* the obstacle there
+— it runs Python out of that venv, and on Windows holds unbreakable OS-level
+locks on the very native-extension files uv must overwrite — so a
+"shut down only if idle" rule would mean an extension that can never update
+its own backend on the machines that need it most. Losing an in-flight turn
+once per extension update is the accepted cost; every other window's
+`WsClient` reconnects to the freshly launched server on its own, and sessions
+rehydrate through the ordinary reconnect path (§5.11).
+
+Client-side sequencing, all inside `ServerLauncher.launch` (kodo-vsix
+`src/server-launcher.ts`), under a cross-window lock so simultaneously
+reloading windows do not all do this at once:
+
+1. `planKodoUpgrade` compares `uv pip show py-kodo` against the extension's
+   own version — **before** deciding whether to reuse the running server.
+2. If an upgrade is due: send `server.shutdown` over a throwaway WS (not the
+   window's control connection — that is opened later, and is the connection
+   being killed), wait for the ack, then poll until the PID is gone and the
+   port is free.
+3. Escalate if it will not die: SIGTERM, then proceed anyway rather than
+   leaving the window without a server.
+4. Upgrade `py-kodo`, then spawn a fresh server on the new backend.
 
 ### 7.7 ⟪planned⟫ — standalone rules management, credential push
 

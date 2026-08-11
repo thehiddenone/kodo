@@ -26,6 +26,10 @@ __all__ = ["ConnectionRegistry", "Request", "HandlerFn", "CONNECTION_REGISTRY_KE
 
 _log = logging.getLogger(__name__)
 
+# Delay between accepting a `server.shutdown` and actually stopping, so the
+# ack frame leaves the socket before the transport is closed under it.
+_SHUTDOWN_ACK_GRACE = 0.1
+
 
 @dataclass
 class Request:
@@ -68,7 +72,9 @@ class ConnectionRegistry:
         self.__manager = manager
         self.__handlers: dict[str, HandlerFn] = {}
         self.__active = 0
-        self.__idle_cb: Callable[[], None] | None = None
+        # The one "stop this process" trigger, shared by the idle self-reap and
+        # the client-requested `server.shutdown` (see `request_shutdown`).
+        self.__stop_cb: Callable[[], None] | None = None
         self.__idle_grace = 0.0
         self.__idle_timer: asyncio.TimerHandle | None = None
         self.__gpu_release_cb: Callable[[], Awaitable[None]] | None = None
@@ -90,13 +96,39 @@ class ConnectionRegistry:
         invoked to stop the server.  Armed immediately so a server nobody ever
         connects to also eventually exits.
 
+        *callback* doubles as this registry's general "stop the process" trigger
+        — :meth:`request_shutdown` invokes the same one.
+
         Args:
             callback: Invoked to trigger graceful shutdown (e.g. ``stop_event.set``).
             grace_seconds: Idle period before shutdown.
         """
-        self.__idle_cb = callback
+        self.__stop_cb = callback
         self.__idle_grace = grace_seconds
         self.__arm_idle()
+
+    def request_shutdown(self, reason: str) -> None:
+        """Shut the server down now, on a client's explicit request.
+
+        Takes the same graceful path as SIGTERM and the idle self-reap: the
+        stop callback ends ``_serve``'s wait, ``runner.cleanup()`` fires
+        ``on_shutdown`` (which stops both llama-servers and the
+        :class:`SessionManager`), and the discovery file is removed.  It does
+        NOT wait for other connected windows or in-flight turns — see
+        ``MSG_SERVER_SHUTDOWN`` for why that is deliberate.
+
+        Fires on a short delay so the caller's ``server.shutdown.ack`` is
+        written to its socket before the transport is torn down under it.
+
+        Args:
+            reason: Free-text reason, logged.
+        """
+        if self.__stop_cb is None:
+            _log.warning("server.shutdown requested (%s) but no stop callback is set", reason)
+            return
+        _log.info("server.shutdown requested (%s) — stopping the singleton server", reason)
+        self.__cancel_idle()
+        asyncio.get_event_loop().call_later(_SHUTDOWN_ACK_GRACE, self.__stop_cb)
 
     def set_gpu_release_hook(self, callback: Callable[[], Awaitable[None]]) -> None:
         """Free local-inference GPU memory as soon as the last window leaves.
@@ -147,7 +179,7 @@ class ConnectionRegistry:
 
     def __arm_idle(self) -> None:
         self.__cancel_idle()
-        if self.__idle_cb is None:
+        if self.__stop_cb is None:
             return
         loop = asyncio.get_event_loop()
         self.__idle_timer = loop.call_later(self.__idle_grace, self.__maybe_shutdown)
@@ -159,7 +191,7 @@ class ConnectionRegistry:
 
     def __maybe_shutdown(self) -> None:
         self.__idle_timer = None
-        if self.__active > 0 or self.__idle_cb is None:
+        if self.__active > 0 or self.__stop_cb is None:
             return
         if self.__manager.any_running():
             # A turn is still streaming (e.g. every window is mid-reload).
@@ -172,7 +204,7 @@ class ConnectionRegistry:
             self.__arm_idle()
             return
         _log.info("No clients for %.0fs — self-reaping singleton server", self.__idle_grace)
-        self.__idle_cb()
+        self.__stop_cb()
 
     async def __release_gpu_if_idle(self) -> None:
         # Re-checked here (not just at schedule time) since this runs as a
