@@ -38,6 +38,7 @@ QWEN_REASONING_BUDGET_FAMILY: frozenset[str] = frozenset(
         "Laguna-S-2.1",
         "Laguna-XS-2.1",
         "Nanbeige4.2-3B",
+        "Nemotron35-30B-A3B",
     }
 )
 
@@ -141,6 +142,14 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "high": 16384,
         "huge": 32768,
         "unlimited": 49152,
+    },
+    "Nemotron35-30B-A3B": {
+        "minimal": 512,
+        "low": 1536,
+        "medium": 4096,
+        "high": 8192,
+        "huge": 16384,
+        "unlimited": 24576,
     },
 }
 

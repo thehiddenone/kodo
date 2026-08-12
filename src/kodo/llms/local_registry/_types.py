@@ -155,6 +155,20 @@ class LocalLLMEntry:
         llm_author: Company of Team who produced the original LLM, e.g.
             ``'OpenAI'``. ``hardcoded_hf`` only — always ``""`` for every
             other kind.
+        license_name: Human-readable name of the original (unquantized)
+            model's license, e.g. ``'Apache License 2.0'`` or
+            ``'OpenMDW-1.1'``. Read off the base model's own HuggingFace
+            page (its ``cardData.license``/``license_link``), not the GGUF
+            quant repo — quant repos rarely restate it. When the base
+            model's page doesn't host a working license link itself (a
+            dead ``license_link``, or none at all), this falls back to the
+            license's own canonical text (e.g. the Apache Software
+            Foundation's copy) rather than a broken HuggingFace URL. All
+            quants sharing one ``base_llm`` share the same license, since
+            quantization doesn't change licensing terms. ``hardcoded_hf``
+            only — always ``""`` for every other kind.
+        license_url: Link to the license text described by ``license_name``.
+            ``hardcoded_hf`` only — always ``""`` for every other kind.
         quant_author: Team or person who produced the quantized GGUF, e.g.
             ``'Unsloth'``. ``hardcoded_hf`` only — always ``""`` for every
             other kind.
@@ -220,6 +234,8 @@ class LocalLLMEntry:
     url: str = ""
     base_llm: str = ""
     llm_author: str = ""
+    license_name: str = ""
+    license_url: str = ""
     quant_author: str = ""
     quant_type: str = ""
     size_hint: str = ""

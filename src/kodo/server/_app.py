@@ -469,6 +469,8 @@ def _local_registry_payload() -> dict[str, object]:
             "min_memory": e.min_memory,
             "memory": e.memory,
             "llm_author": e.llm_author,
+            "license_name": e.license_name,
+            "license_url": e.license_url,
             "llamacpp_version": e.llamacpp_version,
             "context_window": e.context_window,
             "knobs": [k.id for k in e.knobs],

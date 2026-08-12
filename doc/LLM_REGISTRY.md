@@ -130,6 +130,8 @@ class LocalLLMEntry:
     url: str = ""           # custom_server_url
     base_llm: str = ""      # hardcoded_hf only — e.g. "qwen36-27b"
     llm_author: str = ""    # hardcoded_hf only — e.g. "Alibaba Cloud"
+    license_name: str = ""  # hardcoded_hf only — e.g. "Apache License 2.0"
+    license_url: str = ""   # hardcoded_hf only — e.g. "https://www.apache.org/licenses/LICENSE-2.0"
     quant_author: str = ""  # hardcoded_hf only — e.g. "Unsloth"
     quant_type: str = ""    # hardcoded_hf only — e.g. "UD_Q4_K_XL"
     size_hint: str = ""     # hardcoded_hf only — e.g. "28.6 GB"
@@ -149,10 +151,16 @@ class LocalLLMEntry:
     llamacpp_version: int = 0  # hardcoded_hf only in practice — minimum llama.cpp build number; 0 = any version works
 ```
 
-`base_llm`/`llm_author`/`quant_author`/`quant_type`/`size_hint`/`gpu_tip`/`mac_tip`/
+`base_llm`/`llm_author`/`license_name`/`license_url`/`quant_author`/`quant_type`/`size_hint`/`gpu_tip`/`mac_tip`/
 `min_memory`/`memory`/`llamacpp_version` are metadata-only (never read by `ensure_llama_running`
 or the WS handlers) — they identify, respectively, the original unquantized
-model, who produced that original model, who produced the quant, the quant spec, the GGUF file's on-disk size
+model, who produced that original model, that original model's license (name
+and a link to its text — read off the *base* model's own HuggingFace page,
+not the GGUF quant repo, since quant repos rarely restate licensing; every
+quant sharing one `base_llm` shares the same license, since quantization
+doesn't change licensing terms; falls back to the license's own canonical
+text — e.g. the Apache Software Foundation's copy — when the base model's
+page doesn't host a working link itself), who produced the quant, the quant spec, the GGUF file's on-disk size
 (as displayed on the model's HuggingFace file listing, hand-copied — not
 fetched at runtime), a hand-written discrete-GPU-plus-system-RAM
 recommendation, a hand-written MacBook Pro (Apple Silicon unified-memory)
@@ -185,10 +193,10 @@ prose — combined VRAM + system RAM together, not VRAM alone — see §4.4 for
 how kodo-vsix compares them against `detected_vram_gb` + `detected_ram_gb`.
 `llamacpp_version` is the same idea applied to the installed llama.cpp build
 number instead of memory — see §4.4.
-All ten
+All twelve
 fields are always `""`/`0` for `custom_hf`/`custom_file`/`custom_server_url`
 — none of the `local_llm.add_*` WS commands accept them, so a user-added
-entry can never populate them. All ten of
+entry can never populate them. All twelve of
 these **are** included in
 `_local_registry_payload()`'s wire shape (§4.4), alongside the raw
 `context_window` field itself — added so kodo-vsix can render the sidebar's
@@ -431,7 +439,7 @@ caught and swallowed, since this must never block the `hello` handshake.
 field kodo-vsix needs — `name`, `kind`, `description`, `repo_id`, `filename`,
 `path`, `url`, `installed`, `installed_path`, `base_llm`, `quant_author`,
 `quant_type`, `size_hint`, `gpu_tip`, `mac_tip`, `min_memory`, `memory`,
-`llm_author`, `llamacpp_version`,
+`llm_author`, `license_name`, `license_url`, `llamacpp_version`,
 `context_window` — plus
 top-level `llama_server_override_path`, `detected_vram_gb`,
 `detected_ram_gb`, and `thinking_families` (§4.5). `installed_path` is new: the absolute path to the
