@@ -667,7 +667,9 @@ These drive the sidebar's llama.cpp / model controls; they carry no workflow mea
 
 `percent: -1` signals failure (the `message` carries the reason). `llama.state` with `starting: true` ⟪planned⟫ may precede a running/error update; the client treats a missing `running` field as "still starting." Selecting a `custom_server_url` local entry (§7.6, doc/LLM_REGISTRY.md) reports `llama.state {running: false, model: null}` — that entry isn't a process kodo manages, so "running" here always describes kodo's *own* llama-server, which stays stopped until a kodo-managed local model is selected again.
 
-`llamacpp.update` (§7.6) streams the same `llamacpp.install.progress` shape — it is the identical uninstall-then-reinstall flow, just entered from a different request. A single-shot `percent: 100` carrying `up_to_date: true` means the server short-circuited *before* touching the install or the titler: for an unpinned request, the installed build was already `>=` the latest on GitHub; the pinned-version case has no analogous short-circuit (see §7.6).
+**Every `llamacpp.install`/`llamacpp.update` stream is guaranteed to end in a terminal frame** — `percent` of exactly `100` or `-1` — including when the work fails before reporting any progress of its own (the server synthesizes the `-1` in that case, and never emits two terminal frames for one request). Clients may therefore treat the terminal frame as the sole completion signal and gate their busy state on it; kodo-vsix's `onLlamaProgress` does exactly that, and before this guarantee existed a silently-swallowed failure left its progress notification and its "install in flight" flag stuck for the lifetime of the window.
+
+`llamacpp.update` (§7.6) streams the same `llamacpp.install.progress` shape — it is the same install flow, just entered from a different request. A single-shot `percent: 100` carrying `up_to_date: true` means the server short-circuited *before* touching the install or either llama-server: for an unpinned request, the installed build was already `>=` the latest on GitHub; the pinned-version case has no analogous short-circuit (see §7.6).
 
 There is no `local_llm.install.progress` (or any other) byte-level download-progress event — `local_llm.install`/`local_llm.resume`/`local_llm.pause` (§7.6) are fire-and-forget, and kodo-vsix follows progress by polling `manager-state.json` directly off disk instead (doc/LOCAL_MODEL_MANAGER.md §11), independent of any WS connection.
 
@@ -1411,11 +1413,15 @@ progress over the wire — a download's live byte progress is read by polling
 `llamacpp.install.progress` (§5.12) on the requesting connection, since
 both are one-shot binary fetches with no pause/resume.
 
-`llamacpp.update` uninstalls the current build and installs the latest one
-(`update_llamacpp`, doc/INTERNALS.md §10); it also stops the session titler's
-own llama-server first (its process runs off the same binary files being
-replaced) and restarts it once the new build is installed, same as
-`llamacpp.install` does on success (doc/INTERNALS.md §10c). `llamacpp.update`
+`llamacpp.update` installs the requested build and then removes the
+superseded one (`update_llamacpp`, doc/INTERNALS.md §10 — installing first
+means a failed update leaves the previous build working). It stops **both**
+llama-servers first, since both run off the binary files being replaced: the
+session titler's, which it restarts once the new build is installed, same as
+`llamacpp.install` does on success (doc/INTERNALS.md §10c); and kodo's own
+chat llama-server, which it does *not* restart — that one is auto-started on
+demand by the next engine run — pushing a `llama.state {running: false,
+model: null}` (§5.12) as it goes. `llamacpp.update`
 accepts an optional `version` field (a build number, `"b12345"` or `"12345"`)
 to pin an explicit release instead of latest — this backs the **Kōdo
 Settings** panel's "Llama.cpp" section "Install specific version" action
@@ -1424,22 +1430,42 @@ it always installs latest. An unparsable `version` streams a single
 `llamacpp.install.progress` failure (`percent: -1`) instead of installing
 anything.
 
-Both cases are checked *before* the uninstall/reinstall cycle (and before the
-titler is stopped — doc/INTERNALS.md §10c): with no `version`, the handler
+Both cases are checked *before* anything is installed or replaced (and before
+either llama-server is stopped — doc/INTERNALS.md §10c): with no `version`, the handler
 resolves the latest build number first and, if the installed build is already
 `>=` it, replies with a single `percent: 100, up_to_date: true` event and
 does nothing else (the "Update llama.cpp" button's toast). With a pinned
-`version`, the handler calls `build_exists` (`_installer.py`, doc/INTERNALS.md
-§10) to confirm that build was actually published on GitHub Releases first;
-if not, it replies with a `percent: -1` failure and leaves the current
-installation — and the titler — untouched, rather than uninstalling the
-existing build and then failing to install a nonexistent one.
+`version` **naming the build that is already installed**, it replies with the
+same single `percent: 100, up_to_date: true` event — `llamacpp.update` never
+reinstalls a build in place, and this is checked ahead of `build_exists`
+since the build is on disk and GitHub's copy is irrelevant. Reinstalling is
+the client's own `llamacpp.uninstall` + `llamacpp.install` pair (in kodo-vsix,
+the panel's "Uninstall llama.cpp" then "Install llama.cpp" buttons); a client
+must not expect `llamacpp.update` to provide it. kodo-vsix additionally
+*disables* its "Update llama.cpp" button whenever the installed build is
+already `>=` the `latest_version` from `llamacpp.version_info`
+(`llamaCppIsUpToDate`, `settings-webview/localLlmUtils.ts`), so the no-op
+request is normally never sent at all — a UI courtesy layered on the
+server-side short-circuit, not a replacement for it: the panel's version info
+is a cached snapshot, and any client may still send the request. Otherwise the handler calls
+`build_exists` (`_installer.py`, doc/INTERNALS.md §10) to confirm that build
+was actually published on GitHub Releases; if not, it replies with a
+`percent: -1` failure and leaves the current installation — and both
+llama-servers — untouched, rather than disturbing a working install and then
+failing to fetch a nonexistent one. A pinned *older* build is a deliberate
+downgrade and proceeds normally.
 
 `llamacpp.uninstall` removes the current install (`uninstall_llamacpp`) —
 stopping the titler's llama-server and kodo's own chat llama-server first,
 since both can be running off the binary being deleted — and is a plain
-request/response, not a progress stream (deleting a directory is
-near-instant, unlike a binary download). `llamacpp.version_info` reports the
+request/response, not a progress stream. If the delete fails anyway (on
+Windows a file can stay locked briefly after the process holding it is
+signalled, which the server retries with backoff before giving up), the
+request still acks, but with `llama_installed`/`llama_version` describing
+what is *actually* on disk, preceded by an `error` event (§5.12) with code
+`llamacpp_uninstall_failed`. Clients must take the ack's fields as
+authoritative rather than assuming the uninstall succeeded.
+`llamacpp.version_info` reports the
 installed build alongside the latest one available on GitHub Releases
 (`fetch_latest_build_number`, doc/INTERNALS.md §10) — also plain
 request/response; a GitHub-fetch failure (network, rate limit, unparsable
@@ -1492,6 +1518,8 @@ settles.
 ```
 
 → `llamacpp.uninstall.ack` `{ "llama_installed": false, "llama_version": null }`
+  (on a failed delete: the build that is still on disk, after an
+  `llamacpp_uninstall_failed` error event)
 
 → `llamacpp.version_info.ack` `{ "installed_version": "b9876" | null,
   "latest_version": "b12345" | null, "error": null | "<fetch failure reason>" }`

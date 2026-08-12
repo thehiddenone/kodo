@@ -14,17 +14,22 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import platform
 import re
+import shutil
 import ssl
+import stat
 import subprocess
 import tarfile
+import time
 import urllib.request
 import zipfile
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import certifi
 
@@ -62,6 +67,13 @@ _ASSET_NAMES: dict[str, str] = {
 }
 
 _WINDOWS_CUDA_DLLS_URL = "https://github.com/ggml-org/llama.cpp/releases/download/b{N}/cudart-llama-bin-win-cuda-13.3-x64.zip"
+
+# Backoff between attempts to delete a build directory. Stopping a process is
+# asynchronous on Windows — TerminateProcess returns before the kernel has
+# released the handles it held on its mapped .exe/.dll images — so a delete
+# issued right after stopping llama-server can still hit a sharing violation
+# for a moment even though nothing really uses the files any more.
+_RMTREE_RETRY_DELAYS_S: tuple[float, ...] = (0.0, 0.5, 1.5, 3.0)
 
 ProgressCb = Callable[[int, str], None]
 
@@ -232,6 +244,61 @@ def _download(
 
 
 # ---------------------------------------------------------------------------
+# Build-directory removal
+# ---------------------------------------------------------------------------
+
+
+def _on_rmtree_error(func: Any, path: str, _exc: BaseException) -> None:
+    """``shutil.rmtree`` ``onexc`` hook: clear the read-only bit and retry once.
+
+    A read-only file makes ``os.unlink`` raise ``PermissionError`` on Windows
+    no matter who else has it open, so this is worth trying before giving up.
+    Re-raises whatever *func* raises the second time, which is what lets
+    :func:`_rmtree_retrying` see a genuine sharing violation and back off.
+    """
+    with suppress(OSError):
+        os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def _rmtree_retrying(target: Path) -> None:
+    """Recursively delete *target*, retrying while Windows still holds handles.
+
+    A no-op if *target* doesn't exist. See :data:`_RMTREE_RETRY_DELAYS_S` for
+    why the retries are needed at all — on POSIX the first attempt always
+    wins, since unlinking a file some process still has open is legal there.
+
+    Args:
+        target (Path): Directory to remove.
+
+    Raises:
+        OSError: If *target* still could not be removed after the last retry.
+    """
+    if not target.exists():
+        return
+
+    last_error: OSError | None = None
+    for attempt, delay in enumerate(_RMTREE_RETRY_DELAYS_S, start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            shutil.rmtree(target, onexc=_on_rmtree_error)
+            return
+        except OSError as exc:
+            last_error = exc
+            _log.warning(
+                "Could not remove %s (attempt %d/%d): %s",
+                target,
+                attempt,
+                len(_RMTREE_RETRY_DELAYS_S),
+                exc,
+            )
+
+    assert last_error is not None  # the loop body always sets it before falling through
+    raise last_error
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -239,7 +306,8 @@ def _download(
 def find_installed(kodo_dir: Path) -> LlamaInstall | None:
     """Return metadata for the currently installed llama.cpp build.
 
-    Reads ``~/.kodo/llama.cpp/llama-meta.json``; does not scan the filesystem.
+    Reads ``~/.kodo/llama.cpp/llama-meta.json``; does not scan the filesystem,
+    beyond confirming that the executable the meta file names is still there.
 
     Args:
         kodo_dir (Path): User-level ``~/.kodo`` directory.
@@ -254,9 +322,27 @@ def find_installed(kodo_dir: Path) -> LlamaInstall | None:
         build = int(cast(int, meta["build"]))
         executable = Path(str(meta["executable"]))
         install_dir = kodo_dir / "llama.cpp" / f"b{build}"
-        return LlamaInstall(build=build, install_dir=install_dir, executable=executable)
     except (KeyError, ValueError):
         return None
+
+    if not executable.is_file():
+        # The meta file outlived the build it points at — the fingerprint of
+        # an update whose delete step ran partway and then failed. Every
+        # caller (ensure_llama_running, start_titling, the settings panel's
+        # version display, and the update handler's "already up to date"
+        # short-circuit) treats a returned LlamaInstall as runnable, so
+        # reporting one here strands the user on a build that cannot start
+        # and that "Update llama.cpp" then refuses to touch. Report "not
+        # installed" instead, which a plain Install repairs.
+        _log.warning(
+            "llama-meta.json records build b%d at %s, but that executable is gone — "
+            "treating llama.cpp as not installed",
+            build,
+            executable,
+        )
+        return None
+
+    return LlamaInstall(build=build, install_dir=install_dir, executable=executable)
 
 
 def server_executable(install_dir: Path) -> Path | None:
@@ -477,20 +563,37 @@ def uninstall_llamacpp(kodo_dir: Path) -> None:
     removes ``llama-meta.json`` itself.  Does nothing if llama.cpp is not
     installed.
 
+    Every ``llama-server`` process running off this install (kodo's chat
+    server *and* the titler's — see ``server/_app.py``) must already be
+    stopped: on Windows the files cannot be deleted while any of them has
+    them mapped, and :func:`_rmtree_retrying`'s backoff only covers the brief
+    lag between a process being signalled and the kernel releasing its
+    handles, not a process that is still alive.
+
     Args:
         kodo_dir (Path): User-level ``~/.kodo`` directory.
+
+    Raises:
+        OSError: If the build directory could not be removed. ``llama-meta.json``
+            is left in place in that case, so the install stays consistent
+            (still recorded, still on disk) rather than becoming an
+            unreferenced orphan.
     """
     installed = find_installed(kodo_dir)
     if installed is None:
-        _log.info("llama.cpp is not installed — nothing to uninstall")
+        # Also covers "meta file present but its executable is gone" — clean
+        # the stale record up so nothing keeps reporting a phantom install.
+        meta = _meta_path(kodo_dir)
+        if meta.exists():
+            _log.info("Removing stale llama-meta.json with no runnable build behind it")
+            meta.unlink()
+        else:
+            _log.info("llama.cpp is not installed — nothing to uninstall")
         return
 
     _log.info("Uninstalling llama.cpp b%d from %s", installed.build, installed.install_dir)
-    if installed.install_dir.exists():
-        import shutil
-
-        shutil.rmtree(installed.install_dir)
-        _log.info("Removed %s", installed.install_dir)
+    _rmtree_retrying(installed.install_dir)
+    _log.info("Removed %s", installed.install_dir)
 
     meta = _meta_path(kodo_dir)
     if meta.exists():
@@ -504,12 +607,34 @@ def update_llamacpp(
     version: int | None = None,
     progress_cb: ProgressCb | None = None,
 ) -> LlamaInstall:
-    """Uninstall the current llama.cpp build and install another one.
+    """Install another llama.cpp build in place of the current one.
 
-    Equivalent to calling :func:`uninstall_llamacpp` followed by
-    :func:`install_llamacpp`. Also used to install a specific pinned
-    *version* over an existing (possibly different) build — the uninstall
-    step is a no-op if nothing is installed yet.
+    **Installs first, deletes the old build afterwards.** Each build lives in
+    its own ``b{N}`` directory, so the new one never needs the old one's
+    space, and this ordering buys three things the old uninstall-then-install
+    order could not:
+
+    * A failed download/extraction/verification leaves the previous build
+      installed and working, instead of leaving the user with nothing.
+    * ``llama-meta.json`` only ever moves to the new build once that build is
+      on disk and has passed ``--version``, so no window exists where the
+      recorded install doesn't exist.
+    * Deleting the old directory becomes pure cleanup — nothing references it
+      any more — so a Windows sharing violation there costs disk space and a
+      log line rather than failing the update.
+
+    The cost is that both builds are on disk at once for the duration (~2 GB
+    on the Windows CUDA build).
+
+    **This never reinstalls a build in place.** Asking for the build that is
+    already installed is a no-op — :func:`install_llamacpp` returns the
+    existing install (reporting 100%) and there is no superseded directory to
+    clean up, so nothing is deleted and nothing is re-downloaded. A genuine
+    reinstall is the user's explicit :func:`uninstall_llamacpp`-then-
+    :func:`install_llamacpp` pair, which in kodo-vsix means clicking
+    "Uninstall llama.cpp" and then "Install llama.cpp"; ``server/_app.py``'s
+    ``llamacpp.update`` handler short-circuits that case before it ever gets
+    here, so a working install is never torn down to reproduce itself.
 
     Args:
         kodo_dir (Path): User-level ``~/.kodo`` directory.
@@ -519,10 +644,25 @@ def update_llamacpp(
             to :func:`install_llamacpp`.
 
     Returns:
-        LlamaInstall: Metadata for the newly installed build.
+        LlamaInstall: Metadata for the installed build.
 
     Raises:
         RuntimeError: If the installation step fails.
     """
-    uninstall_llamacpp(kodo_dir)
-    return install_llamacpp(kodo_dir, version=version, progress_cb=progress_cb)
+    existing = find_installed(kodo_dir)
+    install = install_llamacpp(kodo_dir, version=version, progress_cb=progress_cb)
+
+    if existing is not None and existing.install_dir != install.install_dir:
+        try:
+            _rmtree_retrying(existing.install_dir)
+            _log.info("Removed superseded llama.cpp build at %s", existing.install_dir)
+        except OSError as exc:
+            _log.warning(
+                "llama.cpp b%d is installed and active, but the superseded build at %s could "
+                "not be removed (%s) — it is unreferenced and safe to delete by hand",
+                install.build,
+                existing.install_dir,
+                exc,
+            )
+
+    return install

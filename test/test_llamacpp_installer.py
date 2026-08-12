@@ -189,6 +189,24 @@ def test_find_installed_invalid_build_returns_none(tmp_path: Path) -> None:
     assert find_installed(tmp_path) is None
 
 
+def test_find_installed_missing_executable_returns_none(tmp_path: Path) -> None:
+    """A meta file naming an executable that is gone reports "not installed".
+
+    This is the state a half-completed delete leaves behind (a build directory
+    partly removed but ``llama-meta.json`` still pointing into it). Reporting an
+    install here strands every caller on a build that cannot run.
+    """
+    _write_llama_meta(
+        tmp_path,
+        build=5143,
+        executable=tmp_path / "llama.cpp" / "b5143" / "llama-server",
+        binary_url="https://example.com/llama-b5143.tar.gz",
+        cuda_dlls_url=None,
+    )
+    assert _meta_path(tmp_path).is_file()  # the record itself is intact
+    assert find_installed(tmp_path) is None
+
+
 # ---------------------------------------------------------------------------
 # server_executable
 # ---------------------------------------------------------------------------
@@ -580,16 +598,15 @@ def test_uninstall_llamacpp_removes_install_dir_and_meta(
     """Uninstall removes the install directory and meta file."""
     import kodo.llms.llamacpp._installer as _inst
 
-    # Create the meta file and install dir.
-    (tmp_path / "llama.cpp").mkdir(parents=True)
+    # Create the install dir and a meta file pointing into it.
+    install_dir = tmp_path / "llama.cpp" / "b5143"
+    install_dir.mkdir(parents=True)
+    (install_dir / "llama-server").write_text("#!/bin/sh", encoding="utf-8")
     meta_file = tmp_path / "llama.cpp" / "llama-meta.json"
     meta_file.write_text(
-        json.dumps({"build": 5143, "executable": str(tmp_path / "llama-server"), "urls": {}}),
+        json.dumps({"build": 5143, "executable": str(install_dir / "llama-server"), "urls": {}}),
         encoding="utf-8",
     )
-    install_dir = tmp_path / "llama.cpp" / "b5143"
-    install_dir.mkdir()
-    (install_dir / "llama-server").write_text("#!/bin/sh", encoding="utf-8")
 
     _inst.uninstall_llamacpp(tmp_path)
 
@@ -597,32 +614,230 @@ def test_uninstall_llamacpp_removes_install_dir_and_meta(
     assert not meta_file.exists()
 
 
+def test_uninstall_llamacpp_clears_stale_meta_with_no_build_behind_it(tmp_path: Path) -> None:
+    """A meta file whose build is already gone is cleaned up rather than left behind."""
+    import kodo.llms.llamacpp._installer as _inst
+
+    _write_llama_meta(
+        tmp_path,
+        build=5143,
+        executable=tmp_path / "llama.cpp" / "b5143" / "llama-server",
+        binary_url="https://example.com/llama-b5143.tar.gz",
+        cuda_dlls_url=None,
+    )
+
+    _inst.uninstall_llamacpp(tmp_path)
+
+    assert not _meta_path(tmp_path).exists()
+
+
 # ---------------------------------------------------------------------------
 # update_llamacpp
 # ---------------------------------------------------------------------------
 
 
-def test_update_llamacpp_calls_uninstall_and_install(
+def _seed_install(tmp_path: Path, build: int) -> Path:
+    """Write a complete, runnable-looking install for *build*; return its directory."""
+    install_dir = tmp_path / "llama.cpp" / f"b{build}"
+    install_dir.mkdir(parents=True)
+    exe = install_dir / "llama-server"
+    exe.write_text("#!/bin/sh", encoding="utf-8")
+    _write_llama_meta(
+        tmp_path,
+        build=build,
+        executable=exe,
+        binary_url=f"https://example.com/llama-b{build}.tar.gz",
+        cuda_dlls_url=None,
+    )
+    return install_dir
+
+
+def test_update_llamacpp_with_nothing_installed_just_installs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """update_llamacpp uninstalls then installs."""
     import kodo.llms.llamacpp._installer as _inst
 
-    uninstall_mock = MagicMock()
     install_mock = MagicMock(
         return_value=LlamaInstall(
-            build=5144, install_dir=tmp_path, executable=tmp_path / "llama-server"
+            build=5144,
+            install_dir=tmp_path / "llama.cpp" / "b5144",
+            executable=tmp_path / "llama.cpp" / "b5144" / "llama-server",
         )
     )
-
-    monkeypatch.setattr(_inst, "uninstall_llamacpp", uninstall_mock)
     monkeypatch.setattr(_inst, "install_llamacpp", install_mock)
 
     result = _inst.update_llamacpp(tmp_path, version=5144)
-    uninstall_mock.assert_called_once_with(tmp_path)
+
     install_mock.assert_called_once()
     assert result.build == 5144
+
+
+def test_update_llamacpp_installs_before_removing_the_old_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The superseded build is deleted only after the new one is installed.
+
+    Ordering is the whole point: on Windows the old build's files can still be
+    locked by a process that is only just exiting, and doing the delete first
+    used to abort the update before it downloaded anything.
+    """
+    import kodo.llms.llamacpp._installer as _inst
+
+    old_dir = _seed_install(tmp_path, 5143)
+    new_dir = tmp_path / "llama.cpp" / "b5144"
+
+    def fake_install(kodo_dir: Path, **_kwargs: object) -> LlamaInstall:
+        assert old_dir.exists(), "old build must still be present while installing"
+        new_dir.mkdir(parents=True)
+        return LlamaInstall(
+            build=5144, install_dir=new_dir, executable=new_dir / "llama-server"
+        )
+
+    monkeypatch.setattr(_inst, "install_llamacpp", fake_install)
+
+    result = _inst.update_llamacpp(tmp_path, version=5144)
+
+    assert result.build == 5144
+    assert not old_dir.exists()
+    assert new_dir.exists()
+
+
+def test_update_llamacpp_keeps_the_old_build_when_the_install_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed update must leave the working install alone, not strand the user."""
+    import kodo.llms.llamacpp._installer as _inst
+
+    old_dir = _seed_install(tmp_path, 5143)
+    monkeypatch.setattr(
+        _inst, "install_llamacpp", MagicMock(side_effect=RuntimeError("download failed"))
+    )
+
+    with pytest.raises(RuntimeError, match="download failed"):
+        _inst.update_llamacpp(tmp_path, version=5144)
+
+    assert old_dir.exists()
+    install = find_installed(tmp_path)
+    assert install is not None
+    assert install.build == 5143
+
+
+def test_update_llamacpp_succeeds_even_if_the_old_build_cannot_be_removed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Removing the superseded build is cleanup — a locked file must not fail the update."""
+    import kodo.llms.llamacpp._installer as _inst
+
+    _seed_install(tmp_path, 5143)
+    new_dir = tmp_path / "llama.cpp" / "b5144"
+    new_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        _inst,
+        "install_llamacpp",
+        MagicMock(
+            return_value=LlamaInstall(
+                build=5144, install_dir=new_dir, executable=new_dir / "llama-server"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        _inst, "_rmtree_retrying", MagicMock(side_effect=PermissionError("still locked"))
+    )
+
+    result = _inst.update_llamacpp(tmp_path, version=5144)
+
+    assert result.build == 5144
+
+
+def test_update_llamacpp_never_reinstalls_the_build_already_installed(
+    tmp_path: Path,
+) -> None:
+    """Targeting the installed build is a no-op — no delete, no re-download.
+
+    Update must never take the uninstall-then-reinstall route: that is the
+    user's own explicit "Uninstall llama.cpp" + "Install llama.cpp" pair, and
+    doing it here would tear down a working install to reproduce itself.
+    Deliberately runs the *real* ``install_llamacpp``, since its
+    already-installed early return is half of what makes this a no-op.
+    """
+    import kodo.llms.llamacpp._installer as _inst
+
+    install_dir = _seed_install(tmp_path, 5143)
+    exe = install_dir / "llama-server"
+    before = exe.read_text(encoding="utf-8")
+    reported: list[tuple[int, str]] = []
+
+    result = _inst.update_llamacpp(
+        tmp_path, version=5143, progress_cb=lambda pct, msg: reported.append((pct, msg))
+    )
+
+    assert result.build == 5143
+    assert install_dir.exists()
+    assert exe.read_text(encoding="utf-8") == before  # untouched, not re-fetched
+    assert reported[-1][0] == 100
+
+
+# ---------------------------------------------------------------------------
+# _rmtree_retrying
+# ---------------------------------------------------------------------------
+
+
+def test_rmtree_retrying_missing_target_is_a_noop(tmp_path: Path) -> None:
+    import kodo.llms.llamacpp._installer as _inst
+
+    _inst._rmtree_retrying(tmp_path / "never-existed")  # must not raise
+
+
+def test_rmtree_retrying_succeeds_on_a_later_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A delete that fails while a stopped process still holds handles is retried."""
+    import kodo.llms.llamacpp._installer as _inst
+
+    target = tmp_path / "b5143"
+    target.mkdir()
+    calls: list[int] = []
+
+    real_rmtree = _inst.shutil.rmtree
+
+    def flaky_rmtree(path: object, **kwargs: object) -> None:
+        calls.append(1)
+        if len(calls) < 3:
+            raise PermissionError(32, "The process cannot access the file")
+        real_rmtree(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(_inst.shutil, "rmtree", flaky_rmtree)
+    monkeypatch.setattr(_inst, "_RMTREE_RETRY_DELAYS_S", (0.0, 0.0, 0.0, 0.0))
+
+    _inst._rmtree_retrying(target)
+
+    assert len(calls) == 3
+    assert not target.exists()
+
+
+def test_rmtree_retrying_raises_after_the_last_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kodo.llms.llamacpp._installer as _inst
+
+    target = tmp_path / "b5143"
+    target.mkdir()
+
+    def always_fails(path: object, **kwargs: object) -> None:
+        raise PermissionError(32, "The process cannot access the file")
+
+    monkeypatch.setattr(_inst.shutil, "rmtree", always_fails)
+    monkeypatch.setattr(_inst, "_RMTREE_RETRY_DELAYS_S", (0.0, 0.0))
+
+    with pytest.raises(PermissionError):
+        _inst._rmtree_retrying(target)
 
 
 # ---------------------------------------------------------------------------

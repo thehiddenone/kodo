@@ -1118,22 +1118,40 @@ async def _stream_llamacpp_progress(
     — both stream the same ``EVT_LLAMACPP_INSTALL_PROGRESS`` shape on the
     requesting connection until *work* finishes.
 
+    **Always ends the stream with a terminal frame** (``percent`` 100 or -1).
+    kodo-vsix's progress notification is only ever dismissed by one of those
+    two (see ``onLlamaProgress`` in kodo-vsix ``src/extension/llamacpp.ts``),
+    so a *work* failure that raised before emitting its own terminal frame
+    used to leave the toast — and the client's "an install is in flight" busy
+    flag, which gates every retry — stuck for the lifetime of the window. The
+    synthesized frame below is what guarantees that can't happen; it is
+    deliberately suppressed when *work* already sent one of its own
+    (``install_llamacpp``'s ``_fail`` emits -1 and then raises), so a normal
+    install failure still produces exactly one error toast.
+
     Returns:
         bool: ``True`` if *work* completed without raising.
     """
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()
     ok = True
+    failure = ""
+    terminal_sent = False
 
     def progress_cb(pct: int, msg: str) -> None:
         loop.call_soon_threadsafe(queue.put_nowait, (pct, msg))
 
     async def run() -> None:
-        nonlocal ok
+        nonlocal ok, failure
         try:
             await asyncio.to_thread(work, progress_cb)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — surfaced to the client below
             ok = False
+            failure = str(exc) or exc.__class__.__name__
+            # Logged here rather than swallowed silently: before this, a
+            # failure left no trace in the server log *and* no event on the
+            # wire, which made the whole operation look like a hang.
+            _log.exception("llama.cpp install/update failed")
         finally:
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
@@ -1143,8 +1161,18 @@ async def _stream_llamacpp_progress(
         if item is None:
             break
         pct, msg = item
+        if pct >= 100 or pct < 0:
+            terminal_sent = True
         await req.connection.send(
             Envelope.make_event(EVT_LLAMACPP_INSTALL_PROGRESS, {"percent": pct, "message": msg})
+        )
+
+    if not ok and not terminal_sent:
+        await req.connection.send(
+            Envelope.make_event(
+                EVT_LLAMACPP_INSTALL_PROGRESS,
+                {"percent": -1, "message": f"llama.cpp operation failed: {failure}"},
+            )
         )
     return ok
 
@@ -1214,11 +1242,33 @@ async def _handle_llamacpp_update(req: Request) -> None:
                 )
             )
             return
+    elif installed is not None and installed.build == version:
+        # Pinned version that is *already* the installed one. Update never
+        # reinstalls a build in place: the only path to a genuine reinstall is
+        # the user explicitly clicking "Uninstall llama.cpp" and then
+        # "Install llama.cpp" in the Kōdo Settings panel. Routing it through
+        # here would tear down a working install — and both llama-servers —
+        # only to reproduce byte-for-byte what is already on disk.
+        #
+        # Checked before build_exists: the build is on disk, so whether GitHub
+        # still serves it is irrelevant and not worth a round trip.
+        await req.connection.send(
+            Envelope.make_event(
+                EVT_LLAMACPP_INSTALL_PROGRESS,
+                {
+                    "percent": 100,
+                    "message": f"llama.cpp b{version} is already installed.",
+                    "up_to_date": True,
+                },
+            )
+        )
+        return
     else:
         # Pinned version ("Install specific version…") — confirm the release
-        # actually exists on GitHub *before* uninstalling the current build,
-        # so a typo'd/nonexistent build number leaves the existing
-        # installation intact and never touches the titler.
+        # actually exists on GitHub *before* touching the current build, so a
+        # typo'd/nonexistent build number leaves the existing installation
+        # intact and never touches either llama-server. A pinned *older* build
+        # is a deliberate downgrade and proceeds normally.
         exists = await asyncio.to_thread(build_exists, version)
         if not exists:
             msg = f"llama.cpp b{version} was not found on GitHub Releases."
@@ -1227,11 +1277,28 @@ async def _handle_llamacpp_update(req: Request) -> None:
             )
             return
 
-    # Stop the titler's llama-server first — it runs off the same llama.cpp
-    # install that update_llamacpp is about to replace (uninstall + fresh
-    # install) — then let a successful update restart it, same as a fresh
-    # install (doc/INTERNALS.md §10c).
+    # Stop *both* llama-server processes that run off the install
+    # update_llamacpp is about to replace: the titler's (kodo.titling) and
+    # kodo's own chat server. Stopping only the titler — as this handler did
+    # until now — is fatal on Windows: update_llamacpp calls the same
+    # uninstall_llamacpp the uninstall handler does, and Windows refuses to
+    # delete an .exe/.dll that a live process has mapped as an image, so the
+    # rmtree failed with a sharing violation before a single progress frame
+    # was emitted. POSIX allows unlinking a running binary, which is exactly
+    # why this only ever reproduced on Windows.
+    #
+    # Deliberately *not* restarted afterwards (unlike the titler): the chat
+    # server is auto-started on demand by ensure_llama_running on the next
+    # engine run, and restarting it here would race the user's own model
+    # choice. EVT_LLAMA_STATE keeps the sidebar's running indicator honest in
+    # the meantime, same as the uninstall handler.
     await stop_titling()
+    chat_server = LlamaServer.get_active_llama_server()
+    if chat_server is not None:
+        await chat_server.stop()
+        await req.connection.send(
+            Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "model": None})
+        )
 
     def _update(progress_cb: Callable[[int, str], None]) -> LlamaInstall:
         return update_llamacpp(kodo_dir, version=version, progress_cb=progress_cb)
@@ -1249,7 +1316,45 @@ async def _handle_llamacpp_uninstall(req: Request) -> None:
     server = LlamaServer.get_active_llama_server()
     if server is not None:
         await server.stop()
-    uninstall_llamacpp(kodo_user_dir())
+
+    # Off-thread: uninstall_llamacpp retries a failed delete with backoff
+    # (Windows releases a stopped process's image handles asynchronously), so
+    # it can block for a few seconds and must not sit on the event loop —
+    # ConnectionRegistry.run_ws awaits handlers one at a time, so stalling
+    # here stalls every other request from this window too.
+    try:
+        await asyncio.to_thread(uninstall_llamacpp, kodo_user_dir())
+    except OSError as exc:
+        # Never raise out of a handler: __dispatch doesn't catch, so the
+        # exception would propagate out of run_ws and drop the connection.
+        # The failure goes out as an EVT_ERROR event (a toast) and the ack
+        # still reports what is really on disk, so the panel doesn't claim an
+        # uninstall that didn't happen. Exactly one reply, either way — the
+        # client resolves on the first response it sees.
+        _log.exception("llama.cpp uninstall failed")
+        installed = find_installed(kodo_user_dir())
+        await req.connection.send(
+            Envelope.make_event(
+                EVT_ERROR,
+                {
+                    "code": "llamacpp_uninstall_failed",
+                    "message": f"Could not remove the llama.cpp installation: {exc}",
+                    "recoverable": True,
+                },
+            )
+        )
+        await req.connection.send(
+            Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "model": None})
+        )
+        await req.reply(
+            {
+                "type": "llamacpp.uninstall.ack",
+                "llama_installed": installed is not None,
+                "llama_version": f"b{installed.build}" if installed is not None else None,
+            }
+        )
+        return
+
     await req.connection.send(
         Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "model": None})
     )

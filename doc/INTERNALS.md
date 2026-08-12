@@ -523,7 +523,7 @@ handlers) — via `kodo.llms.llamacpp`, never from the private modules.
 
 | Module | Defines | Links |
 |---|---|---|
-| [_installer.py](../src/kodo/llms/llamacpp/_installer.py) | `LlamaInstall`, `install/uninstall/update_llamacpp`, `check_llamacpp_update`, `build_exists`, `fetch_latest_build_number`, `find_installed`, `server_executable` | Platform-aware llama.cpp binary install into `~/.kodo/llama.cpp/bN/`. `install_llamacpp`/`update_llamacpp` take an optional `version` (a build number) to pin an explicit release instead of latest. `build_exists` HEAD-probes a given build's release assets — `server/_app.py`'s `llamacpp.update` handler calls it for a pinned `version` *before* uninstalling the current build, so a nonexistent build number fails without touching the existing install. No `kodo` imports. |
+| [_installer.py](../src/kodo/llms/llamacpp/_installer.py) | `LlamaInstall`, `install/uninstall/update_llamacpp`, `check_llamacpp_update`, `build_exists`, `fetch_latest_build_number`, `find_installed`, `server_executable` | Platform-aware llama.cpp binary install into `~/.kodo/llama.cpp/bN/`. `install_llamacpp`/`update_llamacpp` take an optional `version` (a build number) to pin an explicit release instead of latest. `build_exists` HEAD-probes a given build's release assets — `server/_app.py`'s `llamacpp.update` handler calls it for a pinned `version` *before* touching the current build, so a nonexistent build number fails without touching the existing install. **`update_llamacpp` installs first and deletes the superseded build afterwards** (each build has its own `bN` directory, so the new one never needs the old one's space): a failed download leaves the previous build working, `llama-meta.json` only moves once the new build has passed `--version`, and the delete becomes pure cleanup whose failure costs a log line rather than the update. **It never reinstalls a build in place** — targeting the installed build falls through `install_llamacpp`'s already-installed early return with no superseded directory to clean up, so nothing is deleted and nothing re-downloaded; the `llamacpp.update` handler short-circuits that case earlier still (§10c). A genuine reinstall is only ever the user's explicit Uninstall-then-Install pair. Directory removal goes through `_rmtree_retrying`, which retries with backoff and clears read-only bits — Windows releases a stopped process's mapped image handles asynchronously, so a delete issued right after stopping llama-server can still hit a sharing violation for a moment. `find_installed` verifies the executable named by `llama-meta.json` still exists and reports "not installed" when it doesn't, so a half-deleted build self-heals via a plain Install instead of stranding every caller on a build that cannot run. No `kodo` imports. |
 | [_llama_server.py](../src/kodo/llms/llamacpp/_llama_server.py) | `LlamaServer`, `LlamaServerConfig`, `RunningServer`, `find_running_server` | PID-managed `llama-server` subprocess; class-level singleton via `get_active_llama_server()`; `adopt()` reclaims a survivor after restart. |
 | [_manager.py](../src/kodo/llms/llamacpp/_manager.py) | `ensure_llama_running`, `get_local_model_manager` | Composes installer + `kodo.llms.local.LocalModelManager` + server: ensures the right model server is up for a `LocalLLMEntry` (not valid for `custom_server_url` — see LLM_REGISTRY.md §4), honoring the llama-server binary override if set. `get_local_model_manager` resolves the models directory and caches one `LocalModelManager` per directory for the process lifetime; also called directly from `server/_app.py`'s `local_llm.*` WS handlers (no more `_downloader.py` adapter — see LOCAL_MODEL_MANAGER.md §9). |
 
@@ -706,13 +706,50 @@ brand-new session — WS_PROTOCOL.md §5.9i), and by `server/_app.py`
   `start_titling` after a successful install, same `_current_housekeeper_llm_id()`
   resolution as startup.
 - **Update** — `_handle_llamacpp_update` (`llamacpp.update`
-  WS command, `server/_app.py`, §14) calls `stop_titling` *first* (the
-  titler's process runs off the same llama.cpp binary files
-  `update_llamacpp` is about to replace), then `update_llamacpp`, then
-  schedules `start_titling` again on success — same as a fresh install.
+  WS command, `server/_app.py`, §14) stops **both** llama-server processes
+  that run off the install `update_llamacpp` is about to replace — the
+  titler's (`stop_titling`) *and* kodo's own chat server
+  (`LlamaServer.get_active_llama_server()`, followed by an `EVT_LLAMA_STATE`
+  push so the sidebar's running indicator stays honest) — then calls
+  `update_llamacpp`, then schedules `start_titling` again on success, same as
+  a fresh install. The chat server is deliberately **not** restarted here:
+  `ensure_llama_running` brings it back on the next engine run, against
+  whatever model the user has selected by then.
+
+  **Update never reinstalls a build in place**, on either entry path: an
+  unpinned request whose installed build is already `>=` latest, and a pinned
+  request naming the installed build, both short-circuit to a single
+  `percent: 100, up_to_date: true` frame *before* anything is stopped or
+  probed (the pinned case is checked ahead of `build_exists` — the build is on
+  disk, so whether GitHub still serves it is irrelevant). The only route to a
+  genuine reinstall is the user explicitly clicking "Uninstall llama.cpp" and
+  then "Install llama.cpp" in the Kōdo Settings panel. A pinned *older* build
+  is a deliberate downgrade and proceeds normally.
   `update_llamacpp`/`check_llamacpp_update` (`_installer.py`, §10) existed
   but had no caller anywhere before this; `llamacpp.update` (WS_PROTOCOL.md
   §7.6) is a new, minimal WS command with no kodo-vsix UI yet.
+
+  > **Fixed 2026-08-12 — stopping only the titler here was a Windows-fatal
+  > bug.** `update_llamacpp` calls the same `uninstall_llamacpp` the uninstall
+  > handler does, and Windows refuses to delete an `.exe`/`.dll` that a live
+  > process has mapped as an image, so the delete raised a sharing violation
+  > against the still-running chat server *before* `install_llamacpp` emitted
+  > its first progress frame. POSIX allows unlinking a running binary, which
+  > is why this only ever reproduced on Windows. Three separate defects had to
+  > be fixed together; see §10's `update_llamacpp` note for the installer half
+  > and the `_stream_llamacpp_progress` paragraph below for the reporting half.
+
+- **Progress streaming** — `_stream_llamacpp_progress` (shared by the install
+  and update handlers) **always terminates the stream with a `percent` of 100
+  or -1**, synthesizing a `-1` frame if the work raised before reporting one
+  itself, and logs the exception. Both halves matter: kodo-vsix's
+  `onLlamaProgress` dismisses its progress notification *only* on a terminal
+  frame, and the `llamaInstallingState` busy flag it clears there gates every
+  retry — so a swallowed failure used to leave the toast and the disabled
+  buttons stuck until the window was reloaded, with nothing in the server log
+  either. The synthesized frame is suppressed when the work already sent its
+  own (`install_llamacpp`'s `_fail` emits `-1` and then raises), so a normal
+  install failure still yields exactly one error toast.
 - **Housekeeper LLM selection** (added 2026-08-09) — `housekeeper_llm.get`/
   `.set` (WS_PROTOCOL.md §7.6f, doc/SETTINGS.md §2.7) back the Kōdo Settings
   panel's "General" section radio group. `.get` reads the persisted
@@ -729,13 +766,20 @@ brand-new session — WS_PROTOCOL.md §5.9i), and by `server/_app.py`
 - **Uninstall** — `_handle_llamacpp_uninstall` (`llamacpp.uninstall` WS
   command, `server/_app.py`) calls `stop_titling` and stops kodo's own
   chat `LlamaServer` if running (both can be running off the binary files
-  `uninstall_llamacpp` is about to delete), then `uninstall_llamacpp`. Plain
-  request/response, no progress stream — deleting a directory is
-  near-instant. Also called internally by `update_llamacpp` itself
-  (uninstall-then-reinstall), which is why `_handle_llamacpp_update`
-  independently stops/restarts titling around its own call rather than
-  relying on the uninstall handler's stop (they're never both in the
-  request path at once).
+  `uninstall_llamacpp` is about to delete), then `uninstall_llamacpp` — run
+  via `asyncio.to_thread`, since its delete now retries with backoff and
+  `ConnectionRegistry.run_ws` awaits handlers one at a time (blocking here
+  blocks every other request from that window). Plain request/response, no
+  progress stream. A delete that still fails is caught, not raised —
+  `__dispatch` has no handler-level `except`, so an escaping exception would
+  propagate out of `run_ws` and drop the connection; instead an `EVT_ERROR`
+  (`llamacpp_uninstall_failed`, surfaced as a toast by kodo-vsix's
+  `control-channel.ts`) goes out and the ack reports what is *actually* on
+  disk rather than the requested outcome. Also called internally by
+  `update_llamacpp` — but only on the same-build-reinstall path now (see §10)
+  — which is why `_handle_llamacpp_update` independently stops/restarts
+  titling around its own call rather than relying on the uninstall handler's
+  stop (they're never both in the request path at once).
 - **Version query** — `_handle_llamacpp_version_info` (`llamacpp.version_info`
   WS command) reports `find_installed`'s build alongside
   `fetch_latest_build_number()` (renamed from the former private

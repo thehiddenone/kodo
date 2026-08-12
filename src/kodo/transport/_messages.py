@@ -371,19 +371,27 @@ MSG_CONFIG_RELOAD = "config.reload"
 # session-less control connection (extension.ts sidebar), never a session
 # connection. ``llamacpp.install``/``llamacpp.update`` still stream
 # EVT_LLAMACPP_INSTALL_PROGRESS on the requesting connection until done (both
-# are one-shot binary fetches with no pause/resume). ``llamacpp.update``
-# additionally stops the titler's own llama-server first (kodo.titling.
-# stop_titling) — its files live inside the same llama.cpp install being
-# replaced — and restarts it once the new build is installed (mirroring what
-# ``llamacpp.install`` does on success), see doc/INTERNALS.md §10c. This only
-# happens once ``llamacpp.update`` has confirmed there is actually something
-# to do: with no ``version`` it first resolves the latest build number and,
-# if already installed, replies with a single ``percent: 100, up_to_date:
-# true`` progress event instead (titler untouched); with a pinned ``version``
-# it first confirms the build exists on GitHub Releases (``build_exists``)
-# and fails fast (``percent: -1``, titler and current install both untouched)
-# if not, rather than uninstalling the current build before discovering the
-# requested one can't be installed. ``llamacpp.update`` also accepts an
+# are one-shot binary fetches with no pause/resume). Either way the stream
+# always ends in a terminal frame — ``percent`` 100 or -1, never neither and
+# never both — since that frame is the client's only completion signal (see
+# doc/WS_PROTOCOL.md §5.12). ``llamacpp.update`` additionally stops *both*
+# llama-servers running off the install being replaced: the titler's
+# (kodo.titling.stop_titling), restarted once the new build is installed
+# (mirroring what ``llamacpp.install`` does on success), and kodo's own chat
+# server, left stopped for the next engine run to auto-start — see
+# doc/INTERNALS.md §10c. This only happens once ``llamacpp.update`` has
+# confirmed there is actually something to do: with no ``version`` it first
+# resolves the latest build number and, if already installed, replies with a
+# single ``percent: 100, up_to_date: true`` progress event instead (both
+# servers untouched); a pinned ``version`` naming the *installed* build gets
+# that same single event, because ``llamacpp.update`` never reinstalls a
+# build in place — reinstalling is the client's own ``llamacpp.uninstall`` +
+# ``llamacpp.install`` pair; otherwise it confirms the build exists on GitHub
+# Releases (``build_exists``) and fails fast (``percent: -1``, servers and
+# current install all untouched) if not, rather than disturbing a working
+# install before discovering the requested build can't be installed. A pinned
+# *older* build is a deliberate downgrade and proceeds. ``llamacpp.update``
+# also accepts an
 # optional ``version`` field (a build number, e.g. ``"b12345"`` or
 # ``"12345"``) to pin an explicit release instead of installing latest — this
 # is the "Kōdo Settings" panel's "Install specific version" action (kodo-vsix

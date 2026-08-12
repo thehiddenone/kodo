@@ -1146,3 +1146,184 @@ async def test_reconfiguring_the_currently_selected_model_does_not_crash_without
     resp = await _recv(ws)
     assert resp.payload["type"] == "local_llm.registry_state"
     assert _local_entry(resp.payload, _PROFILE_TEST_ENTRY)["active_profile"] == profile_id
+
+
+# ---------------------------------------------------------------------------
+# llamacpp.update — failure reporting and process teardown
+# ---------------------------------------------------------------------------
+
+
+async def test_llamacpp_update_reports_a_failure_that_never_emitted_progress(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure before the first progress frame still ends the stream.
+
+    ``update_llamacpp`` deletes the previous build before ``install_llamacpp``
+    reports anything, and on Windows that delete raises a sharing violation
+    when a llama-server is still mapped onto those files. The exception used to
+    be swallowed with no event and no log line, so kodo-vsix's progress toast —
+    which is only ever dismissed by a terminal frame — hung forever, and the
+    busy flag it sets made every retry a silent no-op. The synthesized
+    ``percent: -1`` below is what makes that impossible.
+    """
+
+    from kodo.llms.llamacpp import LlamaServer
+
+    async def _no_op_stop_titling() -> None:
+        return None
+
+    def _boom(*_a: object, **_k: object) -> object:
+        raise PermissionError(32, "The process cannot access the file")
+
+    # Pinned, not assumed: LlamaServer tracks the active server in a
+    # class-level singleton that other test modules leave set, and a live one
+    # makes the handler emit a llama.state event ahead of the frame under test.
+    monkeypatch.setattr(
+        LlamaServer, "get_active_llama_server", classmethod(lambda cls: None)
+    )
+    monkeypatch.setattr(_app_module, "stop_titling", _no_op_stop_titling)
+    monkeypatch.setattr(_app_module, "find_installed", lambda _dir: None)
+    monkeypatch.setattr(_app_module, "fetch_latest_build_number", lambda: 9999)
+    monkeypatch.setattr(_app_module, "update_llamacpp", _boom)
+
+    await ws.send_str(_make_request("llamacpp.update").to_json())
+
+    evt = await _recv_with_drain(ws)
+    assert evt.payload["type"] == "llamacpp.install.progress"
+    assert evt.payload["percent"] == -1
+    assert "cannot access the file" in str(evt.payload["message"])
+
+
+async def test_llamacpp_update_does_not_duplicate_a_reported_failure(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Work that reports its own -1 before raising produces exactly one error frame."""
+
+    from kodo.llms.llamacpp import LlamaServer
+
+    async def _no_op_stop_titling() -> None:
+        return None
+
+    def _fail_after_reporting(
+        _dir: Path, *, version: int | None = None, progress_cb: object = None
+    ) -> object:
+        assert callable(progress_cb)
+        progress_cb(-1, "llama-server --version returned non-zero exit code")
+        raise RuntimeError("llama-server --version returned non-zero exit code")
+
+    # See the sibling test above for why this is pinned rather than assumed.
+    monkeypatch.setattr(
+        LlamaServer, "get_active_llama_server", classmethod(lambda cls: None)
+    )
+    monkeypatch.setattr(_app_module, "stop_titling", _no_op_stop_titling)
+    monkeypatch.setattr(_app_module, "find_installed", lambda _dir: None)
+    monkeypatch.setattr(_app_module, "fetch_latest_build_number", lambda: 9999)
+    monkeypatch.setattr(_app_module, "update_llamacpp", _fail_after_reporting)
+
+    await ws.send_str(_make_request("llamacpp.update").to_json())
+
+    evt = await _recv_with_drain(ws)
+    assert evt.payload["percent"] == -1
+    assert evt.payload["message"] == "llama-server --version returned non-zero exit code"
+
+    # Nothing further: no synthesized duplicate riding on top of the real one.
+    with pytest.raises(TimeoutError):
+        await _recv_with_drain(ws, timeout=0.5)
+
+
+async def test_llamacpp_update_to_the_installed_build_short_circuits(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pinned version equal to the installed build succeeds without doing anything.
+
+    Update never reinstalls in place — that route is the user's explicit
+    "Uninstall llama.cpp" then "Install llama.cpp" pair. So this must not stop
+    either llama-server, must not probe GitHub, and must not touch the install.
+    """
+    from kodo.llms.llamacpp import LlamaInstall, LlamaServer
+
+    def _must_not_run(*_a: object, **_k: object) -> object:
+        raise AssertionError("the installed build must be left completely alone")
+
+    # Recorded rather than raised: app teardown legitimately calls
+    # stop_titling (_stop_background), long after the request under test.
+    titler_stops: list[object] = []
+
+    async def _record_stop_titling() -> None:
+        titler_stops.append(object())
+
+    monkeypatch.setattr(
+        LlamaServer, "get_active_llama_server", classmethod(lambda cls: None)
+    )
+    monkeypatch.setattr(
+        _app_module,
+        "find_installed",
+        lambda _dir: LlamaInstall(
+            build=9876, install_dir=Path("/fake/b9876"), executable=Path("/fake/llama-server")
+        ),
+    )
+    monkeypatch.setattr(_app_module, "stop_titling", _record_stop_titling)
+    monkeypatch.setattr(_app_module, "build_exists", _must_not_run)
+    monkeypatch.setattr(_app_module, "update_llamacpp", _must_not_run)
+
+    await ws.send_str(_make_request("llamacpp.update", version="b9876").to_json())
+
+    evt = await _recv_with_drain(ws)
+    assert evt.payload["type"] == "llamacpp.install.progress"
+    assert evt.payload["percent"] == 100
+    assert evt.payload["up_to_date"] is True
+    assert "already installed" in str(evt.payload["message"])
+    assert titler_stops == [], "a no-op update must not stop the titler"
+
+
+async def test_llamacpp_update_stops_the_chat_llama_server_first(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The chat llama-server holds the very files the update replaces.
+
+    Stopping only the titler (what this handler did until now) leaves kodo's own
+    llama-server mapped onto the build directory, which Windows then refuses to
+    delete — the root cause of the stuck update. `llamacpp.uninstall` has always
+    stopped both; this asserts `llamacpp.update` does too.
+    """
+    from kodo.llms.llamacpp import LlamaServer
+
+    stopped: list[str] = []
+
+    async def _no_op_stop_titling() -> None:
+        stopped.append("titler")
+
+    class _FakeServer:
+        # Read by _stop_background/_release_llama_gpu during app teardown.
+        is_running = False
+
+        async def stop(self) -> None:
+            stopped.append("chat")
+
+    def _update(
+        _dir: Path, *, version: int | None = None, progress_cb: object = None
+    ) -> object:
+        assert stopped == ["titler", "chat"], "both servers must be down before the delete"
+        assert callable(progress_cb)
+        progress_cb(100, "installed")
+        return object()
+
+    monkeypatch.setattr(_app_module, "stop_titling", _no_op_stop_titling)
+    monkeypatch.setattr(_app_module, "find_installed", lambda _dir: None)
+    monkeypatch.setattr(_app_module, "fetch_latest_build_number", lambda: 9999)
+    monkeypatch.setattr(_app_module, "update_llamacpp", _update)
+    monkeypatch.setattr(
+        LlamaServer, "get_active_llama_server", classmethod(lambda cls: _FakeServer())
+    )
+    monkeypatch.setattr(_app_module, "start_titling", lambda *_a, **_k: asyncio.sleep(0))
+
+    await ws.send_str(_make_request("llamacpp.update").to_json())
+
+    evt = await _recv_with_drain(ws)
+    assert evt.payload["type"] == "llama.state"
+    assert evt.payload["running"] is False
+
+    evt = await _recv_with_drain(ws)
+    assert evt.payload["type"] == "llamacpp.install.progress"
+    assert evt.payload["percent"] == 100
+    assert stopped == ["titler", "chat"]
