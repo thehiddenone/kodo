@@ -236,6 +236,27 @@ async def test_resolve_plugin_cloud_residence_success() -> None:
     assert key_provider.requested == ["anthropic"]
 
 
+async def test_resolve_plugin_cloud_residence_success_openai() -> None:
+    key_provider = _FakeKeyProvider(api_key="sk-oai")
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "openai",
+            "models": {"cloud": {"openai": {"medium": "gpt-5.6-terra"}}},
+        },
+        key_provider=key_provider,
+    )
+
+    plugin, model_id, routing = await engine._resolve_plugin("medium")
+
+    assert model_id == "gpt-5.6-terra"
+    assert routing.residence == "cloud"
+    assert routing.vendor == "openai"
+    assert engine._current_vendor == "openai"
+    assert plugin.name == "openai"
+    assert key_provider.requested == ["openai"]
+
+
 async def test_resolve_plugin_force_model_key_overrides_settings() -> None:
     engine = _make_engine(
         settings={"mode": "local", "models": {"local": "atomicchat-qwen36-27b-q8"}}
@@ -251,8 +272,8 @@ async def test_resolve_plugin_force_model_key_overrides_settings() -> None:
 async def test_resolve_plugin_rejects_unsupported_vendor_module(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    engine = _make_engine(settings={"mode": "cloud", "active_cloud_vendor": "openai"})
-    monkeypatch.setattr(_llm, "get_cloud_vendor_module", lambda vendor: "kodo.llms.openai")
+    engine = _make_engine(settings={"mode": "cloud", "active_cloud_vendor": "google"})
+    monkeypatch.setattr(_llm, "get_cloud_vendor_module", lambda vendor: "kodo.llms.google")
 
     with pytest.raises(RuntimeError, match="Unsupported cloud vendor"):
         await engine._resolve_plugin("medium")

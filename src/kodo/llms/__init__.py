@@ -27,6 +27,7 @@ from ._interface import (
     default_cache_breakpoints,
 )
 from ._logger import LoggingLLMPlugin
+from ._provider_retry import RetryExhaustedError, UnrecoverableError
 from ._sampling import (
     RESERVED_SAMPLING_FIELDS,
     SAMPLER_NAMES,
@@ -103,6 +104,7 @@ __all__ = [
     "RESERVED_LLAMA_ARGS",
     "RESERVED_SAMPLING_FIELDS",
     "RateLimited",
+    "RetryExhaustedError",
     "SAMPLER_NAMES",
     "SAMPLING_PARAM_SPECS",
     "SHARED_KNOBS",
@@ -117,6 +119,7 @@ __all__ = [
     "ToolCallLogger",
     "ToolSpec",
     "TurnEnd",
+    "UnrecoverableError",
     "Usage",
     "add_local_entry",
     "add_profile",

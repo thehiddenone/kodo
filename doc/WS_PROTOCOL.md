@@ -150,6 +150,10 @@ The server replies with the current world plus local-model status:
       "anthropic": { "display_name": "Anthropic", "models": [
         { "model_id": "claude-fable-5", "name": "Claude Fable 5",
           "description": "...", "context_window": 1000000,
+          "recommendation": "For the most demanding work — ..." }, "..." ] },
+      "openai": { "display_name": "OpenAI", "models": [
+        { "model_id": "gpt-5.6-sol", "name": "GPT-5.6 Sol",
+          "description": "...", "context_window": 1000000,
           "recommendation": "For the most demanding work — ..." }, "..." ] }
     },
     "active_cloud_vendor": "anthropic",

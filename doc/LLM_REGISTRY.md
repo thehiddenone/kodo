@@ -83,13 +83,19 @@ class CloudLLMEntry:
 ```
 
 `kodo/llms/_cloud_registry.py` holds one hardcoded tuple of entries per
-vendor (`_ANTHROPIC_MODELS`, ...), aggregated into `_CLOUD_REGISTRY: dict[str,
-tuple[CloudLLMEntry, ...]]` keyed by a lowercase vendor slug (`"anthropic"`).
-A separate `_CLOUD_VENDOR_MODULE` dict maps that same vendor slug to the
-dotted plugin module (`"kodo.llms.anthropic"`) — one plugin class per vendor,
-shared by every model from that vendor (unlike the old per-model `module`
-field). `_CLOUD_VENDOR_DISPLAY` holds the human-readable name shown in the UI
-("Anthropic").
+vendor (`_ANTHROPIC_MODELS`, `_OPENAI_MODELS`), aggregated into
+`_CLOUD_REGISTRY: dict[str, tuple[CloudLLMEntry, ...]]` keyed by a lowercase
+vendor slug (`"anthropic"`, `"openai"`). A separate `_CLOUD_VENDOR_MODULE`
+dict maps that same vendor slug to the dotted plugin module
+(`"kodo.llms.anthropic"`, `"kodo.llms.openai"`) — one plugin class per
+vendor, shared by every model from that vendor (unlike the old per-model
+`module` field). `_CLOUD_VENDOR_DISPLAY` holds the human-readable name shown
+in the UI ("Anthropic", "OpenAI"). A third map, `_CLOUD_VENDOR_MODEL_PREFIX`
+(vendor → the naming prefix its model ids share, e.g. `"claude"`/`"gpt-"`),
+backs `get_cloud_vendor_for_model_prefix` — used only by `kodo/llms/
+_pricing.py` (below) to route a bare `Usage.model` string to the right
+vendor's pricing table; it is *not* used for plugin resolution, which
+requires an exact registry match (`kodo/runtime/_engine/_llm.py`).
 
 Today's Anthropic entries (`claude-fable-5`, `claude-opus-5`,
 `claude-opus-4-8`/`4-7`/`4-6`, `claude-sonnet-5`, `claude-sonnet-4-6`,
@@ -105,10 +111,59 @@ is the one-line "when to pick this" blurb shown next to it there. Pricing
 version of an existing family is priced correctly without a pricing-table
 change; Fable is priced at Opus-tier rates as the max-effort tier.
 
+Today's OpenAI entries (`kodo/llms/openai/`, plugin class `GPTPlugin`) —
+`gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna` (source:
+<https://developers.openai.com/api/docs/models>, as of 2026-08-12), listed
+flagship-first same as Fable. Only three SKUs this generation against four
+effort tiers, so the server-side default (`kodo/server/_config.py`) reuses
+Terra for both `medium` and `high`, reserving Sol for `max` — all three
+remain selectable in any panel regardless. Built against the Responses API
+(`client.responses.stream`, not Chat Completions) via `kodo/llms/openai/
+_convert.py` (message/tool-shape conversion — Responses API `input` is a flat
+item list, unlike Anthropic's nested content blocks) and `_gpt.py` (streaming
+and reasoning-summary handling). Prompt caching is fully automatic on
+OpenAI's side, so `_convert.py` has no cache-breakpoint logic and
+`GPTPlugin.stream_query`'s `cache_breakpoints` argument is accepted and
+ignored. Each
+model gets one fixed Responses API `reasoning.effort` value matched to its
+own positioning (`_REASONING_EFFORT` in `_gpt.py`: luna→minimal,
+terra→medium, sol→high) — not kodo's own capability tier, since that would
+require threading capability all the way through the silent-turn helpers and
+the main turn loop for a single vendor's benefit; out of scope for now.
+Pricing (`kodo/llms/openai/_usage.py`) mirrors Anthropic's table shape;
+cached-input pricing isn't published by the source above, so `cache_read` is
+a placeholder ~50%-off-input estimate, clearly commented as such.
+
+**Both cloud plugins share one retry/backoff core**, `kodo/llms/
+_provider_retry.py` — the `anthropic` and `openai` Python SDKs are both
+Stainless-generated with matching exception shapes
+(`AuthenticationError`/`RateLimitError`/`InternalServerError`/etc., all
+deriving from an `APIStatusError`-like base), so each vendor's own
+`_retry.py` is now a ~35-line shim supplying a `ProviderErrors` bundle (its
+SDK's exception classes) to the shared `with_retry`/`with_retry_iter`.
+`UnrecoverableError`/`RetryExhaustedError` live in `_provider_retry.py` as
+their single canonical definition (also re-exported from `kodo.llms` and
+from each vendor package) — `runtime/_engine/_worker.py`'s generic
+`except UnrecoverableError` catch imports from the provider-neutral
+`kodo.llms`, not one specific vendor package.
+
+**`Usage.usd_cost` dispatches by vendor**, `kodo/llms/_pricing.py` —
+`compute_cost(usage)` looks up `usage.model`'s vendor via
+`get_cloud_vendor_for_model_prefix` and lazily imports that vendor package's
+own `compute_cost`. (Before OpenAI existed as a real vendor, `Usage.usd_cost`
+was hardcoded straight to Anthropic's pricing table for every plugin — a
+latent bug that only ever mattered once a second paid vendor shipped, fixed
+alongside this one.) A local model, or any model id matching no known cloud
+vendor's prefix, costs `$0.0`.
+
 **Adding a cloud vendor or model is a code change** — add a tuple + registry
-entries in `_cloud_registry.py`, and if it's a new vendor, a plugin
-implementing `LLMPlugin` plus a `_CLOUD_VENDOR_MODULE` entry. There is no
-external/JSON part to this registry.
+entries in `_cloud_registry.py`, and if it's a new vendor: a plugin
+implementing `LLMPlugin`, a `_retry.py` wiring a `ProviderErrors` bundle into
+the shared core, a `_usage.py` pricing table, a `_CLOUD_VENDOR_MODULE` entry,
+a `_CLOUD_VENDOR_MODEL_PREFIX` entry, and a `_VENDOR_PLUGIN_FACTORIES` entry
+in `kodo/runtime/_engine/_llm.py` (the vendor-module → one-arg-constructor
+map `_resolve_plugin` dispatches through). There is no external/JSON part to
+this registry.
 
 ---
 

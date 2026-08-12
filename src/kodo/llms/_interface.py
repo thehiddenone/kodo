@@ -107,7 +107,7 @@ class Usage:
         Returns:
             float: Dollar cost of this LLM call.
         """
-        from kodo.llms.anthropic._usage import compute_cost
+        from kodo.llms._pricing import compute_cost
 
         return compute_cost(self)
 
@@ -224,9 +224,10 @@ class TurnEnd(StreamEvent):
 class LLMPlugin(ABC):
     """Abstract LLM provider plugin.
 
-    Wraps a model provider and exposes a uniform streaming interface for
-    the workflow engine.  MVP ships one concrete implementation:
-    :class:`kodo.llms.anthropic.ClaudePlugin`.
+    Wraps a model provider and exposes a uniform streaming interface for the
+    workflow engine. Concrete implementations: :class:`kodo.llms.anthropic.
+    ClaudePlugin`, :class:`kodo.llms.openai.GPTPlugin`, and
+    :class:`kodo.llms.llamacpp.LlamaPlugin` (local).
     """
 
     @property

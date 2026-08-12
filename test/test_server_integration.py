@@ -1178,9 +1178,7 @@ async def test_llamacpp_update_reports_a_failure_that_never_emitted_progress(
     # Pinned, not assumed: LlamaServer tracks the active server in a
     # class-level singleton that other test modules leave set, and a live one
     # makes the handler emit a llama.state event ahead of the frame under test.
-    monkeypatch.setattr(
-        LlamaServer, "get_active_llama_server", classmethod(lambda cls: None)
-    )
+    monkeypatch.setattr(LlamaServer, "get_active_llama_server", classmethod(lambda cls: None))
     monkeypatch.setattr(_app_module, "stop_titling", _no_op_stop_titling)
     monkeypatch.setattr(_app_module, "find_installed", lambda _dir: None)
     monkeypatch.setattr(_app_module, "fetch_latest_build_number", lambda: 9999)
@@ -1212,9 +1210,7 @@ async def test_llamacpp_update_does_not_duplicate_a_reported_failure(
         raise RuntimeError("llama-server --version returned non-zero exit code")
 
     # See the sibling test above for why this is pinned rather than assumed.
-    monkeypatch.setattr(
-        LlamaServer, "get_active_llama_server", classmethod(lambda cls: None)
-    )
+    monkeypatch.setattr(LlamaServer, "get_active_llama_server", classmethod(lambda cls: None))
     monkeypatch.setattr(_app_module, "stop_titling", _no_op_stop_titling)
     monkeypatch.setattr(_app_module, "find_installed", lambda _dir: None)
     monkeypatch.setattr(_app_module, "fetch_latest_build_number", lambda: 9999)
@@ -1252,9 +1248,7 @@ async def test_llamacpp_update_to_the_installed_build_short_circuits(
     async def _record_stop_titling() -> None:
         titler_stops.append(object())
 
-    monkeypatch.setattr(
-        LlamaServer, "get_active_llama_server", classmethod(lambda cls: None)
-    )
+    monkeypatch.setattr(LlamaServer, "get_active_llama_server", classmethod(lambda cls: None))
     monkeypatch.setattr(
         _app_module,
         "find_installed",
@@ -1300,9 +1294,7 @@ async def test_llamacpp_update_stops_the_chat_llama_server_first(
         async def stop(self) -> None:
             stopped.append("chat")
 
-    def _update(
-        _dir: Path, *, version: int | None = None, progress_cb: object = None
-    ) -> object:
+    def _update(_dir: Path, *, version: int | None = None, progress_cb: object = None) -> object:
         assert stopped == ["titler", "chat"], "both servers must be down before the delete"
         assert callable(progress_cb)
         progress_cb(100, "installed")

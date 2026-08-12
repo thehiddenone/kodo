@@ -20,6 +20,7 @@ __all__ = [
     "get_cloud_entry",
     "get_cloud_registry",
     "get_cloud_vendor_display_name",
+    "get_cloud_vendor_for_model_prefix",
     "get_cloud_vendor_module",
 ]
 
@@ -118,15 +119,48 @@ _ANTHROPIC_MODELS: tuple[CloudLLMEntry, ...] = (
     ),
 )
 
+# GPT-5.6 lineup — https://developers.openai.com/api/docs/models (2026-08-12).
+# Only three SKUs this generation (Kōdo has four effort tiers) — Terra is the
+# server-side default for both "medium" and "high" (see kodo/server/_config.py
+# models.cloud.openai), Sol reserved for "max". Listed flagship-first, same
+# convention as Fable leading _ANTHROPIC_MODELS.
+_OPENAI_MODELS: tuple[CloudLLMEntry, ...] = (
+    CloudLLMEntry(
+        name="GPT-5.6 Sol",
+        model_id="gpt-5.6-sol",
+        description="OpenAI GPT-5.6 Sol",
+        context_window=1_000_000,
+        recommendation="For the most demanding work — deep reasoning, gnarly debugging, "
+        "big architectural calls.",
+    ),
+    CloudLLMEntry(
+        name="GPT-5.6 Terra",
+        model_id="gpt-5.6-terra",
+        description="OpenAI GPT-5.6 Terra",
+        context_window=1_000_000,
+        recommendation="The daily driver — balances capability and cost for most everyday "
+        "coding tasks.",
+    ),
+    CloudLLMEntry(
+        name="GPT-5.6 Luna",
+        model_id="gpt-5.6-luna",
+        description="OpenAI GPT-5.6 Luna",
+        context_window=1_000_000,
+        recommendation="Quick and cheap — ideal for simple, high-volume subagent tasks.",
+    ),
+)
+
 # Vendor key -> hardcoded models. Vendor keys are lowercase slugs used in
 # etc/settings.json (``active_cloud_vendor``, ``models.cloud.<vendor>``) and on
 # the wire; display names are separate so the UI can show "Anthropic" etc.
 _CLOUD_REGISTRY: dict[str, tuple[CloudLLMEntry, ...]] = {
     "anthropic": _ANTHROPIC_MODELS,
+    "openai": _OPENAI_MODELS,
 }
 
 _CLOUD_VENDOR_DISPLAY: dict[str, str] = {
     "anthropic": "Anthropic",
+    "openai": "OpenAI",
 }
 
 # Vendor key -> dotted plugin module, mirroring the old LLMEntry.module field
@@ -134,6 +168,18 @@ _CLOUD_VENDOR_DISPLAY: dict[str, str] = {
 # the same plugin implementation).
 _CLOUD_VENDOR_MODULE: dict[str, str] = {
     "anthropic": "kodo.llms.anthropic",
+    "openai": "kodo.llms.openai",
+}
+
+# Vendor key -> the naming-convention prefix that vendor's model_ids use.
+# Used only for best-effort vendor->pricing dispatch (kodo.llms._pricing) when
+# a Usage.model string needs a vendor looked up from the model id alone (e.g.
+# a since-deprecated model no longer in the registry above, still referenced
+# by an old session log). NOT used for plugin resolution, which requires an
+# exact registry match (kodo/runtime/_engine/_llm.py).
+_CLOUD_VENDOR_MODEL_PREFIX: dict[str, str] = {
+    "anthropic": "claude",
+    "openai": "gpt-",
 }
 
 
@@ -158,3 +204,16 @@ def get_cloud_vendor_display_name(vendor: str) -> str:
 def get_cloud_vendor_module(vendor: str) -> str | None:
     """Dotted plugin module for *vendor*, or ``None`` if unknown."""
     return _CLOUD_VENDOR_MODULE.get(vendor)
+
+
+def get_cloud_vendor_for_model_prefix(model: str) -> str | None:
+    """Best-effort vendor lookup from a bare model id, by naming prefix.
+
+    For pricing dispatch (:mod:`kodo.llms._pricing`) only — not a substitute
+    for an exact registry lookup. Returns ``None`` for a local model name or
+    any id matching no known vendor's prefix.
+    """
+    for vendor, prefix in _CLOUD_VENDOR_MODEL_PREFIX.items():
+        if model.startswith(prefix):
+            return vendor
+    return None

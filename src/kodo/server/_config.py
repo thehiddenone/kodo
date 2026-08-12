@@ -43,6 +43,15 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
                 "high": "claude-opus-5",
                 "max": "claude-fable-5",
             },
+            # Only 3 GPT-5.6 SKUs exist (kodo/llms/_cloud_registry.py) for 4
+            # effort tiers — Terra covers both "medium" and "high", Sol is
+            # reserved for "max" only.
+            "openai": {
+                "low": "gpt-5.6-luna",
+                "medium": "gpt-5.6-terra",
+                "high": "gpt-5.6-terra",
+                "max": "gpt-5.6-sol",
+            },
         },
     },
     # Governs the stuck-agent watchdog (kodo.runtime._engine._watchdog,

@@ -691,9 +691,7 @@ def test_update_llamacpp_installs_before_removing_the_old_build(
     def fake_install(kodo_dir: Path, **_kwargs: object) -> LlamaInstall:
         assert old_dir.exists(), "old build must still be present while installing"
         new_dir.mkdir(parents=True)
-        return LlamaInstall(
-            build=5144, install_dir=new_dir, executable=new_dir / "llama-server"
-        )
+        return LlamaInstall(build=5144, install_dir=new_dir, executable=new_dir / "llama-server")
 
     monkeypatch.setattr(_inst, "install_llamacpp", fake_install)
 

@@ -1,14 +1,16 @@
-"""Exponential-backoff retry wrapper for Anthropic API calls (2s / 8s / 32s).
+"""Exponential-backoff retry wrapper for OpenAI API calls (2s / 8s / 32s).
 
 Thin wiring over the shared :mod:`kodo.llms._provider_retry` core — see that
-module for the actual retry/backoff/classification algorithm.
+module for the actual retry/backoff/classification algorithm. The ``openai``
+SDK is, like ``anthropic``, Stainless-generated with matching exception
+shapes, so this mirrors ``kodo/llms/anthropic/_retry.py`` exactly.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Coroutine
 
-import anthropic
+import openai
 
 from kodo.llms._provider_retry import (
     ProviderErrors,
@@ -23,19 +25,19 @@ __all__ = ["RetryExhaustedError", "UnrecoverableError", "with_retry", "with_retr
 _RETRY_DELAYS: tuple[float, ...] = (2.0, 8.0, 32.0)
 
 _ERRORS = ProviderErrors(
-    rate_limit=anthropic.RateLimitError,
+    rate_limit=openai.RateLimitError,
     unrecoverable=(
-        anthropic.AuthenticationError,
-        anthropic.PermissionDeniedError,
-        anthropic.BadRequestError,
+        openai.AuthenticationError,
+        openai.PermissionDeniedError,
+        openai.BadRequestError,
     ),
     retryable=(
-        anthropic.InternalServerError,
-        anthropic.APIConnectionError,
-        anthropic.APITimeoutError,
+        openai.InternalServerError,
+        openai.APIConnectionError,
+        openai.APITimeoutError,
     ),
-    status_error=anthropic.APIStatusError,
-    log_label="Anthropic",
+    status_error=openai.APIStatusError,
+    log_label="OpenAI",
 )
 
 

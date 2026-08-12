@@ -1,0 +1,531 @@
+"""Tests for ``kodo.llms.openai._gpt`` -- the OpenAI GPT LLM plugin.
+
+Mirrors test_claude.py's shape (the Anthropic plugin's equivalent). Covers:
+* :func:`_reasoning_effort_for` per-model mapping.
+* :func:`_map_stop_reason`.
+* :class:`GPTPlugin` properties (``name``, ``supported_models``).
+* :meth:`GPTPlugin.cancel` sets the cancel event.
+* :meth:`GPTPlugin.stream_query` delegates to the internal stream.
+* :meth:`GPTPlugin.__raw_stream` parses Responses API stream events.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+
+from kodo.llms._interface import (
+    ThinkingDelta,
+    TokenDelta,
+    ToolCallArgDelta,
+    ToolCallEvent,
+    TurnEnd,
+    Usage,
+)
+from kodo.llms.openai._gpt import (
+    _DEFAULT_REASONING_EFFORT,
+    _REASONING_EFFORT,
+    GPTPlugin,
+    _map_stop_reason,
+    _reasoning_effort_for,
+)
+
+# ---------------------------------------------------------------------------
+# _reasoning_effort_for -- pure
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_effort_luna_is_minimal() -> None:
+    assert _reasoning_effort_for("gpt-5.6-luna") == "minimal"
+
+
+def test_reasoning_effort_terra_is_medium() -> None:
+    assert _reasoning_effort_for("gpt-5.6-terra") == "medium"
+
+
+def test_reasoning_effort_sol_is_high() -> None:
+    assert _reasoning_effort_for("gpt-5.6-sol") == "high"
+
+
+def test_reasoning_effort_unknown_model_falls_back_to_default() -> None:
+    assert _reasoning_effort_for("gpt-5.7-nova") == _DEFAULT_REASONING_EFFORT
+
+
+def test_reasoning_effort_table_covers_every_supported_model() -> None:
+    plugin = GPTPlugin(api_key="test-key")
+    assert set(_REASONING_EFFORT) == set(plugin.supported_models)
+
+
+# ---------------------------------------------------------------------------
+# _map_stop_reason -- pure
+# ---------------------------------------------------------------------------
+
+
+def _make_response(status: str = "completed", incomplete_reason: str | None = None) -> MagicMock:
+    response = MagicMock()
+    response.status = status
+    if incomplete_reason is not None:
+        response.incomplete_details = MagicMock(reason=incomplete_reason)
+    else:
+        response.incomplete_details = None
+    return response
+
+
+def test_map_stop_reason_completed_no_tool_call_is_end_turn() -> None:
+    assert _map_stop_reason(_make_response("completed"), made_tool_call=False) == "end_turn"
+
+
+def test_map_stop_reason_completed_with_tool_call_is_tool_use() -> None:
+    assert _map_stop_reason(_make_response("completed"), made_tool_call=True) == "tool_use"
+
+
+def test_map_stop_reason_incomplete_max_output_tokens_is_max_tokens() -> None:
+    response = _make_response("incomplete", incomplete_reason="max_output_tokens")
+    assert _map_stop_reason(response, made_tool_call=False) == "max_tokens"
+
+
+def test_map_stop_reason_incomplete_content_filter_is_incomplete() -> None:
+    response = _make_response("incomplete", incomplete_reason="content_filter")
+    assert _map_stop_reason(response, made_tool_call=False) == "incomplete"
+
+
+def test_map_stop_reason_incomplete_with_no_details_is_incomplete() -> None:
+    response = _make_response("incomplete")
+    assert _map_stop_reason(response, made_tool_call=False) == "incomplete"
+
+
+# ---------------------------------------------------------------------------
+# GPTPlugin -- properties
+# ---------------------------------------------------------------------------
+
+
+def test_gpt_plugin_name() -> None:
+    plugin = GPTPlugin(api_key="test-key-123")
+    assert plugin.name == "openai"
+
+
+def test_gpt_plugin_supported_models() -> None:
+    plugin = GPTPlugin(api_key="test-key-123")
+    models = plugin.supported_models
+    assert isinstance(models, list)
+    assert len(models) >= 1
+    assert all(isinstance(m, str) for m in models)
+    assert "gpt-5.6-sol" in models
+
+
+# ---------------------------------------------------------------------------
+# GPTPlugin -- cancel
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gpt_plugin_cancel_no_stream_id() -> None:
+    plugin = GPTPlugin(api_key="test-key-123")
+    await plugin.cancel("nonexistent-stream")  # should not raise
+
+
+@pytest.mark.asyncio
+async def test_gpt_plugin_cancel_sets_event() -> None:
+    plugin = GPTPlugin(api_key="test-key-123")
+    event = asyncio.Event()
+    plugin._GPTPlugin__cancel_events["stream-1"] = event
+
+    await plugin.cancel("stream-1")
+    assert event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_gpt_plugin_cancel_unknown_stream_is_noop() -> None:
+    plugin = GPTPlugin(api_key="test-key-123")
+    event = asyncio.Event()
+    plugin._GPTPlugin__cancel_events["stream-1"] = event
+
+    await plugin.cancel("stream-999")
+    assert not event.is_set()
+
+
+# ---------------------------------------------------------------------------
+# GPTPlugin -- stream_query (mocked internal)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gpt_stream_query_yields_from_inner() -> None:
+    """stream_query delegates to __stream_with_retry which yields from __raw_stream."""
+    plugin = GPTPlugin(api_key="test-key-123")
+    captured_args: dict[str, Any] = {}
+
+    async def _fake_with_retry(**kwargs: Any) -> Any:
+        captured_args.update(kwargs)
+
+        class _FakeEvent:
+            type = "response.output_text.delta"
+
+        yield _FakeEvent()
+
+    plugin._GPTPlugin__stream_with_retry = _fake_with_retry
+
+    events = []
+    async for event in plugin.stream_query(
+        stream_id="s1",
+        model="gpt-5.6-sol",
+        system="You are helpful.",
+        messages=[],
+        tools=[],
+        cache_breakpoints=[],
+    ):
+        events.append(event)
+
+    assert len(events) >= 1
+    assert captured_args["stream_id"] == "s1"
+    assert captured_args["model"] == "gpt-5.6-sol"
+
+
+# ---------------------------------------------------------------------------
+# __raw_stream -- parsing the Responses API stream
+# ---------------------------------------------------------------------------
+
+
+def _make_text_delta(text: str, item_id: str = "item_1") -> Any:
+    from openai.types.responses import ResponseTextDeltaEvent
+
+    return ResponseTextDeltaEvent(
+        type="response.output_text.delta",
+        content_index=0,
+        delta=text,
+        item_id=item_id,
+        logprobs=[],
+        output_index=0,
+        sequence_number=0,
+    )
+
+
+def _make_reasoning_delta(text: str, item_id: str = "item_1") -> Any:
+    from openai.types.responses import ResponseReasoningSummaryTextDeltaEvent
+
+    return ResponseReasoningSummaryTextDeltaEvent(
+        type="response.reasoning_summary_text.delta",
+        delta=text,
+        item_id=item_id,
+        output_index=0,
+        sequence_number=0,
+        summary_index=0,
+    )
+
+
+def _make_function_tool_call(
+    call_id: str, name: str, arguments: str, item_id: str | None = None
+) -> Any:
+    from openai.types.responses import ResponseFunctionToolCall
+
+    return ResponseFunctionToolCall(
+        type="function_call",
+        call_id=call_id,
+        name=name,
+        arguments=arguments,
+        id=item_id,
+    )
+
+
+def _make_output_item_added(item: Any) -> Any:
+    from openai.types.responses import ResponseOutputItemAddedEvent
+
+    return ResponseOutputItemAddedEvent(
+        type="response.output_item.added", item=item, output_index=0, sequence_number=0
+    )
+
+
+def _make_output_item_done(item: Any) -> Any:
+    from openai.types.responses import ResponseOutputItemDoneEvent
+
+    return ResponseOutputItemDoneEvent(
+        type="response.output_item.done", item=item, output_index=0, sequence_number=0
+    )
+
+
+def _make_function_call_arg_delta(item_id: str, delta: str) -> Any:
+    from openai.types.responses import ResponseFunctionCallArgumentsDeltaEvent
+
+    return ResponseFunctionCallArgumentsDeltaEvent(
+        type="response.function_call_arguments.delta",
+        delta=delta,
+        item_id=item_id,
+        output_index=0,
+        sequence_number=0,
+    )
+
+
+def _make_final_response(
+    input_tokens: int = 10,
+    output_tokens: int = 5,
+    cached_tokens: int = 0,
+    status: str = "completed",
+) -> MagicMock:
+    usage = MagicMock()
+    usage.input_tokens = input_tokens
+    usage.output_tokens = output_tokens
+    usage.input_tokens_details = MagicMock(cached_tokens=cached_tokens)
+    final = MagicMock()
+    final.usage = usage
+    final.status = status
+    final.incomplete_details = None
+    return final
+
+
+class _FakeResponseStreamCtx:
+    """A proper async context manager mirroring test_claude.py's _FakeStreamCtx."""
+
+    def __init__(self, events: list, final: MagicMock | None = None) -> None:
+        self._events = list(events)
+        self._idx = 0
+        self._final = final
+
+    async def __aenter__(self) -> _FakeResponseStreamCtx:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        pass
+
+    def __aiter__(self) -> _FakeResponseStreamCtx:
+        return self
+
+    async def __anext__(self) -> Any:
+        if self._idx < len(self._events):
+            event = self._events[self._idx]
+            self._idx += 1
+            return event
+        raise StopAsyncIteration
+
+    async def get_final_response(self) -> MagicMock:
+        if self._final is not None:
+            return self._final
+        return _make_final_response()
+
+
+def _make_plugin() -> GPTPlugin:
+    return GPTPlugin(api_key="test-key")
+
+
+def _patch_client(plugin: GPTPlugin, stream_events: list, final: MagicMock | None = None) -> None:
+    fake_stream = _FakeResponseStreamCtx(stream_events, final)
+    plugin._GPTPlugin__client.responses.stream = MagicMock(return_value=fake_stream)  # type: ignore[method-assign]
+
+
+def _not_cancelled() -> MagicMock:
+    event = MagicMock(spec=asyncio.Event)
+    event.is_set.return_value = False
+    return event
+
+
+@pytest.mark.asyncio
+async def test_gpt_raw_stream_yields_text_tokens() -> None:
+    plugin = _make_plugin()
+    events_in = [_make_text_delta("Hello"), _make_text_delta(" world")]
+    final = _make_final_response()
+    _patch_client(plugin, events_in, final)
+
+    events = []
+    async for event in plugin._GPTPlugin__raw_stream(
+        cancel_event=_not_cancelled(),
+        model="gpt-5.6-sol",
+        system="You are helpful.",
+        messages=[],
+        tools=[],
+        cache_breakpoints=[],
+    ):
+        events.append(event)
+
+    token_events = [e for e in events if isinstance(e, TokenDelta)]
+    assert len(token_events) == 2
+    assert token_events[0].text == "Hello"
+    assert token_events[1].text == " world"
+    assert any(isinstance(e, TurnEnd) for e in events)
+
+
+@pytest.mark.asyncio
+async def test_gpt_raw_stream_yields_reasoning_summary() -> None:
+    plugin = _make_plugin()
+    events_in = [_make_reasoning_delta("Let me think about this")]
+    final = _make_final_response()
+    _patch_client(plugin, events_in, final)
+
+    events = []
+    async for event in plugin._GPTPlugin__raw_stream(
+        cancel_event=_not_cancelled(),
+        model="gpt-5.6-sol",
+        system="You are helpful.",
+        messages=[],
+        tools=[],
+        cache_breakpoints=[],
+    ):
+        events.append(event)
+
+    thinking_events = [e for e in events if isinstance(e, ThinkingDelta)]
+    assert len(thinking_events) == 1
+    assert thinking_events[0].text == "Let me think about this"
+
+
+@pytest.mark.asyncio
+async def test_gpt_raw_stream_yields_tool_call() -> None:
+    plugin = _make_plugin()
+    tool_call = _make_function_tool_call(
+        "call_1", "read_file", '{"path": "/foo/bar.py"}', item_id="item_1"
+    )
+    events_in = [
+        _make_output_item_added(tool_call),
+        _make_function_call_arg_delta("item_1", '{"path"'),
+        _make_function_call_arg_delta("item_1", ': "/foo/bar.py"}'),
+        _make_output_item_done(tool_call),
+    ]
+    final = _make_final_response()
+    _patch_client(plugin, events_in, final)
+
+    events = []
+    async for event in plugin._GPTPlugin__raw_stream(
+        cancel_event=_not_cancelled(),
+        model="gpt-5.6-sol",
+        system="You are helpful.",
+        messages=[],
+        tools=[],
+        cache_breakpoints=[],
+    ):
+        events.append(event)
+
+    tool_events = [e for e in events if isinstance(e, ToolCallEvent)]
+    assert len(tool_events) == 1
+    assert tool_events[0].tool_name == "read_file"
+    assert tool_events[0].tool_use_id == "call_1"
+    assert tool_events[0].tool_input == {"path": "/foo/bar.py"}
+
+    arg_events = [e for e in events if isinstance(e, ToolCallArgDelta)]
+    assert len(arg_events) == 2
+    # The tool name is already known from output_item.added, before any
+    # argument fragment has arrived -- unlike llama.cpp's Chat Completions
+    # deltas, where the name may lag the first fragment.
+    assert all(e.tool_name == "read_file" for e in arg_events)
+
+    turn_ends = [e for e in events if isinstance(e, TurnEnd)]
+    assert turn_ends[0].stop_reason == "tool_use"
+
+
+@pytest.mark.asyncio
+async def test_gpt_raw_stream_tool_call_malformed_json() -> None:
+    plugin = _make_plugin()
+    tool_call = _make_function_tool_call(
+        "call_1", "write_file", "not valid json {", item_id="item_1"
+    )
+    events_in = [_make_output_item_added(tool_call), _make_output_item_done(tool_call)]
+    final = _make_final_response()
+    _patch_client(plugin, events_in, final)
+
+    events = []
+    async for event in plugin._GPTPlugin__raw_stream(
+        cancel_event=_not_cancelled(),
+        model="gpt-5.6-sol",
+        system="You are helpful.",
+        messages=[],
+        tools=[],
+        cache_breakpoints=[],
+    ):
+        events.append(event)
+
+    tool_events = [e for e in events if isinstance(e, ToolCallEvent)]
+    assert len(tool_events) == 1
+    assert tool_events[0].tool_input == {"_raw": "not valid json {"}
+
+
+@pytest.mark.asyncio
+async def test_gpt_raw_stream_cancel_stops_early() -> None:
+    plugin = _make_plugin()
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+    final = _make_final_response()
+    _patch_client(plugin, [_make_text_delta("partial")], final)
+
+    events = []
+    async for event in plugin._GPTPlugin__raw_stream(
+        cancel_event=cancel_event,
+        model="gpt-5.6-sol",
+        system="You are helpful.",
+        messages=[],
+        tools=[],
+        cache_breakpoints=[],
+    ):
+        events.append(event)
+
+    token_events = [e for e in events if isinstance(e, TokenDelta)]
+    assert len(token_events) == 0
+    assert not any(isinstance(e, TurnEnd) for e in events)
+
+
+@pytest.mark.asyncio
+async def test_gpt_raw_stream_usage_includes_cache_read_tokens() -> None:
+    plugin = _make_plugin()
+    final = _make_final_response(input_tokens=100, output_tokens=50, cached_tokens=20)
+    _patch_client(plugin, [], final)
+
+    events = []
+    async for event in plugin._GPTPlugin__raw_stream(
+        cancel_event=_not_cancelled(),
+        model="gpt-5.6-sol",
+        system="You are helpful.",
+        messages=[],
+        tools=[],
+        cache_breakpoints=[],
+    ):
+        events.append(event)
+
+    turn_ends = [e for e in events if isinstance(e, TurnEnd)]
+    assert len(turn_ends) == 1
+    usage: Usage = turn_ends[0].usage
+    assert usage.input_tokens == 100
+    assert usage.output_tokens == 50
+    assert usage.cache_write_tokens == 0
+    assert usage.cache_read_tokens == 20
+    assert usage.model == "gpt-5.6-sol"
+
+
+@pytest.mark.asyncio
+async def test_gpt_raw_stream_stop_reason_max_tokens() -> None:
+    plugin = _make_plugin()
+    final = _make_final_response(status="incomplete")
+    final.incomplete_details = MagicMock(reason="max_output_tokens")
+    _patch_client(plugin, [], final)
+
+    events = []
+    async for event in plugin._GPTPlugin__raw_stream(
+        cancel_event=_not_cancelled(),
+        model="gpt-5.6-sol",
+        system="You are helpful.",
+        messages=[],
+        tools=[],
+        cache_breakpoints=[],
+    ):
+        events.append(event)
+
+    turn_ends = [e for e in events if isinstance(e, TurnEnd)]
+    assert turn_ends[0].stop_reason == "max_tokens"
+
+
+@pytest.mark.asyncio
+async def test_gpt_raw_stream_no_tool_call_is_end_turn() -> None:
+    plugin = _make_plugin()
+    final = _make_final_response()
+    _patch_client(plugin, [_make_text_delta("hi")], final)
+
+    events = []
+    async for event in plugin._GPTPlugin__raw_stream(
+        cancel_event=_not_cancelled(),
+        model="gpt-5.6-sol",
+        system="You are helpful.",
+        messages=[],
+        tools=[],
+        cache_breakpoints=[],
+    ):
+        events.append(event)
+
+    turn_ends = [e for e in events if isinstance(e, TurnEnd)]
+    assert turn_ends[0].stop_reason == "end_turn"

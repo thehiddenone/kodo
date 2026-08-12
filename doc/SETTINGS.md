@@ -56,7 +56,9 @@ design (registries, effort levels, resolution order) is in
     "local": "llamacpp-qwen36-27b-q4-k-xl",
     "cloud": {
       "anthropic": { "low": "claude-haiku-4-5-20251001", "medium": "claude-sonnet-5",
-                      "high": "claude-opus-5", "max": "claude-fable-5" }
+                      "high": "claude-opus-5", "max": "claude-fable-5" },
+      "openai": { "low": "gpt-5.6-luna", "medium": "gpt-5.6-terra",
+                  "high": "gpt-5.6-terra", "max": "gpt-5.6-sol" }
     }
   }
 }
@@ -149,6 +151,12 @@ housekeeper LLM" webview action.
         "medium": "claude-sonnet-5",
         "high": "claude-opus-5",
         "max": "claude-fable-5"
+      },
+      "openai": {
+        "low": "gpt-5.6-luna",
+        "medium": "gpt-5.6-terra",
+        "high": "gpt-5.6-terra",
+        "max": "gpt-5.6-sol"
       }
     }
   },

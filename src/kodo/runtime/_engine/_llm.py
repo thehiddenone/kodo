@@ -34,6 +34,7 @@ from kodo.llms import (
 )
 from kodo.llms.anthropic import ClaudePlugin
 from kodo.llms.llamacpp import LlamaPlugin
+from kodo.llms.openai import GPTPlugin
 from kodo.project import kodo_user_dir
 from kodo.subagents import SubAgent
 from kodo.tools import ToolDispatcher
@@ -41,6 +42,15 @@ from kodo.tools import ToolDispatcher
 from .._agenttools import agent_tool_specs
 from ._proto import EngineHost
 from ._shared import _GUIDE_AGENT_NAME, _JUDGE_AGENT_NAME, _PROBLEM_SOLVER_AGENT_NAME
+
+# Dotted plugin module (kodo.llms._cloud_registry's _CLOUD_VENDOR_MODULE
+# value) -> a one-arg (api_key) constructor for that vendor's LLMPlugin.
+# Adding a vendor here is the last step after registering it in
+# _cloud_registry.py and implementing its plugin package.
+_VENDOR_PLUGIN_FACTORIES: dict[str, Callable[[str], LLMPlugin]] = {
+    "kodo.llms.anthropic": ClaudePlugin,
+    "kodo.llms.openai": GPTPlugin,
+}
 
 
 def _find_cloud_vendor_for_model_id(model_id: str) -> str | None:
@@ -149,14 +159,15 @@ class LLMPlumbingMixin:
         self._current_vendor = vendor
 
         module = get_cloud_vendor_module(vendor)
-        if module != "kodo.llms.anthropic":
+        factory = _VENDOR_PLUGIN_FACTORIES.get(module or "")
+        if factory is None:
             raise RuntimeError(f"Unsupported cloud vendor: {vendor!r}")
 
         key_result: ApiKey = await self._key_provider.get_key(vendor)
         if key_result.error:
             raise RuntimeError(f"API key request rejected: {key_result.error}")
 
-        plugin = ClaudePlugin(api_key=key_result.api_key)
+        plugin = factory(key_result.api_key)
         routing = LLMRouting(residence="cloud", vendor=vendor)
         return LoggingLLMPlugin(plugin, self._llm_logs_dir()), model_key, routing
 

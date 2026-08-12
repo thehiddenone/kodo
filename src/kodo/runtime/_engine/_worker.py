@@ -11,7 +11,7 @@ import asyncio
 import logging
 
 from kodo.common import Envelope
-from kodo.llms.anthropic import UnrecoverableError
+from kodo.llms import UnrecoverableError
 from kodo.transport import EVT_API_KEY_REVOKE
 
 from ._proto import EngineHost
