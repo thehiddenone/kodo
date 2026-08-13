@@ -569,9 +569,7 @@ async def test_gemini_raw_stream_stop_reason_max_tokens() -> None:
 @pytest.mark.asyncio
 async def test_gemini_raw_stream_no_tool_call_is_end_turn() -> None:
     plugin = _make_plugin()
-    _patch_client(
-        plugin, [_make_chunk(content="hi", finish_reason="stop", usage=_usage(10, 5))]
-    )
+    _patch_client(plugin, [_make_chunk(content="hi", finish_reason="stop", usage=_usage(10, 5))])
 
     events = []
     async for event in plugin._GeminiPlugin__raw_stream(
