@@ -1,7 +1,7 @@
 """Behavior tests for Usage.usd_cost -- kodo.llms._pricing's vendor dispatch
 
 plus each vendor's own pricing table (kodo.llms.anthropic._usage,
-kodo.llms.openai._usage).
+kodo.llms.openai._usage, kodo.llms.meta._usage).
 """
 
 from kodo.llms import Usage
@@ -192,3 +192,131 @@ def test_local_model_costs_nothing() -> None:
         model="llamacpp-qwen36-27b-q4-k-xl",
     )
     assert usage.usd_cost == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Meta vendor dispatch (kodo.llms._pricing routes by model-id prefix) --
+# standard vs. the discounted "contributor" tier (kodo.llms.meta._usage).
+# ---------------------------------------------------------------------------
+
+
+def test_meta_zero_tokens_costs_nothing() -> None:
+    usage = Usage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="muse-spark-1.2",
+    )
+    assert usage.usd_cost == 0.0
+
+
+def test_meta_standard_tier_cost() -> None:
+    usage = Usage(
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="muse-spark-1.2",
+    )
+    assert abs(usage.usd_cost - (1.25 + 4.25)) < 1e-9
+
+
+def test_meta_contributor_tier_is_cheaper_than_standard() -> None:
+    standard = Usage(
+        input_tokens=1000,
+        output_tokens=1000,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="muse-spark-1.2",
+    )
+    contributor = Usage(
+        input_tokens=1000,
+        output_tokens=1000,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="muse-spark-1.2-contributor",
+    )
+    assert 0.0 < contributor.usd_cost < standard.usd_cost
+
+
+def test_meta_cache_read_is_cheaper_than_input() -> None:
+    base = Usage(
+        input_tokens=1000,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="muse-spark-1.2",
+    )
+    cached = Usage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=1000,
+        model="muse-spark-1.2",
+    )
+    assert 0.0 < cached.usd_cost < base.usd_cost
+
+
+# ---------------------------------------------------------------------------
+# Google vendor dispatch (kodo.llms._pricing routes by model-id prefix) --
+# gemini-3.6-flash (medium/high/max) vs. gemini-3.5-flash-lite (low).
+# ---------------------------------------------------------------------------
+
+
+def test_google_zero_tokens_costs_nothing() -> None:
+    usage = Usage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="gemini-3.6-flash",
+    )
+    assert usage.usd_cost == 0.0
+
+
+def test_google_flash_cost() -> None:
+    usage = Usage(
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="gemini-3.6-flash",
+    )
+    assert abs(usage.usd_cost - (1.50 + 7.50)) < 1e-9
+
+
+def test_google_flash_lite_is_cheaper_than_flash() -> None:
+    flash = Usage(
+        input_tokens=1000,
+        output_tokens=1000,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="gemini-3.6-flash",
+    )
+    flash_lite = Usage(
+        input_tokens=1000,
+        output_tokens=1000,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="gemini-3.5-flash-lite",
+    )
+    assert 0.0 < flash_lite.usd_cost < flash.usd_cost
+
+
+def test_google_cache_read_is_cheaper_than_input() -> None:
+    base = Usage(
+        input_tokens=1000,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="gemini-3.6-flash",
+    )
+    cached = Usage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=1000,
+        model="gemini-3.6-flash",
+    )
+    assert 0.0 < cached.usd_cost < base.usd_cost

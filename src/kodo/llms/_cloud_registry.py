@@ -150,17 +150,69 @@ _OPENAI_MODELS: tuple[CloudLLMEntry, ...] = (
     ),
 )
 
+# Meta's Model API (https://dev.meta.ai/docs/, as of 2026-08-12) has no
+# effort-tiered lineup like Anthropic/OpenAI -- Muse Spark 1.2 is the one
+# model on offer, so it is the sole entry here and gets assigned to all four
+# kodo effort tiers (kodo/server/_config.py's models.cloud.meta defaults).
+# The heavily-discounted "contributor" tier (trains future Meta models on
+# your traffic in exchange for ~8x-cheaper tokens) is deliberately NOT a
+# second registry entry/selectable model -- it is a per-account toggle
+# (settings.json's meta_contributor_tier, kodo/llms/meta/_muse.py) that
+# rewrites the outbound model id to "muse-spark-1.2-contributor" at request
+# time, since real-world eligibility (see the Cloud AI Settings webview's
+# Meta tab) is a country-restricted opt-in, not a model choice.
+_META_MODELS: tuple[CloudLLMEntry, ...] = (
+    CloudLLMEntry(
+        name="Muse Spark 1.2",
+        model_id="muse-spark-1.2",
+        description="Meta Muse Spark 1.2",
+        context_window=1_000_000,
+        recommendation="Meta's flagship agentic model — the same model handles every effort "
+        "tier, from quick edits to deep multi-file work.",
+    ),
+)
+
+# Gemini's OpenAI-compatible endpoint (https://ai.google.dev/gemini-api/docs/openai,
+# model ids/pricing researched 2026-08-12) has two SKUs against kodo's four
+# effort tiers -- gemini-3.6-flash covers medium/high/max (kodo/server/
+# _config.py's models.cloud.google), gemini-3.5-flash-lite is reserved for
+# low. Unlike Anthropic/OpenAI/Meta (Responses-API-shaped), Gemini's plugin
+# speaks Chat Completions -- see kodo/llms/google/_gemini.py's module
+# docstring. Listed flagship-first, same convention as the other vendors'
+# tuples.
+_GOOGLE_MODELS: tuple[CloudLLMEntry, ...] = (
+    CloudLLMEntry(
+        name="Gemini 3.6 Flash",
+        model_id="gemini-3.6-flash",
+        description="Google Gemini 3.6 Flash",
+        context_window=1_048_576,
+        recommendation="The workhorse -- covers everyday coding through the most demanding "
+        "work in this lineup.",
+    ),
+    CloudLLMEntry(
+        name="Gemini 3.5 Flash-Lite",
+        model_id="gemini-3.5-flash-lite",
+        description="Google Gemini 3.5 Flash-Lite",
+        context_window=1_048_576,
+        recommendation="Quick and cheap -- ideal for simple, high-volume subagent tasks.",
+    ),
+)
+
 # Vendor key -> hardcoded models. Vendor keys are lowercase slugs used in
 # etc/settings.json (``active_cloud_vendor``, ``models.cloud.<vendor>``) and on
 # the wire; display names are separate so the UI can show "Anthropic" etc.
 _CLOUD_REGISTRY: dict[str, tuple[CloudLLMEntry, ...]] = {
     "anthropic": _ANTHROPIC_MODELS,
     "openai": _OPENAI_MODELS,
+    "meta": _META_MODELS,
+    "google": _GOOGLE_MODELS,
 }
 
 _CLOUD_VENDOR_DISPLAY: dict[str, str] = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
+    "meta": "Meta",
+    "google": "Google",
 }
 
 # Vendor key -> dotted plugin module, mirroring the old LLMEntry.module field
@@ -169,6 +221,8 @@ _CLOUD_VENDOR_DISPLAY: dict[str, str] = {
 _CLOUD_VENDOR_MODULE: dict[str, str] = {
     "anthropic": "kodo.llms.anthropic",
     "openai": "kodo.llms.openai",
+    "meta": "kodo.llms.meta",
+    "google": "kodo.llms.google",
 }
 
 # Vendor key -> the naming-convention prefix that vendor's model_ids use.
@@ -176,10 +230,15 @@ _CLOUD_VENDOR_MODULE: dict[str, str] = {
 # a Usage.model string needs a vendor looked up from the model id alone (e.g.
 # a since-deprecated model no longer in the registry above, still referenced
 # by an old session log). NOT used for plugin resolution, which requires an
-# exact registry match (kodo/runtime/_engine/_llm.py).
+# exact registry match (kodo/runtime/_engine/_llm.py). "muse-spark" matches
+# both "muse-spark-1.2" and the contributor-tier "muse-spark-1.2-contributor"
+# rewrite -- kodo.llms.meta._usage.compute_cost does its own finer
+# contributor-vs-standard prefix match once dispatched here.
 _CLOUD_VENDOR_MODEL_PREFIX: dict[str, str] = {
     "anthropic": "claude",
     "openai": "gpt-",
+    "meta": "muse-spark",
+    "google": "gemini-",
 }
 
 

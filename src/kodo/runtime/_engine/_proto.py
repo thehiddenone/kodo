@@ -212,6 +212,9 @@ class EngineHost(Protocol):
     @staticmethod
     def _thinking_block(thinking: str, signature: str | None) -> dict[str, object]: ...
 
+    @staticmethod
+    def _tool_use_block(tc: ToolCallEvent) -> dict[str, object]: ...
+
     def _partial_assistant_message(
         self,
         text_parts: list[str],

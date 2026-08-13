@@ -351,6 +351,43 @@ def test_malformed_security_rules_falls_back_to_empty(kodo_dir: Path) -> None:
     assert second.security_rules == frozenset()
 
 
+def test_cumulative_tokens_default_to_zero(store: TransientStore) -> None:
+    assert store.cumulative_input_tokens == 0
+    assert store.cumulative_input_tokens_uncached == 0
+    assert store.cumulative_output_tokens == 0
+
+
+def test_add_tokens_persists_and_accumulates(store: TransientStore) -> None:
+    store.add_tokens(100, 60, 20)
+    store.add_tokens(50, 50, 10)
+
+    data = json.loads((store.session_dir / "transient.json").read_text(encoding="utf-8"))
+    assert data["cumulative_input_tokens"] == 150
+    assert data["cumulative_input_tokens_uncached"] == 110
+    assert data["cumulative_output_tokens"] == 30
+    assert store.cumulative_input_tokens == 150
+    assert store.cumulative_input_tokens_uncached == 110
+    assert store.cumulative_output_tokens == 30
+
+
+def test_resumed_session_restores_cumulative_tokens(kodo_dir: Path) -> None:
+    session_id = "1748792415"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    first.add_tokens(100, 60, 20)
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.cumulative_input_tokens == 100
+    assert second.cumulative_input_tokens_uncached == 60
+    assert second.cumulative_output_tokens == 20
+
+    # And continues counting from there, not from zero.
+    second.add_tokens(5, 5, 1)
+    assert second.cumulative_input_tokens == 105
+    assert second.cumulative_output_tokens == 21
+
+
 def test_security_path_rules_defaults_to_empty(store: TransientStore) -> None:
     assert store.security_path_rules == frozenset()
 

@@ -134,6 +134,111 @@ Pricing (`kodo/llms/openai/_usage.py`) mirrors Anthropic's table shape;
 cached-input pricing isn't published by the source above, so `cache_read` is
 a placeholder ~50%-off-input estimate, clearly commented as such.
 
+Today's Meta entry (`kodo/llms/meta/`, plugin class `MusePlugin`) —
+`muse-spark-1.2` (source: <https://dev.meta.ai/docs/>, as of 2026-08-12), the
+one and only model Meta's Model API offers. Unlike Anthropic/OpenAI, Meta has
+no effort-tiered lineup at all, so `_META_MODELS` holds a single
+`CloudLLMEntry` and the server-side default (`kodo/server/_config.py`) maps
+all four effort tiers to it. Meta's Model API is drop-in compatible with the
+`openai` Python SDK — its own quickstart docs use Responses-API-specific
+parameter names (`reasoningEffort`, `reasoningSummary`,
+`reasoning.encrypted_content`) — so `MusePlugin` reuses that SDK, pointed at
+`https://api.meta.ai/v1` with a Meta-issued key instead of an OpenAI one, and
+its `_convert.py`/`_retry.py` are near-identical copies of the OpenAI
+plugin's own (kept as separate files per vendor-package self-containment,
+not a shared import — see "Adding a cloud vendor or model" below). Since
+there is only one model for all four kodo tiers, there is no per-model
+`_REASONING_EFFORT` table like OpenAI's — one fixed Responses API
+`reasoning.effort` (`"medium"`) applies to every call, same "not worth
+threading kodo's own capability tier through for one vendor" reasoning as
+OpenAI's table. Pricing (`kodo/llms/meta/_usage.py`) mirrors OpenAI's table
+shape.
+
+**Meta's "contributor" tier.** Meta discounts Muse Spark 1.2 usage roughly
+8-12x (`kodo/llms/meta/_usage.py`: $1.25/$4.25 per-million input/output at
+standard pricing vs. $0.10/$0.20 for contributor) in exchange for permission
+to train future Meta models on the account's prompts/completions — real-world
+eligibility is country-restricted (see the Cloud AI Settings webview's Meta
+tab, which shows a warning and a pointer to Meta's own docs once enabled).
+This is **not** a second cloud-registry entry a user picks per effort tier —
+it is a single account-wide `settings.json` boolean, `meta_contributor_tier`
+(default `false`, doc/SETTINGS.md §2.2), read fresh by
+`kodo/runtime/_engine/_llm.py`'s Meta vendor factory on every plugin
+resolution and passed into `MusePlugin.__init__(api_key, contributor=...)`.
+When `True`, every outbound call's model id is rewritten with a
+`-contributor` suffix (`muse-spark-1.2` → `muse-spark-1.2-contributor`) —
+both the literal API request and the `Usage.model` the plugin reports back,
+so `compute_cost` prices the call at the discounted row. `supported_models`
+and the cloud registry only ever expose the bare `muse-spark-1.2` id; the
+suffixed variant exists only inside `MusePlugin`'s own request/pricing logic.
+
+Today's Google entry (`kodo/llms/google/`, plugin class `GeminiPlugin`) —
+`gemini-3.6-flash` and `gemini-3.5-flash-lite` (source: web research —
+aipricecompare.org, apidog.com, eesel.ai, benchlm.ai, as of 2026-08-12;
+Google does not publish one authoritative pricing page for this generation
+at the time of writing, so both the model ids and the pricing table below
+carry the same "hand-picked from external sources" epistemic status as the
+OpenAI/Meta tables). Two SKUs against kodo's four effort tiers —
+`gemini-3.6-flash` covers `medium`/`high`/`max`, `gemini-3.5-flash-lite` is
+reserved for `low` (`kodo/server/_config.py`'s `models.cloud.google`
+defaults). **Unlike every other cloud vendor here, Google is built against
+Chat Completions** (`client.chat.completions.create`, not
+`client.responses.stream`) via Gemini's OpenAI-compatible endpoint
+(<https://ai.google.dev/gemini-api/docs/openai>,
+`https://generativelanguage.googleapis.com/v1beta/openai/`) — the only other
+Chat-Completions-shaped plugin in this codebase is the *local* `llamacpp`
+one, so `kodo/llms/google/_convert.py`/`_gemini.py` are adapted from
+`llamacpp/_llama.py`'s message/stream-parsing helpers rather than copied from
+OpenAI's/Meta's Responses-API converters, stripped of every local-only
+concern (no `<think>`-tag parsing, no malformed-tool-call salvage, no
+per-request `max_tokens` cap). Reasoning effort is a **direct**
+`reasoning_effort=` kwarg on `chat.completions.create` (confirmed against
+Google's own docs — not nested in `extra_body`, unlike Gemini-native
+thinking-budget controls), and streamed reasoning text arrives on the
+model's own `delta.reasoning_content` field — the same field name
+`llamacpp/_llama.py` already reads via
+`getattr(delta, "reasoning_content", None)`, so no tag-parsing is needed.
+Same "one fixed reasoning effort per model, not per kodo tier" rationale as
+OpenAI's/Meta's tables — `_REASONING_EFFORT` in `_gemini.py`:
+`gemini-3.6-flash`→medium, `gemini-3.5-flash-lite`→low — applies even though
+three kodo tiers share the one Flash model. Prompt caching is automatic on
+Gemini's side, so `cache_breakpoints` is accepted and ignored, same as
+OpenAI/Meta. Pricing (`kodo/llms/google/_usage.py`) mirrors the existing
+table shape: $1.50/$7.50/$0.15 and $0.30/$2.50/$0.03 per-million
+input/output/cached-input for Flash and Flash-Lite respectively;
+`cache_write` is `0.0` (no separate cache-write charge on this endpoint).
+Since Google is reached through the `openai` Python SDK pointed at a custom
+`base_url` (same pattern as Meta), `google/_retry.py` wires the shared
+`_provider_retry` core with the identical `openai.*` exception classes
+Meta's/OpenAI's `_retry.py` use.
+
+**Gemini's `thought_signature` requirement for tool calls.** Gemini's
+thinking models attach an opaque per-call `thought_signature` to a function
+call (wire shape confirmed against real-world OpenAI-compat integrations:
+`extra_content.google.thought_signature` on the tool-call object, both
+incoming and outgoing — not part of the OpenAI Chat Completions spec, but the
+`openai` SDK's response models allow arbitrary extra fields, so it survives
+parsing and is reachable via plain attribute access). Gemini **rejects** any
+later request that replays that tool call without the exact same signature
+(`HTTP 400`, "Function call is missing a thought_signature"). This is
+Gemini's analog of Anthropic's thinking-block signature
+(`ThinkingSignature`), except scoped to the tool call itself rather than a
+separate thinking block, so it is threaded through a new **optional**
+`ToolCallEvent.thought_signature` field (`kodo/llms/_interface.py`, `None`
+for every other plugin) rather than a new event type: `google/_gemini.py`
+captures it off each tool-call delta's `extra_content` as the call streams
+in; `runtime/_engine/_turns.py`'s `_tool_use_block` (mirrors `_thinking_block`
+— both call sites that used to build a bare `tool_use` dict now go through
+it) persists it onto the block as `"thought_signature"` when present, omitted
+otherwise; `google/_convert.py`'s `_expand_assistant` reads it back off the
+block and re-attaches it as `extra_content.google.thought_signature` on
+replay. Every other vendor's converter only pulls `id`/`name`/`input` off a
+`tool_use` block and never touches this key, so it round-trips through mixed
+history harmlessly (there is no fix, and none is attempted here, for the
+inverse case — a tool call made by a *different* vendor, with no signature at
+all, replayed into a Gemini-thinking-model session after a vendor switch;
+that would still 400, since no signature can be fabricated after the fact).
+
 **Both cloud plugins share one retry/backoff core**, `kodo/llms/
 _provider_retry.py` — the `anthropic` and `openai` Python SDKs are both
 Stainless-generated with matching exception shapes
@@ -161,9 +266,12 @@ entries in `_cloud_registry.py`, and if it's a new vendor: a plugin
 implementing `LLMPlugin`, a `_retry.py` wiring a `ProviderErrors` bundle into
 the shared core, a `_usage.py` pricing table, a `_CLOUD_VENDOR_MODULE` entry,
 a `_CLOUD_VENDOR_MODEL_PREFIX` entry, and a `_VENDOR_PLUGIN_FACTORIES` entry
-in `kodo/runtime/_engine/_llm.py` (the vendor-module → one-arg-constructor
-map `_resolve_plugin` dispatches through). There is no external/JSON part to
-this registry.
+in `kodo/runtime/_engine/_llm.py` (the vendor-module → `(api_key, settings) ->
+LLMPlugin` constructor map `_resolve_plugin` dispatches through — the full
+settings dict is passed, not just the key, so a vendor whose plugin needs
+more than that, like Meta's `meta_contributor_tier` flag, reads it there
+instead of `_resolve_plugin` growing a vendor-specific branch). There is no
+external/JSON part to this registry.
 
 ---
 

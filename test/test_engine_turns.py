@@ -56,6 +56,7 @@ class _FakeEmitters:
     def __init__(self) -> None:
         self.stream_events: list[tuple[object, str]] = []
         self.cost_total = 0.0
+        self.token_usages: list[object] = []
         self.usage_calls: list[tuple[object, str, float, str]] = []
         self.context_stats_calls = 0
         self.state_emits = 0
@@ -68,6 +69,9 @@ class _FakeEmitters:
 
     def add_cost(self, usd: float) -> None:
         self.cost_total += usd
+
+    def add_tokens_from_usage(self, usage: object) -> None:
+        self.token_usages.append(usage)
 
     @property
     def cumulative_usd(self) -> float:
@@ -431,6 +435,32 @@ async def test_run_agent_turn_dispatches_tool_calls_and_loops() -> None:
     assert messages[-1].content == "done"
     assert messages[-3].content[-1]["type"] == "tool_use"
     assert messages[-2].content[0]["type"] == "tool_result"
+
+
+async def test_run_agent_turn_tool_call_carries_thought_signature() -> None:
+    """A Gemini tool call's thought_signature survives onto the persisted tool_use block."""
+    round1 = [
+        ToolCallEvent(
+            tool_use_id="tu_1",
+            tool_name="run_command",
+            tool_input={"command": "ls"},
+            thought_signature="sig-gemini-1",
+        ),
+        TurnEnd(usage=_usage(), stop_reason="tool_use"),
+    ]
+    round2 = [TokenDelta(text="done"), TurnEnd(usage=_usage(), stop_reason="end_turn")]
+    engine = _base_engine(gateway=_FakeGateway([round1, round2]))
+
+    async def tool_dispatch(*a, **k):
+        return '{"exit_code": 0}'
+
+    messages, _files = await engine._run_agent_turn(
+        **_agent_turn_kwargs(tool_dispatch=tool_dispatch)
+    )
+
+    tool_use_block = messages[-3].content[-1]
+    assert tool_use_block["type"] == "tool_use"
+    assert tool_use_block["thought_signature"] == "sig-gemini-1"
 
 
 async def test_run_agent_turn_tool_call_round_carries_thinking_and_text_blocks() -> None:

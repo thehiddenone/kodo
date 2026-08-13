@@ -272,6 +272,26 @@ def test_partial_assistant_message_captures_thinking_and_tool_calls() -> None:
     }
 
 
+def test_partial_assistant_message_tool_call_carries_thought_signature() -> None:
+    """A Gemini tool call's thought_signature is persisted onto its tool_use block."""
+    engine, _ = _bare_engine(main_messages=[])
+    tool_call = ToolCallEvent(
+        tool_use_id="tu_9",
+        tool_name="filesystem",
+        tool_input={"a": 1},
+        thought_signature="sig-xyz",
+    )
+    msg = _method(engine)([], [], None, [tool_call])
+    assert msg is not None
+    assert msg.content[0] == {
+        "type": "tool_use",
+        "id": "tu_9",
+        "name": "filesystem",
+        "input": {"a": 1},
+        "thought_signature": "sig-xyz",
+    }
+
+
 # ---------------------------------------------------------------------------
 # _interrupted_tool_result reason wording
 # ---------------------------------------------------------------------------

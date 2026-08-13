@@ -1001,6 +1001,20 @@ class WorkflowEngine(
         """
         return await self._history.full_history()
 
+    async def push_usage_totals(self) -> None:
+        """Push this session's current running usage totals to a freshly
+        (re)connected client.
+
+        Called once from ``_handle_session_hello`` for every ``hello`` — new
+        session, resume, or plain reconnect alike. The running totals
+        (``cumulative_input_tokens``/``cumulative_output_tokens``, persisted
+        across resume via :class:`~kodo.state.TransientStore`) are not part
+        of the ``state`` snapshot (WS_PROTOCOL.md §5.1), so without this the
+        client's status line would show stale or zeroed totals until the
+        next real LLM call. See :meth:`~._events.EngineEmitters.emit_usage_totals`.
+        """
+        await self._emitters.emit_usage_totals()
+
     # ------------------------------------------------------------------
     # Autonomous-mode kill switch + project creation
     # ------------------------------------------------------------------

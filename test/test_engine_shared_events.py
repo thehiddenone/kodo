@@ -280,12 +280,20 @@ class _FakeTransient:
         self.markers: list[dict[str, object]] = []
         self.subsession_markers: list[tuple[str, dict[str, object]]] = []
         self.active_subsession: dict[str, object] | None = None
+        self.cumulative_input_tokens = 0
+        self.cumulative_input_tokens_uncached = 0
+        self.cumulative_output_tokens = 0
 
     def append_marker(self, marker: dict[str, object]) -> None:
         self.markers.append(marker)
 
     def append_subsession_marker(self, subsession_id: str, marker: dict[str, object]) -> None:
         self.subsession_markers.append((subsession_id, marker))
+
+    def add_tokens(self, input_tokens: int, input_tokens_uncached: int, output_tokens: int) -> None:
+        self.cumulative_input_tokens += input_tokens
+        self.cumulative_input_tokens_uncached += input_tokens_uncached
+        self.cumulative_output_tokens += output_tokens
 
 
 def _make_emitters(
@@ -430,18 +438,23 @@ async def test_emit_context_compacting() -> None:
 
 @pytest.mark.asyncio
 async def test_emit_usage_reports_tokens_and_running_cost() -> None:
-    emitters, sink, _ = _make_emitters()
+    emitters, sink, transient = _make_emitters()
     emitters.add_cost(1.23)
     usage = Usage(
         input_tokens=10, output_tokens=20, cache_write_tokens=1, cache_read_tokens=2, model="m"
     )
     turn_end = TurnEnd(usage=usage, stop_reason="end_turn")
+    emitters.add_tokens_from_usage(usage)
 
     await emitters.emit_usage(turn_end, "claude-x", 2.5, "guide")
 
     payload = sink.sent[0].payload
     assert payload["type"] == "usage.update"
     assert payload["cumulative_usd"] == 1.23
+    assert payload["cumulative_input_tokens"] == transient.cumulative_input_tokens == 13
+    assert payload["cumulative_input_tokens_uncached"] == 10
+    assert transient.cumulative_input_tokens_uncached == 10
+    assert payload["cumulative_output_tokens"] == transient.cumulative_output_tokens == 20
     assert payload["duration_seconds"] == 2.5
     assert payload["last_call_tokens"] == {
         "input": 10,
@@ -492,16 +505,38 @@ async def test_emit_usage_persists_marker_to_active_subsession() -> None:
 
 
 @pytest.mark.asyncio
-async def test_emit_cost_only_has_no_call_tokens() -> None:
-    emitters, sink, _ = _make_emitters()
+async def test_emit_usage_totals_has_no_call_tokens() -> None:
+    emitters, sink, transient = _make_emitters()
     emitters.add_cost(0.01)
+    transient.add_tokens(100, 60, 20)
 
-    await emitters.emit_cost_only()
+    await emitters.emit_usage_totals()
 
     payload = sink.sent[0].payload
     assert payload["last_call_tokens"] is None
     assert payload["cumulative_usd"] == 0.01
+    assert payload["cumulative_input_tokens"] == 100
+    assert payload["cumulative_input_tokens_uncached"] == 60
+    assert payload["cumulative_output_tokens"] == 20
     assert payload["model"] == ""
+
+
+def test_add_tokens_from_usage_accumulates_in_transient() -> None:
+    emitters, _sink, transient = _make_emitters()
+    usage_a = Usage(
+        input_tokens=10, output_tokens=5, cache_write_tokens=2, cache_read_tokens=3, model="m"
+    )
+    usage_b = Usage(
+        input_tokens=4, output_tokens=1, cache_write_tokens=0, cache_read_tokens=0, model="m"
+    )
+
+    emitters.add_tokens_from_usage(usage_a)
+    emitters.add_tokens_from_usage(usage_b)
+
+    # input_tokens + cache_read + cache_write per call, summed across both.
+    assert transient.cumulative_input_tokens == (10 + 3 + 2) + (4 + 0 + 0)
+    assert transient.cumulative_input_tokens_uncached == 10 + 4
+    assert transient.cumulative_output_tokens == 5 + 1
 
 
 @pytest.mark.asyncio

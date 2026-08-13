@@ -200,12 +200,21 @@ class ToolCallEvent(StreamEvent):
             the tool name was inferred from the arguments' shape, so the user
             gets a chance to reject a wrong guess. Always ``False`` for a
             normally-structured call.
+        thought_signature: Opaque per-call signature Gemini's thinking models
+            attach to a function call (``extra_content.google.thought_signature``
+            on the wire — see :mod:`kodo.llms.google._gemini`). Gemini rejects a
+            later request that replays this tool call without the exact same
+            signature, the same requirement :class:`ThinkingSignature` encodes
+            for Anthropic's thinking blocks, except scoped to the call itself
+            rather than a separate signature event. ``None`` for every other
+            plugin, which never populates this field.
     """
 
     tool_use_id: str
     tool_name: str
     tool_input: dict[str, object]
     recovered: bool = False
+    thought_signature: str | None = None
 
 
 @dataclass(frozen=True)

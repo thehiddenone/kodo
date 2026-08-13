@@ -829,10 +829,17 @@ EVT_LLM_TURN_START = "llm.turn_start"
 EVT_LLM_WAITING = "llm.waiting"
 
 # Server → Client event. Pushed after every LLM call: ``{cumulative_usd,
-# duration_seconds, last_call_tokens, model, breakdown}``. ``last_call_tokens:
-# null`` (via ``EngineEmitters.emit_cost_only``) folds a *silent* call's cost —
-# e.g. session titling — into the running total without appending a status row
-# to the feed.
+# cumulative_input_tokens, cumulative_input_tokens_uncached,
+# cumulative_output_tokens, duration_seconds, last_call_tokens, model,
+# breakdown}``. The four ``cumulative_*`` fields are combined across the main
+# session and every subsession; the token trio (unlike ``cumulative_usd``)
+# survives a session resume — see ``kodo.state.TransientStore.add_tokens``.
+# ``last_call_tokens: null`` (via ``EngineEmitters.emit_usage_totals``) folds
+# a *silent* call's cost/tokens — e.g. compaction's summarization turn, the
+# web-search agent's tool loop — into the running total without appending a
+# status row to the feed; the same method also pushes the current totals once
+# on every ``hello`` (new session, resume, or reconnect) so a (re)connecting
+# client isn't stuck showing stale/zeroed totals until the next real call.
 EVT_USAGE_UPDATE = "usage.update"
 
 # Server → Client event. Unsolicited runtime error not tied to a specific

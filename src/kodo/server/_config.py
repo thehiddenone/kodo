@@ -52,8 +52,37 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
                 "high": "gpt-5.6-terra",
                 "max": "gpt-5.6-sol",
             },
+            # Meta has no effort-tiered lineup (kodo/llms/_cloud_registry.py's
+            # _META_MODELS) -- Muse Spark 1.2 is the one model on offer, so it
+            # is assigned to all four tiers.
+            "meta": {
+                "low": "muse-spark-1.2",
+                "medium": "muse-spark-1.2",
+                "high": "muse-spark-1.2",
+                "max": "muse-spark-1.2",
+            },
+            # Two Gemini SKUs exist (kodo/llms/_cloud_registry.py's
+            # _GOOGLE_MODELS) for 4 effort tiers -- gemini-3.6-flash covers
+            # medium/high/max, gemini-3.5-flash-lite is reserved for low.
+            "google": {
+                "low": "gemini-3.5-flash-lite",
+                "medium": "gemini-3.6-flash",
+                "high": "gemini-3.6-flash",
+                "max": "gemini-3.6-flash",
+            },
         },
     },
+    # Meta's discounted "contributor" tier: trades training-data permission
+    # for heavily discounted Muse Spark 1.2 pricing (kodo/llms/meta/_usage.py).
+    # Off by default -- turning it on is an explicit opt-in surfaced in the
+    # Cloud AI Settings webview's Meta tab (real-world eligibility is
+    # country-restricted; see that tab's warning copy). Read fresh per LLM
+    # dispatch by kodo/runtime/_engine/_llm.py's Meta plugin factory, exactly
+    # like active_cloud_vendor/models.cloud above -- not a dedicated WS
+    # command, since it has no server-side validation to run (unlike
+    # housekeeper_llm.set) and no side effect beyond which model id the next
+    # Meta call uses.
+    "meta_contributor_tier": False,
     # Governs the stuck-agent watchdog (kodo.runtime._engine._watchdog,
     # doc/STUCK_DETECTION.md) — detects a turn that ended without finishing
     # its task (e.g. an empty final response, or a truncated generation) and

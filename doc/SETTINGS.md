@@ -58,7 +58,11 @@ design (registries, effort levels, resolution order) is in
       "anthropic": { "low": "claude-haiku-4-5-20251001", "medium": "claude-sonnet-5",
                       "high": "claude-opus-5", "max": "claude-fable-5" },
       "openai": { "low": "gpt-5.6-luna", "medium": "gpt-5.6-terra",
-                  "high": "gpt-5.6-terra", "max": "gpt-5.6-sol" }
+                  "high": "gpt-5.6-terra", "max": "gpt-5.6-sol" },
+      "meta": { "low": "muse-spark-1.2", "medium": "muse-spark-1.2",
+                "high": "muse-spark-1.2", "max": "muse-spark-1.2" },
+      "google": { "low": "gemini-3.5-flash-lite", "medium": "gemini-3.6-flash",
+                  "high": "gemini-3.6-flash", "max": "gemini-3.6-flash" }
     }
   }
 }
@@ -67,6 +71,35 @@ design (registries, effort levels, resolution order) is in
 **Model switching**: change the relevant key(s), save the file, send `config.reload`. In local mode there is one active model regardless of a sub-agent's declared `capability`; in cloud mode, `capability` selects which of the active vendor's four effort-level assignments is used. There is no `default_model`/flat-`models`-dict scheme any more (an older revision of this document described one; it never matched the shipped code — see `_resolve_model_key` in `kodo/runtime/_engine/_llm.py` for the actual resolution logic).
 
 **Registering a new model**: cloud models are 100% hardcoded (`kodo/llms/_cloud_registry.py`) — adding one is a code change, not a settings change. Local models can be added live from the Local Inference Settings webview (`local_llm.add_huggingface`/`add_file`/`add_server_url`, WS_PROTOCOL.md §7.6) without touching `settings.json` at all; only *which* installed local model is active goes through `models.local` here.
+
+Meta has no effort-tiered lineup — `models.cloud.meta` maps all four tiers to
+the same `muse-spark-1.2` id, since Meta's Model API offers only one model
+(doc/LLM_REGISTRY.md §3). Google has two SKUs against the four tiers —
+`models.cloud.google` maps `medium`/`high`/`max` to `gemini-3.6-flash` and
+`low` to `gemini-3.5-flash-lite`.
+
+### 2.2a `meta_contributor_tier`
+
+Whether Meta's account-wide "contributor" pricing tier is active — trades
+heavily discounted Muse Spark 1.2 token pricing for permission to train
+future Meta models on the account's prompts/completions (doc/LLM_REGISTRY.md
+§3). `false` by default. Real-world eligibility is country-restricted; the
+Cloud AI Settings webview's Meta tab shows a warning and a pointer to Meta's
+own documentation once this is turned on, rather than trying to enumerate
+eligible countries client-side.
+
+Same pattern as `active_cloud_vendor`/`models.cloud.<vendor>.<effort>` above —
+a plain settings.json write (`extension/cloud-ai-settings.ts`'s
+`setMetaContributorTier`) followed by `config.reload`, no dedicated WS
+command. Read fresh, per LLM dispatch, by `kodo/runtime/_engine/_llm.py`'s
+Meta vendor factory and passed into `MusePlugin`'s constructor — when `true`,
+every outbound Meta call's model id gets a `-contributor` suffix, both in the
+literal API request and in the `Usage.model` reported back for pricing
+(`kodo/llms/meta/_muse.py`, `_usage.py`).
+
+```json
+{ "meta_contributor_tier": false }
+```
 
 ### 2.3 Context limit (per-model — not a setting)
 
@@ -157,9 +190,22 @@ housekeeper LLM" webview action.
         "medium": "gpt-5.6-terra",
         "high": "gpt-5.6-terra",
         "max": "gpt-5.6-sol"
+      },
+      "meta": {
+        "low": "muse-spark-1.2",
+        "medium": "muse-spark-1.2",
+        "high": "muse-spark-1.2",
+        "max": "muse-spark-1.2"
+      },
+      "google": {
+        "low": "gemini-3.5-flash-lite",
+        "medium": "gemini-3.6-flash",
+        "high": "gemini-3.6-flash",
+        "max": "gemini-3.6-flash"
       }
     }
   },
+  "meta_contributor_tier": false,
   "stuck_detection": {
     "active": "local_only",
     "scope": "top_level",

@@ -154,7 +154,15 @@ The server replies with the current world plus local-model status:
       "openai": { "display_name": "OpenAI", "models": [
         { "model_id": "gpt-5.6-sol", "name": "GPT-5.6 Sol",
           "description": "...", "context_window": 1000000,
-          "recommendation": "For the most demanding work — ..." }, "..." ] }
+          "recommendation": "For the most demanding work — ..." }, "..." ] },
+      "meta": { "display_name": "Meta", "models": [
+        { "model_id": "muse-spark-1.2", "name": "Muse Spark 1.2",
+          "description": "...", "context_window": 1000000,
+          "recommendation": "Meta's flagship agentic model — ..." } ] },
+      "google": { "display_name": "Google", "models": [
+        { "model_id": "gemini-3.6-flash", "name": "Gemini 3.6 Flash",
+          "description": "...", "context_window": 1048576,
+          "recommendation": "The workhorse — ..." }, "..." ] }
     },
     "active_cloud_vendor": "anthropic",
     "local_registry": [
@@ -300,8 +308,14 @@ The header toggles split into **two frozen** and **three never-frozen**:
 
 > **Not yet on the snapshot:** `cumulative_usd`, `pending_prompts`, and
 > `last_checkpoint_sha` are **⟪planned⟫** additions; today cost arrives via
-> `usage.update` (§5.9) and pending prompts are re-surfaced by replaying the
-> original request frame on reconnect (§8).
+> `usage.update` (§5.7) and pending prompts are re-surfaced by replaying the
+> original request frame on reconnect (§8). Cost and the cumulative token
+> totals are, however, proactively *pushed* right after `hello.ack` on every
+> `hello` — new session, resume, or plain reconnect — via a synthetic
+> `usage.update` (`last_call_tokens: null`, `EngineEmitters.emit_usage_totals`
+> / `WorkflowEngine.push_usage_totals`), so a client never has to wait for the
+> next real LLM call to see them; they just aren't part of the `state`
+> payload itself.
 
 **Added 2026-07-23:** `workspace_connected` — whether this session's bound directories (if any) are hosted by the workspace currently open in this window, i.e. `WorkflowEngine._is_workspace_connected()` (§7.1b's disconnected/isolated-operation extension). Mode-agnostic (Guided and Problem Solver sessions both report it) and always `true` for a session that has never locked a directory. Recomputed — and this event re-pushed — on session start and on every `workspace.folders` push (§7.1b), so it tracks live connect/disconnect transitions within a turn, not just at session-open time. Drives kodo-vsix's reconnect-workspace button (webview footer, shown only while `false`).
 
@@ -453,13 +467,16 @@ Review activity is intentionally low-fidelity: the design is for the user to see
 
 `target_filename` is now the document's real, project-relative path (previously an 8-character artifact-id prefix the panel couldn't open) — content still stays off the wire, just the path. `verdict` is whatever `kodo.guided_state.read_status` derives from the file's `.jsonl` log after the engine records the critic's returned verdict (§7, STATE_AND_LIFECYCLE.md), not a value the critic invents.
 
-### 5.7 `usage.update` — cost accounting
+### 5.7 `usage.update` — usage accounting
 
-Pushed after each LLM call.
+Pushed after each LLM call, plus once (with `last_call_tokens: null`) right after every `hello.ack` (§5.1) so a (re)connecting client sees the current running totals without waiting for the next call.
 
 ```json
 { "type": "usage.update",
   "cumulative_usd": 1.42,
+  "cumulative_input_tokens": 128450,
+  "cumulative_input_tokens_uncached": 94200,
+  "cumulative_output_tokens": 8320,
   "duration_seconds": 3.218,
   "last_call_tokens": {
     "input": 8421, "output": 1203, "cache_write": 0, "cache_read": 12044
@@ -472,6 +489,14 @@ Pushed after each LLM call.
 ```
 
 `duration_seconds` is the server-measured wall time of that LLM call. The panel formats `last_call_tokens` into its status line. `usd_cost` is this one call's own cost (as opposed to the running `cumulative_usd`); `stop_reason` and `agent` (the agent — main entry agent or sub-agent — that made the call) are audit-only, not rendered. All three are also persisted on the `usage` marker this event's twin (`EngineEmitters.emit_usage`) writes to whichever log is currently active — this is the single per-call audit record; there is no separate per-agent log.
+
+The three `cumulative_*_tokens` fields are the session's running token totals — **combined across the main session and every subsession** (folded in through `EngineEmitters.add_tokens_from_usage` regardless of which is active), and, unlike `cumulative_usd`, **persisted** (`kodo.state.TransientStore.add_tokens` → `transient.json`'s `cumulative_input_tokens`/`cumulative_input_tokens_uncached`/`cumulative_output_tokens`) so they keep counting from where they left off across a resume instead of resetting to zero with a fresh engine process:
+
+- `cumulative_input_tokens` — every input token processed so far, cached or not (`Usage.input_tokens + Usage.cache_read_tokens + Usage.cache_write_tokens`, summed per call).
+- `cumulative_input_tokens_uncached` — the subset of the above that were **not** served from cache (`Usage.input_tokens` alone). Equal to `cumulative_input_tokens` for a session that has never made a caching cloud call — a local-only model always reports `cache_write`/`cache_read` as `0` (no caching concept), so the two figures only diverge once a cloud call's prompt cache actually kicks in. kodo-vsix's status line shows this figure only when it diverges from the total, per this rule.
+- `cumulative_output_tokens` — every generated output token so far (`Usage.output_tokens`, summed per call).
+
+Folded into the running totals from four call sites: the main/subsession turn loop (`_turns.py`) and three engine-driven *silent* calls — compaction's summarization turn and the web-search agent's tool loop, both in `_llm.py` (`_run_silent_return_turn`/`_run_silent_tool_loop_turn`). Session titling does **not** go through this path — it runs against its own dedicated local titler server, tracked by neither `cumulative_usd` nor the token totals.
 
 ### 5.7a `context.stats` / `context.compacting` / `context.compacted` — context gauge & compaction
 

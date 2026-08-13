@@ -52,13 +52,17 @@ class _FakeGateway:
 class _FakeEmitters:
     def __init__(self) -> None:
         self.cost_total = 0.0
-        self.cost_only_calls = 0
+        self.usage_totals_calls = 0
+        self.token_usages: list[object] = []
 
     def add_cost(self, usd: float) -> None:
         self.cost_total += usd
 
-    async def emit_cost_only(self) -> None:
-        self.cost_only_calls += 1
+    def add_tokens_from_usage(self, usage: object) -> None:
+        self.token_usages.append(usage)
+
+    async def emit_usage_totals(self) -> None:
+        self.usage_totals_calls += 1
 
 
 class _FakeKeyProvider:
@@ -257,6 +261,51 @@ async def test_resolve_plugin_cloud_residence_success_openai() -> None:
     assert key_provider.requested == ["openai"]
 
 
+async def test_resolve_plugin_cloud_residence_success_meta() -> None:
+    key_provider = _FakeKeyProvider(api_key="sk-meta")
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "meta",
+            "models": {"cloud": {"meta": {"medium": "muse-spark-1.2"}}},
+        },
+        key_provider=key_provider,
+    )
+
+    plugin, model_id, routing = await engine._resolve_plugin("medium")
+
+    assert model_id == "muse-spark-1.2"
+    assert routing.residence == "cloud"
+    assert routing.vendor == "meta"
+    assert engine._current_vendor == "meta"
+    assert plugin.name == "meta"
+    assert key_provider.requested == ["meta"]
+
+
+async def test_resolve_plugin_meta_contributor_tier_threaded_into_plugin() -> None:
+    """settings.json's meta_contributor_tier reaches MusePlugin's constructor.
+
+    Verified via the id-suffix rewrite it causes -- the plugin has no other
+    externally-observable flag (see kodo/llms/meta/_muse.py).
+    """
+    key_provider = _FakeKeyProvider(api_key="sk-meta")
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "meta",
+            "models": {"cloud": {"meta": {"medium": "muse-spark-1.2"}}},
+            "meta_contributor_tier": True,
+        },
+        key_provider=key_provider,
+    )
+
+    plugin, _model_id, _routing = await engine._resolve_plugin("medium")
+
+    # _resolve_plugin wraps the vendor plugin in LoggingLLMPlugin -- reach
+    # through ._inner for the raw MusePlugin instance the factory built.
+    assert plugin._inner._MusePlugin__contributor is True
+
+
 async def test_resolve_plugin_force_model_key_overrides_settings() -> None:
     engine = _make_engine(
         settings={"mode": "local", "models": {"local": "atomicchat-qwen36-27b-q8"}}
@@ -269,11 +318,32 @@ async def test_resolve_plugin_force_model_key_overrides_settings() -> None:
     assert model_id == "atomicchat-qwen36-27b-q8"
 
 
+async def test_resolve_plugin_cloud_residence_success_google() -> None:
+    key_provider = _FakeKeyProvider(api_key="sk-google")
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "google",
+            "models": {"cloud": {"google": {"medium": "gemini-3.6-flash"}}},
+        },
+        key_provider=key_provider,
+    )
+
+    plugin, model_id, routing = await engine._resolve_plugin("medium")
+
+    assert model_id == "gemini-3.6-flash"
+    assert routing.residence == "cloud"
+    assert routing.vendor == "google"
+    assert engine._current_vendor == "google"
+    assert plugin.name == "google"
+    assert key_provider.requested == ["google"]
+
+
 async def test_resolve_plugin_rejects_unsupported_vendor_module(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    engine = _make_engine(settings={"mode": "cloud", "active_cloud_vendor": "google"})
-    monkeypatch.setattr(_llm, "get_cloud_vendor_module", lambda vendor: "kodo.llms.google")
+    engine = _make_engine(settings={"mode": "cloud", "active_cloud_vendor": "alibaba"})
+    monkeypatch.setattr(_llm, "get_cloud_vendor_module", lambda vendor: "kodo.llms.alibaba")
 
     with pytest.raises(RuntimeError, match="Unsupported cloud vendor"):
         await engine._resolve_plugin("medium")
@@ -398,7 +468,8 @@ async def test_run_silent_return_turn_captures_text_and_result() -> None:
 
     assert result == {"summary": "x"}
     assert text == "hello world"
-    assert engine._emitters.cost_only_calls == 1
+    assert engine._emitters.usage_totals_calls == 1
+    assert len(engine._emitters.token_usages) == 1
 
 
 async def test_run_silent_return_turn_ignores_non_return_result_tool_calls() -> None:
@@ -438,8 +509,9 @@ async def test_run_silent_return_turn_no_turn_end_skips_cost() -> None:
 
     await engine._run_silent_return_turn(_ROUTING, SimpleNamespace(), "model-x", agent, [])
 
-    assert engine._emitters.cost_only_calls == 0
+    assert engine._emitters.usage_totals_calls == 0
     assert engine._emitters.cost_total == 0.0
+    assert engine._emitters.token_usages == []
 
 
 # ---------------------------------------------------------------------------

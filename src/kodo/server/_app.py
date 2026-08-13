@@ -323,6 +323,13 @@ async def _handle_session_hello(
     if history["entries"]:
         await session.channel.send(Envelope.make_event("session.history", history))
 
+    # Running usage totals (WS_PROTOCOL.md §5.7) aren't part of the `state`
+    # snapshot above, so push them explicitly here — otherwise a (re)connecting
+    # client's status line would show stale or zeroed totals until the next
+    # real LLM call, even though the persisted totals already survived a
+    # resume.
+    await session.engine.push_usage_totals()
+
     # Only now replay anything buffered while this session was disconnected
     # (e.g. a mid-turn tool_call whose frame never reached the old socket),
     # plus any still-unanswered approval/question/permission/API-key prompt

@@ -3,6 +3,11 @@
 :class:`EngineEmitters` is a plain collaborator: it owns the outbound
 ``MessageSink`` traffic *and* the running cumulative USD cost (every LLM
 call's cost is folded in through :meth:`add_cost`, visible and silent alike).
+Cumulative input/output *token* totals are folded in the same way, through
+:meth:`add_tokens_from_usage` — but unlike the USD figure, they are not kept
+here: they live in :class:`~kodo.state.TransientStore` (``add_tokens``/
+``cumulative_input_tokens``/``cumulative_output_tokens``) so they survive a
+session resume instead of resetting to zero with every new engine instance.
 The context-gauge payload is engine state owned by the
 :class:`~._compaction.ContextCompactor`, so it is injected as a callable
 rather than duplicated here.
@@ -20,6 +25,7 @@ from kodo.llms import (
     TokenDelta,
     ToolCallArgDelta,
     TurnEnd,
+    Usage,
 )
 from kodo.state import TransientStore
 from kodo.transport import (
@@ -101,6 +107,20 @@ class EngineEmitters:
         """Fold one LLM call's cost into the running session total."""
         self._cumulative_usd += usd
 
+    def add_tokens_from_usage(self, usage: Usage) -> None:
+        """Fold one LLM call's token usage into the session's persisted
+        running totals (:meth:`kodo.state.TransientStore.add_tokens`) —
+        called alongside :meth:`add_cost` at every one of its call sites, so
+        the two stay in lockstep. Unlike ``cumulative_usd``, these totals
+        survive a resume: they live in ``transient.json``, not in this
+        object's own memory.
+        """
+        self._transient.add_tokens(
+            usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens,
+            usage.input_tokens,
+            usage.output_tokens,
+        )
+
     async def handle_stream_event(self, event: StreamEvent, stream_id: str) -> None:
         """Forward a streaming LLM event to the client feed."""
         if isinstance(event, ThinkingDelta):
@@ -160,6 +180,9 @@ class EngineEmitters:
         """
         payload = {
             "cumulative_usd": round(self._cumulative_usd, 6),
+            "cumulative_input_tokens": self._transient.cumulative_input_tokens,
+            "cumulative_input_tokens_uncached": self._transient.cumulative_input_tokens_uncached,
+            "cumulative_output_tokens": self._transient.cumulative_output_tokens,
             "duration_seconds": round(duration_seconds, 3),
             "last_call_tokens": {
                 "input": turn_end.usage.input_tokens,
@@ -210,18 +233,35 @@ class EngineEmitters:
             Envelope.make_event(EVT_AGENT_TOOL_CALL_IN_PROGRESS, {"tool_call_id": tool_call_id})
         )
 
-    async def emit_cost_only(self) -> None:
-        """Push a cost-only ``usage.update`` (no per-call token entry).
+    async def emit_usage_totals(self) -> None:
+        """Push the session's current running totals (cost + tokens) with no
+        per-call token entry.
 
-        With ``last_call_tokens`` set to ``None`` the client updates the running
-        session-cost figure without appending a status entry to the feed — used
-        to fold an invisible call's cost (e.g. session titling) into the total.
+        With ``last_call_tokens`` set to ``None`` the client updates its
+        running totals without appending a status entry to the feed. Two
+        callers:
+
+        - Every engine-driven *silent* call (compaction's summarization turn,
+          the web-search agent's tool loop) — folds that invisible call's
+          cost/tokens into the total right after :meth:`add_cost` /
+          :meth:`add_tokens_from_usage` update it.
+        - Once from ``_handle_session_hello`` (via
+          ``WorkflowEngine.push_usage_totals``) on every ``hello``, new
+          session or reconnect alike — the running totals are not part of the
+          ``state`` snapshot (WS_PROTOCOL.md §5.1), so without this push a
+          (re)connecting client would show stale or zeroed totals until the
+          next real LLM call.
         """
         await self._sink.send(
             Envelope.make_event(
                 EVT_USAGE_UPDATE,
                 {
                     "cumulative_usd": round(self._cumulative_usd, 6),
+                    "cumulative_input_tokens": self._transient.cumulative_input_tokens,
+                    "cumulative_input_tokens_uncached": (
+                        self._transient.cumulative_input_tokens_uncached
+                    ),
+                    "cumulative_output_tokens": self._transient.cumulative_output_tokens,
                     "duration_seconds": 0.0,
                     "last_call_tokens": None,
                     "model": "",

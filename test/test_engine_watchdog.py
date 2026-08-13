@@ -85,12 +85,16 @@ class _FakeEmitters:
         self.think_in_tool_call_critical_messages: list[str] = []
         self.tool_call_cyclic_critical_messages: list[str] = []
         self.cost_total = 0.0
+        self.token_usages: list[object] = []
 
     async def handle_stream_event(self, event: object, stream_id: str) -> None:
         pass
 
     def add_cost(self, usd: float) -> None:
         self.cost_total += usd
+
+    def add_tokens_from_usage(self, usage: object) -> None:
+        self.token_usages.append(usage)
 
     @property
     def cumulative_usd(self) -> float:

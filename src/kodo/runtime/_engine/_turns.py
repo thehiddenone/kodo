@@ -582,6 +582,7 @@ class TurnLoopMixin:
 
             if turn_end is not None:
                 self._emitters.add_cost(turn_end.usage.usd_cost)
+                self._emitters.add_tokens_from_usage(turn_end.usage)
                 call_end_dt = datetime.now(tz=UTC)
                 duration_seconds = (call_end_dt - call_start_dt).total_seconds()
                 await self._emitters.emit_usage(turn_end, model, duration_seconds, agent_name)
@@ -677,14 +678,7 @@ class TurnLoopMixin:
             if text_parts:
                 assistant_content.append({"type": "text", "text": "".join(text_parts)})
             for tc in tool_calls:
-                assistant_content.append(
-                    {
-                        "type": "tool_use",
-                        "id": tc.tool_use_id,
-                        "name": tc.tool_name,
-                        "input": tc.tool_input,
-                    }
-                )
+                assistant_content.append(self._tool_use_block(tc))
             messages = messages + [Message(role="assistant", content=assistant_content)]
 
             # Main turn only: persist the assistant message BEFORE dispatching
@@ -740,6 +734,27 @@ class TurnLoopMixin:
             block["signature"] = signature
         return block
 
+    @staticmethod
+    def _tool_use_block(tc: ToolCallEvent) -> dict[str, object]:
+        """Build a persisted ``tool_use`` content block for an assistant message.
+
+        ``thought_signature`` is Gemini's per-call signature, required for a
+        later request to replay this call back verbatim (see
+        :class:`~kodo.llms._interface.ToolCallEvent`'s docstring and
+        ``kodo.llms.google._convert``, which reads it back off this same key).
+        Every other plugin leaves it ``None``, so the field is simply omitted
+        for them, same pattern as ``_thinking_block``'s ``signature``.
+        """
+        block: dict[str, object] = {
+            "type": "tool_use",
+            "id": tc.tool_use_id,
+            "name": tc.tool_name,
+            "input": tc.tool_input,
+        }
+        if tc.thought_signature is not None:
+            block["thought_signature"] = tc.thought_signature
+        return block
+
     def _partial_assistant_message(
         self: EngineHost,
         text_parts: list[str],
@@ -766,14 +781,7 @@ class TurnLoopMixin:
         if text:
             content.append({"type": "text", "text": text})
         for tc in tool_calls:
-            content.append(
-                {
-                    "type": "tool_use",
-                    "id": tc.tool_use_id,
-                    "name": tc.tool_name,
-                    "input": tc.tool_input,
-                }
-            )
+            content.append(self._tool_use_block(tc))
         return Message(role="assistant", content=content)
 
     async def _dispatch_tool_calls(

@@ -33,7 +33,9 @@ from kodo.llms import (
     local_thinking_tiers,
 )
 from kodo.llms.anthropic import ClaudePlugin
+from kodo.llms.google import GeminiPlugin
 from kodo.llms.llamacpp import LlamaPlugin
+from kodo.llms.meta import MusePlugin
 from kodo.llms.openai import GPTPlugin
 from kodo.project import kodo_user_dir
 from kodo.subagents import SubAgent
@@ -44,12 +46,20 @@ from ._proto import EngineHost
 from ._shared import _GUIDE_AGENT_NAME, _JUDGE_AGENT_NAME, _PROBLEM_SOLVER_AGENT_NAME
 
 # Dotted plugin module (kodo.llms._cloud_registry's _CLOUD_VENDOR_MODULE
-# value) -> a one-arg (api_key) constructor for that vendor's LLMPlugin.
-# Adding a vendor here is the last step after registering it in
-# _cloud_registry.py and implementing its plugin package.
-_VENDOR_PLUGIN_FACTORIES: dict[str, Callable[[str], LLMPlugin]] = {
-    "kodo.llms.anthropic": ClaudePlugin,
-    "kodo.llms.openai": GPTPlugin,
+# value) -> a (api_key, settings) constructor for that vendor's LLMPlugin.
+# The full settings dict is passed (not just api_key) so a vendor whose
+# plugin needs more than the key -- today only Meta, for its
+# meta_contributor_tier account-level toggle -- can read it without a
+# vendor-specific branch in _resolve_plugin below. Adding a vendor here is
+# the last step after registering it in _cloud_registry.py and implementing
+# its plugin package.
+_VENDOR_PLUGIN_FACTORIES: dict[str, Callable[[str, dict[str, object]], LLMPlugin]] = {
+    "kodo.llms.anthropic": lambda api_key, _settings: ClaudePlugin(api_key),
+    "kodo.llms.openai": lambda api_key, _settings: GPTPlugin(api_key),
+    "kodo.llms.meta": lambda api_key, settings: MusePlugin(
+        api_key, contributor=bool(settings.get("meta_contributor_tier", False))
+    ),
+    "kodo.llms.google": lambda api_key, _settings: GeminiPlugin(api_key),
 }
 
 
@@ -167,7 +177,7 @@ class LLMPlumbingMixin:
         if key_result.error:
             raise RuntimeError(f"API key request rejected: {key_result.error}")
 
-        plugin = factory(key_result.api_key)
+        plugin = factory(key_result.api_key, settings)
         routing = LLMRouting(residence="cloud", vendor=vendor)
         return LoggingLLMPlugin(plugin, self._llm_logs_dir()), model_key, routing
 
@@ -420,7 +430,8 @@ class LLMPlumbingMixin:
 
         if turn_end is not None:
             self._emitters.add_cost(turn_end.usage.usd_cost)
-            await self._emitters.emit_cost_only()
+            self._emitters.add_tokens_from_usage(turn_end.usage)
+            await self._emitters.emit_usage_totals()
 
         return result, "".join(text_parts)
 
@@ -514,7 +525,8 @@ class LLMPlumbingMixin:
 
             if turn_end is not None:
                 self._emitters.add_cost(turn_end.usage.usd_cost)
-                await self._emitters.emit_cost_only()
+                self._emitters.add_tokens_from_usage(turn_end.usage)
+                await self._emitters.emit_usage_totals()
 
             thinking_text = "".join(thinking_parts)
             assistant_content: list[dict[str, object]] = []
@@ -607,7 +619,8 @@ class LLMPlumbingMixin:
                 final_turn_end = event
         if final_turn_end is not None:
             self._emitters.add_cost(final_turn_end.usage.usd_cost)
-            await self._emitters.emit_cost_only()
+            self._emitters.add_tokens_from_usage(final_turn_end.usage)
+            await self._emitters.emit_usage_totals()
         for tc in final_calls:
             if tc.tool_name == "return_result":
                 await dispatcher.dispatch(tc.tool_name, tc.tool_input, tc.tool_use_id)

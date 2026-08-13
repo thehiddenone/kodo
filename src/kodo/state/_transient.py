@@ -9,7 +9,9 @@ use and reused across restarts when the session is resumed.  Layout::
                            active_subsession, security_rules,
                            security_path_rules, pending_security_alert,
                            pending_edit_review, workspace_physical_root,
-                           workspace_folders, workspace_code_file)
+                           workspace_folders, workspace_code_file,
+                           cumulative_input_tokens, cumulative_input_tokens_uncached,
+                           cumulative_output_tokens)
         session.jsonl    — append-only MAIN session log: top-level LLM messages
                            (agent-agnostic — Guide and Problem Solver
                            share it) interleaved with ``subsession_start`` /
@@ -233,6 +235,9 @@ class TransientStore:
     __workspace_folders: dict[str, str]
     __workspace_code_file: str | None
     __workspace_locked_paths: frozenset[str]
+    __cumulative_input_tokens: int
+    __cumulative_input_tokens_uncached: int
+    __cumulative_output_tokens: int
 
     def __init__(self, kodo_dir: Path) -> None:
         """Initialise without attaching a session.
@@ -264,6 +269,9 @@ class TransientStore:
         self.__workspace_folders = {}
         self.__workspace_code_file = None
         self.__workspace_locked_paths = frozenset()
+        self.__cumulative_input_tokens = 0
+        self.__cumulative_input_tokens_uncached = 0
+        self.__cumulative_output_tokens = 0
 
     @property
     def session_id(self) -> str:
@@ -697,6 +705,63 @@ class TransientStore:
         if self.__paths is not None:
             self.__flush(self.__paths)
         return self.__security_path_rules
+
+    @property
+    def cumulative_input_tokens(self) -> int:
+        """Total input tokens (uncached + both cache tiers) across every LLM
+        call this session has made so far — main session and every
+        subsession combined, since :meth:`add_tokens` is called regardless of
+        which is active. Persisted, so it keeps counting from where it left
+        off across a resume (WS_PROTOCOL.md §5.7) — unlike
+        ``EngineEmitters.cumulative_usd``, which is in-memory only. Mutated
+        only via :meth:`add_tokens`.
+        """
+        return self.__cumulative_input_tokens
+
+    @property
+    def cumulative_input_tokens_uncached(self) -> int:
+        """The subset of :attr:`cumulative_input_tokens` that were *not*
+        served from cache — tokens the model actually had to process fresh.
+        Equal to :attr:`cumulative_input_tokens` for a session that has never
+        gone through a caching cloud call (a local-only session, or before a
+        cloud call's cache has warmed up): the client shows this figure only
+        when it diverges from the total. Mutated only via :meth:`add_tokens`.
+        """
+        return self.__cumulative_input_tokens_uncached
+
+    @property
+    def cumulative_output_tokens(self) -> int:
+        """Total output tokens generated across every LLM call this session
+        has made so far — main session and every subsession combined, same
+        scope as :attr:`cumulative_input_tokens`. Mutated only via
+        :meth:`add_tokens`.
+        """
+        return self.__cumulative_output_tokens
+
+    def add_tokens(self, input_tokens: int, input_tokens_uncached: int, output_tokens: int) -> None:
+        """Fold one LLM call's token usage into the session's running totals
+        and persist to ``transient.json``, surviving crash-resume.
+
+        Called for every LLM call the session makes — main turn, subsession
+        turn, or an engine-driven silent call (compaction, web search) —
+        regardless of :attr:`active_subsession`, which is what makes the
+        totals a combined main+subsessions figure by construction rather than
+        something the caller has to aggregate itself.
+
+        Args:
+            input_tokens (int): This call's whole input side — uncached plus
+                both cache tiers (``Usage.input_tokens +
+                Usage.cache_read_tokens + Usage.cache_write_tokens``).
+            input_tokens_uncached (int): This call's uncached input tokens
+                alone (``Usage.input_tokens``).
+            output_tokens (int): This call's generated output tokens
+                (``Usage.output_tokens``).
+        """
+        self.__cumulative_input_tokens += input_tokens
+        self.__cumulative_input_tokens_uncached += input_tokens_uncached
+        self.__cumulative_output_tokens += output_tokens
+        if self.__paths is not None:
+            self.__flush(self.__paths)
 
     @property
     def pending_prompt(self) -> dict[str, object] | None:
@@ -1237,6 +1302,11 @@ class TransientStore:
                 if isinstance(raw_locked, list)
                 else frozenset()
             )
+            self.__cumulative_input_tokens = int(data.get("cumulative_input_tokens") or 0)
+            self.__cumulative_input_tokens_uncached = int(
+                data.get("cumulative_input_tokens_uncached") or 0
+            )
+            self.__cumulative_output_tokens = int(data.get("cumulative_output_tokens") or 0)
         except Exception:
             _log.warning("Could not parse transient.json — using defaults")
 
@@ -1305,5 +1375,8 @@ class TransientStore:
             "workspace_folders": self.__workspace_folders,
             "workspace_code_file": self.__workspace_code_file,
             "workspace_locked_paths": sorted(self.__workspace_locked_paths),
+            "cumulative_input_tokens": self.__cumulative_input_tokens,
+            "cumulative_input_tokens_uncached": self.__cumulative_input_tokens_uncached,
+            "cumulative_output_tokens": self.__cumulative_output_tokens,
         }
         paths.transient.write_text(json.dumps(data, indent=2), encoding="utf-8")

@@ -72,10 +72,13 @@ seamlessly across the change.
                          last_modified (bumped on every persisted write below)
     transient.json     — mutable runtime state: stage, last prompt, autonomous,
                          pending_prompt, pending_security_alert (SECURITY.md §7a),
-                         active_subsession (the resume hook), and the session's
+                         active_subsession (the resume hook), the session's
                          remembered VS Code workspace shape (workspace_physical_root,
                          workspace_folders, workspace_code_file, workspace_locked_paths
-                         — WS_PROTOCOL.md §7.1b, CHECKPOINTS.md §8)
+                         — WS_PROTOCOL.md §7.1b, CHECKPOINTS.md §8), and the running
+                         token totals (cumulative_input_tokens,
+                         cumulative_input_tokens_uncached, cumulative_output_tokens
+                         — WS_PROTOCOL.md §5.7)
     session.jsonl      — the MAIN session log (see below)
     subsessions/
         <subsession-id>.jsonl   — one per sub-agent run; the sub-agent's full,
@@ -99,6 +102,15 @@ a collision gets `-1`, `-2`, ... appended. The titler's output is a
 deterministic function of the sanitized prompt, so two sessions started from
 similar or identical prompts would otherwise be indistinguishable in the tab
 strip and session picker.
+
+`transient.json` also remembers the session's running input/output token
+totals — `cumulative_input_tokens`, `cumulative_input_tokens_uncached`, and
+`cumulative_output_tokens` (WS_PROTOCOL.md §5.7), folded in via
+`TransientStore.add_tokens` from every LLM call the session makes, main or
+subsession alike (`EngineEmitters.add_tokens_from_usage`). This is what lets
+the status line's "Total input/output tokens" figure survive a resume — it
+keeps counting from where it left off instead of resetting to zero the way
+`cumulative_usd` does (that one stays in-memory only, on `EngineEmitters`).
 
 `transient.json` also remembers the session's whole VS Code workspace shape —
 `workspace_physical_root`, `workspace_folders` (logical name → physical path,
