@@ -24,11 +24,13 @@ from ._local_llm_qwen3_coder_next_80b import qwen3_coder_next_80b_entries
 from ._local_llm_qwen35_9b import qwen35_9b_entries
 from ._local_llm_qwen36_27b import qwen36_27b_entries
 from ._local_llm_qwen36_35b_a3b import qwen36_35b_a3b_entries
+from ._local_llm_qwen38_27b import qwen38_27b_entries
 from ._types import LocalLLMEntry
 
 _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = tuple(
     entry
     for family_entries in (
+        qwen38_27b_entries(),
         qwen36_27b_entries(),
         qwen36_35b_a3b_entries(),
         qwen3_coder_next_80b_entries(),

@@ -28,6 +28,7 @@ _log = logging.getLogger(__name__)
 #: template has thinking off by default (the other members think by default).
 QWEN_REASONING_BUDGET_FAMILY: frozenset[str] = frozenset(
     {
+        "Qwen38-27B",
         "Qwen36-27B",
         "Qwen36-35B-A3B",
         "Qwen35-9B",
@@ -63,6 +64,14 @@ _GPT_OSS_TIERS: tuple[str, ...] = ("low", "medium", "high")
 #: Qwen35-9B's smaller/weaker-model verbosity). Expect these to be retuned
 #: after real usage.
 QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
+    "Qwen38-27B": {
+        "minimal": 512,
+        "low": 1536,
+        "medium": 4096,
+        "high": 8192,
+        "huge": 16384,
+        "unlimited": 24576,
+    },
     "Qwen36-27B": {
         "minimal": 512,
         "low": 1536,

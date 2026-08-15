@@ -1,0 +1,250 @@
+"""Qwen38-27B GGUF catalog entries."""
+
+from __future__ import annotations
+
+from ._knobs_qwen import QWEN_CONTEXT_KNOB
+from ._knobs_shared import KV_CACHE_F16_DEFAULT, SHARED_KNOBS
+from ._types import LocalLLMEntry
+
+
+def qwen38_27b_entries() -> list[LocalLLMEntry]:
+    return [
+        LocalLLMEntry(
+            name="unsloth-qwen38-27b-bf16",
+            kind="hardcoded_hf",
+            description="Qwen 3.8 27B BF16 by Unsloth",
+            repo_id="unsloth/Qwen3.8-27B-GGUF",
+            filename="BF16/Qwen3.8-27B-BF16-00001-of-00002.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            knob_defaults=KV_CACHE_F16_DEFAULT,
+            base_llm="Qwen38-27B",
+            llm_author="Alibaba Cloud",
+            license_name="Apache License 2.0",
+            license_url="https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
+            quant_author="Unsloth",
+            quant_type="BF16",
+            size_hint="54.7 GB",
+            gpu_tip="~64GB total at 128K context. Qwen3.8's hybrid Gated DeltaNet design keeps "
+            "only 16 of its 64 layers on a real KV cache, so context adds relatively little on top "
+            "of the weights. Still, at BF16 this is the biggest build here — an 8GB GPU (e.g. RTX "
+            "4060) plus ~64GB of DDR5 system RAM covers it via llama.cpp's per-layer offloading.",
+            mac_tip="Needs ~64GB — even a 64GB MacBook Pro (M4 Max or M5 Max) leaves almost no "
+            "headroom; a 128GB config is the realistic choice.",
+            min_memory=64,
+            memory=96,
+            llamacpp_version=10433,
+        ),
+        LocalLLMEntry(
+            name="unsloth-qwen38-27b-ud-q8-k-xl",
+            kind="hardcoded_hf",
+            description="Qwen 3.8 27B UD-Q8_K_XL by Unsloth",
+            repo_id="unsloth/Qwen3.8-27B-GGUF",
+            filename="Qwen3.8-27B-UD-Q8_K_XL.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen38-27B",
+            llm_author="Alibaba Cloud",
+            license_name="Apache License 2.0",
+            license_url="https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
+            quant_author="Unsloth",
+            quant_type="UD-Q8_K_XL",
+            size_hint="31.5 GB",
+            gpu_tip="~41GB total at 128K context. Qwen3.8's hybrid Gated DeltaNet architecture "
+            "puts a real KV cache on just 16 of its 64 layers, so an 8GB GPU (e.g. RTX 4060 Ti) "
+            "plus ~48GB of ordinary DDR5 system RAM covers the rest via llama.cpp's per-layer "
+            "offloading.",
+            mac_tip="Needs ~41GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
+            min_memory=48,
+            memory=48,
+            llamacpp_version=10433,
+        ),
+        LocalLLMEntry(
+            name="unsloth-qwen38-27b-ud-q6-k-xl",
+            kind="hardcoded_hf",
+            description="Qwen 3.8 27B UD-Q6_K_XL by Unsloth",
+            repo_id="unsloth/Qwen3.8-27B-GGUF",
+            filename="Qwen3.8-27B-UD-Q6_K_XL.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen38-27B",
+            llm_author="Alibaba Cloud",
+            license_name="Apache License 2.0",
+            license_url="https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
+            quant_author="Unsloth",
+            quant_type="UD-Q6_K_XL",
+            size_hint="25.9 GB",
+            gpu_tip="~35GB total at 128K context. Only 16 of Qwen3.8's 64 layers carry a real KV "
+            "cache thanks to its hybrid Gated DeltaNet design, so an 8GB GPU (e.g. RTX 3060 Ti) "
+            "plus ~32GB of DDR5 system RAM is enough, with llama.cpp's layer offloading filling in "
+            "the gap.",
+            mac_tip="Needs ~35GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably; "
+            "a 36GB config is tight.",
+            min_memory=36,
+            memory=48,
+            llamacpp_version=10433,
+        ),
+        LocalLLMEntry(
+            name="unsloth-qwen38-27b-ud-q5-k-xl",
+            kind="hardcoded_hf",
+            description="Qwen 3.8 27B UD-Q5_K_XL by Unsloth",
+            repo_id="unsloth/Qwen3.8-27B-GGUF",
+            filename="Qwen3.8-27B-UD-Q5_K_XL.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen38-27B",
+            llm_author="Alibaba Cloud",
+            license_name="Apache License 2.0",
+            license_url="https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
+            quant_author="Unsloth",
+            quant_type="UD-Q5_K_XL",
+            size_hint="20.2 GB",
+            gpu_tip="~29GB total at 128K context. Qwen3.8's hybrid design keeps a real KV cache on "
+            "only 16 of its 64 layers, so context stays cheap — an 8GB GPU (e.g. RTX 5060) plus a "
+            "32GB DDR5 kit covers the whole model via llama.cpp's per-layer offloading.",
+            mac_tip="Needs ~29GB — fits a 36GB MacBook Pro (M4 Max or M5 Max) comfortably; a 32GB "
+            "config is tight.",
+            min_memory=32,
+            memory=36,
+            llamacpp_version=10433,
+        ),
+        LocalLLMEntry(
+            name="unsloth-qwen38-27b-ud-q4-k-xl",
+            kind="hardcoded_hf",
+            description="Qwen 3.8 27B UD-Q4_K_XL by Unsloth",
+            repo_id="unsloth/Qwen3.8-27B-GGUF",
+            filename="Qwen3.8-27B-UD-Q4_K_XL.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen38-27B",
+            llm_author="Alibaba Cloud",
+            license_name="Apache License 2.0",
+            license_url="https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
+            quant_author="Unsloth",
+            quant_type="UD-Q4_K_XL",
+            size_hint="17.9 GB",
+            gpu_tip="~27GB total at 128K context. With only 16 of Qwen3.8's 64 layers holding a "
+            "real KV cache, an 8GB GPU (e.g. RTX 4060) plus a 32GB DDR5 kit covers it comfortably "
+            "— well within reach of a typical gaming rig once llama.cpp splits the layers.",
+            mac_tip="Needs ~27GB — fits a 32GB MacBook Pro (M4 or M5) comfortably.",
+            min_memory=32,
+            memory=32,
+            llamacpp_version=10433,
+        ),
+        LocalLLMEntry(
+            name="unsloth-qwen38-27b-ud-q3-k-xl",
+            kind="hardcoded_hf",
+            description="Qwen 3.8 27B UD-Q3_K_XL by Unsloth",
+            repo_id="unsloth/Qwen3.8-27B-GGUF",
+            filename="Qwen3.8-27B-UD-Q3_K_XL.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen38-27B",
+            llm_author="Alibaba Cloud",
+            license_name="Apache License 2.0",
+            license_url="https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
+            quant_author="Unsloth",
+            quant_type="UD-Q3_K_XL",
+            size_hint="13.4 GB",
+            gpu_tip="~22GB total at 128K context. Qwen3.8's hybrid Gated DeltaNet layers barely "
+            "grow the KV cache with context, so an 8GB GPU (e.g. RX 7600) plus a 16GB DDR5 kit is "
+            "enough, with llama.cpp's layer offloading covering the rest.",
+            mac_tip="Needs ~22GB — fits a 32GB MacBook Pro comfortably; a 24GB config is tight.",
+            min_memory=24,
+            memory=32,
+            llamacpp_version=10433,
+        ),
+        LocalLLMEntry(
+            name="unsloth-qwen38-27b-ud-iq3-xxs",
+            kind="hardcoded_hf",
+            description="Qwen 3.8 27B UD-IQ3_XXS by Unsloth",
+            repo_id="unsloth/Qwen3.8-27B-GGUF",
+            filename="Qwen3.8-27B-UD-IQ3_XXS.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen38-27B",
+            llm_author="Alibaba Cloud",
+            license_name="Apache License 2.0",
+            license_url="https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
+            quant_author="Unsloth",
+            quant_type="UD-IQ3_XXS",
+            size_hint="11.9 GB",
+            gpu_tip="~21GB total at 128K context. Only 16 of Qwen3.8's 64 layers carry a real KV "
+            "cache, so an 8GB GPU (e.g. RX 6650 XT) plus a 16GB DDR5 kit covers it via llama.cpp's "
+            "per-layer offloading.",
+            mac_tip="Needs ~21GB — fits a 24GB MacBook Pro (M4 or M5) comfortably.",
+            min_memory=24,
+            memory=24,
+            llamacpp_version=10433,
+        ),
+        LocalLLMEntry(
+            name="unsloth-qwen38-27b-ud-q2-k-xl",
+            kind="hardcoded_hf",
+            description="Qwen 3.8 27B UD-Q2_K_XL by Unsloth",
+            repo_id="unsloth/Qwen3.8-27B-GGUF",
+            filename="Qwen3.8-27B-UD-Q2_K_XL.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen38-27B",
+            llm_author="Alibaba Cloud",
+            license_name="Apache License 2.0",
+            license_url="https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
+            quant_author="Unsloth",
+            quant_type="UD-Q2_K_XL",
+            size_hint="10.7 GB",
+            gpu_tip="~20GB total at 128K context. Qwen3.8's hybrid design keeps the KV cache small "
+            "even at long context, so an 8GB GPU (e.g. RTX 3070) plus a 16GB DDR5 kit is enough, "
+            "with llama.cpp's layer offloading covering the rest.",
+            mac_tip="Needs ~20GB — fits a 24GB MacBook Pro comfortably.",
+            min_memory=24,
+            memory=24,
+            llamacpp_version=10433,
+        ),
+        LocalLLMEntry(
+            name="unsloth-qwen38-27b-ud-iq2-m",
+            kind="hardcoded_hf",
+            description="Qwen 3.8 27B UD-IQ2_M by Unsloth",
+            repo_id="unsloth/Qwen3.8-27B-GGUF",
+            filename="Qwen3.8-27B-UD-IQ2_M.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen38-27B",
+            llm_author="Alibaba Cloud",
+            license_name="Apache License 2.0",
+            license_url="https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
+            quant_author="Unsloth",
+            quant_type="UD-IQ2_M",
+            size_hint="10.3 GB",
+            gpu_tip="~19GB total at 128K context. With only 16 of Qwen3.8's 64 layers holding a "
+            "real KV cache, an 8GB GPU (e.g. RX 7600 XT) plus a 16GB DDR5 kit covers it via "
+            "llama.cpp's per-layer offloading.",
+            mac_tip="Needs ~19GB — fits a 24GB MacBook Pro (M4 or M5) comfortably.",
+            min_memory=24,
+            memory=24,
+            llamacpp_version=10433,
+        ),
+        LocalLLMEntry(
+            name="unsloth-qwen38-27b-ud-iq2-xxs",
+            kind="hardcoded_hf",
+            description="Qwen 3.8 27B UD-IQ2_XXS by Unsloth",
+            repo_id="unsloth/Qwen3.8-27B-GGUF",
+            filename="Qwen3.8-27B-UD-IQ2_XXS.gguf",
+            context_window=262_144,
+            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            base_llm="Qwen38-27B",
+            llm_author="Alibaba Cloud",
+            license_name="Apache License 2.0",
+            license_url="https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
+            quant_author="Unsloth",
+            quant_type="UD-IQ2_XSS",
+            size_hint="9.01 GB",
+            gpu_tip="~18GB total at 128K context — the smallest of the Qwen3.8 27B builds. "
+            "Qwen3.8's hybrid Gated DeltaNet layers keep the KV cache small, so an 8GB GPU (e.g. "
+            "RTX 4060) plus a 16GB DDR5 kit is enough via llama.cpp's per-layer offloading.",
+            mac_tip="Needs ~18GB — fits a 24GB MacBook Pro comfortably; a 16GB config is not "
+            "enough.",
+            min_memory=24,
+            memory=24,
+            llamacpp_version=10433,
+        ),
+    ]

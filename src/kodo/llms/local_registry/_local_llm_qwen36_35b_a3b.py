@@ -32,7 +32,7 @@ def qwen36_35b_a3b_entries() -> list[LocalLLMEntry]:
             "(M4 Pro/Max or M5 Pro/Max) is safer.",
             min_memory=48,
             memory=64,
-            llamacpp_version=3100,
+            llamacpp_version=5092,
         ),
         LocalLLMEntry(
             name="unsloth-qwen36-35b-a3b-q6-k-xl",
@@ -55,7 +55,7 @@ def qwen36_35b_a3b_entries() -> list[LocalLLMEntry]:
             mac_tip="Needs ~39GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
             min_memory=48,
             memory=48,
-            llamacpp_version=3100,
+            llamacpp_version=5092,
         ),
         LocalLLMEntry(
             name="unsloth-qwen36-35b-a3b-q5-k-xl",
@@ -78,7 +78,7 @@ def qwen36_35b_a3b_entries() -> list[LocalLLMEntry]:
             "tight.",
             min_memory=36,
             memory=48,
-            llamacpp_version=3100,
+            llamacpp_version=5092,
         ),
         LocalLLMEntry(
             name="unsloth-qwen36-35b-a3b-q4-k-xl",
@@ -102,6 +102,6 @@ def qwen36_35b_a3b_entries() -> list[LocalLLMEntry]:
             "the safe choice.",
             min_memory=32,
             memory=36,
-            llamacpp_version=3100,
+            llamacpp_version=5092,
         ),
     ]
