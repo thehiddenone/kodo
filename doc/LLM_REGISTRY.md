@@ -239,6 +239,58 @@ inverse case — a tool call made by a *different* vendor, with no signature at
 all, replayed into a Gemini-thinking-model session after a vendor switch;
 that would still 400, since no signature can be fabricated after the fact).
 
+Today's Alibaba entry (`kodo/llms/alibaba/`, plugin class `QwenPlugin`) —
+`qwen3.8-max`/`qwen3.8-plus`/`qwen3.8-flash` (source: web research —
+eesel.ai, technode.global, datacamp.com, apidog.com, secondtalent.com, as of
+2026-08-16; Alibaba's own Model Studio pricing page was not directly
+reachable at the time of writing, so both the model ids and the pricing
+table carry the same "hand-picked from external sources" epistemic status as
+the OpenAI/Meta/Google tables). Three SKUs against kodo's four effort tiers,
+same shape as OpenAI's lineup — `qwen3.8-plus` covers `medium`/`high`,
+`qwen3.8-flash` is reserved for `low`, `qwen3.8-max` for `max`
+(`kodo/server/_config.py`'s `models.cloud.alibaba` defaults). **Like Google
+(and unlike Anthropic/OpenAI/Meta), Alibaba is built against Chat
+Completions** (`client.chat.completions.create`), via Alibaba Cloud Model
+Studio's OpenAI-compatible endpoint
+(<https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope>,
+`https://dashscope-intl.aliyuncs.com/compatible-mode/v1`) — so
+`kodo/llms/alibaba/_convert.py`/`_qwen.py` are adapted from
+`kodo/llms/google/_convert.py`/`_gemini.py` rather than copied from
+OpenAI's/Meta's Responses-API converters. Reasoning ("thinking") is a
+**boolean** `enable_thinking` flag, nested in `extra_body` since it is not a
+standard OpenAI Chat Completions parameter (confirmed against Alibaba's own
+docs) — unlike Gemini's direct `reasoning_effort=` kwarg or a graded effort
+level, so `_qwen.py`'s `_ENABLE_THINKING` table is `True` for every
+registered model (all three are Qwen's "hybrid" models, thinking-enabled by
+default per Alibaba's docs from the Qwen3.5 generation onward — set
+explicitly here anyway, same "don't rely on an undocumented default"
+posture as every other vendor's fixed-per-model reasoning setting), and
+streamed reasoning text arrives on `delta.reasoning_content`, the same field
+name/shape Gemini uses. Prompt caching is automatic on Alibaba's side (its
+"context cache" feature), so `cache_breakpoints` is accepted and ignored,
+same as OpenAI/Meta/Google. Pricing (`kodo/llms/alibaba/_usage.py`) mirrors
+the existing table shape: $2.00/$6.00/$0.25, $0.40/$1.20/$0.08, and
+$0.05/$0.40/$0.01 per-million input/output/cached-input for Max, Plus, and
+Flash respectively; `cache_write` is `0.0` (no separate cache-write charge
+on this endpoint). Since Alibaba is reached through the `openai` Python SDK
+pointed at a custom `base_url` (same pattern as Meta/Google),
+`alibaba/_retry.py` wires the shared `_provider_retry` core with the
+identical `openai.*` exception classes the other three vendors' `_retry.py`
+use.
+
+**Alibaba has no `thought_signature`-style tool-call replay requirement.**
+Gemini's thinking models reject a replayed tool call missing its exact
+per-call signature (HTTP 400, see above); no equivalent hard requirement was
+found in Alibaba's docs for Qwen. Alibaba's docs do describe a
+`preserve_thinking` request flag (on by default) that keeps a *DashScope-
+managed* multi-turn exchange's own reasoning in context — not applicable
+here, since kodo resends the full conversation history itself every turn
+rather than using a DashScope-managed thread. `kodo/llms/alibaba/_convert.py`
+therefore drops a persisted `thinking` block outright on replay, same as
+OpenAI/Meta/Google all do for their own shapes, flagged in that module's
+docstring as an assumption to revisit if a stricter requirement turns up
+later.
+
 **Both cloud plugins share one retry/backoff core**, `kodo/llms/
 _provider_retry.py` — the `anthropic` and `openai` Python SDKs are both
 Stainless-generated with matching exception shapes

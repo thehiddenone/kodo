@@ -339,11 +339,32 @@ async def test_resolve_plugin_cloud_residence_success_google() -> None:
     assert key_provider.requested == ["google"]
 
 
+async def test_resolve_plugin_cloud_residence_success_alibaba() -> None:
+    key_provider = _FakeKeyProvider(api_key="sk-alibaba")
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "alibaba",
+            "models": {"cloud": {"alibaba": {"medium": "qwen3.8-plus"}}},
+        },
+        key_provider=key_provider,
+    )
+
+    plugin, model_id, routing = await engine._resolve_plugin("medium")
+
+    assert model_id == "qwen3.8-plus"
+    assert routing.residence == "cloud"
+    assert routing.vendor == "alibaba"
+    assert engine._current_vendor == "alibaba"
+    assert plugin.name == "alibaba"
+    assert key_provider.requested == ["alibaba"]
+
+
 async def test_resolve_plugin_rejects_unsupported_vendor_module(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    engine = _make_engine(settings={"mode": "cloud", "active_cloud_vendor": "alibaba"})
-    monkeypatch.setattr(_llm, "get_cloud_vendor_module", lambda vendor: "kodo.llms.alibaba")
+    engine = _make_engine(settings={"mode": "cloud", "active_cloud_vendor": "deepseek"})
+    monkeypatch.setattr(_llm, "get_cloud_vendor_module", lambda vendor: "kodo.llms.deepseek")
 
     with pytest.raises(RuntimeError, match="Unsupported cloud vendor"):
         await engine._resolve_plugin("medium")

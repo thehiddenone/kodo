@@ -62,7 +62,9 @@ design (registries, effort levels, resolution order) is in
       "meta": { "low": "muse-spark-1.2", "medium": "muse-spark-1.2",
                 "high": "muse-spark-1.2", "max": "muse-spark-1.2" },
       "google": { "low": "gemini-3.5-flash-lite", "medium": "gemini-3.6-flash",
-                  "high": "gemini-3.6-flash", "max": "gemini-3.6-flash" }
+                  "high": "gemini-3.6-flash", "max": "gemini-3.6-flash" },
+      "alibaba": { "low": "qwen3.8-flash", "medium": "qwen3.8-plus",
+                   "high": "qwen3.8-plus", "max": "qwen3.8-max" }
     }
   }
 }
@@ -76,7 +78,10 @@ Meta has no effort-tiered lineup — `models.cloud.meta` maps all four tiers to
 the same `muse-spark-1.2` id, since Meta's Model API offers only one model
 (doc/LLM_REGISTRY.md §3). Google has two SKUs against the four tiers —
 `models.cloud.google` maps `medium`/`high`/`max` to `gemini-3.6-flash` and
-`low` to `gemini-3.5-flash-lite`.
+`low` to `gemini-3.5-flash-lite`. Alibaba has three SKUs against the four
+tiers, same shape as OpenAI's row — `models.cloud.alibaba` maps
+`medium`/`high` to `qwen3.8-plus`, `low` to `qwen3.8-flash`, and `max` to
+`qwen3.8-max`.
 
 ### 2.2a `meta_contributor_tier`
 
@@ -202,6 +207,12 @@ housekeeper LLM" webview action.
         "medium": "gemini-3.6-flash",
         "high": "gemini-3.6-flash",
         "max": "gemini-3.6-flash"
+      },
+      "alibaba": {
+        "low": "qwen3.8-flash",
+        "medium": "qwen3.8-plus",
+        "high": "qwen3.8-plus",
+        "max": "qwen3.8-max"
       }
     }
   },

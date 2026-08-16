@@ -70,6 +70,16 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
                 "high": "gemini-3.6-flash",
                 "max": "gemini-3.6-flash",
             },
+            # Three Qwen3.8 SKUs exist (kodo/llms/_cloud_registry.py's
+            # _ALIBABA_MODELS) for 4 effort tiers -- qwen3.8-plus covers both
+            # "medium" and "high", same shape as the openai row above,
+            # qwen3.8-flash is reserved for low, qwen3.8-max for max.
+            "alibaba": {
+                "low": "qwen3.8-flash",
+                "medium": "qwen3.8-plus",
+                "high": "qwen3.8-plus",
+                "max": "qwen3.8-max",
+            },
         },
     },
     # Meta's discounted "contributor" tier: trades training-data permission

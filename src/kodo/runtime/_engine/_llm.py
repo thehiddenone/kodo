@@ -32,6 +32,7 @@ from kodo.llms import (
     local_thinking_default_tier,
     local_thinking_tiers,
 )
+from kodo.llms.alibaba import QwenPlugin
 from kodo.llms.anthropic import ClaudePlugin
 from kodo.llms.google import GeminiPlugin
 from kodo.llms.llamacpp import LlamaPlugin
@@ -60,6 +61,7 @@ _VENDOR_PLUGIN_FACTORIES: dict[str, Callable[[str, dict[str, object]], LLMPlugin
         api_key, contributor=bool(settings.get("meta_contributor_tier", False))
     ),
     "kodo.llms.google": lambda api_key, _settings: GeminiPlugin(api_key),
+    "kodo.llms.alibaba": lambda api_key, _settings: QwenPlugin(api_key),
 }
 
 

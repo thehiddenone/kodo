@@ -162,7 +162,11 @@ The server replies with the current world plus local-model status:
       "google": { "display_name": "Google", "models": [
         { "model_id": "gemini-3.6-flash", "name": "Gemini 3.6 Flash",
           "description": "...", "context_window": 1048576,
-          "recommendation": "The workhorse — ..." }, "..." ] }
+          "recommendation": "The workhorse — ..." }, "..." ] },
+      "alibaba": { "display_name": "Alibaba", "models": [
+        { "model_id": "qwen3.8-max", "name": "Qwen3.8 Max",
+          "description": "...", "context_window": 1000000,
+          "recommendation": "For the most demanding work — ..." }, "..." ] }
     },
     "active_cloud_vendor": "anthropic",
     "local_registry": [

@@ -37,9 +37,9 @@ Kōdo treats a GGUF running under llama.cpp the same way it treats a hosted API 
 
 None of the above makes a small model smarter. It just stops bad tooling from being the reason a session dies before the model even gets to show what it's got. Those are two different problems, and this section only solves one of them.
 
-Prefer a hosted model? Anthropic, OpenAI, Meta, and Google's model families are all supported as first-class alternatives, with per-agent effort tiers and prompt caching (automatic on OpenAI's, Meta's, and Google's side, explicit breakpoints on Anthropic's) keeping multi-agent token costs down. Meta additionally offers an opt-in "contributor" tier — heavily discounted pricing in exchange for permission to train future Meta models on your traffic, off by default and gated behind a warning in the settings panel. Either way, the server, your files, your specs, checkpoints, and session history stay on your machine.
+Prefer a hosted model? Anthropic, OpenAI, Meta, Google, and Alibaba's model families are all supported as first-class alternatives, with per-agent effort tiers and prompt caching (automatic on OpenAI's, Meta's, Google's, and Alibaba's side, explicit breakpoints on Anthropic's) keeping multi-agent token costs down. Meta additionally offers an opt-in "contributor" tier — heavily discounted pricing in exchange for permission to train future Meta models on your traffic, off by default and gated behind a warning in the settings panel. Either way, the server, your files, your specs, checkpoints, and session history stay on your machine.
 
-Anthropic, OpenAI, Meta, and Google are the first four cloud providers, not the last: support for Alibaba, DeepSeek, and Kimi is planned, along with OpenRouter as an aggregator. Further out is a hybrid mode that treats local and cloud as one pool — a small local model triages each step of the workflow, escalating to a frontier model only when the work genuinely needs one and keeping everything routine on your own GPU. "Planned" and "further out" are doing a lot of lifting in that paragraph; nothing above is implemented yet.
+Anthropic, OpenAI, Meta, Google, and Alibaba are the first five cloud providers, not the last: support for DeepSeek and Kimi is planned, along with OpenRouter as an aggregator. Further out is a hybrid mode that treats local and cloud as one pool — a small local model triages each step of the workflow, escalating to a frontier model only when the work genuinely needs one and keeping everything routine on your own GPU. "Planned" and "further out" are doing a lot of lifting in that paragraph; nothing above is implemented yet.
 
 ## Small models, dense contexts
 
@@ -111,7 +111,7 @@ The list below describes what's implemented, not a review score of how well each
 
 **Visual Studio Code extension** — streamed agent output, file diffs in VS Code's native diff editor, approval and permission prompts, cumulative cost, checkpoint controls, and a Local Inference Settings panel for browsing, downloading, and managing local models — all without leaving the IDE.
 
-**Narrow extension surfaces** — LLM providers are plugins (Anthropic, OpenAI, Meta, Google, and llama.cpp today); agents and language toolchains are markdown-defined sub-agents, so adding a role or an ecosystem is meant to be a prompt plus a schema, not an engine change. See [`doc/ADDING_A_SUBAGENT.md`](doc/ADDING_A_SUBAGENT.md).
+**Narrow extension surfaces** — LLM providers are plugins (Anthropic, OpenAI, Meta, Google, Alibaba, and llama.cpp today); agents and language toolchains are markdown-defined sub-agents, so adding a role or an ecosystem is meant to be a prompt plus a schema, not an engine change. See [`doc/ADDING_A_SUBAGENT.md`](doc/ADDING_A_SUBAGENT.md).
 
 ## Building the project
 
@@ -164,4 +164,4 @@ None of the above closes the gap with a frontier hosted model, and it's not supp
 
 Release is gated on demonstrated capability, not a feature list — that part hasn't changed and isn't going to. The `kodo.validator` harness ([`doc/VALIDATOR.md`](doc/VALIDATOR.md)) runs real Kōdo sessions end-to-end — real server, real protocol, real tools and gates, no VS Code, no human — with local models under test. v1.0 ships when a battery of medium-to-high-complexity scenarios builds end-to-end inside that harness with all generated tests passing: an HTTP/HTTPS server in C++ or Rust, a transactional in-memory database, a distributed-consensus NoSQL key/value store, and more. That battery has not been cleared yet.
 
-Current scope: backend software, green-field guided mode (aspirationally — see above), Anthropic/OpenAI/Meta/Google cloud or local llama.cpp models. None of this is a reason to stop; it's a reason to be upfront about where things actually stand while the work continues — slowly, on ordinary hardware, with the same patience this whole approach is asking everyone else to have.
+Current scope: backend software, green-field guided mode (aspirationally — see above), Anthropic/OpenAI/Meta/Google/Alibaba cloud or local llama.cpp models. None of this is a reason to stop; it's a reason to be upfront about where things actually stand while the work continues — slowly, on ordinary hardware, with the same patience this whole approach is asking everyone else to have.

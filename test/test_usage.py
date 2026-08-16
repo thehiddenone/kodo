@@ -320,3 +320,62 @@ def test_google_cache_read_is_cheaper_than_input() -> None:
         model="gemini-3.6-flash",
     )
     assert 0.0 < cached.usd_cost < base.usd_cost
+
+
+# ---------------------------------------------------------------------------
+# Alibaba vendor dispatch (kodo.llms._pricing routes by model-id prefix) --
+# qwen3.8-max (max) vs. qwen3.8-plus (medium/high) vs. qwen3.8-flash (low).
+# ---------------------------------------------------------------------------
+
+
+def test_alibaba_zero_tokens_costs_nothing() -> None:
+    usage = Usage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="qwen3.8-max",
+    )
+    assert usage.usd_cost == 0.0
+
+
+def test_alibaba_max_cost() -> None:
+    usage = Usage(
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="qwen3.8-max",
+    )
+    assert abs(usage.usd_cost - (2.00 + 6.00)) < 1e-9
+
+
+def test_alibaba_flash_is_cheaper_than_plus_is_cheaper_than_max() -> None:
+    def _cost(model: str) -> float:
+        return Usage(
+            input_tokens=1000,
+            output_tokens=1000,
+            cache_write_tokens=0,
+            cache_read_tokens=0,
+            model=model,
+        ).usd_cost
+
+    assert 0.0 < _cost("qwen3.8-flash") < _cost("qwen3.8-plus") < _cost("qwen3.8-max")
+
+
+def test_alibaba_cache_read_is_cheaper_than_input() -> None:
+    base = Usage(
+        input_tokens=1000,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="qwen3.8-max",
+    )
+    cached = Usage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=1000,
+        model="qwen3.8-max",
+    )
+    assert 0.0 < cached.usd_cost < base.usd_cost

@@ -198,6 +198,42 @@ _GOOGLE_MODELS: tuple[CloudLLMEntry, ...] = (
     ),
 )
 
+# Qwen3.8 generation via Alibaba Cloud Model Studio's OpenAI-compatible
+# endpoint (https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope,
+# model ids/pricing researched 2026-08-16 -- see kodo/llms/alibaba/_usage.py).
+# Three SKUs against kodo's four effort tiers, same "middle SKU covers two
+# tiers" shape as _OPENAI_MODELS -- qwen3.8-plus covers medium/high
+# (kodo/server/_config.py's models.cloud.alibaba defaults), qwen3.8-flash is
+# reserved for low, qwen3.8-max for max. Like Google (and unlike
+# Anthropic/OpenAI/Meta), Alibaba's plugin speaks Chat Completions -- see
+# kodo/llms/alibaba/_qwen.py's module docstring. Listed flagship-first, same
+# convention as the other vendors' tuples.
+_ALIBABA_MODELS: tuple[CloudLLMEntry, ...] = (
+    CloudLLMEntry(
+        name="Qwen3.8 Max",
+        model_id="qwen3.8-max",
+        description="Alibaba Qwen3.8 Max",
+        context_window=1_000_000,
+        recommendation="For the most demanding work -- deep reasoning, gnarly debugging, "
+        "big architectural calls.",
+    ),
+    CloudLLMEntry(
+        name="Qwen3.8 Plus",
+        model_id="qwen3.8-plus",
+        description="Alibaba Qwen3.8 Plus",
+        context_window=1_000_000,
+        recommendation="The daily driver -- balances capability and cost for most everyday "
+        "coding tasks.",
+    ),
+    CloudLLMEntry(
+        name="Qwen3.8 Flash",
+        model_id="qwen3.8-flash",
+        description="Alibaba Qwen3.8 Flash",
+        context_window=1_000_000,
+        recommendation="Quick and cheap -- ideal for simple, high-volume subagent tasks.",
+    ),
+)
+
 # Vendor key -> hardcoded models. Vendor keys are lowercase slugs used in
 # etc/settings.json (``active_cloud_vendor``, ``models.cloud.<vendor>``) and on
 # the wire; display names are separate so the UI can show "Anthropic" etc.
@@ -206,6 +242,7 @@ _CLOUD_REGISTRY: dict[str, tuple[CloudLLMEntry, ...]] = {
     "openai": _OPENAI_MODELS,
     "meta": _META_MODELS,
     "google": _GOOGLE_MODELS,
+    "alibaba": _ALIBABA_MODELS,
 }
 
 _CLOUD_VENDOR_DISPLAY: dict[str, str] = {
@@ -213,6 +250,7 @@ _CLOUD_VENDOR_DISPLAY: dict[str, str] = {
     "openai": "OpenAI",
     "meta": "Meta",
     "google": "Google",
+    "alibaba": "Alibaba",
 }
 
 # Vendor key -> dotted plugin module, mirroring the old LLMEntry.module field
@@ -223,6 +261,7 @@ _CLOUD_VENDOR_MODULE: dict[str, str] = {
     "openai": "kodo.llms.openai",
     "meta": "kodo.llms.meta",
     "google": "kodo.llms.google",
+    "alibaba": "kodo.llms.alibaba",
 }
 
 # Vendor key -> the naming-convention prefix that vendor's model_ids use.
@@ -239,6 +278,7 @@ _CLOUD_VENDOR_MODEL_PREFIX: dict[str, str] = {
     "openai": "gpt-",
     "meta": "muse-spark",
     "google": "gemini-",
+    "alibaba": "qwen",
 }
 
 
