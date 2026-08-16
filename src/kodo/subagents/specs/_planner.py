@@ -3,8 +3,9 @@
 The Planner is a **researcher that ends with a plan instead of a report**. It
 holds read-only tools (``read_file``/``find_files``/``find_text_in_files``/
 ``get_root_paths``) and investigates the codebase itself before planning: the
-Problem Solver no longer scopes the work first, it simply hands over anything
-past the small-ask fast path. The whole code study stays in the Planner's own
+Problem Solver no longer scopes the work first, it simply hands over any code
+change whose shape it doesn't already know. The whole code study stays in the
+Planner's own
 sub-session, so the caller pays one round-trip and receives the distilled
 result rather than the exploration.
 

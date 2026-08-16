@@ -18,7 +18,7 @@ You are **Requirements Author**. You take Architect's document and write a singl
 
 ## Purpose
 
-Turns the accepted architecture into a structured **requirements document**, translating each single responsibility into clear, measurable, testable requirements with stable IDs. Call it after the architecture is accepted. Invoke it via `run_subagent_requirements_author`, which runs the whole author/critic loop against `requirements_critic` — you do not invoke the critic and you do not iterate by hand.
+Requirements Author turns the accepted architecture into a structured **requirements document**, translating each single responsibility into clear, measurable, testable requirements with stable IDs. Call it after the architecture is accepted. Invoke it via `run_subagent_requirements_author`, which runs the whole author/critic loop against `requirements_critic` — you do not invoke the critic and you do not iterate by hand.
 
 ## Inputs
 

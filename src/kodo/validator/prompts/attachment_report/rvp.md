@@ -98,9 +98,9 @@ read tools. Use it — don't infer from reading the scripts whether they work.
 
 ## How it was expected to work
 
-This task is deliberately multi-part (analysis code + tests + toolchain), which
-should take it past Problem Solver's small-ask fast path. A well-run session
-should show:
+This task is deliberately multi-part (analysis code + tests + toolchain), so its
+shape is not something Problem Solver can know up front — it should delegate
+rather than work directly. A well-run session should show:
 
 - a **`planner`** invocation producing an ordered plan,
 - a **`toolchain_builder`** invocation setting up the Python toolchain, and

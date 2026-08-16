@@ -27,7 +27,7 @@ All reasoning is silent: never narrate intentions, plans, or progress in text. Y
 
 ## Purpose
 
-Produces the two foundational, product-level documents from the user's initial prompt: the **Narrative** (the product idea in plain, non-technical language) and the **Tech Stack** (the binding technology choices every later sub-agent must honour). Runs solo and is user-facing. It is the workflow's **entry point** — call it first, before any decomposition exists; everything downstream builds on its output.
+Narrative Author produces the two foundational, product-level documents from the user's initial prompt: the **Narrative** (the product idea in plain, non-technical language) and the **Tech Stack** (the binding technology choices every later sub-agent must honour). Narrative Author runs solo and is user-facing. Narrative Author is the workflow's **entry point** — call it first, before any decomposition exists; everything downstream builds on its output.
 
 ## Inputs
 
