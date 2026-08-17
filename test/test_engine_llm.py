@@ -360,11 +360,32 @@ async def test_resolve_plugin_cloud_residence_success_alibaba() -> None:
     assert key_provider.requested == ["alibaba"]
 
 
+async def test_resolve_plugin_cloud_residence_success_deepseek() -> None:
+    key_provider = _FakeKeyProvider(api_key="sk-deepseek")
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "deepseek",
+            "models": {"cloud": {"deepseek": {"medium": "deepseek-v4-flash"}}},
+        },
+        key_provider=key_provider,
+    )
+
+    plugin, model_id, routing = await engine._resolve_plugin("medium")
+
+    assert model_id == "deepseek-v4-flash"
+    assert routing.residence == "cloud"
+    assert routing.vendor == "deepseek"
+    assert engine._current_vendor == "deepseek"
+    assert plugin.name == "deepseek"
+    assert key_provider.requested == ["deepseek"]
+
+
 async def test_resolve_plugin_rejects_unsupported_vendor_module(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    engine = _make_engine(settings={"mode": "cloud", "active_cloud_vendor": "deepseek"})
-    monkeypatch.setattr(_llm, "get_cloud_vendor_module", lambda vendor: "kodo.llms.deepseek")
+    engine = _make_engine(settings={"mode": "cloud", "active_cloud_vendor": "kimi"})
+    monkeypatch.setattr(_llm, "get_cloud_vendor_module", lambda vendor: "kodo.llms.kimi")
 
     with pytest.raises(RuntimeError, match="Unsupported cloud vendor"):
         await engine._resolve_plugin("medium")

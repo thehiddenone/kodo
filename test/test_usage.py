@@ -379,3 +379,62 @@ def test_alibaba_cache_read_is_cheaper_than_input() -> None:
         model="qwen3.8-max",
     )
     assert 0.0 < cached.usd_cost < base.usd_cost
+
+
+# ---------------------------------------------------------------------------
+# DeepSeek vendor dispatch (kodo.llms._pricing routes by model-id prefix) --
+# deepseek-v4-pro (high/max) vs. deepseek-v4-flash (low/medium).
+# ---------------------------------------------------------------------------
+
+
+def test_deepseek_zero_tokens_costs_nothing() -> None:
+    usage = Usage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="deepseek-v4-pro",
+    )
+    assert usage.usd_cost == 0.0
+
+
+def test_deepseek_pro_cost() -> None:
+    usage = Usage(
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="deepseek-v4-pro",
+    )
+    assert abs(usage.usd_cost - (0.435 + 0.87)) < 1e-9
+
+
+def test_deepseek_flash_is_cheaper_than_pro() -> None:
+    def _cost(model: str) -> float:
+        return Usage(
+            input_tokens=1000,
+            output_tokens=1000,
+            cache_write_tokens=0,
+            cache_read_tokens=0,
+            model=model,
+        ).usd_cost
+
+    assert 0.0 < _cost("deepseek-v4-flash") < _cost("deepseek-v4-pro")
+
+
+def test_deepseek_cache_read_is_cheaper_than_input() -> None:
+    base = Usage(
+        input_tokens=1000,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="deepseek-v4-pro",
+    )
+    cached = Usage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=1000,
+        model="deepseek-v4-pro",
+    )
+    assert 0.0 < cached.usd_cost < base.usd_cost

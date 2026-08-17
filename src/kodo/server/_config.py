@@ -80,6 +80,17 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
                 "high": "qwen3.8-plus",
                 "max": "qwen3.8-max",
             },
+            # Two DeepSeek SKUs exist (kodo/llms/_cloud_registry.py's
+            # _DEEPSEEK_MODELS) for 4 effort tiers -- a plain 2-2 split
+            # (unlike the openai/alibaba "middle SKU covers two tiers" shape
+            # above, since DeepSeek only has two SKUs total): V4 Flash
+            # covers low/medium, V4 Pro covers high/max.
+            "deepseek": {
+                "low": "deepseek-v4-flash",
+                "medium": "deepseek-v4-flash",
+                "high": "deepseek-v4-pro",
+                "max": "deepseek-v4-pro",
+            },
         },
     },
     # Meta's discounted "contributor" tier: trades training-data permission

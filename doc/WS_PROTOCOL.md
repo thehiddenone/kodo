@@ -166,6 +166,10 @@ The server replies with the current world plus local-model status:
       "alibaba": { "display_name": "Alibaba", "models": [
         { "model_id": "qwen3.8-max", "name": "Qwen3.8 Max",
           "description": "...", "context_window": 1000000,
+          "recommendation": "For the most demanding work — ..." }, "..." ] },
+      "deepseek": { "display_name": "DeepSeek", "models": [
+        { "model_id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro",
+          "description": "...", "context_window": 1048576,
           "recommendation": "For the most demanding work — ..." }, "..." ] }
     },
     "active_cloud_vendor": "anthropic",

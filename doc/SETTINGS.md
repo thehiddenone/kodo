@@ -64,7 +64,9 @@ design (registries, effort levels, resolution order) is in
       "google": { "low": "gemini-3.5-flash-lite", "medium": "gemini-3.6-flash",
                   "high": "gemini-3.6-flash", "max": "gemini-3.6-flash" },
       "alibaba": { "low": "qwen3.8-flash", "medium": "qwen3.8-plus",
-                   "high": "qwen3.8-plus", "max": "qwen3.8-max" }
+                   "high": "qwen3.8-plus", "max": "qwen3.8-max" },
+      "deepseek": { "low": "deepseek-v4-flash", "medium": "deepseek-v4-flash",
+                    "high": "deepseek-v4-pro", "max": "deepseek-v4-pro" }
     }
   }
 }
@@ -81,7 +83,9 @@ the same `muse-spark-1.2` id, since Meta's Model API offers only one model
 `low` to `gemini-3.5-flash-lite`. Alibaba has three SKUs against the four
 tiers, same shape as OpenAI's row — `models.cloud.alibaba` maps
 `medium`/`high` to `qwen3.8-plus`, `low` to `qwen3.8-flash`, and `max` to
-`qwen3.8-max`.
+`qwen3.8-max`. DeepSeek has two SKUs against the four tiers, split evenly
+rather than middle-SKU-covers-two — `models.cloud.deepseek` maps
+`low`/`medium` to `deepseek-v4-flash` and `high`/`max` to `deepseek-v4-pro`.
 
 ### 2.2a `meta_contributor_tier`
 

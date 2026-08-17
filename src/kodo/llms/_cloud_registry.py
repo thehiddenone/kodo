@@ -234,6 +234,38 @@ _ALIBABA_MODELS: tuple[CloudLLMEntry, ...] = (
     ),
 )
 
+# DeepSeek's own OpenAI-compatible endpoint (https://api-docs.deepseek.com/,
+# model ids/pricing researched 2026-08-16 -- see kodo/llms/deepseek/_usage.py).
+# Legacy `deepseek-chat`/`deepseek-reasoner` aliases were deprecated
+# 2026-07-24 in favor of explicit model ids with a request-level thinking
+# toggle, so those aliases are deliberately not registered here. Two SKUs
+# against kodo's four effort tiers -- a plain 2-2 split (unlike the other
+# two-SKU vendor, Google, which splits 3-1), since DeepSeek's naming makes
+# the capability gap explicit: V4 Pro is the deep-reasoning flagship
+# (high/max), V4 Flash the fast/cheap everyday model (low/medium) --
+# `kodo/server/_config.py`'s `models.cloud.deepseek` defaults. Like Google/
+# Alibaba (and unlike Anthropic/OpenAI/Meta), DeepSeek's plugin speaks Chat
+# Completions -- see `kodo/llms/deepseek/_deepseek.py`'s module docstring.
+# Listed flagship-first, same convention as the other vendors' tuples.
+_DEEPSEEK_MODELS: tuple[CloudLLMEntry, ...] = (
+    CloudLLMEntry(
+        name="DeepSeek V4 Pro",
+        model_id="deepseek-v4-pro",
+        description="DeepSeek V4 Pro",
+        context_window=1_048_576,
+        recommendation="For the most demanding work -- deep reasoning, gnarly debugging, "
+        "big architectural calls.",
+    ),
+    CloudLLMEntry(
+        name="DeepSeek V4 Flash",
+        model_id="deepseek-v4-flash",
+        description="DeepSeek V4 Flash",
+        context_window=1_048_576,
+        recommendation="The fast, cheap daily driver -- covers everyday coding at a "
+        "fraction of Pro's cost.",
+    ),
+)
+
 # Vendor key -> hardcoded models. Vendor keys are lowercase slugs used in
 # etc/settings.json (``active_cloud_vendor``, ``models.cloud.<vendor>``) and on
 # the wire; display names are separate so the UI can show "Anthropic" etc.
@@ -243,6 +275,7 @@ _CLOUD_REGISTRY: dict[str, tuple[CloudLLMEntry, ...]] = {
     "meta": _META_MODELS,
     "google": _GOOGLE_MODELS,
     "alibaba": _ALIBABA_MODELS,
+    "deepseek": _DEEPSEEK_MODELS,
 }
 
 _CLOUD_VENDOR_DISPLAY: dict[str, str] = {
@@ -251,6 +284,7 @@ _CLOUD_VENDOR_DISPLAY: dict[str, str] = {
     "meta": "Meta",
     "google": "Google",
     "alibaba": "Alibaba",
+    "deepseek": "DeepSeek",
 }
 
 # Vendor key -> dotted plugin module, mirroring the old LLMEntry.module field
@@ -262,6 +296,7 @@ _CLOUD_VENDOR_MODULE: dict[str, str] = {
     "meta": "kodo.llms.meta",
     "google": "kodo.llms.google",
     "alibaba": "kodo.llms.alibaba",
+    "deepseek": "kodo.llms.deepseek",
 }
 
 # Vendor key -> the naming-convention prefix that vendor's model_ids use.
@@ -279,6 +314,7 @@ _CLOUD_VENDOR_MODEL_PREFIX: dict[str, str] = {
     "meta": "muse-spark",
     "google": "gemini-",
     "alibaba": "qwen",
+    "deepseek": "deepseek-",
 }
 
 

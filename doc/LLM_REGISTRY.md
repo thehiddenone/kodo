@@ -291,6 +291,61 @@ OpenAI/Meta/Google all do for their own shapes, flagged in that module's
 docstring as an assumption to revisit if a stricter requirement turns up
 later.
 
+Today's DeepSeek entry (`kodo/llms/deepseek/`, plugin class `DeepSeekPlugin`)
+— `deepseek-v4-pro`/`deepseek-v4-flash` (source: web research —
+morphllm.com, cloudzero.com, flowith.io, benchlm.ai, openrouter.ai, as of
+2026-08-16; DeepSeek's legacy `deepseek-chat`/`deepseek-reasoner` aliases
+were deprecated 2026-07-24 in favor of these explicit model ids, so both the
+model ids and the pricing table carry the same "hand-picked from external
+sources" epistemic status as the OpenAI/Meta/Google/Alibaba tables). Two SKUs
+against kodo's four effort tiers — unlike every other multi-SKU vendor here
+(OpenAI/Alibaba's "middle SKU covers two tiers", Google's asymmetric 3-1),
+DeepSeek splits evenly: `deepseek-v4-flash` covers `low`/`medium`,
+`deepseek-v4-pro` covers `high`/`max` (`kodo/server/_config.py`'s
+`models.cloud.deepseek` defaults) — a plain 2-2 split, since DeepSeek's own
+naming already makes the capability/cost gap explicit (Pro is the
+deep-reasoning flagship, Flash the fast/cheap everyday model), unlike
+Google's Flash/Flash-Lite pair where "Flash" itself is the strong SKU.
+**Like Google/Alibaba (and unlike Anthropic/OpenAI/Meta), DeepSeek is built
+against Chat Completions** (`client.chat.completions.create`), via
+DeepSeek's own OpenAI-compatible endpoint
+(<https://api-docs.deepseek.com/>, `https://api.deepseek.com/v1`) — so
+`kodo/llms/deepseek/_convert.py`/`_deepseek.py` are adapted from
+`kodo/llms/alibaba/_convert.py`/`_qwen.py` rather than copied from
+OpenAI's/Meta's Responses-API converters. Reasoning ("thinking") is enabled
+unconditionally for both models, same posture as Alibaba, but with a
+**graded** `reasoning_effort` string (`"high"` for Flash, `"max"` for Pro)
+nested alongside a `thinking.type: "enabled"` toggle inside `extra_body` —
+neither is a standard OpenAI Chat Completions parameter (per DeepSeek's own
+docs), and this is a third distinct shape from Gemini's direct
+`reasoning_effort=` kwarg and Qwen's flat boolean `enable_thinking`, so
+`_deepseek.py`'s `_REASONING_EFFORT` table picks one fixed effort string per
+model (not per kodo tier), same "no per-tier knob to thread through the
+silent-turn helpers for one vendor's benefit alone" rationale as every other
+vendor's table here. Streamed reasoning text arrives on
+`delta.reasoning_content`, the same field name/shape Gemini/Qwen use. Prompt
+caching is automatic on DeepSeek's side (its disk-backed context cache), so
+`cache_breakpoints` is accepted and ignored, same as OpenAI/Meta/Google/
+Alibaba. Pricing (`kodo/llms/deepseek/_usage.py`) is $0.435/$0.87/$0.003625
+and $0.14/$0.28/$0.0028 per-million input/output/cached-input for Pro and
+Flash respectively; `cache_write` is `0.0` (no separate cache-write charge on
+this endpoint) — note the two models' cache-read discount ratios don't match
+each other (~1/120 for Pro vs. ~1/50 for Flash), which reads as ordinary
+aggregator noise across sources rather than a documented per-model policy,
+flagged rather than silently reconciled. Since DeepSeek is reached through
+the `openai` Python SDK pointed at a custom `base_url` (same pattern as
+Meta/Google/Alibaba), `deepseek/_retry.py` wires the shared
+`_provider_retry` core with the identical `openai.*` exception classes the
+other four vendors' `_retry.py` use.
+
+**DeepSeek has no `thought_signature`-style tool-call replay requirement.**
+Gemini's thinking models reject a replayed tool call missing its exact
+per-call signature (HTTP 400, see above); no equivalent hard requirement was
+found in DeepSeek's docs. `kodo/llms/deepseek/_convert.py` therefore drops a
+persisted `thinking` block outright on replay, same as OpenAI/Meta/Google/
+Alibaba all do for their own shapes, flagged in that module's docstring as
+an assumption to revisit if a stricter requirement turns up later.
+
 **Both cloud plugins share one retry/backoff core**, `kodo/llms/
 _provider_retry.py` — the `anthropic` and `openai` Python SDKs are both
 Stainless-generated with matching exception shapes
