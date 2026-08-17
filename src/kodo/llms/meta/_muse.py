@@ -107,7 +107,8 @@ class MusePlugin(LLMPlugin):
             contributor (bool): Whether the account-level "contributor" tier
                 is active -- see the class docstring.
         """
-        self.__client = openai.AsyncOpenAI(api_key=api_key, base_url=_BASE_URL)
+        # max_retries=0: kodo.llms._provider_retry/_gateway own retry/backoff.
+        self.__client = openai.AsyncOpenAI(api_key=api_key, base_url=_BASE_URL, max_retries=0)
         self.__contributor = contributor
         self.__cancel_events = {}
 

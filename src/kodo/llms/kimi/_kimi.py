@@ -149,7 +149,8 @@ class KimiPlugin(LLMPlugin):
         Args:
             api_key (str): Kimi/Moonshot API key (not written to disk per NFR-06).
         """
-        self.__client = openai.AsyncOpenAI(api_key=api_key, base_url=_BASE_URL)
+        # max_retries=0: kodo.llms._provider_retry/_gateway own retry/backoff.
+        self.__client = openai.AsyncOpenAI(api_key=api_key, base_url=_BASE_URL, max_retries=0)
         self.__cancel_events = {}
 
     @property

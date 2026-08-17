@@ -13,8 +13,12 @@ Routing is by **feed**:
   two requests at once.
 * ``cloud:<vendor>`` — one feed per cloud vendor with a live, configurable
   concurrency limit (default 2).  When a vendor returns 429 the offending request
-  is re-queued with an exponential, vendor-stateful delay (1, 2, 4, 8 … minutes;
-  reset to the base on any success).
+  is re-queued with an exponential, vendor-stateful delay (1, 2, 4, 8 … minutes,
+  plus jitter; reset to the base on any success). A server-advised
+  ``Retry-After`` is honored only as a *floor* on the delay, never as a
+  substitute for it — a vendor that keeps advertising a short fixed cooldown
+  (e.g. a per-request quota window, not a real backoff signal) cannot pin the
+  retry delay and defeat the exponential growth.
 
 A feed is a **delay-aware FIFO admission controller**: a request honors its
 ``ready_at`` delay first, then competes for a slot strictly in arrival order.
@@ -27,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -44,6 +49,7 @@ _log = logging.getLogger(__name__)
 _LOCAL_FEED = "local"
 _BASE_BACKOFF_SECONDS = 60.0
 _MAX_BACKOFF_SECONDS = 3600.0
+_JITTER_FRACTION = 0.25
 
 
 class EventSink(Protocol):
@@ -83,12 +89,14 @@ class _Feed:
         max_backoff: float,
         now: Callable[[], float],
         sleep: Callable[[float], Awaitable[None]],
+        jitter: Callable[[], float] = random.random,
     ) -> None:
         self.__max_slots = max_slots
         self.__base = base_backoff
         self.__cap = max_backoff
         self.__now = now
         self.__sleep = sleep
+        self.__jitter = jitter
         self.__active = 0
         self.__seq = 0
         self.__waiters: list[int] = []
@@ -148,16 +156,28 @@ class _Feed:
     def bump_backoff(self, retry_after: float | None) -> float:
         """Return the delay to impose for a 429 and double the running backoff.
 
+        ``retry_after`` is honored only as a *floor* on the running backoff,
+        never as a replacement for it: a vendor that keeps advertising a
+        short, fixed ``Retry-After`` on every 429 (a per-request quota
+        cooldown rather than a real backoff signal — observed from Moonshot's
+        Kimi API, which sends ``Retry-After: 1`` on every throttled response)
+        would otherwise pin the retry delay at that value forever and defeat
+        exponential growth entirely. A genuinely large server-advised delay
+        (e.g. a real quota-reset window) is still respected, since it exceeds
+        the computed floor. A small positive jitter is layered on top of the
+        final delay so concurrent retries don't resynchronize.
+
         Args:
-            retry_after: Server-advised delay, used verbatim for this attempt if
-                present; otherwise the current running backoff is used.
+            retry_after: Server-advised delay, used as a floor for this
+                attempt if present; otherwise the current running backoff is
+                the floor.
 
         Returns:
             float: Seconds to delay this request's re-queue.
         """
-        delay = retry_after if retry_after is not None else self.__backoff
+        delay = max(retry_after or 0.0, self.__backoff)
         self.__backoff = min(self.__backoff * 2, self.__cap)
-        return delay
+        return delay + delay * self.__jitter() * _JITTER_FRACTION
 
 
 class LLMGateway:
@@ -169,6 +189,9 @@ class LLMGateway:
         base_backoff: Base 429 delay in seconds (default 60).
         max_backoff: Cap for the exponential 429 delay in seconds.
         now / sleep: Clock seams for deterministic tests.
+        jitter: Returns a fresh random value in ``[0, 1)`` on each call, used
+            to add positive jitter on top of each computed 429 delay. Seam
+            for deterministic tests; defaults to :func:`random.random`.
     """
 
     def __init__(
@@ -179,12 +202,14 @@ class LLMGateway:
         max_backoff: float = _MAX_BACKOFF_SECONDS,
         now: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        jitter: Callable[[], float] = random.random,
     ) -> None:
         self.__cloud_concurrency = cloud_concurrency
         self.__base = base_backoff
         self.__cap = max_backoff
         self.__now = now
         self.__sleep = sleep
+        self.__jitter = jitter
         self.__feeds: dict[str, _Feed] = {}
 
     async def stream_query(
@@ -275,6 +300,7 @@ class LLMGateway:
                 max_backoff=self.__cap,
                 now=self.__now,
                 sleep=self.__sleep,
+                jitter=self.__jitter,
             )
             self.__feeds[key] = feed
         return feed

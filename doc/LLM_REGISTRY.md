@@ -414,7 +414,7 @@ Alibaba/DeepSeek all do for their own shapes, flagged in that module's
 docstring as an assumption to revisit if a stricter requirement turns up
 later.
 
-**All six cloud plugins share one retry/backoff core**, `kodo/llms/
+**All seven cloud plugins share one retry/backoff core**, `kodo/llms/
 _provider_retry.py` — the `anthropic` and `openai` Python SDKs are both
 Stainless-generated with matching exception shapes
 (`AuthenticationError`/`RateLimitError`/`InternalServerError`/etc., all
@@ -425,7 +425,14 @@ SDK's exception classes) to the shared `with_retry`/`with_retry_iter`.
 their single canonical definition (also re-exported from `kodo.llms` and
 from each vendor package) — `runtime/_engine/_worker.py`'s generic
 `except UnrecoverableError` catch imports from the provider-neutral
-`kodo.llms`, not one specific vendor package.
+`kodo.llms`, not one specific vendor package. Every vendor's SDK client is
+constructed with **`max_retries=0`** — the SDK's own built-in retry must stay
+off so this shared core and the gateway (`kodo.llms._gateway`, see
+LLM_GATEWAY.md's 429-throttling section) are the only place retry/backoff
+decisions get made; leaving a vendor's default `max_retries` enabled causes
+the SDK to silently retry a couple of times on its own short schedule before
+either layer ever sees the error (this was a real bug for Kimi, fixed
+2026-08-16).
 
 **`Usage.usd_cost` dispatches by vendor**, `kodo/llms/_pricing.py` —
 `compute_cost(usage)` looks up `usage.model`'s vendor via

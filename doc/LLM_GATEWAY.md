@@ -59,17 +59,44 @@ once admitted. The webview shows "LLM is busy, waiting …".
 Rate-limit policy is **vendor-stateful**, held in the feed:
 
 - The plugin surfaces an HTTP 429 as the provider-agnostic `RateLimited`
-  (`anthropic/_retry.py` no longer treats it as a terminal error). It honors a
-  `Retry-After` header when present.
+  (`anthropic/_retry.py` no longer treats it as a terminal error). It captures
+  a `Retry-After` header when present, but the header is **never** used
+  verbatim as the delay — see below.
 - On 429 (raised before any event is yielded), the gateway re-queues the request
-  with `ready_at = now + current_backoff` and **doubles** `current_backoff`
-  (`min(*2, 3600s)`); the base is **60 s**, so consecutive throttles wait
-  1, 2, 4, 8 … minutes. Any **successful** request resets the backoff to the base.
+  with `ready_at = now + delay` where `delay = max(retry_after, current_backoff)`,
+  plus jitter (see below), and **doubles** `current_backoff` (`min(*2, 3600s)`);
+  the base is **60 s**, so consecutive throttles wait 1, 2, 4, 8 … minutes. Any
+  **successful** request resets the backoff to the base.
+- **`Retry-After` is a floor, not a substitute.** A vendor's advertised delay is
+  only ever used when it *exceeds* the currently computed backoff (e.g. a real
+  quota-reset window worth respecting); a vendor that keeps sending a short,
+  fixed `Retry-After` on every 429 — as Moonshot's Kimi API does
+  (`Retry-After: 1` on every throttled response, a per-request quota cooldown
+  hint rather than a real backoff signal) — cannot pin the delay at that value
+  and defeat the exponential growth. This was a real bug (2026-08-16): the
+  gateway used to honor `Retry-After` verbatim whenever present, so a vendor
+  advertising a constant 1s cooldown produced an unbounded retry loop that
+  hammered the API roughly once a second instead of backing off.
+- A small positive **jitter** (up to +25% of the computed delay, randomized) is
+  added on top of the final delay so concurrent retries against the same
+  vendor don't resynchronize. `LLMGateway`/`_Feed` take an injectable `jitter:
+  Callable[[], float]` seam (defaults to `random.random`) for deterministic
+  tests.
 - It emits `llm.waiting {reason:"throttled", retry_in_seconds}`; the extension
   shows an auto-dismissing notice and the webview shows
   "Getting throttled, waiting for X minutes".
 - A 429 that arrives **mid-stream** (after events were yielded) is surfaced as a
   normal error rather than restarting a partial stream (documented limitation).
+
+**The SDK's own built-in retry is disabled** (`max_retries=0` on every vendor's
+`openai.AsyncOpenAI`/`anthropic.AsyncAnthropic` client construction). Both SDKs
+default to `max_retries=2`, which — left enabled — silently retries 429s and
+5xx/timeout errors *inside* the SDK first, on its own short, un-jittered
+schedule (and, for 429s, driven by the same misleading vendor `Retry-After`),
+before either `kodo.llms._provider_retry` or the gateway ever see the error.
+This module and the gateway are the sole owners of retry/backoff policy for
+every cloud vendor; a new vendor plugin must construct its SDK client with
+`max_retries=0` too.
 
 ## Cancellation & release
 

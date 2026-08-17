@@ -8,7 +8,7 @@ queue / 429 backoff without real time passing.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import pytest
 
@@ -58,6 +58,7 @@ class FakePlugin(LLMPlugin):
         *,
         release: asyncio.Event | None = None,
         fail_times: int = 0,
+        retry_after: float | None = None,
         error: Exception | None = None,
         payload: list[StreamEvent] | None = None,
     ) -> None:
@@ -65,6 +66,7 @@ class FakePlugin(LLMPlugin):
         self.__started = started
         self.__release = release
         self.__fail_times = fail_times
+        self.__retry_after = retry_after
         self.__error = error
         self.__payload = payload
 
@@ -79,7 +81,7 @@ class FakePlugin(LLMPlugin):
     async def stream_query(self, **kwargs: object) -> AsyncIterator[StreamEvent]:  # type: ignore[override]
         if self.__fail_times > 0:
             self.__fail_times -= 1
-            raise RateLimited()
+            raise RateLimited(retry_after=self.__retry_after)
         self.__started.append(self.__label)
         if self.__payload is not None:
             for ev in self.__payload:
@@ -132,10 +134,16 @@ async def _settle() -> None:
         await asyncio.sleep(0)
 
 
-def _gateway(concurrency: int = 2, clock: ManualClock | None = None) -> LLMGateway:
+def _gateway(
+    concurrency: int = 2,
+    clock: ManualClock | None = None,
+    jitter: Callable[[], float] = lambda: 0.0,
+) -> LLMGateway:
     if clock is None:
-        return LLMGateway(cloud_concurrency=lambda: concurrency)
-    return LLMGateway(cloud_concurrency=lambda: concurrency, now=clock.now, sleep=clock.sleep)
+        return LLMGateway(cloud_concurrency=lambda: concurrency, jitter=jitter)
+    return LLMGateway(
+        cloud_concurrency=lambda: concurrency, now=clock.now, sleep=clock.sleep, jitter=jitter
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +391,75 @@ async def test_consecutive_429_doubles_then_resets() -> None:
     await task2
     d2 = [e["retry_in_seconds"] for e in sink2.events if e.get("reason") == "throttled"]
     assert d2 == [60.0]
+
+
+@pytest.mark.asyncio
+async def test_small_retry_after_does_not_pin_the_backoff() -> None:
+    """Regression test: a vendor that keeps advertising a short, fixed
+    ``Retry-After`` on every 429 (observed from Moonshot's Kimi API sending
+    ``Retry-After: 1`` on every throttled response) must not be able to pin
+    the retry delay at that value and defeat exponential growth — the
+    computed backoff is always a floor under the server's hint.
+    """
+    clock = ManualClock()
+    gw = _gateway(concurrency=2, clock=clock)
+    started: list[str] = []
+    sink = RecordingSink()
+    plugin = FakePlugin("R", started, fail_times=3, retry_after=1.0)
+
+    task = asyncio.create_task(
+        _drain(gw.stream_query(routing=CLOUD_A, plugin=plugin, sink=sink), [])
+    )
+    for _ in range(3):
+        await _settle()
+        clock.advance(10_000)
+    await _settle()
+    await task
+
+    delays = [e["retry_in_seconds"] for e in sink.events if e.get("reason") == "throttled"]
+    assert delays == [60.0, 120.0, 240.0]  # not pinned at the vendor's 1s hint
+
+
+@pytest.mark.asyncio
+async def test_large_retry_after_is_honored_over_the_computed_backoff() -> None:
+    """A server-advised delay that genuinely exceeds the computed backoff
+    (e.g. a real quota-reset window) is still respected."""
+    clock = ManualClock()
+    gw = _gateway(concurrency=2, clock=clock)
+    started: list[str] = []
+    sink = RecordingSink()
+    plugin = FakePlugin("R", started, fail_times=1, retry_after=90.0)
+
+    task = asyncio.create_task(
+        _drain(gw.stream_query(routing=CLOUD_A, plugin=plugin, sink=sink), [])
+    )
+    await _settle()
+    clock.advance(90)
+    await _settle()
+    await task
+
+    delays = [e["retry_in_seconds"] for e in sink.events if e.get("reason") == "throttled"]
+    assert delays == [90.0]  # exceeds the 60s base, so the vendor's hint wins
+
+
+@pytest.mark.asyncio
+async def test_429_delay_carries_positive_jitter() -> None:
+    clock = ManualClock()
+    gw = _gateway(concurrency=2, clock=clock, jitter=lambda: 1.0)  # max jitter
+    started: list[str] = []
+    sink = RecordingSink()
+    plugin = FakePlugin("R", started, fail_times=1)
+
+    task = asyncio.create_task(
+        _drain(gw.stream_query(routing=CLOUD_A, plugin=plugin, sink=sink), [])
+    )
+    await _settle()
+    clock.advance(75)  # 60s base + 25% max jitter
+    await _settle()
+    await task
+
+    delays = [e["retry_in_seconds"] for e in sink.events if e.get("reason") == "throttled"]
+    assert delays == [75.0]
 
 
 # ---------------------------------------------------------------------------

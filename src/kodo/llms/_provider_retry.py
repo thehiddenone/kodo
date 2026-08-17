@@ -10,6 +10,16 @@ supplies its own SDK's exception classes via :class:`ProviderErrors` and gets
 back the same behavior: unrecoverable errors (auth/quota/billing) raise
 immediately, retryable errors (5xx/timeout/connection) back off and retry,
 and 429s are translated into the gateway-owned :class:`RateLimited`.
+
+Every vendor's SDK client **must** be constructed with ``max_retries=0``
+(``openai.AsyncOpenAI``/``anthropic.AsyncAnthropic`` both default to 2). This
+module and the gateway (``kodo.llms._gateway``) are the exclusive owners of
+retry/backoff policy; leaving the SDK's own retry enabled means every raw
+HTTP error gets silently retried a couple of times *inside* the SDK first,
+on its own short, un-jittered schedule (and, for 429s, driven by whatever
+``Retry-After`` the vendor sends) before this module or the gateway ever see
+it -- defeating both the ``(2, 8, 32)``\ s backoff below and the gateway's
+exponential 429 backoff.
 """
 
 from __future__ import annotations
