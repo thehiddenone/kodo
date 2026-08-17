@@ -381,11 +381,36 @@ async def test_resolve_plugin_cloud_residence_success_deepseek() -> None:
     assert key_provider.requested == ["deepseek"]
 
 
+async def test_resolve_plugin_cloud_residence_success_kimi() -> None:
+    key_provider = _FakeKeyProvider(api_key="sk-kimi")
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "kimi",
+            "models": {"cloud": {"kimi": {"medium": "kimi-k2.7-code"}}},
+        },
+        key_provider=key_provider,
+    )
+
+    plugin, model_id, routing = await engine._resolve_plugin("medium")
+
+    assert model_id == "kimi-k2.7-code"
+    assert routing.residence == "cloud"
+    assert routing.vendor == "kimi"
+    assert engine._current_vendor == "kimi"
+    assert plugin.name == "kimi"
+    assert key_provider.requested == ["kimi"]
+
+
 async def test_resolve_plugin_rejects_unsupported_vendor_module(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    engine = _make_engine(settings={"mode": "cloud", "active_cloud_vendor": "kimi"})
-    monkeypatch.setattr(_llm, "get_cloud_vendor_module", lambda vendor: "kodo.llms.kimi")
+    # "openrouter" is a still-unregistered vendor (kodo/llms/_cloud_registry.py) --
+    # a placeholder standing in for whatever the next vendor to be added turns
+    # out to be. Do not repoint this at a vendor that has since gone live
+    # (kimi included) without picking a new still-unregistered one.
+    engine = _make_engine(settings={"mode": "cloud", "active_cloud_vendor": "openrouter"})
+    monkeypatch.setattr(_llm, "get_cloud_vendor_module", lambda vendor: "kodo.llms.openrouter")
 
     with pytest.raises(RuntimeError, match="Unsupported cloud vendor"):
         await engine._resolve_plugin("medium")

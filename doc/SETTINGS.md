@@ -66,7 +66,9 @@ design (registries, effort levels, resolution order) is in
       "alibaba": { "low": "qwen3.8-flash", "medium": "qwen3.8-plus",
                    "high": "qwen3.8-plus", "max": "qwen3.8-max" },
       "deepseek": { "low": "deepseek-v4-flash", "medium": "deepseek-v4-flash",
-                    "high": "deepseek-v4-pro", "max": "deepseek-v4-pro" }
+                    "high": "deepseek-v4-pro", "max": "deepseek-v4-pro" },
+      "kimi": { "low": "kimi-k2.7-code", "medium": "kimi-k2.7-code",
+                "high": "kimi-k3", "max": "kimi-k3" }
     }
   }
 }
@@ -86,6 +88,10 @@ tiers, same shape as OpenAI's row — `models.cloud.alibaba` maps
 `qwen3.8-max`. DeepSeek has two SKUs against the four tiers, split evenly
 rather than middle-SKU-covers-two — `models.cloud.deepseek` maps
 `low`/`medium` to `deepseek-v4-flash` and `high`/`max` to `deepseek-v4-pro`.
+Kimi also has two registered SKUs, same even split as DeepSeek —
+`models.cloud.kimi` maps `low`/`medium` to `kimi-k2.7-code` and `high`/`max`
+to `kimi-k3` (doc/LLM_REGISTRY.md §3 covers why `kimi-k2.6`/`kimi-k2.5` are
+not registered).
 
 ### 2.2a `meta_contributor_tier`
 
@@ -217,6 +223,18 @@ housekeeper LLM" webview action.
         "medium": "qwen3.8-plus",
         "high": "qwen3.8-plus",
         "max": "qwen3.8-max"
+      },
+      "deepseek": {
+        "low": "deepseek-v4-flash",
+        "medium": "deepseek-v4-flash",
+        "high": "deepseek-v4-pro",
+        "max": "deepseek-v4-pro"
+      },
+      "kimi": {
+        "low": "kimi-k2.7-code",
+        "medium": "kimi-k2.7-code",
+        "high": "kimi-k3",
+        "max": "kimi-k3"
       }
     }
   },

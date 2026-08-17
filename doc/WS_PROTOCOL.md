@@ -170,6 +170,10 @@ The server replies with the current world plus local-model status:
       "deepseek": { "display_name": "DeepSeek", "models": [
         { "model_id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro",
           "description": "...", "context_window": 1048576,
+          "recommendation": "For the most demanding work — ..." }, "..." ] },
+      "kimi": { "display_name": "Kimi", "models": [
+        { "model_id": "kimi-k3", "name": "Kimi K3",
+          "description": "...", "context_window": 1048576,
           "recommendation": "For the most demanding work — ..." }, "..." ] }
     },
     "active_cloud_vendor": "anthropic",

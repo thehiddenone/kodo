@@ -346,7 +346,75 @@ persisted `thinking` block outright on replay, same as OpenAI/Meta/Google/
 Alibaba all do for their own shapes, flagged in that module's docstring as
 an assumption to revisit if a stricter requirement turns up later.
 
-**Both cloud plugins share one retry/backoff core**, `kodo/llms/
+Today's Kimi entry (`kodo/llms/kimi/`, plugin class `KimiPlugin`) — Moonshot
+AI's current (source: web research — morphllm.com, benchlm.ai, requesty.ai,
+costgoat.com, openrouter.ai, as of 2026-08-16) lineup has three non-deprecated
+SKUs (`kimi-k3`, `kimi-k2.6`, `kimi-k2.7-code`); `kimi-k2.5` and the `kimi-k2`
+series are deliberately not registered — `kimi-k2.5` is no longer offered to
+new signups ahead of a 2026-08-31 platform sunset, and `kimi-k2` was
+discontinued outright on 2026-05-25, same "don't register a model already on
+its way out" posture as DeepSeek's dropped legacy aliases. Of the two current
+non-flagship SKUs, `kimi-k2.7-code` is registered and `kimi-k2.6` is not — a
+judgment call, not a documented Moonshot recommendation: the two are
+identically priced ($0.95/$4.00 input/output) and comparably capable, but
+kodo is a coding agent with no use for K2.6's vision input, and K2.7 Code's
+own docs claim higher success rates on coding tasks specifically, so it reads
+as the more relevant "everyday" model for this product. This makes for a
+plain 2-2 split, same shape as DeepSeek's — `kimi-k2.7-code` covers
+`low`/`medium`, `kimi-k3` covers `high`/`max` (`kodo/server/_config.py`'s
+`models.cloud.kimi` defaults) — since Kimi's real price-tier count today is
+two, not three. **Like Google/Alibaba/DeepSeek (and unlike
+Anthropic/OpenAI/Meta), Kimi is built against Chat Completions**
+(`client.chat.completions.create`), via Moonshot's own OpenAI-compatible
+endpoint (<https://platform.moonshot.ai/docs/guide/migrating-from-openai-to-kimi>,
+`https://api.moonshot.ai/v1`) — so `kodo/llms/kimi/_convert.py`/`_kimi.py` are
+adapted from `kodo/llms/deepseek/_convert.py`/`_deepseek.py` rather than
+copied from OpenAI's/Meta's Responses-API converters. Streamed reasoning text
+arrives on `delta.reasoning_content`, the same field name/shape
+Gemini/Qwen/DeepSeek use. Prompt caching is automatic on Kimi's side (a
+prefix-based context cache hitting on unchanged prefixes aligned to 256-token
+chunks — <https://platform.kimi.ai/docs/guide/use-context-caching-feature-of-kimi-api>),
+so `cache_breakpoints` is accepted and ignored, same as OpenAI/Meta/Google/
+Alibaba/DeepSeek. Pricing (`kodo/llms/kimi/_usage.py`) is
+$3.00/$15.00/$0.30 and $0.95/$4.00/$0.19 per-million input/output/cached-input
+for K3 and K2.7 Code respectively; `cache_write` is `0.0` (no separate
+cache-write charge on this endpoint). Since Kimi is reached through the
+`openai` Python SDK pointed at a custom `base_url` (same pattern as
+Meta/Google/Alibaba/DeepSeek), `kimi/_retry.py` wires the shared
+`_provider_retry` core with the identical `openai.*` exception classes the
+other five vendors' `_retry.py` use.
+
+**Kimi's two model families use two genuinely different reasoning-config
+mechanisms — unlike every other vendor here, which uses one shape per
+vendor.** `kimi-k3` (thinking permanently on) takes a graded
+`reasoning_effort` as a **top-level** keyword argument on
+`chat.completions.create` — the same direct-kwarg placement Gemini uses in
+this codebase, *not* nested in `extra_body` like DeepSeek's/Qwen's own
+thinking toggles (confirmed against Moonshot's own K3 quickstart docs:
+"configure reasoning effort with the top-level `reasoning_effort` request
+field...; do not reuse the K2.x thinking parameter" —
+<https://platform.kimi.ai/docs/guide/kimi-k3-quickstart>). `kimi-k2.7-code`
+instead takes a boolean `thinking.type` switch (`"enabled"`/`"disabled"`)
+nested inside `extra_body` — the same field name/shape DeepSeek's own
+`thinking.type` toggle uses — since it is not a standard Chat Completions
+parameter (confirmed against
+<https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model>); fixed at
+`"enabled"` (always-on), same "one fixed reasoning setting per model, not per
+kodo tier" posture as every other vendor's table here.
+`kodo/llms/kimi/_kimi.py`'s `_reasoning_kwargs_for` dispatches on the exact
+model id between the two shapes, falling back to the boolean-toggle shape for
+any unregistered/future model id.
+
+**Kimi has no `thought_signature`-style tool-call replay requirement.**
+Gemini's thinking models reject a replayed tool call missing its exact
+per-call signature (HTTP 400, see above); no equivalent hard requirement was
+found in Moonshot's docs. `kodo/llms/kimi/_convert.py` therefore drops a
+persisted `thinking` block outright on replay, same as OpenAI/Meta/Google/
+Alibaba/DeepSeek all do for their own shapes, flagged in that module's
+docstring as an assumption to revisit if a stricter requirement turns up
+later.
+
+**All six cloud plugins share one retry/backoff core**, `kodo/llms/
 _provider_retry.py` — the `anthropic` and `openai` Python SDKs are both
 Stainless-generated with matching exception shapes
 (`AuthenticationError`/`RateLimitError`/`InternalServerError`/etc., all

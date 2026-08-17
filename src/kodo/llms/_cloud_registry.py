@@ -266,6 +266,47 @@ _DEEPSEEK_MODELS: tuple[CloudLLMEntry, ...] = (
     ),
 )
 
+# Moonshot AI's Kimi lineup via its own OpenAI-compatible endpoint
+# (https://platform.moonshot.ai/docs/guide/migrating-from-openai-to-kimi,
+# model list https://platform.kimi.ai/docs/models, pricing researched
+# 2026-08-16 -- see kodo/llms/kimi/_usage.py). Moonshot's current lineup has
+# three non-deprecated SKUs (kimi-k3, kimi-k2.6, kimi-k2.7-code); kimi-k2.5
+# and the kimi-k2 series are deliberately not registered here -- k2.5 is no
+# longer offered to new signups ahead of a 2026-08-31 platform sunset, and k2
+# was discontinued outright on 2026-05-25, same "don't register a model
+# already on its way out" posture as DeepSeek's dropped legacy aliases. Of
+# the two current non-flagship SKUs, kimi-k2.7-code is registered here and
+# kimi-k2.6 is not -- a judgment call (the two are identically priced and
+# comparably capable, but Kōdo is a coding agent with no use for K2.6's
+# vision input, and K2.7 Code's own docs claim higher success rates on coding
+# tasks specifically), not a documented Moonshot recommendation; see
+# `kodo/llms/kimi/_kimi.py`'s module-level comment for the full reasoning.
+# Two SKUs against kodo's four effort tiers -- a plain 2-2 split, same shape
+# as DeepSeek's (`kodo/server/_config.py`'s `models.cloud.kimi` defaults):
+# kimi-k2.7-code covers low/medium, kimi-k3 covers high/max. Like
+# Google/Alibaba/DeepSeek (and unlike Anthropic/OpenAI/Meta), Kimi's plugin
+# speaks Chat Completions -- see `kodo/llms/kimi/_kimi.py`'s module
+# docstring. Listed flagship-first, same convention as the other vendors'
+# tuples.
+_KIMI_MODELS: tuple[CloudLLMEntry, ...] = (
+    CloudLLMEntry(
+        name="Kimi K3",
+        model_id="kimi-k3",
+        description="Moonshot AI Kimi K3",
+        context_window=1_048_576,
+        recommendation="For the most demanding work -- deep reasoning, gnarly debugging, "
+        "big architectural calls.",
+    ),
+    CloudLLMEntry(
+        name="Kimi K2.7 Code",
+        model_id="kimi-k2.7-code",
+        description="Moonshot AI Kimi K2.7 Code",
+        context_window=262_144,
+        recommendation="The fast, cheap daily driver -- Kimi's coding-tuned model covers "
+        "everyday work at a fraction of K3's cost.",
+    ),
+)
+
 # Vendor key -> hardcoded models. Vendor keys are lowercase slugs used in
 # etc/settings.json (``active_cloud_vendor``, ``models.cloud.<vendor>``) and on
 # the wire; display names are separate so the UI can show "Anthropic" etc.
@@ -276,6 +317,7 @@ _CLOUD_REGISTRY: dict[str, tuple[CloudLLMEntry, ...]] = {
     "google": _GOOGLE_MODELS,
     "alibaba": _ALIBABA_MODELS,
     "deepseek": _DEEPSEEK_MODELS,
+    "kimi": _KIMI_MODELS,
 }
 
 _CLOUD_VENDOR_DISPLAY: dict[str, str] = {
@@ -285,6 +327,7 @@ _CLOUD_VENDOR_DISPLAY: dict[str, str] = {
     "google": "Google",
     "alibaba": "Alibaba",
     "deepseek": "DeepSeek",
+    "kimi": "Kimi",
 }
 
 # Vendor key -> dotted plugin module, mirroring the old LLMEntry.module field
@@ -297,6 +340,7 @@ _CLOUD_VENDOR_MODULE: dict[str, str] = {
     "google": "kodo.llms.google",
     "alibaba": "kodo.llms.alibaba",
     "deepseek": "kodo.llms.deepseek",
+    "kimi": "kodo.llms.kimi",
 }
 
 # Vendor key -> the naming-convention prefix that vendor's model_ids use.
@@ -315,6 +359,7 @@ _CLOUD_VENDOR_MODEL_PREFIX: dict[str, str] = {
     "google": "gemini-",
     "alibaba": "qwen",
     "deepseek": "deepseek-",
+    "kimi": "kimi-",
 }
 
 

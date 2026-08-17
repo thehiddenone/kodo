@@ -438,3 +438,62 @@ def test_deepseek_cache_read_is_cheaper_than_input() -> None:
         model="deepseek-v4-pro",
     )
     assert 0.0 < cached.usd_cost < base.usd_cost
+
+
+# ---------------------------------------------------------------------------
+# Kimi vendor dispatch (kodo.llms._pricing routes by model-id prefix) --
+# kimi-k3 (high/max) vs. kimi-k2.7-code (low/medium).
+# ---------------------------------------------------------------------------
+
+
+def test_kimi_zero_tokens_costs_nothing() -> None:
+    usage = Usage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="kimi-k3",
+    )
+    assert usage.usd_cost == 0.0
+
+
+def test_kimi_k3_cost() -> None:
+    usage = Usage(
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="kimi-k3",
+    )
+    assert abs(usage.usd_cost - (3.00 + 15.00)) < 1e-9
+
+
+def test_kimi_code_model_is_cheaper_than_k3() -> None:
+    def _cost(model: str) -> float:
+        return Usage(
+            input_tokens=1000,
+            output_tokens=1000,
+            cache_write_tokens=0,
+            cache_read_tokens=0,
+            model=model,
+        ).usd_cost
+
+    assert 0.0 < _cost("kimi-k2.7-code") < _cost("kimi-k3")
+
+
+def test_kimi_cache_read_is_cheaper_than_input() -> None:
+    base = Usage(
+        input_tokens=1000,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="kimi-k3",
+    )
+    cached = Usage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_write_tokens=0,
+        cache_read_tokens=1000,
+        model="kimi-k3",
+    )
+    assert 0.0 < cached.usd_cost < base.usd_cost

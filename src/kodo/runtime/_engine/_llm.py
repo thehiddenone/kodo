@@ -36,6 +36,7 @@ from kodo.llms.alibaba import QwenPlugin
 from kodo.llms.anthropic import ClaudePlugin
 from kodo.llms.deepseek import DeepSeekPlugin
 from kodo.llms.google import GeminiPlugin
+from kodo.llms.kimi import KimiPlugin
 from kodo.llms.llamacpp import LlamaPlugin
 from kodo.llms.meta import MusePlugin
 from kodo.llms.openai import GPTPlugin
@@ -64,6 +65,7 @@ _VENDOR_PLUGIN_FACTORIES: dict[str, Callable[[str, dict[str, object]], LLMPlugin
     "kodo.llms.google": lambda api_key, _settings: GeminiPlugin(api_key),
     "kodo.llms.alibaba": lambda api_key, _settings: QwenPlugin(api_key),
     "kodo.llms.deepseek": lambda api_key, _settings: DeepSeekPlugin(api_key),
+    "kodo.llms.kimi": lambda api_key, _settings: KimiPlugin(api_key),
 }
 
 

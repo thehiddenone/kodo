@@ -91,6 +91,16 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
                 "high": "deepseek-v4-pro",
                 "max": "deepseek-v4-pro",
             },
+            # Two Kimi SKUs are registered (kodo/llms/_cloud_registry.py's
+            # _KIMI_MODELS) for 4 effort tiers -- a plain 2-2 split, same
+            # shape as the deepseek row above: kimi-k2.7-code covers
+            # low/medium, kimi-k3 covers high/max.
+            "kimi": {
+                "low": "kimi-k2.7-code",
+                "medium": "kimi-k2.7-code",
+                "high": "kimi-k3",
+                "max": "kimi-k3",
+            },
         },
     },
     # Meta's discounted "contributor" tier: trades training-data permission
