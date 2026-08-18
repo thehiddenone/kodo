@@ -177,6 +177,16 @@ The server replies with the current world plus local-model status:
           "recommendation": "For the most demanding work — ..." }, "..." ] }
     },
     "active_cloud_vendor": "anthropic",
+    "openrouter_catalog": [
+      { "id": "openrouter/auto", "name": "Auto Router", "context_length": 0,
+        "price_prompt": -1.0, "price_completion": -1.0, "price_cache_read": 0.0,
+        "price_cache_write": 0.0, "supports_reasoning": false },
+      { "id": "anthropic/claude-sonnet-4", "name": "Anthropic: Claude Sonnet 4",
+        "context_length": 1000000, "price_prompt": 0.000003, "price_completion": 0.000015,
+        "price_cache_read": 0.0000003, "price_cache_write": 0.00000375,
+        "supports_reasoning": true },
+      "... ~414 more entries ..."
+    ],
     "local_registry": [
       { "name": "llamacpp-qwen36-27b-q4-k-xl", "kind": "hardcoded_hf",
         "description": "...", "repo_id": "...", "filename": "...",
@@ -204,6 +214,20 @@ The LLM registry itself (both `cloud_registry` and the catalogue behind
 section only covers the wire shape. `cloud_registry` is 100% hardcoded and
 static for the process lifetime; `local_registry` is hardcoded entries merged
 with the user's custom collection and can change mid-session (see §5.12a).
+
+`openrouter_catalog` is a **third**, differently-shaped registry —
+OpenRouter's own fetched/cached model list (doc/LLM_REGISTRY.md §3a), not
+part of `cloud_registry` above (OpenRouter has no compiled-in model tuple).
+Each entry is `{id, name, context_length, price_prompt, price_completion,
+price_cache_read, price_cache_write, supports_reasoning}` — `price_*` fields
+are USD per token (`openrouter/auto`'s own entry reports `-1` for
+`price_prompt`/`price_completion`, a sentinel meaning "depends on whichever
+model this routes a request to", never `0`). Unlike `cloud_registry`, this
+list changes over time (OpenRouter's own catalog, refreshed on a 12-hour
+TTL — kodo/llms/_openrouter_catalog.py) and can be empty (`[]`) briefly after
+a cold server start, before the first background fetch completes; the client
+should tolerate an empty list rather than treating it as an error. A manual
+re-fetch is available via `openrouter.models.refresh` (§7.6h).
 `kind` is one of `hardcoded_hf` / `custom_hf` / `custom_file` /
 `custom_server_url`; `installed` is always present and pre-computed
 server-side per §LLM_REGISTRY.md's installed-state rules — the client never
@@ -315,7 +339,7 @@ The header toggles split into **two frozen** and **three never-frozen**:
 
 - `edit_control` — how file edits are handled: `review_all` (pause for sign-off) / `allow_all` / `smart` (default). Set via `edit_control.set` (§7.4a). **Enforced** for `create_file`/`edit_file` only — the dispatcher reads it live per call and a review-worthy call fires `prompt.edit_review` (§6.9); independent of and always evaluated after `command_control`'s security gate. **Client-owned**: the client keeps the user's selected posture and sends the **shown** value, which it forces to `allow_all` (and locks the toggle in the UI) while Autonomous mode is *in effect* — i.e. the frozen `effective_autonomous` during a turn, the live `autonomous` selection when idle — and restores the user's selection otherwise. The server simply mirrors whatever the client last sent, so its stored value is always exactly what the UI shows.
 - `command_control` — how much risky commands are restricted: `defensive` / `permissive` / `smart` (default). Set via `command_control.set` (§7.4b). **Enforced**: this is the security layer's posture — the dispatcher reads it live per tool call and an `ask` verdict fires `prompt.permission` (§6.7). See doc/SECURITY.md. **Client-owned**, same mirroring rule as `edit_control` (forced `permissive` under Autonomous).
-- `thinking_level` — the session's reasoning-tier slug for the currently active **local** model's thinking family (`kodo.llms.local_thinking_family`/`local_thinking_tiers`, doc/LLM_REGISTRY.md §4.5) — `""` on a cloud model or a local model with no thinking family. Set via `thinking_level.set` (§7.4e). **Server-owned**, unlike the two toggles above: the valid value set is model-dependent, so the engine validates every change against the active model rather than mirroring the client unconditionally, and re-derives it itself (no client request needed) whenever a brand-new session opens or the active model's thinking family changes mid-session (a `config.reload`-triggered model switch). doc/SESSIONS.md has the full session-lifecycle picture.
+- `thinking_level` — the session's reasoning-tier slug for the currently active **local, or OpenRouter,** model's thinking family (`kodo.llms.local_thinking_family`/`local_thinking_tiers` for a local model, the synthetic `"openrouter"` family for OpenRouter — doc/LLM_REGISTRY.md §3a/§4.5) — `""` on any other cloud model, or a local model with no thinking family. Set via `thinking_level.set` (§7.4e). **Server-owned**, unlike the two toggles above: the valid value set is model-dependent, so the engine validates every change against the active model rather than mirroring the client unconditionally, and re-derives it itself (no client request needed) whenever a brand-new session opens or the active model's thinking family changes mid-session (a `config.reload`-triggered model switch). doc/SESSIONS.md has the full session-lifecycle picture.
 - `sampling` — this session's request-level llama-server sampling overrides, keyed by local registry entry ("quant") name: `{entry_name: {parameter: value}}`, holding only the parameters the user actually set for each. `{}` for a session that has never opened the sampling modal, which is the normal case and means no sampling fields are sent at all. Set via `sampling.set` (§7.4f). **Server-owned**, like `thinking_level` — but unlike it, never reset by a model switch: each override set is already scoped to the entry it applies to, so switching models just makes the others dormant until you switch back. Sparse by design — an absent parameter is *omitted* from the request body, letting llama-server keep whatever the launch args started it with, which is **not** the same as sending llama.cpp's built-in default. See doc/SAMPLING.md.
 
 > **Not yet on the snapshot:** `cumulative_usd`, `pending_prompts`, and
@@ -751,7 +775,9 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                      "tiers": ["minimal", "low", "medium", "high", "huge", "unlimited"],
                      "default": "unlimited" },
     "GPT-OSS-20B": { "family": "gpt_oss_reasoning_effort",
-                      "tiers": ["low", "medium", "high"], "default": "medium" }
+                      "tiers": ["low", "medium", "high"], "default": "medium" },
+    "openrouter": { "family": "openrouter_reasoning_effort",
+                     "tiers": ["low", "medium", "high", "max"], "default": "medium" }
   },
   "knob_defs": { "tail-culling": { "id": "tail-culling", "name": "Tail culling",
                                    "description": "How aggressively unlikely tokens are …",
@@ -777,7 +803,7 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                         "valid_values": null } ] }
 ```
 
-Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. Does **not** carry download progress (see above) — that's read off disk, not this event. `thinking_families` is keyed by `base_llm` (only entries that support a thinking-tier control appear) and is the single source the client uses to decide which control (if any) to render and what tiers/default to offer — see doc/LLM_REGISTRY.md §4.5. The *current* tier selection is **not** in this payload and is **not** read off settings.json any more — thinking is a per-session server-tracked value (`state.thinking_level`, §5.1, doc/SESSIONS.md), not a global one keyed by `base_llm`.
+Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. Does **not** carry download progress (see above) — that's read off disk, not this event. `thinking_families` is keyed by `base_llm` (only entries that support a thinking-tier control appear) and is the single source the client uses to decide which control (if any) to render and what tiers/default to offer — see doc/LLM_REGISTRY.md §4.5. The *current* tier selection is **not** in this payload and is **not** read off settings.json any more — thinking is a per-session server-tracked value (`state.thinking_level`, §5.1, doc/SESSIONS.md), not a global one keyed by `base_llm`. The one `"openrouter"` entry is not derived from any local registry entry above — it's a static, always-present key for OpenRouter's session-controlled reasoning effort (doc/LLM_REGISTRY.md §3a), the one cloud vendor with a thinking-tier mechanism at all.
 
 Each entry's launch configuration is, unlike thinking level, a **global**
 per-entry selection — not session-scoped — since it changes actual
@@ -1392,7 +1418,7 @@ Response:
 { "type": "thinking_level.set", "thinking_level": "high" }
 ```
 
-`thinking_level` must be a tier slug valid for the session's currently active **local** model's thinking family (the `thinking_families` payload, §5.12a / doc/LLM_REGISTRY.md §4.5 — the client computes the next tier itself and sends it, e.g. cycling a toggle button), or `""` if the active model has none. Unlike `edit_control.set`/`command_control.set`, an invalid value is **rejected outright** rather than coerced to a safe default — the server validates against the active model because the valid set is model-dependent, not a fixed enum.
+`thinking_level` must be a tier slug valid for the session's currently active **local, or OpenRouter,** model's thinking family (the `thinking_families` payload, §5.12a / doc/LLM_REGISTRY.md §3a/§4.5 — the client computes the next tier itself and sends it, e.g. cycling a toggle button), or `""` if the active model has none. Unlike `edit_control.set`/`command_control.set`, an invalid value is **rejected outright** rather than coerced to a safe default — the server validates against the active model because the valid set is model-dependent, not a fixed enum.
 
 Response:
 
@@ -1953,6 +1979,29 @@ reloading windows do not all do this at once:
 3. Escalate if it will not die: SIGTERM, then proceed anyway rather than
    leaving the window without a server.
 4. Upgrade `py-kodo`, then spawn a fresh server on the new backend.
+
+### 7.6h `openrouter.models.refresh` — re-fetch the OpenRouter catalog on demand
+
+Control connection only. Backs the OpenRouter Cloud AI Settings tab's
+"Refresh model list" button (doc/LLM_REGISTRY.md §3a) — an on-demand
+alternative to the 12-hour background TTL refresh
+(`kodo.llms.run_openrouter_catalog_refresh_loop`, started once at server
+startup).
+
+```json
+{ "type": "openrouter.models.refresh" }
+```
+
+→ `openrouter.models.refresh.ack` `{ "models": [ {"id": "...", "name": "...",
+"context_length": 0, "price_prompt": 0.0, "price_completion": 0.0,
+"price_cache_read": 0.0, "price_cache_write": 0.0, "supports_reasoning":
+false}, "..." ] }` — same per-entry shape as `hello.ack`'s
+`openrouter_catalog` field. Unlike `local_llm.check_updates` (§7.6),
+this **does** reply synchronously — one OpenRouter round trip, not a
+per-file scan — so there is no separate progress/event push. A fetch
+failure still replies with whatever was already cached rather than an
+error field; there is nothing actionable for the client to do differently,
+and the previous catalog is still better than an empty one.
 
 ### 7.7 ⟪planned⟫ — standalone rules management, credential push
 

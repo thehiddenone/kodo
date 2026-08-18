@@ -101,6 +101,21 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
                 "high": "kimi-k3",
                 "max": "kimi-k3",
             },
+            # Unlike every other vendor above, OpenRouter has no fixed
+            # per-tier lineup (kodo/llms/_openrouter_catalog.py -- its
+            # catalog is fetched, not compiled in) -- every tier defaults to
+            # the special router pseudo-model, which picks a concrete
+            # upstream model per request on OpenRouter's own terms. A user
+            # can still assign a specific model to any tier in Manual mode;
+            # this is only the out-of-the-box default. See
+            # openrouter_auto_mode below for the separate all-tiers-locked-
+            # to-auto toggle.
+            "openrouter": {
+                "low": "openrouter/auto",
+                "medium": "openrouter/auto",
+                "high": "openrouter/auto",
+                "max": "openrouter/auto",
+            },
         },
     },
     # Meta's discounted "contributor" tier: trades training-data permission
@@ -114,6 +129,16 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
     # housekeeper_llm.set) and no side effect beyond which model id the next
     # Meta call uses.
     "meta_contributor_tier": False,
+    # Whether OpenRouter's Cloud AI Settings tab is in Auto mode: when True,
+    # every effort tier resolves to "openrouter/auto" regardless of
+    # models.cloud.openrouter above (kodo/runtime/_engine/_llm.py's
+    # _resolve_model_key), and the per-tier pickers are disabled client-side.
+    # The underlying models.cloud.openrouter map is left untouched while this
+    # is on, so switching back to Manual restores whatever was picked before.
+    # Off by default -- Manual mode, with every tier already defaulting to
+    # the auto router anyway, so Auto vs. Manual-all-default-to-auto behave
+    # identically until the user actually customizes a tier.
+    "openrouter_auto_mode": False,
     # Governs the stuck-agent watchdog (kodo.runtime._engine._watchdog,
     # doc/STUCK_DETECTION.md) — detects a turn that ended without finishing
     # its task (e.g. an empty final response, or a truncated generation) and

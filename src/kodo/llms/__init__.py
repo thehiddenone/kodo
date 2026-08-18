@@ -27,6 +27,13 @@ from ._interface import (
     default_cache_breakpoints,
 )
 from ._logger import LoggingLLMPlugin
+from ._openrouter_catalog import (
+    OpenRouterModelInfo,
+    get_openrouter_catalog,
+    get_openrouter_model,
+    refresh_openrouter_catalog,
+    run_openrouter_catalog_refresh_loop,
+)
 from ._provider_retry import RetryExhaustedError, UnrecoverableError
 from ._sampling import (
     RESERVED_SAMPLING_FIELDS,
@@ -98,6 +105,7 @@ __all__ = [
     "LocalLLMEntry",
     "LoggingLLMPlugin",
     "Message",
+    "OpenRouterModelInfo",
     "QWEN_REASONING_BUDGET_FAMILY",
     "QWEN_TIER_TOKEN_BUDGETS",
     "REASONING_BUDGET_MESSAGE",
@@ -136,6 +144,8 @@ __all__ = [
     "get_knob_selections",
     "get_llama_server_override_path",
     "get_local_registry",
+    "get_openrouter_catalog",
+    "get_openrouter_model",
     "get_profiles",
     "knob_owned_flags",
     "knob_selection_args",
@@ -145,12 +155,14 @@ __all__ = [
     "local_thinking_tiers",
     "parse_llama_args",
     "parse_llama_args_text",
+    "refresh_openrouter_catalog",
     "remove_local_entry",
     "remove_profile",
     "resolve_context_window",
     "resolve_default_profile_args",
     "resolve_effective_llama_config",
     "resolve_knob_selections",
+    "run_openrouter_catalog_refresh_loop",
     "sampling_param_spec",
     "sampling_specs_to_json",
     "set_active_profile",

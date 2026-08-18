@@ -18,7 +18,7 @@ retry/backoff policy; leaving the SDK's own retry enabled means every raw
 HTTP error gets silently retried a couple of times *inside* the SDK first,
 on its own short, un-jittered schedule (and, for 429s, driven by whatever
 ``Retry-After`` the vendor sends) before this module or the gateway ever see
-it -- defeating both the ``(2, 8, 32)``\ s backoff below and the gateway's
+it -- defeating both the ``(2, 8, 32)``-second backoff below and the gateway's
 exponential 429 backoff.
 """
 

@@ -68,15 +68,18 @@ design (registries, effort levels, resolution order) is in
       "deepseek": { "low": "deepseek-v4-flash", "medium": "deepseek-v4-flash",
                     "high": "deepseek-v4-pro", "max": "deepseek-v4-pro" },
       "kimi": { "low": "kimi-k2.7-code", "medium": "kimi-k2.7-code",
-                "high": "kimi-k3", "max": "kimi-k3" }
+                "high": "kimi-k3", "max": "kimi-k3" },
+      "openrouter": { "low": "openrouter/auto", "medium": "openrouter/auto",
+                       "high": "openrouter/auto", "max": "openrouter/auto" }
     }
-  }
+  },
+  "openrouter_auto_mode": false
 }
 ```
 
 **Model switching**: change the relevant key(s), save the file, send `config.reload`. In local mode there is one active model regardless of a sub-agent's declared `capability`; in cloud mode, `capability` selects which of the active vendor's four effort-level assignments is used. There is no `default_model`/flat-`models`-dict scheme any more (an older revision of this document described one; it never matched the shipped code — see `_resolve_model_key` in `kodo/runtime/_engine/_llm.py` for the actual resolution logic).
 
-**Registering a new model**: cloud models are 100% hardcoded (`kodo/llms/_cloud_registry.py`) — adding one is a code change, not a settings change. Local models can be added live from the Local Inference Settings webview (`local_llm.add_huggingface`/`add_file`/`add_server_url`, WS_PROTOCOL.md §7.6) without touching `settings.json` at all; only *which* installed local model is active goes through `models.local` here.
+**Registering a new model**: cloud models are 100% hardcoded (`kodo/llms/_cloud_registry.py`) — adding one is a code change, not a settings change — **except OpenRouter** (doc/LLM_REGISTRY.md §3a): its catalog is fetched from OpenRouter's own API and cached, so `models.cloud.openrouter.<effort>` can be set to any of its 400+ model ids without a kodo code change. Local models can be added live from the Local Inference Settings webview (`local_llm.add_huggingface`/`add_file`/`add_server_url`, WS_PROTOCOL.md §7.6) without touching `settings.json` at all; only *which* installed local model is active goes through `models.local` here.
 
 Meta has no effort-tiered lineup — `models.cloud.meta` maps all four tiers to
 the same `muse-spark-1.2` id, since Meta's Model API offers only one model
@@ -91,7 +94,11 @@ rather than middle-SKU-covers-two — `models.cloud.deepseek` maps
 Kimi also has two registered SKUs, same even split as DeepSeek —
 `models.cloud.kimi` maps `low`/`medium` to `kimi-k2.7-code` and `high`/`max`
 to `kimi-k3` (doc/LLM_REGISTRY.md §3 covers why `kimi-k2.6`/`kimi-k2.5` are
-not registered).
+not registered). OpenRouter has no fixed lineup at all (doc/LLM_REGISTRY.md
+§3a) — `models.cloud.openrouter` defaults every tier to the special router
+pseudo-model `"openrouter/auto"`, overridable per tier in Manual mode; see
+`openrouter_auto_mode` below for the separate all-tiers-locked-to-auto
+toggle.
 
 ### 2.2a `meta_contributor_tier`
 
@@ -114,6 +121,27 @@ literal API request and in the `Usage.model` reported back for pricing
 
 ```json
 { "meta_contributor_tier": false }
+```
+
+### 2.2b `openrouter_auto_mode`
+
+Whether OpenRouter's Cloud AI Settings tab is in Auto mode (doc/LLM_REGISTRY.md
+§3a). `false` by default (Manual mode). When `true`,
+`kodo/runtime/_engine/_llm.py`'s `_resolve_model_key` returns the router
+pseudo-model `"openrouter/auto"` for every effort tier, **regardless** of
+`models.cloud.openrouter` above — that map is deliberately left untouched
+while Auto is on, so turning it back off restores whatever was picked
+per-tier in Manual mode. The per-tier pickers are disabled client-side while
+this is `true`.
+
+Same pattern as `meta_contributor_tier` above — a plain settings.json write
+(`extension/cloud-ai-settings.ts`'s `setOpenRouterAutoMode`) followed by
+`config.reload`, no dedicated WS command, since there's no server-side
+validation to run beyond a boolean. Read fresh, per LLM dispatch, by
+`_resolve_model_key`.
+
+```json
+{ "openrouter_auto_mode": false }
 ```
 
 ### 2.3 Context limit (per-model — not a setting)

@@ -414,7 +414,121 @@ Alibaba/DeepSeek all do for their own shapes, flagged in that module's
 docstring as an assumption to revisit if a stricter requirement turns up
 later.
 
-**All seven cloud plugins share one retry/backoff core**, `kodo/llms/
+### 3a. OpenRouter — a fetched catalog, not a compiled-in tuple
+
+Every vendor above ships a fixed, small, hand-picked lineup baked into
+`_cloud_registry.py` at kodo's own release cadence. OpenRouter
+(<https://openrouter.ai>) is an aggregator with 400+ models across many
+upstream providers (414 as of 2026-08-17) and per-model pricing/context/
+reasoning-support metadata that changes on OpenRouter's own schedule — a
+compiled-in tuple isn't a fit, so OpenRouter is the one vendor **absent**
+from `_CLOUD_REGISTRY` (it still gets `_CLOUD_VENDOR_DISPLAY`/
+`_CLOUD_VENDOR_MODULE` entries, for display name + plugin dispatch).
+
+**The catalog is fetched and cached, not compiled in.**
+`kodo/llms/_openrouter_catalog.py` owns one unauthenticated `GET
+https://openrouter.ai/api/v1/models` (no API key required to list models),
+caching the parsed result (`OpenRouterModelInfo`: `id`, `name`,
+`context_length`, `price_prompt`/`price_completion`/`price_cache_read`/
+`price_cache_write`, `supports_reasoning`) to
+`~/.kodo/etc/openrouter-models.json` — same directory
+`local-llm-registry.json` lives in, though this file has no user-editable
+part; it's purely a fetched cache. `kodo/server/_app.py`'s `_start_background`
+kicks off `run_openrouter_catalog_refresh_loop` at server startup (fetch
+immediately, then re-fetch every 12 hours for as long as the process runs —
+not just on-connect, since a kodo-server process can stay up for days with
+clients reconnecting to an already-open control channel rather than sending
+a fresh `hello`). The full cached catalog is shipped in `hello.ack`'s
+`openrouter_catalog` field, the same delivery pattern `cloud_registry`/
+`local_registry`/`sampling_specs` already use — kodo-vsix's OpenRouter tab
+filters it client-side for its searchable model picker rather than making a
+server round trip per keystroke (WS_PROTOCOL.md §4.1). A user can also
+force an immediate re-fetch via `openrouter.models.refresh`
+(WS_PROTOCOL.md §7.6h), for a "Refresh model list" button.
+
+**Two modes, one settings key each.** `models.cloud.openrouter.<effort>`
+(`kodo/server/_config.py`) holds a real OpenRouter model id per tier, same
+shape as every other vendor — defaulting all four tiers to the special
+router pseudo-model `"openrouter/auto"` out of the box. A second, separate
+boolean, `openrouter_auto_mode` (default `False`, doc/SETTINGS.md §2.2b),
+is the account-wide "Auto mode" toggle the Cloud AI Settings tab's checkbox
+drives: when `True`, `kodo/runtime/_engine/_llm.py`'s `_resolve_model_key`
+returns `"openrouter/auto"` unconditionally for every tier, **without**
+overwriting `models.cloud.openrouter` — so switching Auto back off restores
+whatever the user had picked per-tier in Manual mode. This mirrors
+`meta_contributor_tier`'s "plain settings write + `config.reload`, no
+dedicated WS command" pattern, since there's no server-side validation to
+run beyond a boolean.
+
+**Reasoning effort rides the session's `thinking_level`, extended to a
+cloud vendor for the first time.** Every other Chat-Completions-shaped
+vendor here (Kimi/DeepSeek/Alibaba/Gemini) hardcodes one fixed reasoning
+setting per known model, since each has only a handful of models — that
+doesn't work for OpenRouter, where the model behind any given tier is
+arbitrary (and, in Auto mode or the Manual-mode default, is the *same*
+`"openrouter/auto"` id for all four tiers, so a model-keyed table couldn't
+even distinguish which tier is calling). Rather than invent a second,
+parallel "how hard to think" concept, OpenRouter reuses the mechanism
+`LlamaPlugin` (local) already has: session-level `thinking_level`, adjusted
+independently of which tier picked the model, surfaced through the exact
+same `thinking_families`-keyed machinery (§4.5) via a synthetic `base_llm`
+identity, `"openrouter"` (`kodo.runtime._engine._llm._OPENROUTER_BASE_LLM`
+— not a real local registry entry). `_current_base_llm()` returns that
+identity whenever `mode == "cloud" and active_cloud_vendor == "openrouter"`;
+`_thinking_kwargs`'s guard was widened from "local only" to "local or
+OpenRouter"; and a small OpenRouter-only tier table
+(`_OPENROUTER_THINKING_TIERS = ("low", "medium", "high", "max")`, default
+`"medium"`) is consulted alongside `local_thinking_tiers`/
+`local_thinking_default_tier` (which stay local-only and untouched) by two
+thin wrapper functions, `_thinking_tiers_for`/`_thinking_default_for`. The
+tier names map 1:1 onto OpenRouter's own unified `reasoning.effort`
+parameter (<https://openrouter.ai/docs/use-cases/reasoning-tokens>, which
+also accepts `"minimal"`/`"xhigh"`/`"none"` — kodo never sends those) — no
+translation table needed, and unsupported models are documented to
+silently ignore the whole `reasoning` field. `OpenRouterPlugin.stream_query`
+takes `thinking_level` as its parameter name, matching `LlamaPlugin`'s
+exactly, so `LoggingLLMPlugin`'s existing conditional-forwarding (built for
+`LlamaPlugin`) needed no changes at all. Reasoning text streams back on
+`delta.reasoning_details` (a list of typed objects; only
+`type == "reasoning.text"` entries carry text), not the flat
+`delta.reasoning_content` string Kimi/DeepSeek/Alibaba/Gemini use — a flat
+`delta.reasoning` string is also checked as a defensive fallback.
+
+**Cost is read off the response, not computed from a table.** A
+hand-maintained per-token pricing table (every other vendor's `_usage.py`)
+doesn't scale to 400+ models, and can't price `"openrouter/auto"` at all —
+its own catalog entry reports `-1` for `price_prompt`/`price_completion`,
+since its real per-token rate depends on whichever model it routes a given
+request to. OpenRouter's own Chat Completions response reports the exact
+USD cost per call in the final chunk's `usage.cost` field
+(<https://openrouter.ai/docs/use-cases/usage-accounting> — "credits" are
+USD 1:1, no request flag needed, always included), so
+`OpenRouterPlugin` reads it directly into a new `Usage.provider_reported_cost`
+field (`kodo/llms/_interface.py`) instead. `Usage.usd_cost` returns it
+verbatim when set, only falling through to `_pricing.py`'s per-token-table
+dispatch otherwise — every other vendor leaves the field `None` and is
+unaffected. `OpenRouterPlugin` also reads the *actual served model* off
+each chunk's own `model` field (present on every OpenAI-compatible
+response) into `Usage.model`, so `"openrouter/auto"` calls are priced and
+logged against whichever real upstream model actually answered, not the
+router pseudo-id. OpenRouter's own model ids (`"<upstream provider>/<model>"`,
+e.g. `"anthropic/claude-sonnet-4"`) also don't share one common prefix, so
+OpenRouter is deliberately absent from `_CLOUD_VENDOR_MODEL_PREFIX` — the
+prefix-based fallback `_pricing.py` uses for old/deprecated model ids no
+longer in a vendor's registry never applies to OpenRouter, since every
+OpenRouter `Usage` always carries `provider_reported_cost`.
+
+Since OpenRouter is reached through the `openai` Python SDK pointed at a
+custom `base_url` (`https://openrouter.ai/api/v1`, same pattern as
+Meta/Google/Alibaba/DeepSeek/Kimi), `openrouter/_retry.py` wires the shared
+`_provider_retry` core with the identical `openai.*` exception classes the
+other six vendors' `_retry.py` use, and `openrouter/_convert.py` is adapted
+from Kimi's (Chat-Completions-shaped; no cache-breakpoint logic, since
+OpenRouter's upstream providers handle prompt caching on their own terms
+with no single marker mechanism kodo could target across the whole
+catalog).
+
+**All eight cloud plugins share one retry/backoff core**, `kodo/llms/
 _provider_retry.py` — the `anthropic` and `openai` Python SDKs are both
 Stainless-generated with matching exception shapes
 (`AuthenticationError`/`RateLimitError`/`InternalServerError`/etc., all
@@ -434,10 +548,12 @@ the SDK to silently retry a couple of times on its own short schedule before
 either layer ever sees the error (this was a real bug for Kimi, fixed
 2026-08-16).
 
-**`Usage.usd_cost` dispatches by vendor**, `kodo/llms/_pricing.py` —
-`compute_cost(usage)` looks up `usage.model`'s vendor via
-`get_cloud_vendor_for_model_prefix` and lazily imports that vendor package's
-own `compute_cost`. (Before OpenAI existed as a real vendor, `Usage.usd_cost`
+**`Usage.usd_cost` dispatches by vendor, unless the provider already told
+us** — `kodo/llms/_pricing.py`'s `compute_cost(usage)` looks up
+`usage.model`'s vendor via `get_cloud_vendor_for_model_prefix` and lazily
+imports that vendor package's own `compute_cost`, but only when
+`usage.provider_reported_cost` is unset (every vendor except OpenRouter;
+see §3a above). (Before OpenAI existed as a real vendor, `Usage.usd_cost`
 was hardcoded straight to Anthropic's pricing table for every plugin — a
 latent bug that only ever mattered once a second paid vendor shipped, fixed
 alongside this one.) A local model, or any model id matching no known cloud
@@ -453,7 +569,10 @@ LLMPlugin` constructor map `_resolve_plugin` dispatches through — the full
 settings dict is passed, not just the key, so a vendor whose plugin needs
 more than that, like Meta's `meta_contributor_tier` flag, reads it there
 instead of `_resolve_plugin` growing a vendor-specific branch). There is no
-external/JSON part to this registry.
+external/JSON part to this registry — **except OpenRouter** (§3a), whose
+whole point is a runtime-fetched catalog instead of a compiled-in tuple, and
+which skips the `_usage.py`/`_CLOUD_VENDOR_MODEL_PREFIX` steps entirely for
+the reasons given above.
 
 ---
 

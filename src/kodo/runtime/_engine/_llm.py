@@ -40,6 +40,7 @@ from kodo.llms.kimi import KimiPlugin
 from kodo.llms.llamacpp import LlamaPlugin
 from kodo.llms.meta import MusePlugin
 from kodo.llms.openai import GPTPlugin
+from kodo.llms.openrouter import OpenRouterPlugin
 from kodo.project import kodo_user_dir
 from kodo.subagents import SubAgent
 from kodo.tools import ToolDispatcher
@@ -66,7 +67,45 @@ _VENDOR_PLUGIN_FACTORIES: dict[str, Callable[[str, dict[str, object]], LLMPlugin
     "kodo.llms.alibaba": lambda api_key, _settings: QwenPlugin(api_key),
     "kodo.llms.deepseek": lambda api_key, _settings: DeepSeekPlugin(api_key),
     "kodo.llms.kimi": lambda api_key, _settings: KimiPlugin(api_key),
+    "kodo.llms.openrouter": lambda api_key, _settings: OpenRouterPlugin(api_key),
 }
+
+# A synthetic "base_llm" identity for OpenRouter -- not a real local registry
+# entry (OpenRouter is a cloud vendor), but reusing the exact same
+# base_llm-keyed thinking-tier machinery every local model already goes
+# through (_current_base_llm/_thinking_level_for_model/handle_thinking_level_set
+# below, and the server's thinking_families payload) is how OpenRouter gets a
+# real, independently-adjustable "how hard should it think" control instead
+# of one hardcoded per model -- see kodo/llms/openrouter/_openrouter.py's
+# class docstring. local_thinking_tiers/local_thinking_family/
+# local_thinking_default_tier (kodo/llms/local_registry/_thinking.py) stay
+# local-only and untouched; _thinking_tiers_for/_thinking_default_for below
+# are the one branch point that also recognizes this identity.
+_OPENROUTER_BASE_LLM = "openrouter"
+# Matches OpenRouter's own `reasoning.effort` literal strings directly (no
+# translation table needed) and reuses the exact "low"/"medium"/"high"
+# wording kodo/llms/local_registry/_thinking.py's GPT_OSS_REASONING_EFFORT_FAMILY
+# already uses for a conceptually distinct axis (that family's tiers govern a
+# *local* GPT-OSS model's launch-time reasoning_effort; this one governs a
+# per-request OpenRouter parameter) -- not a new naming convention.
+_OPENROUTER_THINKING_TIERS: tuple[str, ...] = ("low", "medium", "high", "max")
+# OpenRouter's own documented default when reasoning is enabled with no
+# explicit effort (https://openrouter.ai/docs/use-cases/reasoning-tokens).
+_OPENROUTER_DEFAULT_THINKING_TIER = "medium"
+
+
+def _thinking_tiers_for(base_llm: str) -> tuple[str, ...]:
+    """``local_thinking_tiers``, plus the synthetic OpenRouter identity."""
+    if base_llm == _OPENROUTER_BASE_LLM:
+        return _OPENROUTER_THINKING_TIERS
+    return local_thinking_tiers(base_llm)
+
+
+def _thinking_default_for(base_llm: str) -> str:
+    """``local_thinking_default_tier``, plus the synthetic OpenRouter identity."""
+    if base_llm == _OPENROUTER_BASE_LLM:
+        return _OPENROUTER_DEFAULT_THINKING_TIER
+    return local_thinking_default_tier(base_llm)
 
 
 def _find_cloud_vendor_for_model_id(model_id: str) -> str | None:
@@ -118,6 +157,13 @@ class LLMPlumbingMixin:
             return str(models_map.get("local", "llamacpp-qwen36-27b-q4-k-xl"))
 
         vendor = str(settings.get("active_cloud_vendor", "anthropic"))
+        # Auto mode overrides every tier to the router pseudo-model,
+        # regardless of what models.cloud.openrouter holds -- that map is
+        # deliberately left untouched (not overwritten) so toggling Auto back
+        # off restores whatever the user had picked in Manual mode. See
+        # kodo/server/_config.py's openrouter_auto_mode default.
+        if vendor == "openrouter" and bool(settings.get("openrouter_auto_mode", False)):
+            return "openrouter/auto"
         cloud_map = models_map.get("cloud", {})
         vendor_map = cloud_map.get(vendor, {}) if isinstance(cloud_map, dict) else {}
         if not isinstance(vendor_map, dict):
@@ -191,29 +237,42 @@ class LLMPlumbingMixin:
         """``base_llm`` of the session's currently active *local* model.
 
         Reads fresh settings each call (same as :meth:`_resolve_model_key`).
-        ``""`` whenever the session is on a cloud model, or a local registry
-        entry with no ``base_llm`` (``custom_hf``/``custom_file``/
-        ``custom_server_url``) — i.e. whenever there is no thinking-tier
-        mechanism to apply. Used to keep ``_session.thinking_level`` in sync
-        with whatever model is actually selected (doc/SESSIONS.md).
+        Returns the synthetic :data:`_OPENROUTER_BASE_LLM` identity when the
+        active model is on OpenRouter (the one cloud vendor with a
+        thinking-tier mechanism -- see :func:`_thinking_tiers_for`), ``""``
+        for any other cloud vendor, and a local registry entry's own
+        ``base_llm`` (``""`` for one with none, e.g. ``custom_hf``/
+        ``custom_file``/``custom_server_url``) for a local model. Used to
+        keep ``_session.thinking_level`` in sync with whatever model is
+        actually selected (doc/SESSIONS.md).
         """
+        settings = self._get_settings()
+        if (
+            str(settings.get("mode", "cloud")) == "cloud"
+            and str(settings.get("active_cloud_vendor", "anthropic")) == "openrouter"
+        ):
+            return _OPENROUTER_BASE_LLM
         model_key = self._resolve_model_key(self._entry_capability())
         entry = get_local_registry(kodo_user_dir()).get(model_key)
         return entry.base_llm if entry is not None else ""
 
     def _thinking_kwargs(self: EngineHost, routing: LLMRouting) -> dict[str, object]:
-        """``{"thinking_level": ...}`` to splice into a local ``stream_query`` call.
+        """``{"thinking_level": ...}`` to splice into a ``stream_query`` call.
 
         Applies the session's ``thinking_level`` to every LLM call this
-        session makes on its active *local* model — not just the main turn,
-        but every silent call too (compaction, ``web_search``'s tool loop) —
-        since it is a session-wide setting, not a per-call one
-        (doc/SESSIONS.md). ``{}`` for a cloud call (no thinking-tier
-        mechanism; ``ClaudePlugin.stream_query`` has no such parameter) or
-        when the active local model has no thinking family
-        (``_session.thinking_level`` is already ``""`` in that case).
+        session makes on its active *local or OpenRouter* model — not just
+        the main turn, but every silent call too (compaction, ``web_search``'s
+        tool loop) — since it is a session-wide setting, not a per-call one
+        (doc/SESSIONS.md). OpenRouter is the one cloud vendor with a
+        thinking-tier mechanism (kodo/llms/openrouter/_openrouter.py's class
+        docstring); every other cloud plugin has no such parameter at all.
+        ``{}`` for any other cloud call, or when the active model has no
+        thinking family (``_session.thinking_level`` is already ``""`` in
+        that case).
         """
-        if routing.residence != "local" or not self._session.thinking_level:
+        if not (routing.residence == "local" or routing.vendor == "openrouter"):
+            return {}
+        if not self._session.thinking_level:
             return {}
         return {"thinking_level": self._session.thinking_level}
 
@@ -300,10 +359,10 @@ class LLMPlumbingMixin:
         valid for it (e.g. the active model changed underneath a resumed
         session while it was closed).
         """
-        tiers = local_thinking_tiers(base_llm)
+        tiers = _thinking_tiers_for(base_llm)
         if prefer is not None and (prefer in tiers if tiers else prefer == ""):
             return prefer
-        return local_thinking_default_tier(base_llm)
+        return _thinking_default_for(base_llm)
 
     async def _sync_thinking_level_to_model(self: EngineHost) -> None:
         """Re-derive ``thinking_level`` when the active model's identity changed.
@@ -346,7 +405,7 @@ class LLMPlumbingMixin:
             bool: ``True`` if applied, ``False`` if rejected.
         """
         base_llm = self._current_base_llm()
-        tiers = local_thinking_tiers(base_llm)
+        tiers = _thinking_tiers_for(base_llm)
         if tiers:
             if value not in tiers:
                 return False

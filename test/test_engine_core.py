@@ -828,6 +828,17 @@ def test_current_base_llm_empty_for_non_thinking_local_model(tmp_path: Path) -> 
     assert engine._current_base_llm() == "Qwen3-Coder-Next-80B"
 
 
+def test_current_base_llm_openrouter_returns_synthetic_identity(tmp_path: Path) -> None:
+    """OpenRouter is the one cloud vendor with a thinking-tier mechanism --
+    _current_base_llm() returns its synthetic "openrouter" identity (not a
+    real local registry entry), same base_llm-keyed machinery every local
+    model already goes through (doc/LLM_REGISTRY.md §3a)."""
+    engine, _t, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "cloud", "active_cloud_vendor": "openrouter"}
+    )
+    assert engine._current_base_llm() == "openrouter"
+
+
 async def test_start_fresh_session_seeds_thinking_level_from_family_default(
     tmp_path: Path,
 ) -> None:
@@ -955,6 +966,52 @@ async def test_handle_thinking_level_set_accepts_empty_for_non_thinking_model(
     ok = await engine.handle_thinking_level_set("")
     assert ok is True
     assert engine._session.thinking_level == ""
+
+
+async def test_start_fresh_session_seeds_thinking_level_for_openrouter(
+    tmp_path: Path,
+) -> None:
+    engine, transient, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "cloud", "active_cloud_vendor": "openrouter"}
+    )
+    try:
+        await engine.start("session-1", resumed=False)
+        assert engine._session.thinking_level == "medium"
+        assert transient.thinking_level == "medium"
+    finally:
+        await _cancel_worker(engine)
+
+
+async def test_handle_thinking_level_set_accepts_valid_tier_for_openrouter(
+    tmp_path: Path,
+) -> None:
+    engine, transient, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "cloud", "active_cloud_vendor": "openrouter"}
+    )
+    transient.attach_session("s1", resumed=False)
+
+    ok = await engine.handle_thinking_level_set("max")
+
+    assert ok is True
+    assert engine._session.thinking_level == "max"
+    assert transient.thinking_level == "max"
+
+
+async def test_handle_thinking_level_set_rejects_invalid_tier_for_openrouter(
+    tmp_path: Path,
+) -> None:
+    engine, transient, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "cloud", "active_cloud_vendor": "openrouter"}
+    )
+    transient.attach_session("s1", resumed=False)
+    engine._session.thinking_level = "medium"
+
+    # "unlimited" is a local Qwen-family tier, not valid for OpenRouter's
+    # own low/medium/high/max scale.
+    ok = await engine.handle_thinking_level_set("unlimited")
+
+    assert ok is False
+    assert engine._session.thinking_level == "medium"
 
 
 def test_freeze_effective_modes_snapshots_both_toggles(tmp_path: Path) -> None:

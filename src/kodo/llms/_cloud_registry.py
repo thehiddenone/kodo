@@ -310,6 +310,15 @@ _KIMI_MODELS: tuple[CloudLLMEntry, ...] = (
 # Vendor key -> hardcoded models. Vendor keys are lowercase slugs used in
 # etc/settings.json (``active_cloud_vendor``, ``models.cloud.<vendor>``) and on
 # the wire; display names are separate so the UI can show "Anthropic" etc.
+#
+# OpenRouter is deliberately NOT a key here. Every vendor above ships a fixed,
+# small, hand-picked model lineup that changes on kodo's own release schedule
+# — a real fit for a compiled-in tuple. OpenRouter is an aggregator with 400+
+# models and per-model pricing/context/reasoning-support metadata that
+# changes on OpenRouter's own schedule, fetched and cached at runtime instead
+# (see kodo.llms._openrouter_catalog). It still needs an entry in
+# _CLOUD_VENDOR_DISPLAY/_CLOUD_VENDOR_MODULE below (display name + plugin
+# dispatch), just not one here.
 _CLOUD_REGISTRY: dict[str, tuple[CloudLLMEntry, ...]] = {
     "anthropic": _ANTHROPIC_MODELS,
     "openai": _OPENAI_MODELS,
@@ -328,6 +337,7 @@ _CLOUD_VENDOR_DISPLAY: dict[str, str] = {
     "alibaba": "Alibaba",
     "deepseek": "DeepSeek",
     "kimi": "Kimi",
+    "openrouter": "OpenRouter",
 }
 
 # Vendor key -> dotted plugin module, mirroring the old LLMEntry.module field
@@ -341,6 +351,7 @@ _CLOUD_VENDOR_MODULE: dict[str, str] = {
     "alibaba": "kodo.llms.alibaba",
     "deepseek": "kodo.llms.deepseek",
     "kimi": "kodo.llms.kimi",
+    "openrouter": "kodo.llms.openrouter",
 }
 
 # Vendor key -> the naming-convention prefix that vendor's model_ids use.
@@ -352,6 +363,13 @@ _CLOUD_VENDOR_MODULE: dict[str, str] = {
 # both "muse-spark-1.2" and the contributor-tier "muse-spark-1.2-contributor"
 # rewrite -- kodo.llms.meta._usage.compute_cost does its own finer
 # contributor-vs-standard prefix match once dispatched here.
+#
+# OpenRouter is deliberately absent: its model ids are "<upstream
+# provider>/<model>" (e.g. "anthropic/claude-sonnet-4"), with no prefix
+# shared across the whole catalog -- and it doesn't need one, since every
+# OpenRouter Usage always carries provider_reported_cost
+# (kodo.llms._interface.Usage), so it never falls through to this
+# prefix-based dispatch at all.
 _CLOUD_VENDOR_MODEL_PREFIX: dict[str, str] = {
     "anthropic": "claude",
     "openai": "gpt-",

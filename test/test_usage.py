@@ -497,3 +497,63 @@ def test_kimi_cache_read_is_cheaper_than_input() -> None:
         model="kimi-k3",
     )
     assert 0.0 < cached.usd_cost < base.usd_cost
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter -- unlike every vendor above, cost is never computed from a
+# per-token table (its 400+-model dynamic catalog makes one impractical, and
+# it can't price "openrouter/auto" at all). Usage.provider_reported_cost, set
+# from the provider's own response, takes precedence over kodo.llms._pricing's
+# model-prefix dispatch entirely (doc/LLM_REGISTRY.md §3a).
+# ---------------------------------------------------------------------------
+
+
+def test_openrouter_provider_reported_cost_takes_precedence() -> None:
+    usage = Usage(
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="anthropic/claude-sonnet-4",
+        provider_reported_cost=0.0042,
+    )
+    assert usage.usd_cost == 0.0042
+
+
+def test_openrouter_without_provider_reported_cost_falls_back_to_zero() -> None:
+    """No _CLOUD_VENDOR_MODEL_PREFIX entry for OpenRouter means a bare
+    OpenRouter-shaped model id (no provider_reported_cost set) prices at
+    $0 via the ordinary "unknown vendor" fallback, same as a local model."""
+    usage = Usage(
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="anthropic/claude-sonnet-4",
+    )
+    assert usage.usd_cost == 0.0
+
+
+def test_openrouter_auto_pseudo_model_without_provider_reported_cost_is_zero() -> None:
+    usage = Usage(
+        input_tokens=1000,
+        output_tokens=1000,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="openrouter/auto",
+    )
+    assert usage.usd_cost == 0.0
+
+
+def test_openrouter_provider_reported_cost_of_zero_is_not_treated_as_unset() -> None:
+    """0.0 is a real cost (e.g. a free model) -- must not be confused with
+    "not set", which is what None means."""
+    usage = Usage(
+        input_tokens=1000,
+        output_tokens=1000,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+        model="some-provider/free-model:free",
+        provider_reported_cost=0.0,
+    )
+    assert usage.usd_cost == 0.0

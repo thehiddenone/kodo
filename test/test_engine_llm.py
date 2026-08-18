@@ -201,6 +201,59 @@ def test_resolve_model_key_malformed_models_map_is_tolerated() -> None:
     assert engine._resolve_model_key("high") == get_cloud_registry()["anthropic"][0].model_id
 
 
+def test_resolve_model_key_openrouter_manual_mode_uses_per_tier_pick() -> None:
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "openrouter",
+            "models": {"cloud": {"openrouter": {"high": "anthropic/claude-sonnet-4"}}},
+        }
+    )
+    assert engine._resolve_model_key("high") == "anthropic/claude-sonnet-4"
+
+
+def test_resolve_model_key_openrouter_auto_mode_overrides_every_tier() -> None:
+    # Even though "high" has an explicit manual pick, openrouter_auto_mode
+    # forces every tier to the router pseudo-model regardless.
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "openrouter",
+            "openrouter_auto_mode": True,
+            "models": {"cloud": {"openrouter": {"high": "anthropic/claude-sonnet-4"}}},
+        }
+    )
+    assert engine._resolve_model_key("high") == "openrouter/auto"
+    assert engine._resolve_model_key("low") == "openrouter/auto"
+
+
+def test_resolve_model_key_openrouter_auto_mode_does_not_mutate_settings() -> None:
+    """Toggling Auto off must restore the untouched manual per-tier picks."""
+    models_map = {"cloud": {"openrouter": {"high": "anthropic/claude-sonnet-4"}}}
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "openrouter",
+            "openrouter_auto_mode": True,
+            "models": models_map,
+        }
+    )
+    engine._resolve_model_key("high")
+    assert models_map["cloud"]["openrouter"] == {"high": "anthropic/claude-sonnet-4"}
+
+
+def test_resolve_model_key_openrouter_auto_mode_false_uses_manual_map() -> None:
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "openrouter",
+            "openrouter_auto_mode": False,
+            "models": {"cloud": {"openrouter": {"high": "anthropic/claude-sonnet-4"}}},
+        }
+    )
+    assert engine._resolve_model_key("high") == "anthropic/claude-sonnet-4"
+
+
 # ---------------------------------------------------------------------------
 # _resolve_plugin
 # ---------------------------------------------------------------------------
@@ -402,15 +455,42 @@ async def test_resolve_plugin_cloud_residence_success_kimi() -> None:
     assert key_provider.requested == ["kimi"]
 
 
+async def test_resolve_plugin_cloud_residence_success_openrouter() -> None:
+    key_provider = _FakeKeyProvider(api_key="sk-or")
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "openrouter",
+            "models": {"cloud": {"openrouter": {"medium": "anthropic/claude-sonnet-4"}}},
+        },
+        key_provider=key_provider,
+    )
+
+    plugin, model_id, routing = await engine._resolve_plugin("medium")
+
+    assert model_id == "anthropic/claude-sonnet-4"
+    assert routing.residence == "cloud"
+    assert routing.vendor == "openrouter"
+    assert engine._current_vendor == "openrouter"
+    assert plugin.name == "openrouter"
+    assert key_provider.requested == ["openrouter"]
+
+
 async def test_resolve_plugin_rejects_unsupported_vendor_module(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # "openrouter" is a still-unregistered vendor (kodo/llms/_cloud_registry.py) --
-    # a placeholder standing in for whatever the next vendor to be added turns
-    # out to be. Do not repoint this at a vendor that has since gone live
-    # (kimi included) without picking a new still-unregistered one.
-    engine = _make_engine(settings={"mode": "cloud", "active_cloud_vendor": "openrouter"})
-    monkeypatch.setattr(_llm, "get_cloud_vendor_module", lambda vendor: "kodo.llms.openrouter")
+    # Every vendor _cloud_registry.py currently knows about (including
+    # OpenRouter, 2026-08-17) is now registered in _VENDOR_PLUGIN_FACTORIES,
+    # so this test can no longer point at a *real* vendor name -- it
+    # monkeypatches get_cloud_vendor_module to return a dotted module string
+    # that deliberately has no _VENDOR_PLUGIN_FACTORIES entry, simulating a
+    # vendor registered in _cloud_registry.py but not yet wired into
+    # _resolve_plugin's factory map (a genuine mid-rollout state, same one
+    # this test caught for kimi and then openrouter before they each went
+    # live). If a future vendor addition needs this stand-in module path,
+    # just keep it a name nothing else will ever register.
+    engine = _make_engine(settings={"mode": "cloud", "active_cloud_vendor": "not-yet-wired"})
+    monkeypatch.setattr(_llm, "get_cloud_vendor_module", lambda vendor: "kodo.llms.not_yet_wired")
 
     with pytest.raises(RuntimeError, match="Unsupported cloud vendor"):
         await engine._resolve_plugin("medium")
@@ -435,6 +515,37 @@ async def test_resolve_plugin_falls_back_to_settings_vendor_when_model_unknown()
 
     assert model_id == "totally-unknown-model-id"
     assert routing.vendor == "anthropic"
+
+
+# ---------------------------------------------------------------------------
+# _thinking_kwargs -- extended to OpenRouter alongside local (doc/LLM_REGISTRY.md §3a)
+# ---------------------------------------------------------------------------
+
+
+def test_thinking_kwargs_empty_for_non_openrouter_cloud_routing() -> None:
+    engine = _make_engine()
+    engine._session.thinking_level = "high"
+    assert engine._thinking_kwargs(LLMRouting(residence="cloud", vendor="anthropic")) == {}
+
+
+def test_thinking_kwargs_includes_level_for_openrouter_routing() -> None:
+    engine = _make_engine()
+    engine._session.thinking_level = "high"
+    assert engine._thinking_kwargs(LLMRouting(residence="cloud", vendor="openrouter")) == {
+        "thinking_level": "high"
+    }
+
+
+def test_thinking_kwargs_still_includes_level_for_local_routing() -> None:
+    engine = _make_engine()
+    engine._session.thinking_level = "unlimited"
+    assert engine._thinking_kwargs(LLMRouting(residence="local")) == {"thinking_level": "unlimited"}
+
+
+def test_thinking_kwargs_empty_for_openrouter_routing_when_level_unset() -> None:
+    engine = _make_engine()
+    engine._session.thinking_level = ""
+    assert engine._thinking_kwargs(LLMRouting(residence="cloud", vendor="openrouter")) == {}
 
 
 # ---------------------------------------------------------------------------

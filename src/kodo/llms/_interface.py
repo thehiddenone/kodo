@@ -92,6 +92,16 @@ class Usage:
         cache_write_tokens: Tokens written to the prompt cache this call.
         cache_read_tokens: Tokens read from the prompt cache this call.
         model: Model identifier used for pricing lookup.
+        provider_reported_cost: When set, the exact USD cost the provider
+            itself reported for this call — takes precedence over
+            :mod:`kodo.llms._pricing`'s per-token table dispatch. Every
+            vendor here leaves this ``None`` (their cost is computed from
+            ``model`` via a hand-maintained pricing table) except OpenRouter,
+            whose 400+-model dynamic catalog makes a hand-maintained table
+            impractical and whose own Chat Completions response already
+            reports the real cost per call — the only way to price
+            ``openrouter/auto`` at all, since its real per-token rate depends
+            on whichever model it routed a given request to.
     """
 
     input_tokens: int
@@ -99,14 +109,19 @@ class Usage:
     cache_write_tokens: int
     cache_read_tokens: int
     model: str
+    provider_reported_cost: float | None = None
 
     @property
     def usd_cost(self) -> float:
-        """Estimated USD cost based on published model pricing.
+        """USD cost of this LLM call.
 
         Returns:
-            float: Dollar cost of this LLM call.
+            float: The provider's own reported cost when
+            ``provider_reported_cost`` is set; otherwise an estimate from
+            published per-token pricing (:mod:`kodo.llms._pricing`).
         """
+        if self.provider_reported_cost is not None:
+            return self.provider_reported_cost
         from kodo.llms._pricing import compute_cost
 
         return compute_cost(self)

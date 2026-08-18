@@ -43,6 +43,7 @@ from kodo.llms import (
     get_knob_selections,
     get_llama_server_override_path,
     get_local_registry,
+    get_openrouter_catalog,
     get_profiles,
     llama_arg_catalog_to_json,
     local_thinking_default_tier,
@@ -50,9 +51,11 @@ from kodo.llms import (
     local_thinking_tiers,
     parse_llama_args,
     parse_llama_args_text,
+    refresh_openrouter_catalog,
     remove_local_entry,
     remove_profile,
     resolve_default_profile_args,
+    run_openrouter_catalog_refresh_loop,
     sampling_specs_to_json,
     set_active_profile,
     set_knobs,
@@ -134,6 +137,7 @@ from kodo.transport import (
     MSG_LOCAL_LLM_UPDATE,
     MSG_LOCAL_LLM_UPDATE_PROFILE,
     MSG_MODE_SET,
+    MSG_OPENROUTER_MODELS_REFRESH,
     MSG_PROJECT_CREATE,
     MSG_PROMPT_SUBMIT,
     MSG_SAMPLING_SET,
@@ -366,9 +370,27 @@ def _local_entry_installed(entry: LocalLLMEntry, kodo_dir: Path) -> bool:
     return _local_entry_installed_path(entry, kodo_dir) is not None
 
 
+#: OpenRouter's own synthetic "base_llm" thinking-family entry — not derived
+#: from any local registry entry (OpenRouter is a cloud vendor), added
+#: unconditionally alongside the local ones below. Tier values/default must
+#: match kodo.runtime._engine._llm's _OPENROUTER_BASE_LLM/
+#: _OPENROUTER_THINKING_TIERS/_OPENROUTER_DEFAULT_THINKING_TIER exactly —
+#: that module is the one place stream_query actually consumes a
+#: thinking_level for OpenRouter, this is only the client-facing catalog
+#: entry describing what's valid.
+_OPENROUTER_THINKING_FAMILY_ENTRY: dict[str, object] = {
+    "family": "openrouter_reasoning_effort",
+    "tiers": ["low", "medium", "high", "max"],
+    "default": "medium",
+}
+
+
 def _thinking_families_payload(registry: dict[str, LocalLLMEntry]) -> dict[str, object]:
     """``base_llm -> {family, tiers, default}`` for every base model with a
-    thinking-tier mechanism (see ``kodo.llms.local_thinking_family``).
+    thinking-tier mechanism (see ``kodo.llms.local_thinking_family``), plus
+    the one synthetic entry for OpenRouter's session-controlled reasoning
+    effort (``"openrouter"`` — kodo.runtime._engine._llm's
+    ``_OPENROUTER_BASE_LLM``, not a real local registry entry).
 
     Server-computed rather than a second table hardcoded in kodo-vsix, since
     family membership already lives in ``kodo.llms.local_registry._thinking``
@@ -376,7 +398,7 @@ def _thinking_families_payload(registry: dict[str, LocalLLMEntry]) -> dict[str, 
     flags) — a duplicate client-side copy would risk drifting out of sync.
     """
     base_llms = {e.base_llm for e in registry.values() if e.base_llm}
-    return {
+    payload: dict[str, object] = {
         base_llm: {
             "family": local_thinking_family(base_llm),
             "tiers": list(local_thinking_tiers(base_llm)),
@@ -385,6 +407,8 @@ def _thinking_families_payload(registry: dict[str, LocalLLMEntry]) -> dict[str, 
         for base_llm in base_llms
         if local_thinking_family(base_llm) is not None
     }
+    payload["openrouter"] = _OPENROUTER_THINKING_FAMILY_ENTRY
+    return payload
 
 
 def _knob_defs_payload(registry: dict[str, LocalLLMEntry]) -> dict[str, object]:
@@ -535,14 +559,39 @@ def _cloud_registry_payload() -> dict[str, object]:
     }
 
 
+def _openrouter_catalog_payload(kodo_dir: Path) -> list[dict[str, object]]:
+    """The cached OpenRouter catalog, wire-shaped for ``hello.ack``'s
+    ``openrouter_catalog`` field and the ``openrouter.models.refresh.ack``
+    reply — same fields either way (kodo-vsix's ``OpenRouterModelInfo``
+    mirror expects one shape regardless of which message delivered it).
+    """
+    return [
+        {
+            "id": m.id,
+            "name": m.name,
+            "context_length": m.context_length,
+            "price_prompt": m.price_prompt,
+            "price_completion": m.price_completion,
+            "price_cache_read": m.price_cache_read,
+            "price_cache_write": m.price_cache_write,
+            "supports_reasoning": m.supports_reasoning,
+        }
+        for m in get_openrouter_catalog(kodo_dir)
+    ]
+
+
 def _llama_payload(settings: dict[str, object] | None = None) -> dict[str, object]:
-    llama = find_installed(kodo_user_dir())
+    kodo_dir = kodo_user_dir()
+    llama = find_installed(kodo_dir)
     active = LlamaServer.get_active_llama_server()
     llama_is_running = active is not None and active.is_running
     active_vendor = str((settings or {}).get("active_cloud_vendor", "anthropic"))
     return {
         "cloud_registry": _cloud_registry_payload(),
         "active_cloud_vendor": active_vendor,
+        # Fetched/cached dynamically, not compiled in like cloud_registry
+        # above -- see kodo.llms._openrouter_catalog's module docstring.
+        "openrouter_catalog": _openrouter_catalog_payload(kodo_dir),
         **_local_registry_payload(),
         "llama_installed": llama is not None,
         "llama_version": f"b{llama.build}" if llama is not None else None,
@@ -1663,6 +1712,26 @@ async def _handle_local_llm_check_updates(req: Request) -> None:
     asyncio.create_task(run())
 
 
+async def _handle_openrouter_models_refresh(req: Request) -> None:
+    """Re-fetch OpenRouter's model catalog on demand — see MSG_OPENROUTER_MODELS_REFRESH.
+
+    Unlike ``_handle_local_llm_check_updates`` above, this awaits the fetch
+    and replies synchronously — one OpenRouter round trip, not a per-file
+    scan, so there's no need for a separate progress/event push. A fetch
+    failure still replies with whatever was already cached
+    (``refresh_openrouter_catalog``'s own fallback) rather than an error;
+    there's nothing actionable for the client to do differently.
+    """
+    kodo_dir = kodo_user_dir()
+    await refresh_openrouter_catalog(kodo_dir)
+    await req.reply(
+        {
+            "type": "openrouter.models.refresh.ack",
+            "models": _openrouter_catalog_payload(kodo_dir),
+        }
+    )
+
+
 async def _send_registry_state(req: Request) -> None:
     await req.connection.send(
         Envelope.make_event(EVT_LOCAL_LLM_REGISTRY_STATE, _local_registry_payload())
@@ -2262,6 +2331,13 @@ async def _start_background(app: web.Application) -> None:
     if llama_install is not None:
         asyncio.create_task(start_titling(user_dir, _current_housekeeper_llm_id()))
 
+    # Fire-and-forget, same tolerance-for-a-cold-cache posture as the titler
+    # above: fetches immediately, then keeps re-fetching on a 12-hour TTL for
+    # as long as the server runs (kodo.llms.run_openrouter_catalog_refresh_loop).
+    # The OpenRouter Cloud AI Settings tab's model picker is simply empty
+    # until the first fetch lands.
+    asyncio.create_task(run_openrouter_catalog_refresh_loop(user_dir))
+
     # Ensure the bundled third-party utils (uv, ripgrep, fd) are present under
     # ~/.kodo/bin. Best-effort and idempotent: a no-op once already present,
     # so this only does real work on a first console-style launch. Off the
@@ -2381,6 +2457,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_LOCAL_LLM_PAUSE, _handle_local_llm_pause)
     conn_registry.register_handler(MSG_LOCAL_LLM_UPDATE, _handle_local_llm_update)
     conn_registry.register_handler(MSG_LOCAL_LLM_CHECK_UPDATES, _handle_local_llm_check_updates)
+    conn_registry.register_handler(MSG_OPENROUTER_MODELS_REFRESH, _handle_openrouter_models_refresh)
     conn_registry.register_handler(MSG_LOCAL_LLM_UNINSTALL, _handle_local_llm_uninstall)
     conn_registry.register_handler(MSG_LOCAL_LLM_REMOVE, _handle_local_llm_remove)
     conn_registry.register_handler(MSG_LOCAL_LLM_ADD_HUGGINGFACE, _handle_local_llm_add_huggingface)

@@ -470,6 +470,22 @@ MSG_SERVER_SHUTDOWN = "server.shutdown"
 # is a best-effort scan, not a validated mutation.
 MSG_LOCAL_LLM_CHECK_UPDATES = "local_llm.check_updates"
 
+# Client → Server. Control connection only. Re-fetch OpenRouter's model
+# catalog (kodo.llms._openrouter_catalog) instead of waiting for the
+# 12-hour background TTL refresh — backs the OpenRouter Cloud AI Settings
+# tab's "Refresh model list" button. No payload. Fire-and-forget from the
+# client's perspective in the sense that it can take a few seconds (one
+# network round trip to OpenRouter), but unlike MSG_LOCAL_LLM_CHECK_UPDATES
+# it *does* reply synchronously once the fetch completes:
+# ``openrouter.models.refresh.ack`` ``{models: [{id, name, context_length,
+# price_prompt, price_completion, price_cache_read, price_cache_write,
+# supports_reasoning}, ...]}`` — the refreshed catalog, same shape as
+# ``hello.ack``'s ``openrouter_catalog`` field. A fetch failure still replies
+# with whatever was already cached (kodo.llms.refresh_openrouter_catalog's
+# own fallback), never an error — there's nothing actionable for the client
+# to do differently.
+MSG_OPENROUTER_MODELS_REFRESH = "openrouter.models.refresh"
+
 # Client → Server. Synchronous local-model switch (WS_PROTOCOL.md §7.6a).
 # ``{name}`` — ``name`` is a *local registry* name. The server persists the
 # selection into ``~/.kodo/etc/settings.json`` (``mode: "local"`` +
