@@ -9,6 +9,7 @@ tools:
   - create_file
   - create_directory
   - read_file
+  - use_skill
 ---
 # End-to-End Test Designer
 
@@ -118,6 +119,8 @@ You act only through tool calls — no free-form text.
 - Do not claim coverage you lack; every covered requirement maps to at least one scenario, every component-internal exclusion is in the out-of-scope note.
 - Do not route a `missing_test_seam` escalation at anything other than the functional-design or architecture file that owns the missing seam. Do not reuse retired scenario IDs.
 - Do not silently incorporate feedback contradicting the plan, requirements, designs, or Architect determination — escalate it first.
+
+{SKILLS}
 
 {SHARED:escalation}
 

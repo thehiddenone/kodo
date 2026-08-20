@@ -2073,6 +2073,67 @@ an error reply: the fetch fails, the server falls back to whatever was cached
 for that region, and the client renders an empty or stale picker — the same
 non-actionable outcome as a network failure.
 
+### 7.6j `skills.list` / `skills.delete` — installed Agent Skills
+
+Control connection only, same framing as §7.6c — backs the **Kōdo Settings**
+panel's "Skills" section (kodo-vsix `SkillsSection.tsx`). Reads and deletes the
+skills the user has installed under `~/.kodo/skills` (doc/SKILLS.md).
+
+```json
+{ "type": "skills.list" }
+```
+
+→ `skills.list.ack`:
+
+```json
+{ "root": "/home/u/.kodo/skills",
+  "skills": [
+    { "name": "pdf", "description": "Use this skill whenever …",
+      "path": "/home/u/.kodo/skills/pdf", "error": "" },
+    { "name": "halfbaked", "description": "",
+      "path": "/home/u/.kodo/skills/halfbaked",
+      "error": "SKILL.md has no `---` YAML frontmatter block." }
+  ] }
+```
+
+`name` is the skill's **directory name** — its identity, and the value
+`skills.delete` takes. `root` is sent so the panel can name and open the skills
+directory without rebuilding the path client-side. Entries are name-sorted
+(case-insensitive).
+
+A directory that failed to load is **included**, with an empty `description`
+and a non-empty `error`: the panel shows it as an error row so a broken skill
+can be seen and deleted rather than silently vanishing. An agent never sees
+those — `use_skill` and the prompt catalog both read only the usable subset.
+Non-directory entries in the skills root (a stray `README.md`) are not skills
+and are omitted entirely.
+
+```json
+{ "type": "skills.delete", "name": "pdf" }
+```
+
+→ `skills.delete.ack` `{ "ok": true, "root": "...", "skills": [ ... ] }` with
+the post-deletion listing — same refresh-from-response contract as
+`security.rules.delete.ack` (§7.6c) — or
+`{ "ok": false, "error": "...", "root": "...", "skills": [ ... ] }`, which also
+carries the listing: the most likely failure is the panel showing a skill
+someone already removed from disk, and a refreshed table is what makes that
+obvious. kodo-vsix confirms with a native modal before sending; the server
+performs no confirmation of its own.
+
+Deletion is recursive and irreversible (the whole skill directory, companion
+files included). `name` is re-validated server-side regardless of what the
+client sent — `kodo.skills.SkillStore` requires a single path component with no
+separator and no `.`/`..`, then re-checks after `resolve()` that the parent is
+still the resolved skills root, so a crafted or symlinked `name` cannot reach
+outside the store (doc/SKILLS.md §6).
+
+**There is no `skills.add`.** Skills are installed by dropping a directory into
+`~/.kodo/skills` by hand (doc/SKILLS.md §2). Nor is there an invalidation
+event: the prompt catalog is re-rendered from disk on every agent turn, so a
+skill added or deleted here takes effect on the next turn with no `config.reload`
+follow-up and no push to live sessions.
+
 ### 7.7 ⟪planned⟫ — standalone rules management, credential push
 
 Persistent user-defined allow rules (FR-SEC-07) — generalized `(executable,

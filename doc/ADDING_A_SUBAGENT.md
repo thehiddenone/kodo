@@ -51,6 +51,13 @@ A new sub-agent named `foo` needs **all** of these, or the registry raises
      - `{SHARED:callouts}` — entry agents only. A sub-agent runs inside a
        subsession block where its text is collapsed and the block's own
        open/close callouts are drawn by the client.
+   - One further token is **not** a `{SHARED:…}` block: `{SKILLS}` expands to
+     the catalog of user-installed skills (doc/SKILLS.md). It is **mandatory
+     if** you granted `use_skill`, and forbidden otherwise — construction fails
+     both ways, and so does `test_agents.py`. Grant it only to an agent that
+     decides *what kind of task* it is doing; a sub-agent handed an
+     already-scoped task usually should not, since its caller has already made
+     that call.
    - Do **not** restate anything a shared block or a tool description already
      says (minimal edits, silent reasoning, injection resistance, the
      `ask_user` discipline).

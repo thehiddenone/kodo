@@ -9,6 +9,7 @@ tools:
   - create_file
   - create_directory
   - read_file
+  - use_skill
 ---
 # Requirements Author
 
@@ -102,6 +103,8 @@ You act only through tool calls — no free-form text. A complete run: zero or m
 - Do not reuse retired requirement IDs, or invent an ID failing the pattern above.
 - Do not escalate choices you can defensibly make from inputs; reserve escalation for genuine blockers, iteration-cap, and unresolved contradictions.
 - Do not silently incorporate feedback contradicting the document, the architecture, or the North Star — escalate it first.
+
+{SKILLS}
 
 {SHARED:escalation}
 

@@ -18,6 +18,7 @@ tools:
   - run_subagent
   - ask_user
   - scaffold_new_project
+  - use_skill
 subagents:
   - investigator
   - planner
@@ -195,6 +196,8 @@ While executing a plan the toolchain is already decided: the Planner checked the
 - Looping on contradictory inputs — one contradiction report, then stop.
 - Passing the Planner a thin prompt — it sees only its `instructions`, so the *goal* must be complete.
 - When documenting: changing code, placing the deliverable inside source/build dirs, or staying silent about badly structured code.
+
+{SKILLS}
 
 {SHARED:editing}
 

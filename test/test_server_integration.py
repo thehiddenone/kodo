@@ -1319,3 +1319,117 @@ async def test_llamacpp_update_stops_the_chat_llama_server_first(
     assert evt.payload["type"] == "llamacpp.install.progress"
     assert evt.payload["percent"] == 100
     assert stopped == ["titler", "chat"]
+
+
+# ---------------------------------------------------------------------------
+# skills.list / skills.delete (doc/WS_PROTOCOL.md §7.6j, doc/SKILLS.md §5)
+#
+# ``_temp_home`` redirects HOME, so the skills root these exercise is
+# ``tmp_path/.kodo/skills`` — the developer's real installed skills are never
+# read and, more importantly, never deleted.
+# ---------------------------------------------------------------------------
+
+
+def _install_skill(home: Path, name: str, text: str) -> Path:
+    directory = home / ".kodo" / "skills" / name
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "SKILL.md").write_text(text, encoding="utf-8")
+    return directory
+
+
+async def _skills_request(
+    ws: aiohttp.ClientWebSocketResponse, msg_type: str, **payload: object
+) -> dict[str, object]:
+    req = _make_request(msg_type, **payload)
+    await ws.send_str(req.to_json())
+    return (await _recv_response(ws, req.id)).payload
+
+
+async def test_server_creates_the_skills_root_on_startup(
+    server: TestServer, _temp_home: Path
+) -> None:
+    """The user is told to drop skills into a directory, so it must exist."""
+    assert (_temp_home / ".kodo" / "skills").is_dir()
+
+
+async def test_skills_list_returns_installed_skills_and_the_root(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
+) -> None:
+    _install_skill(
+        _temp_home, "pdf", "---\nname: pdf\ndescription: Work with PDF files.\n---\n\nUse pypdf.\n"
+    )
+    await _control_hello(ws)
+
+    payload = await _skills_request(ws, "skills.list")
+
+    assert payload["type"] == "skills.list.ack"
+    assert payload["root"] == str(_temp_home / ".kodo" / "skills")
+    skills = cast(list[dict[str, object]], payload["skills"])
+    assert len(skills) == 1
+    assert skills[0]["name"] == "pdf"
+    assert skills[0]["description"] == "Work with PDF files."
+    assert skills[0]["path"] == str(_temp_home / ".kodo" / "skills" / "pdf")
+    assert skills[0]["error"] == ""
+
+
+async def test_skills_list_includes_broken_skills_with_an_error(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
+) -> None:
+    """Broken skills must stay visible in the panel so they can be deleted."""
+    _install_skill(_temp_home, "halfbaked", "no frontmatter here\n")
+    await _control_hello(ws)
+
+    skills = cast(list[dict[str, object]], (await _skills_request(ws, "skills.list"))["skills"])
+
+    assert len(skills) == 1
+    assert skills[0]["name"] == "halfbaked"
+    assert skills[0]["description"] == ""
+    assert "frontmatter" in str(skills[0]["error"])
+
+
+async def test_skills_delete_removes_the_directory_and_returns_the_new_listing(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
+) -> None:
+    doomed = _install_skill(_temp_home, "pdf", "---\nname: pdf\ndescription: D.\n---\n\nB.\n")
+    (doomed / "REFERENCE.md").write_text("companion", encoding="utf-8")
+    _install_skill(_temp_home, "keeper", "---\nname: keeper\ndescription: K.\n---\n\nB.\n")
+    await _control_hello(ws)
+
+    payload = await _skills_request(ws, "skills.delete", name="pdf")
+
+    assert payload["type"] == "skills.delete.ack"
+    assert payload["ok"] is True
+    assert not doomed.exists(), "the whole directory goes, companion files included"
+    skills = cast(list[dict[str, object]], payload["skills"])
+    assert [s["name"] for s in skills] == ["keeper"], "the ack carries the refreshed listing"
+
+
+async def test_skills_delete_of_an_unknown_name_fails_without_closing_the_socket(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
+) -> None:
+    _install_skill(_temp_home, "keeper", "---\nname: keeper\ndescription: K.\n---\n\nB.\n")
+    await _control_hello(ws)
+
+    payload = await _skills_request(ws, "skills.delete", name="ghost")
+
+    assert payload["ok"] is False
+    assert "ghost" in str(payload["error"])
+    # The failure ack still carries the listing, which is what lets the panel
+    # correct itself when it was showing something already gone from disk.
+    assert [s["name"] for s in cast(list[dict[str, object]], payload["skills"])] == ["keeper"]
+
+
+async def test_skills_delete_cannot_escape_the_skills_root(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
+) -> None:
+    """``name`` is re-validated server-side regardless of what a client sends."""
+    (_temp_home / ".kodo" / "skills").mkdir(parents=True, exist_ok=True)
+    victim = _temp_home / ".kodo" / "etc"
+    victim.mkdir(parents=True, exist_ok=True)
+    (victim / "settings.json").write_text("{}", encoding="utf-8")
+    await _control_hello(ws)
+
+    payload = await _skills_request(ws, "skills.delete", name="../etc")
+
+    assert payload["ok"] is False
+    assert (victim / "settings.json").exists()

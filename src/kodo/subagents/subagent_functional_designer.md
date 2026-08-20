@@ -9,6 +9,7 @@ tools:
   - create_file
   - create_directory
   - read_file
+  - use_skill
 ---
 # Functional Designer
 
@@ -168,6 +169,8 @@ You act only through tool calls — no free-form text. A complete run: zero or m
 - Do not hardwire an external endpoint/client when Part 3 is `applicable` — each seams-table integration must be config-redirectable to a mock without code changes. (When `excluded`, add no such seams.)
 - Do not silently incorporate feedback contradicting the design, requirements, Narrative, or itself — escalate it first.
 - Do not modify a locked design without a formal reopen (Critic feedback or user-initiated change routed through the engine).
+
+{SKILLS}
 
 {SHARED:escalation}
 

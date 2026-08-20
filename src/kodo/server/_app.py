@@ -82,13 +82,14 @@ from kodo.llms.llamacpp import (
     update_llamacpp,
 )
 from kodo.llms.local import LocalModelError
-from kodo.project import ProjectLayoutError, WorkspaceLayout, kodo_user_dir
+from kodo.project import ProjectLayoutError, WorkspaceLayout, kodo_skills_dir, kodo_user_dir
 from kodo.runtime import (
     CheckpointState,
     MirrorDirtyError,
     delete_global_security_rules,
     list_global_security_rules,
 )
+from kodo.skills import Skill, SkillDeleteError, SkillStore
 from kodo.subagents import AgentRegistry
 from kodo.titling import (
     DEFAULT_HOUSEKEEPER_LLM_ID,
@@ -155,6 +156,8 @@ from kodo.transport import (
     MSG_SESSION_RELEASE,
     MSG_SESSION_SECURITY_RULES_DELETE,
     MSG_SESSION_SECURITY_RULES_LIST,
+    MSG_SKILLS_DELETE,
+    MSG_SKILLS_LIST,
     MSG_STOP,
     MSG_STUCK_DETECTION_GET,
     MSG_STUCK_DETECTION_SET,
@@ -912,6 +915,70 @@ async def _handle_housekeeper_llm_set(req: Request) -> None:
     # different model) before starting the newly selected one.
     asyncio.create_task(start_titling(kodo_user_dir(), option_id))
     await req.reply({"type": "housekeeper_llm.set.ack", "ok": True, "selected": option_id})
+
+
+# ------------------------------------------------------------------
+# skills.list / skills.delete (doc/WS_PROTOCOL.md §7.6j, doc/SKILLS.md §5)
+# — the user-installed Agent Skills under ~/.kodo/skills, backing the Kōdo
+# Settings panel's "Skills" section. Read-and-delete only: skills are
+# installed by dropping a directory in by hand, so there is no add/update
+# command to pair with these.
+# ------------------------------------------------------------------
+
+
+def _skills_payload(store: SkillStore) -> dict[str, object]:
+    """The listing both skills handlers reply with.
+
+    Built once here so ``skills.delete.ack`` carries exactly the same shape as
+    ``skills.list.ack`` and the panel can refresh from either response alone,
+    with no follow-up round trip.
+    """
+    return {
+        "root": str(store.root),
+        "skills": [_skill_row(skill) for skill in store.entries()],
+    }
+
+
+def _skill_row(skill: Skill) -> dict[str, object]:
+    """One skill as the panel's table row.
+
+    ``error`` is empty for a healthy skill and carries the load failure for a
+    directory that could not be parsed — those are listed deliberately, so a
+    broken skill is visible and deletable instead of silently missing.
+    """
+    return {
+        "name": skill.name,
+        "description": skill.description,
+        "path": str(skill.root),
+        "error": skill.error,
+    }
+
+
+async def _handle_skills_list(req: Request) -> None:
+    store = SkillStore(kodo_skills_dir())
+    await req.reply({"type": "skills.list.ack", **_skills_payload(store)})
+
+
+async def _handle_skills_delete(req: Request) -> None:
+    store = SkillStore(kodo_skills_dir())
+    name = str(req.env.payload.get("name", "")).strip()
+    try:
+        store.delete(name)
+    except SkillDeleteError as exc:
+        # Still send the listing: the most likely cause is that the panel is
+        # showing a skill someone already removed from disk, and a refreshed
+        # table is exactly what makes that obvious.
+        await req.reply(
+            {
+                "type": "skills.delete.ack",
+                "ok": False,
+                "error": str(exc),
+                **_skills_payload(store),
+            }
+        )
+        return
+    _log.info("Deleted skill %r from %s", name, store.root)
+    await req.reply({"type": "skills.delete.ack", "ok": True, **_skills_payload(store)})
 
 
 # ------------------------------------------------------------------
@@ -2451,6 +2518,9 @@ def create_app(config: Config) -> web.Application:
 
     layout = WorkspaceLayout()
     layout.init()
+    # The store has no installer — the user drops directories in — so the
+    # directory they are told about must exist before they look for it.
+    SkillStore(kodo_skills_dir()).ensure_root()
     _setup_log_file(layout, config.log_level)
 
     registry = AgentRegistry(_AGENTS_DIR)
@@ -2487,6 +2557,8 @@ def create_app(config: Config) -> web.Application:
         MSG_HOUSEKEEPER_LLM_GET, _make_housekeeper_llm_get_handler(config)
     )
     conn_registry.register_handler(MSG_HOUSEKEEPER_LLM_SET, _handle_housekeeper_llm_set)
+    conn_registry.register_handler(MSG_SKILLS_LIST, _handle_skills_list)
+    conn_registry.register_handler(MSG_SKILLS_DELETE, _handle_skills_delete)
     conn_registry.register_handler(MSG_PROMPT_SUBMIT, _handle_prompt)
     conn_registry.register_handler(MSG_MODE_SET, _handle_mode)
     conn_registry.register_handler(MSG_WORKFLOW_SET, _handle_workflow)

@@ -57,6 +57,7 @@ from kodo.toolspecs import (
     TOOLCHAIN_BUILD,
     TOOLCHAIN_DEPS,
     UPDATE_WEB_SEARCH_STATE,
+    USE_SKILL,
     WAIT,
     WEB_SEARCH,
     ToolSpec,
@@ -101,6 +102,7 @@ from ._tool import Tool
 from ._toolchain_build import ToolchainBuildTool
 from ._toolchain_deps import ToolchainDepsTool
 from ._update_web_search_state import UpdateWebSearchStateTool
+from ._use_skill import UseSkillTool
 from ._wait import WaitTool
 from ._web_search import WebSearchTool
 
@@ -144,6 +146,7 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (WAIT, WaitTool),
     (REMAINING_TIME, RemainingTimeTool),
     (SUBMIT_EVALUATION, SubmitEvaluationTool),
+    (USE_SKILL, UseSkillTool),
 )
 
 _CLASSES_BY_NAME: dict[str, type[Tool]] = {spec.name: cls for spec, cls in _TOOL_CLASSES}

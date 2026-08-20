@@ -349,6 +349,30 @@ MSG_HOUSEKEEPER_LLM_GET = "housekeeper_llm.get"
 # persisted or restarted in that case).
 MSG_HOUSEKEEPER_LLM_SET = "housekeeper_llm.set"
 
+# Client → Server. Control connection only. List every skill installed under
+# ``~/.kodo/skills`` (doc/SKILLS.md) — backs the Kōdo Settings panel's
+# "Skills" section. No payload. Replies ``skills.list.ack`` ``{root: "/abs/
+# path/to/.kodo/skills", skills: [{name, description, path, error}, ...]}``,
+# name-sorted. ``root`` is sent so the panel can name and open the directory
+# without rebuilding the path client-side. Directories that failed to load are
+# included with a non-empty ``error`` and an empty ``description`` — the panel
+# shows them so a broken skill can be seen and deleted rather than silently
+# vanishing; an agent never sees them.
+MSG_SKILLS_LIST = "skills.list"
+
+# Client → Server. Control connection only. Delete one installed skill's whole
+# directory, recursively and irreversibly (the panel confirms first). Payload:
+# ``{name: "pdf"}`` — the skill's *directory* name, which is its identity.
+# ``kodo.skills.SkillStore`` re-validates that the name is a single path
+# component resolving to a direct child of the skills root, so a crafted
+# ``name`` cannot reach outside the store. Replies ``skills.delete.ack``
+# ``{ok: true, skills: [...], root}`` with the post-deletion listing (same
+# refresh-from-response contract as ``security.rules.delete.ack``), or
+# ``{ok: false, error, skills, root}`` if the deletion failed. Agents pick up
+# the change with no reload: the prompt catalog is re-rendered from disk on
+# every turn.
+MSG_SKILLS_DELETE = "skills.delete"
+
 # Client → Server. Manually trigger context compaction for this session. Honoured
 # only when the entry agent is idle (``state.phase == "awaiting_user"``) and
 # there is context to compact; otherwise ignored. Drives the same path as the

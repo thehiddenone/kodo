@@ -15,6 +15,7 @@ tools:
   - get_root_paths
   - toolchain_build
   - toolchain_deps
+  - use_skill
 ---
 # Developer
 
@@ -92,6 +93,8 @@ Call `return_result` once: `primary_path`, every `path` touched, `tests_written`
 - Hand-editing dependency manifests — use `toolchain_deps`.
 - Improvising build/test commands, or setting the build system up yourself — use `toolchain_build`; when it reports no scripts, signal `toolchain_not_set_up` and let the Problem Solver handle setup.
 - Sprawl beyond what the instructions need; finishing without the read-back check.
+
+{SKILLS}
 
 {SHARED:editing}
 

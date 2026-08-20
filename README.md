@@ -105,6 +105,8 @@ The list below describes what's implemented, not a review score of how well each
 
 **Security layer** — every tool call passes through a per-call allow-or-ask judgement driven by the Tool Control posture (permissive / defensive / smart). Smart mode statically analyzes shell commands for targets outside the workspace and runs an LLM intent judge over high-impact calls; anything it can't clear raises a permission prompt. See [`doc/SECURITY.md`](doc/SECURITY.md).
 
+**Agent Skills** — drop a skill directory into `~/.kodo/skills` and agents follow it. Kōdo reads the open [Agent Skill](https://github.com/anthropics/skills) `SKILL.md` format, so skills written for other agent runtimes work unchanged. Each installed skill's description sits in the prompt; an agent loads the full instructions on demand when a task matches. Browse and remove them from Kōdo Settings → Skills. See [`doc/SKILLS.md`](doc/SKILLS.md).
+
 **Web-capable research** — an agent-driven web search that paces its own discovery/read/synthesis loop, with browser-backed and static page extraction. See [`doc/WEB_SEARCH.md`](doc/WEB_SEARCH.md).
 
 **Quantified quality control** — Kōdo's agent prompts aren't tuned by gut feel alone. An internal harness, `kodo.validator`, drives real sessions through the real server, protocol, tools, and gates — no VS Code, no human — and records a complete transcript for scoring, giving system-prompt changes a measurable quality signal instead of vibes. This matters doubly for local models: open-weight families differ enough in behaviour that a prompt suited to one can fail another, so the harness is what makes per-model prompt curation tractable at all. See [`doc/VALIDATOR.md`](doc/VALIDATOR.md).

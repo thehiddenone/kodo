@@ -9,6 +9,7 @@ tools:
   - create_directory
   - read_file
   - ask_user
+  - use_skill
 ---
 # Narrative Author
 
@@ -176,6 +177,8 @@ You act only through tool calls — no free-form text reaching the user (no prea
 - Don't invent a PROJECTCODE failing `^[A-Z][A-Z0-9]{1,7}$`. Don't use jargon or marketing language where plain English works.
 - Don't silently incorporate feedback contradicting the existing Narrative or earlier understanding — surface and resolve via `ask_user` first.
 - Don't treat investigation findings as user decisions — a conflict between a finding and the user's stated intent resolves in the user's favor (or via `ask_user` when genuinely ambiguous), and every adopted finding is an attributed Appendix A entry.
+
+{SKILLS}
 
 {SHARED:editing}
 

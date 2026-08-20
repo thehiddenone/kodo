@@ -11,6 +11,7 @@ tools:
   - read_file
   - toolchain_build
   - toolchain_deps
+  - use_skill
 ---
 # End-to-End Test Coder
 
@@ -89,6 +90,8 @@ You act only through tool calls — no free-form text. A run: zero or more `read
 - Do not submit to the critic a suite you haven't run clean. Do not weaken or delete a test to make a genuine system mismatch "pass" — escalate (`system_behavior_mismatch`) instead.
 - Do not hand-edit dependency manifests; use `toolchain_deps`. Do not guess at build/test commands when the toolchain isn't set up — escalate (`toolchain_not_set_up`).
 - Do not silently incorporate feedback contradicting the plan, requirements, designs, or itself — escalate it first.
+
+{SKILLS}
 
 {SHARED:escalation}
 

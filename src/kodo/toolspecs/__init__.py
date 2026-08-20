@@ -64,6 +64,7 @@ from ._submit_evaluation import SUBMIT_EVALUATION
 from ._toolchain_build import TOOLCHAIN_BUILD
 from ._toolchain_deps import TOOLCHAIN_DEPS
 from ._update_web_search_state import UPDATE_WEB_SEARCH_STATE
+from ._use_skill import USE_SKILL
 from ._visibility import build_detail_rows, stringify_value
 from ._wait import WAIT
 from ._web_search import WEB_SEARCH
@@ -118,6 +119,7 @@ __all__ = [
     "TOOLCHAIN_BUILD",
     "TOOLCHAIN_DEPS",
     "UPDATE_WEB_SEARCH_STATE",
+    "USE_SKILL",
     "VISIBILITY_ALWAYS",
     "VISIBILITY_HIDDEN",
     "VISIBILITY_VALUES",
@@ -170,6 +172,7 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     TOOLCHAIN_BUILD,
     TOOLCHAIN_DEPS,
     UPDATE_WEB_SEARCH_STATE,
+    USE_SKILL,
     WAIT,
     WEB_SEARCH,
 )

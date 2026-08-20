@@ -9,13 +9,14 @@ import pytest
 
 from kodo.subagents import (
     SHARED_FILE_PREFIX,
+    SKILLS_TOKEN,
     AgentLoadError,
     AgentRegistry,
     SubAgent,
     load_agent,
     shared_token,
 )
-from kodo.toolspecs import ALL_TOOLS, ToolSpec
+from kodo.toolspecs import ALL_TOOLS, USE_SKILL, ToolSpec
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -798,6 +799,79 @@ def _shipped_agent_files() -> list[Path]:
     return files
 
 
+# ---------------------------------------------------------------------------
+# {SKILLS} — the installed-skills catalog (doc/SKILLS.md §3)
+# ---------------------------------------------------------------------------
+
+
+def test_registry_expands_the_skills_token_from_the_live_store(tmp_path: Path) -> None:
+    """The catalog comes off disk, so a skill installed later still shows up."""
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    skills = tmp_path / "skills"
+    (skills / "pdf").mkdir(parents=True)
+    (skills / "pdf" / "SKILL.md").write_text(
+        "---\nname: pdf\ndescription: Work with PDF files.\n---\n\nInstructions.\n",
+        encoding="utf-8",
+    )
+    _write_preamble(agents)
+    _write_agent(
+        agents,
+        "skilled",
+        f"name: skilled\ntools:\n  - {USE_SKILL.name}\n",
+        _shared(f"Body.\n\n{SKILLS_TOKEN}"),
+    )
+
+    prompt = AgentRegistry(agents, skills).get("skilled").system_prompt
+
+    assert SKILLS_TOKEN not in prompt
+    assert "## Available skills" in prompt
+    assert "**pdf** — Work with PDF files." in prompt
+
+
+def test_registry_renders_an_empty_catalog_when_no_skills_are_installed(tmp_path: Path) -> None:
+    """An empty store still renders a block — that is what stops an invented name."""
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    _write_preamble(agents)
+    _write_agent(
+        agents,
+        "skilled",
+        f"name: skilled\ntools:\n  - {USE_SKILL.name}\n",
+        _shared(f"Body.\n\n{SKILLS_TOKEN}"),
+    )
+
+    prompt = AgentRegistry(agents, tmp_path / "nonexistent").get("skilled").system_prompt
+
+    assert "No skills are installed." in prompt
+
+
+def test_registry_skills_tool_without_the_token_raises(tmp_path: Path) -> None:
+    """A grant with no catalog leaves the model guessing skill names."""
+    _write_preamble(tmp_path)
+    _write_agent(
+        tmp_path, "skilled", f"name: skilled\ntools:\n  - {USE_SKILL.name}\n", _shared("B.")
+    )
+    with pytest.raises(AgentLoadError, match=re.escape(SKILLS_TOKEN)):
+        AgentRegistry(tmp_path, tmp_path / "skills")
+
+
+def test_registry_skills_token_without_the_tool_raises(tmp_path: Path) -> None:
+    """A catalog with no grant advertises skills the agent cannot open."""
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "unskilled", "name: unskilled\n", _shared(f"B.\n\n{SKILLS_TOKEN}"))
+    with pytest.raises(AgentLoadError, match=USE_SKILL.name):
+        AgentRegistry(tmp_path, tmp_path / "skills")
+
+
+def test_registry_leaves_a_skill_free_agent_untouched(tmp_path: Path) -> None:
+    """No token, no grant, no directory scan, no catalog."""
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "plain", f"name: plain\ntools:\n  - {_READ_TOOL}\n", _shared("B."))
+    prompt = AgentRegistry(tmp_path, tmp_path / "skills").get("plain").system_prompt
+    assert "Available skills" not in prompt
+
+
 @pytest.mark.parametrize("path", _shipped_agent_files(), ids=lambda p: p.stem)
 def test_shipped_agent_includes_the_required_shared_blocks(path: Path) -> None:
     body = path.read_text(encoding="utf-8")
@@ -829,6 +903,20 @@ def test_shipped_agent_with_write_tools_includes_the_editing_block(path: Path) -
     assert (shared_token("editing") in body) == bool(granted), (
         f"{path.name} grants {sorted(granted)} — the editing block must be present "
         f"exactly when it can change files"
+    )
+
+
+@pytest.mark.parametrize("path", _shipped_agent_files(), ids=lambda p: p.stem)
+def test_shipped_agent_declares_skills_in_both_halves_or_neither(path: Path) -> None:
+    """The ``use_skill`` grant and ``{SKILLS}`` are one declaration in two places.
+
+    Same shape as the editing-block invariant above: the tool name is read off
+    the live spec rather than spelled out, so a rename moves this test with it.
+    """
+    granted = USE_SKILL.name in load_agent(path).tools
+    body = path.read_text(encoding="utf-8")
+    assert (SKILLS_TOKEN in body) == granted, (
+        f"{path.name}: {SKILLS_TOKEN} must be present exactly when {USE_SKILL.name!r} is granted"
     )
 
 

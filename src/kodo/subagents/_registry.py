@@ -108,11 +108,28 @@ including ``compactor``, which the engine seeds with a bare transcript message
 rather than a rendered task turn. An agent with no ``SubAgentSpec`` including
 it is a load-time error.
 
+Installed skills
+================
+
+One further substitution shares the same philosophy: ``{SKILLS}`` expands to
+the catalog of skills installed under ``~/.kodo/skills`` (doc/SKILLS.md). It
+differs from ``{SHARED:…}`` in exactly one way — its content comes from the
+live filesystem instead of a file in this package, so it is expanded per
+:meth:`AgentRegistry.get` rather than once at construction, and a skill the
+user drops in mid-session is advertised on the next turn.
+
+The **tool grant is the opt-in**: an agent gets skills by declaring
+``use_skill`` in its ``tools:`` frontmatter, and :meth:`AgentRegistry.
+__validate_skills` then *requires* the ``{SKILLS}`` token in its body (and
+rejects the token without the grant). So there is still no engine-side "which
+agents get skills" rule to keep in sync — an agent declares it, the same way it
+declares everything else it can do.
+
 Raises :class:`~._loader.AgentLoadError` on duplicate names, missing entries, a
 tool with no matching :class:`~kodo.toolspecs.ToolSpec`, a ``critic:`` that does
 not resolve to an agent declaring ``role: critic``, an unknown/missing/nested
 ``{SHARED:…}``, a sub-agent with no ``## Purpose``, or ``{SHARED:task_input}``
-in an agent with no spec.
+in an agent with no spec, or a ``use_skill``/``{SKILLS}`` half-declaration.
 """
 
 from __future__ import annotations
@@ -121,10 +138,13 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
+from kodo.project import kodo_skills_dir
+from kodo.skills import SkillStore, render_catalog
 from kodo.toolspecs import (
     ALL_TOOLS,
     RETURN_RESULT,
     RUN_SUBAGENT,
+    USE_SKILL,
     ToolSpec,
     build_return_result_spec,
     build_run_subagent_spec,
@@ -175,6 +195,20 @@ _TASK_INPUT_SHARED = "task_input"
 # rather than per-frontmatter so it can never drift from a spec's existence.
 # Replaced per-agent by ``return_result_specs`` before it reaches the LLM.
 _RETURN_RESULT_TOOL = RETURN_RESULT.name
+
+# ``{SKILLS}`` ⇄ the installed-skills catalog (doc/SKILLS.md §3). A second
+# substitution alongside ``{SHARED:<name>}``, deliberately shaped like it —
+# placement is the agent author's, and nothing is auto-appended — but expanded
+# from the *live* ``~/.kodo/skills`` directory rather than a file in this
+# package, so a skill installed mid-session shows up on the next turn. It takes
+# no name, since there is only ever one catalog.
+SKILLS_TOKEN = "{SKILLS}"
+
+# The tool grant that *is* the opt-in: an agent gets skills by declaring
+# ``use_skill``. ``__validate_skills`` binds the two together in both
+# directions, so the grant and the catalog can never appear without each other
+# (a tool with nothing to name, or a catalog the agent cannot act on).
+_USE_SKILL_TOOL = USE_SKILL.name
 
 # The catalog name an agent declares in its ``tools:`` frontmatter to opt into
 # spawning sub-agents. It is never offered as-is: ``run_subagent_specs`` expands
@@ -289,9 +323,15 @@ class AgentRegistry:
             without being schema-bearing.
     """
 
-    __slots__ = ("__agents", "__shared")
+    __slots__ = ("__agents", "__shared", "__skills")
 
-    def __init__(self, agents_dir: Path) -> None:
+    def __init__(self, agents_dir: Path, skills_dir: Path | None = None) -> None:
+        # The skills root is injectable purely so tests (and the validator's
+        # isolated home) can point at a temp directory; every production caller
+        # leaves it None and gets ``~/.kodo/skills``. The store itself holds no
+        # cache — it re-scans on each read — so binding it once here still sees
+        # skills installed after the server started.
+        self.__skills = SkillStore(skills_dir if skills_dir is not None else kodo_skills_dir())
         # Shared blocks (``shared_<name>.md``), keyed by ``<name>``. Never
         # globbed as agents (those globs are ``subagent_*.md`` / ``agent_*.md``),
         # so a shared file can never register as a spawnable agent.
@@ -324,6 +364,7 @@ class AgentRegistry:
             # frontmatter reference fails fast rather than at first dispatch.
             self.__validate_tools(agent.tools, path)
             self.__validate_shared(agent)
+            self.__validate_skills(agent)
             self.__agents[agent.name] = agent
         # Every sub-agent some caller may spawn — the union of all
         # ``subagents:`` allow-lists. Exactly these get a generated
@@ -449,6 +490,37 @@ class AgentRegistry:
                 f"is never seeded from a structured task_input"
             )
 
+    @staticmethod
+    def __validate_skills(agent: SubAgent) -> None:
+        """Bind the ``use_skill`` grant and the ``{SKILLS}`` catalog together.
+
+        Skills reach an agent through two halves that are useless apart: the
+        catalog tells the model which skills exist, the tool loads one. Either
+        half alone is a silent misconfiguration — a grant with no catalog gives
+        the model a tool it can only call with a guessed name, and a catalog
+        with no grant advertises skills the agent has no way to open — and
+        neither would fail visibly at runtime, so both are load-time errors
+        here. Checking it in the registry (rather than only in
+        ``test_agents.py``) is what makes the tool grant a *sufficient*
+        declaration for an agent author: declare it, and forgetting the token
+        is caught for you.
+
+        Raises:
+            AgentLoadError: the agent declares one half without the other.
+        """
+        has_token = SKILLS_TOKEN in agent.system_prompt
+        has_tool = _USE_SKILL_TOOL in agent.tools
+        if has_tool and not has_token:
+            raise AgentLoadError(
+                f"{agent.source_path}: grants {_USE_SKILL_TOOL!r}, so its prompt must "
+                f"include {SKILLS_TOKEN} where the installed-skills catalog should go"
+            )
+        if has_token and not has_tool:
+            raise AgentLoadError(
+                f"{agent.source_path}: includes {SKILLS_TOKEN} without granting "
+                f"{_USE_SKILL_TOOL!r} — the agent would be shown skills it cannot load"
+            )
+
     def __finalize(self, agent: SubAgent, autonomous: bool) -> SubAgent:
         """Render *agent* for the requested mode.
 
@@ -469,6 +541,14 @@ class AgentRegistry:
         system_prompt = _SHARED_TOKEN_RE.sub(
             lambda m: self.__shared[m.group(1)], agent.system_prompt
         )
+        # Guarded on the token so the ~30 agents without skills never pay for a
+        # directory scan. The ones that do pay it once per turn, which is the
+        # point: the catalog reflects what is installed *now*, not what was
+        # installed when the server booted.
+        if SKILLS_TOKEN in system_prompt:
+            system_prompt = system_prompt.replace(
+                SKILLS_TOKEN, render_catalog(self.__skills.usable())
+            )
         return replace(agent, tools=effective_tools, system_prompt=system_prompt)
 
     def get(self, name: str, autonomous: bool = False) -> SubAgent:

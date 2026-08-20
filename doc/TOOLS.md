@@ -978,6 +978,7 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [tools/_dispatch.py](../src/kodo/tools/_dispatch.py) | `_TOOL_CLASSES` table, `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME`. |
 | [tools/_paths.py](../src/kodo/tools/_paths.py) | `resolve_within` path guard (file-I/O + shell). |
 | [project/_layout.py](../src/kodo/project/_layout.py) | `session_temp_dir(session_id)` — `~/.kodo/sessions/<id>/tmp`, the `temporary` scratch root (§5a). |
+| [skills/](../src/kodo/skills/) | `SkillStore`/`load_skill`/`render_catalog` — the user-installed Agent Skills `use_skill` reads (doc/SKILLS.md). A leaf package, so `tools` may import it. |
 | [subagents/_registry.py](../src/kodo/subagents/_registry.py) | Validates each agent's `tools:` frontmatter against `ALL_TOOLS`; autonomous filtering. Renders no tool text into the prompt. |
 | [toolspecs/_describe.py](../src/kodo/toolspecs/_describe.py) | `tool_description()` — prose + dense `output_schema` sketch; the only tool text the model reads. |
 | [llms/anthropic/_claude.py](../src/kodo/llms/anthropic/_claude.py) | Converts `ToolSpec` → API `tools` param; parses `tool_use` → `ToolCallEvent`. |

@@ -107,6 +107,7 @@ imported); the annotation on each line names the packages pulled in.
  │ subagents │   │  llms  │   │   tools   │              T3   (llms ⊇ llamacpp utils;
  └─────┬─────┘   └───┬────┘   └─────┬─────┘                    tools imported only by runtime)
        │ toolspecs   │ toolspecs    │ toolspecs · guided_state · project · common
+       │ skills      │              │ skills
        │             │ transport    │
        │             │ common       │
        ▼             ▼              ▼
@@ -120,9 +121,9 @@ imported); the annotation on each line names the packages pulled in.
  └─────┬─────┘
        │ common
        ▼
- ┌────────┬─────────┬──────────────┬───────┬────────┬─────────────┬──────────┬───────────┐
- │ common │ project │ guided_state │ state │ mirror │ shellparser │ binutils │ websearch │   T0  ← import nothing from kodo
- └────────┴─────────┴──────────────┴───────┴────────┴─────────────┴──────────┴───────────┘
+ ┌────────┬─────────┬──────────────┬───────┬────────┬─────────────┬──────────┬───────────┬────────┐
+ │ common │ project │ guided_state │ state │ mirror │ shellparser │ binutils │ websearch │ skills │   T0  ← import nothing from kodo
+ └────────┴─────────┴──────────────┴───────┴────────┴─────────────┴──────────┴───────────┴────────┘
 ```
 
 `runtime` is the sole importer of `mirror`, `security`, and (`security` aside)
@@ -145,7 +146,8 @@ T3 — it does not import (or get imported by) any of those three.
 only the principal lines are drawn above to keep the figure readable.)
 
 - **T0 — leaf packages** (`common`, `project`, `guided_state`, `state`,
-  `mirror`, `shellparser`, `binutils`, `websearch`): import nothing from `kodo`.
+  `mirror`, `shellparser`, `binutils`, `websearch`, `skills`): import nothing
+  from `kodo`.
   `state/_memory.py` is a **stub** (see §13); `mirror`/`shellparser`
   are the checkpoint/parse primitives consumed by `runtime` (§10b) — and
   `shellparser` also by `security`; `binutils` is the
@@ -153,7 +155,11 @@ only the principal lines are drawn above to keep the figure readable.)
   log (§7) that replaced `kodo.workspace`; `websearch` is the Playwright- and
   `curl_cffi`-backed fetch engine behind `query_search_engine`/`web_search`
   (doc/WEB_SEARCH.md) and the single-page fetch behind `read_webpage`
-  (doc/READ_WEBPAGE.md), consumed only by `tools`.
+  (doc/READ_WEBPAGE.md), consumed only by `tools`; `skills` is the
+  user-installed Agent Skills store under `~/.kodo/skills` (doc/SKILLS.md),
+  taking its root as a constructor argument — which is what keeps it a leaf —
+  and consumed by `tools` (the `use_skill` handler), `subagents` (the
+  `{SKILLS}` prompt catalog) and `server` (`skills.list`/`skills.delete`).
 - **T1**: `transport` (wire framing over `common`).
 - **T2**: `toolspecs` (tool catalog) — now a true leaf, importing nothing from
   `kodo` (the old `toolspecs → workspace` edge for `ArtifactType` is gone) —
@@ -168,7 +174,7 @@ only the principal lines are drawn above to keep the figure readable.)
   merged from the former `llm_utils`), and `tools` (the **dispatch
   implementation** of every tool in the catalog — one `Tool` subclass per tool).
   `tools` has a hard import ceiling of T0/T1/T2 (`guided_state` + `project` +
-  `toolspecs` + `common`, the last for the same `system_temp_roots()` helper
+  `skills` + `toolspecs` + `common`, the last for the same `system_temp_roots()` helper
   `security` uses — routed through `common` rather than a direct
   `tools → security` import so the two stay decoupled); the collaborators it
   needs from higher tiers — the gate, the session, the sub-agent launcher —
@@ -323,6 +329,7 @@ placeholders.
 | `web_search` | ✅ implemented (`WebSearchTool`, doc/WEB_SEARCH.md) — a thin wrapper over the **`web_search` agent** (medium capability): validates/clamps `query`/`max_results`/`timeout` (≤600s) and delegates to `EngineServices.run_web_search_agent`, which drives the agent through a new silent, multi-round, non-subsession tool loop (`_run_silent_tool_loop_turn`). The agent itself plans discovery (`query_search_engine`, one engine per call), reads pages (`read_webpage`), paces itself (`get_web_search_state`/`update_web_search_state`/`wait`), watches its own clock (`remaining_time`), and returns `{themes, note}` via `return_result` — replacing the old deterministic discover-all-four-in-parallel → scrape → silent-`web_summarizer`-synthesis pipeline (and its 30-min-per-engine `CooldownStore`) entirely. `max_results` caps the theme count (default 5, max 10). Granted only to the shared `investigator` sub-agent (spawnable by both entry agents). Security impact `MODERATE`; available in autonomous mode. |
 | `query_search_engine` | ✅ implemented (`QuerySearchEngineTool`, doc/WEB_SEARCH.md) — the `web_search` agent's discovery primitive: query one of Google/Bing/DuckDuckGo(HTML)/English-Wikipedia(full-text) and return its organic hits (ads/engine-internal links skipped), one engine per call. `browser` picks the fetch backend (`firefox` default, `chrome`/`edge`/`webkit`/`chromium`, or `curl` — `curl_cffi` TLS/HTTP2 fingerprint impersonation, no browser process, backed by a from-scratch `selectolax` port of the per-engine extraction logic for the pages with no live DOM to evaluate). A wall is a compliant `{"error": ...}`, distinct from a legitimate empty `hits` list. Security impact `LOW`; available in autonomous mode. |
 | `read_webpage` | ✅ implemented (`ReadWebpageTool`, doc/READ_WEBPAGE.md) — fetch **one caller-given URL** and return its `content`, shaped by `content_filter` (`off`/`html`/`text`, default `text` — the tool's original Markdown-conversion behavior, content-root selected and chrome-stripped). `browser` picks the fetch backend, same choices as `query_search_engine`; `BrowserSession` (`kodo/websearch/_browser.py`) launches exactly the requested kind with **no cascade** — errors immediately if unavailable, since the caller chose deliberately. Since the URL comes straight from the agent, it's SSRF-guarded: non-http(s) schemes and hosts resolving to a private/loopback/link-local/reserved address raise before any request is made. A captcha/anti-bot wall, an HTTP 403/429/503, or (in `text` mode) too-thin residual content raises the same way and the tool returns `{"error": "..."}` advising against retrying the same URL with the same browser — **no cooldown state**. Granted only to the shared `investigator` sub-agent and the `web_search` agent. Security impact `LOW`; available in autonomous mode. |
+| `use_skill` | ✅ implemented (`UseSkillTool`, doc/SKILLS.md) — returns one user-installed skill's full `SKILL.md` body plus its absolute directory path, the load half of a progressive-disclosure pair whose other half is the `{SKILLS}` catalog `AgentRegistry` expands into the prompt of every agent granted this tool. `~/.kodo/skills` is re-scanned per call (no cache), so a skill installed or deleted mid-session takes effect on the next turn. The grant *is* the opt-in — `__validate_skills` rejects the tool without the token and the token without the tool — and it is held today by `problem_solver` plus every sub-agent that itself writes code or documents (`coder`, `architect`, `developer`, `e2e_test_coder`, `e2e_test_designer`, `functional_designer`, `narrative_author`, `requirements_author`, `test_coder`, `test_designer`); critics, `judge`, toolchain agents, and read-only/investigative agents opt out (doc/SKILLS.md §7). Security impact `MINIMAL`; available in autonomous mode; grants nothing beyond the text it returns. |
 | `get_web_search_state` / `update_web_search_state` | ✅ implemented — the `web_search` agent's persistent key-value pacing memory (`kodo.websearch.WebSearchStateStore`, `~/.kodo/websearch/agent_state.json`, 12h TTL per entry refreshed on write). `update_web_search_state`'s special `<time_mark>` value records `time.time()` under a key instead of a literal string; reading it back returns the elapsed seconds, recomputed fresh every call. Exclusive to the `web_search` agent by convention. Security impact `NONE`; available in autonomous mode. |
 | `wait` / `remaining_time` | ✅ implemented — the `web_search` agent's anti-burst pacing lever (a clamped sleep, ≤30s/call, never sleeping past `ToolContext.deadline`) and timeout countdown (seconds left before the run's deadline, set from the tool's `timeout`). Exclusive to the `web_search` agent by convention. Security impact `NONE`; available in autonomous mode. |
 | `run_subagent`, `rollback`, `finalize_project` | ✅ implemented. `run_subagent` is never offered as-is: each caller gets one `run_subagent_<name>` tool per invocable sub-agent, carrying that sub-agent's own `input_schema`, and the engine folds such a call back to the canonical form before dispatch (doc/TOOLS.md §5A). When the target declares a `critic:`, one call runs the whole author/critic loop. `rollback` now delegates to the same shadow-git mirror Problem Solver uses (§7/§10b). |

@@ -409,6 +409,31 @@ async def test_read_attachment_compliance(tmp_path: Path, monkeypatch: pytest.Mo
     )
 
 
+@pytest.mark.asyncio
+async def test_use_skill_compliance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Same reasoning as read_attachment above: redirect the skills root away
+    # from the developer's real ~/.kodo so the run does not depend on (or see)
+    # whatever they happen to have installed.
+    skills_root = tmp_path / "skills"
+    (skills_root / "pdf").mkdir(parents=True)
+    (skills_root / "pdf" / "SKILL.md").write_text(
+        "---\nname: pdf\ndescription: Work with PDF files.\n---\n\nUse pypdf.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("kodo.tools._use_skill.kodo_skills_dir", lambda: skills_root)
+
+    d = _make_dispatcher(tmp_path)
+    ok = _assert_compliant("use_skill", await _dispatch(d, "use_skill", {"name": "pdf"}))
+    assert ok["name"] == "pdf"
+    assert ok["instructions"] == "Use pypdf."
+    assert ok["path"] == str(skills_root / "pdf")
+
+    # Error paths: unknown name, traversal attempt, missing argument.
+    _assert_compliant("use_skill", await _dispatch(d, "use_skill", {"name": "ghost"}))
+    _assert_compliant("use_skill", await _dispatch(d, "use_skill", {"name": "../etc"}))
+    _assert_compliant("use_skill", await _dispatch(d, "use_skill", {}))
+
+
 # ---------------------------------------------------------------------------
 # Workspace search tools (get_root_paths / find_files / find_text_in_files)
 # ---------------------------------------------------------------------------
@@ -985,6 +1010,7 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "update_web_search_state",
         "wait",
         "remaining_time",
+        "use_skill",
     }
     assert set(DISPATCHABLE_TOOLS_BY_NAME) == covered, (
         "Dispatchable tools changed; add a compliance scenario for: "

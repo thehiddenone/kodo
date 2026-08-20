@@ -30,6 +30,23 @@ def kodo_user_dir() -> Path:
     return Path.home() / ".kodo"
 
 
+def kodo_skills_dir() -> Path:
+    """``~/.kodo/skills/`` — the user-level Agent Skills store (doc/SKILLS.md).
+
+    One directory per installed skill, each holding a ``SKILL.md`` (open Agent
+    Skill format: YAML frontmatter with ``name``/``description``, then the
+    instruction body) plus whatever bundled files that body references. Skills
+    are installed by dropping a directory here by hand — there is no installer
+    — so this path is the whole contract between the user and the feature, and
+    :class:`kodo.skills.SkillStore` treats every entry as untrusted input.
+
+    Exposed here, next to ``session_temp_dir``, so both the ``use_skill`` tool
+    (T2.5) and the singleton server's ``skills.list``/``skills.delete``
+    handlers resolve the same root without either importing the other.
+    """
+    return kodo_user_dir() / "skills"
+
+
 def session_attachments_dir(session_id: str) -> Path:
     """``~/.kodo/sessions/<session_id>/attachments`` — one session's stored prompt attachments.
 

@@ -9,6 +9,7 @@ tools:
   - create_file
   - create_directory
   - read_file
+  - use_skill
 ---
 # Test Designer
 
@@ -91,6 +92,8 @@ You act only through tool calls — no free-form text. A complete run: zero or m
 - Do not plan tests exercising internal mechanisms (function calls, internal state, code paths) — behavior at exposed interfaces only. No compound tests; no ungrounded boundaries/scenarios; no non-functional tests; no cross-component integration tests (component-isolation only).
 - Do not write with uncovered requirements; the coverage table must be complete. Do not reuse retired test IDs.
 - Do not silently incorporate feedback contradicting the plan, Design, requirements, or itself — escalate it first.
+
+{SKILLS}
 
 {SHARED:escalation}
 

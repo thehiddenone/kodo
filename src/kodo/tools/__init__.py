@@ -3,7 +3,8 @@
 This package is a dedicated import tier **between** ``toolspecs`` (T2) and
 ``subagents``/``llms`` (T3): it may import only from T0/T1/T2 (``common``,
 ``project``, ``toolchains``, ``state``, ``security``, ``transport``,
-``guided_state``, ``toolspecs``) and is consumed from above by ``runtime``.  It
+``guided_state``, ``skills``, ``toolspecs``) and is consumed from above by
+``runtime``.  It
 must never import ``subagents``, ``llms``, or ``runtime`` — the collaborators
 those would provide are expressed here as structural Protocols
 (:class:`GateLike`, :class:`SessionLike`, :class:`EngineServices`) and injected.
@@ -72,6 +73,7 @@ from ._tool import Tool
 from ._toolchain_build import ToolchainBuildTool
 from ._toolchain_deps import ToolchainDepsTool
 from ._update_web_search_state import UpdateWebSearchStateTool
+from ._use_skill import UseSkillTool
 from ._wait import WaitTool
 from ._web_search import WebSearchTool
 
@@ -119,6 +121,7 @@ __all__ = [
     "ToolchainBuildTool",
     "ToolchainDepsTool",
     "UpdateWebSearchStateTool",
+    "UseSkillTool",
     "WaitTool",
     "WebSearchTool",
     "compute_new_content",
