@@ -1,7 +1,7 @@
 """Tests for ``kodo.llms.openai._gpt`` -- the OpenAI GPT LLM plugin.
 
 Mirrors test_claude.py's shape (the Anthropic plugin's equivalent). Covers:
-* :func:`_reasoning_effort_for` per-model mapping.
+* :func:`_reasoning_effort_for` thinking-tier mapping.
 * :func:`_map_stop_reason`.
 * :class:`GPTPlugin` properties (``name``, ``supported_models``).
 * :meth:`GPTPlugin.cancel` sets the cancel event.
@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kodo.llms._cloud_thinking import cloud_thinking_default_tier, cloud_thinking_tiers
 from kodo.llms._interface import (
     ThinkingDelta,
     TokenDelta,
@@ -27,7 +28,7 @@ from kodo.llms._interface import (
 )
 from kodo.llms.openai._gpt import (
     _DEFAULT_REASONING_EFFORT,
-    _REASONING_EFFORT,
+    _REASONING_EFFORTS,
     GPTPlugin,
     _map_stop_reason,
     _reasoning_effort_for,
@@ -38,25 +39,31 @@ from kodo.llms.openai._gpt import (
 # ---------------------------------------------------------------------------
 
 
-def test_reasoning_effort_luna_is_minimal() -> None:
-    assert _reasoning_effort_for("gpt-5.6-luna") == "minimal"
+def test_reasoning_effort_forwards_every_valid_tier() -> None:
+    """A tier the API accepts goes out verbatim -- no translation table."""
+    for tier in sorted(_REASONING_EFFORTS):
+        assert _reasoning_effort_for(tier) == tier
 
 
-def test_reasoning_effort_terra_is_medium() -> None:
-    assert _reasoning_effort_for("gpt-5.6-terra") == "medium"
+def test_reasoning_effort_none_falls_back_to_default() -> None:
+    assert _reasoning_effort_for(None) == _DEFAULT_REASONING_EFFORT
 
 
-def test_reasoning_effort_sol_is_high() -> None:
-    assert _reasoning_effort_for("gpt-5.6-sol") == "high"
+def test_reasoning_effort_unknown_tier_falls_back_to_default() -> None:
+    """An out-of-family value is never forwarded (it would 400)."""
+    assert _reasoning_effort_for("unlimited") == _DEFAULT_REASONING_EFFORT
 
 
-def test_reasoning_effort_unknown_model_falls_back_to_default() -> None:
-    assert _reasoning_effort_for("gpt-5.7-nova") == _DEFAULT_REASONING_EFFORT
+def test_reasoning_effort_accepts_exactly_the_registered_family_tiers() -> None:
+    """The plugin's accepted set is the family catalog's, read off the registry.
 
-
-def test_reasoning_effort_table_covers_every_supported_model() -> None:
-    plugin = GPTPlugin(api_key="test-key")
-    assert set(_REASONING_EFFORT) == set(plugin.supported_models)
+    Spec-driven rather than a second hardcoded list: kodo.llms._cloud_thinking
+    is what the server advertises and what thinking_level.set validates
+    against, so a tier that is offered but rejected here would silently
+    degrade to the default.
+    """
+    assert set(cloud_thinking_tiers("openai")) == _REASONING_EFFORTS
+    assert cloud_thinking_default_tier("openai") == _DEFAULT_REASONING_EFFORT
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +183,7 @@ async def test_gpt_stream_query_yields_from_inner() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -335,6 +343,7 @@ async def test_gpt_raw_stream_yields_text_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -360,6 +369,7 @@ async def test_gpt_raw_stream_yields_reasoning_summary() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -391,6 +401,7 @@ async def test_gpt_raw_stream_yields_tool_call() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -429,6 +440,7 @@ async def test_gpt_raw_stream_tool_call_malformed_json() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -453,6 +465,7 @@ async def test_gpt_raw_stream_cancel_stops_early() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -475,6 +488,7 @@ async def test_gpt_raw_stream_usage_includes_cache_read_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -503,6 +517,7 @@ async def test_gpt_raw_stream_stop_reason_max_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -524,6 +539,7 @@ async def test_gpt_raw_stream_no_tool_call_is_end_turn() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 

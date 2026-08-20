@@ -35,22 +35,43 @@ _log = logging.getLogger(__name__)
 # uses for Meta's Model API.
 _BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
-# Kōdo's four capability tiers map onto two real Gemini model IDs -- Flash
-# covers medium/high/max (see kodo/server/_config.py's models.cloud.google
-# defaults), Flash-Lite is reserved for low. Same "one fixed reasoning effort
-# per MODEL, not per kodo tier" rationale as kodo/llms/openai/_gpt.py's own
-# table: there is no per-tier knob to thread through the silent-turn helpers
-# for one vendor's benefit alone.
-_REASONING_EFFORT: dict[str, str] = {
-    "gemini-3.6-flash": "medium",
-    "gemini-3.5-flash-lite": "low",
-}
+# Reasoning depth is session-controlled: the engine passes the session's
+# thinking_level (kodo.llms._cloud_thinking's "google" family) on every call
+# and it lands verbatim in the OpenAI-compatible endpoint's `reasoning_effort`
+# field, which Google maps 1:1 onto Gemini's own thinking levels
+# (https://ai.google.dev/gemini-api/docs/openai,
+# https://ai.google.dev/gemini-api/docs/thinking) -- so the tier slugs are
+# Gemini's own vocabulary and no translation table is needed.
+#
+# Both registered models (gemini-3.6-flash, gemini-3.5-flash-lite) accept all
+# four levels. There is no "max" here, and reasoning cannot be turned off on a
+# Gemini 3 model at all -- "minimal" is the floor. Default "medium" is
+# gemini-3.6-flash's own default (flash-lite's own is "minimal", but the tier
+# is vendor-scoped rather than per-model -- see kodo/llms/_cloud_thinking.py);
+# before this control existed the effort was fixed per model at
+# flash="medium"/flash-lite="low".
+#
+# Note the endpoint rejects `reasoning_effort` sent together with a native
+# thinking_level/thinking_budget via extra_body -- kodo only ever sends the
+# former.
+_REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high"})
 _DEFAULT_REASONING_EFFORT = "medium"
 
 
-def _reasoning_effort_for(model: str) -> str:
-    """Fixed reasoning-effort tier for *model* (Chat Completions ``reasoning_effort``)."""
-    return _REASONING_EFFORT.get(model, _DEFAULT_REASONING_EFFORT)
+def _reasoning_effort_for(thinking_level: str | None) -> str:
+    """Chat Completions ``reasoning_effort`` for this request's thinking tier.
+
+    Args:
+        thinking_level (str | None): Session tier slug, or ``None``. Anything
+            outside :data:`_REASONING_EFFORTS` falls back to the family
+            default rather than being forwarded to the API.
+
+    Returns:
+        str: A valid ``reasoning_effort`` value.
+    """
+    if thinking_level in _REASONING_EFFORTS:
+        return str(thinking_level)
+    return _DEFAULT_REASONING_EFFORT
 
 
 def _map_finish_reason(reason: str | None) -> str:
@@ -122,6 +143,7 @@ class GeminiPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a Gemini response via Chat Completions, with retry.
 
@@ -133,7 +155,11 @@ class GeminiPlugin(LLMPlugin):
             tools (list[ToolSpec]): Tools the model may invoke.
             cache_breakpoints (list[int]): Accepted for interface parity;
                 ignored -- Gemini's prompt caching is automatic.
-
+            thinking_level (str | None): The session's reasoning tier for the
+                ``"google"`` thinking family (``"minimal"``/``"low"``/
+                ``"medium"``/``"high"``), or ``None`` for the family default.
+                Forwarded verbatim as ``reasoning_effort``, which Google maps
+                onto Gemini's own thinking levels.
         Yields:
             StreamEvent: Token/reasoning deltas, tool calls, then :class:`TurnEnd`.
         """
@@ -144,6 +170,7 @@ class GeminiPlugin(LLMPlugin):
             messages=messages,
             tools=tools,
             cache_breakpoints=cache_breakpoints,
+            thinking_level=thinking_level,
         )
 
     async def cancel(self, stream_id: str) -> None:
@@ -170,6 +197,7 @@ class GeminiPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None,
     ) -> AsyncIterator[StreamEvent]:
         cancel_event = asyncio.Event()
         self.__cancel_events[stream_id] = cancel_event
@@ -182,6 +210,7 @@ class GeminiPlugin(LLMPlugin):
                     messages=messages,
                     tools=tools,
                     cache_breakpoints=cache_breakpoints,
+                    thinking_level=thinking_level,
                 )
             ):
                 yield event
@@ -197,6 +226,7 @@ class GeminiPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None,
     ) -> AsyncIterator[StreamEvent]:
         del cache_breakpoints  # Gemini's prompt caching is automatic -- see _convert.py
 
@@ -220,7 +250,7 @@ class GeminiPlugin(LLMPlugin):
             model=model,
             messages=oai_messages,
             tools=oai_tools if oai_tools else openai.NOT_GIVEN,
-            reasoning_effort=_reasoning_effort_for(model),
+            reasoning_effort=_reasoning_effort_for(thinking_level),
             stream=True,
             stream_options={"include_usage": True},
         )

@@ -26,6 +26,7 @@ from huggingface_hub.errors import GatedRepoError
 
 from kodo.binutils import ensure_all_utils
 from kodo.llms import (
+    CLOUD_THINKING_FAMILIES,
     LLMGateway,
     LLMRouting,
     LocalLLMEntry,
@@ -370,32 +371,18 @@ def _local_entry_installed(entry: LocalLLMEntry, kodo_dir: Path) -> bool:
     return _local_entry_installed_path(entry, kodo_dir) is not None
 
 
-#: OpenRouter's own synthetic "base_llm" thinking-family entry — not derived
-#: from any local registry entry (OpenRouter is a cloud vendor), added
-#: unconditionally alongside the local ones below. Tier values/default must
-#: match kodo.runtime._engine._llm's _OPENROUTER_BASE_LLM/
-#: _OPENROUTER_THINKING_TIERS/_OPENROUTER_DEFAULT_THINKING_TIER exactly —
-#: that module is the one place stream_query actually consumes a
-#: thinking_level for OpenRouter, this is only the client-facing catalog
-#: entry describing what's valid.
-_OPENROUTER_THINKING_FAMILY_ENTRY: dict[str, object] = {
-    "family": "openrouter_reasoning_effort",
-    "tiers": ["low", "medium", "high", "max"],
-    "default": "medium",
-}
-
-
 def _thinking_families_payload(registry: dict[str, LocalLLMEntry]) -> dict[str, object]:
     """``base_llm -> {family, tiers, default}`` for every base model with a
-    thinking-tier mechanism (see ``kodo.llms.local_thinking_family``), plus
-    the one synthetic entry for OpenRouter's session-controlled reasoning
-    effort (``"openrouter"`` — kodo.runtime._engine._llm's
-    ``_OPENROUTER_BASE_LLM``, not a real local registry entry).
+    thinking-tier mechanism (see ``kodo.llms.local_thinking_family``), plus one
+    synthetic entry per **cloud vendor** (``"anthropic"``, ``"openai"``, ... —
+    the vendor key itself, not a real local registry entry), whose
+    session-controlled reasoning tier rides the exact same machinery.
 
     Server-computed rather than a second table hardcoded in kodo-vsix, since
     family membership already lives in ``kodo.llms.local_registry._thinking``
-    as the single source of truth (also needed there for the launch-time CLI
-    flags) — a duplicate client-side copy would risk drifting out of sync.
+    (local) and ``kodo.llms._cloud_thinking`` (cloud) as the single source of
+    truth — the same two tables the engine validates ``thinking_level.set``
+    against — so a duplicate client-side copy would risk drifting out of sync.
     """
     base_llms = {e.base_llm for e in registry.values() if e.base_llm}
     payload: dict[str, object] = {
@@ -407,7 +394,12 @@ def _thinking_families_payload(registry: dict[str, LocalLLMEntry]) -> dict[str, 
         for base_llm in base_llms
         if local_thinking_family(base_llm) is not None
     }
-    payload["openrouter"] = _OPENROUTER_THINKING_FAMILY_ENTRY
+    for vendor, entry in CLOUD_THINKING_FAMILIES.items():
+        payload[vendor] = {
+            "family": entry.family,
+            "tiers": list(entry.tiers),
+            "default": entry.default,
+        }
     return payload
 
 

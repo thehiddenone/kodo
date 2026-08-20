@@ -38,25 +38,39 @@ __all__ = ["GPTPlugin"]
 
 _log = logging.getLogger(__name__)
 
-# Kōdo's four capability tiers (low/medium/high/max) map onto three real
-# model IDs this generation -- Terra covers both "medium" and "high", Sol is
-# reserved for "max" (see kodo/server/_config.py's models.cloud.openai
-# defaults). There is therefore no per-kodo-tier reasoning-effort knob to
-# thread through here (that would need capability plumbed all the way through
-# _run_silent_return_turn/_run_silent_tool_loop_turn/the main turn loop) --
-# each MODEL instead gets one fixed reasoning effort, matching its own
-# positioning (Luna: lightweight/fast, Terra: balanced, Sol: flagship).
-_REASONING_EFFORT: dict[str, str] = {
-    "gpt-5.6-luna": "minimal",
-    "gpt-5.6-terra": "medium",
-    "gpt-5.6-sol": "high",
-}
+# Reasoning effort is session-controlled, not model-fixed: the engine passes
+# the session's thinking_level (kodo.llms._cloud_thinking's "openai" family)
+# on every call and it lands verbatim in the Responses API's
+# `reasoning.effort` (https://developers.openai.com/api/docs/guides/reasoning).
+# The tier slugs are that parameter's own vocabulary, so no translation table
+# is needed -- only validation, since an unrecognised value would 400.
+#
+# The API's full documented set also includes "none" and "minimal"; kodo
+# offers neither (there is no non-reasoning tier -- doc/LLM_REGISTRY.md
+# §4.5a), and the GPT-5.6 generation does not list "minimal" among its
+# supported values at all. Default "medium" is GPT-5.6's own documented
+# default; before this control existed each model carried one fixed effort
+# (luna="minimal", terra="medium", sol="high"), which the session-wide tier
+# replaces -- the same tier now applies whichever capability tier resolved
+# the model.
+_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 _DEFAULT_REASONING_EFFORT = "medium"
 
 
-def _reasoning_effort_for(model: str) -> str:
-    """Fixed reasoning-effort tier for *model* (Responses API ``reasoning.effort``)."""
-    return _REASONING_EFFORT.get(model, _DEFAULT_REASONING_EFFORT)
+def _reasoning_effort_for(thinking_level: str | None) -> str:
+    """Responses API ``reasoning.effort`` for this request's thinking tier.
+
+    Args:
+        thinking_level (str | None): Session tier slug, or ``None``. Anything
+            outside :data:`_REASONING_EFFORTS` falls back to the family
+            default rather than being forwarded to the API.
+
+    Returns:
+        str: A valid ``reasoning.effort`` value.
+    """
+    if thinking_level in _REASONING_EFFORTS:
+        return str(thinking_level)
+    return _DEFAULT_REASONING_EFFORT
 
 
 def _map_stop_reason(response: Response, made_tool_call: bool) -> str:
@@ -113,6 +127,7 @@ class GPTPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a GPT response via the Responses API, with retry.
 
@@ -124,6 +139,10 @@ class GPTPlugin(LLMPlugin):
             tools (list[ToolSpec]): Tools the model may invoke.
             cache_breakpoints (list[int]): Accepted for interface parity;
                 ignored -- Responses API caching is automatic.
+            thinking_level (str | None): The session's reasoning tier for the
+                ``"openai"`` thinking family (``"low"``/``"medium"``/
+                ``"high"``/``"xhigh"``/``"max"``), or ``None`` for the family
+                default. Forwarded verbatim as ``reasoning.effort``.
 
         Yields:
             StreamEvent: Token/reasoning deltas, tool calls, then :class:`TurnEnd`.
@@ -135,6 +154,7 @@ class GPTPlugin(LLMPlugin):
             messages=messages,
             tools=tools,
             cache_breakpoints=cache_breakpoints,
+            thinking_level=thinking_level,
         )
 
     async def cancel(self, stream_id: str) -> None:
@@ -161,6 +181,7 @@ class GPTPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None,
     ) -> AsyncIterator[StreamEvent]:
         cancel_event = asyncio.Event()
         self.__cancel_events[stream_id] = cancel_event
@@ -173,6 +194,7 @@ class GPTPlugin(LLMPlugin):
                     messages=messages,
                     tools=tools,
                     cache_breakpoints=cache_breakpoints,
+                    thinking_level=thinking_level,
                 )
             ):
                 yield event
@@ -188,6 +210,7 @@ class GPTPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None,
     ) -> AsyncIterator[StreamEvent]:
         del cache_breakpoints  # Responses API caching is automatic -- see _convert.py
 
@@ -205,7 +228,7 @@ class GPTPlugin(LLMPlugin):
             model=model,
             instructions=system,
             input=input_items,
-            reasoning={"effort": _reasoning_effort_for(model), "summary": "auto"},
+            reasoning={"effort": _reasoning_effort_for(thinking_level), "summary": "auto"},
             # kodo resends full conversation history every turn (like the
             # Anthropic plugin) and never uses previous_response_id chaining,
             # so there is no reason to let OpenAI retain this response

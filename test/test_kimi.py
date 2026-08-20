@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 import openai
 import pytest
 
+from kodo.llms._cloud_thinking import cloud_thinking_default_tier, cloud_thinking_tiers
 from kodo.llms._interface import (
     ThinkingDelta,
     TokenDelta,
@@ -31,7 +32,7 @@ from kodo.llms._interface import (
 )
 from kodo.llms.kimi._kimi import (
     _DEFAULT_REASONING_EFFORT,
-    _REASONING_EFFORT,
+    _REASONING_EFFORTS,
     KimiPlugin,
     _map_finish_reason,
     _reasoning_kwargs_for,
@@ -43,35 +44,51 @@ from kodo.llms.kimi._kimi import (
 
 
 def test_reasoning_kwargs_k3_uses_top_level_reasoning_effort() -> None:
-    assert _reasoning_kwargs_for("kimi-k3") == {"reasoning_effort": "max"}
+    assert _reasoning_kwargs_for("kimi-k3", None) == {"reasoning_effort": _DEFAULT_REASONING_EFFORT}
+
+
+def test_reasoning_kwargs_k3_forwards_every_valid_tier() -> None:
+    """The session's tier reaches K3 verbatim -- Moonshot's own scale."""
+    for tier in sorted(_REASONING_EFFORTS):
+        assert _reasoning_kwargs_for("kimi-k3", tier) == {"reasoning_effort": tier}
+
+
+def test_reasoning_kwargs_k3_rejects_medium_tier() -> None:
+    """K3's scale has no "medium" -- a stale client value falls back, never 400s."""
+    assert _reasoning_kwargs_for("kimi-k3", "medium") == {
+        "reasoning_effort": _DEFAULT_REASONING_EFFORT
+    }
 
 
 def test_reasoning_kwargs_k3_does_not_nest_in_extra_body() -> None:
-    result = _reasoning_kwargs_for("kimi-k3")
+    result = _reasoning_kwargs_for("kimi-k3", "high")
     assert "extra_body" not in result
 
 
 def test_reasoning_kwargs_code_model_uses_extra_body_thinking_toggle() -> None:
-    assert _reasoning_kwargs_for("kimi-k2.7-code") == {
+    assert _reasoning_kwargs_for("kimi-k2.7-code", None) == {
         "extra_body": {"thinking": {"type": "enabled"}}
     }
 
 
-def test_reasoning_kwargs_code_model_does_not_set_reasoning_effort() -> None:
-    result = _reasoning_kwargs_for("kimi-k2.7-code")
-    assert "reasoning_effort" not in result
+def test_reasoning_kwargs_code_model_ignores_the_thinking_tier() -> None:
+    """kimi-k2.7-code accepts no effort parameter at all -- the tier is dropped."""
+    for tier in sorted(_REASONING_EFFORTS):
+        result = _reasoning_kwargs_for("kimi-k2.7-code", tier)
+        assert result == {"extra_body": {"thinking": {"type": "enabled"}}}
+        assert "reasoning_effort" not in result
 
 
 def test_reasoning_kwargs_unknown_model_falls_back_to_extra_body_toggle() -> None:
     """An unregistered/future model id defaults to the boolean-toggle shape, not K3's."""
-    result = _reasoning_kwargs_for("kimi-k4-nano")
+    result = _reasoning_kwargs_for("kimi-k4-nano", "max")
     assert result == {"extra_body": {"thinking": {"type": "enabled"}}}
 
 
-def test_reasoning_effort_table_only_covers_k3() -> None:
-    """Only kimi-k3 uses the graded reasoning_effort mechanism -- see module docstring."""
-    assert set(_REASONING_EFFORT) == {"kimi-k3"}
-    assert _REASONING_EFFORT["kimi-k3"] == _DEFAULT_REASONING_EFFORT
+def test_reasoning_effort_accepts_exactly_the_registered_family_tiers() -> None:
+    """Accepted set == the family catalog the server advertises (see test_gpt)."""
+    assert set(cloud_thinking_tiers("kimi")) == _REASONING_EFFORTS
+    assert cloud_thinking_default_tier("kimi") == _DEFAULT_REASONING_EFFORT
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +190,7 @@ async def test_kimi_stream_query_yields_from_inner() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -295,6 +313,7 @@ async def test_kimi_raw_stream_k3_sends_top_level_reasoning_effort() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         pass
 
@@ -320,6 +339,7 @@ async def test_kimi_raw_stream_code_model_sends_extra_body_thinking_toggle() -> 
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         pass
 
@@ -348,6 +368,7 @@ async def test_kimi_raw_stream_token_deltas() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -377,6 +398,7 @@ async def test_kimi_raw_stream_reasoning_content_passthrough() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -410,6 +432,7 @@ async def test_kimi_raw_stream_tool_calls() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -453,6 +476,7 @@ async def test_kimi_raw_stream_tool_call_malformed_json() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -487,6 +511,7 @@ async def test_kimi_raw_stream_cancel_stops_stream() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -511,6 +536,7 @@ async def test_kimi_raw_stream_usage_includes_cache_read_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -540,6 +566,7 @@ async def test_kimi_raw_stream_usage_missing_cache_details_defaults_to_zero() ->
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -560,6 +587,7 @@ async def test_kimi_raw_stream_stop_reason_max_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -580,6 +608,7 @@ async def test_kimi_raw_stream_no_tool_call_is_end_turn() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 

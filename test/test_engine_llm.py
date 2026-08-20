@@ -16,6 +16,7 @@ import pytest
 
 from kodo.common import ApiKey
 from kodo.llms import (
+    CLOUD_THINKING_FAMILIES,
     LLMRouting,
     Message,
     ThinkingDelta,
@@ -518,14 +519,26 @@ async def test_resolve_plugin_falls_back_to_settings_vendor_when_model_unknown()
 
 
 # ---------------------------------------------------------------------------
-# _thinking_kwargs -- extended to OpenRouter alongside local (doc/LLM_REGISTRY.md §3a)
+# _thinking_kwargs -- every cloud vendor alongside local (doc/LLM_REGISTRY.md §4.5a)
 # ---------------------------------------------------------------------------
 
 
-def test_thinking_kwargs_empty_for_non_openrouter_cloud_routing() -> None:
+def test_thinking_kwargs_includes_level_for_every_cloud_vendor_with_a_family() -> None:
+    """Read off the family catalog, not a hardcoded vendor list: a vendor that
+    advertises a thinking family but never receives the tier would show a live
+    control that does nothing."""
     engine = _make_engine()
     engine._session.thinking_level = "high"
-    assert engine._thinking_kwargs(LLMRouting(residence="cloud", vendor="anthropic")) == {}
+    for vendor in CLOUD_THINKING_FAMILIES:
+        assert engine._thinking_kwargs(LLMRouting(residence="cloud", vendor=vendor)) == {
+            "thinking_level": "high"
+        }
+
+
+def test_thinking_kwargs_empty_for_cloud_vendor_without_a_family() -> None:
+    engine = _make_engine()
+    engine._session.thinking_level = "high"
+    assert engine._thinking_kwargs(LLMRouting(residence="cloud", vendor="not-a-vendor")) == {}
 
 
 def test_thinking_kwargs_includes_level_for_openrouter_routing() -> None:

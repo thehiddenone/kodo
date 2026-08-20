@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kodo.llms import CLOUD_THINKING_FAMILIES
 from kodo.project import SessionWorkspace, WorkspaceLayout
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._checkpoints import CheckpointState
@@ -814,9 +815,18 @@ def test_current_base_llm_resolves_local_model(tmp_path: Path) -> None:
     assert engine._current_base_llm() == "Qwen36-27B"
 
 
-def test_current_base_llm_empty_for_cloud_mode(tmp_path: Path) -> None:
+def test_current_base_llm_is_the_vendor_key_for_cloud_mode(tmp_path: Path) -> None:
+    """Every cloud vendor has a thinking family, keyed by its own vendor key as
+    a synthetic base_llm (doc/LLM_REGISTRY.md §4.5a)."""
     engine, _t, _s, _g = _make_engine(
         tmp_path, settings={"mode": "cloud", "active_cloud_vendor": "anthropic"}
+    )
+    assert engine._current_base_llm() == "anthropic"
+
+
+def test_current_base_llm_empty_for_cloud_vendor_without_a_family(tmp_path: Path) -> None:
+    engine, _t, _s, _g = _make_engine(
+        tmp_path, settings={"mode": "cloud", "active_cloud_vendor": "not-a-vendor"}
     )
     assert engine._current_base_llm() == ""
 
@@ -829,14 +839,64 @@ def test_current_base_llm_empty_for_non_thinking_local_model(tmp_path: Path) -> 
 
 
 def test_current_base_llm_openrouter_returns_synthetic_identity(tmp_path: Path) -> None:
-    """OpenRouter is the one cloud vendor with a thinking-tier mechanism --
-    _current_base_llm() returns its synthetic "openrouter" identity (not a
-    real local registry entry), same base_llm-keyed machinery every local
-    model already goes through (doc/LLM_REGISTRY.md §3a)."""
+    """Cloud vendors reuse the base_llm-keyed machinery every local model
+    already goes through, via a synthetic identity that is just the vendor key
+    (not a real local registry entry) -- doc/LLM_REGISTRY.md §3a/§4.5a."""
     engine, _t, _s, _g = _make_engine(
         tmp_path, settings={"mode": "cloud", "active_cloud_vendor": "openrouter"}
     )
     assert engine._current_base_llm() == "openrouter"
+
+
+async def test_start_fresh_cloud_session_seeds_the_vendors_own_default_tier(
+    tmp_path: Path,
+) -> None:
+    """Each vendor's default is its own API default, read off the family table
+    rather than a shared constant -- an untouched session must reproduce the
+    behavior the plugin had before the control existed."""
+    for vendor, entry in CLOUD_THINKING_FAMILIES.items():
+        engine, transient, _s, _g = _make_engine(
+            tmp_path, settings={"mode": "cloud", "active_cloud_vendor": vendor}
+        )
+        try:
+            await engine.start(f"session-{vendor}", resumed=False)
+            assert engine._session.thinking_level == entry.default, vendor
+            assert transient.thinking_level == entry.default, vendor
+        finally:
+            await _cancel_worker(engine)
+
+
+async def test_handle_thinking_level_set_accepts_every_tier_its_vendor_advertises(
+    tmp_path: Path,
+) -> None:
+    """The client only ever sends a tier from the `thinking_families` payload,
+    so every advertised tier must be accepted -- and nothing else."""
+    for vendor, entry in CLOUD_THINKING_FAMILIES.items():
+        engine, _t, _s, _g = _make_engine(
+            tmp_path, settings={"mode": "cloud", "active_cloud_vendor": vendor}
+        )
+        for tier in entry.tiers:
+            assert await engine.handle_thinking_level_set(tier), (vendor, tier)
+            assert engine._session.thinking_level == tier
+        assert not await engine.handle_thinking_level_set("not-a-tier"), vendor
+
+
+async def test_switching_cloud_vendor_resets_the_tier_to_the_new_vendors_default(
+    tmp_path: Path,
+) -> None:
+    """Vendor tier sets genuinely differ (Kimi has no "medium", Google no
+    "max"), so a vendor switch must re-derive rather than carry a tier over."""
+    settings: dict[str, object] = {"mode": "cloud", "active_cloud_vendor": "google"}
+    engine, _t, _s, _g = _make_engine(tmp_path, settings=settings)
+    try:
+        await engine.start("session-1", resumed=False)
+        assert engine._session.thinking_level == "medium"
+
+        settings["active_cloud_vendor"] = "kimi"
+        await engine._sync_thinking_level_to_model()
+        assert engine._session.thinking_level == "max"
+    finally:
+        await _cancel_worker(engine)
 
 
 async def test_start_fresh_session_seeds_thinking_level_from_family_default(

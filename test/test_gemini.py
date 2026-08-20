@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 import openai
 import pytest
 
+from kodo.llms._cloud_thinking import cloud_thinking_default_tier, cloud_thinking_tiers
 from kodo.llms._interface import (
     ThinkingDelta,
     TokenDelta,
@@ -29,7 +30,7 @@ from kodo.llms._interface import (
 )
 from kodo.llms.google._gemini import (
     _DEFAULT_REASONING_EFFORT,
-    _REASONING_EFFORT,
+    _REASONING_EFFORTS,
     GeminiPlugin,
     _map_finish_reason,
     _reasoning_effort_for,
@@ -40,21 +41,25 @@ from kodo.llms.google._gemini import (
 # ---------------------------------------------------------------------------
 
 
-def test_reasoning_effort_flash_is_medium() -> None:
-    assert _reasoning_effort_for("gemini-3.6-flash") == "medium"
+def test_reasoning_effort_forwards_every_valid_tier() -> None:
+    """Gemini's thinking levels are the tier slugs -- forwarded verbatim."""
+    for tier in sorted(_REASONING_EFFORTS):
+        assert _reasoning_effort_for(tier) == tier
 
 
-def test_reasoning_effort_flash_lite_is_low() -> None:
-    assert _reasoning_effort_for("gemini-3.5-flash-lite") == "low"
+def test_reasoning_effort_none_falls_back_to_default() -> None:
+    assert _reasoning_effort_for(None) == _DEFAULT_REASONING_EFFORT
 
 
-def test_reasoning_effort_unknown_model_falls_back_to_default() -> None:
-    assert _reasoning_effort_for("gemini-4.0-pro") == _DEFAULT_REASONING_EFFORT
+def test_reasoning_effort_rejects_max_tier() -> None:
+    """Gemini has no "max" level -- a stale client value must not be sent on."""
+    assert _reasoning_effort_for("max") == _DEFAULT_REASONING_EFFORT
 
 
-def test_reasoning_effort_table_covers_every_supported_model() -> None:
-    plugin = GeminiPlugin(api_key="test-key")
-    assert set(_REASONING_EFFORT) == set(plugin.supported_models)
+def test_reasoning_effort_accepts_exactly_the_registered_family_tiers() -> None:
+    """Accepted set == the family catalog the server advertises (see test_gpt)."""
+    assert set(cloud_thinking_tiers("google")) == _REASONING_EFFORTS
+    assert cloud_thinking_default_tier("google") == _DEFAULT_REASONING_EFFORT
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +161,7 @@ async def test_gemini_stream_query_yields_from_inner() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -274,6 +280,7 @@ async def test_gemini_raw_stream_token_deltas() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -303,6 +310,7 @@ async def test_gemini_raw_stream_reasoning_content_passthrough() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -336,6 +344,7 @@ async def test_gemini_raw_stream_tool_calls() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -381,6 +390,7 @@ async def test_gemini_raw_stream_tool_call_captures_thought_signature() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -419,6 +429,7 @@ async def test_gemini_raw_stream_tool_call_ignores_non_dict_extra_content() -> N
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -452,6 +463,7 @@ async def test_gemini_raw_stream_tool_call_malformed_json() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -486,6 +498,7 @@ async def test_gemini_raw_stream_cancel_stops_stream() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -510,6 +523,7 @@ async def test_gemini_raw_stream_usage_includes_cache_read_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -539,6 +553,7 @@ async def test_gemini_raw_stream_usage_missing_cache_details_defaults_to_zero() 
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -559,6 +574,7 @@ async def test_gemini_raw_stream_stop_reason_max_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -579,6 +595,7 @@ async def test_gemini_raw_stream_no_tool_call_is_end_turn() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 

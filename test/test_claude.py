@@ -1,7 +1,8 @@
 """Tests for ``kodo.llms.anthropic._claude`` -- the Claude LLM plugin.
 
 Covers:
-* :func:`_thinking_param` for adaptive vs. non-adaptive models.
+* :func:`_thinking_param`/:func:`_effort_param`/:func:`_max_tokens_for` --
+  how one session thinking tier lands in each of the two request shapes.
 * :class:`ClaudePlugin` properties (``name``, ``supported_models``).
 * :meth:`ClaudePlugin.cancel` sets the cancel event.
 * :meth:`ClaudePlugin.stream_query` delegates to the internal stream.
@@ -16,6 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kodo.llms._cloud_thinking import cloud_thinking_default_tier, cloud_thinking_tiers
 from kodo.llms._interface import (
     ThinkingDelta,
     ThinkingSignature,
@@ -26,9 +28,17 @@ from kodo.llms._interface import (
 )
 from kodo.llms.anthropic._claude import (
     _ADAPTIVE_THINKING_MODELS,
+    _DEFAULT_EFFORT,
+    _DEFAULT_MAX_TOKENS,
+    _THINKING_BUDGET_TOKENS,
     ClaudePlugin,
+    _effort_param,
+    _max_tokens_for,
+    _resolve_tier,
     _thinking_param,
 )
+
+_MANUAL_MODEL = "claude-haiku-4-5-20251001"
 
 # ---------------------------------------------------------------------------
 # _thinking_param -- pure
@@ -36,39 +46,109 @@ from kodo.llms.anthropic._claude import (
 
 
 def test_thinking_param_adaptive_model() -> None:
-    """Models in _ADAPTIVE_THINKING_MODELS get {\"type\": \"adaptive\"}."""
+    """Models in _ADAPTIVE_THINKING_MODELS get {\"type\": \"adaptive\"} at every tier."""
     for model in _ADAPTIVE_THINKING_MODELS:
-        assert _thinking_param(model) == {"type": "adaptive"}
+        for tier in _THINKING_BUDGET_TOKENS:
+            assert _thinking_param(model, tier) == {"type": "adaptive"}
 
 
 def test_thinking_param_non_adaptive_model() -> None:
     """Non-adaptive models get {\"type\": \"enabled\", \"budget_tokens\": ...}."""
-    result = _thinking_param("claude-3-5-sonnet-20241022")
+    result = _thinking_param("claude-3-5-sonnet-20241022", "medium")
     assert result == {"type": "enabled", "budget_tokens": 4096}
 
 
 def test_thinking_param_opus_4_7() -> None:
     """claude-opus-4-7 is adaptive (in the newer tier)."""
-    result = _thinking_param("claude-opus-4-7")
+    result = _thinking_param("claude-opus-4-7", _DEFAULT_EFFORT)
     assert result == {"type": "adaptive"}
 
 
 def test_thinking_param_opus_4_8() -> None:
     """claude-opus-4-8 is adaptive."""
-    result = _thinking_param("claude-opus-4-8")
+    result = _thinking_param("claude-opus-4-8", _DEFAULT_EFFORT)
     assert result == {"type": "adaptive"}
 
 
 def test_thinking_param_opus_5() -> None:
     """claude-opus-5 is adaptive."""
-    result = _thinking_param("claude-opus-5")
+    result = _thinking_param("claude-opus-5", _DEFAULT_EFFORT)
     assert result == {"type": "adaptive"}
 
 
 def test_thinking_param_sonnet_5() -> None:
     """claude-sonnet-5 is adaptive."""
-    result = _thinking_param("claude-sonnet-5")
+    result = _thinking_param("claude-sonnet-5", _DEFAULT_EFFORT)
     assert result == {"type": "adaptive"}
+
+
+# ---------------------------------------------------------------------------
+# Thinking tiers -- one session tier, two request shapes
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_tier_accepts_every_registered_family_tier() -> None:
+    """Spec-driven: the tiers the server advertises are the ones honored here.
+
+    A tier offered by kodo.llms._cloud_thinking but unknown to this plugin
+    would silently collapse to the default -- a live control that does nothing.
+    """
+    for tier in cloud_thinking_tiers("anthropic"):
+        assert _resolve_tier(tier) == tier
+    assert cloud_thinking_default_tier("anthropic") == _DEFAULT_EFFORT
+
+
+def test_resolve_tier_falls_back_for_none_and_unknown() -> None:
+    assert _resolve_tier(None) == _DEFAULT_EFFORT
+    assert _resolve_tier("unlimited") == _DEFAULT_EFFORT
+
+
+def test_effort_param_only_for_adaptive_models() -> None:
+    """Adaptive models take the tier as output_config.effort..."""
+    for model in _ADAPTIVE_THINKING_MODELS:
+        assert _effort_param(model, "low") == {"output_config": {"effort": "low"}}
+
+
+def test_effort_param_empty_for_manual_models() -> None:
+    """...manual ones express it through budget_tokens instead, never both."""
+    assert _effort_param(_MANUAL_MODEL, "low") == {}
+
+
+def test_budget_tokens_scale_with_the_tier() -> None:
+    budgets = [
+        _thinking_param(_MANUAL_MODEL, t)["budget_tokens"]
+        for t in cloud_thinking_tiers("anthropic")
+    ]
+    assert budgets == sorted(budgets)
+    assert min(budgets) >= 1024  # API floor
+
+
+def test_default_tier_reproduces_the_pre_control_budget() -> None:
+    """ "medium" is the fixed 4096-token budget this plugin used to always send."""
+    assert _thinking_param(_MANUAL_MODEL, "medium") == {
+        "type": "enabled",
+        "budget_tokens": 4096,
+    }
+
+
+def test_max_tokens_always_leaves_room_above_the_budget() -> None:
+    """budget_tokens must stay < max_tokens, with room for the visible answer."""
+    for tier in cloud_thinking_tiers("anthropic"):
+        budget = _thinking_param(_MANUAL_MODEL, tier)["budget_tokens"]
+        assert isinstance(budget, int)
+        assert _max_tokens_for(_MANUAL_MODEL, tier) > budget
+
+
+def test_max_tokens_unchanged_at_and_below_the_default_tier() -> None:
+    """Nothing changes for a session that never touches the control."""
+    assert _max_tokens_for("claude-opus-5", _DEFAULT_EFFORT) == _DEFAULT_MAX_TOKENS
+    assert _max_tokens_for(_MANUAL_MODEL, "medium") == _DEFAULT_MAX_TOKENS
+
+
+def test_max_tokens_raised_for_the_deepest_adaptive_tiers() -> None:
+    """xhigh/max need room to land -- a truncated turn trips the watchdog."""
+    assert _max_tokens_for("claude-opus-5", "max") > _DEFAULT_MAX_TOKENS
+    assert _max_tokens_for("claude-opus-5", "xhigh") > _DEFAULT_MAX_TOKENS
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +240,7 @@ async def test_claude_plugin_stream_query_delegates_to_raw_stream() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -206,6 +287,7 @@ async def test_claude_stream_query_yields_from_inner() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -381,6 +463,7 @@ async def test_claude_raw_stream_yields_text_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -411,6 +494,7 @@ async def test_claude_raw_stream_yields_thinking_and_signature() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -441,6 +525,7 @@ async def test_claude_raw_stream_yields_tool_call() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -470,6 +555,7 @@ async def test_claude_raw_stream_yields_tool_call_with_json_error() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -497,6 +583,7 @@ async def test_claude_raw_stream_cancel_stops_early() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -527,6 +614,7 @@ async def test_claude_raw_stream_usage_includes_cache_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -561,6 +649,7 @@ async def test_claude_raw_stream_multiple_tool_blocks() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 

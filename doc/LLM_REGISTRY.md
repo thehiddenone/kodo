@@ -460,25 +460,24 @@ whatever the user had picked per-tier in Manual mode. This mirrors
 dedicated WS command" pattern, since there's no server-side validation to
 run beyond a boolean.
 
-**Reasoning effort rides the session's `thinking_level`, extended to a
-cloud vendor for the first time.** Every other Chat-Completions-shaped
-vendor here (Kimi/DeepSeek/Alibaba/Gemini) hardcodes one fixed reasoning
-setting per known model, since each has only a handful of models — that
-doesn't work for OpenRouter, where the model behind any given tier is
-arbitrary (and, in Auto mode or the Manual-mode default, is the *same*
-`"openrouter/auto"` id for all four tiers, so a model-keyed table couldn't
-even distinguish which tier is calling). Rather than invent a second,
-parallel "how hard to think" concept, OpenRouter reuses the mechanism
-`LlamaPlugin` (local) already has: session-level `thinking_level`, adjusted
-independently of which tier picked the model, surfaced through the exact
-same `thinking_families`-keyed machinery (§4.5) via a synthetic `base_llm`
-identity, `"openrouter"` (`kodo.runtime._engine._llm._OPENROUTER_BASE_LLM`
-— not a real local registry entry). `_current_base_llm()` returns that
-identity whenever `mode == "cloud" and active_cloud_vendor == "openrouter"`;
-`_thinking_kwargs`'s guard was widened from "local only" to "local or
-OpenRouter"; and a small OpenRouter-only tier table
-(`_OPENROUTER_THINKING_TIERS = ("low", "medium", "high", "max")`, default
-`"medium"`) is consulted alongside `local_thinking_tiers`/
+**Reasoning effort rides the session's `thinking_level` — the mechanism
+OpenRouter introduced to the cloud side, now shared by every vendor (§4.5a).**
+Every other vendor here originally hardcoded one fixed reasoning setting per
+known model, since each has only a handful of models — that never worked for
+OpenRouter, where the model behind any given tier is arbitrary (and, in Auto
+mode or the Manual-mode default, is the *same* `"openrouter/auto"` id for all
+four tiers, so a model-keyed table couldn't even distinguish which tier is
+calling). Rather than invent a second, parallel "how hard to think" concept,
+OpenRouter reused the mechanism `LlamaPlugin` (local) already had:
+session-level `thinking_level`, adjusted independently of which tier picked
+the model, surfaced through the exact same `thinking_families`-keyed machinery
+(§4.5) via a synthetic `base_llm` identity — the vendor key `"openrouter"`,
+not a real local registry entry. That shape generalised cleanly, and is now
+how *all eight* cloud vendors expose reasoning depth: `_current_base_llm()`
+returns the active vendor key whenever `mode == "cloud"` (and that vendor has
+a family), `_thinking_kwargs` sends the tier for local and every
+family-carrying cloud vendor alike, and the per-vendor tier tables live in
+`kodo/llms/_cloud_thinking.py`, consulted alongside `local_thinking_tiers`/
 `local_thinking_default_tier` (which stay local-only and untouched) by two
 thin wrapper functions, `_thinking_tiers_for`/`_thinking_default_for`. The
 tier names map 1:1 onto OpenRouter's own unified `reasoning.effort`
@@ -487,12 +486,21 @@ also accepts `"minimal"`/`"xhigh"`/`"none"` — kodo never sends those) — no
 translation table needed, and unsupported models are documented to
 silently ignore the whole `reasoning` field. `OpenRouterPlugin.stream_query`
 takes `thinking_level` as its parameter name, matching `LlamaPlugin`'s
-exactly, so `LoggingLLMPlugin`'s existing conditional-forwarding (built for
-`LlamaPlugin`) needed no changes at all. Reasoning text streams back on
+exactly — as every cloud plugin now does — so `LoggingLLMPlugin`'s existing
+conditional-forwarding (built for `LlamaPlugin`) needed no changes at all. Reasoning text streams back on
 `delta.reasoning_details` (a list of typed objects; only
 `type == "reasoning.text"` entries carry text), not the flat
 `delta.reasoning_content` string Kimi/DeepSeek/Alibaba/Gemini use — a flat
 `delta.reasoning` string is also checked as a defensive fallback.
+
+Client-side this surfaces as the ordinary footer Thinking toggle in kodo-vsix
+(`ModeControls.tsx`), cycling Low → Medium → High → Max, enabled whenever
+OpenRouter is the active cloud vendor — **not** gated on the selected model's
+`supports_reasoning` catalog flag. The tier is a session-level setting that is
+deliberately independent of which model an effort tier resolves to (and under
+Auto mode the routed model isn't known until the request is made), so the
+control is vendor-scoped; models that don't support reasoning ignore the
+parameter, which the tier tooltips say outright.
 
 **Cost is read off the response, not computed from a table.** A
 hand-maintained per-token pricing table (every other vendor's `_usage.py`)
@@ -1075,6 +1083,9 @@ before it must answer. Two mechanisms exist, keyed off `base_llm` (never
   `chat_template_kwargs: {"reasoning_effort": "<tier>"}` — not a top-level
   field. Default tier is `medium` (the model's own native default).
 
+Further families exist that are *not* local and therefore not in
+`local_registry/` at all — **one per cloud vendor**. See §4.5a.
+
 `kodo.llms.local_thinking_family(base_llm)` /
 `local_thinking_tiers(base_llm)` / `local_thinking_default_tier(base_llm)`
 (all in `local_registry/`) are the single source of truth for both the
@@ -1103,6 +1114,83 @@ own per-call override — falling back to the family default when absent or
 invalid for `base_llm`. Entries with no thinking family (`base_llm == ""`,
 or a hardcoded model outside both families) get no `extra_body` at all — no
 behavior change.
+
+### 4.5a Thinking tiers — cloud vendors
+
+Every cloud vendor has a thinking-tier family of its own, keyed by a synthetic
+`base_llm` that is simply **the vendor key** (`"anthropic"`, `"openai"`,
+`"meta"`, `"google"`, `"alibaba"`, `"deepseek"`, `"kimi"`, `"openrouter"` —
+none of them a real local registry entry). They ride every piece of machinery
+described in §4.5 — the `thinking_families` payload, `thinking_level.set`, the
+per-session `SessionState.thinking_level` — identically to the two local
+families; the only structural differences are that their tier tables live in
+**`kodo/llms/_cloud_thinking.py`** (`CLOUD_THINKING_FAMILIES`) instead of
+`local_registry/`, and that they are added to the payload unconditionally
+rather than derived from an installed-model registry.
+
+| vendor | family | tiers | default | request shape |
+| --- | --- | --- | --- | --- |
+| `anthropic` | `anthropic_effort` | low, medium, high, xhigh, max | `high` | `output_config.effort` (adaptive models) **or** `thinking.budget_tokens` (extended-thinking-only models) |
+| `openai` | `openai_reasoning_effort` | low, medium, high, xhigh, max | `medium` | Responses API `reasoning.effort` |
+| `meta` | `meta_reasoning_effort` | minimal, low, medium, high, xhigh | `medium` | Responses API `reasoning.effort` |
+| `google` | `google_thinking_level` | minimal, low, medium, high | `medium` | Chat Completions `reasoning_effort` (Google maps it onto Gemini's thinking levels) |
+| `alibaba` | `alibaba_reasoning_effort` | low, medium, xhigh | `xhigh` | `extra_body.reasoning_effort`, alongside the always-on `enable_thinking` |
+| `deepseek` | `deepseek_reasoning_effort` | low, high, max | `high` | top-level `reasoning_effort`, alongside `extra_body.thinking.type` |
+| `kimi` | `kimi_reasoning_effort` | low, high, max | `max` | top-level `reasoning_effort` (K3 only) |
+| `openrouter` | `openrouter_reasoning_effort` | low, medium, high, max | `medium` | `reasoning.effort` — see §3a |
+
+Four rules explain every entry in that table:
+
+1. **Tier slugs are the vendor's own API vocabulary, never a normalised kōdo
+   scale.** That is why the lists differ: Google's ladder has no `max` and
+   reasoning cannot be disabled on it at all; DeepSeek's and Kimi's have no
+   `medium` (DeepSeek folds `medium`/`xhigh` into `high` server-side, so
+   offering them would be a UI lie); Alibaba's jumps `medium` → `xhigh`;
+   Meta's has a `minimal` and no `max`. What the user picks is exactly what
+   goes on the wire, so a tier can never mean one thing in the UI and another
+   at the provider.
+2. **Defaults are each vendor's own documented API default**, so a session
+   that never touches the control behaves as it did before the control
+   existed (`anthropic`'s `high` is literally "identical to omitting the
+   parameter"; `meta`'s `medium` is the fixed value the plugin used to send).
+3. **Tier sets are vendor-scoped, never model-scoped.** One session talks to
+   several of a vendor's models within a single turn — each agent capability
+   tier resolves its own `model_id` (`_resolve_model_key`) — so a per-model
+   tier list could not describe "this session's thinking level" at all. Where
+   a vendor's models disagree, the **plugin** reconciles it, not the tier
+   list: `ClaudePlugin` translates one tier into whichever of the two Claude
+   request shapes the target model speaks (and sizes `max_tokens` to match,
+   since `budget_tokens` must stay below it and a truncated turn trips the
+   watchdog), and `KimiPlugin` drops the tier for `kimi-k2.7-code`, which
+   accepts no effort parameter at all. Where the difference is user-visible,
+   the client's tier tooltip carries the caveat (`_THINKING_CAVEAT` in
+   `ModeControls.tsx` — today OpenRouter and Kimi).
+4. **There is no "off" tier**, even on the four vendors whose APIs can
+   disable reasoning (`reasoning.effort: "none"`, `enable_thinking: false`,
+   `thinking.type: "disabled"`). Kōdo is a coding agent; every tier reasons.
+   Two vendors (Meta, Kimi K2.7 Code) reject a disable request with a 400
+   anyway.
+
+Each plugin **validates the tier it receives** against its own accepted set
+and falls back to the family default rather than forwarding an unknown value,
+so a stale or racing client can never turn a thinking-level change into a
+provider 400.
+
+**Any client-side handling of `family` must treat the set of families as
+open** — a `thinking_families` consumer that pattern-matches a fixed list
+silently drops the entries it doesn't know and disables the control (exactly
+the kodo-vsix bug fixed on 2026-08-17: `App.tsx`'s `mode_state` message
+validation had an inline two-family literal check, so the server's
+`openrouter_reasoning_effort` arrived and was coerced to `null`; it now goes
+through `coerceThinkingFamily`, driven by the single `THINKING_FAMILIES` array
+in `llm-registry-types.ts` — which now lists ten families).
+
+Adding a vendor is therefore one entry in `CLOUD_THINKING_FAMILIES`, one
+translation in that vendor's plugin, one slug in `THINKING_FAMILIES`, and one
+tooltip table in `ModeControls.tsx`. `test/test_cloud_thinking.py` enforces
+the invariants that make that safe: every registered vendor has an entry,
+every default is one of its own tiers, family slugs are unique, and vendor
+keys never collide with a local `base_llm` (both share one payload keyspace).
 
 ### 4.6 Launch configuration: knobs and profiles
 

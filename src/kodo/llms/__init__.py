@@ -8,6 +8,13 @@ from ._cloud_registry import (
     get_cloud_vendor_display_name,
     get_cloud_vendor_module,
 )
+from ._cloud_thinking import (
+    CLOUD_THINKING_FAMILIES,
+    CloudThinkingFamily,
+    cloud_thinking_default_tier,
+    cloud_thinking_family,
+    cloud_thinking_tiers,
+)
 from ._context import get_context_window
 from ._gateway import EventSink, LLMGateway, LLMRouting
 from ._hardware import detect_ram_gb, detect_vram_gb
@@ -90,7 +97,9 @@ from .local_registry import (
 
 __all__ = [
     "BASE_LLAMA_ARGS",
+    "CLOUD_THINKING_FAMILIES",
     "CloudLLMEntry",
+    "CloudThinkingFamily",
     "EventSink",
     "GPT_OSS_REASONING_EFFORT_FAMILY",
     "LLAMA_ARG_CATALOG",
@@ -132,6 +141,9 @@ __all__ = [
     "add_local_entry",
     "add_profile",
     "clear_llama_server_override_path",
+    "cloud_thinking_default_tier",
+    "cloud_thinking_family",
+    "cloud_thinking_tiers",
     "default_cache_breakpoints",
     "detect_ram_gb",
     "detect_vram_gb",

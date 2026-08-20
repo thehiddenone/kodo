@@ -41,10 +41,6 @@ _log = logging.getLogger(__name__)
 
 _DEFAULT_MAX_TOKENS = 8192
 
-# Extended thinking: budget_tokens must be >=1024 and < max_tokens, leaving
-# headroom in _DEFAULT_MAX_TOKENS for the visible response.
-_THINKING_BUDGET_TOKENS = 4096
-
 # Models on the newer "adaptive thinking" tier manage their own reasoning
 # budget and reject the classic thinking={"type": "enabled", "budget_tokens"}
 # shape with a 400. Earlier-generation models still require that shape —
@@ -59,12 +55,115 @@ _ADAPTIVE_THINKING_MODELS = frozenset(
     }
 )
 
+# ----------------------------------------------------------------------
+# Thinking tiers (kodo.llms._cloud_thinking's "anthropic" family)
+# ----------------------------------------------------------------------
+# The session's thinking_level (doc/SESSIONS.md) reaches this plugin as one of
+# the family's five tier slugs, and lands in *one of two* request shapes
+# depending on which mode the model is on -- the split above. Both are driven
+# by the same tier, so "Thinking: High" means the same intent on every Claude
+# model even though the wire shape differs.
+#
+# Adaptive models take it as `output_config.effort`
+# (https://platform.claude.com/docs/en/build-with-claude/effort), whose five
+# levels the tier slugs match 1:1 -- no translation table. `high` is both the
+# family default and the API's own default ("setting effort to high produces
+# exactly the same behavior as omitting the parameter entirely"), so an
+# untouched session sends what this plugin effectively sent before the control
+# existed.
+_DEFAULT_EFFORT = "high"
 
-def _thinking_param(model: str) -> dict[str, object]:
-    """Return the right ``thinking`` request shape for *model*."""
+# `xhigh` is the one level not offered by every effort-capable model (the
+# 4.6 generation has `max` but no `xhigh`), so a model listed here gets it
+# clamped to `high` rather than 400ing. Empty in practice today -- every
+# model currently in _ADAPTIVE_THINKING_MODELS accepts all five levels -- but
+# the clamp is the guard rail for the next 4.6-shaped model that joins that
+# set (e.g. if claude-sonnet-4-6/claude-opus-4-6 are migrated off manual
+# budgets, which their generation supports).
+_NO_XHIGH_EFFORT_MODELS: frozenset[str] = frozenset()
+
+# Manual ("extended thinking") models have no effort parameter at all, so the
+# same tier is translated into a `budget_tokens` value instead
+# (https://platform.claude.com/docs/en/build-with-claude/extended-thinking).
+# `medium` deliberately reproduces the fixed 4096 budget this plugin used for
+# every manual-mode request before the control existed. The API floor is 1024
+# tokens; the budget is a target, not a hard cap (max_tokens is the real
+# ceiling).
+_THINKING_BUDGET_TOKENS: dict[str, int] = {
+    "low": 2048,
+    "medium": 4096,
+    "high": 8192,
+    "xhigh": 16384,
+    "max": 24576,
+}
+_DEFAULT_THINKING_BUDGET_TOKENS = _THINKING_BUDGET_TOKENS["high"]
+
+# budget_tokens must be < max_tokens, and the difference is all the room the
+# visible answer has. 4096 is exactly the headroom _DEFAULT_MAX_TOKENS left
+# over the old fixed 4096-token budget, so the low/medium tiers still send
+# max_tokens=8192 unchanged; only the tiers that outgrow it raise the ceiling.
+_RESPONSE_TOKEN_HEADROOM = 4096
+
+# Adaptive models get no budget to size against, but the deeper tiers still
+# need room to land: Anthropic's own guidance is to raise max_tokens when
+# running at xhigh/max effort, since it is a hard limit on thinking *plus*
+# response text and a truncated turn trips kodo's watchdog
+# (runtime/_engine/_watchdog.py reads the "max_tokens" stop reason). Tiers up
+# to and including the `high` default keep _DEFAULT_MAX_TOKENS, so nothing
+# changes for a session that never touches the control.
+_ADAPTIVE_MAX_TOKENS: dict[str, int] = {
+    "xhigh": 16384,
+    "max": 32768,
+}
+
+
+def _resolve_tier(thinking_level: str | None) -> str:
+    """The tier slug to use for this request — *thinking_level* or the default.
+
+    Args:
+        thinking_level (str | None): Caller-supplied tier, or ``None`` when the
+            caller has none (e.g. a session whose thinking level was never
+            resolved). Anything outside the family's tier set falls back to the
+            default rather than being forwarded to the API.
+
+    Returns:
+        str: One of :data:`_THINKING_BUDGET_TOKENS`' keys.
+    """
+    if thinking_level in _THINKING_BUDGET_TOKENS:
+        return str(thinking_level)
+    return _DEFAULT_EFFORT
+
+
+def _thinking_param(model: str, tier: str) -> dict[str, object]:
+    """Return the right ``thinking`` request shape for *model* at *tier*."""
     if model in _ADAPTIVE_THINKING_MODELS:
         return {"type": "adaptive"}
-    return {"type": "enabled", "budget_tokens": _THINKING_BUDGET_TOKENS}
+    return {
+        "type": "enabled",
+        "budget_tokens": _THINKING_BUDGET_TOKENS.get(tier, _DEFAULT_THINKING_BUDGET_TOKENS),
+    }
+
+
+def _effort_param(model: str, tier: str) -> dict[str, object]:
+    """``{"output_config": {...}}`` for an adaptive model, ``{}`` otherwise.
+
+    Manual-mode models express the tier through ``budget_tokens`` instead
+    (:func:`_thinking_param`); sending an effort alongside it would be a second
+    control over the same intent, and the two oldest registered models don't
+    accept the parameter at all.
+    """
+    if model not in _ADAPTIVE_THINKING_MODELS:
+        return {}
+    effort = "high" if tier == "xhigh" and model in _NO_XHIGH_EFFORT_MODELS else tier
+    return {"output_config": {"effort": effort}}
+
+
+def _max_tokens_for(model: str, tier: str) -> int:
+    """Output ceiling for this request — see :data:`_RESPONSE_TOKEN_HEADROOM`."""
+    if model in _ADAPTIVE_THINKING_MODELS:
+        return _ADAPTIVE_MAX_TOKENS.get(tier, _DEFAULT_MAX_TOKENS)
+    budget = _THINKING_BUDGET_TOKENS.get(tier, _DEFAULT_THINKING_BUDGET_TOKENS)
+    return max(_DEFAULT_MAX_TOKENS, budget + _RESPONSE_TOKEN_HEADROOM)
 
 
 class ClaudePlugin(LLMPlugin):
@@ -73,6 +172,15 @@ class ClaudePlugin(LLMPlugin):
     Uses the official ``anthropic`` Python SDK with prompt caching,
     exponential-backoff retries (FR-LLM-05), and cancellation support
     (FR-LLM-07).
+
+    Reasoning depth is **session-controlled**, not fixed per model: the
+    engine passes the session's ``thinking_level``
+    (:data:`kodo.llms._cloud_thinking.CLOUD_THINKING_FAMILIES`'s
+    ``"anthropic"`` family) on every call, and this plugin translates that one
+    tier into whichever request shape the target model speaks — adaptive
+    models take ``output_config.effort``, extended-thinking-only models take
+    ``thinking.budget_tokens`` — sizing ``max_tokens`` to match. See the
+    module-level tier tables.
     """
 
     __client: anthropic.AsyncAnthropic
@@ -114,6 +222,7 @@ class ClaudePlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a Claude response with prompt caching and retry.
 
@@ -124,6 +233,12 @@ class ClaudePlugin(LLMPlugin):
             messages (list[Message]): Conversation history.
             tools (list[ToolSpec]): Tools the model may invoke.
             cache_breakpoints (list[int]): Message indices to cache.
+            thinking_level (str | None): The session's reasoning tier for the
+                ``"anthropic"`` thinking family (``"low"``/``"medium"``/
+                ``"high"``/``"xhigh"``/``"max"``), or ``None`` for the family
+                default. Applied as ``output_config.effort`` on an adaptive
+                model and as ``thinking.budget_tokens`` on a manual one — see
+                :func:`_thinking_param`/:func:`_effort_param`.
 
         Yields:
             StreamEvent: Token deltas, tool calls, then :class:`TurnEnd`.
@@ -135,6 +250,7 @@ class ClaudePlugin(LLMPlugin):
             messages=messages,
             tools=tools,
             cache_breakpoints=cache_breakpoints,
+            thinking_level=thinking_level,
         )
 
     async def cancel(self, stream_id: str) -> None:
@@ -161,6 +277,7 @@ class ClaudePlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None,
     ) -> AsyncIterator[StreamEvent]:
         cancel_event = asyncio.Event()
         self.__cancel_events[stream_id] = cancel_event
@@ -173,6 +290,7 @@ class ClaudePlugin(LLMPlugin):
                     messages=messages,
                     tools=tools,
                     cache_breakpoints=cache_breakpoints,
+                    thinking_level=thinking_level,
                 )
             ):
                 yield event
@@ -188,6 +306,7 @@ class ClaudePlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None,
     ) -> AsyncIterator[StreamEvent]:
         system_blocks = build_system_blocks(system)
         msg_params = build_message_params(messages, cache_breakpoints)
@@ -208,12 +327,14 @@ class ClaudePlugin(LLMPlugin):
         current_tool_name: str | None = None
         current_tool_input_parts: list[str] = []
 
+        tier = _resolve_tier(thinking_level)
         async with self.__client.messages.stream(
             model=model,
-            max_tokens=_DEFAULT_MAX_TOKENS,
+            max_tokens=_max_tokens_for(model, tier),
             system=system_blocks,  # type: ignore[arg-type]
             messages=msg_params,  # type: ignore[arg-type]
-            thinking=_thinking_param(model),  # type: ignore[arg-type]
+            thinking=_thinking_param(model, tier),  # type: ignore[arg-type]
+            **_effort_param(model, tier),  # type: ignore[arg-type]
             **({"tools": tool_defs} if tool_defs else {}),  # type: ignore[arg-type]
         ) as stream:
             async for raw_event in stream:

@@ -247,8 +247,11 @@ only for display.
 **Per-provider signature handling.** Anthropic's extended thinking signs each
 thinking block; the API rejects a later request that replays thinking text
 without the exact signature Anthropic issued for it. The Claude plugin
-(`llms/anthropic/_claude.py`) now requests thinking on every call (`thinking:
-{type: "enabled", budget_tokens: ...}`), captures that signature from the
+(`llms/anthropic/_claude.py`) requests thinking on every call — `thinking:
+{type: "adaptive"}` plus an `output_config.effort` on the adaptive-thinking
+models, `thinking: {type: "enabled", budget_tokens: ...}` on the older ones,
+both driven by the session's thinking level (see below) — captures that
+signature from the
 stream's `signature_delta` as a new `ThinkingSignature` event, and the engine
 stores it on the block (`"signature": "<sig>"`). llama.cpp has no equivalent
 mechanism — its `ThinkingDelta`s (parsed from `<think>...</think>` tags or an
@@ -426,17 +429,29 @@ schemas either — those reach the caller as real JSON Schema on its own
 
 Each session tracks its own **`thinking_level`** (`SessionState.thinking_level`,
 `TransientStore.thinking_level`) — a reasoning-tier slug for whatever the
-session's currently active **local** model's thinking family supports
-(`kodo.llms.local_thinking_family`/`local_thinking_tiers`/
-`local_thinking_default_tier`, doc/LLM_REGISTRY.md §4.5): six tiers
-(`minimal`..`unlimited`) for the Qwen reasoning-budget family, three
-(`low`/`medium`/`high`) for the GPT-OSS reasoning-effort family, or `""` on a
-cloud model or a local model with no thinking family at all (e.g.
-Qwen3-Coder-Next-80B, or any `custom_*` registry entry). Every local LLM call
-the session's engine makes — the main turn, the security judge, compaction,
-`web_search`'s tool loop — carries this one value
+session's currently active model's thinking family supports. Two catalogs
+back it, both keyed by `base_llm` (doc/LLM_REGISTRY.md §4.5/§4.5a):
+
+- **Local models** — `kodo.llms.local_thinking_family`/`local_thinking_tiers`/
+  `local_thinking_default_tier`: six tiers (`minimal`..`unlimited`) for the
+  Qwen reasoning-budget family, three (`low`/`medium`/`high`) for the GPT-OSS
+  reasoning-effort family.
+- **Cloud vendors** — `kodo.llms._cloud_thinking`'s
+  `CLOUD_THINKING_FAMILIES`, keyed by a synthetic `base_llm` that is the
+  vendor key itself. Every vendor has one, and each carries its own API's
+  effort vocabulary rather than a shared scale (Anthropic
+  `low`..`max`, Google `minimal`..`high`, DeepSeek/Kimi `low`/`high`/`max`,
+  Alibaba `low`/`medium`/`xhigh`, …).
+
+`""` means the active model has no thinking family at all — a local model
+outside both families (e.g. Qwen3-Coder-Next-80B, or any `custom_*` registry
+entry). Every LLM call the session's engine makes — the main turn, the
+security judge, compaction, `web_search`'s tool loop — carries this one value
 (`LLMPlumbingMixin._thinking_kwargs`), not a per-call override; it is a
-whole-session setting, the same way `command_control` is.
+whole-session setting, the same way `command_control` is. Each plugin
+translates the tier into its provider's own request shape and validates it
+against its own accepted set, falling back to the family default rather than
+forwarding a value the provider would reject.
 
 Unlike `edit_control`/`command_control` (WS_PROTOCOL.md §5.1), which are
 fixed 3-way enums the client owns and the server just mirrors,
@@ -444,17 +459,19 @@ fixed 3-way enums the client owns and the server just mirrors,
 the source of truth and validates every change:
 
 - **A brand-new session** seeds `thinking_level` from the active model's
-  family default (`local_thinking_default_tier`) — Qwen-family sessions start
-  at `"unlimited"`, GPT-OSS-family at `"medium"`, non-thinking models at
-  `""`. A caller can override this seed via `hello`'s optional
+  family default — Qwen-family sessions start at `"unlimited"`, GPT-OSS-family
+  at `"medium"`, cloud sessions at their vendor's own documented API default
+  (Anthropic `"high"`, OpenAI/Google/Meta/OpenRouter `"medium"`, DeepSeek
+  `"high"`, Alibaba `"xhigh"`, Kimi `"max"`), non-thinking models at `""`. A caller can override this seed via `hello`'s optional
   `thinking_level` field (WS_PROTOCOL.md §4.1) instead — built for the
   validator's RVP judge session, whose `hello` fires before there is
   anywhere else to attach the tier its preceding `llm.select` pinned
   (doc/VALIDATOR.md §9).
 - **A resumed session** restores its persisted value, but only if it is
-  still valid for the *currently* active model — the active local/cloud
-  model is a machine-global selection, not per-session, so it may have
-  changed while this session was closed. An invalid persisted value
+  still valid for the *currently* active model — the active local model /
+  cloud vendor is a machine-global selection, not per-session, so it may have
+  changed while this session was closed (and a switch between two cloud
+  vendors changes the valid tier set just as a local model switch does). An invalid persisted value
   self-heals to the current model's family default rather than being kept.
 - **A live model switch** (`config.reload`, broadcast to every open
   session — WS_PROTOCOL.md §7.5) re-derives `thinking_level` the same way if
@@ -462,8 +479,9 @@ the source of truth and validates every change:
   (`WorkflowEngine._sync_thinking_level_to_model`, called from the worker's
   `config_changed` handling alongside `ContextCompactor.handle_config_changed`)
   — a tier valid for one family (e.g. Qwen's `"huge"`) is not necessarily
-  valid for another (GPT-OSS has no `"huge"` tier), so the reset avoids
-  silently carrying over a meaningless value.
+  valid for another (GPT-OSS has no `"huge"` tier, Google no `"max"`,
+  DeepSeek no `"medium"`), so the reset avoids silently carrying over a
+  meaningless value. Switching cloud vendors counts as such a switch.
 - **A user request** (`thinking_level.set`, WS_PROTOCOL.md §7.4e) is
   validated against the active model's tiers and rejected outright if
   invalid (`WorkflowEngine.handle_thinking_level_set`) — unlike

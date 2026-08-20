@@ -5,9 +5,9 @@ sections, Chat-Completions-shaped ``__raw_stream`` fixtures) since DeepSeek is
 reached the same way Qwen/Gemini are: ``client.chat.completions.create``, not
 ``client.responses.stream`` -- see kodo/llms/deepseek/_deepseek.py's module
 docstring. Two real differences from the Qwen tests: the thinking config is a
-per-model graded ``reasoning_effort`` string nested (with the ``thinking.type``
-toggle) inside ``extra_body``, not a flat boolean, and there is no
-per-tool-call signature capture/replay to test.
+session-controlled graded ``reasoning_effort`` string sent top-level (with the
+``thinking.type`` toggle left in ``extra_body``), not a flat boolean, and there
+is no per-tool-call signature capture/replay to test.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 import openai
 import pytest
 
+from kodo.llms._cloud_thinking import cloud_thinking_default_tier, cloud_thinking_tiers
 from kodo.llms._interface import (
     ThinkingDelta,
     TokenDelta,
@@ -30,40 +31,43 @@ from kodo.llms._interface import (
 )
 from kodo.llms.deepseek._deepseek import (
     _DEFAULT_REASONING_EFFORT,
-    _REASONING_EFFORT,
+    _REASONING_EFFORTS,
     DeepSeekPlugin,
     _extra_body_for,
     _map_finish_reason,
+    _reasoning_effort_for,
 )
 
 # ---------------------------------------------------------------------------
-# _extra_body_for -- pure
+# _extra_body_for / _reasoning_effort_for -- pure
 # ---------------------------------------------------------------------------
 
 
-def test_extra_body_pro_uses_max_reasoning_effort() -> None:
-    assert _extra_body_for("deepseek-v4-pro") == {
-        "thinking": {"type": "enabled"},
-        "reasoning_effort": "max",
-    }
+def test_extra_body_is_the_thinking_toggle_only() -> None:
+    """Effort moved out to a top-level kwarg; extra_body keeps the switch."""
+    for model in ("deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v5-nano"):
+        assert _extra_body_for(model) == {"thinking": {"type": "enabled"}}
 
 
-def test_extra_body_flash_uses_high_reasoning_effort() -> None:
-    assert _extra_body_for("deepseek-v4-flash") == {
-        "thinking": {"type": "enabled"},
-        "reasoning_effort": "high",
-    }
+def test_reasoning_effort_forwards_every_valid_tier() -> None:
+    for tier in sorted(_REASONING_EFFORTS):
+        assert _reasoning_effort_for(tier) == tier
 
 
-def test_extra_body_unknown_model_falls_back_to_default() -> None:
-    result = _extra_body_for("deepseek-v5-nano")
-    assert result["reasoning_effort"] == _DEFAULT_REASONING_EFFORT
-    assert result["thinking"] == {"type": "enabled"}
+def test_reasoning_effort_none_falls_back_to_default() -> None:
+    assert _reasoning_effort_for(None) == _DEFAULT_REASONING_EFFORT
 
 
-def test_reasoning_effort_table_covers_every_supported_model() -> None:
-    plugin = DeepSeekPlugin(api_key="test-key")
-    assert set(_REASONING_EFFORT) == set(plugin.supported_models)
+def test_reasoning_effort_rejects_medium_tier() -> None:
+    """DeepSeek folds "medium" into "high" server-side, so kodo never offers it."""
+    assert "medium" not in _REASONING_EFFORTS
+    assert _reasoning_effort_for("medium") == _DEFAULT_REASONING_EFFORT
+
+
+def test_reasoning_effort_accepts_exactly_the_registered_family_tiers() -> None:
+    """Accepted set == the family catalog the server advertises (see test_gpt)."""
+    assert set(cloud_thinking_tiers("deepseek")) == _REASONING_EFFORTS
+    assert cloud_thinking_default_tier("deepseek") == _DEFAULT_REASONING_EFFORT
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +169,7 @@ async def test_deepseek_stream_query_yields_from_inner() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -287,18 +292,17 @@ async def test_deepseek_raw_stream_sends_reasoning_config_via_extra_body() -> No
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level="max",
     ):
         pass
 
-    assert captured["extra_body"] == {
-        "thinking": {"type": "enabled"},
-        "reasoning_effort": "high",
-    }
+    assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert captured["reasoning_effort"] == "max"
     assert captured["model"] == "deepseek-v4-flash"
 
 
 @pytest.mark.asyncio
-async def test_deepseek_raw_stream_pro_model_sends_max_reasoning_effort() -> None:
+async def test_deepseek_raw_stream_defaults_effort_when_no_tier_supplied() -> None:
     plugin = _make_plugin()
     captured: dict[str, Any] = {}
     _patch_client(
@@ -314,10 +318,12 @@ async def test_deepseek_raw_stream_pro_model_sends_max_reasoning_effort() -> Non
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         pass
 
-    assert captured["extra_body"]["reasoning_effort"] == "max"
+    assert captured["reasoning_effort"] == _DEFAULT_REASONING_EFFORT
+    assert "reasoning_effort" not in captured["extra_body"]
 
 
 @pytest.mark.asyncio
@@ -340,6 +346,7 @@ async def test_deepseek_raw_stream_token_deltas() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -369,6 +376,7 @@ async def test_deepseek_raw_stream_reasoning_content_passthrough() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -402,6 +410,7 @@ async def test_deepseek_raw_stream_tool_calls() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -445,6 +454,7 @@ async def test_deepseek_raw_stream_tool_call_malformed_json() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -479,6 +489,7 @@ async def test_deepseek_raw_stream_cancel_stops_stream() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -503,6 +514,7 @@ async def test_deepseek_raw_stream_usage_includes_cache_read_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -532,6 +544,7 @@ async def test_deepseek_raw_stream_usage_missing_cache_details_defaults_to_zero(
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -552,6 +565,7 @@ async def test_deepseek_raw_stream_stop_reason_max_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -572,6 +586,7 @@ async def test_deepseek_raw_stream_no_tool_call_is_end_turn() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 

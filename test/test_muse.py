@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kodo.llms._cloud_thinking import cloud_thinking_default_tier, cloud_thinking_tiers
 from kodo.llms._interface import (
     ThinkingDelta,
     TokenDelta,
@@ -30,10 +31,44 @@ from kodo.llms._interface import (
 from kodo.llms.meta._muse import (
     _BASE_URL,
     _CONTRIBUTOR_SUFFIX,
-    _REASONING_EFFORT,
+    _DEFAULT_REASONING_EFFORT,
+    _REASONING_EFFORTS,
     MusePlugin,
     _map_stop_reason,
+    _reasoning_effort_for,
 )
+
+# ---------------------------------------------------------------------------
+# _reasoning_effort_for -- pure
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_effort_forwards_every_valid_tier() -> None:
+    """Muse Spark's own effort levels are the tier slugs -- forwarded verbatim."""
+    for tier in sorted(_REASONING_EFFORTS):
+        assert _reasoning_effort_for(tier) == tier
+
+
+def test_reasoning_effort_none_falls_back_to_default() -> None:
+    assert _reasoning_effort_for(None) == _DEFAULT_REASONING_EFFORT
+
+
+def test_reasoning_effort_rejects_max_tier() -> None:
+    """Muse Spark has no "max" level (its ladder tops out at xhigh)."""
+    assert _reasoning_effort_for("max") == _DEFAULT_REASONING_EFFORT
+
+
+def test_reasoning_effort_never_sends_none_level() -> None:
+    """Meta rejects effort "none" with a 400 -- and kodo offers no off tier."""
+    assert "none" not in _REASONING_EFFORTS
+    assert _reasoning_effort_for("none") == _DEFAULT_REASONING_EFFORT
+
+
+def test_reasoning_effort_accepts_exactly_the_registered_family_tiers() -> None:
+    """Accepted set == the family catalog the server advertises (see test_gpt)."""
+    assert set(cloud_thinking_tiers("meta")) == _REASONING_EFFORTS
+    assert cloud_thinking_default_tier("meta") == _DEFAULT_REASONING_EFFORT
+
 
 # ---------------------------------------------------------------------------
 # _map_stop_reason -- pure
@@ -158,6 +193,7 @@ async def test_muse_stream_query_yields_from_inner() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -321,6 +357,7 @@ async def test_muse_raw_stream_yields_text_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -346,6 +383,7 @@ async def test_muse_raw_stream_yields_reasoning_summary() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -377,6 +415,7 @@ async def test_muse_raw_stream_yields_tool_call() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -412,6 +451,7 @@ async def test_muse_raw_stream_tool_call_malformed_json() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -436,6 +476,7 @@ async def test_muse_raw_stream_cancel_stops_early() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -458,6 +499,7 @@ async def test_muse_raw_stream_usage_includes_cache_read_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -486,6 +528,7 @@ async def test_muse_raw_stream_stop_reason_max_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -507,6 +550,7 @@ async def test_muse_raw_stream_no_tool_call_is_end_turn() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -531,11 +575,12 @@ async def test_muse_raw_stream_sends_fixed_reasoning_effort() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level="xhigh",
     ):
         pass
 
     _, kwargs = mock_stream.call_args
-    assert kwargs["reasoning"] == {"effort": _REASONING_EFFORT, "summary": "auto"}
+    assert kwargs["reasoning"] == {"effort": "xhigh", "summary": "auto"}
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +601,7 @@ async def test_muse_raw_stream_standard_tier_sends_bare_model_id() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -578,6 +624,7 @@ async def test_muse_raw_stream_contributor_tier_suffixes_model_id() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 

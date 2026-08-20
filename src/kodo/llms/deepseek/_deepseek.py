@@ -44,35 +44,50 @@ _BASE_URL = "https://api.deepseek.com/v1"
 # everyday model) rather than "Flash" itself being the strong SKU.
 #
 # Reasoning ("thinking") is enabled unconditionally for both models -- see
-# _extra_body_for below -- with a per-model *graded* reasoning_effort, same
-# "one fixed reasoning setting per model, not per kodo tier" rationale as
-# kodo/llms/google/_gemini.py's own table (there is no per-tier knob to
-# thread through the silent-turn helpers for one vendor's benefit alone).
-# DeepSeek's docs (https://api-docs.deepseek.com/guides/thinking_mode)
-# describe "low"/"high"/"max" (or, per a since-superseded source, "high"/
-# "xhigh") effort strings for both models -- "high" is used here as V4
-# Flash's default (fast model, still gets real reasoning) and "max" for V4
-# Pro (the flagship reasoning tier), a judgment call given the inconsistent
-# naming across sources rather than a documented recommendation.
-_REASONING_EFFORT: dict[str, str] = {
-    "deepseek-v4-pro": "max",
-    "deepseek-v4-flash": "high",
-}
+# _extra_body_for below -- and *how hard* is session-controlled: the engine
+# passes the session's thinking_level (kodo.llms._cloud_thinking's "deepseek"
+# family) on every call and it goes out as a top-level `reasoning_effort`,
+# where DeepSeek's own OpenAI-format examples place it
+# (https://api-docs.deepseek.com/guides/thinking_mode/).
+#
+# Both registered models accept the identical scale. DeepSeek nominally
+# tolerates "medium"/"xhigh" too, but folds both into "high" server-side, so
+# offering them as separate tiers would be a UI lie: only the three values
+# that map to distinct behavior ("low"/"high"/"max") are offered. Default
+# "high" is DeepSeek's own documented default; before this control existed
+# the effort was fixed per model at pro="max"/flash="high".
+_REASONING_EFFORTS = frozenset({"low", "high", "max"})
 _DEFAULT_REASONING_EFFORT = "high"
 
 
-def _extra_body_for(model: str) -> dict[str, object]:
-    """Fixed thinking-mode request body for *model* (DeepSeek's ``extra_body``).
+def _reasoning_effort_for(thinking_level: str | None) -> str:
+    """DeepSeek ``reasoning_effort`` for this request's thinking tier.
 
-    Unlike Qwen's single boolean ``enable_thinking`` flag or Gemini's direct
-    ``reasoning_effort=`` kwarg, DeepSeek nests a graded ``reasoning_effort``
-    string inside the same ``extra_body`` dict as its ``thinking.type``
-    toggle -- neither is a standard OpenAI Chat Completions parameter.
+    Args:
+        thinking_level (str | None): Session tier slug, or ``None``. Anything
+            outside :data:`_REASONING_EFFORTS` falls back to the family
+            default rather than being forwarded to the API.
+
+    Returns:
+        str: A valid ``reasoning_effort`` value.
     """
-    return {
-        "thinking": {"type": "enabled"},
-        "reasoning_effort": _REASONING_EFFORT.get(model, _DEFAULT_REASONING_EFFORT),
-    }
+    if thinking_level in _REASONING_EFFORTS:
+        return str(thinking_level)
+    return _DEFAULT_REASONING_EFFORT
+
+
+def _extra_body_for(model: str) -> dict[str, object]:
+    """Thinking-mode switch for *model* (DeepSeek's ``extra_body``).
+
+    Thinking is on unconditionally for both registered models; *how hard* is
+    the session's tier, sent separately as a top-level ``reasoning_effort``
+    kwarg (:func:`_reasoning_effort_for`) the way DeepSeek's own OpenAI-format
+    examples place it. ``thinking.type`` stays here in ``extra_body`` because
+    it is not a standard OpenAI Chat Completions parameter -- the same
+    field name/shape Kimi's K2.x models use.
+    """
+    del model  # Both registered models take the identical switch.
+    return {"thinking": {"type": "enabled"}}
 
 
 def _map_finish_reason(reason: str | None) -> str:
@@ -148,6 +163,7 @@ class DeepSeekPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a DeepSeek response via Chat Completions, with retry.
 
@@ -159,7 +175,10 @@ class DeepSeekPlugin(LLMPlugin):
             tools (list[ToolSpec]): Tools the model may invoke.
             cache_breakpoints (list[int]): Accepted for interface parity;
                 ignored -- DeepSeek's context caching is automatic.
-
+            thinking_level (str | None): The session's reasoning tier for the
+                ``"deepseek"`` thinking family (``"low"``/``"high"``/
+                ``"max"``), or ``None`` for the family default. Forwarded
+                verbatim as a top-level ``reasoning_effort``.
         Yields:
             StreamEvent: Token/reasoning deltas, tool calls, then :class:`TurnEnd`.
         """
@@ -170,6 +189,7 @@ class DeepSeekPlugin(LLMPlugin):
             messages=messages,
             tools=tools,
             cache_breakpoints=cache_breakpoints,
+            thinking_level=thinking_level,
         )
 
     async def cancel(self, stream_id: str) -> None:
@@ -196,6 +216,7 @@ class DeepSeekPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None,
     ) -> AsyncIterator[StreamEvent]:
         cancel_event = asyncio.Event()
         self.__cancel_events[stream_id] = cancel_event
@@ -208,6 +229,7 @@ class DeepSeekPlugin(LLMPlugin):
                     messages=messages,
                     tools=tools,
                     cache_breakpoints=cache_breakpoints,
+                    thinking_level=thinking_level,
                 )
             ):
                 yield event
@@ -223,6 +245,7 @@ class DeepSeekPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None,
     ) -> AsyncIterator[StreamEvent]:
         del cache_breakpoints  # DeepSeek's context caching is automatic -- see _convert.py
 
@@ -245,6 +268,7 @@ class DeepSeekPlugin(LLMPlugin):
             model=model,
             messages=oai_messages,
             tools=oai_tools if oai_tools else openai.NOT_GIVEN,
+            reasoning_effort=_reasoning_effort_for(thinking_level),
             extra_body=_extra_body_for(model),
             stream=True,
             stream_options={"include_usage": True},

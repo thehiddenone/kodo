@@ -32,6 +32,11 @@ from kodo.llms import (
     local_thinking_default_tier,
     local_thinking_tiers,
 )
+from kodo.llms._cloud_thinking import (
+    CLOUD_THINKING_FAMILIES,
+    cloud_thinking_default_tier,
+    cloud_thinking_tiers,
+)
 from kodo.llms.alibaba import QwenPlugin
 from kodo.llms.anthropic import ClaudePlugin
 from kodo.llms.deepseek import DeepSeekPlugin
@@ -70,41 +75,32 @@ _VENDOR_PLUGIN_FACTORIES: dict[str, Callable[[str, dict[str, object]], LLMPlugin
     "kodo.llms.openrouter": lambda api_key, _settings: OpenRouterPlugin(api_key),
 }
 
-# A synthetic "base_llm" identity for OpenRouter -- not a real local registry
-# entry (OpenRouter is a cloud vendor), but reusing the exact same
-# base_llm-keyed thinking-tier machinery every local model already goes
-# through (_current_base_llm/_thinking_level_for_model/handle_thinking_level_set
-# below, and the server's thinking_families payload) is how OpenRouter gets a
-# real, independently-adjustable "how hard should it think" control instead
-# of one hardcoded per model -- see kodo/llms/openrouter/_openrouter.py's
-# class docstring. local_thinking_tiers/local_thinking_family/
-# local_thinking_default_tier (kodo/llms/local_registry/_thinking.py) stay
-# local-only and untouched; _thinking_tiers_for/_thinking_default_for below
-# are the one branch point that also recognizes this identity.
-_OPENROUTER_BASE_LLM = "openrouter"
-# Matches OpenRouter's own `reasoning.effort` literal strings directly (no
-# translation table needed) and reuses the exact "low"/"medium"/"high"
-# wording kodo/llms/local_registry/_thinking.py's GPT_OSS_REASONING_EFFORT_FAMILY
-# already uses for a conceptually distinct axis (that family's tiers govern a
-# *local* GPT-OSS model's launch-time reasoning_effort; this one governs a
-# per-request OpenRouter parameter) -- not a new naming convention.
-_OPENROUTER_THINKING_TIERS: tuple[str, ...] = ("low", "medium", "high", "max")
-# OpenRouter's own documented default when reasoning is enabled with no
-# explicit effort (https://openrouter.ai/docs/use-cases/reasoning-tokens).
-_OPENROUTER_DEFAULT_THINKING_TIER = "medium"
+# Cloud vendors reuse the exact same base_llm-keyed thinking-tier machinery
+# every local model already goes through (_current_base_llm/
+# _thinking_level_for_model/handle_thinking_level_set below, and the server's
+# thinking_families payload), keyed by a synthetic "base_llm" that is just the
+# vendor key -- not a real local registry entry. That is how each cloud vendor
+# gets a real, independently-adjustable "how hard should it think" control
+# instead of one setting hardcoded per model inside its plugin. The per-vendor
+# tier tables live in kodo/llms/_cloud_thinking.py (one source of truth, read
+# by both this module and the server payload); local_thinking_tiers/
+# local_thinking_family/local_thinking_default_tier
+# (kodo/llms/local_registry/_thinking.py) stay local-only and untouched, and
+# _thinking_tiers_for/_thinking_default_for below are the one branch point
+# that consults both. OpenRouter was the first vendor wired this way
+# (doc/LLM_REGISTRY.md §3a); every other vendor followed the same path.
 
 
 def _thinking_tiers_for(base_llm: str) -> tuple[str, ...]:
-    """``local_thinking_tiers``, plus the synthetic OpenRouter identity."""
-    if base_llm == _OPENROUTER_BASE_LLM:
-        return _OPENROUTER_THINKING_TIERS
-    return local_thinking_tiers(base_llm)
+    """``local_thinking_tiers``, plus the synthetic per-vendor cloud identities."""
+    cloud_tiers = cloud_thinking_tiers(base_llm)
+    return cloud_tiers or local_thinking_tiers(base_llm)
 
 
 def _thinking_default_for(base_llm: str) -> str:
-    """``local_thinking_default_tier``, plus the synthetic OpenRouter identity."""
-    if base_llm == _OPENROUTER_BASE_LLM:
-        return _OPENROUTER_DEFAULT_THINKING_TIER
+    """``local_thinking_default_tier``, plus the synthetic cloud identities."""
+    if base_llm in CLOUD_THINKING_FAMILIES:
+        return cloud_thinking_default_tier(base_llm)
     return local_thinking_default_tier(base_llm)
 
 
@@ -234,24 +230,25 @@ class LLMPlumbingMixin:
         return LoggingLLMPlugin(plugin, self._llm_logs_dir()), model_key, routing
 
     def _current_base_llm(self: EngineHost) -> str:
-        """``base_llm`` of the session's currently active *local* model.
+        """``base_llm`` of the session's currently active model.
 
         Reads fresh settings each call (same as :meth:`_resolve_model_key`).
-        Returns the synthetic :data:`_OPENROUTER_BASE_LLM` identity when the
-        active model is on OpenRouter (the one cloud vendor with a
-        thinking-tier mechanism -- see :func:`_thinking_tiers_for`), ``""``
-        for any other cloud vendor, and a local registry entry's own
-        ``base_llm`` (``""`` for one with none, e.g. ``custom_hf``/
-        ``custom_file``/``custom_server_url``) for a local model. Used to
-        keep ``_session.thinking_level`` in sync with whatever model is
-        actually selected (doc/SESSIONS.md).
+        In cloud mode this is the synthetic per-vendor identity -- the vendor
+        key itself (``"anthropic"``, ``"openai"``, ...), whose tier table
+        lives in :data:`~kodo.llms._cloud_thinking.CLOUD_THINKING_FAMILIES`
+        -- since the thinking tier is vendor-scoped, not model-scoped (one
+        session talks to several of a vendor's models in a single turn, one
+        per agent capability tier). ``""`` for a cloud vendor with no
+        thinking family at all (none today). In local mode it is the local
+        registry entry's own ``base_llm`` (``""`` for one with none, e.g.
+        ``custom_hf``/``custom_file``/``custom_server_url``). Used to keep
+        ``_session.thinking_level`` in sync with whatever model is actually
+        selected (doc/SESSIONS.md).
         """
         settings = self._get_settings()
-        if (
-            str(settings.get("mode", "cloud")) == "cloud"
-            and str(settings.get("active_cloud_vendor", "anthropic")) == "openrouter"
-        ):
-            return _OPENROUTER_BASE_LLM
+        if str(settings.get("mode", "cloud")) == "cloud":
+            vendor = str(settings.get("active_cloud_vendor", "anthropic"))
+            return vendor if vendor in CLOUD_THINKING_FAMILIES else ""
         model_key = self._resolve_model_key(self._entry_capability())
         entry = get_local_registry(kodo_user_dir()).get(model_key)
         return entry.base_llm if entry is not None else ""
@@ -260,17 +257,17 @@ class LLMPlumbingMixin:
         """``{"thinking_level": ...}`` to splice into a ``stream_query`` call.
 
         Applies the session's ``thinking_level`` to every LLM call this
-        session makes on its active *local or OpenRouter* model — not just
-        the main turn, but every silent call too (compaction, ``web_search``'s
-        tool loop) — since it is a session-wide setting, not a per-call one
-        (doc/SESSIONS.md). OpenRouter is the one cloud vendor with a
-        thinking-tier mechanism (kodo/llms/openrouter/_openrouter.py's class
-        docstring); every other cloud plugin has no such parameter at all.
-        ``{}`` for any other cloud call, or when the active model has no
-        thinking family (``_session.thinking_level`` is already ``""`` in
-        that case).
+        session makes on its active model — not just the main turn, but every
+        silent call too (compaction, ``web_search``'s tool loop) — since it is
+        a session-wide setting, not a per-call one (doc/SESSIONS.md). Every
+        cloud vendor now has a thinking-tier mechanism of its own
+        (:data:`~kodo.llms._cloud_thinking.CLOUD_THINKING_FAMILIES`; each
+        plugin translates the tier into that vendor's own request shape), so
+        the only cases left that add no field at all are a vendor with no
+        family and a local model with none — both of which already leave
+        ``_session.thinking_level`` at ``""``.
         """
-        if not (routing.residence == "local" or routing.vendor == "openrouter"):
+        if routing.residence == "cloud" and (routing.vendor or "") not in CLOUD_THINKING_FAMILIES:
             return {}
         if not self._session.thinking_level:
             return {}

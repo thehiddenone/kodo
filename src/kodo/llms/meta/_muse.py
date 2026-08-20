@@ -43,14 +43,39 @@ _log = logging.getLogger(__name__)
 # key instead of an OpenAI one.
 _BASE_URL = "https://api.meta.ai/v1"
 
-# Meta has no effort-tiered lineup (kodo/llms/_cloud_registry.py's
-# _META_MODELS docstring) -- Muse Spark 1.2 is one model spanning all four of
-# kodo's effort tiers, so unlike OpenAI's per-model _REASONING_EFFORT table
-# there is no model identity to pick an effort from. A single fixed Responses
-# API `reasoning.effort` applies to every call, same "not worth threading
-# kodo's own capability tier through the silent-turn helpers for one vendor"
-# rationale as kodo/llms/openai/_gpt.py's own table.
-_REASONING_EFFORT = "medium"
+# Reasoning effort is session-controlled: the engine passes the session's
+# thinking_level (kodo.llms._cloud_thinking's "meta" family) on every call and
+# it lands verbatim in the Responses API's `reasoning.effort`
+# (https://dev.meta.ai/docs/reasoning). Meta has no effort-tiered lineup
+# (kodo/llms/_cloud_registry.py's _META_MODELS docstring) -- Muse Spark 1.2 is
+# one model spanning all four of kodo's capability tiers -- so the session
+# tier is the *only* thing that varies reasoning depth here.
+#
+# Muse Spark's scale is Responses-API-shaped like OpenAI's but genuinely
+# different in its ends: it has a "minimal" level and no "max", and it rejects
+# "none" with a 400 (reasoning cannot be disabled at all). Meta documents no
+# default value -- omitting the parameter leaves the model to pick its own
+# depth -- so the family default stays "medium", the fixed value this plugin
+# sent on every call before the control existed.
+_REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh"})
+_DEFAULT_REASONING_EFFORT = "medium"
+
+
+def _reasoning_effort_for(thinking_level: str | None) -> str:
+    """Responses API ``reasoning.effort`` for this request's thinking tier.
+
+    Args:
+        thinking_level (str | None): Session tier slug, or ``None``. Anything
+            outside :data:`_REASONING_EFFORTS` falls back to the family
+            default rather than being forwarded to the API.
+
+    Returns:
+        str: A valid ``reasoning.effort`` value.
+    """
+    if thinking_level in _REASONING_EFFORTS:
+        return str(thinking_level)
+    return _DEFAULT_REASONING_EFFORT
+
 
 # The suffix Meta's Model API model id gets when the account-level
 # "contributor" tier is active (settings.json's meta_contributor_tier,
@@ -129,6 +154,7 @@ class MusePlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a Muse response via the Responses API, with retry.
 
@@ -143,7 +169,10 @@ class MusePlugin(LLMPlugin):
             tools (list[ToolSpec]): Tools the model may invoke.
             cache_breakpoints (list[int]): Accepted for interface parity;
                 ignored -- Responses API caching is automatic.
-
+            thinking_level (str | None): The session's reasoning tier for the
+                ``"meta"`` thinking family (``"minimal"``/``"low"``/
+                ``"medium"``/``"high"``/``"xhigh"``), or ``None`` for the
+                family default. Forwarded verbatim as ``reasoning.effort``.
         Yields:
             StreamEvent: Token/reasoning deltas, tool calls, then :class:`TurnEnd`.
         """
@@ -154,6 +183,7 @@ class MusePlugin(LLMPlugin):
             messages=messages,
             tools=tools,
             cache_breakpoints=cache_breakpoints,
+            thinking_level=thinking_level,
         )
 
     async def cancel(self, stream_id: str) -> None:
@@ -180,6 +210,7 @@ class MusePlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None,
     ) -> AsyncIterator[StreamEvent]:
         cancel_event = asyncio.Event()
         self.__cancel_events[stream_id] = cancel_event
@@ -192,6 +223,7 @@ class MusePlugin(LLMPlugin):
                     messages=messages,
                     tools=tools,
                     cache_breakpoints=cache_breakpoints,
+                    thinking_level=thinking_level,
                 )
             ):
                 yield event
@@ -207,6 +239,7 @@ class MusePlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None,
     ) -> AsyncIterator[StreamEvent]:
         del cache_breakpoints  # Responses API caching is automatic -- see _convert.py
 
@@ -225,7 +258,7 @@ class MusePlugin(LLMPlugin):
             model=api_model,
             instructions=system,
             input=input_items,
-            reasoning={"effort": _REASONING_EFFORT, "summary": "auto"},
+            reasoning={"effort": _reasoning_effort_for(thinking_level), "summary": "auto"},
             # kodo resends full conversation history every turn (like the
             # Anthropic and OpenAI plugins) and never uses
             # previous_response_id chaining, so there is no reason to let

@@ -30,6 +30,7 @@ from kodo.llms._interface import (
 )
 from kodo.llms.alibaba._qwen import (
     _DEFAULT_ENABLE_THINKING,
+    _DEFAULT_REASONING_EFFORT,
     _ENABLE_THINKING,
     QwenPlugin,
     _enable_thinking_for,
@@ -162,6 +163,7 @@ async def test_qwen_stream_query_yields_from_inner() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -284,11 +286,41 @@ async def test_qwen_raw_stream_sends_enable_thinking_via_extra_body() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         pass
 
-    assert captured["extra_body"] == {"enable_thinking": True}
+    assert captured["extra_body"] == {
+        "enable_thinking": True,
+        "reasoning_effort": _DEFAULT_REASONING_EFFORT,
+    }
     assert captured["model"] == "qwen3.8-plus"
+
+
+@pytest.mark.asyncio
+async def test_qwen_raw_stream_sends_session_thinking_tier_as_reasoning_effort() -> None:
+    """The session tier rides `reasoning_effort` in the same extra_body dict as
+    the always-on `enable_thinking` switch (doc/LLM_REGISTRY.md §4.5a)."""
+    plugin = _make_plugin()
+    captured: dict[str, Any] = {}
+    _patch_client(
+        plugin,
+        [_make_chunk(content="hi", finish_reason="stop", usage=_usage(1, 1))],
+        captured_kwargs=captured,
+    )
+
+    async for _ in plugin._QwenPlugin__raw_stream(
+        cancel_event=_not_cancelled(),
+        model="qwen3.8-plus",
+        system="sys",
+        messages=[],
+        tools=[],
+        cache_breakpoints=[],
+        thinking_level="low",
+    ):
+        pass
+
+    assert captured["extra_body"] == {"enable_thinking": True, "reasoning_effort": "low"}
 
 
 @pytest.mark.asyncio
@@ -311,6 +343,7 @@ async def test_qwen_raw_stream_token_deltas() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -340,6 +373,7 @@ async def test_qwen_raw_stream_reasoning_content_passthrough() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -373,6 +407,7 @@ async def test_qwen_raw_stream_tool_calls() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -416,6 +451,7 @@ async def test_qwen_raw_stream_tool_call_malformed_json() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -450,6 +486,7 @@ async def test_qwen_raw_stream_cancel_stops_stream() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -474,6 +511,7 @@ async def test_qwen_raw_stream_usage_includes_cache_read_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -503,6 +541,7 @@ async def test_qwen_raw_stream_usage_missing_cache_details_defaults_to_zero() ->
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -523,6 +562,7 @@ async def test_qwen_raw_stream_stop_reason_max_tokens() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 
@@ -543,6 +583,7 @@ async def test_qwen_raw_stream_no_tool_call_is_end_turn() -> None:
         messages=[],
         tools=[],
         cache_breakpoints=[],
+        thinking_level=None,
     ):
         events.append(event)
 

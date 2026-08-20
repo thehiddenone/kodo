@@ -64,13 +64,22 @@ _BASE_URL = "https://api.moonshot.ai/v1"
 # Reasoning ("thinking") is enabled unconditionally for both models, same
 # posture as DeepSeek/Alibaba -- see _reasoning_kwargs_for below for the
 # (genuinely different) mechanism each model uses.
-_REASONING_EFFORT: dict[str, str] = {
-    "kimi-k3": "max",
-}
+#
+# *How hard* to think is session-controlled on K3: the engine passes the
+# session's thinking_level (kodo.llms._cloud_thinking's "kimi" family) on
+# every call and it goes out as K3's top-level `reasoning_effort`. The scale
+# is Moonshot's own three values -- "low"/"high"/"max", with no "medium",
+# the same shape as DeepSeek's -- and the family default "max" is the
+# OpenPlatform API's own default, which is also what this plugin sent before
+# the control existed. `kimi-k2.7-code` supports no effort parameter at all
+# (thinking permanently on at its own fixed level), so it silently ignores
+# the tier; kodo-vsix's tier tooltips carry that caveat, since the tier list
+# is vendor-scoped rather than per-model (kodo/llms/_cloud_thinking.py).
+_REASONING_EFFORTS = frozenset({"low", "high", "max"})
 _DEFAULT_REASONING_EFFORT = "max"
 
 
-def _reasoning_kwargs_for(model: str) -> dict[str, object]:
+def _reasoning_kwargs_for(model: str, thinking_level: str | None) -> dict[str, object]:
     """Extra ``chat.completions.create()`` kwargs enabling reasoning for *model*.
 
     Kimi's two model families do not share a reasoning-config shape.
@@ -81,17 +90,32 @@ def _reasoning_kwargs_for(model: str) -> dict[str, object]:
     against Moonshot's own K3 quickstart docs:
     https://platform.kimi.ai/docs/guide/kimi-k3-quickstart -- "configure
     reasoning effort with the top-level reasoning_effort request field...; do
-    not reuse the K2.x thinking parameter"). Every other registered model
-    (today, only ``kimi-k2.7-code``) instead takes a boolean ``thinking.type``
-    switch nested inside ``extra_body`` -- the same field name/shape
-    DeepSeek's own ``thinking.type`` toggle uses -- since it is not a standard
-    Chat Completions parameter (confirmed against
+    not reuse the K2.x thinking parameter"), carrying this request's thinking
+    tier. Every other registered model (today, only ``kimi-k2.7-code``)
+    instead takes a boolean ``thinking.type`` switch nested inside
+    ``extra_body`` -- the same field name/shape DeepSeek's own
+    ``thinking.type`` toggle uses -- since it is not a standard Chat
+    Completions parameter (confirmed against
     https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model); fixed at
-    ``"enabled"`` (always-on), same "one fixed reasoning setting per model,
-    not per kodo tier" posture as every other vendor's table here.
+    ``"enabled"``, because that model accepts neither ``reasoning_effort`` nor
+    ``thinking_budget`` and rejects ``"disabled"`` outright. The session's
+    tier therefore has no effect on it -- the one registered model anywhere
+    here that ignores the control.
+
+    Args:
+        model (str): Kimi model identifier for this request.
+        thinking_level (str | None): Session tier slug, or ``None``. Anything
+            outside :data:`_REASONING_EFFORTS` falls back to the family
+            default rather than being forwarded to the API.
+
+    Returns:
+        dict[str, object]: Kwargs to splice into the ``create()`` call.
     """
     if model == "kimi-k3":
-        return {"reasoning_effort": _REASONING_EFFORT.get(model, _DEFAULT_REASONING_EFFORT)}
+        effort = (
+            thinking_level if thinking_level in _REASONING_EFFORTS else _DEFAULT_REASONING_EFFORT
+        )
+        return {"reasoning_effort": effort}
     return {"extra_body": {"thinking": {"type": "enabled"}}}
 
 
@@ -170,6 +194,7 @@ class KimiPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a Kimi response via Chat Completions, with retry.
 
@@ -181,7 +206,11 @@ class KimiPlugin(LLMPlugin):
             tools (list[ToolSpec]): Tools the model may invoke.
             cache_breakpoints (list[int]): Accepted for interface parity;
                 ignored -- Kimi's context caching is automatic.
-
+            thinking_level (str | None): The session's reasoning tier for the
+                ``"kimi"`` thinking family (``"low"``/``"high"``/``"max"``),
+                or ``None`` for the family default. Forwarded verbatim as
+                ``kimi-k3``'s top-level ``reasoning_effort``; ``kimi-k2.7-code``
+                has no effort parameter and ignores it.
         Yields:
             StreamEvent: Token/reasoning deltas, tool calls, then :class:`TurnEnd`.
         """
@@ -192,6 +221,7 @@ class KimiPlugin(LLMPlugin):
             messages=messages,
             tools=tools,
             cache_breakpoints=cache_breakpoints,
+            thinking_level=thinking_level,
         )
 
     async def cancel(self, stream_id: str) -> None:
@@ -218,6 +248,7 @@ class KimiPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None,
     ) -> AsyncIterator[StreamEvent]:
         cancel_event = asyncio.Event()
         self.__cancel_events[stream_id] = cancel_event
@@ -230,6 +261,7 @@ class KimiPlugin(LLMPlugin):
                     messages=messages,
                     tools=tools,
                     cache_breakpoints=cache_breakpoints,
+                    thinking_level=thinking_level,
                 )
             ):
                 yield event
@@ -245,6 +277,7 @@ class KimiPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None,
     ) -> AsyncIterator[StreamEvent]:
         del cache_breakpoints  # Kimi's context caching is automatic -- see _convert.py
 
@@ -269,7 +302,7 @@ class KimiPlugin(LLMPlugin):
             tools=oai_tools if oai_tools else openai.NOT_GIVEN,
             stream=True,
             stream_options={"include_usage": True},
-            **_reasoning_kwargs_for(model),
+            **_reasoning_kwargs_for(model, thinking_level),
         )
         async for chunk in response:
             if cancel_event.is_set():

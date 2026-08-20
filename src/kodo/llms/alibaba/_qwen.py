@@ -65,6 +65,43 @@ def _enable_thinking_for(model: str) -> bool:
     return _ENABLE_THINKING.get(model, _DEFAULT_ENABLE_THINKING)
 
 
+# *How hard* to think, on top of the always-on `enable_thinking` switch above,
+# is session-controlled: the engine passes the session's thinking_level
+# (kodo.llms._cloud_thinking's "alibaba" family) on every call and it rides
+# DashScope's own `reasoning_effort` field, nested in `extra_body` alongside
+# `enable_thinking` since neither is a standard OpenAI Chat Completions
+# parameter (https://www.alibabacloud.com/help/en/model-studio/deep-thinking).
+#
+# Qwen3.8's scale has a hole where "high" would be -- the documented levels
+# are "low"/"medium"/"xhigh" -- so this is the one vendor here whose tier list
+# is not a prefix of the usual effort ladder. Default "xhigh" is Qwen's own
+# documented default, matching the always-thinking posture the fixed
+# `enable_thinking=True` above already encoded.
+#
+# The other DashScope depth control, `thinking_budget` (1-32768 reasoning
+# tokens), is deliberately never sent: qwen3.8-max rejects a request carrying
+# both, and a graded effort maps onto kodo's tier control without a second
+# token-budget scale to reconcile.
+_REASONING_EFFORTS = frozenset({"low", "medium", "xhigh"})
+_DEFAULT_REASONING_EFFORT = "xhigh"
+
+
+def _reasoning_effort_for(thinking_level: str | None) -> str:
+    """DashScope ``reasoning_effort`` for this request's thinking tier.
+
+    Args:
+        thinking_level (str | None): Session tier slug, or ``None``. Anything
+            outside :data:`_REASONING_EFFORTS` falls back to the family
+            default rather than being forwarded to the API.
+
+    Returns:
+        str: A valid ``reasoning_effort`` value.
+    """
+    if thinking_level in _REASONING_EFFORTS:
+        return str(thinking_level)
+    return _DEFAULT_REASONING_EFFORT
+
+
 def _map_finish_reason(reason: str | None) -> str:
     """Map a Chat Completions ``finish_reason`` to kodo's canonical stop-reason vocabulary.
 
@@ -138,6 +175,7 @@ class QwenPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a Qwen response via Chat Completions, with retry.
 
@@ -149,7 +187,10 @@ class QwenPlugin(LLMPlugin):
             tools (list[ToolSpec]): Tools the model may invoke.
             cache_breakpoints (list[int]): Accepted for interface parity;
                 ignored -- Alibaba's context-cache prompt caching is automatic.
-
+            thinking_level (str | None): The session's reasoning tier for the
+                ``"alibaba"`` thinking family (``"low"``/``"medium"``/
+                ``"xhigh"``), or ``None`` for the family default. Forwarded as
+                DashScope's ``reasoning_effort`` inside ``extra_body``.
         Yields:
             StreamEvent: Token/reasoning deltas, tool calls, then :class:`TurnEnd`.
         """
@@ -160,6 +201,7 @@ class QwenPlugin(LLMPlugin):
             messages=messages,
             tools=tools,
             cache_breakpoints=cache_breakpoints,
+            thinking_level=thinking_level,
         )
 
     async def cancel(self, stream_id: str) -> None:
@@ -186,6 +228,7 @@ class QwenPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None,
     ) -> AsyncIterator[StreamEvent]:
         cancel_event = asyncio.Event()
         self.__cancel_events[stream_id] = cancel_event
@@ -198,6 +241,7 @@ class QwenPlugin(LLMPlugin):
                     messages=messages,
                     tools=tools,
                     cache_breakpoints=cache_breakpoints,
+                    thinking_level=thinking_level,
                 )
             ):
                 yield event
@@ -213,6 +257,7 @@ class QwenPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
+        thinking_level: str | None,
     ) -> AsyncIterator[StreamEvent]:
         del cache_breakpoints  # Alibaba's context-cache caching is automatic -- see _convert.py
 
@@ -235,7 +280,10 @@ class QwenPlugin(LLMPlugin):
             model=model,
             messages=oai_messages,
             tools=oai_tools if oai_tools else openai.NOT_GIVEN,
-            extra_body={"enable_thinking": _enable_thinking_for(model)},
+            extra_body={
+                "enable_thinking": _enable_thinking_for(model),
+                "reasoning_effort": _reasoning_effort_for(thinking_level),
+            },
             stream=True,
             stream_options={"include_usage": True},
         )
