@@ -12,6 +12,7 @@ requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.14.0",
     "anthropic>=0.106.0",
+    "boto3>=1.43.73",
     "certifi>=2026.7.22",
     "curl_cffi>=0.15.0",
     "huggingface_hub>=1.18.0",
@@ -65,6 +66,15 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.12"
 strict = true
 files = ["src"]
+
+# boto3/botocore ship no type information (no py.typed, no bundled stubs), and
+# the optional boto3-stubs package generates per-service types that would have
+# to be pinned in lockstep with boto3 itself. The Bedrock plugin
+# (kodo/llms/bedrock/) therefore treats its clients as Any and validates every
+# field it reads off a response at runtime instead.
+[[tool.mypy.overrides]]
+module = ["boto3.*", "botocore.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["test"]

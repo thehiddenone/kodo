@@ -536,7 +536,188 @@ OpenRouter's upstream providers handle prompt caching on their own terms
 with no single marker mechanism kodo could target across the whole
 catalog).
 
-**All eight cloud plugins share one retry/backoff core**, `kodo/llms/
+### 3b. AWS Bedrock — the second aggregator, on your own AWS account
+
+Bedrock (<https://aws.amazon.com/bedrock/>) is the second vendor built to
+§3a's shape rather than §3's: **absent from `_CLOUD_REGISTRY`** (display name
++ plugin-module entries only), catalog fetched at runtime, model chosen from a
+searchable picker, thinking tier session-level rather than per-model, and
+prompt-cache breakpoints ignored. Where OpenRouter aggregates many providers
+behind one vendor's API key and bills you itself, Bedrock serves them from
+**your own AWS account** and bills through AWS. That difference is the source
+of every way this vendor deviates from OpenRouter, and each deviation below is
+forced by AWS, not chosen.
+
+**Credentials are a pair, not a string.** Kōdo authenticates with a long-term
+IAM user access key: an access key id *and* a secret access key. The
+`api_key.request` pull protocol (WS_PROTOCOL.md §6.3) moves exactly one opaque
+string per vendor, and widening it for one vendor would touch the key broker,
+the named-multi-key store, the revoke path, and every other vendor's flow. So
+kodo-vsix packs both values into one JSON object and sends *that* as the "api
+key" — `{"access_key_id": "AKIA…", "secret_access_key": "…"}` — and
+`kodo/llms/bedrock/_credentials.py` is the only place that knows the string is
+structured. Nothing else in the credential path changes: the blob lives in VS
+Code SecretStorage under the same UUID scheme, is listed/activated/forgotten
+by the same `cloud-credentials.ts` code, and is never written to disk by the
+server (NFR-06). A user who pastes a bare access key id — the shape every
+other vendor's key has — gets a named `InvalidCredentialsError` at plugin
+construction naming what was actually expected, rather than an opaque
+`UnrecognizedClientException` from deep inside botocore.
+
+The **region is deliberately not in that blob**. A region is not a secret, it
+belongs to the account's Bedrock setup rather than to the credential, and
+`_resolve_plugin` already passes the whole settings dict to each vendor's
+plugin factory — so `bedrock_region` (doc/SETTINGS.md §2.2c, default
+`us-east-1`) is a plain setting with a plain dropdown, read fresh on every
+dispatch exactly like `meta_contributor_tier`. The minimum IAM policy is
+`bedrock:InvokeModelWithResponseStream` plus `bedrock:ListFoundationModels`
+and `bedrock:ListInferenceProfiles` for the catalog.
+
+**The catalog fetch needs credentials, so there is no background loop.**
+OpenRouter's `/models` endpoint is unauthenticated, which is what lets the
+server refresh it on a 12-hour TTL loop from startup. `ListFoundationModels`
+is a signed AWS call, and the server holds no credentials of its own — they
+are pulled per LLM dispatch over a *session's* response channel, which a
+control-connection handler doesn't have. A server-side loop would therefore
+either fire a credential prompt at the user unprompted or silently do nothing.
+So the Bedrock refresh is **client-driven and carries its credentials with
+it**: `bedrock.models.refresh` `{api_key, region}` (WS_PROTOCOL.md §7.6i),
+sent by kodo-vsix from the tab's "Refresh model list" button, after a key is
+added, after a region change, and unattended on every `hello.ack` when the
+catalog is empty (`maybeRefreshBedrockCatalog`). That last path resolves the
+*active* key without the interactive add-a-key fallback, so a window with no
+Bedrock key configured is never nagged for one.
+
+**The cache is region-scoped, and that is the invalidation mechanism.**
+`kodo/llms/_bedrock_catalog.py` caches to `~/.kodo/etc/bedrock-models.json`
+alongside the OpenRouter cache, recording the region it fetched for;
+`get_bedrock_catalog(kodo_dir, region)` returns `[]` for any other region. So
+changing `bedrock_region` makes `hello.ack`'s `bedrock_catalog` field read
+empty, which is already the client's cue to refresh — no separate
+invalidation message exists or is needed. (`get_bedrock_model` is deliberately
+region-*agnostic*: its only caller is `get_context_window`, which is handed a
+model id deep inside the compaction path with no region in scope.)
+
+**Two calls, merged — inference profiles are first-class entries.** Many
+Bedrock models cannot be invoked on demand by their bare model id at all;
+they return a `ValidationException` telling the caller to use an inference
+profile instead. So `ListInferenceProfiles` (`SYSTEM_DEFINED`, paginated) is
+fetched alongside `ListFoundationModels` (`byOutputModality=TEXT`,
+`byInferenceType=ON_DEMAND`) and its cross-region profile ids (`us.`, `eu.`,
+`apac.`, …) are offered as catalog entries in their own right, sorted first
+and labelled as profiles in the picker. Each profile inherits the display
+metadata of the foundation model behind it. Models are additionally filtered
+to `responseStreamingSupported` (kōdo only ever streams), TEXT input, and an
+`ACTIVE` lifecycle. A profile-listing failure is caught and degraded to
+models-only, since `ListInferenceProfiles` is a separate IAM action a narrow
+policy may not grant.
+
+**Context windows are a best-effort family table, because Bedrock exposes
+none.** Neither `ListFoundationModels` nor `GetFoundationModel` reports a
+context length. Leaving it unknown would hand every Bedrock model kodo's
+262,144-token default (`kodo/llms/_context.py`), which is *larger* than most
+of them — auto-compaction would happily overfill a 128k model until the
+provider hard-errors. `_FAMILY_CONTEXT_WINDOWS` in `_bedrock_catalog.py` is
+the conservative alternative: a published figure per model family, matched as
+a substring so a region prefix and a version suffix still hit, and `0`
+("unknown", falls back to the default) for anything unrecognised. It is
+explicitly best-effort and expected to need occasional updating.
+
+**No cost is reported and no pricing table exists.** Bedrock's Converse
+response carries token counts but never a price, and its 110+ models are
+priced per-region through the separate AWS Price List API (a different
+service, a different IAM grant). So Bedrock is the one vendor that has
+*neither* a `_usage.py` (unlike §3's seven) *nor* `provider_reported_cost`
+(unlike OpenRouter): `Usage.provider_reported_cost` stays `None`, Bedrock is
+absent from `_CLOUD_VENDOR_MODEL_PREFIX`, and `_pricing.compute_cost` returns
+`0.0` — kōdo shows Bedrock usage in tokens only. Note the prefix table is
+matched against bare model ids and Bedrock's are `<provider>.<model>`
+(`anthropic.claude-…`, `meta.llama…`), none of which collide with an existing
+prefix; the closest call, `qwen.qwen3-…` against Alibaba's `qwen`, does match
+and still costs nothing, since Alibaba's `compute_cost` returns `0.0` for a
+model id absent from its own table.
+
+**boto3 is synchronous, so the stream runs on a worker thread.** Every other
+plugin here uses a natively async SDK; boto3 has no async client (and
+`aioboto3` has no Converse support at all), while boto3 is already a declared
+kodo dependency — so adding a second AWS SDK to avoid a thread would be the
+worse trade. `kodo/llms/bedrock/_stream.py` runs the blocking
+`converse_stream` call and its `EventStream` iteration on a
+`run_in_executor` thread that feeds an `asyncio.Queue`. Cancellation
+(`LLMPlugin.cancel`'s one-second contract) is handled at both ends: the
+consumer races each `queue.get()` against the cancel event so the *caller*
+stops immediately, and teardown closes the underlying `EventStream`, which is
+what unblocks the worker's socket read so the thread actually exits. The
+`contextlib.aclosing` around that generator in `_bedrock.py` is load-bearing
+for the second half — without it the close would wait on garbage collection.
+
+**Retry classification is hand-written, because botocore has no exception
+classes to hand over.** `ProviderErrors` (§3's shared `_provider_retry` core)
+classifies by exception *class*, but botocore raises one `ClientError` for
+every service error with the discriminator in `response["Error"]["Code"]`, and
+its per-service subclasses are generated at runtime off the service model, so
+they aren't importable at module scope at all.
+`kodo/llms/bedrock/_retry.py` therefore classifies by code itself and
+re-raises into a small statically importable hierarchy the shared core can
+then treat exactly like any SDK's. Codes in neither table fall back to the
+HTTP status — 5xx retried, 4xx not — which is the safe direction, since an
+unrecognised 4xx on Bedrock is a configuration problem (a model id needing an
+inference profile, a missing model-access grant) that four identical retries
+would only delay. `ValidationException` is classified unrecoverable for the
+same reason. The botocore client is built with
+`Config(retries={"max_attempts": 1, "mode": "standard"})` — standard mode
+counts *total* attempts, so `1`, not `0`, is this SDK's spelling of the
+`max_retries=0` invariant §3 requires of every vendor — plus a 900-second read
+timeout, since botocore's 60-second default applies per socket read on the
+event stream and would abort a deep-thinking turn mid-flight.
+
+**Thinking dispatches by model family, because the one unified knob Converse
+does have can't carry adaptive thinking on its own.** This is the place
+Bedrock deviates furthest from OpenRouter, and the reasoning is worth stating
+precisely rather than as "there is no unified parameter":
+
+* Converse **does** expose a top-level `outputConfig.effort`, taking exactly
+  this family's five tiers. It is in botocore 1.43.73's own service model —
+  what the SDK actually puts on the wire — though **not** in the published
+  `OutputConfig` API reference page, which still lists only `textFormat`. It
+  is a server-validated free-form string, so botocore itself rejects nothing
+  client-side.
+* It is **not sufficient alone**: adaptive thinking is switched on by
+  `thinking: {"type": "adaptive"}`, which has no top-level equivalent and must
+  go through `additionalModelRequestFields` regardless. And *that* field is
+  **passthrough** — Bedrock validates it against the target model and returns
+  a `ValidationException` for a field the model doesn't define, so Anthropic's
+  `thinking`/`output_config` sent to Nova or Llama is a hard 400, not a no-op.
+* Whether `outputConfig.effort` is *ignored* or *rejected* on a non-Claude
+  model is undocumented, and its own doc note ("when extended thinking is
+  disabled, the effort level is capped at `high`") is Claude-flavoured. That
+  unknown is what blocks switching the non-Claude majority onto it, and it
+  cannot be settled without a real AWS account to test against — so kōdo sends
+  AWS's own documented recipe and nothing else. **This is the clearest
+  follow-up on this vendor.**
+
+`kodo/llms/bedrock/_reasoning.py` therefore emits
+`{"thinking": {"type": "adaptive"}, "output_config": {"effort": tier}}` only
+for the Claude models AWS documents as adaptive-thinking-capable, matched by
+substring so a `us.` profile prefix and a `-v1:0` suffix both still hit, and
+**nothing at all** for every other family. `xhigh`/`max` are clamped to `high`
+outside Opus 5 / Opus 4.6, which AWS documents as the only models accepting
+them. The control is consequently a documented no-op on non-Claude Bedrock
+models, which the client's tier tooltips say out loud
+(`_BEDROCK_THINKING_CAVEAT`) rather than hide — the same honesty trade
+OpenRouter's own caveat makes.
+
+**`models.cloud.bedrock` has no auto fallback.** OpenRouter can default every
+tier to `"openrouter/auto"`; Bedrock has no router pseudo-model, so all four
+tiers start on one broadly available cross-region Claude profile
+(`us.anthropic.claude-sonnet-4-6`) and are meant to be re-pointed from the
+picker once the catalog has loaded for the user's region. A profile id that
+doesn't exist in the configured region simply errors on first use, the same
+way a missing API key does for every other vendor. There is no Auto-mode
+toggle for this vendor.
+
+
+**All nine cloud plugins share one retry/backoff core**, `kodo/llms/
 _provider_retry.py` — the `anthropic` and `openai` Python SDKs are both
 Stainless-generated with matching exception shapes
 (`AuthenticationError`/`RateLimitError`/`InternalServerError`/etc., all
@@ -548,8 +729,9 @@ their single canonical definition (also re-exported from `kodo.llms` and
 from each vendor package) — `runtime/_engine/_worker.py`'s generic
 `except UnrecoverableError` catch imports from the provider-neutral
 `kodo.llms`, not one specific vendor package. Every vendor's SDK client is
-constructed with **`max_retries=0`** — the SDK's own built-in retry must stay
-off so this shared core and the gateway (`kodo.llms._gateway`, see
+constructed with **`max_retries=0`** (botocore spells it
+`Config(retries={"max_attempts": 1, "mode": "standard"})` — see §3b) — the
+SDK's own built-in retry must stay off so this shared core and the gateway (`kodo.llms._gateway`, see
 LLM_GATEWAY.md's 429-throttling section) are the only place retry/backoff
 decisions get made; leaving a vendor's default `max_retries` enabled causes
 the SDK to silently retry a couple of times on its own short schedule before
@@ -561,7 +743,8 @@ us** — `kodo/llms/_pricing.py`'s `compute_cost(usage)` looks up
 `usage.model`'s vendor via `get_cloud_vendor_for_model_prefix` and lazily
 imports that vendor package's own `compute_cost`, but only when
 `usage.provider_reported_cost` is unset (every vendor except OpenRouter;
-see §3a above). (Before OpenAI existed as a real vendor, `Usage.usd_cost`
+see §3a above). Bedrock has neither half of that — no reported cost and no
+pricing table — and so always costs `$0.0`; see §3b. (Before OpenAI existed as a real vendor, `Usage.usd_cost`
 was hardcoded straight to Anthropic's pricing table for every plugin — a
 latent bug that only ever mattered once a second paid vendor shipped, fixed
 alongside this one.) A local model, or any model id matching no known cloud
@@ -577,10 +760,11 @@ LLMPlugin` constructor map `_resolve_plugin` dispatches through — the full
 settings dict is passed, not just the key, so a vendor whose plugin needs
 more than that, like Meta's `meta_contributor_tier` flag, reads it there
 instead of `_resolve_plugin` growing a vendor-specific branch). There is no
-external/JSON part to this registry — **except OpenRouter** (§3a), whose
-whole point is a runtime-fetched catalog instead of a compiled-in tuple, and
-which skips the `_usage.py`/`_CLOUD_VENDOR_MODEL_PREFIX` steps entirely for
-the reasons given above.
+external/JSON part to this registry — **except the two aggregators, OpenRouter
+(§3a) and AWS Bedrock (§3b)**, whose whole point is a runtime-fetched catalog
+instead of a compiled-in tuple, and which skip the
+`_usage.py`/`_CLOUD_VENDOR_MODEL_PREFIX` steps entirely for the reasons given
+above.
 
 ---
 
@@ -1119,8 +1303,8 @@ behavior change.
 
 Every cloud vendor has a thinking-tier family of its own, keyed by a synthetic
 `base_llm` that is simply **the vendor key** (`"anthropic"`, `"openai"`,
-`"meta"`, `"google"`, `"alibaba"`, `"deepseek"`, `"kimi"`, `"openrouter"` —
-none of them a real local registry entry). They ride every piece of machinery
+`"meta"`, `"google"`, `"alibaba"`, `"deepseek"`, `"kimi"`, `"openrouter"`,
+`"bedrock"` — none of them a real local registry entry). They ride every piece of machinery
 described in §4.5 — the `thinking_families` payload, `thinking_level.set`, the
 per-session `SessionState.thinking_level` — identically to the two local
 families; the only structural differences are that their tier tables live in
@@ -1138,6 +1322,7 @@ rather than derived from an installed-model registry.
 | `deepseek` | `deepseek_reasoning_effort` | low, high, max | `high` | top-level `reasoning_effort`, alongside `extra_body.thinking.type` |
 | `kimi` | `kimi_reasoning_effort` | low, high, max | `max` | top-level `reasoning_effort` (K3 only) |
 | `openrouter` | `openrouter_reasoning_effort` | low, medium, high, max | `medium` | `reasoning.effort` — see §3a |
+| `bedrock` | `bedrock_effort` | low, medium, high, xhigh, max | `high` | `additionalModelRequestFields.output_config.effort` + `thinking.type: "adaptive"`, **Claude models only** — see §3b |
 
 Four rules explain every entry in that table:
 
@@ -1162,9 +1347,12 @@ Four rules explain every entry in that table:
    request shapes the target model speaks (and sizes `max_tokens` to match,
    since `budget_tokens` must stay below it and a truncated turn trips the
    watchdog), and `KimiPlugin` drops the tier for `kimi-k2.7-code`, which
-   accepts no effort parameter at all. Where the difference is user-visible,
-   the client's tier tooltip carries the caveat (`_THINKING_CAVEAT` in
-   `ModeControls.tsx` — today OpenRouter and Kimi).
+   accepts no effort parameter at all, and `BedrockPlugin` sends the effort
+   only to the Claude families documented to accept one (Bedrock's
+   per-model parameters are passthrough-validated, so a guess is a 400 rather
+   than an ignored field — §3b). Where the difference is user-visible, the
+   client's tier tooltip carries the caveat (`_THINKING_CAVEAT` in
+   `ModeControls.tsx` — today OpenRouter, Kimi, and Bedrock).
 4. **There is no "off" tier**, even on the four vendors whose APIs can
    disable reasoning (`reasoning.effort: "none"`, `enable_thinking: false`,
    `thinking.type: "disabled"`). Kōdo is a coding agent; every tier reasons.
@@ -1183,11 +1371,12 @@ the kodo-vsix bug fixed on 2026-08-17: `App.tsx`'s `mode_state` message
 validation had an inline two-family literal check, so the server's
 `openrouter_reasoning_effort` arrived and was coerced to `null`; it now goes
 through `coerceThinkingFamily`, driven by the single `THINKING_FAMILIES` array
-in `llm-registry-types.ts` — which now lists ten families).
+in `llm-registry-types.ts` — which now lists eleven families).
 
 Adding a vendor is therefore one entry in `CLOUD_THINKING_FAMILIES`, one
 translation in that vendor's plugin, one slug in `THINKING_FAMILIES`, and one
-tooltip table in `ModeControls.tsx`. `test/test_cloud_thinking.py` enforces
+tooltip table in `ModeControls.tsx` (plus a `_THINKING_CAVEAT` line if the
+tier does not reach every model the vendor serves). `test/test_cloud_thinking.py` enforces
 the invariants that make that safe: every registered vendor has an entry,
 every default is one of its own tiers, family slugs are unique, and vendor
 keys never collide with a local `base_llm` (both share one payload keyspace).

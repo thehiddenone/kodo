@@ -486,6 +486,26 @@ MSG_LOCAL_LLM_CHECK_UPDATES = "local_llm.check_updates"
 # to do differently.
 MSG_OPENROUTER_MODELS_REFRESH = "openrouter.models.refresh"
 
+# Client → Server. Control connection only. Re-fetch AWS Bedrock's model
+# catalog for one region (kodo.llms._bedrock_catalog) — backs the Bedrock
+# Cloud AI Settings tab's model picker.
+#
+# Unlike MSG_OPENROUTER_MODELS_REFRESH above, this is the *only* way the
+# Bedrock catalog is ever fetched: ListFoundationModels is a signed AWS call
+# and the server holds no credentials of its own, so there is no background
+# TTL loop to fall back on. The payload therefore carries the credentials with
+# it — ``{api_key: "<JSON access-key blob>", region: "us-east-1"}``, the same
+# blob the client would answer an ``api_key.request`` with (§6.3) — rather
+# than the server pulling them, since a control-connection handler has no
+# session response channel to pull over.
+#
+# Replies ``bedrock.models.refresh.ack`` ``{models: [{id, name, provider,
+# context_length, inference_profile, supports_streaming}], region}``, the same
+# per-model shape hello.ack's ``bedrock_catalog`` field carries. A fetch
+# failure still replies with whatever was already cached for that region
+# (kodo.llms.refresh_bedrock_catalog's own fallback) rather than an error.
+MSG_BEDROCK_MODELS_REFRESH = "bedrock.models.refresh"
+
 # Client → Server. Synchronous local-model switch (WS_PROTOCOL.md §7.6a).
 # ``{name}`` — ``name`` is a *local registry* name. The server persists the
 # selection into ``~/.kodo/etc/settings.json`` (``mode: "local"`` +

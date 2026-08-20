@@ -116,6 +116,24 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
                 "high": "openrouter/auto",
                 "max": "openrouter/auto",
             },
+            # Bedrock is the other fetched-catalog vendor
+            # (kodo/llms/_bedrock_catalog.py), and unlike OpenRouter it has
+            # no router pseudo-model to fall back on -- every Converse call
+            # names a concrete model or inference profile. So all four tiers
+            # start on one broadly-available cross-region Claude profile and
+            # are meant to be re-pointed from the Cloud AI Settings picker
+            # once the catalog has been fetched for the user's region. The
+            # "us." prefix is a cross-region inference profile: many Bedrock
+            # models reject on-demand invocation by bare model id and require
+            # one (doc/LLM_REGISTRY.md §3b), and a profile id that doesn't
+            # exist in the configured region simply errors on first use, the
+            # same way a missing API key does for every other vendor.
+            "bedrock": {
+                "low": "us.anthropic.claude-sonnet-4-6",
+                "medium": "us.anthropic.claude-sonnet-4-6",
+                "high": "us.anthropic.claude-sonnet-4-6",
+                "max": "us.anthropic.claude-sonnet-4-6",
+            },
         },
     },
     # Meta's discounted "contributor" tier: trades training-data permission
@@ -139,6 +157,16 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
     # the auto router anyway, so Auto vs. Manual-all-default-to-auto behave
     # identically until the user actually customizes a tier.
     "openrouter_auto_mode": False,
+    # Which AWS region Bedrock is called in. Bedrock is regional: the model
+    # catalog, the available cross-region inference profiles, and pricing all
+    # depend on it, so this is a first-class setting rather than something
+    # buried in the credential. Deliberately NOT part of the stored
+    # credential blob (kodo/llms/bedrock/_credentials.py) -- a region is not
+    # a secret, and keeping it here means the region picker is plain settings
+    # UI and the plugin factory reads it off the settings dict exactly like
+    # meta_contributor_tier above. Read fresh per LLM dispatch, so a region
+    # change takes effect on the next call with no restart.
+    "bedrock_region": "us-east-1",
     # Governs the stuck-agent watchdog (kodo.runtime._engine._watchdog,
     # doc/STUCK_DETECTION.md) — detects a turn that ended without finishing
     # its task (e.g. an empty final response, or a truncated generation) and

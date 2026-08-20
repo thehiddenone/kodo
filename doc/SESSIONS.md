@@ -441,7 +441,12 @@ back it, both keyed by `base_llm` (doc/LLM_REGISTRY.md §4.5/§4.5a):
   vendor key itself. Every vendor has one, and each carries its own API's
   effort vocabulary rather than a shared scale (Anthropic
   `low`..`max`, Google `minimal`..`high`, DeepSeek/Kimi `low`/`high`/`max`,
-  Alibaba `low`/`medium`/`xhigh`, …).
+  Alibaba `low`/`medium`/`xhigh`, …). On the two aggregator vendors the tier
+  can only reach the models that actually accept one — silently for OpenRouter
+  (unsupported models ignore the parameter), and by explicit omission for
+  Bedrock (whose per-model parameters are passthrough-validated, so kōdo sends
+  an effort only to the Claude families documented to accept it,
+  doc/LLM_REGISTRY.md §3b). Both say so in the client's tier tooltips.
 
 `""` means the active model has no thinking family at all — a local model
 outside both families (e.g. Qwen3-Coder-Next-80B, or any `custom_*` registry
@@ -461,8 +466,8 @@ the source of truth and validates every change:
 - **A brand-new session** seeds `thinking_level` from the active model's
   family default — Qwen-family sessions start at `"unlimited"`, GPT-OSS-family
   at `"medium"`, cloud sessions at their vendor's own documented API default
-  (Anthropic `"high"`, OpenAI/Google/Meta/OpenRouter `"medium"`, DeepSeek
-  `"high"`, Alibaba `"xhigh"`, Kimi `"max"`), non-thinking models at `""`. A caller can override this seed via `hello`'s optional
+  (Anthropic/Bedrock `"high"`, OpenAI/Google/Meta/OpenRouter `"medium"`,
+  DeepSeek `"high"`, Alibaba `"xhigh"`, Kimi `"max"`), non-thinking models at `""`. A caller can override this seed via `hello`'s optional
   `thinking_level` field (WS_PROTOCOL.md §4.1) instead — built for the
   validator's RVP judge session, whose `hello` fires before there is
   anywhere else to attach the tier its preceding `llm.select` pinned

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from kodo.common import ApiKey
 from kodo.llms import (
+    DEFAULT_BEDROCK_REGION,
     LLMPlugin,
     LLMRouting,
     LoggingLLMPlugin,
@@ -39,6 +40,7 @@ from kodo.llms._cloud_thinking import (
 )
 from kodo.llms.alibaba import QwenPlugin
 from kodo.llms.anthropic import ClaudePlugin
+from kodo.llms.bedrock import BedrockPlugin
 from kodo.llms.deepseek import DeepSeekPlugin
 from kodo.llms.google import GeminiPlugin
 from kodo.llms.kimi import KimiPlugin
@@ -57,9 +59,11 @@ from ._shared import _GUIDE_AGENT_NAME, _JUDGE_AGENT_NAME, _PROBLEM_SOLVER_AGENT
 # Dotted plugin module (kodo.llms._cloud_registry's _CLOUD_VENDOR_MODULE
 # value) -> a (api_key, settings) constructor for that vendor's LLMPlugin.
 # The full settings dict is passed (not just api_key) so a vendor whose
-# plugin needs more than the key -- today only Meta, for its
-# meta_contributor_tier account-level toggle -- can read it without a
-# vendor-specific branch in _resolve_plugin below. Adding a vendor here is
+# plugin needs more than the key -- Meta, for its meta_contributor_tier
+# account-level toggle, and Bedrock, whose AWS region is a non-secret
+# per-vendor setting rather than part of the credential (doc/SETTINGS.md
+# §2.2c) -- can read it without a vendor-specific branch in _resolve_plugin
+# below. Adding a vendor here is
 # the last step after registering it in _cloud_registry.py and implementing
 # its plugin package.
 _VENDOR_PLUGIN_FACTORIES: dict[str, Callable[[str, dict[str, object]], LLMPlugin]] = {
@@ -73,6 +77,9 @@ _VENDOR_PLUGIN_FACTORIES: dict[str, Callable[[str, dict[str, object]], LLMPlugin
     "kodo.llms.deepseek": lambda api_key, _settings: DeepSeekPlugin(api_key),
     "kodo.llms.kimi": lambda api_key, _settings: KimiPlugin(api_key),
     "kodo.llms.openrouter": lambda api_key, _settings: OpenRouterPlugin(api_key),
+    "kodo.llms.bedrock": lambda api_key, settings: BedrockPlugin(
+        api_key, str(settings.get("bedrock_region", DEFAULT_BEDROCK_REGION))
+    ),
 }
 
 # Cloud vendors reuse the exact same base_llm-keyed thinking-tier machinery

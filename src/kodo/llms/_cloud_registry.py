@@ -311,14 +311,15 @@ _KIMI_MODELS: tuple[CloudLLMEntry, ...] = (
 # etc/settings.json (``active_cloud_vendor``, ``models.cloud.<vendor>``) and on
 # the wire; display names are separate so the UI can show "Anthropic" etc.
 #
-# OpenRouter is deliberately NOT a key here. Every vendor above ships a fixed,
-# small, hand-picked model lineup that changes on kodo's own release schedule
-# — a real fit for a compiled-in tuple. OpenRouter is an aggregator with 400+
-# models and per-model pricing/context/reasoning-support metadata that
-# changes on OpenRouter's own schedule, fetched and cached at runtime instead
-# (see kodo.llms._openrouter_catalog). It still needs an entry in
+# OpenRouter and AWS Bedrock are deliberately NOT keys here. Every vendor
+# above ships a fixed, small, hand-picked model lineup that changes on kodo's
+# own release schedule — a real fit for a compiled-in tuple. Both aggregators
+# instead expose hundreds of models with metadata that changes on their own
+# schedule (and, for Bedrock, differs per AWS region), fetched and cached at
+# runtime instead (see kodo.llms._openrouter_catalog and
+# kodo.llms._bedrock_catalog). They still need entries in
 # _CLOUD_VENDOR_DISPLAY/_CLOUD_VENDOR_MODULE below (display name + plugin
-# dispatch), just not one here.
+# dispatch), just not ones here.
 _CLOUD_REGISTRY: dict[str, tuple[CloudLLMEntry, ...]] = {
     "anthropic": _ANTHROPIC_MODELS,
     "openai": _OPENAI_MODELS,
@@ -338,6 +339,7 @@ _CLOUD_VENDOR_DISPLAY: dict[str, str] = {
     "deepseek": "DeepSeek",
     "kimi": "Kimi",
     "openrouter": "OpenRouter",
+    "bedrock": "AWS Bedrock",
 }
 
 # Vendor key -> dotted plugin module, mirroring the old LLMEntry.module field
@@ -352,6 +354,7 @@ _CLOUD_VENDOR_MODULE: dict[str, str] = {
     "deepseek": "kodo.llms.deepseek",
     "kimi": "kodo.llms.kimi",
     "openrouter": "kodo.llms.openrouter",
+    "bedrock": "kodo.llms.bedrock",
 }
 
 # Vendor key -> the naming-convention prefix that vendor's model_ids use.
@@ -370,6 +373,17 @@ _CLOUD_VENDOR_MODULE: dict[str, str] = {
 # OpenRouter Usage always carries provider_reported_cost
 # (kodo.llms._interface.Usage), so it never falls through to this
 # prefix-based dispatch at all.
+#
+# Bedrock is absent for a different reason: it has no pricing table to
+# dispatch *to* (AWS reports no cost on the response and prices its whole
+# catalog per-region through a separate Price List API -- see
+# kodo/llms/bedrock/_bedrock.py), so a Bedrock Usage is meant to fall through
+# to compute_cost's 0.0. Note the prefixes below are matched against the bare
+# model id, and Bedrock ids are "<provider>.<model>" ("anthropic.claude-...",
+# "meta.llama...", "deepseek.r1..."), none of which start with any prefix
+# here; the closest call is "qwen.qwen3-..." vs. Alibaba's "qwen", which does
+# match -- and still costs nothing, since Alibaba's compute_cost returns 0.0
+# for a model id absent from its own table.
 _CLOUD_VENDOR_MODEL_PREFIX: dict[str, str] = {
     "anthropic": "claude",
     "openai": "gpt-",

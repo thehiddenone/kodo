@@ -1,6 +1,14 @@
 """LLM plugin interfaces and Anthropic implementation."""
 
 from ._arg_catalog import LLAMA_ARG_CATALOG, LlamaArgSpec, llama_arg_catalog_to_json
+from ._bedrock_catalog import (
+    BEDROCK_REGIONS,
+    DEFAULT_BEDROCK_REGION,
+    BedrockModelInfo,
+    get_bedrock_catalog,
+    get_bedrock_model,
+    refresh_bedrock_catalog,
+)
 from ._cloud_registry import (
     CloudLLMEntry,
     get_cloud_entry,
@@ -97,6 +105,9 @@ from .local_registry import (
 
 __all__ = [
     "BASE_LLAMA_ARGS",
+    "BEDROCK_REGIONS",
+    "DEFAULT_BEDROCK_REGION",
+    "BedrockModelInfo",
     "CLOUD_THINKING_FAMILIES",
     "CloudLLMEntry",
     "CloudThinkingFamily",
@@ -156,6 +167,8 @@ __all__ = [
     "get_knob_selections",
     "get_llama_server_override_path",
     "get_local_registry",
+    "get_bedrock_catalog",
+    "get_bedrock_model",
     "get_openrouter_catalog",
     "get_openrouter_model",
     "get_profiles",
@@ -167,6 +180,7 @@ __all__ = [
     "local_thinking_tiers",
     "parse_llama_args",
     "parse_llama_args_text",
+    "refresh_bedrock_catalog",
     "refresh_openrouter_catalog",
     "remove_local_entry",
     "remove_profile",

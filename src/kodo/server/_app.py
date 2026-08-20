@@ -27,6 +27,7 @@ from huggingface_hub.errors import GatedRepoError
 from kodo.binutils import ensure_all_utils
 from kodo.llms import (
     CLOUD_THINKING_FAMILIES,
+    DEFAULT_BEDROCK_REGION,
     LLMGateway,
     LLMRouting,
     LocalLLMEntry,
@@ -39,6 +40,7 @@ from kodo.llms import (
     detect_ram_gb,
     detect_vram_gb,
     get_active_profile,
+    get_bedrock_catalog,
     get_cloud_registry,
     get_cloud_vendor_display_name,
     get_knob_selections,
@@ -52,6 +54,7 @@ from kodo.llms import (
     local_thinking_tiers,
     parse_llama_args,
     parse_llama_args_text,
+    refresh_bedrock_catalog,
     refresh_openrouter_catalog,
     remove_local_entry,
     remove_profile,
@@ -100,6 +103,7 @@ from kodo.transport import (
     EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_LOCAL_LLM_REGISTRY_STATE,
     EVT_LOCAL_LLM_UPDATES_AVAILABLE,
+    MSG_BEDROCK_MODELS_REFRESH,
     MSG_CHECKPOINT_LIST,
     MSG_CHECKPOINT_REDO,
     MSG_CHECKPOINT_ROLL_FORWARD,
@@ -572,6 +576,30 @@ def _openrouter_catalog_payload(kodo_dir: Path) -> list[dict[str, object]]:
     ]
 
 
+def _bedrock_catalog_payload(kodo_dir: Path, region: str) -> list[dict[str, object]]:
+    """The cached Bedrock catalog for *region*, wire-shaped for ``hello.ack``'s
+    ``bedrock_catalog`` field and the ``bedrock.models.refresh.ack`` reply —
+    same fields either way (kodo-vsix's ``BedrockModelInfo`` mirror expects
+    one shape regardless of which message delivered it).
+
+    ``[]`` both before the first fetch *and* whenever the cache holds a
+    different region's catalog — the client treats an empty list as "ask for a
+    refresh", which is what makes a region change re-populate the picker with
+    no extra invalidation message (see kodo.llms._bedrock_catalog).
+    """
+    return [
+        {
+            "id": m.id,
+            "name": m.name,
+            "provider": m.provider,
+            "context_length": m.context_length,
+            "inference_profile": m.inference_profile,
+            "supports_streaming": m.supports_streaming,
+        }
+        for m in get_bedrock_catalog(kodo_dir, region)
+    ]
+
+
 def _llama_payload(settings: dict[str, object] | None = None) -> dict[str, object]:
     kodo_dir = kodo_user_dir()
     llama = find_installed(kodo_dir)
@@ -584,6 +612,13 @@ def _llama_payload(settings: dict[str, object] | None = None) -> dict[str, objec
         # Fetched/cached dynamically, not compiled in like cloud_registry
         # above -- see kodo.llms._openrouter_catalog's module docstring.
         "openrouter_catalog": _openrouter_catalog_payload(kodo_dir),
+        # Same deal, per-region and credential-gated -- see
+        # kodo.llms._bedrock_catalog's module docstring for why this one has
+        # no background refresh loop behind it.
+        "bedrock_catalog": _bedrock_catalog_payload(
+            kodo_dir,
+            str((settings or {}).get("bedrock_region", DEFAULT_BEDROCK_REGION)),
+        ),
         **_local_registry_payload(),
         "llama_installed": llama is not None,
         "llama_version": f"b{llama.build}" if llama is not None else None,
@@ -1724,6 +1759,35 @@ async def _handle_openrouter_models_refresh(req: Request) -> None:
     )
 
 
+async def _handle_bedrock_models_refresh(req: Request) -> None:
+    """Re-fetch Bedrock's model catalog for one region — see MSG_BEDROCK_MODELS_REFRESH.
+
+    Shaped like ``_handle_openrouter_models_refresh`` above (await the fetch,
+    reply synchronously with the result), with one structural difference: the
+    credentials come *in the request*. ListFoundationModels is a signed AWS
+    call and the server holds no Bedrock credentials of its own — they live in
+    the client's SecretStorage and are normally pulled per LLM dispatch over a
+    session's response channel, which a control-connection handler like this
+    one doesn't have.
+
+    A missing/invalid credential blob is not an error reply: the fetch simply
+    fails, ``refresh_bedrock_catalog`` falls back to whatever was cached, and
+    the client renders an empty (or stale) picker — the same non-actionable
+    outcome as a network failure.
+    """
+    kodo_dir = kodo_user_dir()
+    api_key = str(req.env.payload.get("api_key", ""))
+    region = str(req.env.payload.get("region", "")) or DEFAULT_BEDROCK_REGION
+    await refresh_bedrock_catalog(kodo_dir, api_key, region)
+    await req.reply(
+        {
+            "type": "bedrock.models.refresh.ack",
+            "models": _bedrock_catalog_payload(kodo_dir, region),
+            "region": region,
+        }
+    )
+
+
 async def _send_registry_state(req: Request) -> None:
     await req.connection.send(
         Envelope.make_event(EVT_LOCAL_LLM_REGISTRY_STATE, _local_registry_payload())
@@ -2450,6 +2514,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_LOCAL_LLM_UPDATE, _handle_local_llm_update)
     conn_registry.register_handler(MSG_LOCAL_LLM_CHECK_UPDATES, _handle_local_llm_check_updates)
     conn_registry.register_handler(MSG_OPENROUTER_MODELS_REFRESH, _handle_openrouter_models_refresh)
+    conn_registry.register_handler(MSG_BEDROCK_MODELS_REFRESH, _handle_bedrock_models_refresh)
     conn_registry.register_handler(MSG_LOCAL_LLM_UNINSTALL, _handle_local_llm_uninstall)
     conn_registry.register_handler(MSG_LOCAL_LLM_REMOVE, _handle_local_llm_remove)
     conn_registry.register_handler(MSG_LOCAL_LLM_ADD_HUGGINGFACE, _handle_local_llm_add_huggingface)

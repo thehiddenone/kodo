@@ -187,6 +187,15 @@ The server replies with the current world plus local-model status:
         "supports_reasoning": true },
       "... ~414 more entries ..."
     ],
+    "bedrock_catalog": [
+      { "id": "us.anthropic.claude-opus-5", "name": "US Claude Opus 5",
+        "provider": "Anthropic", "context_length": 200000,
+        "inference_profile": true, "supports_streaming": true },
+      { "id": "anthropic.claude-opus-5", "name": "Claude Opus 5",
+        "provider": "Anthropic", "context_length": 200000,
+        "inference_profile": false, "supports_streaming": true },
+      "... the rest of the configured region's catalog ..."
+    ],
     "local_registry": [
       { "name": "llamacpp-qwen36-27b-q4-k-xl", "kind": "hardcoded_hf",
         "description": "...", "repo_id": "...", "filename": "...",
@@ -228,6 +237,26 @@ TTL — kodo/llms/_openrouter_catalog.py) and can be empty (`[]`) briefly after
 a cold server start, before the first background fetch completes; the client
 should tolerate an empty list rather than treating it as an error. A manual
 re-fetch is available via `openrouter.models.refresh` (§7.6h).
+
+`bedrock_catalog` is a **fourth** registry shape — AWS Bedrock's own
+fetched/cached model list for the *currently configured region*
+(doc/LLM_REGISTRY.md §3b), also absent from `cloud_registry`. Each entry is
+`{id, name, provider, context_length, inference_profile, supports_streaming}`.
+Two properties differ from `openrouter_catalog` and matter to clients:
+
+* **There are no price fields.** Bedrock reports no cost on a response and
+  prices its catalog per-region through a separate AWS API, so kōdo shows
+  Bedrock usage in tokens only.
+* **It is region-scoped, and `[]` is the client's cue to refresh.** The
+  server returns `[]` both before the first fetch *and* whenever its cache
+  holds a different region's catalog, so changing `bedrock_region`
+  (doc/SETTINGS.md §2.2c) empties this field with no separate invalidation
+  message. There is no background refresh loop behind it either — the fetch
+  is a signed AWS call and the server holds no credentials — so a client that
+  sees `[]` and holds Bedrock credentials should send
+  `bedrock.models.refresh` (§7.6i). `context_length` is best-effort (`0` =
+  unknown); `inference_profile` marks a cross-region profile id, which for
+  many models is the only form that can be invoked on demand.
 `kind` is one of `hardcoded_hf` / `custom_hf` / `custom_file` /
 `custom_server_url`; `installed` is always present and pre-computed
 server-side per §LLM_REGISTRY.md's installed-state rules — the client never
@@ -780,6 +809,9 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                     "tiers": ["low", "medium", "high", "xhigh", "max"], "default": "high" },
     "google": { "family": "google_thinking_level",
                  "tiers": ["minimal", "low", "medium", "high"], "default": "medium" },
+    "bedrock": { "family": "bedrock_effort",
+                 "tiers": ["low", "medium", "high", "xhigh", "max"],
+                 "default": "high" },
     "openrouter": { "family": "openrouter_reasoning_effort",
                      "tiers": ["low", "medium", "high", "max"], "default": "medium" },
     "...": "one entry per cloud vendor — see doc/LLM_REGISTRY.md §4.5a"
@@ -808,7 +840,7 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                         "valid_values": null } ] }
 ```
 
-Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. Does **not** carry download progress (see above) — that's read off disk, not this event. `thinking_families` is keyed by `base_llm` (only entries that support a thinking-tier control appear) and is the single source the client uses to decide which control (if any) to render and what tiers/default to offer — see doc/LLM_REGISTRY.md §4.5/§4.5a. The *current* tier selection is **not** in this payload and is **not** read off settings.json any more — thinking is a per-session server-tracked value (`state.thinking_level`, §5.1, doc/SESSIONS.md), not a global one keyed by `base_llm`. The **cloud-vendor entries** (`"anthropic"`, `"openai"`, `"meta"`, `"google"`, `"alibaba"`, `"deepseek"`, `"kimi"`, `"openrouter"`) are not derived from any local registry entry above — they are static, always-present keys, one per vendor, each carrying that vendor's own API effort vocabulary (the tier lists genuinely differ per vendor: Google has no `max`, DeepSeek/Kimi have no `medium`, Alibaba jumps `medium` → `xhigh`). Clients must treat both the family set and the tier sets as **open** and read them from this payload rather than hardcoding either.
+Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. Does **not** carry download progress (see above) — that's read off disk, not this event. `thinking_families` is keyed by `base_llm` (only entries that support a thinking-tier control appear) and is the single source the client uses to decide which control (if any) to render and what tiers/default to offer — see doc/LLM_REGISTRY.md §4.5/§4.5a. The *current* tier selection is **not** in this payload and is **not** read off settings.json any more — thinking is a per-session server-tracked value (`state.thinking_level`, §5.1, doc/SESSIONS.md), not a global one keyed by `base_llm`. The **cloud-vendor entries** (`"anthropic"`, `"openai"`, `"meta"`, `"google"`, `"alibaba"`, `"deepseek"`, `"kimi"`, `"openrouter"`, `"bedrock"`) are not derived from any local registry entry above — they are static, always-present keys, one per vendor, each carrying that vendor's own API effort vocabulary (the tier lists genuinely differ per vendor: Google has no `max`, DeepSeek/Kimi have no `medium`, Alibaba jumps `medium` → `xhigh`). Clients must treat both the family set and the tier sets as **open** and read them from this payload rather than hardcoding either.
 
 Each entry's launch configuration is, unlike thinking level, a **global**
 per-entry selection — not session-scoped — since it changes actual
@@ -2007,6 +2039,39 @@ per-file scan — so there is no separate progress/event push. A fetch
 failure still replies with whatever was already cached rather than an
 error field; there is nothing actionable for the client to do differently,
 and the previous catalog is still better than an empty one.
+
+### 7.6i `bedrock.models.refresh` — re-fetch the AWS Bedrock catalog
+
+Control connection only. Backs the AWS Bedrock Cloud AI Settings tab's
+"Refresh model list" button (doc/LLM_REGISTRY.md §3b), and is the **only** way
+this catalog is ever fetched — unlike §7.6h there is no background TTL loop
+behind it.
+
+```json
+{ "type": "bedrock.models.refresh",
+  "api_key": "{\"access_key_id\": \"AKIA…\", \"secret_access_key\": \"…\"}",
+  "region": "us-east-1" }
+```
+
+→ `bedrock.models.refresh.ack` `{ "models": [ {"id": "...", "name": "...",
+"provider": "...", "context_length": 0, "inference_profile": false,
+"supports_streaming": true}, "..." ], "region": "us-east-1" }` — same
+per-entry shape as `hello.ack`'s `bedrock_catalog` field.
+
+**This is the one command that carries credentials in its payload.**
+`ListFoundationModels` is a signed AWS call; the server holds no Bedrock
+credentials of its own, and a control-connection handler has no session
+response channel to pull them over the way `api_key.request` (§6.3) does. The
+`api_key` value is byte-for-byte what the client would answer an
+`api_key.request` for vendor `bedrock` with — a JSON blob holding the IAM
+access key pair (doc/LLM_REGISTRY.md §3b) — travelling the same local
+WebSocket. A client that has no Bedrock key stored should simply not send this
+command.
+
+Replies synchronously, like §7.6h. A missing/invalid credential blob is **not**
+an error reply: the fetch fails, the server falls back to whatever was cached
+for that region, and the client renders an empty or stale picker — the same
+non-actionable outcome as a network failure.
 
 ### 7.7 ⟪planned⟫ — standalone rules management, credential push
 

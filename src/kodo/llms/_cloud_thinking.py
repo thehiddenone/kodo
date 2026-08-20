@@ -173,6 +173,23 @@ CLOUD_THINKING_FAMILIES: dict[str, CloudThinkingFamily] = {
         tiers=("low", "medium", "high", "max"),
         default="medium",
     ),
+    # Converse does have a top-level `outputConfig.effort` taking exactly
+    # these five tiers (botocore's service model, though not the published
+    # API reference), but it can't carry adaptive thinking on its own -- that
+    # needs `thinking: {"type": "adaptive"}` via `additionalModelRequestFields`,
+    # which Bedrock validates against the target model. So these tiers are
+    # Claude-on-Bedrock's `output_config.effort` scale (https://docs.aws.amazon.com/bedrock/latest/userguide/
+    # claude-messages-adaptive-thinking.html), matching the "anthropic" entry
+    # above, and `kodo.llms.bedrock._reasoning` sends *nothing* for the
+    # families kodo hasn't verified rather than risking a ValidationException
+    # -- so the control is a documented no-op on non-Claude Bedrock models,
+    # which the client's tier tooltips say out loud. Default `high` is
+    # Claude's own documented default there.
+    "bedrock": CloudThinkingFamily(
+        family="bedrock_effort",
+        tiers=("low", "medium", "high", "xhigh", "max"),
+        default="high",
+    ),
 }
 
 

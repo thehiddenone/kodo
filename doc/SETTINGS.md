@@ -70,16 +70,21 @@ design (registries, effort levels, resolution order) is in
       "kimi": { "low": "kimi-k2.7-code", "medium": "kimi-k2.7-code",
                 "high": "kimi-k3", "max": "kimi-k3" },
       "openrouter": { "low": "openrouter/auto", "medium": "openrouter/auto",
-                       "high": "openrouter/auto", "max": "openrouter/auto" }
+                       "high": "openrouter/auto", "max": "openrouter/auto" },
+      "bedrock": { "low": "us.anthropic.claude-sonnet-4-6",
+                    "medium": "us.anthropic.claude-sonnet-4-6",
+                    "high": "us.anthropic.claude-sonnet-4-6",
+                    "max": "us.anthropic.claude-sonnet-4-6" }
     }
   },
-  "openrouter_auto_mode": false
+  "openrouter_auto_mode": false,
+  "bedrock_region": "us-east-1"
 }
 ```
 
 **Model switching**: change the relevant key(s), save the file, send `config.reload`. In local mode there is one active model regardless of a sub-agent's declared `capability`; in cloud mode, `capability` selects which of the active vendor's four effort-level assignments is used. There is no `default_model`/flat-`models`-dict scheme any more (an older revision of this document described one; it never matched the shipped code — see `_resolve_model_key` in `kodo/runtime/_engine/_llm.py` for the actual resolution logic).
 
-**Registering a new model**: cloud models are 100% hardcoded (`kodo/llms/_cloud_registry.py`) — adding one is a code change, not a settings change — **except OpenRouter** (doc/LLM_REGISTRY.md §3a): its catalog is fetched from OpenRouter's own API and cached, so `models.cloud.openrouter.<effort>` can be set to any of its 400+ model ids without a kodo code change. Local models can be added live from the Local Inference Settings webview (`local_llm.add_huggingface`/`add_file`/`add_server_url`, WS_PROTOCOL.md §7.6) without touching `settings.json` at all; only *which* installed local model is active goes through `models.local` here.
+**Registering a new model**: cloud models are 100% hardcoded (`kodo/llms/_cloud_registry.py`) — adding one is a code change, not a settings change — **except the two aggregators, OpenRouter and AWS Bedrock** (doc/LLM_REGISTRY.md §3a/§3b): their catalogs are fetched at runtime and cached, so `models.cloud.openrouter.<effort>` can be set to any of OpenRouter's 400+ model ids, and `models.cloud.bedrock.<effort>` to any model id or cross-region inference-profile id available in the configured `bedrock_region`, without a kodo code change. Local models can be added live from the Local Inference Settings webview (`local_llm.add_huggingface`/`add_file`/`add_server_url`, WS_PROTOCOL.md §7.6) without touching `settings.json` at all; only *which* installed local model is active goes through `models.local` here.
 
 Meta has no effort-tiered lineup — `models.cloud.meta` maps all four tiers to
 the same `muse-spark-1.2` id, since Meta's Model API offers only one model
@@ -98,7 +103,13 @@ not registered). OpenRouter has no fixed lineup at all (doc/LLM_REGISTRY.md
 §3a) — `models.cloud.openrouter` defaults every tier to the special router
 pseudo-model `"openrouter/auto"`, overridable per tier in Manual mode; see
 `openrouter_auto_mode` below for the separate all-tiers-locked-to-auto
-toggle.
+toggle. AWS Bedrock has no fixed lineup either (doc/LLM_REGISTRY.md §3b) and,
+unlike OpenRouter, no router pseudo-model to fall back on — every Converse
+call names a concrete model or inference profile, so `models.cloud.bedrock`
+starts all four tiers on one broadly available cross-region Claude profile
+(`us.anthropic.claude-sonnet-4-6`), meant to be re-pointed from the Bedrock
+tab's picker once the catalog has been fetched for the user's region. There is
+no Auto-mode toggle for Bedrock.
 
 ### 2.2a `meta_contributor_tier`
 
@@ -144,9 +155,38 @@ validation to run beyond a boolean. Read fresh, per LLM dispatch, by
 { "openrouter_auto_mode": false }
 ```
 
+### 2.2c `bedrock_region`
+
+Which AWS region Bedrock is called in (doc/LLM_REGISTRY.md §3b).
+`"us-east-1"` by default. Bedrock is regional: which models exist, which
+cross-region inference profiles can serve them, and what they cost all depend
+on this.
+
+**Deliberately a plain setting rather than part of the stored credential.**
+AWS authentication needs an access key id and a secret access key, which
+kodo-vsix packs into one JSON blob to fit the existing one-secret-per-vendor
+`api_key.request` channel — but a region is not a secret, and
+`_resolve_plugin` already hands each vendor's plugin factory the whole
+settings dict. So the region rides here, gets a plain dropdown in the Bedrock
+tab, and reaches `BedrockPlugin`'s constructor exactly the way
+`meta_contributor_tier` reaches `MusePlugin`'s.
+
+Same write pattern as `meta_contributor_tier`/`openrouter_auto_mode` above —
+a plain settings.json write (`extension/cloud-ai-settings.ts`'s
+`setBedrockRegion`) followed by `config.reload` — with one extra client-side
+step: the fetched model catalog is region-scoped server-side, so changing this
+makes `hello.ack`'s `bedrock_catalog` field read empty and the extension
+immediately re-fetches it for the new region (WS_PROTOCOL.md §7.6i). Read
+fresh per LLM dispatch, so a region change takes effect on the next call with
+no restart.
+
+```json
+{ "bedrock_region": "us-east-1" }
+```
+
 ### 2.3 Context limit (per-model — not a setting)
 
-The token budget for an entry agent's **main context** (the shared Guide / Problem Solver conversation) is **not** a global setting. It is the **current model's context window**, defined per model as `context_window` in `kodo/llms/_cloud_registry.py` or `kodo/llms/_local_registry.py` (e.g. Claude Opus/Sonnet/Fable = 1,000,000; Haiku 4.5 = 200,000; local Qwen3 = 262,144; local Gemma = 131,072), resolved via `kodo.llms.get_context_window`. After every entry-agent turn the engine measures the context (last call's input + cache + output tokens); once it reaches **90%** of the current model's window it automatically runs the `compactor` sub-agent, which condenses the conversation into a shorter transcript — same turns, user prompts verbatim, no facts dropped — and resets the live context in place (a `compaction` marker is written to `session.jsonl`; the full log is kept as audit). The user can also trigger this at any idle moment via the header's **Compact now** button (`compact.now`).
+The token budget for an entry agent's **main context** (the shared Guide / Problem Solver conversation) is **not** a global setting. It is the **current model's context window**, defined per model as `context_window` in `kodo/llms/_cloud_registry.py` or `kodo/llms/_local_registry.py` (for the two fetched-catalog vendors, from the catalog entry instead — OpenRouter reports a real `context_length`, while Bedrock reports none at all and falls back to a best-effort per-family table, doc/LLM_REGISTRY.md §3b) (e.g. Claude Opus/Sonnet/Fable = 1,000,000; Haiku 4.5 = 200,000; local Qwen3 = 262,144; local Gemma = 131,072), resolved via `kodo.llms.get_context_window`. After every entry-agent turn the engine measures the context (last call's input + cache + output tokens); once it reaches **90%** of the current model's window it automatically runs the `compactor` sub-agent, which condenses the conversation into a shorter transcript — same turns, user prompts verbatim, no facts dropped — and resets the live context in place (a `compaction` marker is written to `session.jsonl`; the full log is kept as audit). The user can also trigger this at any idle moment via the header's **Compact now** button (`compact.now`).
 
 Because the limit follows the model, **switching the model changes it immediately** (`config.reload` notifies every live session). Switching to a model whose window is **smaller than the live context** triggers an auto-compaction *using the outgoing model* before the switch takes effect (see STATE_AND_LIFECYCLE.md §4.5). The legacy `context_limit` setting was **removed**; to change the budget, change the model or edit its `context_window` in the registry.
 
