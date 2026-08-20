@@ -255,6 +255,81 @@ def test_resolve_model_key_openrouter_auto_mode_false_uses_manual_map() -> None:
     assert engine._resolve_model_key("high") == "anthropic/claude-sonnet-4"
 
 
+def test_resolve_model_key_cloud_uniform_overrides_every_tier() -> None:
+    # Even though "high" has an explicit per-tier pick, the enabled uniform
+    # shortcut forces every tier to its model regardless.
+    uniform_entry = {"enabled": True, "model_id": "claude-haiku-4-5-20251001"}
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "anthropic",
+            "models": {
+                "cloud": {"anthropic": {"high": "claude-opus-5"}},
+                "cloud_uniform": {"anthropic": uniform_entry},
+            },
+        }
+    )
+    assert engine._resolve_model_key("high") == "claude-haiku-4-5-20251001"
+    assert engine._resolve_model_key("low") == "claude-haiku-4-5-20251001"
+
+
+def test_resolve_model_key_cloud_uniform_does_not_mutate_settings() -> None:
+    """Toggling the shortcut off must restore the untouched per-tier picks."""
+    uniform_entry = {"enabled": True, "model_id": "claude-haiku-4-5-20251001"}
+    models_map = {
+        "cloud": {"anthropic": {"high": "claude-opus-5"}},
+        "cloud_uniform": {"anthropic": uniform_entry},
+    }
+    engine = _make_engine(
+        settings={"mode": "cloud", "active_cloud_vendor": "anthropic", "models": models_map}
+    )
+    engine._resolve_model_key("high")
+    assert models_map["cloud"]["anthropic"] == {"high": "claude-opus-5"}
+
+
+def test_resolve_model_key_cloud_uniform_disabled_uses_per_tier_map() -> None:
+    uniform_entry = {"enabled": False, "model_id": "claude-haiku-4-5-20251001"}
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "anthropic",
+            "models": {
+                "cloud": {"anthropic": {"high": "claude-opus-5"}},
+                "cloud_uniform": {"anthropic": uniform_entry},
+            },
+        }
+    )
+    assert engine._resolve_model_key("high") == "claude-opus-5"
+
+
+def test_resolve_model_key_cloud_uniform_enabled_but_no_model_id_uses_per_tier_map() -> None:
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "anthropic",
+            "models": {
+                "cloud": {"anthropic": {"high": "claude-opus-5"}},
+                "cloud_uniform": {"anthropic": {"enabled": True, "model_id": None}},
+            },
+        }
+    )
+    assert engine._resolve_model_key("high") == "claude-opus-5"
+
+
+def test_resolve_model_key_openrouter_auto_mode_wins_over_cloud_uniform() -> None:
+    # A hand-edited settings.json could set both; auto_mode is checked first.
+    uniform_entry = {"enabled": True, "model_id": "anthropic/claude-sonnet-4"}
+    engine = _make_engine(
+        settings={
+            "mode": "cloud",
+            "active_cloud_vendor": "openrouter",
+            "openrouter_auto_mode": True,
+            "models": {"cloud_uniform": {"openrouter": uniform_entry}},
+        }
+    )
+    assert engine._resolve_model_key("high") == "openrouter/auto"
+
+
 # ---------------------------------------------------------------------------
 # _resolve_plugin
 # ---------------------------------------------------------------------------

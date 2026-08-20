@@ -82,6 +82,10 @@ design (registries, effort levels, resolution order) is in
 }
 ```
 
+Every vendor also has a `models.cloud_uniform.<vendor>` entry (a sibling of
+`models.cloud`, not shown in the trimmed example above) — the "use one model
+for all effort levels" shortcut. See §2.2d.
+
 **Model switching**: change the relevant key(s), save the file, send `config.reload`. In local mode there is one active model regardless of a sub-agent's declared `capability`; in cloud mode, `capability` selects which of the active vendor's four effort-level assignments is used. There is no `default_model`/flat-`models`-dict scheme any more (an older revision of this document described one; it never matched the shipped code — see `_resolve_model_key` in `kodo/runtime/_engine/_llm.py` for the actual resolution logic).
 
 **Registering a new model**: cloud models are 100% hardcoded (`kodo/llms/_cloud_registry.py`) — adding one is a code change, not a settings change — **except the two aggregators, OpenRouter and AWS Bedrock** (doc/LLM_REGISTRY.md §3a/§3b): their catalogs are fetched at runtime and cached, so `models.cloud.openrouter.<effort>` can be set to any of OpenRouter's 400+ model ids, and `models.cloud.bedrock.<effort>` to any model id or cross-region inference-profile id available in the configured `bedrock_region`, without a kodo code change. Local models can be added live from the Local Inference Settings webview (`local_llm.add_huggingface`/`add_file`/`add_server_url`, WS_PROTOCOL.md §7.6) without touching `settings.json` at all; only *which* installed local model is active goes through `models.local` here.
@@ -182,6 +186,49 @@ no restart.
 
 ```json
 { "bedrock_region": "us-east-1" }
+```
+
+### 2.2d `models.cloud_uniform.<vendor>`
+
+Per-vendor "use one model for all effort levels" shortcut (doc/LLM_REGISTRY.md
+§3c) — an alternative to picking a model per effort tier in
+`models.cloud.<vendor>` above, for a user who just wants one specific cloud
+model handling every call to that vendor.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `models.cloud_uniform.<vendor>.enabled` | boolean | Whether the shortcut is active for that vendor. `false` by default for every vendor. |
+| `models.cloud_uniform.<vendor>.model_id` | string \| `null` | The model every effort tier resolves to while `enabled` is `true`. `null` until the user first picks one — a `null`/missing `model_id` with `enabled: true` is treated as "not actually configured yet" and falls through to `models.cloud.<vendor>` exactly as if `enabled` were `false`. |
+
+When `enabled` is `true`, `kodo/runtime/_engine/_llm.py`'s `_resolve_model_key`
+returns `model_id` for **every** capability, regardless of
+`models.cloud.<vendor>` — that per-tier map is deliberately left untouched
+while this is on (same non-destructive-override shape as
+`openrouter_auto_mode` above), so turning `enabled` back off restores whatever
+was picked per-tier, with no data loss. The four per-tier pickers are disabled
+client-side while this is on.
+
+**OpenRouter is a special case**: this shortcut and `openrouter_auto_mode`
+are mutually exclusive at the UI layer — the Cloud AI Settings webview
+disables each checkbox while the other is checked, so a user can never have
+both active from the UI. If a hand-edited `settings.json` somehow sets both,
+`_resolve_model_key` checks `openrouter_auto_mode` first, so Auto mode wins.
+
+Same write pattern as `meta_contributor_tier`/`openrouter_auto_mode` above —
+a plain settings.json write (`extension/cloud-ai-settings.ts`'s
+`setCloudUniformEnabled`/`setCloudUniformModel`) followed by `config.reload`,
+no dedicated WS command. Read fresh, per LLM dispatch, by
+`_resolve_model_key`.
+
+```json
+{
+  "models": {
+    "cloud_uniform": {
+      "anthropic": { "enabled": true, "model_id": "claude-sonnet-5" },
+      "openai": { "enabled": false, "model_id": null }
+    }
+  }
+}
 ```
 
 ### 2.3 Context limit (per-model — not a setting)

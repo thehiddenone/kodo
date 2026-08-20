@@ -136,13 +136,17 @@ class LLMPlumbingMixin:
         Pure settings lookup (no plugin construction, no key request), so it is
         safe to call synchronously from the context-limit/auto-compaction paths.
         In ``local`` mode every capability maps to the single selected local
-        model; otherwise the per-vendor, per-capability cloud model is used,
-        falling back through the other capability tiers (``medium`` first,
-        since that's the safest default) and finally to the vendor's first
-        hardcoded registry model. A bare capability name (``"high"``, etc.)
-        is never returned as a model key — an incomplete or stale
-        ``models.cloud.<vendor>`` map (e.g. one predating a newly added
-        tier) would otherwise 404 against the provider.
+        model; otherwise, if the active vendor's "use one model for all
+        effort levels" shortcut is enabled (``models.cloud_uniform.<vendor>``,
+        alongside OpenRouter's ``openrouter_auto_mode``), that one model wins
+        regardless of *capability*. Failing both, the per-vendor,
+        per-capability cloud model is used, falling back through the other
+        capability tiers (``medium`` first, since that's the safest default)
+        and finally to the vendor's first hardcoded registry model. A bare
+        capability name (``"high"``, etc.) is never returned as a model key
+        — an incomplete or stale ``models.cloud.<vendor>`` map (e.g. one
+        predating a newly added tier) would otherwise 404 against the
+        provider.
 
         Args:
             capability: ``'max'``, ``'high'``, ``'medium'``, or ``'low'``.
@@ -167,6 +171,17 @@ class LLMPlumbingMixin:
         # kodo/server/_config.py's openrouter_auto_mode default.
         if vendor == "openrouter" and bool(settings.get("openrouter_auto_mode", False)):
             return "openrouter/auto"
+        # "Use one model for all effort levels" shortcut -- checked after
+        # openrouter_auto_mode (so Auto mode wins if a hand-edited
+        # settings.json somehow set both) and before the per-tier map, which
+        # is deliberately left untouched by this override. See
+        # kodo/server/_config.py's models.cloud_uniform default.
+        uniform_map = models_map.get("cloud_uniform", {})
+        uniform_vendor = uniform_map.get(vendor, {}) if isinstance(uniform_map, dict) else {}
+        if isinstance(uniform_vendor, dict) and uniform_vendor.get("enabled"):
+            uniform_model_id = uniform_vendor.get("model_id")
+            if uniform_model_id:
+                return str(uniform_model_id)
         cloud_map = models_map.get("cloud", {})
         vendor_map = cloud_map.get(vendor, {}) if isinstance(cloud_map, dict) else {}
         if not isinstance(vendor_map, dict):

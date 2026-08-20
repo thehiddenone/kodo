@@ -1501,7 +1501,7 @@ Response:
 { "type": "config.reload.ack" }
 ```
 
-The full `mode`/`active_cloud_vendor`/`models` schema is documented in [SETTINGS.md](SETTINGS.md) §2.2 and [LLM_REGISTRY.md](LLM_REGISTRY.md) §5. Cloud vendor/effort-tier selection (the Cloud AI Settings webview's vertically-stacked effort panels) and local-model selection are both plain settings.json writes followed by `config.reload` — there is no dedicated WS message for either. **Adding a new cloud model** requires a code change to `kodo/llms/_cloud_registry.py` (it is 100% hardcoded); **adding a local model** is done live via the §7.6 `local_llm.add_*` commands.
+The full `mode`/`active_cloud_vendor`/`models` schema is documented in [SETTINGS.md](SETTINGS.md) §2.2 and [LLM_REGISTRY.md](LLM_REGISTRY.md) §5. Cloud vendor/effort-tier selection (the Cloud AI Settings webview's vertically-stacked effort panels), the per-vendor "use one model for all effort levels" shortcut (`models.cloud_uniform.<vendor>` — SETTINGS.md §2.2d, LLM_REGISTRY.md §3c), and local-model selection are all plain settings.json writes followed by `config.reload` — there is no dedicated WS message for any of them. **Adding a new cloud model** requires a code change to `kodo/llms/_cloud_registry.py` (it is 100% hardcoded); **adding a local model** is done live via the §7.6 `local_llm.add_*` commands.
 
 ### 7.6 Local-model management commands
 

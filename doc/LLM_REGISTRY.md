@@ -58,9 +58,13 @@ fresh settings on every dispatch:
 - `mode == "local"` — every capability collapses to the single
   `settings["models"]["local"]` key (one local llama-server serves one model
   at a time; there's no per-capability local selection).
-- `mode == "cloud"` — `settings["models"]["cloud"][active_cloud_vendor][capability]`,
-  falling back to that vendor's `medium` entry, then the capability name
-  itself, if unset.
+- `mode == "cloud"` — if the active vendor's "use one model for all effort
+  levels" shortcut is enabled (`settings["models"]["cloud_uniform"]
+  [active_cloud_vendor]`, §3c below), that one model wins regardless of
+  *capability*. Otherwise,
+  `settings["models"]["cloud"][active_cloud_vendor][capability]`, falling
+  back to that vendor's `medium` entry, then the capability name itself, if
+  unset.
 
 `_resolve_plugin` then determines cloud-vs-local **by registry membership of
 the resolved key**, not by re-checking `mode` — this matters for
@@ -765,6 +769,71 @@ external/JSON part to this registry — **except the two aggregators, OpenRouter
 instead of a compiled-in tuple, and which skip the
 `_usage.py`/`_CLOUD_VENDOR_MODEL_PREFIX` steps entirely for the reasons given
 above.
+
+---
+
+### 3c. "Use one model for all effort levels" — the per-vendor uniform shortcut
+
+Every cloud vendor (all nine — the seven compiled-in registries above, plus
+the two aggregators, §3a/§3b) has a second, alternative way to pick a model:
+instead of assigning one of the four effort tiers (§2) individually, a user
+can flip one checkbox and pick a single model that serves *every* capability
+for that vendor. This is a shortcut layered on top of the per-tier map, not a
+replacement for it — think of it as the cloud-vendor equivalent of local mode
+(where there's only ever one active model, full stop), reachable without
+re-configuring all four tiers to the same id by hand.
+
+**Settings shape** — `models.cloud_uniform.<vendor>: {"enabled": bool,
+"model_id": str | None}` (doc/SETTINGS.md §2.2d), a sibling of
+`models.cloud.<vendor>` under the same `models` key. `enabled` defaults to
+`false` and `model_id` to `None` for every vendor.
+
+**Resolution** — `LLMPlumbingMixin._resolve_model_key`
+(`kodo/runtime/_engine/_llm.py`) checks this *after* `openrouter_auto_mode`
+(§3a) and *before* the per-tier `models.cloud.<vendor>` map: if
+`cloud_uniform[vendor].enabled` is true and `model_id` is set, that model id
+is returned unconditionally for every capability — `medium`, `low`, whatever
+was asked for. If `enabled` is true but `model_id` is still `None` (the user
+checked the box but hasn't picked a model yet), resolution falls through to
+the per-tier map exactly as if the shortcut were off, rather than returning an
+empty/invalid model id.
+
+**Non-destructive, same shape as `openrouter_auto_mode`** — enabling the
+shortcut does **not** touch `models.cloud.<vendor>`. The four per-tier
+selections stay exactly as they were, just locked (`disabled`) in the Cloud AI
+Settings webview's four `EffortSection`/`CatalogModelPicker` rows while the
+shortcut is on. Unchecking it restores per-tier resolution instantly, with
+whatever was configured there before untouched. This was a deliberate design
+choice (not the alternative "overwrite all four tiers" shape) precisely so the
+shortcut is a lossless, freely reversible toggle.
+
+**OpenRouter's extra wrinkle** — OpenRouter already had `openrouter_auto_mode`
+(§3a), which is conceptually adjacent (it also picks one thing regardless of
+effort tier) but semantically different: Auto mode *delegates* model choice to
+OpenRouter's own router (`"openrouter/auto"`, decided per-request on
+OpenRouter's terms), while the uniform shortcut *pins* one specific model the
+user chose from the catalog. The two are mutually exclusive at the UI layer —
+`CloudVendorSection.tsx`'s `OpenRouterVendorPanel` disables each checkbox
+while the other is checked — so a user can only ever have one active from the
+webview. `_resolve_model_key` checks `openrouter_auto_mode` first, so if a
+hand-edited `settings.json` somehow set both, Auto mode wins. AWS Bedrock has
+no Auto mode to conflict with, so its uniform checkbox has no such
+counterpart.
+
+**Webview implementation** — `CloudVendorSection.tsx`'s `UniformModelSection`
+is the one shared checkbox-plus-picker component every vendor panel renders
+(`CloudVendorPanel`, `OpenRouterVendorPanel`, `BedrockVendorPanel`); which
+*picker* it's handed differs by vendor shape exactly like the four per-tier
+rows do — `UniformModelSelect` (a plain `<select>` over the vendor's
+compiled-in `CloudRegistry` entry) for the seven static vendors, and the
+shared `CatalogModelPicker` (§3a) for OpenRouter/Bedrock, reusing each
+vendor's already-fetched catalog. Host-side: `extension/cloud-ai-settings.ts`'s
+`setCloudUniformEnabled`/`setCloudUniformModel`, both a plain settings write +
+`config.reload` + panel-state repush, no dedicated WS command (same pattern as
+`setOpenRouterAutoMode`/`setBedrockRegion`); `extension/settings-io.ts`'s
+`readCloudUniform()` fills in `{enabled: false, modelId: null}` for any vendor
+missing from `settings.json`, same merge-over-defaults shape as
+`readCloudModels()`.
 
 ---
 
@@ -1820,7 +1889,10 @@ writes followed by `config.reload` (§7.5) — same pattern as the pre-existing
 `set_mode`/`set_active_model` sidebar wiring, no dedicated WS message. Same
 for each of the four effort-panel selections in Cloud AI Settings: the
 extension writes `models.cloud.<vendor>.<effort>` directly and sends
-`config.reload`. Thinking level (§4.5) is **not** in this file — it is a
+`config.reload`. `models.cloud_uniform.<vendor>` (§3c) is a sibling of
+`models.cloud.<vendor>` written the same way — the "use one model for all
+effort levels" shortcut, not shown in the trimmed example above. Thinking
+level (§4.5) is **not** in this file — it is a
 per-session value tracked by the engine, not a global setting keyed by
 `base_llm` (doc/SESSIONS.md). This file has no per-workspace layering (a
 single global file) and no migration path from the old 3-tier/flat schema —

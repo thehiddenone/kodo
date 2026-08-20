@@ -135,6 +135,35 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
                 "max": "us.anthropic.claude-sonnet-4-6",
             },
         },
+        # Per-vendor "use one model for every effort level" shortcut -- an
+        # alternative to the four-tier map above, not a replacement for it.
+        # When a vendor's "enabled" is True, _resolve_model_key
+        # (kodo/runtime/_engine/_llm.py) returns "model_id" unconditionally
+        # for every capability, regardless of what models.cloud.<vendor>
+        # holds. That per-tier map is deliberately left untouched while this
+        # is on -- same non-destructive-override shape as
+        # openrouter_auto_mode below -- so turning "enabled" back off
+        # restores whatever low/medium/high/max was picked before, with no
+        # data loss. "model_id" is None until the user first picks one in the
+        # Cloud AI Settings webview (a vendor's shortcut picker starts empty,
+        # not defaulted to the vendor's "medium" model).
+        #
+        # For OpenRouter specifically: this is mutually exclusive with
+        # openrouter_auto_mode at the UI layer (each checkbox disables the
+        # other), so in practice only one of the two ever applies. If both
+        # were somehow set at once (e.g. a hand-edited settings.json),
+        # openrouter_auto_mode wins -- _resolve_model_key checks it first.
+        "cloud_uniform": {
+            "anthropic": {"enabled": False, "model_id": None},
+            "openai": {"enabled": False, "model_id": None},
+            "meta": {"enabled": False, "model_id": None},
+            "google": {"enabled": False, "model_id": None},
+            "alibaba": {"enabled": False, "model_id": None},
+            "deepseek": {"enabled": False, "model_id": None},
+            "kimi": {"enabled": False, "model_id": None},
+            "openrouter": {"enabled": False, "model_id": None},
+            "bedrock": {"enabled": False, "model_id": None},
+        },
     },
     # Meta's discounted "contributor" tier: trades training-data permission
     # for heavily discounted Muse Spark 1.2 pricing (kodo/llms/meta/_usage.py).
