@@ -52,23 +52,68 @@ for `run_command`, static shell analysis.
 
 | Posture | Rule |
 |---|---|
-| `permissive` | Threshold only: everything **below CRITICAL** is allowed. |
+| `permissive` | Threshold only: everything **below CRITICAL** is allowed — **except** a small curated set of `run_command` shapes that ask regardless (§2a). |
 | `defensive` | Threshold only: everything **at or above MODERATE** asks. |
 | `smart` | Below HIGH → allow (workspace-confined by construction). **HIGH → judged individually by a per-tool static policy** (§3). CRITICAL → always ask. |
 
 Current impact assignments (see `toolspecs/_*.py`): HIGH = `run_command`,
 `filesystem`, `rollback`, `toolchain_deps`, `disable_autonomous_mode`;
 MODERATE = `edit_file`; no tool is SEVERE or CRITICAL today. So in practice:
-permissive allows everything, defensive asks on the six MODERATE+ tools, and
-smart judges the HIGH ones. A HIGH tool *without* a per-tool policy in §3
-asks unconditionally — adding a HIGH tool means adding its policy.
+permissive allows everything except the §2a curated `run_command` set,
+defensive asks on the six MODERATE+ tools, and smart judges the HIGH ones. A
+HIGH tool *without* a per-tool policy in §3 asks unconditionally — adding a
+HIGH tool means adding its policy.
+
+### 2a. Permissive's exception: posture-independent "always ask" commands
+
+A small, explicitly curated set of `git` subcommands asks even under
+`permissive` — `add`, `commit`, `merge`, `rebase`, `cherry-pick`, `config`
+(bare or `--global`/`--system`), `push` (plain or force/delete), `reset
+--hard`, and `clean` — unless the caller already holds a matching Phase 2
+rule (session or global, §3.2a; same mechanism, same "always allow"
+checkbox as every other ask). This is narrower than routing `permissive`
+through the full SMART ladder: an unrelated dangerous command (`sudo rm -rf
+/`, an out-of-workspace read, …) is untouched and stays allowed under
+`permissive`, exactly as before — only this curated set is exempted from
+the blanket threshold allow.
+
+Mechanically, each of these is an ordinary `CommandRule` in
+`kodo.security._defaults` with `always_enforce=True`
+(`kodo.security._rules.CommandRule`); `SecurityLayer`'s permissive branch
+calls the dedicated `find_enforced_asks()` for `run_command` before its
+blanket allow — a separate, narrow pass from `evaluate_command()` (not a
+parameterization of it), since only `always_enforce` matters here and every
+other heuristic (workspace escape, read-only fast path, structural red
+flags, dual-mode commands, the generic default-ask) must stay bypassed for
+`permissive` to keep meaning what it says. `smart` needs no separate wiring
+— it already runs every `run_command` through the full ladder, so these
+commands ask there purely because they're ask-rules in the table (`add`/
+`commit`/`merge`/`rebase`/`cherry-pick`/bare `config` used to be on the
+unconditional git allow-list; they no longer are). `defensive` needs no
+wiring either — it already asks unconditionally on every HIGH-impact
+`run_command`, never consulting the rule engine or a granted rule for *any*
+command, so it already asked on all of these before this existed, with no
+rule-bypass (a deliberate choice: defensive's "never consult rules"
+invariant wasn't carved out for this).
+
+**Autonomous mode is exempt from this exception**, even though it also
+forces the layer into `permissive` (see below) — `evaluate()` threads the
+real `autonomous` flag past the posture name specifically so this check
+only fires for a genuine, user-selected permissive posture. Enforcing it
+under Autonomous would just hang the turn on a `prompt.permission` nobody
+is present to answer, defeating the exact guarantee Autonomous forces
+permissive for in the first place.
+
+See doc/SECURITY_RULES_PLAN.md "Posture-independent 'always ask' commands"
+for the full design rationale.
 
 Two overrides apply in every posture:
 
 - **Autonomous mode ⇒ permissive.** While `effective_autonomous` is true the
   layer operates as `permissive` server-side — the twin of the client forcing
   the Command toggle to Permissive (and locking it) while Autonomous is in
-  effect: there is no user present to answer a prompt.
+  effect: there is no user present to answer a prompt. (This also bypasses
+  §2a's exception, above — Autonomous never asks on these either.)
 - **`disable_autonomous_mode` is never gated.** Its only effect is returning
   control to the user; prompting for permission to do that would be
   self-defeating.
@@ -376,8 +421,12 @@ evaluate_command()` — a deterministic verdict ladder, first hit wins
      (`git push`, `npm publish`, `kubectl`, cloud CLIs …), `destructive`
      (`rm -r`, `git reset --hard`, `dd` …), `system` (`sudo`-adjacent
      installs, services, `npm -g`, `pip --user` …), `network` (`curl`,
-     `ssh`, `nc` …), `privilege` (`sudo`, `RunAs`), `obfuscation` — and a
-     fixed one-sentence reason shown in the prompt. Allow-rules cover the
+     `ssh`, `nc` …), `privilege` (`sudo`, `RunAs`), `obfuscation`, `vcs`
+     (`git add`/`commit`/`merge`/`rebase`/`cherry-pick`/bare `config` — §2a)
+     — and a fixed one-sentence reason shown in the prompt. A rule may also
+     carry `always_enforce=True` (§2a): whether this ask survives even a
+     `permissive` posture, consulted only by `find_enforced_asks`, never by
+     the ordinary ladder here. Allow-rules cover the
      benign development set: **build/test/lint runners are unconditionally
      allowed by decision** (`make`, `pytest`, `npm run`, `cargo build`,
      `hatch run` …), plus safe VCS subcommands and in-workspace file

@@ -36,6 +36,7 @@ def _ask(
     category: str,
     reason: str,
     eligible: bool = False,
+    enforce: bool = False,
 ) -> CommandRule:
     return CommandRule(
         executable=executable,
@@ -45,6 +46,7 @@ def _ask(
         category=category,
         reason=reason,
         rule_eligible=eligible,
+        always_enforce=enforce,
     )
 
 
@@ -78,8 +80,6 @@ _GIT_SAFE_SUBCOMMANDS = (
     "shortlog",
     "reflog",
     "ls-files",
-    "add",
-    "commit",
     "checkout",
     "switch",
     "restore",
@@ -87,9 +87,6 @@ _GIT_SAFE_SUBCOMMANDS = (
     "stash",
     "fetch",
     "pull",
-    "merge",
-    "rebase",
-    "cherry-pick",
     "tag",
     "init",
     "rm",
@@ -107,12 +104,20 @@ _GIT_ALLOWS = tuple(_allow("git", sub) for sub in _GIT_SAFE_SUBCOMMANDS)
 
 _SHARED_RULES: tuple[CommandRule, ...] = (
     # --- git ---
+    # This block of `git` subcommands is the curated "dangerous" set
+    # (doc/SECURITY.md §2a): each asks in every Command Control posture,
+    # including `permissive` and `defensive`, never just `smart` — the
+    # `enforce=True` flag is what makes `permissive` still surface it despite
+    # its own blanket allow (`_layer.py`'s `find_enforced_asks` call).
+    # `defensive` already asks unconditionally on every HIGH-impact
+    # `run_command` regardless of this flag, so it needs no special handling.
     _ask(
         "git",
         "push",
         ("--force", "-f", "--force-with-lease", "--delete", "--mirror"),
         category="destructive",
         reason="'git push' with force/delete rewrites or removes remote history.",
+        enforce=True,
     ),
     _ask(
         "git",
@@ -120,6 +125,7 @@ _SHARED_RULES: tuple[CommandRule, ...] = (
         category="deployment",
         reason="'git push' publishes commits to a remote.",
         eligible=True,
+        enforce=True,
     ),
     _ask(
         "git",
@@ -127,12 +133,14 @@ _SHARED_RULES: tuple[CommandRule, ...] = (
         ("--hard",),
         category="destructive",
         reason="'git reset --hard' discards uncommitted work.",
+        enforce=True,
     ),
     _ask(
         "git",
         "clean",
         category="destructive",
         reason="'git clean' permanently deletes untracked files.",
+        enforce=True,
     ),
     _ask(
         "git",
@@ -140,6 +148,55 @@ _SHARED_RULES: tuple[CommandRule, ...] = (
         ("--global", "--system"),
         category="system",
         reason="Changes git configuration outside this repository.",
+        enforce=True,
+    ),
+    _ask(
+        "git",
+        "config",
+        category="vcs",
+        reason="Changes this repository's git configuration.",
+        eligible=True,
+        enforce=True,
+    ),
+    _ask(
+        "git",
+        "add",
+        category="vcs",
+        reason="Stages changes for the next commit.",
+        eligible=True,
+        enforce=True,
+    ),
+    _ask(
+        "git",
+        "commit",
+        category="vcs",
+        reason="Records a new commit onto the current branch.",
+        eligible=True,
+        enforce=True,
+    ),
+    _ask(
+        "git",
+        "merge",
+        category="vcs",
+        reason="Merges another branch's history into the current branch.",
+        eligible=True,
+        enforce=True,
+    ),
+    _ask(
+        "git",
+        "rebase",
+        category="vcs",
+        reason="Rewrites the current branch's commit history onto another base.",
+        eligible=True,
+        enforce=True,
+    ),
+    _ask(
+        "git",
+        "cherry-pick",
+        category="vcs",
+        reason="Applies another commit's changes onto the current branch.",
+        eligible=True,
+        enforce=True,
     ),
     *_GIT_ALLOWS,
     # --- npm / pnpm / yarn / bun ---

@@ -273,6 +273,7 @@ async def _eval(
     tool_input: dict[str, object],
     mode: str,
     autonomous: bool = False,
+    session_rules: frozenset[tuple[str, str]] = frozenset(),
 ) -> SecurityDecision:
     return await layer.evaluate(
         tool_name=tool,
@@ -281,6 +282,7 @@ async def _eval(
         autonomous=autonomous,
         default_cwd="/ws/proj",
         roots=("/ws/proj",),
+        session_rules=session_rules,
     )
 
 
@@ -288,6 +290,71 @@ async def _eval(
 async def test_permissive_allows_high() -> None:
     layer = SecurityLayer()
     d = await _eval(layer, "run_command", {"command": "rm -rf /", "intent": "x"}, "permissive")
+    assert d.action == "allow"
+
+
+# ----------------------------------------------------------------------
+# Permissive-mode exception: the curated always-enforce git commands
+# (doc/SECURITY.md §2a)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git add -A",
+        "git commit -m x",
+        "git merge feature/x",
+        "git rebase main",
+        "git cherry-pick abc123",
+        "git config user.name x",
+        "git config --global user.name x",
+        "git push",
+        "git push --force",
+        "git reset --hard",
+        "git clean -fdx",
+    ],
+)
+async def test_permissive_still_asks_on_always_enforce_commands(command: str) -> None:
+    layer = SecurityLayer()
+    d = await _eval(layer, "run_command", {"command": command, "intent": "x"}, "permissive")
+    assert d.action == "ask", f"{command!r} unexpectedly allowed under permissive"
+    assert d.source == "enforced"
+
+
+@pytest.mark.asyncio
+async def test_permissive_always_enforce_bypassed_by_a_granted_rule() -> None:
+    layer = SecurityLayer()
+    d = await _eval(
+        layer,
+        "run_command",
+        {"command": "git commit -m x", "intent": "x"},
+        "permissive",
+        session_rules=frozenset({("git", "commit")}),
+    )
+    assert d.action == "allow"
+
+
+@pytest.mark.asyncio
+async def test_permissive_always_enforce_exempt_under_autonomous() -> None:
+    layer = SecurityLayer()
+    d = await _eval(
+        layer,
+        "run_command",
+        {"command": "git commit -m x", "intent": "x"},
+        "permissive",
+        autonomous=True,
+    )
+    assert d.action == "allow"
+
+
+@pytest.mark.asyncio
+async def test_permissive_unrelated_dangerous_commands_still_allow() -> None:
+    # Only the curated git set is enforced under permissive — everything
+    # else keeps its existing "below CRITICAL passes" behavior.
+    layer = SecurityLayer()
+    d = await _eval(layer, "run_command", {"command": "sudo rm -rf /", "intent": "x"}, "permissive")
     assert d.action == "allow"
 
 

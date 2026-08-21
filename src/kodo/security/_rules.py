@@ -69,7 +69,13 @@ from ._analysis import (
 )
 from ._classify import CD_EXECUTABLES, SHELL_EXECUTABLES, NormalizedSegment
 
-__all__ = ["AskPart", "CommandRule", "RuleDecision", "evaluate_command"]
+__all__ = [
+    "AskPart",
+    "CommandRule",
+    "RuleDecision",
+    "evaluate_command",
+    "find_enforced_asks",
+]
 
 # Recursive evaluation (command substitutions, `sh -c` nesting) gives up —
 # and asks — beyond this depth; legitimate dev commands never nest this far.
@@ -161,6 +167,14 @@ class CommandRule:
         rule_eligible: Whether a Phase 2 user rule may generalize/override
             this finding ("always allow `git push`"). Never set on
             destructive / privilege / obfuscation rules.
+        always_enforce: Whether this ask survives even a ``permissive``
+            posture (doc/SECURITY.md §2a) — a small, explicitly curated set
+            of commands (today: specific ``git`` subcommands) that must ask
+            regardless of Command Control, unless the caller already holds a
+            matching Phase 2 rule. Consulted only by
+            :func:`find_enforced_asks`; ``evaluate_command`` itself ignores
+            the flag; ``smart``/``defensive`` already ask on every one of
+            these through the ordinary ladder. Never set on an allow-rule.
     """
 
     executable: str | tuple[str, ...]
@@ -170,6 +184,7 @@ class CommandRule:
     category: str = "unknown"
     reason: str = ""
     rule_eligible: bool = False
+    always_enforce: bool = False
 
 
 @dataclass(frozen=True)
@@ -492,6 +507,95 @@ def evaluate_command(
     reason = primary.reason if len(asks) == 1 else "; ".join(a.reason for a in asks)
     parts = tuple(a.parts[0] for a in asks)
     return replace(primary, reason=reason, parts=parts)
+
+
+def find_enforced_asks(
+    command: str,
+    *,
+    cwd: str,
+    roots: tuple[str, ...],
+    windows: bool | None = None,
+    rules: tuple[CommandRule, ...] | None = None,
+    known_rules: frozenset[tuple[str, str]] = frozenset(),
+    _depth: int = 0,
+) -> tuple[AskPart, ...]:
+    """Which of *command*'s elementary commands match an ``always_enforce``
+    table rule (doc/SECURITY.md §2a) not already covered by a granted Phase 2
+    rule — independent of Command Control posture.
+
+    A deliberately narrow, separate pass from :func:`evaluate_command`: it
+    exists only so a ``permissive`` posture's blanket allow can still surface
+    the small curated set of commands that must ask regardless of posture,
+    without resurrecting every other heuristic (workspace-escape, read-only
+    fast path, structural red flags, dual-mode commands, the general
+    default-ask) that ``smart`` mode already covers through the full ladder.
+    Only an explicit, named ``CommandRule`` with ``always_enforce=True`` can
+    produce a result here; everything else that would ask under ``smart`` is
+    silently treated as allowed, matching permissive's own semantics for
+    every command outside this curated set.
+
+    Recurses into ``$(...)``/backtick command substitutions and a bare
+    shell's nested command (``sh -c "…"``, a heredoc body) exactly like
+    ``evaluate_command`` does, so a wrapped occurrence is caught the same as
+    a bare one; inline/encoded opaque code (``python -c``, ``-EncodedCommand``)
+    is not descended into — that stays out of scope for this narrow check.
+    """
+    win = os.name == "nt" if windows is None else windows
+    if rules is None:
+        from ._defaults import default_rules
+
+        rules = default_rules(win)
+    if _depth > _MAX_DEPTH:
+        return ()
+
+    analysis = analyze_command(command, cwd=cwd, roots=roots, windows=win)
+    parts: list[AskPart] = []
+
+    for snippet in analysis.command_subs:
+        inner = _strip_command_sub(snippet)
+        if not inner:
+            continue
+        parts.extend(
+            find_enforced_asks(
+                inner,
+                cwd=cwd,
+                roots=roots,
+                windows=win,
+                rules=rules,
+                known_rules=known_rules,
+                _depth=_depth + 1,
+            )
+        )
+
+    seen_shapes: set[tuple[str, str]] = set()
+    for segment in analysis.segments:
+        if not segment.executable:
+            continue
+        if segment.executable in SHELL_EXECUTABLES and segment.nested_command is not None:
+            parts.extend(
+                find_enforced_asks(
+                    segment.nested_command,
+                    cwd=cwd,
+                    roots=roots,
+                    windows=win,
+                    rules=rules,
+                    known_rules=known_rules,
+                    _depth=_depth + 1,
+                )
+            )
+            continue
+        rule = next((r for r in rules if r.always_enforce and _matches(r, segment)), None)
+        if rule is None:
+            continue
+        shape = (segment.executable, segment.subcommand)
+        if shape in known_rules or shape in seen_shapes:
+            continue
+        seen_shapes.add(shape)
+        parts.append(
+            AskPart(reason=rule.reason, rule_offer=shape if rule.rule_eligible else None)
+        )
+
+    return tuple(parts)
 
 
 def _judge_segment(

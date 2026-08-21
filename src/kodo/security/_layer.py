@@ -10,7 +10,12 @@ rules over structure (doc/SECURITY_RULES_PLAN.md), never an LLM.
 
 Three postures, driven by the session's ``command_control`` setting:
 
-- ``permissive`` — threshold only: everything below CRITICAL passes.
+- ``permissive`` — threshold only: everything below CRITICAL passes, *except*
+  a small curated set of ``run_command`` shapes (today: specific ``git``
+  subcommands, doc/SECURITY.md §2a) flagged ``always_enforce`` in the rule
+  table — those still ask unless the caller already holds a matching Phase 2
+  rule (:func:`._rules.find_enforced_asks`). Autonomous mode's synthetic
+  permissive (below) is exempt from this check.
 - ``defensive``  — threshold only: everything at or above MODERATE asks.
 - ``smart``      — the default. Calls below HIGH pass (their effects are
   workspace-confined by construction). HIGH calls are judged individually by
@@ -42,7 +47,7 @@ from dataclasses import dataclass
 
 from kodo.toolspecs import ALL_TOOLS, SecurityImpact, ToolSpec
 
-from ._rules import AskPart, RuleDecision, evaluate_command
+from ._rules import AskPart, RuleDecision, evaluate_command, find_enforced_asks
 from ._store import global_path_rules, global_rules
 
 __all__ = [
@@ -100,7 +105,9 @@ class SecurityDecision:
             unknown tool / per-tool static policy), ``"threshold"``
             (permissive/defensive/smart levels), ``"workspace"`` (static
             outside-workspace finding), ``"static"`` (provably read-only
-            fast path), or ``"rules"`` (the heuristic rule engine).
+            fast path), ``"rules"`` (the heuristic rule engine), or
+            ``"enforced"`` (a ``permissive``-posture-only match against the
+            curated always-ask command set, doc/SECURITY.md §2a).
         rule_offer: For a ``run_command`` ask only, the ``(executable,
             subcommand)`` shape the permission prompt should offer to
             permanently allow (session or global) for the *first* asking
@@ -201,7 +208,15 @@ class SecurityLayer:
             mode = MODE_PERMISSIVE
 
         decision = self.__evaluate_mode(
-            mode, spec, impact, tool_input, default_cwd, roots, session_rules, session_path_rules
+            mode,
+            spec,
+            impact,
+            tool_input,
+            default_cwd,
+            roots,
+            session_rules,
+            session_path_rules,
+            autonomous,
         )
         _log.info(
             "security: %s %s (%s, mode=%s, source=%s): %s",
@@ -224,10 +239,22 @@ class SecurityLayer:
         roots: tuple[str, ...],
         session_rules: frozenset[tuple[str, str]],
         session_path_rules: frozenset[tuple[str, str]],
+        autonomous: bool,
     ) -> SecurityDecision:
         if mode == MODE_PERMISSIVE:
             if impact >= SecurityImpact.CRITICAL:
                 return _ask(f"{spec.external_name} is {impact.label}-impact.", "threshold")
+            # Autonomous mode's synthetic permissive is exempt: it exists
+            # specifically to guarantee no ask can ever block a run with no
+            # user present to answer it (see module docstring). Only a
+            # genuine, user-selected permissive posture is checked against
+            # the always-enforce set below.
+            if not autonomous and spec.name == "run_command":
+                enforced = self.__evaluate_always_enforce(
+                    tool_input, default_cwd, roots, session_rules
+                )
+                if enforced is not None:
+                    return enforced
             return _allow(f"Permissive: {impact.label} impact passes.", "threshold")
 
         if mode == MODE_DEFENSIVE:
@@ -295,6 +322,27 @@ class SecurityLayer:
         return _ask(
             verdict.reason, verdict.source, rule_offer=verdict.rule_offer, parts=verdict.parts
         )
+
+    def __evaluate_always_enforce(
+        self,
+        tool_input: dict[str, object],
+        default_cwd: str,
+        roots: tuple[str, ...],
+        session_rules: frozenset[tuple[str, str]],
+    ) -> SecurityDecision | None:
+        """A ``permissive``-posture-only check (doc/SECURITY.md §2a): does
+        *tool_input*'s command match one of the small curated set of
+        commands that ask regardless of Command Control? Returns ``None`` to
+        mean "no override, apply the ordinary permissive threshold" — never
+        an ``allow`` itself, since that is the caller's own fallback."""
+        command = str(tool_input.get("command", ""))
+        cwd = self.__effective_cwd(tool_input, default_cwd)
+        known_rules = session_rules | global_rules()
+        parts = find_enforced_asks(command, cwd=cwd, roots=roots, known_rules=known_rules)
+        if not parts:
+            return None
+        reason = parts[0].reason if len(parts) == 1 else "; ".join(p.reason for p in parts)
+        return _ask(reason, "enforced", rule_offer=parts[0].rule_offer, parts=parts)
 
     @staticmethod
     def __evaluate_filesystem(tool_input: dict[str, object]) -> SecurityDecision:

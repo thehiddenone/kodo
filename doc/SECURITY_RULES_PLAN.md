@@ -928,3 +928,74 @@ inlined, was factored out into the shared `_resolve_absolute` helper
 tightens the general outside-workspace check, not just the toolchain-script
 fast path: `cd a && cd b && cat ../file` now resolves `../file` against
 `a/b`, not the command's own starting directory. No wire/protocol change.
+
+## Posture-independent "always ask" commands (post-launch, 2026-08-20)
+
+Motivation: `git add`/`commit`/`merge`/`rebase`/`cherry-pick` were on the
+unconditional git allow-list (`_GIT_SAFE_SUBCOMMANDS`) — they never asked in
+*any* posture, not just `permissive`. `git push`/`git config --global` did
+already ask, but only in `smart`/`defensive`: `permissive`'s threshold check
+(`impact < CRITICAL → allow`) never even inspects a `run_command` call's
+content, so these silently ran unattended whenever a session's Command
+Control was set to Permissive. The user wanted a curated set of git
+subcommands to ask regardless of posture unless already covered by a granted
+Phase 2 rule — explicitly *not* a general "route permissive through the full
+smart-mode ladder" change (that would resurrect every other heuristic —
+workspace-escape, `rm -rf`, `sudo`, npm publish, … — that permissive is
+supposed to skip).
+
+Design, after clarifying scope with the user (command list, whether smart
+mode's allow-list gap counted too, whether Autonomous mode should be
+affected, whether to reuse the existing Phase 2 rule mechanism):
+
+- **`CommandRule.always_enforce: bool = False`** (`_rules.py`) — a new field,
+  set only on specific ask-rules in `_defaults.py`'s git block: `add`,
+  `commit`, `merge`, `rebase`, `cherry-pick`, bare `config` (all four new,
+  `category="vcs"`, `rule_eligible=True`), plus the pre-existing `push`
+  (plain and force/delete variants), `reset --hard`, `clean`, and
+  `config --global/--system` (marked `always_enforce=True` in place — their
+  `rule_eligible` values are untouched, so the destructive/`--global` ones
+  stay permanently non-bypassable, exactly as before). `checkout`/`switch`/
+  `restore`/`branch`/`tag`/`stash`/`pull`/`fetch` were deliberately left
+  alone — not named by the user, and flagging them would alarm on routine
+  branch-switching.
+- **`find_enforced_asks()`** (`_rules.py`) — a small, deliberately separate
+  pass from `evaluate_command()`, not a parameterization of it: parses the
+  command the same way (`analyze_command`), recurses into `$(...)`/backtick
+  substitutions and a bare shell's nested command (`sh -c "…"`, a heredoc
+  body) the same way, but *only* matches segments against `always_enforce`
+  table entries — every other heuristic (read-only fast path, workspace
+  escape, structural red flags, dual-mode commands, the generic default-ask)
+  is simply not consulted, so an unrelated dangerous command (`sudo rm -rf
+  /`) is untouched by this pass and stays allowed under `permissive`, same as
+  today. A match already covered by the caller's merged session+global
+  known-rules is silently dropped (the existing bypass, reused as-is).
+- **`SecurityLayer.__evaluate_mode`**'s `MODE_PERMISSIVE` branch calls this
+  for `run_command` only, before its blanket allow, and surfaces an `ask`
+  (`source="enforced"`) built from whatever parts survive — same
+  `prompt.permission`/`rule_offer`/"always allow" grant flow as every other
+  ask, so kodo-vsix needed zero changes.
+- **Autonomous mode is exempt.** Autonomous already forces the layer into a
+  synthetic `permissive` specifically because there is no user to answer a
+  prompt (doc/SECURITY.md §2); enforcing this check there would just hang
+  the turn on a `prompt.permission` nobody can ever answer. `evaluate()` now
+  threads the real `autonomous` flag into `__evaluate_mode` so the
+  always-enforce check only runs for a genuine, user-selected permissive
+  posture — Autonomous mode's "no ask can ever block this run" guarantee is
+  unchanged.
+- **`defensive` needed no change at all.** It already asks unconditionally
+  on every HIGH-impact `run_command` (never consults the rule engine or any
+  granted rule for *any* command, by design) — so it already asked on all of
+  these before this change, and continues to, with no rule-bypass in that
+  posture either (a deliberate answer from the user: defensive's
+  "never consult rules" invariant was not to be carved out for this).
+- **`smart` needed no new wiring**, only the rule-table edits above — it
+  already runs every `run_command` through the full `evaluate_command()`
+  ladder, so removing `add`/`commit`/`merge`/`rebase`/`cherry-pick` from the
+  allow-list and adding their ask-rules is what fixes it there; the new
+  `always_enforce` flag itself is read only by `find_enforced_asks`, not by
+  `evaluate_command`.
+
+No wire/protocol change — this is entirely server-side rule-table and
+`SecurityLayer` logic; the permission prompt's shape is identical to any
+other `run_command` ask. See doc/SECURITY.md §2a.
