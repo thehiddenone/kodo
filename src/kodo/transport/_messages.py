@@ -373,6 +373,54 @@ MSG_SKILLS_LIST = "skills.list"
 # every turn.
 MSG_SKILLS_DELETE = "skills.delete"
 
+# Client → Server. Control connection only. Clone a git repository and report
+# the valid Agent Skills it contains, for the Kōdo Settings panel's "Install
+# from a repository" modal (doc/SKILLS.md §2) — the picker step, before
+# anything is installed. Payload: ``{repo_url: "https://github.com/owner/repo"}``.
+# Replies ``skills.install_scan.ack`` ``{ok: true, skills: [{name, description}, ...]}``
+# (only skills that loaded cleanly — the same filter ``skills.install`` applies),
+# or ``{ok: false, error: "..."}`` if the ``git`` CLI is missing or the clone
+# failed. The clone is a throwaway temp directory, deleted before the reply is
+# sent — nothing here can be used to actually install a skill.
+MSG_SKILLS_INSTALL_SCAN = "skills.install_scan"
+
+# Client → Server. Control connection only. Clone the same repository again
+# (independently of any prior ``skills.install_scan`` — nothing is cached
+# between the two) and copy the caller's selected skills into
+# ``~/.kodo/skills``. Payload: ``{repo_url: "...", install: [{name: "pdf",
+# overwrite: false}, ...]}`` — ``overwrite`` says whether a same-named skill
+# already installed may be replaced; the server re-validates this against the
+# current skills root rather than trusting it, since the target can have
+# changed between the scan and this call. Replies ``skills.install.ack``
+# ``{ok: true, installed: [...], conflicts: [...], missing: [...], root, skills: [...]}``
+# — ``conflicts`` lists requested names that exist and were not overwritten
+# (``overwrite`` was false), ``missing`` lists requested names no longer found
+# in the repo; ``root``/``skills`` are the same post-install listing shape as
+# ``skills.list.ack``, so the panel refreshes its table from this response
+# alone. On a clone failure: ``{ok: false, error: "...", root, skills: [...]}``.
+MSG_SKILLS_INSTALL = "skills.install"
+
+# Client → Server. Control connection only. Install exactly one skill from a
+# local ``SKILL.md`` file or the directory containing one — no ``git`` clone,
+# for the Kōdo Settings panel's "Install from a local file" picker
+# (doc/SKILLS.md §2). Payload: ``{path: "/abs/path/to/SKILL.md", overwrite:
+# false}`` — ``path`` is an absolute filesystem path (the client already
+# resolved it via a native file picker) to either a ``SKILL.md`` file or its
+# containing directory. Unlike ``skills.install_scan``/``skills.install``,
+# there is no separate scan step: the skill's name comes straight from its
+# directory, so the first call already knows whether it would install or
+# conflict. Replies ``skills.install_local.ack`` with the *same* shape as
+# ``skills.install.ack`` (``{ok: true, installed: [...], conflicts: [...],
+# missing: [], root, skills: [...]}``, at most one name in each list, or
+# ``{ok: false, error: "...", root, skills: [...]}``) so the panel can reuse
+# its existing result handling. ``ok: false`` covers an argument-level problem
+# (the path does not exist, or is not a ``SKILL.md`` file) or a malformed
+# ``SKILL.md`` — unlike the repo scan, a broken candidate here cannot be
+# silently skipped, since it is the only one. A name in ``conflicts`` means a
+# same-named skill already exists and ``overwrite`` was false; the panel
+# confirms with the user and resends with ``overwrite: true``.
+MSG_SKILLS_INSTALL_LOCAL = "skills.install_local"
+
 # Client → Server. Manually trigger context compaction for this session. Honoured
 # only when the entry agent is idle (``state.phase == "awaiting_user"``) and
 # there is context to compact; otherwise ignored. Drives the same path as the

@@ -47,6 +47,31 @@ system prompt as-is), and the OpenAI tools shape is the one ``LlamaPlugin``
 builds regardless of which vendor ``LLM_ID`` resolves to. The argument is kept
 because per-LLM variation is planned: when model-specific behavior is added,
 this is where it will show up, and the invocation will not have to change.
+
+``--list-skills`` and ``--install-skill TARGET`` are a second, unrelated
+pair of commands living in this same entry point for convenience — Agent
+Skills (doc/SKILLS.md) management, not prompt/tool diagnostics. They call the
+same :mod:`kodo.skills` functions the Kōdo Settings panel's install picker
+calls over the WS wire (``skills.install_scan``/``skills.install``/
+``skills.install_local`` — doc/WS_PROTOCOL.md §7.6j), so a skill visible to
+one is visible to the other.
+
+``--install-skill`` accepts two shapes of ``TARGET``, told apart by whether it
+resolves to an existing path on disk (:func:`_run_install_skill`):
+
+- **A local path** (absolute or relative to the current directory) — either a
+  directory holding ``SKILL.md`` directly, or a direct path to the
+  ``SKILL.md`` file itself. Installs that **one** skill, no ``git`` involved
+  (:func:`kodo.skills.install_local_skill`). A same-named skill already
+  installed is only overwritten after an explicit ``y`` at a confirmation
+  prompt, or unconditionally under ``--yes``/``-y``.
+- **Anything else** is treated as a git repository URL: it is cloned, every
+  valid skill it contains is listed, and the user is asked once per skill
+  (``Yes``/``No``/``All``) unless ``--yes``/``-y`` is given, in which case
+  every valid skill is installed with no prompting at all — including
+  overwriting a same-named skill already installed, since a non-interactive
+  run has no terminal to confirm an overwrite on (see
+  :func:`_run_install_skill_from_repo`).
 """
 
 from __future__ import annotations
@@ -60,8 +85,16 @@ from pathlib import Path
 import kodo.subagents as _subagents_pkg
 from kodo.llms import CloudLLMEntry, get_cloud_registry, get_local_registry
 from kodo.llms.llamacpp import build_openai_tools, get_local_model_manager
-from kodo.project import kodo_user_dir
+from kodo.project import kodo_skills_dir, kodo_user_dir
 from kodo.runtime import agent_tool_specs
+from kodo.skills import (
+    GitNotAvailableError,
+    SkillInstallError,
+    SkillStore,
+    install_local_skill,
+    install_skills,
+    scan_repository,
+)
 from kodo.subagents import AgentLoadError, AgentRegistry, SubAgent
 
 _AGENTS_DIR = Path(_subagents_pkg.__file__).parent
@@ -78,7 +111,11 @@ def main(argv: list[str] | None = None) -> int:
     """
     args = _parse_args(argv)
     try:
-        if args.system_prompt is not None:
+        if args.list_skills:
+            code = _run_list_skills()
+        elif args.install_skill is not None:
+            code = _run_install_skill(args.install_skill, assume_yes=args.yes)
+        elif args.system_prompt is not None:
             code = _run_system_prompt(args.model, args.agent)
         else:
             code = _run_tools(args.model, args.agent)
@@ -139,6 +176,30 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         dest="tools",
         help="Print AGENT's tools=[...] payload exactly as submitted to the "
         "OpenAI-compatible client, for --model/-m.",
+    )
+    group.add_argument(
+        "--list-skills",
+        dest="list_skills",
+        action="store_true",
+        help="List every installed Agent Skill (name and description) under ~/.kodo/skills.",
+    )
+    group.add_argument(
+        "--install-skill",
+        metavar="TARGET",
+        dest="install_skill",
+        help="Install an Agent Skill into ~/.kodo/skills. TARGET is either a local path "
+        "(a directory holding SKILL.md, or a direct path to a SKILL.md file — absolute or "
+        "relative) installed as-is with no git involved, or a git repository URL, which is "
+        "cloned so you can interactively choose which of the skill(s) it contains to install.",
+    )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        dest="yes",
+        action="store_true",
+        help="With --install-skill, install without prompting — every valid skill found, for "
+        "a repository URL, or the one skill at a local path, overwriting any same-named skill "
+        "already installed.",
     )
     parsed = parser.parse_args(argv)
     parsed.agent = parsed.system_prompt if parsed.system_prompt is not None else parsed.tools
@@ -277,6 +338,185 @@ def _run_tools(model_arg: str | None, agent_name: str) -> int:
 
     oai_tools = build_openai_tools(agent_tool_specs(registry, agent))
     print(json.dumps(oai_tools, indent=2))
+    return 0
+
+
+def _run_list_skills() -> int:
+    """Print every installed Agent Skill: ``name: description``, or the load error.
+
+    Returns:
+        int: Always 0 — an empty or all-broken store is not an error.
+    """
+    skills = SkillStore(kodo_skills_dir()).entries()
+    if not skills:
+        print("No skills installed.")
+        return 0
+    for skill in skills:
+        if skill.usable:
+            print(f"{skill.name}: {skill.description}")
+        else:
+            print(f"{skill.name}: [broken] {skill.error}")
+    return 0
+
+
+def _run_install_skill(target: str, *, assume_yes: bool) -> int:
+    """Dispatch ``--install-skill TARGET`` by whether *target* is a local path.
+
+    *target* resolves against the current working directory the same way
+    :func:`kodo.skills.install_local_skill` will resolve it: if that resolved
+    path exists on disk (a directory or a file), this is a local-path install
+    (:func:`_run_install_local_skill`) — no ``git`` involved, exactly one
+    skill. Otherwise *target* is treated as a git repository URL, unchanged
+    from before local-path support existed (:func:`_run_install_skill_from_repo`).
+
+    Args:
+        target: The ``--install-skill`` argument — a local path or a repo URL.
+        assume_yes: ``--yes``/``-y``.
+
+    Returns:
+        int: See :func:`_run_install_local_skill`/:func:`_run_install_skill_from_repo`.
+    """
+    candidate = Path(target).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    if candidate.exists():
+        return _run_install_local_skill(target, assume_yes=assume_yes)
+    return _run_install_skill_from_repo(target, assume_yes=assume_yes)
+
+
+def _run_install_local_skill(path: str, *, assume_yes: bool) -> int:
+    """Install the one skill at local *path* (doc/SKILLS.md §2).
+
+    No prompt unless installing would overwrite an already-installed
+    same-named skill — the user already named this exact path, unlike the
+    repo flow's picker over several candidates, so there is nothing to
+    confirm except a destructive overwrite.
+
+    Args:
+        path: A local directory holding ``SKILL.md``, or a direct path to a
+            ``SKILL.md`` file.
+        assume_yes: ``--yes``/``-y`` — overwrite an existing same-named skill
+            without prompting.
+
+    Returns:
+        int: 0 on success, 2 if *path* does not resolve to a valid skill, or
+        an overwrite was needed and stdin is not interactive and *assume_yes*
+        was not given.
+    """
+    skills_root = kodo_skills_dir()
+    try:
+        result = install_local_skill(path, skills_root, overwrite=False)
+    except SkillInstallError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    if result.conflicts:
+        name = result.conflicts[0]
+        if not assume_yes:
+            try:
+                prompt = f"{name!r} is already installed — overwrite it? (y/n) "
+                answer = input(prompt).strip().lower()
+            except EOFError:
+                print(
+                    "Error: no more input to read (stdin is not interactive) — pass --yes/-y to "
+                    "overwrite without prompting.",
+                    file=sys.stderr,
+                )
+                return 2
+            if answer not in ("y", "yes"):
+                print("Installation cancelled.")
+                return 0
+        try:
+            result = install_local_skill(path, skills_root, overwrite=True)
+        except SkillInstallError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+
+    for name in result.installed:
+        print(f"Installed: {name}")
+    return 0
+
+
+def _run_install_skill_from_repo(repo_url: str, *, assume_yes: bool) -> int:
+    """Clone *repo_url*, then install the skills the user (or ``--yes``) selects.
+
+    Prompts once per valid skill found — ``Install NAME: DESCRIPTION (y/n/a/q)``
+    — unless *assume_yes* is set, in which case every valid skill is selected
+    with no prompting. A skill already installed locally is flagged inline
+    (``already installed locally — will be overwritten``) rather than with a
+    second prompt: answering ``y`` (or reaching it under ``a``/``--yes``) is
+    itself the overwrite confirmation (doc/SKILLS.md §2).
+
+    Args:
+        repo_url: Passed straight to ``git clone``.
+        assume_yes: ``--yes``/``-y`` — select every valid skill with no
+            interactive loop at all, for scripts/CI.
+
+    Returns:
+        int: 0 on success (including "nothing selected" or "nothing valid
+        found" — neither is a failure), 2 if ``git`` is missing or the clone
+        failed, 2 if stdin isn't interactive and *assume_yes* was not given.
+    """
+    try:
+        found = scan_repository(repo_url)
+    except (GitNotAvailableError, SkillInstallError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    if not found:
+        print(f"No valid skills found in {repo_url}.")
+        return 0
+
+    skills_root = kodo_skills_dir()
+    already_installed = {s.name for s in SkillStore(skills_root).entries()}
+
+    selections: dict[str, bool] = {}
+    install_all = assume_yes
+    try:
+        for skill in found:
+            if install_all:
+                selections[skill.name] = True
+                continue
+            prompt = f"Install {skill.name}: {skill.description}"
+            if skill.name in already_installed:
+                prompt += "  [already installed locally — will be overwritten]"
+            prompt += " (y/n/a/q) "
+            while True:
+                answer = input(prompt).strip().lower()
+                if answer in ("y", "yes"):
+                    selections[skill.name] = True
+                    break
+                if answer in ("n", "no", ""):
+                    break
+                if answer in ("a", "all"):
+                    selections[skill.name] = True
+                    install_all = True
+                    break
+                if answer in ("q", "quit"):
+                    print("Installation cancelled.")
+                    return 0
+                print("Please answer y, n, a (yes to all remaining), or q (quit).")
+    except EOFError:
+        print(
+            "Error: no more input to read (stdin is not interactive) — pass --yes/-y to "
+            "install without prompting.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not selections:
+        print("Nothing selected to install.")
+        return 0
+
+    result = install_skills(repo_url, selections, skills_root)
+
+    for name in result.installed:
+        print(f"Installed: {name}")
+    for name in result.conflicts:
+        print(f"Skipped (already installed, not confirmed): {name}", file=sys.stderr)
+    for name in result.missing:
+        print(f"Skipped (no longer found in {repo_url}): {name}", file=sys.stderr)
+
     return 0
 
 

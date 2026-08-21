@@ -1,8 +1,9 @@
 # Agent Skills
 
-> Status: implemented (2026-08-19). User-installed instruction packs under
-> `~/.kodo/skills`, surfaced to agents by progressive disclosure and managed
-> from the Kōdo Settings panel's **Skills** section.
+> Status: implemented (2026-08-19; installer added 2026-08-20). User-installed
+> instruction packs under `~/.kodo/skills`, surfaced to agents by progressive
+> disclosure and managed from the Kōdo Settings panel's **Skills** section or
+> `python -m kodo`.
 
 ---
 
@@ -66,14 +67,82 @@ silent rename.
 
 ## 2. Installing a skill
 
-By hand. Copy or clone a skill directory into `~/.kodo/skills` and it is live
-on the next agent turn — there is no installer, no registry, no refresh
-command, and no restart.
+Three ways, all landing on the same directory-copy underneath:
 
-That is a deliberate scope choice, not a gap: an installer would need a trust
-model for third-party instruction text, and dropping in a directory is
-something the user can already do, audit, and undo with their file manager.
-The Settings panel therefore offers **Open** and **Delete** and no *Add*.
+**By hand.** Copy or clone a skill directory into `~/.kodo/skills` and it is
+live on the next agent turn — no registry, no refresh command, no restart.
+This remains the simplest path and the one with no trust decision beyond
+"I put this directory here myself."
+
+**From a local file or directory already on disk**, via
+`python -m kodo --install-skill TARGET` (`TARGET` an existing local path) or
+the Kōdo Settings panel's Skills section ("Install from a local file…"). This
+is an assisted version of "by hand": `kodo.skills.install_local_skill` copies
+**exactly one** skill — no `git`, no clone, no picker over several
+candidates:
+
+1. `TARGET` resolves to either a directory holding `SKILL.md` directly, or a
+   direct path to the `SKILL.md` file itself (its parent directory is the
+   skill). A `TARGET` that is neither — does not exist, or is a file not
+   named `SKILL.md` — is a clear, upfront error.
+2. Unlike the repository flow below, the directory is **not** scanned
+   recursively for further `SKILL.md` files — a directory bundling several
+   skills must be installed one at a time, each by pointing this at its own
+   subdirectory. The skill's name is its directory's basename, same as
+   installing by hand.
+3. The candidate is parsed with the same `load_skill` §1 uses. A malformed
+   `SKILL.md` is a clear, upfront error here (unlike the repo flow's silent
+   skip of one broken candidate among several — there is no fallback
+   candidate when only one was named).
+4. A name that already exists under `~/.kodo/skills` is **not** overwritten
+   until confirmed — a `y`/`n` prompt on the CLI (skipped, and answered yes,
+   under `--yes`/`-y`), a native confirm dialog in the panel — then the whole
+   directory is copied in, replacing the existing one.
+
+The CLI tells the two `--install-skill` shapes apart by whether `TARGET`
+resolves to an existing path on disk: if so, this local flow runs; otherwise
+`TARGET` is treated as a git repository URL (below). A local git-repository
+*directory* passed to `--install-skill` therefore now takes this branch —
+exactly one skill, requiring `SKILL.md` directly at that path — rather than
+the repository flow's recursive multi-skill scan; point at a subdirectory
+directly, or use `git clone` yourself first, to install more than one skill
+out of it in one pass.
+
+**From a git repository**, via `python -m kodo --install-skill REPO_URL` (a
+`TARGET` that does *not* resolve to a local path) or the Kōdo Settings
+panel's Skills section ("Install from a repository…"). Both call the same
+`kodo.skills` functions:
+
+1. `git clone --depth 1` the repo into a throwaway temp directory. Requires
+   the `git` CLI on `PATH` — its absence is a clear, upfront error (not a
+   crash), both on the CLI (stderr) and in the panel (an error toast). This is
+   the one hard external dependency the feature has, deliberately not
+   vendored or worked around: cloning is exactly what `git` is for, and every
+   environment that can build/run kodo already has it for kodo's own
+   development.
+2. Scan the clone for every `SKILL.md` it contains — a repo may bundle several
+   skills, one per subdirectory (or be a single skill with `SKILL.md` at its
+   root, named after the repo itself; see `kodo/skills/_install.py`).
+3. Each candidate is parsed with the exact same `load_skill` §1 uses, so a
+   candidate that reaches the picker is guaranteed installable exactly as
+   shown — no separate, looser "does this look like a skill" check.
+4. The valid candidates (name + description) are offered to the user to
+   choose from — checkboxes in the panel's modal, or a `y`/`n`/`a`/`q` prompt
+   per skill on the CLI (`a` = yes to everything remaining, `q` = stop).
+   A candidate whose name already exists under `~/.kodo/skills` is flagged
+   inline (**"already installed locally — will be overwritten"**); answering
+   yes to it *is* the overwrite confirmation — there is no second prompt.
+5. Only the skills the user picked are copied — the whole directory
+   containing `SKILL.md`, siblings and subdirectories included — into
+   `~/.kodo/skills`, overwriting an existing same-named skill only where the
+   user confirmed it in step 4. The clone is deleted immediately after.
+
+Nothing is cached between the "show me what's in this repo" step and the
+"install what I picked" step — the repo is cloned once for each, matching
+`SkillStore`'s own stateless-between-calls convention (§8). A user who takes
+a while deciding in the modal never leaves an orphaned clone behind, and a
+repo that changed in between is simply re-scanned; a name the user picked
+that is no longer found is reported rather than silently skipped.
 
 The server creates `~/.kodo/skills` on startup (`create_app`, `_app.py`) so the
 directory the user is pointed at always exists.
@@ -157,8 +226,9 @@ command.
 
 ## 5. Managing skills — the Kōdo Settings panel
 
-**Kōdo Settings → Skills**, between *Sessions* and *Global Allow-Rules*. A
-table of every installed skill:
+**Kōdo Settings → Skills**, between *Sessions* and *Global Allow-Rules*. An
+**"Install from a repository…"** button and an **"Install from a local
+file…"** button above a table of every installed skill:
 
 | Column | Content |
 |---|---|
@@ -166,6 +236,21 @@ table of every installed skill:
 | Description | Its `description`, or the load error for a broken skill. |
 | (actions) | 📁 Open · 🗑 Delete |
 
+- **Install from a repository…** opens a modal: a repo URL field, then (after
+  scanning) one checkbox per valid skill found — name, description, and an
+  inline warning on any name that already exists locally — then, after
+  installing, the list of what was actually installed. See §2 for the full
+  flow. A missing `git` CLI, or a clone failure, shows an error toast and
+  leaves the modal on the URL step so the user can fix the URL or install
+  `git` and retry.
+- **Install from a local file…** opens the OS's native file-open dialog,
+  filtered to `.md` files. The user navigates to and selects a `SKILL.md`
+  file directly — there is no folder picker and no recursive scan, since this
+  installs exactly one skill (§2). A picked file not literally named
+  `SKILL.md` is rejected client-side with an error toast, before any server
+  round trip. If a same-named skill is already installed, a native confirm
+  dialog asks before overwriting; declining leaves the existing skill
+  untouched. No custom modal is needed — native dialogs are the whole UI.
 - **📁 Open** launches a **new VS Code window** rooted at the skill's directory,
   so the user can read and edit `SKILL.md` and its companion files with the
   ordinary editor.
@@ -181,10 +266,11 @@ deletable in the same place.
 
 ### Wire protocol
 
-`skills.list` / `skills.delete`, control-connection only — see
-doc/WS_PROTOCOL.md §7.6j. Both reply with the same full listing, so the panel
-refreshes from either response with no follow-up round trip. There is no
-`skills.add`, matching §2.
+`skills.list` / `skills.delete`, `skills.install_scan` / `skills.install`, and
+`skills.install_local`, control-connection only — see doc/WS_PROTOCOL.md
+§7.6j. `skills.list` and `skills.delete` reply with the same full listing, so
+the panel refreshes from either response with no follow-up round trip;
+`skills.install` and `skills.install_local` do too.
 
 ---
 
@@ -266,17 +352,20 @@ half added alone.
 
 | File | Role |
 |---|---|
-| [skills/_skill.py](../src/kodo/skills/_skill.py) | `Skill` (frozen) + `load_skill` — the never-raising SKILL.md parser and its own third-party-tolerant frontmatter reader. |
+| [skills/_skill.py](../src/kodo/skills/_skill.py) | `Skill` (frozen) + `load_skill` — the never-raising SKILL.md parser and its own third-party-tolerant frontmatter reader. Its `name` argument lets a caller install-target-name a skill discovered somewhere other than directly under the skills root. |
 | [skills/_store.py](../src/kodo/skills/_store.py) | `SkillStore` — `entries()` (all, broken included), `usable()`, `get()`, `delete()`, `ensure_root()`, and the containment guard. |
+| [skills/_install.py](../src/kodo/skills/_install.py) | `require_git`, `scan_repository`, `install_skills`, `install_local_skill`, `InstallResult` — cloning a repo and copying selected skills out of it, or installing one from a local path with no clone at all (§2). |
 | [skills/_catalog.py](../src/kodo/skills/_catalog.py) | `render_catalog` — the `## Available skills` block substituted for `{SKILLS}`. |
 | [project/_layout.py](../src/kodo/project/_layout.py) | `kodo_skills_dir()` — `~/.kodo/skills`. |
 | [toolspecs/_use_skill.py](../src/kodo/toolspecs/_use_skill.py) | The `USE_SKILL` spec. |
 | [tools/_use_skill.py](../src/kodo/tools/_use_skill.py) | `UseSkillTool` — re-scans the store per call. |
 | [subagents/_registry.py](../src/kodo/subagents/_registry.py) | `SKILLS_TOKEN`, `__validate_skills`, and the per-turn expansion in `__finalize`. |
-| [server/_app.py](../src/kodo/server/_app.py) | `skills.list` / `skills.delete` handlers; `ensure_root()` on startup. |
-| [transport/_messages.py](../src/kodo/transport/_messages.py) | `MSG_SKILLS_LIST` / `MSG_SKILLS_DELETE`. |
-| kodo-vsix `settings-webview/SkillsSection.tsx` | The Skills table. |
-| kodo-vsix `extension/kodo-settings-bridge.ts` | `fetchSkillsForPanel`, `openSkillFolder`, `deleteSkillFromSettingsPanel`. |
+| [server/_app.py](../src/kodo/server/_app.py) | `skills.list` / `skills.delete` / `skills.install_scan` / `skills.install` handlers; `ensure_root()` on startup. |
+| [transport/_messages.py](../src/kodo/transport/_messages.py) | `MSG_SKILLS_LIST` / `MSG_SKILLS_DELETE` / `MSG_SKILLS_INSTALL_SCAN` / `MSG_SKILLS_INSTALL`. |
+| [\_\_main\_\_.py](../src/kodo/__main__.py) | `python -m kodo --list-skills` / `--install-skill REPO_URL [--yes]` — the CLI installer. |
+| kodo-vsix `settings-webview/SkillsSection.tsx` | The Skills table + "Install from a repository…" button. |
+| kodo-vsix `settings-webview/InstallSkillsModal.tsx` | The URL → checkbox-picker → results modal. |
+| kodo-vsix `extension/kodo-settings-bridge.ts` | `fetchSkillsForPanel`, `openSkillFolder`, `deleteSkillFromSettingsPanel`, `scanSkillRepoForPanel`, `installSkillsFromPanel`. |
 
 `kodo.skills` is a **leaf package** — it imports nothing from `kodo`, taking
 the skills root as a `SkillStore` constructor argument — so `tools` (T2.5),

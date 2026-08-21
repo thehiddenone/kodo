@@ -464,3 +464,141 @@ def test_find_cloud_entry_does_not_match_on_the_display_name() -> None:
         for entry in models:
             if entry.name != entry.model_id:
                 assert main_mod._find_cloud_entry(entry.name) is None
+
+
+# ---------------------------------------------------------------------------
+# --install-skill TARGET (local-path dispatch, doc/SKILLS.md §2)
+# ---------------------------------------------------------------------------
+
+
+def _write_skill(directory: Path, description: str) -> Path:
+    """Write ``directory/SKILL.md``. No frontmatter ``name`` — the skill's
+    identity is *directory*'s own basename (doc/SKILLS.md §1), so the caller
+    picks the name by picking the directory, same as installing by hand."""
+    directory.mkdir(parents=True)
+    (directory / "SKILL.md").write_text(
+        f"---\ndescription: {description}\n---\n\nDo the thing.\n",
+        encoding="utf-8",
+    )
+    return directory
+
+
+@pytest.fixture
+def skills_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the CLI's ``kodo_skills_dir()`` at an empty ``tmp_path`` — a separate
+    function object from ``kodo_user_dir()`` (both independently compute
+    ``Path.home() / ".kodo"``), so it needs its own patch target."""
+    home = tmp_path / "skills-home"
+    monkeypatch.setattr(main_mod, "kodo_skills_dir", lambda: home)
+    return home
+
+
+def test_install_skill_installs_from_a_local_directory(
+    tmp_path: Path, skills_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = _write_skill(tmp_path / "source" / "pdf", "Work with PDF files.")
+
+    code, out, err = _run(capsys, "--install-skill", str(source))
+
+    assert code == 0
+    assert err == ""
+    assert "Installed: pdf" in out
+    assert (skills_home / "pdf" / "SKILL.md").is_file()
+
+
+def test_install_skill_installs_from_a_direct_skill_md_path(
+    tmp_path: Path, skills_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = _write_skill(tmp_path / "source" / "pdf", "Work with PDF files.")
+
+    code, out, _ = _run(capsys, "--install-skill", str(source / "SKILL.md"))
+
+    assert code == 0
+    assert "Installed: pdf" in out
+    assert (skills_home / "pdf" / "SKILL.md").is_file()
+
+
+def test_install_skill_resolves_a_relative_local_path(
+    tmp_path: Path,
+    skills_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_skill(tmp_path / "source" / "pdf", "Work with PDF files.")
+    monkeypatch.chdir(tmp_path)
+
+    code, out, _ = _run(capsys, "--install-skill", "source/pdf")
+
+    assert code == 0
+    assert "Installed: pdf" in out
+    assert (skills_home / "pdf" / "SKILL.md").is_file()
+
+
+def test_install_skill_local_conflict_is_declined_without_yes(
+    tmp_path: Path,
+    skills_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _write_skill(tmp_path / "source" / "pdf", "New version.")
+    _write_skill(skills_home / "pdf", "Old version.")
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    code, out, _ = _run(capsys, "--install-skill", str(source))
+
+    assert code == 0
+    assert "cancelled" in out.lower()
+    assert (skills_home / "pdf" / "SKILL.md").read_text(encoding="utf-8").count("Old version.") == 1
+
+
+def test_install_skill_local_conflict_overwrites_when_confirmed(
+    tmp_path: Path,
+    skills_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _write_skill(tmp_path / "source" / "pdf", "New version.")
+    _write_skill(skills_home / "pdf", "Old version.")
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+
+    code, out, _ = _run(capsys, "--install-skill", str(source))
+
+    assert code == 0
+    assert "Installed: pdf" in out
+    assert "New version." in (skills_home / "pdf" / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_install_skill_local_conflict_overwrites_with_yes_flag_and_no_prompt(
+    tmp_path: Path, skills_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = _write_skill(tmp_path / "source" / "pdf", "New version.")
+    _write_skill(skills_home / "pdf", "Old version.")
+
+    code, out, _ = _run(capsys, "--install-skill", str(source), "--yes")
+
+    assert code == 0
+    assert "Installed: pdf" in out
+    assert "New version." in (skills_home / "pdf" / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_install_skill_local_path_that_does_not_exist_but_looks_local_is_an_error(
+    tmp_path: Path, skills_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A nonexistent ``TARGET`` falls through to the git-repo branch, and a bad
+    local-looking path (no scheme, no host) fails the clone with a clear error
+    rather than something more confusing."""
+    code, out, err = _run(capsys, "--install-skill", str(tmp_path / "does-not-exist"))
+
+    assert code == 2
+    assert "Error:" in err
+
+
+def test_install_skill_unknown_url_target_is_not_treated_as_local(
+    tmp_path: Path, skills_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A URL never resolves as an existing local path, so it still reaches the
+    git-clone branch (and fails there, since it is unreachable)."""
+    code, out, err = _run(capsys, "--install-skill", "https://example.invalid/whatever.git")
+
+    assert code == 2
+    assert "Error:" in err

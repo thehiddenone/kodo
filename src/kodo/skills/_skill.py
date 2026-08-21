@@ -86,18 +86,27 @@ class Skill:
         return self.root / SKILL_FILE
 
 
-def load_skill(directory: Path) -> Skill:
+def load_skill(directory: Path, *, name: str | None = None) -> Skill:
     """Load the skill in *directory*, never raising.
 
     Args:
-        directory: A directory directly under the skills root.
+        directory: A directory holding a ``SKILL.md``.
+        name: The skill's identity to report and to cross-check the
+            frontmatter ``name`` against. Defaults to ``directory.name`` — the
+            store's convention (:class:`~kodo.skills.SkillStore`), where a
+            skill's identity is the directory it lives in directly under the
+            skills root. Callers that stage a skill somewhere else first (a
+            cloned repo's temp checkout — :mod:`kodo.skills._install`) pass
+            the *install-target* name here instead, since ``directory.name``
+            there is a throwaway clone-relative path segment, not the name
+            the skill will be known by once installed.
 
     Returns:
         Skill: Populated on success; carrying a non-empty
             :attr:`Skill.error` (and empty ``description``/``body``) when the
             directory holds no readable, well-formed ``SKILL.md``.
     """
-    name = directory.name
+    name = name if name is not None else directory.name
     path = directory / SKILL_FILE
 
     if not path.is_file():

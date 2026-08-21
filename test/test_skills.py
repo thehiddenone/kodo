@@ -9,13 +9,29 @@ skill degrades to a visible, deletable row and never raises past the caller.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from kodo.skills import SKILL_FILE, Skill, SkillDeleteError, SkillStore, load_skill, render_catalog
+from kodo.skills import (
+    SKILL_FILE,
+    GitNotAvailableError,
+    Skill,
+    SkillDeleteError,
+    SkillInstallError,
+    SkillStore,
+    install_local_skill,
+    install_skills,
+    load_skill,
+    render_catalog,
+    scan_repository,
+)
 from kodo.tools import UseSkillTool
 from kodo.toolspecs import USE_SKILL
+
+_GIT_AVAILABLE = shutil.which("git") is not None
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,6 +48,29 @@ def _install(root: Path, name: str, text: str) -> Path:
 
 def _skill_md(name: str, description: str, body: str = "Do the thing.") -> str:
     return f"---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"
+
+
+def _git_repo(tmp_path: Path, dirname: str, files: dict[str, str]) -> Path:
+    """A local git repo at ``tmp_path/dirname`` holding *files* (path -> content), one commit.
+
+    ``git clone`` accepts a local path as its URL, which is what lets
+    :func:`~kodo.skills.scan_repository`/:func:`~kodo.skills.install_skills`
+    be exercised without any network access.
+    """
+    repo = tmp_path / dirname
+    repo.mkdir(parents=True)
+    for relpath, content in files.items():
+        path = repo / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    env_args = ["-c", "user.email=test@example.com", "-c", "user.name=Test"]
+    subprocess.run(["git", *env_args, "init", "--quiet"], cwd=repo, check=True)
+    subprocess.run(["git", *env_args, "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", *env_args, "commit", "--quiet", "-m", "init"], cwd=repo, check=True)
+    return repo
+
+
+pytestmark_git = pytest.mark.skipif(not _GIT_AVAILABLE, reason="git CLI not on PATH")
 
 
 # ---------------------------------------------------------------------------
@@ -363,3 +402,238 @@ async def test_use_skill_sees_a_skill_installed_after_the_session_started(
     assert "error" in await _use_skill("late")
     _install(skills_home, "late", _skill_md("late", "Arrived later."))
     assert (await _use_skill("late"))["description"] == "Arrived later."
+
+
+# ---------------------------------------------------------------------------
+# require_git / scan_repository / install_skills (doc/SKILLS.md §2)
+# ---------------------------------------------------------------------------
+
+
+def test_require_git_raises_when_git_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(GitNotAvailableError):
+        from kodo.skills._install import require_git
+
+        require_git()
+
+
+def test_scan_repository_raises_when_git_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(GitNotAvailableError):
+        scan_repository("https://example.invalid/whatever.git")
+
+
+def test_install_skills_raises_when_git_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(GitNotAvailableError):
+        install_skills("https://example.invalid/whatever.git", {"pdf": False}, tmp_path)
+
+
+@pytestmark_git
+def test_scan_repository_finds_multiple_skills_and_skips_broken_ones(tmp_path: Path) -> None:
+    repo = _git_repo(
+        tmp_path,
+        "skillpack",
+        {
+            "pdf/SKILL.md": _skill_md("pdf", "Work with PDF files."),
+            "docx/SKILL.md": _skill_md("docx", "Work with Word files."),
+            "broken/SKILL.md": "junk, no frontmatter\n",
+            "README.md": "not a skill\n",
+        },
+    )
+
+    found = {s.name: s for s in scan_repository(str(repo))}
+
+    assert set(found) == {"pdf", "docx"}
+    assert found["pdf"].description == "Work with PDF files."
+    assert all(s.usable for s in found.values())
+
+
+@pytestmark_git
+def test_scan_repository_names_a_root_level_skill_after_the_repo(tmp_path: Path) -> None:
+    """A ``SKILL.md`` at the clone root has no directory of its own to be named after."""
+    repo = _git_repo(
+        tmp_path, "my-cool-skill", {"SKILL.md": "---\ndescription: Root skill.\n---\n\nBody.\n"}
+    )
+
+    found = scan_repository(str(repo))
+
+    assert [s.name for s in found] == ["my-cool-skill"]
+
+
+@pytestmark_git
+def test_scan_repository_raises_for_an_unreachable_repo(tmp_path: Path) -> None:
+    with pytest.raises(SkillInstallError):
+        scan_repository(str(tmp_path / "does-not-exist"))
+
+
+@pytestmark_git
+def test_install_skills_copies_the_whole_directory_including_companions(tmp_path: Path) -> None:
+    repo = _git_repo(
+        tmp_path,
+        "skillpack",
+        {
+            "pdf/SKILL.md": _skill_md("pdf", "Work with PDF files.", "See REFERENCE.md."),
+            "pdf/REFERENCE.md": "Advanced notes.",
+        },
+    )
+    skills_root = tmp_path / "installed"
+
+    result = install_skills(str(repo), {"pdf": False}, skills_root)
+
+    assert result.installed == ["pdf"]
+    assert (skills_root / "pdf" / SKILL_FILE).is_file()
+    assert (skills_root / "pdf" / "REFERENCE.md").read_text(encoding="utf-8") == "Advanced notes."
+
+
+@pytestmark_git
+def test_install_skills_reports_missing_for_a_name_not_in_the_repo(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path, "skillpack", {"pdf/SKILL.md": _skill_md("pdf", "P.")})
+    result = install_skills(str(repo), {"ghost": False}, tmp_path / "installed")
+    assert result.missing == ["ghost"]
+    assert result.installed == []
+
+
+@pytestmark_git
+def test_install_skills_conflicts_without_overwrite_and_leaves_existing_untouched(
+    tmp_path: Path,
+) -> None:
+    repo = _git_repo(tmp_path, "skillpack", {"pdf/SKILL.md": _skill_md("pdf", "New version.")})
+    skills_root = tmp_path / "installed"
+    _install(skills_root, "pdf", _skill_md("pdf", "Old version."))
+
+    result = install_skills(str(repo), {"pdf": False}, skills_root)
+
+    assert result.conflicts == ["pdf"]
+    assert result.installed == []
+    assert load_skill(skills_root / "pdf").description == "Old version."
+
+
+@pytestmark_git
+def test_install_skills_overwrites_when_confirmed(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path, "skillpack", {"pdf/SKILL.md": _skill_md("pdf", "New version.")})
+    skills_root = tmp_path / "installed"
+    _install(skills_root, "pdf", _skill_md("pdf", "Old version."))
+
+    result = install_skills(str(repo), {"pdf": True}, skills_root)
+
+    assert result.installed == ["pdf"]
+    assert load_skill(skills_root / "pdf").description == "New version."
+
+
+# ---------------------------------------------------------------------------
+# install_local_skill (doc/SKILLS.md §2)
+# ---------------------------------------------------------------------------
+
+
+def test_install_local_skill_from_a_directory(tmp_path: Path) -> None:
+    source = _install(tmp_path / "source", "pdf", _skill_md("pdf", "Work with PDF files."))
+    skills_root = tmp_path / "installed"
+
+    result = install_local_skill(str(source), skills_root, overwrite=False)
+
+    assert result.installed == ["pdf"]
+    assert result.conflicts == []
+    assert load_skill(skills_root / "pdf").description == "Work with PDF files."
+
+
+def test_install_local_skill_from_a_direct_skill_md_path(tmp_path: Path) -> None:
+    source = _install(tmp_path / "source", "pdf", _skill_md("pdf", "Work with PDF files."))
+    skills_root = tmp_path / "installed"
+
+    result = install_local_skill(str(source / SKILL_FILE), skills_root, overwrite=False)
+
+    assert result.installed == ["pdf"]
+    assert load_skill(skills_root / "pdf").description == "Work with PDF files."
+
+
+def test_install_local_skill_copies_companion_files(tmp_path: Path) -> None:
+    source = _install(
+        tmp_path / "source", "pdf", _skill_md("pdf", "Work with PDF files.", "See REFERENCE.md.")
+    )
+    (source / "REFERENCE.md").write_text("Advanced notes.", encoding="utf-8")
+    skills_root = tmp_path / "installed"
+
+    install_local_skill(str(source), skills_root, overwrite=False)
+
+    assert (skills_root / "pdf" / "REFERENCE.md").read_text(encoding="utf-8") == "Advanced notes."
+
+
+def test_install_local_skill_resolves_a_relative_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install(tmp_path / "source", "pdf", _skill_md("pdf", "Work with PDF files."))
+    monkeypatch.chdir(tmp_path)
+    skills_root = tmp_path / "installed"
+
+    result = install_local_skill("source/pdf", skills_root, overwrite=False)
+
+    assert result.installed == ["pdf"]
+
+
+def test_install_local_skill_does_not_scan_recursively(tmp_path: Path) -> None:
+    """Unlike the repo flow, a bundle of skills under one directory is not discovered —
+    the caller must point this at each skill's own subdirectory (doc/SKILLS.md §2)."""
+    bundle = tmp_path / "bundle"
+    _install(bundle, "pdf", _skill_md("pdf", "P."))
+    _install(bundle, "docx", _skill_md("docx", "D."))
+
+    with pytest.raises(SkillInstallError):
+        install_local_skill(str(bundle), tmp_path / "installed", overwrite=False)
+
+
+def test_install_local_skill_raises_for_a_missing_path(tmp_path: Path) -> None:
+    with pytest.raises(SkillInstallError):
+        install_local_skill(
+            str(tmp_path / "does-not-exist"), tmp_path / "installed", overwrite=False
+        )
+
+
+def test_install_local_skill_raises_for_a_non_skill_md_file(tmp_path: Path) -> None:
+    stray = tmp_path / "README.md"
+    stray.write_text("not a skill", encoding="utf-8")
+    with pytest.raises(SkillInstallError):
+        install_local_skill(str(stray), tmp_path / "installed", overwrite=False)
+
+
+def test_install_local_skill_raises_for_a_broken_skill_md(tmp_path: Path) -> None:
+    source = _install(tmp_path / "source", "pdf", "junk, no frontmatter\n")
+    with pytest.raises(SkillInstallError):
+        install_local_skill(str(source), tmp_path / "installed", overwrite=False)
+
+
+def test_install_local_skill_conflicts_without_overwrite_and_leaves_existing_untouched(
+    tmp_path: Path,
+) -> None:
+    source = _install(tmp_path / "source", "pdf", _skill_md("pdf", "New version."))
+    skills_root = tmp_path / "installed"
+    _install(skills_root, "pdf", _skill_md("pdf", "Old version."))
+
+    result = install_local_skill(str(source), skills_root, overwrite=False)
+
+    assert result.conflicts == ["pdf"]
+    assert result.installed == []
+    assert load_skill(skills_root / "pdf").description == "Old version."
+
+
+def test_install_local_skill_overwrites_when_confirmed(tmp_path: Path) -> None:
+    source = _install(tmp_path / "source", "pdf", _skill_md("pdf", "New version."))
+    skills_root = tmp_path / "installed"
+    _install(skills_root, "pdf", _skill_md("pdf", "Old version."))
+
+    result = install_local_skill(str(source), skills_root, overwrite=True)
+
+    assert result.installed == ["pdf"]
+    assert load_skill(skills_root / "pdf").description == "New version."
+
+
+def test_install_local_skill_raises_when_source_is_already_the_installed_copy(
+    tmp_path: Path,
+) -> None:
+    skills_root = tmp_path / "installed"
+    _install(skills_root, "pdf", _skill_md("pdf", "P."))
+
+    with pytest.raises(SkillInstallError):
+        install_local_skill(str(skills_root / "pdf"), skills_root, overwrite=False)

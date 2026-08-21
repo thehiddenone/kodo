@@ -2073,7 +2073,7 @@ an error reply: the fetch fails, the server falls back to whatever was cached
 for that region, and the client renders an empty or stale picker — the same
 non-actionable outcome as a network failure.
 
-### 7.6j `skills.list` / `skills.delete` — installed Agent Skills
+### 7.6j `skills.list` / `skills.delete` / `skills.install_scan` / `skills.install` / `skills.install_local` — installed Agent Skills
 
 Control connection only, same framing as §7.6c — backs the **Kōdo Settings**
 panel's "Skills" section (kodo-vsix `SkillsSection.tsx`). Reads and deletes the
@@ -2128,10 +2128,111 @@ separator and no `.`/`..`, then re-checks after `resolve()` that the parent is
 still the resolved skills root, so a crafted or symlinked `name` cannot reach
 outside the store (doc/SKILLS.md §6).
 
-**There is no `skills.add`.** Skills are installed by dropping a directory into
-`~/.kodo/skills` by hand (doc/SKILLS.md §2). Nor is there an invalidation
-event: the prompt catalog is re-rendered from disk on every agent turn, so a
-skill added or deleted here takes effect on the next turn with no `config.reload`
+**Installing from a repository** is a separate two-step round trip — scan,
+then install — rather than one `skills.add`, since the user needs to see and
+pick from what a repo contains before anything is copied.
+
+```json
+{ "type": "skills.install_scan", "repo_url": "https://github.com/owner/repo" }
+```
+
+→ `skills.install_scan.ack`:
+
+```json
+{ "ok": true,
+  "skills": [
+    { "name": "pdf", "description": "Use this skill whenever …" },
+    { "name": "commit-style", "description": "Use when writing a commit message …" }
+  ] }
+```
+
+or `{ "ok": false, "error": "git is required to install skills from a repository, but was not found on PATH." }`.
+
+`git clone --depth 1` runs into a throwaway temp directory, which is deleted
+before this reply is sent — the reply carries only name/description, never a
+path into the (already gone) clone. Only skills that load cleanly are listed,
+the same filter `kodo.skills.load_skill` applies everywhere else; a
+malformed `SKILL.md` in the repo is silently omitted rather than reported (it
+would only confuse a user picking skills to install, not help them).
+
+```json
+{ "type": "skills.install",
+  "repo_url": "https://github.com/owner/repo",
+  "install": [ { "name": "pdf", "overwrite": false },
+               { "name": "commit-style", "overwrite": true } ] }
+```
+
+→ `skills.install.ack`:
+
+```json
+{ "ok": true,
+  "installed": ["commit-style"],
+  "conflicts": ["pdf"],
+  "missing": [],
+  "root": "/home/u/.kodo/skills",
+  "skills": [ ... ] }
+```
+
+The repo is **cloned again**, independently of any prior `skills.install_scan`
+— nothing from that call is cached or kept alive server-side, matching
+`kodo.skills.SkillStore`'s own stateless-between-calls convention. For each
+requested name: absent from this fresh clone → `missing`; present, already
+installed, and `overwrite` false → `conflicts` (nothing on disk touched);
+otherwise the skill's whole directory (companion files included) is copied
+into `~/.kodo/skills`, replacing any existing same-named skill, and the name
+lands in `installed`. `overwrite` is **re-validated server-side** rather than
+trusted, since the target can change between the scan and this call — the
+one enforcement point for "prompt to confirm overwrite" (doc/SKILLS.md §2).
+`root`/`skills` are the same post-install listing shape as `skills.list.ack`,
+so the panel refreshes its table from this response alone, same
+refresh-from-response contract as `skills.delete.ack`. A clone failure
+replies `{ "ok": false, "error": "...", "root": "...", "skills": [...] }` —
+the listing is still sent, unchanged, for the same reason `skills.delete.ack`
+sends it on failure.
+
+**Installing from a local file or directory** is a third install path,
+alongside `skills.list`/`skills.delete` and the scan-then-install pair above —
+backing the panel's "Install from a local file" native file picker
+(doc/SKILLS.md §2, §5). Unlike the repo pair, there is no separate scan step:
+`path` already names the one skill to install, so the first call already
+knows whether it would install or conflict.
+
+```json
+{ "type": "skills.install_local", "path": "/home/u/some/dir/SKILL.md", "overwrite": false }
+```
+
+→ `skills.install_local.ack` — the **same shape** as `skills.install.ack`, so
+the panel reuses its existing result handling, just with at most one name in
+each list and `missing` always empty (there is no re-scan step to miss
+against):
+
+```json
+{ "ok": true,
+  "installed": ["pdf"],
+  "conflicts": [],
+  "missing": [],
+  "root": "/home/u/.kodo/skills",
+  "skills": [ ... ] }
+```
+
+`path` is a filesystem path to either a `SKILL.md` file or the directory
+containing one — absolute in practice (the client already resolved it via a
+native file picker), though the server also accepts one relative to its own
+working directory. No `git` is involved and the directory is **not** scanned
+recursively for further `SKILL.md` files the way the repo flow scans a whole
+clone — installing several skills out of one local directory means calling
+this once per skill's own subdirectory. A same-named skill already installed
+lands in `conflicts` when `overwrite` is false (nothing on disk touched); the
+panel then shows a native confirm dialog and resends with `overwrite: true`.
+`{ "ok": false, "error": "...", "root": "...", "skills": [...] }` covers an
+argument-level problem (`path` does not exist, or is not a `SKILL.md` file) or
+a malformed `SKILL.md` — unlike the repo scan's silent skip of one broken
+candidate among several, there is no fallback candidate when only one was
+named, so this fails loudly instead.
+
+Nor is there an invalidation event for any of the three install flows: the
+prompt catalog is re-rendered from disk on every agent turn, so a skill added
+or deleted here takes effect on the next turn with no `config.reload`
 follow-up and no push to live sessions.
 
 ### 7.7 ⟪planned⟫ — standalone rules management, credential push

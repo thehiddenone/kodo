@@ -89,7 +89,16 @@ from kodo.runtime import (
     delete_global_security_rules,
     list_global_security_rules,
 )
-from kodo.skills import Skill, SkillDeleteError, SkillStore
+from kodo.skills import (
+    GitNotAvailableError,
+    Skill,
+    SkillDeleteError,
+    SkillInstallError,
+    SkillStore,
+    install_local_skill,
+    install_skills,
+    scan_repository,
+)
 from kodo.subagents import AgentRegistry
 from kodo.titling import (
     DEFAULT_HOUSEKEEPER_LLM_ID,
@@ -157,6 +166,9 @@ from kodo.transport import (
     MSG_SESSION_SECURITY_RULES_DELETE,
     MSG_SESSION_SECURITY_RULES_LIST,
     MSG_SKILLS_DELETE,
+    MSG_SKILLS_INSTALL,
+    MSG_SKILLS_INSTALL_LOCAL,
+    MSG_SKILLS_INSTALL_SCAN,
     MSG_SKILLS_LIST,
     MSG_STOP,
     MSG_STUCK_DETECTION_GET,
@@ -979,6 +991,120 @@ async def _handle_skills_delete(req: Request) -> None:
         return
     _log.info("Deleted skill %r from %s", name, store.root)
     await req.reply({"type": "skills.delete.ack", "ok": True, **_skills_payload(store)})
+
+
+async def _handle_skills_install_scan(req: Request) -> None:
+    """Clone a repo and report the valid Agent Skills it contains (doc/SKILLS.md §2).
+
+    The clone happens on a worker thread (`asyncio.to_thread`) — like the
+    local-model download paths in this module, this is one blocking
+    subprocess-plus-disk-scan call that must not stall the event loop, and a
+    slow/unreachable git host must not stall any other connection either.
+    """
+    repo_url = str(req.env.payload.get("repo_url", "")).strip()
+    try:
+        skills = await asyncio.to_thread(scan_repository, repo_url)
+    except (GitNotAvailableError, SkillInstallError) as exc:
+        await req.reply({"type": "skills.install_scan.ack", "ok": False, "error": str(exc)})
+        return
+    await req.reply(
+        {
+            "type": "skills.install_scan.ack",
+            "ok": True,
+            "skills": [{"name": s.name, "description": s.description} for s in skills],
+        }
+    )
+
+
+async def _handle_skills_install(req: Request) -> None:
+    """Clone a repo again and install the caller's selected skills (doc/SKILLS.md §2).
+
+    Payload: ``{"repo_url": "...", "install": [{"name": "...", "overwrite": bool}, ...]}``.
+    Re-clones independently of any prior ``skills.install_scan`` — this module,
+    like :class:`~kodo.skills.SkillStore`, keeps no state between requests, so
+    there is no clone to have kept alive and nothing to leak if the panel is
+    closed between scanning and installing. ``overwrite`` is re-validated
+    against the *current* skills root by :func:`~kodo.skills.install_skills`
+    rather than trusted outright, since the two calls are independent and the
+    target directory can change between them.
+    """
+    repo_url = str(req.env.payload.get("repo_url", "")).strip()
+    raw_install = req.env.payload.get("install", [])
+    selections: dict[str, bool] = {}
+    if isinstance(raw_install, list):
+        for item in raw_install:
+            if isinstance(item, dict) and isinstance(item.get("name"), str):
+                selections[item["name"]] = bool(item.get("overwrite"))
+
+    store = SkillStore(kodo_skills_dir())
+    try:
+        result = await asyncio.to_thread(install_skills, repo_url, selections, store.root)
+    except (GitNotAvailableError, SkillInstallError) as exc:
+        await req.reply(
+            {
+                "type": "skills.install.ack",
+                "ok": False,
+                "error": str(exc),
+                **_skills_payload(store),
+            }
+        )
+        return
+    if result.installed:
+        _log.info("Installed skill(s) %s into %s from %s", result.installed, store.root, repo_url)
+    await req.reply(
+        {
+            "type": "skills.install.ack",
+            "ok": True,
+            "installed": result.installed,
+            "conflicts": result.conflicts,
+            "missing": result.missing,
+            **_skills_payload(store),
+        }
+    )
+
+
+async def _handle_skills_install_local(req: Request) -> None:
+    """Install one skill from a local ``SKILL.md`` file/directory (doc/SKILLS.md §2).
+
+    Payload: ``{"path": "/abs/path/to/SKILL.md-or-dir", "overwrite": bool}``.
+    No ``git`` involved, so this runs on a worker thread only because it
+    touches disk (``shutil.copytree``), same reasoning as the local-model
+    install paths elsewhere in this module. Replies with the same
+    ``installed``/``conflicts``/``missing``/``root``/``skills`` shape as
+    ``skills.install.ack`` so the panel can reuse its result handling —
+    ``missing`` is always empty here (there is no re-scan step to miss
+    against). An argument-level problem (bad path, not a ``SKILL.md`` file,
+    a malformed ``SKILL.md``, or installing a skill from its own installed
+    copy) replies ``ok: false`` — unlike the repo scan, there is no second
+    candidate to silently fall back to.
+    """
+    path = str(req.env.payload.get("path", "")).strip()
+    overwrite = bool(req.env.payload.get("overwrite"))
+    store = SkillStore(kodo_skills_dir())
+    try:
+        result = await asyncio.to_thread(install_local_skill, path, store.root, overwrite=overwrite)
+    except SkillInstallError as exc:
+        await req.reply(
+            {
+                "type": "skills.install_local.ack",
+                "ok": False,
+                "error": str(exc),
+                **_skills_payload(store),
+            }
+        )
+        return
+    if result.installed:
+        _log.info("Installed skill %s into %s from %s", result.installed, store.root, path)
+    await req.reply(
+        {
+            "type": "skills.install_local.ack",
+            "ok": True,
+            "installed": result.installed,
+            "conflicts": result.conflicts,
+            "missing": result.missing,
+            **_skills_payload(store),
+        }
+    )
 
 
 # ------------------------------------------------------------------
@@ -2559,6 +2685,9 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_HOUSEKEEPER_LLM_SET, _handle_housekeeper_llm_set)
     conn_registry.register_handler(MSG_SKILLS_LIST, _handle_skills_list)
     conn_registry.register_handler(MSG_SKILLS_DELETE, _handle_skills_delete)
+    conn_registry.register_handler(MSG_SKILLS_INSTALL_SCAN, _handle_skills_install_scan)
+    conn_registry.register_handler(MSG_SKILLS_INSTALL, _handle_skills_install)
+    conn_registry.register_handler(MSG_SKILLS_INSTALL_LOCAL, _handle_skills_install_local)
     conn_registry.register_handler(MSG_PROMPT_SUBMIT, _handle_prompt)
     conn_registry.register_handler(MSG_MODE_SET, _handle_mode)
     conn_registry.register_handler(MSG_WORKFLOW_SET, _handle_workflow)

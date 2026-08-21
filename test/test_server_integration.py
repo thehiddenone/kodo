@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
+import subprocess
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import cast
@@ -1433,3 +1435,256 @@ async def test_skills_delete_cannot_escape_the_skills_root(
 
     assert payload["ok"] is False
     assert (victim / "settings.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# skills.install_scan / skills.install (doc/WS_PROTOCOL.md §7.6j, doc/SKILLS.md §2)
+#
+# ``git clone`` accepts a local path as its URL, so a local repo built with
+# ``_git_skill_repo`` stands in for a GitHub URL with no network access.
+# ---------------------------------------------------------------------------
+
+_GIT_AVAILABLE = shutil.which("git") is not None
+_requires_git = pytest.mark.skipif(not _GIT_AVAILABLE, reason="git CLI not on PATH")
+
+
+def _git_skill_repo(tmp_path: Path, dirname: str, files: dict[str, str]) -> Path:
+    repo = tmp_path / dirname
+    repo.mkdir(parents=True)
+    for relpath, content in files.items():
+        path = repo / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    cfg = ["-c", "user.email=test@example.com", "-c", "user.name=Test"]
+    subprocess.run(["git", *cfg, "init", "--quiet"], cwd=repo, check=True)
+    subprocess.run(["git", *cfg, "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", *cfg, "commit", "--quiet", "-m", "init"], cwd=repo, check=True)
+    return repo
+
+
+@_requires_git
+async def test_skills_install_scan_returns_only_valid_skills(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path, tmp_path: Path
+) -> None:
+    repo = _git_skill_repo(
+        tmp_path,
+        "skillpack",
+        {
+            "pdf/SKILL.md": "---\nname: pdf\ndescription: Work with PDF files.\n---\n\nB.\n",
+            "broken/SKILL.md": "junk, no frontmatter\n",
+        },
+    )
+    await _control_hello(ws)
+
+    payload = await _skills_request(ws, "skills.install_scan", repo_url=str(repo))
+
+    assert payload["type"] == "skills.install_scan.ack"
+    assert payload["ok"] is True
+    skills = cast(list[dict[str, object]], payload["skills"])
+    assert [s["name"] for s in skills] == ["pdf"]
+    assert skills[0]["description"] == "Work with PDF files."
+
+
+async def test_skills_install_scan_reports_git_missing(
+    ws: aiohttp.ClientWebSocketResponse,
+    _temp_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    await _control_hello(ws)
+
+    payload = await _skills_request(ws, "skills.install_scan", repo_url="https://example.invalid/x")
+
+    assert payload["ok"] is False
+    assert "git" in str(payload["error"]).lower()
+
+
+@_requires_git
+async def test_skills_install_copies_selected_skills_and_refreshes_the_listing(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path, tmp_path: Path
+) -> None:
+    repo = _git_skill_repo(
+        tmp_path,
+        "skillpack",
+        {
+            "pdf/SKILL.md": "---\nname: pdf\ndescription: Work with PDF files.\n---\n\nB.\n",
+            "docx/SKILL.md": "---\nname: docx\ndescription: Word files.\n---\n\nB.\n",
+        },
+    )
+    await _control_hello(ws)
+
+    payload = await _skills_request(
+        ws, "skills.install", repo_url=str(repo), install=[{"name": "pdf", "overwrite": False}]
+    )
+
+    assert payload["type"] == "skills.install.ack"
+    assert payload["ok"] is True
+    assert payload["installed"] == ["pdf"]
+    assert payload["conflicts"] == []
+    assert payload["missing"] == []
+    assert (_temp_home / ".kodo" / "skills" / "pdf" / "SKILL.md").is_file()
+    assert not (_temp_home / ".kodo" / "skills" / "docx").exists()
+    skills = cast(list[dict[str, object]], payload["skills"])
+    assert [s["name"] for s in skills] == ["pdf"], "the ack carries the refreshed listing"
+
+
+@_requires_git
+async def test_skills_install_reports_conflict_without_overwrite(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path, tmp_path: Path
+) -> None:
+    _install_skill(_temp_home, "pdf", "---\nname: pdf\ndescription: Old.\n---\n\nB.\n")
+    repo = _git_skill_repo(
+        tmp_path, "skillpack", {"pdf/SKILL.md": "---\nname: pdf\ndescription: New.\n---\n\nB.\n"}
+    )
+    await _control_hello(ws)
+
+    payload = await _skills_request(
+        ws, "skills.install", repo_url=str(repo), install=[{"name": "pdf", "overwrite": False}]
+    )
+
+    assert payload["installed"] == []
+    assert payload["conflicts"] == ["pdf"]
+    skills = cast(list[dict[str, object]], payload["skills"])
+    assert skills[0]["description"] == "Old.", (
+        "an unconfirmed conflict must not touch the existing skill"
+    )
+
+
+@_requires_git
+async def test_skills_install_overwrites_when_confirmed(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path, tmp_path: Path
+) -> None:
+    _install_skill(_temp_home, "pdf", "---\nname: pdf\ndescription: Old.\n---\n\nB.\n")
+    repo = _git_skill_repo(
+        tmp_path, "skillpack", {"pdf/SKILL.md": "---\nname: pdf\ndescription: New.\n---\n\nB.\n"}
+    )
+    await _control_hello(ws)
+
+    payload = await _skills_request(
+        ws, "skills.install", repo_url=str(repo), install=[{"name": "pdf", "overwrite": True}]
+    )
+
+    assert payload["installed"] == ["pdf"]
+    skills = cast(list[dict[str, object]], payload["skills"])
+    assert skills[0]["description"] == "New."
+
+
+# ---------------------------------------------------------------------------
+# skills.install_local (doc/WS_PROTOCOL.md §7.6j, doc/SKILLS.md §2)
+#
+# No ``git`` involved — *path* is read straight off disk, so these need
+# neither ``_requires_git`` nor a repo fixture.
+# ---------------------------------------------------------------------------
+
+
+def _local_skill_source(tmp_path: Path, name: str, text: str) -> Path:
+    """A local ``SKILL.md``, elsewhere on disk, standing in for a picked file."""
+    directory = tmp_path / "source" / name
+    directory.mkdir(parents=True)
+    (directory / "SKILL.md").write_text(text, encoding="utf-8")
+    return directory
+
+
+async def test_skills_install_local_from_a_skill_md_path(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path, tmp_path: Path
+) -> None:
+    source = _local_skill_source(
+        tmp_path, "pdf", "---\nname: pdf\ndescription: Work with PDF files.\n---\n\nB.\n"
+    )
+    await _control_hello(ws)
+
+    payload = await _skills_request(
+        ws, "skills.install_local", path=str(source / "SKILL.md"), overwrite=False
+    )
+
+    assert payload["type"] == "skills.install_local.ack"
+    assert payload["ok"] is True
+    assert payload["installed"] == ["pdf"]
+    assert payload["conflicts"] == []
+    assert payload["missing"] == []
+    assert (_temp_home / ".kodo" / "skills" / "pdf" / "SKILL.md").is_file()
+    skills = cast(list[dict[str, object]], payload["skills"])
+    assert [s["name"] for s in skills] == ["pdf"], "the ack carries the refreshed listing"
+
+
+async def test_skills_install_local_from_a_directory_path(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path, tmp_path: Path
+) -> None:
+    source = _local_skill_source(
+        tmp_path, "pdf", "---\nname: pdf\ndescription: Work with PDF files.\n---\n\nB.\n"
+    )
+    await _control_hello(ws)
+
+    payload = await _skills_request(ws, "skills.install_local", path=str(source), overwrite=False)
+
+    assert payload["ok"] is True
+    assert payload["installed"] == ["pdf"]
+
+
+async def test_skills_install_local_reports_conflict_without_overwrite(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path, tmp_path: Path
+) -> None:
+    _install_skill(_temp_home, "pdf", "---\nname: pdf\ndescription: Old.\n---\n\nB.\n")
+    source = _local_skill_source(tmp_path, "pdf", "---\nname: pdf\ndescription: New.\n---\n\nB.\n")
+    await _control_hello(ws)
+
+    payload = await _skills_request(
+        ws, "skills.install_local", path=str(source), overwrite=False
+    )
+
+    assert payload["ok"] is True
+    assert payload["installed"] == []
+    assert payload["conflicts"] == ["pdf"]
+    skills = cast(list[dict[str, object]], payload["skills"])
+    assert skills[0]["description"] == "Old.", (
+        "an unconfirmed conflict must not touch the existing skill"
+    )
+
+
+async def test_skills_install_local_overwrites_when_confirmed(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path, tmp_path: Path
+) -> None:
+    _install_skill(_temp_home, "pdf", "---\nname: pdf\ndescription: Old.\n---\n\nB.\n")
+    source = _local_skill_source(tmp_path, "pdf", "---\nname: pdf\ndescription: New.\n---\n\nB.\n")
+    await _control_hello(ws)
+
+    payload = await _skills_request(ws, "skills.install_local", path=str(source), overwrite=True)
+
+    assert payload["installed"] == ["pdf"]
+    skills = cast(list[dict[str, object]], payload["skills"])
+    assert skills[0]["description"] == "New."
+
+
+async def test_skills_install_local_fails_without_touching_the_socket_for_a_bad_path(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path, tmp_path: Path
+) -> None:
+    await _control_hello(ws)
+
+    payload = await _skills_request(
+        ws, "skills.install_local", path=str(tmp_path / "does-not-exist"), overwrite=False
+    )
+
+    assert payload["ok"] is False
+    assert "does not exist" in str(payload["error"])
+    # The failure ack still carries the (empty) listing, same contract as
+    # skills.install's failure ack.
+    assert cast(list[dict[str, object]], payload["skills"]) == []
+
+
+async def test_skills_install_local_does_not_scan_recursively(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path, tmp_path: Path
+) -> None:
+    """A directory bundling several skills as subdirectories is not discovered
+    — unlike the repo flow's recursive scan, this requires ``SKILL.md``
+    directly at the given path (doc/SKILLS.md §2)."""
+    bundle = tmp_path / "bundle"
+    (bundle / "pdf").mkdir(parents=True)
+    (bundle / "pdf" / "SKILL.md").write_text(
+        "---\nname: pdf\ndescription: P.\n---\n\nB.\n", encoding="utf-8"
+    )
+    await _control_hello(ws)
+
+    payload = await _skills_request(ws, "skills.install_local", path=str(bundle), overwrite=False)
+
+    assert payload["ok"] is False
+    assert "SKILL.md" in str(payload["error"])
