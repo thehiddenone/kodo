@@ -1628,9 +1628,7 @@ async def test_skills_install_local_reports_conflict_without_overwrite(
     source = _local_skill_source(tmp_path, "pdf", "---\nname: pdf\ndescription: New.\n---\n\nB.\n")
     await _control_hello(ws)
 
-    payload = await _skills_request(
-        ws, "skills.install_local", path=str(source), overwrite=False
-    )
+    payload = await _skills_request(ws, "skills.install_local", path=str(source), overwrite=False)
 
     assert payload["ok"] is True
     assert payload["installed"] == []

@@ -591,9 +591,7 @@ def find_enforced_asks(
         if shape in known_rules or shape in seen_shapes:
             continue
         seen_shapes.add(shape)
-        parts.append(
-            AskPart(reason=rule.reason, rule_offer=shape if rule.rule_eligible else None)
-        )
+        parts.append(AskPart(reason=rule.reason, rule_offer=shape if rule.rule_eligible else None))
 
     return tuple(parts)
 
