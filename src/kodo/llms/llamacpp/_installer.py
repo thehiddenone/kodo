@@ -166,11 +166,18 @@ def _asset_url(build_number: int, platform_key: str) -> tuple[str, str]:
 def fetch_latest_build_number() -> int:
     """Fetch the latest llama.cpp build number from GitHub Releases.
 
+    ``/releases/latest`` used to always be a rolling ``bNNNN`` tag. ggml-org
+    now publishes it as a semver wrapper (e.g. ``v0.2.0``) that points at the
+    real nightly build via a ``nightly-tag.txt`` release asset instead — see
+    https://github.com/ggml-org/ggml/discussions/1579. Handle both shapes:
+    parse the tag directly when it still matches ``bNNNN``, otherwise fetch
+    ``nightly-tag.txt`` and parse that.
+
     Returns:
         int: Build number (e.g. ``5143`` for tag ``b5143``).
 
     Raises:
-        RuntimeError: If the tag name cannot be parsed.
+        RuntimeError: If the build number cannot be determined either way.
     """
     req = urllib.request.Request(
         _GITHUB_RELEASES_LATEST,
@@ -180,11 +187,26 @@ def fetch_latest_build_number() -> int:
         },
     )
     with urllib.request.urlopen(req, timeout=30, context=_SSL_CONTEXT) as resp:
-        data: object = json.loads(resp.read())
-    tag = str(cast(dict[str, object], data)["tag_name"])
+        release = cast(dict[str, object], json.loads(resp.read()))
+    tag = str(release["tag_name"])
     match = re.match(r"^b(\d+)$", tag)
-    if not match:
+    if match:
+        return int(match.group(1))
+
+    assets = cast("list[dict[str, object]]", release.get("assets") or [])
+    nightly_url = next(
+        (str(a["browser_download_url"]) for a in assets if a.get("name") == "nightly-tag.txt"),
+        None,
+    )
+    if nightly_url is None:
         raise RuntimeError(f"Cannot parse build number from GitHub tag {tag!r}")
+
+    req = urllib.request.Request(nightly_url, headers={"User-Agent": _USER_AGENT})
+    with urllib.request.urlopen(req, timeout=30, context=_SSL_CONTEXT) as resp:
+        nightly_tag = resp.read().decode().strip()
+    match = re.match(r"^b(\d+)$", nightly_tag)
+    if not match:
+        raise RuntimeError(f"Cannot parse build number from nightly tag {nightly_tag!r}")
     return int(match.group(1))
 
 

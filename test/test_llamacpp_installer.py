@@ -382,7 +382,7 @@ def test_fetch_latest_build_number_parses_tag(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_fetch_latest_build_number_invalid_tag_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A tag without the b prefix raises RuntimeError."""
+    """A tag without the b prefix and no nightly-tag.txt asset raises RuntimeError."""
     import urllib.request as _urllib
 
     mock_resp = MagicMock()
@@ -396,6 +396,49 @@ def test_fetch_latest_build_number_invalid_tag_raises(monkeypatch: pytest.Monkey
 
     with pytest.raises(RuntimeError, match="Cannot parse build number"):
         fetch_latest_build_number()
+
+
+def test_fetch_latest_build_number_falls_back_to_nightly_tag_asset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A semver 'latest' release resolves its build via the nightly-tag.txt asset.
+
+    Mirrors ggml-org/llama.cpp's release scheme change (see
+    https://github.com/ggml-org/ggml/discussions/1579): ``/releases/latest``
+    now returns e.g. ``v0.2.0`` with a ``nightly-tag.txt`` asset whose content
+    is the real ``bNNNN`` build tag.
+    """
+    import urllib.request as _urllib
+
+    release_resp = MagicMock()
+    release_resp.read.return_value = json.dumps(
+        {
+            "tag_name": "v0.2.0",
+            "assets": [
+                {
+                    "name": "nightly-tag.txt",
+                    "browser_download_url": (
+                        "https://github.com/ggml-org/llama.cpp/releases/download/v0.2.0/nightly-tag.txt"
+                    ),
+                }
+            ],
+        }
+    ).encode()
+    release_req = MagicMock()
+    release_req.__enter__ = MagicMock(return_value=release_resp)
+    release_req.__exit__ = MagicMock(return_value=False)
+
+    nightly_resp = MagicMock()
+    nightly_resp.read.return_value = b"b10566\n"
+    nightly_req = MagicMock()
+    nightly_req.__enter__ = MagicMock(return_value=nightly_resp)
+    nightly_req.__exit__ = MagicMock(return_value=False)
+
+    monkeypatch.setattr(_urllib, "Request", MagicMock(side_effect=lambda *a, **kw: MagicMock()))
+    monkeypatch.setattr(_urllib, "urlopen", MagicMock(side_effect=[release_req, nightly_req]))
+
+    result = fetch_latest_build_number()
+    assert result == 10566
 
 
 # ---------------------------------------------------------------------------
