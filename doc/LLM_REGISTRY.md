@@ -1336,6 +1336,22 @@ before it must answer. Two mechanisms exist, keyed off `base_llm` (never
   `chat_template_kwargs: {"reasoning_effort": "<tier>"}` — not a top-level
   field. Default tier is `medium` (the model's own native default).
 
+`MuseGlimmer-30B` is deliberately in **neither** family, despite the base
+model itself supporting a graded low/medium/high/xhigh reasoning strength
+(matching Meta's cloud "Muse Spark" — see `kodo/llms/meta/_muse.py`'s
+`_REASONING_EFFORTS`, which also has a `minimal` tier the local GGUF's model
+card doesn't mention). Neither existing mechanism fits: Muse Glimmer's
+reasoning strength is set by a literal `Reasoning strength: <value>` line in
+the *system prompt*, not a CLI token budget or a `chat_template_kwargs` field
+consumed by the GGUF's own Jinja template — its base model ships no
+`chat_template` at all. Wiring it would need a third,
+system-prompt-injection thinking-tier mechanism (new code in `_llama.py` and
+wherever the request's system prompt gets assembled, well beyond a
+`local_registry/` change), and upstream llama.cpp support for the tiers
+themselves is still incomplete as of 2026-08-21 (model support merged in
+ggml-org/llama.cpp#26841, but the PR that sets Muse Glimmer's own thinking
+tags, #27475, is still open). Revisit once that lands.
+
 Further families exist that are *not* local and therefore not in
 `local_registry/` at all — **one per cloud vendor**. See §4.5a.
 

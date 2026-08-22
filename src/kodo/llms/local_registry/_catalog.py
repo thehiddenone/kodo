@@ -16,6 +16,7 @@ from ._local_llm_gpt_oss_20b import gpt_oss_20b_entries
 from ._local_llm_gpt_oss_120b import gpt_oss_120b_entries
 from ._local_llm_laguna_s_21 import laguna_s_21_entries
 from ._local_llm_laguna_xs_21 import laguna_xs_21_entries
+from ._local_llm_muse_glimmer_30b import muse_glimmer_30b_entries
 from ._local_llm_nanbiege42_3b import nanbiege42_3b_entries
 from ._local_llm_nemotron35_30b_a3b import nemotron35_30b_a3b_entries
 from ._local_llm_ornith10_9b import ornith10_9b_entries
@@ -40,6 +41,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = tuple(
         ornith10_35b_a3b_entries(),
         ornith10_9b_entries(),
         nemotron35_30b_a3b_entries(),
+        muse_glimmer_30b_entries(),
         gemma4_26b_a4b_entries(),
         gemma4_31b_entries(),
         nanbiege42_3b_entries(),
