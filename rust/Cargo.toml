@@ -1,0 +1,19 @@
+[package]
+name = "kodo-rust-native"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# This crate's own version is not the package's version — pyproject.toml's
+# [project] version is authoritative and stamped by scripts/pre_build.py.
+# See doc/BUILD.md.
+
+[lib]
+name = "rust_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+# abi3-py312: build against Python's stable ABI floor at 3.12, so one
+# compiled wheel per platform/arch works for every Python >= 3.12 without
+# rebuilding per interpreter version. See doc/BUILD.md.
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py312"] }
