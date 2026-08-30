@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "py-kodo"
-version = "0.3.22"
+version = "0.3.23"
 description = "Kōdo — an open-source AI coding assistant"
 readme = "README.md"
 license = { file = "LICENSE" }
