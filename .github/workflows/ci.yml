@@ -92,9 +92,6 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             args: --release
-          - os: windows-latest
-            target: aarch64-pc-windows-msvc
-            args: --release
     runs-on: ${{ matrix.os }}
 
     steps:
