@@ -6,12 +6,9 @@
 | -------- | ------------- | ---------------------------------------- |
 | Python   | >= 3.12       | Runtime interpreter.                     |
 | hatch    | >= 1.17       | Build manager. Installed at `~/.local/bin/hatch` or on `PATH`. |
-| Rust     | stable        | `kodo` is a hybrid Python/Rust package — see [doc/BUILD.md](doc/BUILD.md). Install via [rustup](https://www.rust-lang.org/tools/install). Needed to build/develop `kodo`; never needed to install the published `py-kodo` wheel. |
 
-The five scripts below drive hatch directly. The hatch environment (defined
-in `pyproject.toml`) is created automatically on first use, and now also
-compiles the Rust extension under `rust/` as part of that — see
-[doc/BUILD.md](doc/BUILD.md).
+No additional installation is required — the five scripts below drive hatch directly.
+The hatch environment (defined in `pyproject.toml`) is created automatically on first use.
 
 ## Build Scripts
 
@@ -84,9 +81,5 @@ See [`README.md`](README.md) for the full development cycle and release workflow
 
 ## Cross-Platform
 
-The project is a hybrid Python/Rust package (see [doc/BUILD.md](doc/BUILD.md)) —
-building it locally compiles a native extension for your own machine. The
-`.sh` and `.ps1` pairs invoke identical hatch commands; there are no
-host/target differences for local development. CI builds separate native
-wheels for each supported platform/arch (doc/BUILD.md §5); that
-cross-compilation only happens in CI, not locally.
+The project is pure Python with no native extensions. The `.sh` and `.ps1` pairs
+invoke identical hatch commands; there are no host/target differences.

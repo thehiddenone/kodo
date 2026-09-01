@@ -56,11 +56,6 @@ calls over the WS wire (``skills.install_scan``/``skills.install``/
 ``skills.install_local`` — doc/WS_PROTOCOL.md §7.6j), so a skill visible to
 one is visible to the other.
 
-``--rust-hello`` is a third, unrelated command living here for convenience —
-it calls :func:`kodo.rust_native.hello_world` and prints the result, proving
-the compiled Rust extension (doc/BUILD.md) was built, packaged, and is
-importable, with no bearing on prompt/tool diagnostics or skills.
-
 ``--install-skill`` accepts two shapes of ``TARGET``, told apart by whether it
 resolves to an existing path on disk (:func:`_run_install_skill`):
 
@@ -116,9 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     args = _parse_args(argv)
     try:
-        if args.rust_hello:
-            code = _run_rust_hello()
-        elif args.list_skills:
+        if args.list_skills:
             code = _run_list_skills()
         elif args.install_skill is not None:
             code = _run_install_skill(args.install_skill, assume_yes=args.yes)
@@ -198,13 +191,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "(a directory holding SKILL.md, or a direct path to a SKILL.md file — absolute or "
         "relative) installed as-is with no git involved, or a git repository URL, which is "
         "cloned so you can interactively choose which of the skill(s) it contains to install.",
-    )
-    group.add_argument(
-        "--rust-hello",
-        dest="rust_hello",
-        action="store_true",
-        help="Print the greeting from kodo.rust_native.hello_world(), proving the compiled "
-        "Rust extension is built, packaged, and importable (doc/BUILD.md).",
     )
     parser.add_argument(
         "--yes",
@@ -352,18 +338,6 @@ def _run_tools(model_arg: str | None, agent_name: str) -> int:
 
     oai_tools = build_openai_tools(agent_tool_specs(registry, agent))
     print(json.dumps(oai_tools, indent=2))
-    return 0
-
-
-def _run_rust_hello() -> int:
-    """Print the greeting from the compiled Rust extension.
-
-    Returns:
-        int: Always 0 — see :func:`kodo.rust_native.hello_world`.
-    """
-    from kodo.rust_native import hello_world
-
-    print(hello_world())
     return 0
 
 

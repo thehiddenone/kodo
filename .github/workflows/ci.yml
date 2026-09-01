@@ -21,10 +21,6 @@ jobs:
       with:
         python-version: '3.12'
 
-    - name: Install Rust toolchain
-      id: install_rust
-      uses: dtolnay/rust-toolchain@stable
-
     - name: Install hatch
       id: install_hatch
       run: pipx install hatch
@@ -33,16 +29,10 @@ jobs:
       id: check
       run: hatch run check
 
-  # Gate: only build+publish wheels on a push to main that bumped
-  # build_number — see doc/BUILD.md and README.md's release-workflow section.
-  # A plain push and a release push both run `hatch run check` exactly once;
-  # this job (and everything downstream of it) is the release-only half.
-  gate:
+  build:
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    outputs:
-      changed: ${{ steps.filter.outputs.changed }}
 
     steps:
     - name: Checkout code
@@ -64,104 +54,25 @@ jobs:
           echo "changed=false" >> "$GITHUB_OUTPUT"
         fi
 
-  # One native wheel per platform/arch (doc/BUILD.md §5) — the version
-  # already committed to pyproject.toml (stamped by `hatch run build` locally
-  # before the push, same as before this workflow built Rust) is what gets
-  # built; no re-stamping happens in CI.
-  build-wheels:
-    needs: gate
-    if: needs.gate.outputs.changed == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            manylinux: "2014"
-            args: --release --zig
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            manylinux: "2014"
-            args: --release --zig
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            args: --release
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            args: --release
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            args: --release
-    runs-on: ${{ matrix.os }}
+    - name: Set up Python
+      if: steps.filter.outputs.changed == 'true'
+      id: setup_python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
 
-    steps:
-    - name: Checkout code
-      id: checkout_code
-      uses: actions/checkout@v4
+    - name: Install hatch
+      if: steps.filter.outputs.changed == 'true'
+      id: install_hatch
+      run: pipx install hatch
 
-    - name: Build wheel
+    - name: Build wheel and source distribution
+      if: steps.filter.outputs.changed == 'true'
       id: build
-      uses: PyO3/maturin-action@v1
-      with:
-        target: ${{ matrix.target }}
-        manylinux: ${{ matrix.manylinux || 'auto' }}
-        args: ${{ matrix.args }} --out dist
+      run: hatch build
 
-    - name: Upload wheel artifact
-      id: upload
-      uses: actions/upload-artifact@v4
-      with:
-        name: wheel-${{ matrix.target }}
-        path: dist/*.whl
-
-  build-sdist:
-    needs: gate
-    if: needs.gate.outputs.changed == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      id: checkout_code
-      uses: actions/checkout@v4
-
-    - name: Build sdist
-      id: build
-      uses: PyO3/maturin-action@v1
-      with:
-        command: sdist
-        args: --out dist
-
-    - name: Upload sdist artifact
-      id: upload
-      uses: actions/upload-artifact@v4
-      with:
-        name: sdist
-        path: dist/*.tar.gz
-
-  # Merges every per-target wheel + the sdist into one dist/ and re-uploads
-  # it as `kodo-latest` — the exact artifact name/shape publish-kodo.yml
-  # already expects, so that workflow needs no changes.
-  combine:
-    needs: [ build-wheels, build-sdist ]
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Download all build artifacts
-      id: download
-      uses: actions/download-artifact@v4
-      with:
-        pattern: wheel-*
-        path: dist
-        merge-multiple: true
-
-    - name: Download sdist artifact
-      id: download_sdist
-      uses: actions/download-artifact@v4
-      with:
-        name: sdist
-        path: dist
-
-    - name: Upload combined build artifacts
+    - name: Upload build artifacts
+      if: steps.filter.outputs.changed == 'true'
       id: upload
       uses: actions/upload-artifact@v4
       with:

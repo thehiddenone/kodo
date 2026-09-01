@@ -117,12 +117,12 @@ The list below describes what's implemented, not a review score of how well each
 
 ## Building the project
 
-`kodo` is a hybrid Python/Rust package — Python source under `src/kodo/`, a Rust crate under `rust/`, built together by [maturin](https://www.maturin.rs/) with [PyO3](https://pyo3.rs/) bindings, and driven day-to-day through [hatch](https://hatch.pypa.io) for environment and build management. See [`doc/BUILD.md`](doc/BUILD.md) for the full layout and CI wheel matrix. The version scheme is `major.minor.build` (e.g. `0.1.7`) — there's no separate patch slot, the build number *is* the third component. It lives in the `build_number` file, gets stamped into `pyproject.toml` and `__init__.py` at build time, and is auto-incremented after a successful `hatch run build`. Pushing that incremented `build_number` to `main` is what actually ships a release, via two chained GitHub
+The project uses [hatch](https://hatch.pypa.io) for environment and build management. The version scheme is `major.minor.build` (e.g. `0.1.7`) — there's no separate patch slot, the build number *is* the third component. It lives in the `build_number` file, gets stamped into `pyproject.toml` and `__init__.py` at build time, and is auto-incremented after a successful `hatch run build`. Pushing that incremented `build_number` to `main` is what actually ships a release, via two chained GitHub
 
 Actions workflows:
 
-1. [`ci.yml`](.github/workflows/ci.yml) runs `hatch run check` on every push and PR to `main` — this is the badge at the top of this README. Gated on that check passing, a second job diffs the push against its previous commit; only if `build_number` changed does the release half run: one native wheel per supported platform/arch built in parallel (macOS, Windows, and Linux, each × x86_64/arm64 — [`doc/BUILD.md`](doc/BUILD.md) §5) plus a source distribution, all merged into a single `kodo-latest` artifact. One check per push either way — a plain push and a release push both run `hatch run check` exactly once.
-2. [`publish-kodo.yml`](.github/workflows/publish-kodo.yml) triggers on completion of `ci.yml`. If that run failed, or succeeded without producing an artifact (i.e. it wasn't a `build_number` push), there is nothing to publish and it's a no-op. Otherwise it downloads the `kodo-latest` artifact (all platform wheels + sdist) and publishes all of it to PyPI in one call.
+1. [`ci.yml`](.github/workflows/ci.yml) runs `hatch run check` on every push and PR to `main` — this is the badge at the top of this README. A second job in the same workflow, gated on that check passing, diffs the push against its previous commit; only if `build_number` changed does it `hatch build` the wheel and upload it as an artifact. One check per push either way — a plain push and a release push both run `hatch run check` exactly once.
+2. [`publish-kodo.yml`](.github/workflows/publish-kodo.yml) triggers on completion of `ci.yml`. If that run failed, or succeeded without producing an artifact (i.e. it wasn't a `build_number` push), there is nothing to publish and it's a no-op. Otherwise it downloads the artifact and publishes it to PyPI.
 
 There's no separate manual "now go publish" step — bumping the file *is* the trigger,
 which is a little unsettling if you think about it too hard, so it's best not to.
@@ -140,11 +140,11 @@ code change  →  build  →  test  →  commit  →  hatch run build  →  push
 | `hatch run typecheck` | Type-check with mypy. |
 | `hatch run test` | Run the test suite with pytest. |
 | `hatch run check` | Run fmt, lint, typecheck, and tests — no build. |
-| `hatch build` | Quick native wheel (your own platform/arch only) + sdist using the current version in `pyproject.toml`. Does **not** increment `build_number` or run checks. Use during development to verify the build. |
+| `hatch build` | Quick wheel + sdist using the current version in `pyproject.toml`. Does **not** increment `build_number` or run checks. Use during development to verify the build. |
 | `hatch run check-version` | Sync `__version__` in `__init__.py` from `pyproject.toml`. |
 | `hatch run build` | Full release pipeline: stamp version, fmt, lint, typecheck, test, build, post-increment `build_number`. |
 
-The `build_number` file contains the build number for the work currently in progress. Commit your changes *before* running `hatch run build` — this way the committed source matches the build number recorded in the repository. `hatch run build` is intended to be the final step once code changes are done, tests are green, and everything is committed. It produces a numbered native wheel for your own platform, then advances `build_number` so the repository is already pointing at the next iteration. (CI separately builds one wheel per supported platform/arch when that advanced `build_number` reaches `main` — see [`doc/BUILD.md`](doc/BUILD.md).)
+The `build_number` file contains the build number for the work currently in progress. Commit your changes *before* running `hatch run build` — this way the committed source matches the build number recorded in the repository. `hatch run build` is intended to be the final step once code changes are done, tests are green, and everything is committed. It produces a numbered wheel, then advances `build_number` so the repository is already pointing at the next iteration.
 
 If a `kodo-vsix` checkout sits alongside this repo (`../kodo-vsix`), `scripts/post_build.py` also pins its `package.json` `version` to the `py-kodo` version just built — `kodo-vsix` installs `py-kodo` from PyPI pinned to its own extension version (see `kodo-vsix/src/uv-setup.ts`), so the two must always move together. No-op if that checkout isn't present.
 

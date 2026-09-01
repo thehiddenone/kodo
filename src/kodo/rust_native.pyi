@@ -1,3 +1,0 @@
-"""Type stub for the compiled `kodo.rust_native` extension — see doc/BUILD.md."""
-
-def hello_world() -> str: ...
