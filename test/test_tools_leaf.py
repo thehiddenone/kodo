@@ -626,6 +626,10 @@ async def test_create_file_temporary_resolves_under_session_scratch_dir(
     assert result["status"] == "created"
     assert (scratch_root / "note.txt").read_text(encoding="utf-8") == "hi"
     assert not (project_root / "note.txt").exists()
+    # The model has no way to know where the scratch directory lives on
+    # disk, so the echoed `path` must be the resolved absolute path, not
+    # the relative path it passed in — otherwise it can't reuse the value.
+    assert result["path"] == str(scratch_root / "note.txt")
 
 
 @pytest.mark.asyncio
@@ -643,6 +647,8 @@ async def test_create_file_without_temporary_still_resolves_project_root(
     assert result["status"] == "created"
     assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "hi"
     assert not scratch_root.exists()
+    # Without `temporary`, `path` is echoed back exactly as given.
+    assert result["path"] == "note.txt"
 
 
 @pytest.mark.asyncio

@@ -382,6 +382,17 @@ never land in the project — which reaches only agents holding a
 the usual per-project root list it returns one `{"name": "scratch", "path":
 ...}` entry for `session_temp_dir(self.context.session_id)` (created eagerly
 via `mkdir(parents=True, exist_ok=True)` so the path is guaranteed to exist).
+
+**Echoing the resolved path back.** `create_file`'s result normally echoes
+`path` back exactly as given, but under `temporary: true` it instead returns
+the resolved absolute filesystem path (`str(target)` in
+[tools/_create_file.py](../src/kodo/tools/_create_file.py)) — the agent
+supplied only a relative path and has no other way to learn where the
+scratch directory actually lives on disk, so the relative echo it used to
+get back was useless for reuse (e.g. handing the file to another tool or
+`run_command`). The absolute path returned is safe to reuse as `path` on a
+later `temporary: true` call too, since `resolve_within` accepts an absolute
+path that already resolves inside the scratch root.
 This is how an agent gets the scratch directory's *absolute path* — e.g. to
 pass as `run_command`'s `working_dir`. No resolver special-case is needed for
 this any more (as of the 2026-07-24 multi-project rework, WS_PROTOCOL.md

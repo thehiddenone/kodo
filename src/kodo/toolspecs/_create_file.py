@@ -104,9 +104,11 @@ CREATE_FILE: ToolSpec = ToolSpec(
             "path": {
                 "type": "string",
                 "description": (
-                    "The path that was (or would be) created, echoed back as given — "
-                    "reuse this to refer to the file again later, e.g. under "
-                    "`temporary: true` where the resolved location isn't otherwise known."
+                    "The path that was (or would be) created. Echoed back as given, "
+                    "except under `temporary: true`, where the resolved absolute "
+                    "filesystem path is returned instead, since the scratch directory's "
+                    "location isn't otherwise known. Reuse this value to refer to the "
+                    "file again later."
                 ),
             },
             "feedback": {

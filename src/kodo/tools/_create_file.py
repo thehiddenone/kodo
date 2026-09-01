@@ -44,7 +44,15 @@ class CreateFileTool(Tool):
             _log.info("create_file from %s failed: %s", ctx.agent_name, exc)
             return json.dumps({"error": str(exc)})
 
-        result: dict[str, object] = {"status": "created", "path": path}
+        # Under `temporary`, the model has no way to know where the scratch
+        # directory lives on disk, so it can't reconstruct an absolute path
+        # from the relative one it passed in — echo back the resolved
+        # absolute path instead so it can be reused (e.g. handed to another
+        # tool) directly.
+        result: dict[str, object] = {
+            "status": "created",
+            "path": str(target) if temporary else path,
+        }
         # Undeclared field — not in CREATE_FILE.output_schema, so the engine's
         # normalize_output() strips it before it reaches the LLM or the UI
         # parameters table. It's an engine-only side channel (see
