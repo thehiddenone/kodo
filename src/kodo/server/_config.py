@@ -209,8 +209,14 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
         "active": "local_only",
         # "top_level" | "top_level_and_subagents" — whether only the main
         # entry agent (Guide/Problem Solver) is watched, or sub-agents
-        # (run_subagent_<name>) too.
-        "scope": "top_level",
+        # (run_subagent_<name>) too. Defaults to covering sub-agents: a
+        # sub-agent's own tool calls (e.g. return_result) stream through the
+        # exact same mid-stream cyclic-argument detector (§2.10) as the entry
+        # agent's, and excluding them left that detector never even
+        # constructed for any sub-agent turn — the gap that let a local
+        # model balloon a return_result array to 1000+ repeated elements
+        # unnoticed (root-caused 2026-08-31).
+        "scope": "top_level_and_subagents",
         # In interactive mode, whether a detected stall is nudged
         # automatically (True) or surfaced as a prompt.stuck_alert the user
         # must confirm (False). Autonomous mode always nudges immediately,

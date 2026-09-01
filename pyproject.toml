@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "py-kodo"
-version = "0.2.21"
-description = "Kōdo (コード) — an open-source AI coding assistant"
+version = "0.3.24"
+description = "Kōdo — an open-source AI coding assistant"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
@@ -52,7 +52,7 @@ validate = "python -m kodo.validator.scenarios {args}"
 validate-suite = "python -m kodo.validator.suites {args}"
 check-version = "python scripts/check_version.py"
 check    = ["ruff format src test", "ruff check src test --fix", "mypy", "python scripts/check_version.py", "pytest --full-trace"]
-build    = ["python scripts/pre_build.py", "ruff format src test", "ruff check src test", "mypy", "python scripts/check_version.py", "pytest", "hatch build", "python scripts/post_build.py"]
+build    = ["python scripts/pre_build.py", "ruff format src test", "ruff check src test --fix", "mypy", "python scripts/check_version.py", "pytest", "hatch build", "python scripts/post_build.py"]
 
 [tool.ruff]
 src = ["src"]

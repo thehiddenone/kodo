@@ -217,7 +217,7 @@ def _watchdog_engine(
     default_settings: dict[str, object] = {
         "stuck_detection": {
             "active": "local_only",
-            "scope": "top_level",
+            "scope": "top_level_and_subagents",
             "auto_unstuck_interactive": False,
         }
     }
@@ -333,14 +333,14 @@ def test_detect_red_flags_multi_word_response_is_not_terse() -> None:
 def test_stuck_settings_defaults_on_missing_block() -> None:
     cfg = _stuck_settings({})
     assert cfg.active == "local_only"
-    assert cfg.scope == "top_level"
+    assert cfg.scope == "top_level_and_subagents"
     assert cfg.auto_unstuck_interactive is False
 
 
 def test_stuck_settings_invalid_values_fall_back_to_defaults() -> None:
     cfg = _stuck_settings({"stuck_detection": {"active": "yolo", "scope": "everything"}})
     assert cfg.active == "local_only"
-    assert cfg.scope == "top_level"
+    assert cfg.scope == "top_level_and_subagents"
 
 
 def test_stuck_settings_applies_off_never_applies() -> None:
@@ -636,9 +636,33 @@ async def test_on_stall_subagent_scope_dismiss_does_not_retry() -> None:
     assert engine._transient.appended_sub == []
 
 
-async def test_on_stall_subagent_scope_excluded_by_default_top_level_scope() -> None:
-    """Default scope ("top_level") does not watch sub-agents at all."""
-    engine = _watchdog_engine(autonomous=True)  # default scope="top_level"
+async def test_on_stall_subagent_scope_included_by_default() -> None:
+    """Default scope ("top_level_and_subagents") watches sub-agent turns too
+    — changed 2026-08-31 after a sub-agent's return_result call ballooned a
+    tool-call argument into 1000+ repeated elements with nothing watching
+    that turn at all (doc/STUCK_DETECTION.md §2.2/§2.10)."""
+    engine = _watchdog_engine(autonomous=True)  # default settings, no override
+    handler = engine._make_stall_handler(
+        agent_name="investigator",
+        routing=_LOCAL_ROUTING,
+        is_entry_turn=False,
+        subsession_id="sub-1",
+    )
+
+    decision = await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
+
+    assert decision.retry is True
+    assert len(engine._transient.appended_sub) == 1
+
+
+async def test_on_stall_subagent_scope_excluded_when_scope_set_to_top_level() -> None:
+    """Explicit scope="top_level" opts back out of watching sub-agents (the
+    default is "top_level_and_subagents" — see the scope-inclusion test
+    above)."""
+    engine = _watchdog_engine(
+        autonomous=True,
+        settings={"stuck_detection": {"active": "local_only", "scope": "top_level"}},
+    )
     handler = engine._make_stall_handler(
         agent_name="investigator",
         routing=_LOCAL_ROUTING,
@@ -878,8 +902,24 @@ def test_make_cyclic_thinking_handler_returns_none_for_cloud_when_local_only() -
     assert handler is None
 
 
-def test_make_cyclic_thinking_handler_returns_none_for_subagent_excluded_by_default_scope() -> None:
-    engine = _watchdog_engine(autonomous=True)  # default scope="top_level"
+def test_make_cyclic_thinking_handler_returns_callable_for_subagent_by_default() -> None:
+    """Default scope ("top_level_and_subagents") watches sub-agent turns too
+    — changed 2026-08-31, see the matching stall-handler test above."""
+    engine = _watchdog_engine(autonomous=True)  # default settings, no override
+    handler = engine._make_cyclic_thinking_handler(
+        agent_name="investigator",
+        routing=_LOCAL_ROUTING,
+        is_entry_turn=False,
+        subsession_id="sub-1",
+    )
+    assert handler is not None
+
+
+def test_make_cyclic_thinking_handler_returns_none_for_subagent_when_scope_is_top_level() -> None:
+    engine = _watchdog_engine(
+        autonomous=True,
+        settings={"stuck_detection": {"active": "local_only", "scope": "top_level"}},
+    )
     handler = engine._make_cyclic_thinking_handler(
         agent_name="investigator",
         routing=_LOCAL_ROUTING,
@@ -1162,6 +1202,21 @@ def test_make_tool_call_cyclic_handler_returns_none_for_cloud_when_local_only() 
         agent_name="problem_solver", routing=_CLOUD_ROUTING, is_entry_turn=True
     )
     assert handler is None
+
+
+def test_make_tool_call_cyclic_handler_returns_callable_for_subagent_by_default() -> None:
+    """Default scope ("top_level_and_subagents") watches sub-agent tool calls
+    too — changed 2026-08-31 after a sub-agent's return_result call went
+    unwatched and ballooned a `options` array to 1000+ repeated "n/a"
+    elements (doc/STUCK_DETECTION.md §2.10)."""
+    engine = _watchdog_engine(autonomous=True)  # default settings, no override
+    handler = engine._make_tool_call_cyclic_handler(
+        agent_name="investigator",
+        routing=_LOCAL_ROUTING,
+        is_entry_turn=False,
+        subsession_id="sub-1",
+    )
+    assert handler is not None
 
 
 async def test_tool_call_cyclic_handler_entry_turn_strike_one_notices_and_sets_streak() -> None:

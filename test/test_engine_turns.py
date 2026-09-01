@@ -1150,7 +1150,7 @@ def _entry_agent_engine(*, gateway: _FakeGateway | None = None) -> WorkflowEngin
     engine._get_settings = lambda: {
         "stuck_detection": {
             "active": "local_only",
-            "scope": "top_level",
+            "scope": "top_level_and_subagents",
             "auto_unstuck_interactive": False,
         }
     }

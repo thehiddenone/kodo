@@ -309,7 +309,7 @@ def _resumable_engine(
     engine._get_settings = lambda: {
         "stuck_detection": {
             "active": "local_only",
-            "scope": "top_level",
+            "scope": "top_level_and_subagents",
             "auto_unstuck_interactive": False,
         }
     }

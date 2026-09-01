@@ -295,7 +295,9 @@ def _stuck_settings(settings: dict[str, object]) -> _StuckSettings:
     scope = raw.get("scope")
     return _StuckSettings(
         active=active if active in ("off", "local_only", "local_and_cloud") else "local_only",
-        scope=scope if scope in ("top_level", "top_level_and_subagents") else "top_level",
+        scope=scope
+        if scope in ("top_level", "top_level_and_subagents")
+        else "top_level_and_subagents",
         auto_unstuck_interactive=bool(raw.get("auto_unstuck_interactive", False)),
     )
 

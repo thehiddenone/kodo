@@ -783,7 +783,7 @@ def _stuck_detection_payload(raw: dict[str, object]) -> dict[str, object]:
     scope = raw.get("scope")
     return {
         "active": active if active in _STUCK_DETECTION_ACTIVE_VALUES else "local_only",
-        "scope": scope if scope in _STUCK_DETECTION_SCOPE_VALUES else "top_level",
+        "scope": scope if scope in _STUCK_DETECTION_SCOPE_VALUES else "top_level_and_subagents",
         "auto_unstuck_interactive": bool(raw.get("auto_unstuck_interactive", False)),
     }
 
