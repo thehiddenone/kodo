@@ -22,7 +22,7 @@ from typing import Protocol
 
 from kodo.common import Envelope, MessageSink
 from kodo.guided_state import append_new_revision, is_tracked
-from kodo.shellparser import parse_command
+from kodo.shellparser import flatten_command
 from kodo.state import TransientStore
 from kodo.tools import NoWorkspaceError, PathResolver, RootPath
 from kodo.transport import EVT_CHECKPOINT_STATE
@@ -176,7 +176,7 @@ class CheckpointCoordinator:
             return [p for p in (_resolve("destination"), _resolve("path"), _resolve("source")) if p]
         if tool_name == "run_command":
             command = str(tool_input.get("command", ""))
-            if not command.strip() or not command_may_mutate(parse_command(command)):
+            if not command.strip() or not command_may_mutate(flatten_command(command)):
                 return []
             working_dir = tool_input.get("working_dir")
             try:

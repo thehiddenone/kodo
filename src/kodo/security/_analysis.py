@@ -31,8 +31,8 @@ from dataclasses import dataclass
 from kodo.common import system_temp_roots
 from kodo.shellparser import (
     ParsedCommand,
+    flatten_command,
     is_fd_merge_target,
-    parse_command,
     parse_powershell_command,
 )
 
@@ -66,10 +66,14 @@ def _mask_unless_ps_null(match: re.Match[str]) -> str:
 # family so findings can quote the exact snippet. The first two families are
 # *command* substitutions — they execute a nested command, which the rule
 # engine analyzes recursively — the rest are value expansions.
+_SUBEXPRESSION_RE = re.compile(r"\$\([^)]*\)?")  # $(command) / $( unterminated
+_BACKTICK_SUB_RE = re.compile(r"`[^`]*`?")  # `command` — POSIX only (see below)
+
 _COMMAND_SUB_RES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\$\([^)]*\)?"),  # $(command) / $( unterminated
-    re.compile(r"`[^`]*`?"),  # `command`
-    # Process substitution `<(cmd)` / `>(cmd)`: bash runs *cmd* and hands the
+    _SUBEXPRESSION_RE,
+    _BACKTICK_SUB_RE,
+    # Process substitution `<(cmd)` / `>(cmd)` (POSIX; PowerShell has no such
+    # form, so this simply never matches there): bash runs *cmd* and hands the
     # caller a /dev/fd path to its stream. It executes exactly like `$(...)`
     # does, so it is recursively judged the same way. Without this the whole
     # construct tokenized down to the inner command's stray arguments —
@@ -83,6 +87,16 @@ _VALUE_SUB_RES: tuple[re.Pattern[str], ...] = (
     re.compile(r"%[A-Za-z_][A-Za-z0-9_]*%"),  # %VAR%
 )
 _SUBSTITUTION_RES: tuple[re.Pattern[str], ...] = _COMMAND_SUB_RES + _VALUE_SUB_RES
+
+# In PowerShell a backtick is the *escape* character (`` `n ``, a
+# backtick-newline line continuation), never command substitution — that
+# dialect spells it ``$(...)``, which stays. Scanning for the POSIX form on
+# Windows matched an ordinary escape and everything up to the next backtick
+# as if it were a nested command, masking a chunk of the line out of path
+# analysis and asking about a "command substitution" that was never there.
+_WINDOWS_SUBSTITUTION_RES: tuple[re.Pattern[str], ...] = tuple(
+    pattern for pattern in _SUBSTITUTION_RES if pattern is not _BACKTICK_SUB_RE
+)
 
 # Executables that only read (no flag of theirs writes a file) — the fast-path
 # allow-list for SMART mode. Deliberately stricter than the checkpoint
@@ -212,7 +226,11 @@ class CommandAnalysis:
         read_only: ``True`` when every executable in the pipeline is on the
             conservative read-only allow-list and no redirection writes a file.
         segments: The normalized per-segment view (:mod:`._classify`) the rule
-            engine matches on.
+            engine matches on — for POSIX these are the commands the script
+            *may* execute (:func:`kodo.shellparser.flatten_command`), so a
+            loop body or an `if` branch contributes its own entries; one may
+            carry ``opaque_reason`` instead of an executable, for a construct
+            that reduces to no command at all.
         operators: The separators joining the segments, verbatim from the
             parse (``'|'``, ``'&&'``, …).
         segment_toolchain_script: Per segment (positionally aligned with
@@ -283,7 +301,7 @@ def analyze_command(
     unresolved: list[str] = []
     command_subs: list[str] = []
     masked = command
-    for pattern in _SUBSTITUTION_RES:
+    for pattern in _WINDOWS_SUBSTITUTION_RES if win else _SUBSTITUTION_RES:
         for match in pattern.finditer(masked):
             snippet = match.group()
             if win and _PS_NULL_RE.match(snippet):
@@ -297,12 +315,17 @@ def analyze_command(
         else:
             masked = pattern.sub(_SUB_MARK, masked)
 
-    parsed: ParsedCommand = parse_powershell_command(masked) if win else parse_command(masked)
+    # POSIX goes through the flattener (`kodo.shellparser.flatten_command`),
+    # so control-flow bodies, `case` arms and called function bodies each
+    # contribute their own commands instead of collapsing into the arguments
+    # of a keyword pseudo-command. PowerShell keeps the flat parse for now —
+    # its own flattener is not written yet (doc/SECURITY.md §5).
+    parsed: ParsedCommand = parse_powershell_command(masked) if win else flatten_command(masked)
     segments = normalize_segments(parsed, windows=win)
 
     # The cwd each segment actually runs in — shifts after an inline `cd`/
     # `Set-Location` earlier in the same &&/;/|| chain (see `_track_cwd`).
-    effective_cwds = _track_cwd(segments, parsed.operators, cwd, win)
+    effective_cwds = _track_cwd(segments, parsed.operators, cwd, win, parsed.contexts)
 
     # Each segment gets its own accumulating list, so a path repeated across
     # segments (`cat /etc/hosts && grep x /etc/hosts`) is attributed to BOTH
@@ -360,6 +383,12 @@ def _is_read_only(segments: tuple[NormalizedSegment, ...], *, windows: bool) -> 
     already resolved PowerShell aliases (``ls`` → ``get-childitem``), so the
     allow-list is widened with the cmdlet names.
     """
+    if any(segment.opaque_reason for segment in segments):
+        # An unreducible construct is by definition not provably read-only —
+        # and `named` below would skip it (its executable is empty), so
+        # without this a `ls` beside one would take the whole line down the
+        # fast path and never surface it.
+        return False
     if any(segment.writes_file for segment in segments):
         return False
     named = [segment for segment in segments if segment.executable]
@@ -410,6 +439,7 @@ def _track_cwd(
     operators: tuple[str, ...],
     cwd: str,
     windows: bool,
+    contexts: tuple[frozenset[str], ...] = (),
 ) -> tuple[str, ...]:
     """The effective working directory for each segment, following any
     inline ``cd``/``Set-Location`` earlier in the same ``&&``/``;``/``||``
@@ -425,6 +455,15 @@ def _track_cwd(
     ``cd /project/subdir && ./scripts/build.sh`` resolved
     ``./scripts/build.sh`` against the wrong directory and fell through to
     the generic default-ask instead of the toolchain-script allow.
+
+    A ``cd`` inside a loop or a conditional branch (``contexts``, from
+    :func:`kodo.shellparser.flatten_command`) never updates the chain either:
+    the flattener emits every branch and body, so whether that ``cd`` ran at
+    all — and how many times — is exactly what static analysis cannot know.
+    Letting it shift the cwd would resolve its *siblings*' relative paths
+    against a directory the shell may never have been in. An empty
+    ``contexts`` means "not flattened" (the PowerShell dialect), not "no
+    context", and simply leaves this check inactive.
 
     Only a ``cd`` whose target is a single, substitution-free positional
     argument updates the tracked cwd. A bare ``cd`` (goes to ``$HOME``),
@@ -445,6 +484,8 @@ def _track_cwd(
         if segment.executable not in CD_EXECUTABLES:
             continue
         if segment.has_substitution or len(segment.args) != 1 or segment.args[0] == "-":
+            continue
+        if i < len(contexts) and contexts[i] & {"loop", "conditional"}:
             continue
         current = _resolve_absolute(segment.args[0], current, windows)
     return tuple(effective)

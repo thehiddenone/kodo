@@ -1059,68 +1059,110 @@ not a segment separator") and was corrected.
 
 No wire/protocol change; no rule-table change.
 
-## Flattening scripts to judgeable commands (planned, 2026-09-01)
 
-The remaining phases of the work Phase 0 above opened. **Not implemented.**
+## Flattening scripts to judgeable commands (post-launch, 2026-09-01)
 
-`kodo.shellparser` is a flat tokenizer, not an AST: it splits on a fixed
-separator set and has no grammar, so `if`/`for`/`while`/`case`/function
-definitions carry no structural meaning and their bodies land in the
-*arguments* of a keyword pseudo-command. Today that fails closed only by
-luck — via the path check noticing a path-shaped argument, or the generic
-"not in the known-safe command set" default on the keyword itself.
+Phases 1-5 of the work Phase 0 above opened. **Implemented.** The design
+notes that follow record what was decided and why, not a plan.
 
-The plan is to reduce an arbitrary script to the set of primitive commands
-it **may** execute and judge each one through the existing table. This is a
-good fit because the consumer is *already* per-command: `evaluate_command`
-judges segments independently and emits one `AskPart` each, and only two
-call sites outside the package consume the parse (`_analysis.py` and
-`_engine/_checkpointing.py`). Over-approximation (emitting both branches of
-an `if`, a loop body that may run zero times) is the sound direction — extra
-asks, never a missed one.
+### What changed
 
-Two decisions already taken, and two constraints that make it sound:
+`kodo/shellparser/_flatten.py` — `flatten_command()` walks control flow and
+returns the same `ParsedCommand` populated with the primitive commands the
+script *may* execute. `kodo.security._analysis.analyze_command` (POSIX) and
+`kodo.runtime._checkpoints.command_may_mutate` consume it. Everything
+downstream is untouched: the rule engine was **already** per-command, so this
+was a producer swap. Full behavioral spec: doc/SECURITY.md §5.
 
-- **Hand-rolled bounded grammar**, not `bashlex` or `tree-sitter`:
-  `shellparser` stays dependency-free and T0, it matches the package's
-  existing bounded/fail-closed philosophy, and it applies equally to the
-  PowerShell dialect, which has no library equivalent in Python.
-- **Phase 0 shipped separately** (above) rather than waiting to be
-  fixed-by-construction, because those were live bypasses.
-- **The flattener must emit a sum type, `SimpleCommand | Opaque`.** Anything
-  irreducibly dynamic — `eval "$x"`, `source ./f.sh`, an array used as a
-  command, a function reached through a variable, `trap`'d code — reduces to
-  no command list at all. An `Opaque` node must reach `_judge_segment` and
-  ask (mapping onto the existing `nested_opaque=True` path, which needs no
-  new downstream code). Silently omitting them would rebuild exactly the
-  Phase 0 bug in a nicer shape.
-- **Per-command structural context must survive the flattening** —
-  `in_loop` / `backgrounded` / `deferred` / `conditional` flags. Some risk
-  lives in composition, not in any single command: a loop runs `rm $f` N
-  times over unresolved values, `&` backgrounds work past the `timeout`,
-  `trap … EXIT` defers execution.
+To share segment building rather than reimplement it, `_parser.parse_command`
+was split into `prepare_tokens()` (front half: heredocs lifted, newlines and
+IO_NUMBER redirects masked, tokenized, grouping *split out but not dropped*)
+and `build_parsed()` (back half: segments, redirection decoding, heredoc
+attachment). `parse_command` = `build_parsed(_drop_grouping(prepare_tokens))`;
+`flatten_command` = `build_parsed(walk(prepare_tokens))`. The old
+`_strip_grouping` became `_split_grouping` + `_drop_grouping` because the
+flattener needs `{`/`}` to bound a function body and `)` to end a `case`
+pattern, where `parse_command` only needs them gone.
 
-Sequence: (1) `kodo/shellparser/_flatten.py`, a keyword-driven recursive
-descent handling `if`/`for`/`while`/`until`/`case`, function definitions
-(recorded, not emitted at the definition site) and call sites (body inlined,
-depth-capped, recursion → `Opaque`); (2) rewire `analyze_command` and
-`command_may_mutate` onto it, with `_track_cwd` gaining a rule that a `cd`
-inside a conditional or loop body does not propagate to siblings; (3)
-calibration — this is the largest phase, not the parser: an ask-count cap
-(past *N* distinct asking commands, collapse to one "this script does too
-much to review piecewise" ask) and growing the 96-rule table for commands
-that used to hide inside script bodies (`make`, `install`, `ln`, `chmod`);
-(4) the PowerShell dialect, or an explicit documented gap; (5) docs.
+### Decisions, and why
 
-Known gap this closes, tracked here so it is not lost: a function definition
-currently leaks its body into a *grantable* rule shape —
-`f() { rm -rf src; }; f` offers `('f','rm')`, pinning a permanent
-always-allow rule to a name whose body is arbitrary. Deliberately **not**
-addressed in Phase 0; it needs the function-inlining step.
+- **Hand-rolled bounded grammar**, not `bashlex`/`tree-sitter`: keeps
+  `shellparser` dependency-free and T0, matches the package's bounded and
+  fail-closed philosophy, and applies to the PowerShell dialect too. It is a
+  keyword-driven linear walk over the existing token stream, not a bash
+  grammar.
+- **Opaque is a sum-type member, not an omission.** A construct that reduces
+  to no command list (self-recursive function, past the depth cap) becomes a
+  segment whose *executable slot* carries an `OPAQUE_PREFIX` marker — the
+  same opaque-token technique `_parser` already uses for redirects and
+  newlines, so **no dataclass needed a new field** and every positional
+  alignment survived. It surfaces as `NormalizedSegment.opaque_reason`.
+  Three places had to learn about it, and each was a potential silent allow:
+  `evaluate_command`'s per-segment loop (it skips empty executables — an
+  opaque segment must be handled *before* that skip), `_is_read_only` (an
+  opaque segment's empty executable is filtered out of `named`, so a
+  read-only sibling would otherwise take the whole line down the fast path),
+  and `command_may_mutate`.
+- **Contexts are carried, and one consumer uses them today.**
+  `ParsedCommand.contexts` reports `loop`/`conditional`/`background` per
+  segment. `_track_cwd` now refuses to let a `cd` inside a loop or branch
+  shift the chain's cwd — whether it ran is exactly what cannot be known.
+  An inlined function body inherits its call site's context.
+- **Function definitions are recorded, not emitted**, and inlined at each
+  call site with the call's arguments skipped. An uncalled function
+  contributes nothing, matching the shell. This closed the Phase 0 known
+  gap: `f() { rm -rf src; }; f` no longer offers `('f','rm')` as a permanent
+  rule shape — it inlines to `rm -rf src`, which is `destructive` and never
+  rule-eligible.
+- **`_CONTROL_KEYWORDS` (§2.2 rule 5) was kept, demoted to a backstop.** For
+  POSIX the flattener means a keyword never surfaces as a segment at all;
+  the frozenset still guards PowerShell's flat parse. Cost is one lookup;
+  the failure it prevents is a permanent rule.
 
-Open questions: whether the ask-count cap collapses to a single ask or
-truncates with a "+N more" affordance in the kodo-vsix permission panel (a
-two-repo decision); whether Phase 4 builds a PowerShell flattener or
-documents the gap; and whether a granted always-allow rule should be
-invalidated for shapes whose command came from an inlined function body.
+### Calibration — the largest part, as predicted
+
+- **Ask cap.** `_MAX_ASK_PARTS = 10` *distinct* asking commands (dedup by
+  shape runs first); past it the decision collapses to one whole-script ask
+  built fresh, carrying no shape, eligibility or offer. **Server-side only,
+  no protocol change** — the "+N more" panel affordance was the alternative
+  and is a two-repo change; it stays open.
+- **Rule-table growth.** The script-control builtins (`read`, `shift`,
+  `break`, `continue`, `return`, `exit`, `wait`, `let`, `getopts`, `local`,
+  `declare`, `typeset`, `readonly`, `shopt`, `builtin`) plus `install`.
+  These became *visible* only once bodies were emitted. Deliberately not
+  added: `exec` (peeled as a transparent wrapper in `._classify` instead, so
+  `exec rm -rf src` is judged as `rm`), `eval` (own ask-rule), `trap` (its
+  handler is deferred code this engine never analyzes), `umask` (it really
+  does change the permission bits of files created afterwards).
+- Measured on a fixed corpus: 18/18 benign scripts allow (was 17/18 before
+  the builtin additions, and far worse before flattening), 8/8 dangerous
+  scripts ask.
+
+### PowerShell (Phase 4): one fix, one documented gap
+
+- **Fixed — and it was a live bypass.** `parse_powershell_command` had the
+  *same* newline bug Phase 0 fixed for POSIX; the Phase 0 change had only
+  touched `_parser.py`. `Get-ChildItem\nRemove-Item -Recurse src` silently
+  allowed on Windows. Newlines now separate statements there, emitted lazily
+  so leading/trailing/repeated ones and a newline after a control operator
+  never manufacture an empty segment or split a pipe; backtick-newline is a
+  line continuation.
+- **Fixed — pre-existing false asks.** A backtick is PowerShell's escape
+  character, not command substitution; `_analysis` was scanning for the
+  POSIX backtick form in both dialects. Substitution scanning is now
+  dialect-aware.
+- **Gap, deliberately left.** No PowerShell *flattener*. Its control-flow
+  forms still fail closed to an ask on the keyword — friction, not a bypass,
+  unlike the newline. Writing a second hand-rolled grammar that cannot be
+  exercised on Windows from here was judged the worse trade. Recorded in
+  doc/SECURITY.md §10.
+
+### Still open
+
+- Ask-cap presentation: one collapsed ask (shipped) vs. a "+N more"
+  affordance in the kodo-vsix permission panel (two-repo).
+- Whether a granted always-allow rule should be invalidated for a shape
+  whose command came from an inlined function body. Currently a body's
+  command is offered on its own merits, exactly as if written inline.
+- `trap` handler bodies are still never parsed (doc/SECURITY.md §10).
 

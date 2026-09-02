@@ -571,6 +571,45 @@ _POSIX_RULES: tuple[CommandRule, ...] = _SHARED_RULES + (
     # bucket as `cd`; `history`/`jobs`/`dirs` are pure introspection.
     _allow(("cd", "export", "set", "unset", "alias", "source", ".")),
     _allow(("pushd", "popd", "dirs", "jobs", "history")),
+    # Script-control builtins. These became *visible* when the flattener
+    # started emitting the bodies of loops, branches and functions
+    # (doc/SECURITY_RULES_PLAN.md, "Flattening scripts") — before that they
+    # were swallowed into the arguments of a keyword pseudo-command and
+    # never judged at all. Every one of them affects only the current
+    # invocation's own shell: `read` binds stdin into a variable (it has no
+    # file-writing form at all), the loop/function control words change
+    # control flow, and the declaration builtins scope a name. None can
+    # touch the filesystem.
+    #
+    # Deliberately NOT here: `exec` (it replaces the shell with an arbitrary
+    # command, so it is peeled as a transparent wrapper in `._classify`
+    # instead, letting the *wrapped* command be judged on its own merits),
+    # `eval` (has its own ask-rule), `trap` (its handler is deferred code
+    # this engine never analyzes), and `umask` (it really does change the
+    # permission bits of files created afterwards).
+    _allow(
+        (
+            "read",
+            "shift",
+            "break",
+            "continue",
+            "return",
+            "exit",
+            "wait",
+            "let",
+            "getopts",
+            "local",
+            "declare",
+            "typeset",
+            "readonly",
+            "shopt",
+            "builtin",
+        )
+    ),
+    # `install` is `cp` plus a mode/owner — the same bucket as the `cp`/`mv`/
+    # `ln` allow above, and a path outside the workspace still asks via the
+    # workspace-escape check before any of these rules are consulted.
+    _allow("install"),
     # Process/system introspection (read-only in effect). `sysctl` is judged
     # per-segment instead (`._rules._DUAL_MODE`) — `-w`/assignment form
     # writes a live kernel parameter.

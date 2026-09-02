@@ -188,11 +188,19 @@ class ParsedCommand:
             ``'&&'``, ``';'``, …), in order. There is one operator between each
             adjacent pair of segments (a trailing operator yields a final empty
             segment).
+        contexts: Per-segment structural context, positionally aligned with
+            ``segments`` — the control-flow constructs each command sits
+            inside (``'loop'``, ``'conditional'``) plus ``'background'`` for
+            one launched with ``&``. Only :func:`kodo.shellparser.
+            flatten_command` fills this in; :func:`parse_command` leaves it
+            empty, since a flat split has no structure to report. Callers
+            must treat an empty tuple as "unknown", never as "no context".
     """
 
     raw: str
     segments: tuple[Segment, ...] = ()
     operators: tuple[str, ...] = field(default_factory=tuple)
+    contexts: tuple[frozenset[str], ...] = ()
 
     @property
     def executables(self) -> tuple[str, ...]:
@@ -222,11 +230,50 @@ def parse_command(command: str) -> ParsedCommand:
         ParsedCommand: The structural parse. Never raises; unparseable input
         falls back to a single best-effort segment.
     """
-    raw = command
+    tokens, stream_redirs, bodies = prepare_tokens(command)
+    return build_parsed(command, _drop_grouping(tokens), stream_redirs, bodies)
+
+
+StreamRedirs = list[tuple[str | None, str, str | None]]
+
+
+def prepare_tokens(command: str) -> tuple[list[str], StreamRedirs, list[str]]:
+    """Tokenize *command* up to (but not including) segment building.
+
+    The shared front half of :func:`parse_command` and
+    :func:`kodo.shellparser.flatten_command`: here-doc bodies lifted out,
+    separator newlines and IO_NUMBER redirects masked, tokenized, then
+    grouping punctuation *split out but not dropped* — the flattener needs
+    `(`/`)`/`{`/`}` to find a function definition's body and a `case` arm's
+    pattern, where `parse_command` only needs them gone
+    (:func:`_drop_grouping`).
+
+    Returns:
+        tuple: the token list, the stream-redirect registry
+        :func:`build_parsed` decodes placeholders against, and the here-doc
+        bodies to attach, in source order.
+    """
     reduced, bodies = _extract_heredocs(command)
     broken = _protect_newlines(reduced)
     protected, stream_redirs = _protect_stream_redirects(broken)
-    tokens = _fold_line_breaks(_strip_grouping(_tokenize(protected)))
+    return _fold_line_breaks(_split_grouping(_tokenize(protected))), stream_redirs, bodies
+
+
+def build_parsed(
+    raw: str,
+    tokens: list[str],
+    stream_redirs: StreamRedirs,
+    bodies: list[str],
+    contexts: list[frozenset[str]] | None = None,
+) -> ParsedCommand:
+    """Build a :class:`ParsedCommand` from a prepared token list.
+
+    The back half of :func:`parse_command`, shared verbatim with the
+    flattener so both produce structurally identical parses — only the token
+    list differs. *contexts* (when given) is the flattener's per-segment
+    structural context, positionally aligned with the segments these tokens
+    produce; :func:`parse_command` passes ``None`` and gets the empty tuple.
+    """
     if not tokens:
         return ParsedCommand(raw=raw)
 
@@ -272,7 +319,17 @@ def parse_command(command: str) -> ParsedCommand:
     if bodies:
         body_iter = iter(bodies)
         segments = [_attach_heredoc_bodies(s, body_iter) for s in segments]
-    return ParsedCommand(raw=raw, segments=tuple(segments), operators=tuple(operators))
+    aligned: tuple[frozenset[str], ...] = ()
+    if contexts is not None:
+        # Defensive: a mismatch would silently mis-attribute one segment's
+        # loop/conditional context to another, so pad or trim rather than
+        # trusting the two halves to agree.
+        padded = list(contexts[: len(segments)])
+        padded += [frozenset()] * (len(segments) - len(padded))
+        aligned = tuple(padded)
+    return ParsedCommand(
+        raw=raw, segments=tuple(segments), operators=tuple(operators), contexts=aligned
+    )
 
 
 def _attach_heredoc_bodies(segment: Segment, bodies: Iterator[str]) -> Segment:
@@ -483,13 +540,24 @@ def _make_segment(words: list[str], redirs: list[Redirection]) -> Segment:
     return Segment(executable=executable, args=args, redirections=tuple(redirs))
 
 
-def _strip_grouping(tokens: list[str]) -> list[str]:
-    """Drop bare `(`/`)` subshell and `{`/`}` brace-group punctuation.
+def _drop_grouping(tokens: list[str]) -> list[str]:
+    """Drop the grouping punctuation :func:`_split_grouping` isolated.
 
-    Subshell/brace grouping only wraps a command sequence — it doesn't
-    change what runs inside, so for the purposes of this parser (and its
-    judgement-making callers) it is inert and can simply disappear, letting
-    whatever separators live inside (`;`, `&&`, `|`, …) do their normal job.
+    Grouping only wraps a command sequence — it doesn't change what runs
+    inside — so for :func:`parse_command` (and its judgement-making callers)
+    it is inert and simply disappears, letting whatever separators live
+    inside do their normal job. The flattener keeps these tokens instead:
+    it needs `{`/`}` to delimit a function definition's body and `)` to end
+    a `case` arm's pattern.
+    """
+    return [tok for tok in tokens if tok not in ("(", ")", "{", "}")]
+
+
+def _split_grouping(tokens: list[str]) -> list[str]:
+    """Isolate bare `(`/`)` subshell and `{`/`}` brace-group punctuation as
+    their own tokens, so a caller can either drop them
+    (:func:`_drop_grouping`) or read them as structure (the flattener).
+
     Two independent cases:
 
     - `(`/`)`: `shlex` already splits these out as their own tokens, but
@@ -498,18 +566,15 @@ def _strip_grouping(tokens: list[str]) -> list[str]:
       touched here when it is built *entirely* from operator characters
       (never true of a word or quoted content, which always contain some
       other character, e.g. a quoted literal `"(error)"` stays untouched).
-    - `{`/`}`: not `shlex` punctuation, so a bare brace only ever appears as
-      its own whitespace-delimited token (`{ cmd; }`) — never merged into
-      `/tmp/{a,b}` or `find`'s `{}` placeholder, both single tokens already.
+    - `{`/`}`: not `shlex` punctuation, so a bare brace already only ever
+      appears as its own whitespace-delimited token (`{ cmd; }`) — never
+      merged into `/tmp/{a,b}` or `find`'s `{}` placeholder, both single
+      tokens already — and needs no splitting here.
     """
     out: list[str] = []
     for tok in tokens:
-        if tok in ("{", "}"):
-            continue
         if tok and set(tok) <= _OPERATOR_CHARS and ("(" in tok or ")" in tok):
-            out.extend(
-                piece for piece in _GROUPING_RE.split(tok) if piece and piece not in ("(", ")")
-            )
+            out.extend(piece for piece in _GROUPING_RE.split(tok) if piece)
             continue
         out.append(tok)
     return out

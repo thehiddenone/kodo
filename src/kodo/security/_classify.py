@@ -18,7 +18,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from kodo.shellparser import ParsedCommand, Redirection, Segment, redirection_writes_file
+from kodo.shellparser import (
+    ParsedCommand,
+    Redirection,
+    Segment,
+    opaque_reason,
+    redirection_writes_file,
+)
 
 __all__ = ["CD_EXECUTABLES", "NormalizedSegment", "SUB_MARK", "leaf_name", "normalize_segments"]
 
@@ -54,6 +60,7 @@ _TRANSPARENT_WRAPPERS: dict[str, int] = {
     "time": 0,
     "nice": 0,
     "stdbuf": 0,
+    "exec": 0,  # replaces the shell with the command; judge the command
     "timeout": 1,  # the duration
 }
 
@@ -138,6 +145,14 @@ class NormalizedSegment:
             otherwise.
         nested_opaque: The segment carries inline non-shell code
             (``python -c``, ``-EncodedCommand``) that cannot be analyzed.
+        opaque_reason: Non-empty when this "segment" is not a command at
+            all but a construct the flattener could not reduce to one (a
+            self-recursive shell function, nesting past its depth cap —
+            :func:`kodo.shellparser.opaque_reason`). The string says which.
+            Such a segment has no executable, subcommand or shape; callers
+            must judge it on this field alone and must never skip it for
+            having an empty ``executable``, which is exactly the silent-allow
+            shape the flattener exists to prevent.
         piped_input: The segment's stdin is the previous segment's pipe.
         writes_file: A redirection writes to a file (not a stream merge) —
             keeps a writer out of the *whole-command* ``CommandAnalysis.read_only``
@@ -155,6 +170,7 @@ class NormalizedSegment:
     has_substitution: bool = False
     nested_command: str | None = None
     nested_opaque: bool = False
+    opaque_reason: str = ""
     piped_input: bool = False
     writes_file: bool = False
 
@@ -186,6 +202,11 @@ def normalize_segments(parsed: ParsedCommand, *, windows: bool) -> tuple[Normali
 
 
 def _normalize(segment: Segment, *, windows: bool, piped_input: bool) -> NormalizedSegment:
+    unreducible = opaque_reason(segment.executable) if segment.executable else None
+    if unreducible is not None:
+        # The flattener's marker rides in the executable slot; it is not a
+        # program name and must not be matched, normalized or path-checked.
+        return NormalizedSegment(executable="", opaque_reason=unreducible, piped_input=piped_input)
     tokens = [segment.executable, *segment.args] if segment.executable else list(segment.args)
     has_sub = any(SUB_MARK in t for t in tokens)
     writes = any(redirection_writes_file(r) for r in segment.redirections)

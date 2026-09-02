@@ -30,14 +30,25 @@ alone (doc/SECURITY_RULES_PLAN.md). The verdict ladder, first hit wins:
     allows unconditionally, ahead of the rule table — its basename is never
     on any allow-list, so without this it would otherwise fall through to
     the generic default-ask.
+3b. **Unreducible constructs** — a segment the flattener marked opaque
+    (``._classify.NormalizedSegment.opaque_reason``: a self-recursive shell
+    function, nesting past its depth cap) asks with that reason and offers no
+    rule. It carries no executable, so it must be handled before the
+    empty-executable skip below, not after.
 4. **Per-segment rules** — every pipeline segment must individually clear:
    structural red flags (bare shell as a pipe target, inline/encoded code,
    ``xargs`` feeding unknown args to a mutator), then the ordered
    :class:`CommandRule` table (ask-rules and allow-rules interleaved,
    specific before general — see :mod:`._defaults`). Nested shell commands
-   (``sh -c "…"``) are evaluated recursively.
+   (``sh -c "…"``) are evaluated recursively. "Segment" here means one
+   command the script *may* execute: for POSIX the segments come from
+   :func:`kodo.shellparser.flatten_command`, so an `if` branch, a loop body,
+   a ``case`` arm and a called function's body each contribute their own.
 5. **Default: ask.** A command not in the known-safe set produces the same
    deterministic, explainable ask every time.
+6. **Cap.** More than :data:`_MAX_ASK_PARTS` distinct asking commands
+   collapse into one whole-script ask carrying no rule offer — a wall of
+   checkboxes is not a review.
 
 An allow-rule match is voided by an embedded substitution: a state-changing
 command whose arguments cannot be statically resolved is referred to the user
@@ -80,6 +91,23 @@ __all__ = [
 # Recursive evaluation (command substitutions, `sh -c` nesting) gives up —
 # and asks — beyond this depth; legitimate dev commands never nest this far.
 _MAX_DEPTH = 3
+
+# How many distinct asking commands a single `run_command` may surface
+# individually before the decision collapses to one whole-script ask.
+#
+# Flattening made this reachable: a script's branches, loop bodies and called
+# functions now each contribute their own commands, so a long bootstrap
+# script that used to produce one ask can produce a dozen. Past this point
+# the per-command permission prompt stops being a review and becomes a wall
+# of checkboxes nobody reads — and approving a wall one box at a time is
+# worse than approving the script knowingly, because each granted rule is
+# permanent. The collapsed ask deliberately carries **no** rule offer for
+# the same reason (doc/SECURITY_RULES_PLAN.md, "Flattening scripts").
+#
+# Ten is chosen to sit well above any ordinary pipeline or `&&` chain (which
+# rarely exceeds three or four asking commands) and below the size at which a
+# script stops being reviewable command-by-command.
+_MAX_ASK_PARTS = 10
 
 
 @dataclass(frozen=True)
@@ -399,6 +427,14 @@ def evaluate_command(
     seen_paths: set[tuple[str, str]] = set()
     sensitive_roots = _sensitive_roots()
     for i, segment in enumerate(analysis.segments):
+        if segment.opaque_reason:
+            # A construct the flattener could not reduce to commands. It has
+            # no executable, so the emptiness check below would skip it —
+            # which is precisely the silent-allow shape the flattener exists
+            # to prevent. Judge it on its reason alone, and never offer a
+            # rule for it: there is no shape to generalize.
+            asks.append(_ask(segment.opaque_reason, "obfuscation"))
+            continue
         if not segment.executable:
             continue
 
@@ -503,10 +539,36 @@ def evaluate_command(
             source="rules",
         )
 
+    if len(asks) > _MAX_ASK_PARTS:
+        return _collapsed_ask(asks)
+
     primary = asks[0]
     reason = primary.reason if len(asks) == 1 else "; ".join(a.reason for a in asks)
     parts = tuple(a.parts[0] for a in asks)
     return replace(primary, reason=reason, parts=parts)
+
+
+def _collapsed_ask(asks: list[RuleDecision]) -> RuleDecision:
+    """One whole-script ask standing in for more than `_MAX_ASK_PARTS` of them.
+
+    Built fresh rather than by `replace`-ing the first ask, so no shape,
+    eligibility or offer survives: nothing here has been reviewed
+    individually, so nothing may be granted permanently off the back of it.
+    A few leading reasons are quoted so the prompt still says *what kind* of
+    thing is in there rather than only how much.
+    """
+    preview = "; ".join(a.reason for a in asks[:3])
+    reason = (
+        f"This runs {len(asks)} distinct commands that each need review — too many to "
+        f"approve one at a time. The first few: {preview}"
+    )
+    return RuleDecision(
+        action="ask",
+        reason=reason,
+        category=asks[0].category,
+        source=asks[0].source,
+        parts=(AskPart(reason=reason),),
+    )
 
 
 def find_enforced_asks(
@@ -569,7 +631,11 @@ def find_enforced_asks(
 
     seen_shapes: set[tuple[str, str]] = set()
     for segment in analysis.segments:
-        if not segment.executable:
+        if segment.opaque_reason or not segment.executable:
+            # An opaque construct can never match a named `always_enforce`
+            # rule, and permissive treats everything outside that curated set
+            # as allowed — so it is skipped here exactly like any other
+            # command `smart` would ask about but permissive does not.
             continue
         if segment.executable in SHELL_EXECUTABLES and segment.nested_command is not None:
             parts.extend(
@@ -786,14 +852,19 @@ def _is_path_like(token: str) -> bool:
 
 
 # Control-structure reserved words, across every dialect this engine parses.
-# `._parser`/`._powershell` split pipeline segments on `;`/`&`/`&&`/`||`/`|`
-# with no grammar awareness of `for`/`if`/`while`/... compound statements, so
-# a loop or conditional's own keywords ("for f", "do echo", "done", "then", a
-# `for /L ... do` cmd.exe one-liner, ...) surface as pseudo-segments with a
-# reserved word as their "executable" — never an invocable program a rule
-# could meaningfully generalize over. The segment still asks (the compound
-# statement as a whole is exactly as unanalyzable as before); only the offer
-# is suppressed, doc/SECURITY_RULES_PLAN.md §2.2 rule 5.
+# A reserved word is never an invocable program, so a rule keyed on one could
+# only ever misfire — either never matching again (the same loop rarely
+# repeats verbatim) or silently generalizing over a keyword that appears in
+# unrelated, unreviewed compound statements later.
+#
+# For POSIX this is now a **backstop**, not the mechanism: `flatten_command`
+# understands compound statements, so `for`/`do`/`done` no longer surface as
+# pseudo-segments at all — the loop's *body* does. It still guards the
+# PowerShell dialect, which keeps the flat, grammar-free parse (its own
+# flattener is not written; doc/SECURITY.md §5), and any construct a future
+# flattener change stops recognizing. Kept deliberately: the cost is one
+# frozenset lookup, and the failure it prevents is a permanent rule.
+# doc/SECURITY_RULES_PLAN.md §2.2 rule 5.
 _CONTROL_KEYWORDS = frozenset(
     {
         # POSIX sh/bash/zsh/ksh
@@ -875,13 +946,10 @@ def _rule_offer(
 
     A segment whose executable is a shell/PowerShell/cmd control-structure
     keyword (``_CONTROL_KEYWORDS`` — ``for``, ``do``, ``done``, ``if``,
-    ``then``, ...) is never offered, known or not (§2.2 rule 5): the
-    line-level parser has no grammar for compound statements, so a keyword
-    orphaned into its own pseudo-segment by the `;`/`&`/`&&`/`||`/`|` split
-    is never an invocable program — offering a rule for it would either never
-    match again (the same loop rarely repeats verbatim) or, worse, silently
-    generalize over a keyword that appears in unrelated, unreviewed compound
-    statements later.
+    ``then``, ...) is never offered, known or not (§2.2 rule 5): a reserved
+    word is not an invocable program, so a rule keyed on one could only ever
+    misfire. For POSIX the flattener means such a segment no longer occurs;
+    this stays as the backstop for PowerShell's flat parse.
     """
     if segment.executable in _CONTROL_KEYWORDS:
         return None

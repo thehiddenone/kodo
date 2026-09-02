@@ -6,7 +6,9 @@ judgement-free, never raises. It understands the parts of PowerShell (and, by
 overlap, ``cmd.exe``) syntax that matter for *structure*:
 
 - separators: ``;`` ``|`` ``||`` ``&&`` ``&`` (a lone ``&`` at the start of a
-  segment is PowerShell's call operator, not a separator, and is dropped);
+  segment is PowerShell's call operator, not a separator, and is dropped),
+  and a **newline**, which separates statements exactly as ``;`` does — a
+  backtick-newline line continuation does not;
 - quoting: single quotes (literal, ``''`` escapes a quote) and double quotes
   (`` ` `` backtick escapes the next char, ``""`` escapes a quote);
 - `` ` `` backtick escaping outside quotes;
@@ -99,10 +101,25 @@ def _tokenize(command: str) -> list[tuple[str, str]]:
     word: list[str] = []
     i = 0
     n = len(command)
+    # A newline separates statements in PowerShell exactly as `;` does, but
+    # it only *becomes* a separator once another token actually follows it.
+    # Deferring the emit this way handles leading, trailing and repeated
+    # newlines, and a newline after a control operator (`cmd |` then a new
+    # line, which continues the pipeline), without any of them manufacturing
+    # an empty segment or splitting a pipe apart.
+    pending_newline = False
+
+    def emit(token: tuple[str, str]) -> None:
+        nonlocal pending_newline
+        if pending_newline:
+            if tokens and tokens[-1][0] != "sep":
+                tokens.append(("sep", ";"))
+            pending_newline = False
+        tokens.append(token)
 
     def flush() -> None:
         if word:
-            tokens.append(("word", "".join(word)))
+            emit(("word", "".join(word)))
             word.clear()
 
     while i < n:
@@ -110,6 +127,8 @@ def _tokenize(command: str) -> list[tuple[str, str]]:
 
         if ch.isspace():
             flush()
+            if ch == "\n":
+                pending_newline = True
             i += 1
             continue
 
@@ -149,6 +168,9 @@ def _tokenize(command: str) -> list[tuple[str, str]]:
             continue
 
         if ch == "`" and i + 1 < n:
+            if command[i + 1] == "\n":
+                i += 2  # Line continuation: the newline is removed entirely.
+                continue
             word.append(command[i + 1])
             i += 2
             continue
@@ -156,7 +178,7 @@ def _tokenize(command: str) -> list[tuple[str, str]]:
         two = command[i : i + 2]
         if two in _TWO_CHAR_SEPARATORS:
             flush()
-            tokens.append(("sep", two))
+            emit(("sep", two))
             i += 2
             continue
 
@@ -170,16 +192,16 @@ def _tokenize(command: str) -> list[tuple[str, str]]:
             i = redir.end()
             # `2>&1`-style merge: attach `&1` as the target word.
             if i < n and command[i] == "&" and i + 1 < n and command[i + 1].isdigit():
-                tokens.append(("redir", op))
-                tokens.append(("word", command[i : i + 2]))
+                emit(("redir", op))
+                emit(("word", command[i : i + 2]))
                 i += 2
             else:
-                tokens.append(("redir", op))
+                emit(("redir", op))
             continue
 
         if ch in _ONE_CHAR_SEPARATORS:
             flush()
-            tokens.append(("sep", ch))
+            emit(("sep", ch))
             i += 1
             continue
 

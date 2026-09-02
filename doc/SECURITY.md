@@ -241,6 +241,11 @@ from `kodo.shellparser` (the POSIX parser, or the PowerShell/Windows parser on
    Guided-mode file-tool resolver), so `create_file` / `edit_file` /
    `filesystem` / `read_file` can address the temp directory too, not just
    `run_command` (§4).
+1a. **The segments themselves** — for POSIX these are the commands the script
+   *may* execute (`kodo.shellparser.flatten_command`, §5), so an `if` branch,
+   a loop body, a `case` arm and a called function's body each contribute
+   their own; one may be *opaque* instead (§3.2 step 2a). PowerShell keeps
+   the flat split for now (§10).
 2. **`unresolved`** — substitution snippets (`$(...)`, backticks, `${VAR}`,
    `$VAR`/`$env:VAR`, `%VAR%`) that defeat static resolution. Substitutions
    are **masked before parsing** so `$(pwd)/y` stays one (skipped) token
@@ -363,8 +368,17 @@ evaluate_command()` — a deterministic verdict ladder, first hit wins
    construct tokenized down to the inner command's stray arguments:
    `diff <(rm -rf src) o.txt` parsed to a lone read-only `diff` segment and
    auto-allowed on step 3's fast path.
+2a. **Unreducible constructs** — a segment the flattener could not reduce to
+   a command at all (§5: a self-recursive shell function, function nesting
+   past its depth cap) → **ask**, with that reason, `obfuscation` category,
+   and **no rule offer** — there is no shape to generalize. Such a segment
+   carries no executable, so the engine handles it *before* its
+   empty-executable skip; handling it after would be the same silent-allow
+   shape the flattener exists to remove.
 3. **Read-only fast path** — `read_only` **and no segment has an
-   outside-workspace finding** → **allow**. The second half of that AND is
+   outside-workspace finding** → **allow**. An opaque segment (2a) also
+   disqualifies the whole line here, so a read-only sibling can't carry it
+   down the fast path. The second half of that AND is
    new (§3.2c): `read_only` alone only knows about executables and writes,
    nothing about paths, so a lone `cat /etc/hosts` — every executable
    "read-only", nothing written — must not slip through just because step 1
@@ -932,6 +946,92 @@ recursively like `bash -c "…"`. The "no other positional" rule is unchanged
 — `bash script.sh <<< data` pipes the string to *script.sh*'s stdin as data
 and keeps the "runs a workspace script" trust.
 
+### Flattening a script to the commands it may execute
+
+`parse_command()` is a flat tokenizer: it splits on separators and has no
+grammar, so `if`/`for`/`while`/`case`/function bodies carried no structural
+meaning and landed in the **arguments** of a keyword pseudo-command. The
+rule engine then judged `for f` and `do rm` — never `rm -rf src`. That failed
+closed only by luck: via the path check noticing a path-shaped argument, or
+the generic "not in the known-safe command set" default on the keyword.
+
+`kodo.shellparser.flatten_command()` (POSIX only — see §10) walks that
+structure and returns the same `ParsedCommand`, populated with the primitive
+commands the script **may** execute. `kodo.security._analysis.
+analyze_command` and `kodo.runtime._checkpoints.command_may_mutate` both
+consume it; everything downstream — the 96-rule table, per-segment judging,
+`AskPart` dedup, the permission prompt — is unchanged, because the rule
+engine was **already** per-command. This was a producer swap, not a rewrite.
+
+It is a keyword-driven linear walk over the existing token stream, not a bash
+grammar, and it is deliberately bounded in the same way the rest of this
+package is. Three properties make it safe to judge on:
+
+- **It over-approximates.** *Both* branches of an `if` are emitted, and so is
+  a loop body that may run zero times. Extra commands to judge, never a
+  missing one — the correct bias for a permission gate.
+- **It never silently drops what it cannot reduce.** A self-recursive
+  function, or one nesting past the inlining depth cap, becomes an *opaque*
+  segment (`kodo.shellparser.opaque_reason`) that asks with that reason and
+  offers no rule (§3.2 step 2a). Anything else it does not recognize keeps
+  its old behavior: the tokens stay ordinary words and reach the engine as an
+  ordinary, fail-closed command.
+- **It reports structure it cannot express as commands.**
+  `ParsedCommand.contexts` carries, per segment, the constructs it sits
+  inside — `loop`, `conditional`, `background` — because some risk is
+  compositional and invisible in a flat list. The one consumer today is
+  `_track_cwd`: a `cd` inside a loop or a branch no longer shifts the chain's
+  cwd, since whether it ran (and how often) is exactly what static analysis
+  cannot know. `cd sub && cat ../notes.txt` still resolves against the new
+  directory; `for f in a; do cd sub; done; cat ../notes.txt` does not, and
+  asks. An empty `contexts` means "not flattened" (the PowerShell dialect),
+  never "no context".
+
+**Function definitions are recorded, not executed.** A definition's body is
+not emitted where it is defined — defining a function runs nothing — and is
+spliced in at each call site instead, depth-capped, with the call's own
+arguments skipped (they are `$1`…`$n` inside the body, not a command). A
+function that is never called contributes no commands at all, matching the
+shell. This closes a real hole: `f() { rm -rf src; }; f` used to leak the
+body into the arguments of an unknown command `f` and *offer* `('f','rm')`
+as a permanent always-allow shape — pinning a rule to a name whose body is
+arbitrary. It now inlines to `rm -rf src`, which is `destructive` and has
+never been rule-eligible.
+
+**The cost is friction, and it is capped.** A script's branches, bodies and
+called functions each contribute commands, so a long bootstrap script that
+used to produce one ask can produce a dozen. Past `_MAX_ASK_PARTS` (10)
+*distinct* asking commands — dedup by shape runs first — the decision
+collapses to a single whole-script ask carrying **no** rule offer: a wall of
+checkboxes is not a review, and approving one box at a time is worse than
+approving the script knowingly, because each granted rule is permanent.
+Calibration in the other direction went into the rule table: `read`,
+`shift`, `break`, `continue`, `return`, `exit`, `wait`, `let`, `getopts`,
+`local`, `declare`, `typeset`, `readonly`, `shopt`, `builtin` and `install`
+all allow now — they became *visible* only once loop and function bodies
+were emitted, and each touches only the current invocation's own shell.
+`exec` is peeled as a transparent wrapper in `._classify` instead, so
+`exec rm -rf src` is judged as `rm`, not waved through as `exec`.
+
+### Newlines and backticks in the PowerShell dialect
+
+`parse_powershell_command()` had the **same newline bypass** as the POSIX
+parser and needed the same fix: its tokenizer classified `\n` as ordinary
+whitespace, so `Get-ChildItem\nRemove-Item -Recurse src` read as one
+read-only `Get-ChildItem` and silently allowed. A newline now separates
+statements there exactly as `;` does, emitted lazily so that leading,
+trailing and repeated newlines — and a newline after a control operator,
+which continues the pipeline — never manufacture an empty segment or split a
+pipe. A backtick-newline line continuation is removed entirely rather than
+folded into the word.
+
+Separately, a backtick is PowerShell's **escape character**, never command
+substitution — that dialect spells it `$(...)`. `kodo.security._analysis`
+was scanning for the POSIX backtick form in both dialects, so an ordinary
+escape (and everything up to the next backtick) was masked out of path
+analysis and asked about as a phantom "embedded command substitution".
+Substitution scanning is now dialect-aware; `$(...)` is unchanged in both.
+
 The security layer picks the dialect by platform (`os.name`).
 
 ## 6. Wire protocol & VSIX UI
@@ -1145,17 +1245,19 @@ expected to simply retry.
 
 Phase 2 user rules (§3.2a) are implemented. What's left:
 
-- **Flattening a script to the commands it may execute** — the parser is a
-  flat tokenizer, not an AST (§5), so `if`/`for`/`while`/`case`/function
-  bodies carry no structural meaning and land in the *arguments* of a
-  keyword pseudo-command; today that fails closed only via the path check or
-  the generic unknown-command default. The plan reduces a script to the set
-  of primitive commands it may execute and runs each through the existing
-  ladder — the consumer is already per-command, so it is a producer swap.
-  A known gap it closes: `f() { rm -rf src; }; f` currently offers
-  `('f','rm')` as a permanent always-allow shape, pinning a rule to a name
-  whose body is arbitrary. Full design, decisions and sequence:
-  SECURITY_RULES_PLAN.md, "Flattening scripts to judgeable commands".
+- **A PowerShell flattener.** Script flattening (§5) is POSIX-only;
+  `parse_powershell_command` still uses the flat, grammar-free split, so a
+  Windows `if (…) { … }` / `foreach` / `function` body is not judged as its
+  own commands. This is **friction, not a bypass** — those forms fail closed
+  to an ask on the keyword today, and the newline separator (the one case
+  that really did allow silently) is fixed in both dialects. Closing it
+  means a second hand-rolled grammar; the deliberate choice was to document
+  the asymmetry rather than write one that cannot be exercised on Windows
+  here. `_CONTROL_KEYWORDS` in `kodo.security._rules` is the backstop that
+  keeps a PowerShell keyword out of a permanent rule offer meanwhile.
+- **`trap` handler bodies are never analyzed.** `trap 'cmd' EXIT` asks as an
+  unknown command (fail-closed, correct) but the deferred code inside it is
+  not parsed the way `sh -c` / heredoc bodies are.
 - **Phase 3** — ask-rate telemetry, a standalone rules-management UI
   (list/revoke a session's or the machine's granted rules outside the flow
   of answering a live prompt — `security.add_rule`/`security.rules.list`/

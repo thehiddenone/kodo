@@ -387,3 +387,54 @@ def test_newline_inside_heredoc_body_is_not_a_separator() -> None:
     assert p.executables == ("cat", "echo")
     assert p.operators == (";",)
     assert p.segments[0].redirections[0].heredoc_body == "rm -rf src\n"
+
+
+# ----------------------------------------------------------------------
+# PowerShell: newlines separate statements there too
+# ----------------------------------------------------------------------
+
+
+def test_powershell_newline_separates_commands() -> None:
+    # The Windows half of the same bypass: `_tokenize` classified a newline
+    # as ordinary whitespace, so `Remove-Item` became an argument of
+    # `Get-ChildItem` and the whole line read as provably read-only.
+    p = parse_powershell_command("Get-ChildItem\nRemove-Item -Recurse src")
+    assert p.executables == ("Get-ChildItem", "Remove-Item")
+    assert p.operators == (";",)
+
+
+def test_powershell_crlf_newline_separates_commands() -> None:
+    p = parse_powershell_command("Get-ChildItem\r\nRemove-Item src")
+    assert p.executables == ("Get-ChildItem", "Remove-Item")
+    assert p.operators == (";",)
+
+
+def test_powershell_newline_after_operator_continues_the_pipeline() -> None:
+    p = parse_powershell_command("Get-Content a |\n  Out-File b")
+    assert p.executables == ("Get-Content", "Out-File")
+    assert p.operators == ("|",)
+
+
+def test_powershell_backtick_newline_is_a_line_continuation() -> None:
+    p = parse_powershell_command("Get-ChildItem `\n  -Recurse")
+    assert p.executables == ("Get-ChildItem",)
+    assert p.operators == ()
+    assert p.segments[0].args == ("-Recurse",)
+
+
+def test_powershell_leading_and_trailing_newlines_add_no_empty_segments() -> None:
+    p = parse_powershell_command("\nGet-ChildItem\n")
+    assert p.executables == ("Get-ChildItem",)
+    assert p.operators == ()
+    assert len(p.segments) == 1
+
+
+def test_powershell_blank_lines_collapse_to_one_separator() -> None:
+    p = parse_powershell_command("Get-ChildItem\n\n\nRemove-Item src")
+    assert p.operators == (";",)
+
+
+def test_powershell_newline_inside_quotes_is_not_a_separator() -> None:
+    p = parse_powershell_command('Write-Output "line one\nline two"')
+    assert p.executables == ("Write-Output",)
+    assert p.operators == ()

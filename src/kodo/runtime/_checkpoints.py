@@ -32,7 +32,7 @@ from pathlib import Path
 
 from kodo.mirror import ShadowMirror
 from kodo.project import ProjectLayout
-from kodo.shellparser import ParsedCommand, redirection_writes_file
+from kodo.shellparser import ParsedCommand, opaque_reason, redirection_writes_file
 
 __all__ = [
     "CheckpointEntry",
@@ -150,6 +150,8 @@ def command_may_mutate(parsed: ParsedCommand) -> bool:
     execs = parsed.executables
     if not execs:
         return False
+    if any(opaque_reason(exe) is not None for exe in execs):
+        return True  # Unreducible construct: assume it wrote something.
     return any(_command_name(exe) not in _READONLY_COMMANDS for exe in execs)
 
 
