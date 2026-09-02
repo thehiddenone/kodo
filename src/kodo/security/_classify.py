@@ -273,9 +273,9 @@ def _is_flag(token: str, windows: bool) -> bool:
 def _heredoc_nested_command(
     exe: str, positionals: tuple[str, ...], redirections: tuple[Redirection, ...]
 ) -> tuple[str | None, bool]:
-    """A bare shell/interpreter fed a here-document reads it as its program —
-    same trust boundary as ``-c``/``-e`` (:func:`_nested_command`), just
-    supplied over stdin instead of a flag.
+    """A bare shell/interpreter fed a here-document *or here-string* reads it
+    as its program — same trust boundary as ``-c``/``-e``
+    (:func:`_nested_command`), just supplied over stdin instead of a flag.
 
     Only applies when there's no other positional (``bash script.sh <<EOF``
     feeds the heredoc to *script.sh*'s stdin as data, not to bash-as-code —
@@ -283,6 +283,15 @@ def _heredoc_nested_command(
     A `-` placeholder positional (`python - <<EOF`, meaning "read the program
     from stdin") is caught too: `_is_flag` already treats a bare `-` as a
     flag, so it never reaches `positionals`.
+
+    A here-string (``bash <<< 'rm -rf src'``) is the same construct in
+    single-line form — its whole *target* is the program text, where a
+    here-document's is the body between the operator and its terminator —
+    so both are resolved to the same ``nested_command``. Before this, a bare
+    shell fed a here-string produced no positionals and no nested command at
+    all, so it fell through to the generic "starts a bare interactive shell"
+    ask: the right verdict by luck, with a reason that named neither the code
+    being run nor its actual danger category.
     """
     if positionals:
         return None, False
@@ -290,6 +299,8 @@ def _heredoc_nested_command(
         (r.heredoc_body for r in redirections if r.operator == "<<" and r.heredoc_body is not None),
         None,
     )
+    if body is None:
+        body = next((r.target for r in redirections if r.operator == "<<<" and r.target), None)
     if body is None:
         return None, False
     if exe in _SH_FAMILY:

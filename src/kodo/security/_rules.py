@@ -991,7 +991,8 @@ def _path_rule_offer(
 
 
 def _strip_command_sub(snippet: str) -> str:
-    """``$(inner)`` / ```inner``` → ``inner`` (best-effort, may be empty)."""
-    if snippet.startswith("$("):
+    """``$(inner)`` / ```inner``` / ``<(inner)`` → ``inner`` (best-effort,
+    may be empty)."""
+    if snippet.startswith(("$(", "<(", ">(")):
         return snippet[2:].rstrip(")").strip()
     return snippet.strip("`").strip()

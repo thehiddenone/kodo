@@ -44,6 +44,14 @@ from kodo.shellparser import parse_command
         # always intended (this used to disagree with `kodo.security`'s own
         # classification before both were unified on `redirection_writes_file`).
         ("cat <> rw.txt", True),
+        # A newline is a command separator: before the parser recognized one,
+        # every line after the first collapsed into line one's *arguments*, so
+        # a multi-line command looked as read-only as its first line and the
+        # checkpoint sweep was skipped for changes it really did make.
+        ("ls\nrm -rf dist", True),
+        ("cat x.txt\ntee out.txt", True),
+        # …but a genuinely read-only multi-line command still skips the sweep.
+        ("ls -la\nls -R", False),
     ],
 )
 def test_command_may_mutate(command: str, expected: bool) -> None:

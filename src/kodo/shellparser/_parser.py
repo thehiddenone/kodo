@@ -80,6 +80,29 @@ _QUOTE_SPAN_RE = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
 # so the placeholder survives `_tokenize` as a single opaque word.
 _REDIR_PLACEHOLDER_RE = re.compile(r"\x00RDR(\d+)\x00")
 
+# A newline is a POSIX command separator, exactly equivalent to `;` — but
+# `shlex` classifies it as ordinary whitespace, so without this pass every
+# line after the first silently collapses into the *arguments* of the first
+# line's command (`ls\nrm -rf src` parsed to a single `ls` segment carrying
+# "rm -rf src" as args). Multi-line commands are routine here — `run_command`
+# supports here-documents — so the separator is masked to an opaque token
+# before tokenization, the same way `_protect_stream_redirects` protects an
+# IO_NUMBER redirect, and folded back into a `;` afterwards.
+#
+# The alternation is scanned in order, so each branch consumes its match
+# whole: a backslash-newline is a *line continuation* (bash removes it; it
+# becomes a single space here, never a separator), any other backslash-escape
+# is passed through untouched so an escaped backslash can't swallow the
+# newline behind it (`\\` then a real newline still separates), and only a
+# bare newline becomes the separator token.
+_LINE_BREAK_RE = re.compile(r"\\\r?\n|\\.|\r?\n", re.DOTALL)
+
+# The masked separator. Padded with spaces on both sides when inserted, and
+# placed *after* the newline it replaces — `shlex`'s `#` comment handling
+# runs to the end of the line, so a token placed before the newline would be
+# eaten along with the comment (`ls # note\nrm -rf x`) and the separator lost.
+_LINE_BREAK_TOKEN = "\x00NL\x00"
+
 
 @dataclass(frozen=True)
 class Redirection:
@@ -201,8 +224,9 @@ def parse_command(command: str) -> ParsedCommand:
     """
     raw = command
     reduced, bodies = _extract_heredocs(command)
-    protected, stream_redirs = _protect_stream_redirects(reduced)
-    tokens = _strip_grouping(_tokenize(protected))
+    broken = _protect_newlines(reduced)
+    protected, stream_redirs = _protect_stream_redirects(broken)
+    tokens = _fold_line_breaks(_strip_grouping(_tokenize(protected)))
     if not tokens:
         return ParsedCommand(raw=raw)
 
@@ -264,6 +288,83 @@ def _attach_heredoc_bodies(segment: Segment, bodies: Iterator[str]) -> Segment:
             for r in segment.redirections
         ),
     )
+
+
+def _protect_newlines(text: str) -> str:
+    """Mark every newline in *text* that acts as a command separator, so it
+    survives ``shlex`` (which treats it as ordinary whitespace) as its own
+    token instead of silently vanishing.
+
+    Quoted spans are passed through verbatim via `_QUOTE_SPAN_RE` — the same
+    guard `_protect_stream_redirects` uses — so a literal newline inside
+    ``echo "line one\nline two"`` stays data. Here-document bodies were
+    already lifted out by :func:`_extract_heredocs` before this runs, so
+    their newlines are never seen here either. A backslash-newline line
+    continuation collapses to a space (what bash does with it) rather than
+    separating.
+
+    Returns:
+        str: The rewritten text. Every separator newline is kept *and*
+        followed by a space-padded `_LINE_BREAK_TOKEN`; :func:`_fold_line_breaks`
+        turns the surviving tokens into `;` operators once tokenization has
+        run.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        text = match.group()
+        if text.startswith("\\"):
+            # `\<newline>` is a line continuation; any other `\x` escape is
+            # passed through so it can't swallow a following newline.
+            return " " if text.endswith("\n") else text
+        return f"{text} {_LINE_BREAK_TOKEN} "
+
+    out: list[str] = []
+    cursor = 0
+    for qm in _QUOTE_SPAN_RE.finditer(text):
+        out.append(_LINE_BREAK_RE.sub(replace, text[cursor : qm.start()]))
+        out.append(qm.group())
+        cursor = qm.end()
+    out.append(_LINE_BREAK_RE.sub(replace, text[cursor:]))
+    return "".join(out)
+
+
+def _fold_line_breaks(tokens: list[str]) -> list[str]:
+    """Turn each surviving `_LINE_BREAK_TOKEN` into a `;` separator.
+
+    A newline that directly follows a control operator *continues* the
+    command rather than separating it (``curl x |\n    sh``, ``a &&\n b``) —
+    emitting a separator there would split the pipeline and lose the
+    operator's own meaning, notably ``|``'s piped-stdin fact, which the
+    security layer keys its "pipes data into a shell" finding on. Those
+    line breaks are dropped instead, leaving the real operator to join the
+    two sides exactly as if they had been written on one line. A leading
+    line break (a command starting with a blank or comment-only line) is
+    dropped for the same reason: there is nothing to its left to separate,
+    and so is a trailing one, or one whose next real token is itself a
+    separator — nothing to its right, or an explicit operator already doing
+    the job.
+
+    `;` rather than a distinct operator because a newline *is* `;` in POSIX
+    sequencing semantics, and every downstream consumer already handles `;`
+    correctly — `._analysis._SEQUENTIAL_OPERATORS` (inline-``cd`` tracking)
+    and `._classify.normalize_segments` (the ``|``-only piped-input check).
+    """
+    out: list[str] = []
+    for i, token in enumerate(tokens):
+        if token != _LINE_BREAK_TOKEN:
+            out.append(token)
+            continue
+        if not out or out[-1] in _SEGMENT_SEPARATORS:
+            continue
+        following = next((t for t in tokens[i + 1 :] if t != _LINE_BREAK_TOKEN), None)
+        if following is None or following in _SEGMENT_SEPARATORS:
+            # Nothing left to separate: a trailing newline (every heredoc's
+            # operator line ends in one), or an explicit operator on the next
+            # line taking over the join (`cmd\n; other`). Emitting here would
+            # only manufacture an empty segment.
+            continue
+        out.append(";")
+    return out
 
 
 def _protect_stream_redirects(text: str) -> tuple[str, list[tuple[str | None, str, str | None]]]:

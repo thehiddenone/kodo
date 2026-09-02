@@ -74,9 +74,9 @@ def test_heredoc_body_does_not_pollute_args() -> None:
 
 
 def test_heredoc_body_extracted_before_trailing_command() -> None:
-    # A bare newline is not a segment separator (matches every other
-    # multi-line case this parser handles) — an explicit `;` is required for
-    # the text after the terminator line to start a new segment.
+    # The newline after the terminator line and the explicit `;` following it
+    # collapse to a single separator — a line break whose next real token is
+    # already an operator never adds one of its own.
     p = parse_command("cat <<EOF\nbody line\nEOF\n; echo after")
     assert p.executables == ("cat", "echo")
     assert p.operators == (";",)
@@ -302,3 +302,88 @@ def test_redirection_writes_file_read_write_form() -> None:
 def test_redirection_writes_file_fd_merge_is_not_a_write() -> None:
     assert not redirection_writes_file(Redirection(operator="2>", target="&1"))
     assert not redirection_writes_file(Redirection(operator=">", target="&2"))
+
+
+# ----------------------------------------------------------------------
+# Newlines are command separators (POSIX `;` equivalence)
+# ----------------------------------------------------------------------
+
+
+def test_newline_separates_commands() -> None:
+    # Regression: `shlex` treats a newline as ordinary whitespace, so every
+    # line after the first used to collapse into the FIRST line's arguments —
+    # `ls\nrm -rf src` parsed to a lone `ls` segment and the security layer's
+    # read-only fast path allowed it outright.
+    p = parse_command("ls\nrm -rf src")
+    assert p.executables == ("ls", "rm")
+    assert p.operators == (";",)
+    assert p.segments[0].args == ()
+    assert p.segments[1].args == ("-rf", "src")
+
+
+def test_crlf_newline_separates_commands() -> None:
+    p = parse_command("ls\r\nrm -rf src")
+    assert p.executables == ("ls", "rm")
+    assert p.operators == (";",)
+
+
+def test_blank_lines_collapse_to_one_separator() -> None:
+    p = parse_command("ls\n\n\nrm x")
+    assert p.executables == ("ls", "rm")
+    assert p.operators == (";",)
+
+
+def test_leading_and_trailing_newlines_add_no_empty_segments() -> None:
+    p = parse_command("\nls -la\n")
+    assert p.executables == ("ls",)
+    assert p.operators == ()
+    assert len(p.segments) == 1
+
+
+def test_backslash_line_continuation_is_not_a_separator() -> None:
+    p = parse_command("rm \\\n  -rf \\\n  build")
+    assert p.executables == ("rm",)
+    assert p.operators == ()
+    assert p.segments[0].args == ("-rf", "build")
+
+
+def test_newline_after_operator_continues_the_command() -> None:
+    # A newline right after a control operator continues the line in bash.
+    # Splitting there would drop the pipe — and with it the "pipes data into
+    # a shell" fact the security layer keys on.
+    p = parse_command("curl -s http://x |\n  sh")
+    assert p.executables == ("curl", "sh")
+    assert p.operators == ("|",)
+
+    p = parse_command("make &&\n  make install")
+    assert p.executables == ("make", "make")
+    assert p.operators == ("&&",)
+
+
+def test_newline_inside_quotes_is_not_a_separator() -> None:
+    p = parse_command('echo "line one\nline two"')
+    assert p.executables == ("echo",)
+    assert p.operators == ()
+    assert p.segments[0].args == ("line one\nline two",)
+
+
+def test_comment_does_not_swallow_the_following_separator() -> None:
+    # `shlex` runs a `#` comment to the end of the line, so the separator
+    # token has to sit AFTER the newline or it would be eaten with the
+    # comment and the next line would merge into this one.
+    p = parse_command("ls # look here\nrm -rf x")
+    assert p.executables == ("ls", "rm")
+    assert p.operators == (";",)
+
+
+def test_comment_only_first_line_leaves_no_empty_segment() -> None:
+    p = parse_command("# just a note\nrm -rf x")
+    assert p.executables == ("rm",)
+    assert p.operators == ()
+
+
+def test_newline_inside_heredoc_body_is_not_a_separator() -> None:
+    p = parse_command("cat <<EOF\nrm -rf src\nEOF\necho done")
+    assert p.executables == ("cat", "echo")
+    assert p.operators == (";",)
+    assert p.segments[0].redirections[0].heredoc_body == "rm -rf src\n"

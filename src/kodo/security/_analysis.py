@@ -69,6 +69,13 @@ def _mask_unless_ps_null(match: re.Match[str]) -> str:
 _COMMAND_SUB_RES: tuple[re.Pattern[str], ...] = (
     re.compile(r"\$\([^)]*\)?"),  # $(command) / $( unterminated
     re.compile(r"`[^`]*`?"),  # `command`
+    # Process substitution `<(cmd)` / `>(cmd)`: bash runs *cmd* and hands the
+    # caller a /dev/fd path to its stream. It executes exactly like `$(...)`
+    # does, so it is recursively judged the same way. Without this the whole
+    # construct tokenized down to the inner command's stray arguments —
+    # `diff <(rm -rf src) o.txt` parsed to a lone read-only `diff` segment
+    # and auto-allowed on the read-only fast path.
+    re.compile(r"[<>]\([^)]*\)?"),
 )
 _VALUE_SUB_RES: tuple[re.Pattern[str], ...] = (
     re.compile(r"\$\{[^}]*\}?"),  # ${VAR}

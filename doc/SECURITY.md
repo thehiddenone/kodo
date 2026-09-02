@@ -245,8 +245,9 @@ from `kodo.shellparser` (the POSIX parser, or the PowerShell/Windows parser on
    `$VAR`/`$env:VAR`, `%VAR%`) that defeat static resolution. Substitutions
    are **masked before parsing** so `$(pwd)/y` stays one (skipped) token
    instead of shlex splitting off a bogus absolute `/y`. The *command*
-   substitutions (`$(...)`, backticks — they execute code) are additionally
-   surfaced as **`command_subs`** for the rule engine's recursion.
+   substitutions (`$(...)`, backticks, and **process substitution**
+   `<(...)`/`>(...)` — they all execute code) are additionally surfaced as
+   **`command_subs`** for the rule engine's recursion.
 3. **`read_only`** — every pipeline executable, **after wrapper-peeling**
    (`env`/`nohup`/`timeout`/… — see point 4), is on a conservative read-only
    allow-list *and* no redirection writes a file. The list is stricter than
@@ -353,9 +354,15 @@ evaluate_command()` — a deterministic verdict ladder, first hit wins
    substitution, `cd -`, or a bare `cd`) simply stops the chain from
    updating any further — every later segment keeps the last *known-good*
    cwd, failing closed rather than guessing.
-2. **Command substitutions** — each `$(...)`/backtick snippet is recursively
-   evaluated as its own command (depth-capped at 3); a dangerous inner
-   command asks. `echo $(date)` allows; `echo $(rm -rf /)` asks.
+2. **Command substitutions** — each `$(...)`/backtick/`<(...)`/`>(...)`
+   snippet is recursively evaluated as its own command (depth-capped at 3);
+   a dangerous inner command asks. `echo $(date)` allows; `echo $(rm -rf /)`
+   asks. Process substitution belongs in this step for exactly the same
+   reason the others do — bash runs the inner command and hands the caller a
+   `/dev/fd` path to its stream — and before it was recognized, the whole
+   construct tokenized down to the inner command's stray arguments:
+   `diff <(rm -rf src) o.txt` parsed to a lone read-only `diff` segment and
+   auto-allowed on step 3's fast path.
 3. **Read-only fast path** — `read_only` **and no segment has an
    outside-workspace finding** → **allow**. The second half of that AND is
    new (§3.2c): `read_only` alone only knows about executables and writes,
@@ -881,6 +888,50 @@ receiving command (`cat`, `tee`, `mysql`, …) simply has its heredoc body
 discarded from the token stream — it was already just data, and the fix's
 only job there is to stop it from polluting `args`/`subcommand`.
 
+`parse_command()` also treats a **newline as a command separator** — which
+it is in POSIX, exactly equivalent to `;`. `shlex` classifies a newline as
+ordinary whitespace, so before this every line after the first silently
+collapsed into the *arguments* of the first line's command, and a multi-line
+command was judged as if it were only its opening line. This was a silent
+**allow** in the default `smart` posture, not a confusing reason: `ls\nrm
+-rf src` parsed to a single `ls` segment carrying `rm -rf src` as arguments
+and took the read-only fast path (§3.2 step 3); `git status\ngit push
+--force` matched the benign `git status` rule; and `find_enforced_asks`
+(§2a) saw nothing to enforce, defeating the posture-independent always-ask
+set in `permissive`, the one posture where it is the only protection left.
+`kodo.runtime._checkpoints.command_may_mutate` read the same executables
+tuple, so the checkpoint sweep was skipped for multi-line commands that did
+mutate. Multi-line input is routine here — `run_command` supports
+here-documents — so this was reachable in ordinary use, not a crafted edge.
+
+Mechanically it mirrors `_protect_stream_redirects`: `_protect_newlines`
+scans the heredoc-reduced text, skipping quoted spans via `_QUOTE_SPAN_RE`
+(a newline inside `echo "a\nb"` stays data) and heredoc bodies (already
+lifted out), and marks each separator newline with an opaque token that
+survives tokenization; `_fold_line_breaks` then turns the surviving tokens
+into `;` operators. Three cases deliberately emit *no* separator, matching
+what bash does: a **backslash-newline line continuation** (collapsed to a
+space), a newline **directly after a control operator** (`curl x |\n  sh`,
+`make &&\n  make install` — splitting there would drop the operator and
+with it `|`'s piped-stdin fact, which the "pipes data into a shell" finding
+keys on), and a **leading or trailing** newline, or one whose next real
+token is already a separator (nothing to join, so it would only manufacture
+an empty segment). The token is placed *after* the newline it replaces
+because `shlex` runs a `#` comment to the end of its line — a token before
+the newline would be eaten with the comment and the separator lost.
+
+A **here-string** fed to a bare shell (`bash <<< 'rm -rf src'`) is now
+resolved to that segment's `nested_command`, the same as a here-document
+body (`kodo.security._classify._heredoc_nested_command` handles both) — it
+is the same construct in single-line form, with the whole redirection
+*target* as the program text instead of the body between the operator and
+its terminator. It already asked, but only by falling through to the generic
+"starts a bare interactive shell" default, with a reason that named neither
+the code being run nor its real danger category; it is now judged
+recursively like `bash -c "…"`. The "no other positional" rule is unchanged
+— `bash script.sh <<< data` pipes the string to *script.sh*'s stdin as data
+and keeps the "runs a workspace script" trust.
+
 The security layer picks the dialect by platform (`os.name`).
 
 ## 6. Wire protocol & VSIX UI
@@ -1094,14 +1145,25 @@ expected to simply retry.
 
 Phase 2 user rules (§3.2a) are implemented. What's left:
 
+- **Flattening a script to the commands it may execute** — the parser is a
+  flat tokenizer, not an AST (§5), so `if`/`for`/`while`/`case`/function
+  bodies carry no structural meaning and land in the *arguments* of a
+  keyword pseudo-command; today that fails closed only via the path check or
+  the generic unknown-command default. The plan reduces a script to the set
+  of primitive commands it may execute and runs each through the existing
+  ladder — the consumer is already per-command, so it is a producer swap.
+  A known gap it closes: `f() { rm -rf src; }; f` currently offers
+  `('f','rm')` as a permanent always-allow shape, pinning a rule to a name
+  whose body is arbitrary. Full design, decisions and sequence:
+  SECURITY_RULES_PLAN.md, "Flattening scripts to judgeable commands".
 - **Phase 3** — ask-rate telemetry, a standalone rules-management UI
   (list/revoke a session's or the machine's granted rules outside the flow
   of answering a live prompt — `security.add_rule`/`security.rules.list`/
   `security.rules.delete` stay reserved in WS_PROTOCOL.md §7.7 for this),
   deeper PowerShell/cmd tables, validator scenarios for the gate; and
-  possibly an AST-based safe-subset analysis for inline `python -c` code,
-  today's main deterministic-ask friction. Full design: SECURITY_RULES_PLAN.md
-  Phase 3.
+  possibly an AST-based safe-subset analysis for inline `python -c` code
+  (a *Python* AST, unrelated to the shell flattening above), today's main
+  deterministic-ask friction. Full design: SECURITY_RULES_PLAN.md Phase 3.
 - **An unknown command's path-like *argument* (not subcommand) still stays
   outside the offer** (§3.2 rule 3, "Unknown" — `pytest ../other/`, a
   bespoke CLI's second-plus path argument) — the release valve for that

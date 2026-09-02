@@ -999,3 +999,128 @@ affected, whether to reuse the existing Phase 2 rule mechanism):
 No wire/protocol change — this is entirely server-side rule-table and
 `SecurityLayer` logic; the permission prompt's shape is identical to any
 other `run_command` ask. See doc/SECURITY.md §2a.
+
+
+## Structural blind spots: newline, process substitution, here-string (post-launch, 2026-09-01)
+
+Phase 0 of a larger piece of work (see "Flattening scripts to judgeable
+commands" below). Three constructs reached `evaluate_command` in a shape
+that hid a command from the rule engine **entirely** — not "asked with a
+confusing reason", but produced a silent `allow` in the default `smart`
+posture. All three were verified end-to-end through
+`SecurityLayer.evaluate(command_control="smart")`, not just the rule engine.
+
+| Command | Parsed executables | Was | Now |
+| --- | --- | --- | --- |
+| `ls\nrm -rf src` | `('ls',)` | allow (read-only fast path) | ask (destructive) |
+| `git status\ngit push --force` | `('git',)` | allow (benign `git status` rule) | ask (enforced) |
+| `diff <(rm -rf src) o.txt` | `('diff',)` | allow (read-only fast path) | ask (destructive) |
+| `bash <<< 'rm -rf src'` | `('bash',)` | ask, but only as "bare interactive shell" | ask (destructive, named) |
+
+**Newline is a command separator.** The root cause of the first two, and the
+most severe: `shlex` treats a newline as ordinary whitespace, so every line
+after the first collapsed into the *arguments* of the first line's command.
+Fixed in `kodo.shellparser._parser` with `_protect_newlines` /
+`_fold_line_breaks`, mirroring `_protect_stream_redirects`' mask-then-decode
+shape. Full mechanics and the deliberate no-separator cases (line
+continuation, newline after a control operator, leading/trailing) are in
+doc/SECURITY.md §5. Two consequences worth restating:
+
+- It **defeated §2a** — `find_enforced_asks("git status\ngit push --force")`
+  returned zero parts where the bare form returned one, so the curated
+  always-ask set was bypassable in `permissive`, the one posture where it is
+  the only remaining protection.
+- It **also degraded checkpointing** — `kodo.runtime._checkpoints.
+  command_may_mutate` reads the same `executables` tuple, so the sweep was
+  skipped for multi-line commands that really did mutate. Fixed for free by
+  the parser change; pinned by new cases in `test_checkpoints.py`.
+
+**Process substitution `<(...)`/`>(...)`** joined `_COMMAND_SUB_RES` in
+`kodo.security._analysis`, so it is masked before parsing and recursively
+judged like `$(...)` (§3.2 step 2). `_strip_command_sub` learned the two new
+prefixes. A benign inner command (`diff <(ls a) <(ls b)`) still allows — the
+fix adds no friction to the common case.
+
+**A here-string fed to a bare shell** now resolves to that segment's
+`nested_command` via `_classify._heredoc_nested_command`, the same as a
+here-document body, so `bash <<< '…'` is judged recursively instead of
+falling through to the generic bare-shell ask. `bash script.sh <<< data`
+still allows — the "no other positional" rule is unchanged.
+
+Tests: a `test_hidden_destructive_command_is_never_allowed` corpus in
+`test_security_rules.py` (the invariant is *"for any command containing an
+`rm -rf`, the verdict is never allow"*, across each wrapping form), a
+newline-separator block in `test_shellparser.py` covering quoting, comments,
+continuations, blank lines and heredoc bodies, a permissive/§2a regression
+in `test_security_layer.py`, and the multi-line cases in
+`test_checkpoints.py`. One pre-existing test comment in
+`test_shellparser.py` asserted the old behavior in prose ("a bare newline is
+not a segment separator") and was corrected.
+
+No wire/protocol change; no rule-table change.
+
+## Flattening scripts to judgeable commands (planned, 2026-09-01)
+
+The remaining phases of the work Phase 0 above opened. **Not implemented.**
+
+`kodo.shellparser` is a flat tokenizer, not an AST: it splits on a fixed
+separator set and has no grammar, so `if`/`for`/`while`/`case`/function
+definitions carry no structural meaning and their bodies land in the
+*arguments* of a keyword pseudo-command. Today that fails closed only by
+luck — via the path check noticing a path-shaped argument, or the generic
+"not in the known-safe command set" default on the keyword itself.
+
+The plan is to reduce an arbitrary script to the set of primitive commands
+it **may** execute and judge each one through the existing table. This is a
+good fit because the consumer is *already* per-command: `evaluate_command`
+judges segments independently and emits one `AskPart` each, and only two
+call sites outside the package consume the parse (`_analysis.py` and
+`_engine/_checkpointing.py`). Over-approximation (emitting both branches of
+an `if`, a loop body that may run zero times) is the sound direction — extra
+asks, never a missed one.
+
+Two decisions already taken, and two constraints that make it sound:
+
+- **Hand-rolled bounded grammar**, not `bashlex` or `tree-sitter`:
+  `shellparser` stays dependency-free and T0, it matches the package's
+  existing bounded/fail-closed philosophy, and it applies equally to the
+  PowerShell dialect, which has no library equivalent in Python.
+- **Phase 0 shipped separately** (above) rather than waiting to be
+  fixed-by-construction, because those were live bypasses.
+- **The flattener must emit a sum type, `SimpleCommand | Opaque`.** Anything
+  irreducibly dynamic — `eval "$x"`, `source ./f.sh`, an array used as a
+  command, a function reached through a variable, `trap`'d code — reduces to
+  no command list at all. An `Opaque` node must reach `_judge_segment` and
+  ask (mapping onto the existing `nested_opaque=True` path, which needs no
+  new downstream code). Silently omitting them would rebuild exactly the
+  Phase 0 bug in a nicer shape.
+- **Per-command structural context must survive the flattening** —
+  `in_loop` / `backgrounded` / `deferred` / `conditional` flags. Some risk
+  lives in composition, not in any single command: a loop runs `rm $f` N
+  times over unresolved values, `&` backgrounds work past the `timeout`,
+  `trap … EXIT` defers execution.
+
+Sequence: (1) `kodo/shellparser/_flatten.py`, a keyword-driven recursive
+descent handling `if`/`for`/`while`/`until`/`case`, function definitions
+(recorded, not emitted at the definition site) and call sites (body inlined,
+depth-capped, recursion → `Opaque`); (2) rewire `analyze_command` and
+`command_may_mutate` onto it, with `_track_cwd` gaining a rule that a `cd`
+inside a conditional or loop body does not propagate to siblings; (3)
+calibration — this is the largest phase, not the parser: an ask-count cap
+(past *N* distinct asking commands, collapse to one "this script does too
+much to review piecewise" ask) and growing the 96-rule table for commands
+that used to hide inside script bodies (`make`, `install`, `ln`, `chmod`);
+(4) the PowerShell dialect, or an explicit documented gap; (5) docs.
+
+Known gap this closes, tracked here so it is not lost: a function definition
+currently leaks its body into a *grantable* rule shape —
+`f() { rm -rf src; }; f` offers `('f','rm')`, pinning a permanent
+always-allow rule to a name whose body is arbitrary. Deliberately **not**
+addressed in Phase 0; it needs the function-inlining step.
+
+Open questions: whether the ask-count cap collapses to a single ask or
+truncates with a "+N more" affordance in the kodo-vsix permission panel (a
+two-repo decision); whether Phase 4 builds a PowerShell flattener or
+documents the gap; and whether a granted always-allow rule should be
+invalidated for shapes whose command came from an inlined function body.
+

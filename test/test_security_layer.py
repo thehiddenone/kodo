@@ -324,6 +324,27 @@ async def test_permissive_still_asks_on_always_enforce_commands(command: str) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status\ngit push --force",
+        "ls -la\ngit reset --hard",
+        "echo starting\ngit clean -fdx\necho done",
+    ],
+)
+async def test_permissive_always_enforce_survives_a_newline(command: str) -> None:
+    # Regression: a newline was not a segment separator, so a curated
+    # always-ask command on any line but the first collapsed into the first
+    # line's arguments and `find_enforced_asks` saw nothing to enforce —
+    # silently defeating §2a in the one posture where it is the only
+    # protection left.
+    layer = SecurityLayer()
+    d = await _eval(layer, "run_command", {"command": command, "intent": "x"}, "permissive")
+    assert d.action == "ask", f"{command!r} unexpectedly allowed under permissive"
+    assert d.source == "enforced"
+
+
+@pytest.mark.asyncio
 async def test_permissive_always_enforce_bypassed_by_a_granted_rule() -> None:
     layer = SecurityLayer()
     d = await _eval(
