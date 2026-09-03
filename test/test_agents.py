@@ -28,6 +28,8 @@ _WORKING_RULES_TEXT = "## How You Work\n\nHow well you work."
 _EDITING_TEXT = "## Changing Files\n\nMake exactly the change asked for."
 _CALLOUTS_TEXT = "## Drawing the User's Attention\n\nFour callout tags."
 _TASK_INPUT_TEXT = "Your task arrives as your first message."
+_FINDINGS_AUTHOR_TEXT = "## Findings\n\nCall get_findings; you do not close them."
+_FINDINGS_CRITIC_TEXT = "## Findings\n\nCall get_findings; only you may close one."
 
 # The two blocks every prompt must include, in the order agent files close with
 # them: working rules, then security last.
@@ -66,6 +68,8 @@ def _write_preamble(
     editing: str = _EDITING_TEXT,
     callouts: str = _CALLOUTS_TEXT,
     task_input: str = _TASK_INPUT_TEXT,
+    findings_author: str = _FINDINGS_AUTHOR_TEXT,
+    findings_critic: str = _FINDINGS_CRITIC_TEXT,
 ) -> None:
     """Write the shared blocks an ``AgentRegistry`` over *tmp_path* can include."""
     for name, text in (
@@ -74,6 +78,8 @@ def _write_preamble(
         ("editing", editing),
         ("callouts", callouts),
         ("task_input", task_input),
+        ("findings_author", findings_author),
+        ("findings_critic", findings_critic),
     ):
         (tmp_path / f"{SHARED_FILE_PREFIX}{name}.md").write_text(text, encoding="utf-8")
 
@@ -326,6 +332,53 @@ def test_registry_file_modifying_tool_without_the_editing_block_raises(tmp_path:
     _write_agent(tmp_path, "writer", f"name: writer\ntools:\n  - {_WRITE_TOOL}\n", _shared("B."))
     with pytest.raises(AgentLoadError, match="editing"):
         AgentRegistry(tmp_path)
+
+
+def test_registry_get_findings_grant_without_a_findings_block_raises(tmp_path: Path) -> None:
+    """The findings protocol's pairing rule (doc/FINDINGS.md §7): an agent that
+    can read the backlog must be told which half of the protocol it owns."""
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "reviewer", "name: reviewer\ntools:\n  - get_findings\n", _shared("B."))
+    with pytest.raises(AgentLoadError, match="findings"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_both_findings_blocks_at_once_raises(tmp_path: Path) -> None:
+    """The halves have opposite obligations — an author never closes a finding,
+    a critic is the only one that may — so carrying both is a contradiction."""
+    _write_preamble(tmp_path)
+    _write_agent(
+        tmp_path,
+        "confused",
+        "name: confused\ntools:\n  - get_findings\n",
+        _shared("B.", shared_token("findings_author"), shared_token("findings_critic")),
+    )
+    with pytest.raises(AgentLoadError, match="exactly one"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_findings_block_without_the_grant_raises(tmp_path: Path) -> None:
+    """The other direction: a block that tells an agent to call a tool it was
+    never granted."""
+    _write_preamble(tmp_path)
+    _write_agent(
+        tmp_path, "talker", "name: talker\n", _shared("B.", shared_token("findings_author"))
+    )
+    with pytest.raises(AgentLoadError, match="get_findings"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_findings_block_included_when_paired_with_the_grant(tmp_path: Path) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(
+        tmp_path,
+        "critic_agent",
+        "name: critic_agent\nrole: critic\ntools:\n  - get_findings\n",
+        _shared("B.", shared_token("findings_critic")),
+    )
+    prompt = AgentRegistry(tmp_path).get("critic_agent").system_prompt
+    assert _FINDINGS_CRITIC_TEXT in prompt
+    assert _FINDINGS_AUTHOR_TEXT not in prompt
 
 
 def test_registry_read_only_agent_needs_no_editing_block(tmp_path: Path) -> None:

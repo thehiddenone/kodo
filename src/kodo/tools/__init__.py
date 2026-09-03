@@ -42,12 +42,14 @@ from ._dispatch import (
     canonical_tool_call,
     tools_for_agent,
 )
+from ._document_status import document_status, status_from_state
 from ._edit_file import EditFileTool, compute_new_content
 from ._edit_review import should_review_edit
 from ._filesystem import FilesystemTool
 from ._finalize_project import FinalizeProjectTool
 from ._find_files import FindFilesTool
 from ._find_text_in_files import FindTextInFilesTool
+from ._get_findings import GetFindingsTool
 from ._get_root_paths import GetRootPathsTool
 from ._get_web_search_state import GetWebSearchStateTool
 from ._guided_dev_status import GuidedDevStatusTool
@@ -93,6 +95,7 @@ __all__ = [
     "FindFilesTool",
     "FindTextInFilesTool",
     "GateLike",
+    "GetFindingsTool",
     "GetRootPathsTool",
     "GetWebSearchStateTool",
     "GuidedDevStatusTool",
@@ -125,10 +128,12 @@ __all__ = [
     "WaitTool",
     "WebSearchTool",
     "compute_new_content",
+    "document_status",
     "resolve_logical",
     "resolve_within",
     "root_for",
     "should_review_edit",
+    "status_from_state",
     "canonical_tool_call",
     "tools_for_agent",
 ]

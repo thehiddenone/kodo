@@ -16,7 +16,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kodo.guided_state import append_accepted, append_feedback, append_new_revision
+from kodo.findings import apply_findings
+from kodo.guided_state import append_accepted, append_new_revision
 from kodo.runtime import GateOrchestrator, SessionState
 from kodo.tools import RootPath, ToolDispatcher, canonical_tool_call
 
@@ -114,6 +115,7 @@ def _make_dispatcher(
     autonomous: bool = False,
     session: SessionState | None = None,
     rollback_fn: Callable[[str, str], Awaitable[None]] | None = None,
+    findings_dir: Path | None = None,
 ) -> ToolDispatcher:
     if session is None:
         session = SessionState()
@@ -131,6 +133,7 @@ def _make_dispatcher(
         agent_name="guide",
         session_id="sess-test",
         mode=mode,
+        findings_dir=findings_dir,
     )
 
 
@@ -147,7 +150,12 @@ async def test_guided_dev_status_no_tracked_files_returns_empty_list(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_guided_dev_status_reports_status_from_last_entry(tmp_path: Path) -> None:
+async def test_guided_dev_status_merges_the_document_log_with_the_findings_backlog(
+    tmp_path: Path,
+) -> None:
+    """A row's status comes from both stores: the project-scoped evolution log
+    and this session's findings backlog for the same document
+    (doc/FINDINGS.md §6)."""
     (tmp_path / "specs").mkdir()
     doc = tmp_path / "specs" / "architecture.md"
     doc.write_text("x", encoding="utf-8")
@@ -161,30 +169,62 @@ async def test_guided_dev_status_reports_status_from_last_entry(tmp_path: Path) 
         workflow="guided",
     )
 
-    dispatcher = _make_dispatcher(project_root=tmp_path)
+    findings_dir = tmp_path / "sess" / "findings"
+    logical = "proj/specs/architecture.md"
+    dispatcher = _make_dispatcher(project_root=tmp_path, findings_dir=findings_dir)
+
+    # Written, never reviewed.
     result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
     assert len(result["files"]) == 1
-    assert result["files"][0]["path"] == "proj/specs/architecture.md"
+    assert result["files"][0]["path"] == logical
     assert result["files"][0]["status"] == "pending_review"
     assert result["files"][0]["last_event"]
 
-    append_feedback(
-        doc,
-        tmp_path,
+    # A critic round raised one finding.
+    apply_findings(
+        findings_dir,
+        logical,
         reviewer="architect_critic",
-        accept=False,
-        concerns=[{"kind": "gap", "description": "x"}],
-        summary="needs work",
+        updates=[{"kind": "gap", "description": "x"}],
     )
     result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
     assert result["files"][0]["status"] == "needs_revision"
 
-    append_feedback(
-        doc, tmp_path, reviewer="architect_critic", accept=True, concerns=[], summary="ok"
+    # The critic closed it: reviewed since the last revision, nothing open.
+    apply_findings(
+        findings_dir, logical, reviewer="architect_critic", updates=[{"id": "F1", "state": "fixed"}]
     )
+    result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
+    assert result["files"][0]["status"] == "pending_acceptance"
+
     append_accepted(doc, tmp_path)
     result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
     assert result["files"][0]["status"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_guided_dev_status_reads_pending_review_with_no_session_backlog(
+    tmp_path: Path,
+) -> None:
+    """Findings are session-scoped by design: a document reviewed in another
+    session has no backlog here, so it reads as never-reviewed rather than
+    inheriting a verdict made under a configuration this session cannot see
+    (doc/FINDINGS.md §2)."""
+    (tmp_path / "specs").mkdir()
+    doc = tmp_path / "specs" / "architecture.md"
+    doc.write_text("x", encoding="utf-8")
+    append_new_revision(
+        doc,
+        tmp_path,
+        commit_hash="sha1",
+        author="architect",
+        tool="filesystem",
+        summary="create",
+        workflow="guided",
+    )
+    dispatcher = _make_dispatcher(project_root=tmp_path, findings_dir=tmp_path / "empty")
+    result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
+    assert result["files"][0]["status"] == "pending_review"
 
 
 @pytest.mark.asyncio

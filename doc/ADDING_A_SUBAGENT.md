@@ -79,11 +79,14 @@ A new sub-agent named `foo` needs **all** of these, or the registry raises
      prompt half is inert, and a test in `test_subagentspecs.py` fails if you
      ship one without the other. See doc/TOOLS.md §5A.
    - Every critic returns the **same** shape (`critic_output()` takes no
-     arguments): `{path, accept, concerns, summary}`. A critic's **concern
-     vocabulary is prose** in its prompt's `### Concern vocabulary` section, not
-     a schema enum — see doc/TOOLS.md §5A for why. Choose the kinds
-     deliberately; they are free-form per critic and not coupled to engine
-     logic.
+     arguments): `{path, findings, summary}` — there is deliberately no
+     `accept`, because the verdict is derived from an empty backlog
+     (doc/FINDINGS.md §3). Each `findings` entry is either a new finding (no
+     `id`) or an update to an existing one (`id` plus only what changed). A
+     critic's **concern vocabulary is prose** in its prompt's
+     `### Concern vocabulary` section, not a schema enum — see doc/TOOLS.md §5A
+     for why. Choose the kinds deliberately; they are free-form per critic and
+     not coupled to engine logic.
 3. **Spec registration** — `src/kodo/subagents/specs/__init__.py`
    - Add the `from ._foo import FOO` import, the `"FOO"` entry in `__all__`, and
      `FOO` in the `ALL_SUBAGENTS` tuple. (The registry cross-references spec ↔
@@ -110,6 +113,22 @@ Everything follows from those two. `run_subagent_<author>` becomes a **loop**
 tool — it takes an optional `max_rounds` and returns a `review` block — and the
 engine spawns the critic inside that call. A caller never names a critic, never
 gets a tool for one, and never iterates by hand (doc/TOOLS.md §5A).
+
+**Both halves also need the findings protocol** (doc/FINDINGS.md), which is how
+they actually communicate — the loop passes no findings through the task:
+
+- grant `get_findings` in the `tools:` frontmatter of *both* the author and the
+  critic;
+- include `{SHARED:findings_author}` in the author's prompt and
+  `{SHARED:findings_critic}` in the critic's — exactly one each. The registry
+  refuses to load an agent that grants the tool with neither block, includes
+  both, or includes a block without the grant.
+
+Write the prompt so it reads identically on a first pass and a tenth: the shared
+block already says "call `get_findings` first, every time", so the agent-specific
+prose must not describe a separate "revision round" shape. A critic additionally
+keeps its own `### Concern vocabulary` section — the `kind` values it may use —
+which the schema points at rather than duplicating.
 
 Tool generation (`_registry.py`): every non-critic in the allow-list gets a
 `run_subagent_<name>` tool whose description is that agent's own `## Purpose`,
@@ -138,7 +157,8 @@ never where it sits in the sequence. Keep author and critic adjacent in the
   pairing.
 - `test/test_agents.py` also parametrizes a scan over **every** shipped
   `agent_*.md` / `subagent_*.md`: required blocks present, security last, no
-  unknown block, editing-block-iff-write-tools, no retired `bases:`/`callouts:`
+  unknown block, editing-block-iff-write-tools,
+  findings-block-iff-`get_findings`, no retired `bases:`/`callouts:`
   /`{PLACEHOLDER:…}`. That is where a forgotten token should fail — at build
   time, not on a running server.
 - Both build `AgentRegistry(_REAL_AGENTS_DIR)`, the last-resort runtime copy of

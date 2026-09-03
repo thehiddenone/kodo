@@ -37,6 +37,7 @@ from kodo.toolspecs import (
     FINALIZE_PROJECT,
     FIND_FILES,
     FIND_TEXT_IN_FILES,
+    GET_FINDINGS,
     GET_ROOT_PATHS,
     GET_WEB_SEARCH_STATE,
     GUIDED_DEV_STATUS,
@@ -83,6 +84,7 @@ from ._filesystem import FilesystemTool
 from ._finalize_project import FinalizeProjectTool
 from ._find_files import FindFilesTool
 from ._find_text_in_files import FindTextInFilesTool
+from ._get_findings import GetFindingsTool
 from ._get_root_paths import GetRootPathsTool
 from ._get_web_search_state import GetWebSearchStateTool
 from ._guided_dev_status import GuidedDevStatusTool
@@ -132,6 +134,7 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (FIND_FILES, FindFilesTool),
     (FIND_TEXT_IN_FILES, FindTextInFilesTool),
     (GUIDED_DEV_STATUS, GuidedDevStatusTool),
+    (GET_FINDINGS, GetFindingsTool),
     (RUN_SUBAGENT, RunSubagentTool),
     (RETURN_RESULT, ReturnResultTool),
     (ROLLBACK, RollbackTool),
@@ -278,6 +281,8 @@ class ToolDispatcher:
         mode: str = "problem_solving",
         util_paths: dict[str, Path] | None = None,
         output_schema: dict[str, object] | None = None,
+        findings_dir: Path | None = None,
+        findings_path: str = "",
         deadline: float | None = None,
     ) -> None:
         self.__ctx = ToolContext(
@@ -291,6 +296,8 @@ class ToolDispatcher:
             mode=mode,
             util_paths=dict(util_paths or {}),
             output_schema=output_schema,
+            findings_dir=findings_dir,
+            findings_path=findings_path,
             deadline=deadline,
         )
 

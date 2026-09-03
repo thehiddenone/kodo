@@ -530,7 +530,7 @@ Review activity is intentionally low-fidelity: the design is for the user to see
   "concern_count": 3 }
 ```
 
-`target_filename` is now the document's real, project-relative path (previously an 8-character artifact-id prefix the panel couldn't open) — content still stays off the wire, just the path. `verdict` is whatever `kodo.guided_state.read_status` derives from the file's `.jsonl` log after the engine records the critic's returned verdict (§7, STATE_AND_LIFECYCLE.md), not a value the critic invents.
+`target_filename` is now the document's real, project-relative path (previously an 8-character artifact-id prefix the panel couldn't open) — content still stays off the wire, just the path. `verdict` is whatever `kodo.tools.document_status` derives from the file's evolution log *and* this session's findings backlog after the engine applies the critic's returned findings (STATE_AND_LIFECYCLE.md §1.2, doc/FINDINGS.md), not a value the critic invents — critics no longer return a verdict at all. The event also carries `outstanding`/`opened`/`closed` counters for the round (nothing in kodo-vsix consumes this event today).
 
 ### 5.7 `usage.update` — usage accounting
 
@@ -936,7 +936,7 @@ Response payload — one entry per question, in order:
 
 ### 6.2 `prompt.approval` — document review gate
 
-Surfaced by the engine itself — never by a sub-agent tool call — right after a critic sub-agent returns `accept: true` and the engine records it (`_record_review_verdict`; STATE_AND_LIFECYCLE.md §8.1). In autonomous mode the gate auto-accepts and no `prompt.approval` is emitted (the engine writes the `accepted` jsonl entry directly).
+Surfaced by the engine itself — never by a sub-agent tool call — right after a critic round leaves the document's findings backlog empty and the engine acts on it (`_record_findings`; STATE_AND_LIFECYCLE.md §8.1). In autonomous mode, **and when Edit Control is set to `allow_all`**, the gate auto-accepts and no `prompt.approval` is emitted (the engine writes the `accepted` jsonl entry directly). A rejection with feedback additionally mints that comment as an outstanding finding, which is how the author sees it (doc/FINDINGS.md §3).
 
 Request payload:
 

@@ -404,8 +404,10 @@ class EngineServices(Protocol):
 
         When the named sub-agent declares a ``critic:``, this runs the **whole**
         author→critic loop rather than a single pass — the engine spawns the
-        author, hands its primary file to the critic, and re-runs the author with
-        the critic's concerns until the critic accepts or the budget is spent —
+        author, hands its primary file to the critic, and re-runs the author on
+        the same brief until the critic's findings backlog for that file is empty
+        or the budget is spent (the two exchange findings through their own
+        ``get_findings``/``return_result``, not through the task) —
         and the result carries an extra ``review`` block reporting how the loop
         ended. ``max_rounds`` caps that budget (the engine applies its own
         default when ``None``); it is ignored for a sub-agent with no critic.
@@ -616,8 +618,8 @@ class ToolContext:
         mode: The run's workflow mode, ``"guided"`` or ``"problem_solving"``.
             Frozen for the whole prompt, mirroring
             ``session.effective_workflow_mode``. Used to gate Guided-only
-            tools (``guided_dev_status``) and to tag ``new_revision`` jsonl
-            entries with which workflow produced them.
+            tools (``guided_dev_status``, ``get_findings``) and to tag
+            ``new_revision`` jsonl entries with which workflow produced them.
         resolver: Path resolver for the native file/shell tools — a logical
             (bound-root-name keyed) resolver, shared by both workflow modes.
         gate: Approval/question gate (protocol).
@@ -653,6 +655,17 @@ class ToolContext:
         returned_output: The normalized result the sub-agent passed to
             ``return_result`` (with the engine-owned ``schema_compliance`` field),
             or ``None`` until it calls it. Read back by the engine after the run.
+        findings_dir: This session's ``findings/`` directory (doc/FINDINGS.md),
+            or ``None`` when no session store is attached. Injected by the
+            engine so ``get_findings`` never has to derive a session path for
+            itself — ``session_id`` is the *subsession* id inside a sub-agent
+            run, so it could not.
+        findings_path: The folder-prefixed logical path of the document this
+            run's author/critic round targets, or ``""`` when the run is not a
+            review round (or is an author's first pass, before a file exists).
+            This is what makes ``get_findings`` auto-scoped: the agent never
+            names a path, and an empty scope answers with an empty list rather
+            than an error.
         deadline: Unix timestamp this run must wrap up by, or ``None`` if the
             run is not time-boxed. Populated only for the ``web_search``
             agent's dispatcher (from its caller-supplied, 600s-capped
@@ -673,6 +686,8 @@ class ToolContext:
     current_tool_use_id: str = ""
     stop_requested: bool = False
     returned_output: dict[str, object] | None = None
+    findings_dir: Path | None = None
+    findings_path: str = ""
     deadline: float | None = None
 
     @property

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Protocol
 
 from kodo.common import ApiKeyProvider, MessageSink
+from kodo.findings import RoundSummary
 from kodo.llms import (
     LLMGateway,
     LLMPlugin,
@@ -244,7 +245,11 @@ class EngineHost(Protocol):
     ) -> str: ...
 
     def _make_dispatcher(
-        self, agent_name: str, session_id: str, deadline: float | None = None
+        self,
+        agent_name: str,
+        session_id: str,
+        deadline: float | None = None,
+        findings_path: str = "",
     ) -> ToolDispatcher: ...
 
     # -- sub-agent dispatch (defined in _subagents) --------------------------------
@@ -253,7 +258,7 @@ class EngineHost(Protocol):
     def _critic_for(self, name: str) -> str: ...
 
     async def _spawn_subagent(
-        self, name: str, task_input: dict[str, object]
+        self, name: str, task_input: dict[str, object], findings_path: str = ""
     ) -> dict[str, object]: ...
 
     async def _run_review_loop(
@@ -264,14 +269,22 @@ class EngineHost(Protocol):
         max_rounds: int | None,
     ) -> dict[str, object]: ...
 
-    async def _run_review_round(
-        self, critic_name: str, path: str
-    ) -> tuple[str, list[dict[str, object]]]: ...
+    async def _run_review_round(self, critic_name: str, path: str) -> tuple[str, RoundSummary]: ...
 
-    async def _record_review_verdict(self, reviewer: str, output: dict[str, object]) -> None: ...
+    def _findings_dir(self) -> Path | None: ...
+
+    async def _findings_snapshot(self, path: str) -> dict[str, str]: ...
+
+    async def _document_status(self, path: str) -> str: ...
+
+    async def _record_findings(self, reviewer: str, output: dict[str, object]) -> None: ...
 
     async def _drive_subsession(
-        self, name: str, subsession_id: str, messages: list[Message]
+        self,
+        name: str,
+        subsession_id: str,
+        messages: list[Message],
+        findings_path: str = "",
     ) -> dict[str, object]: ...
 
     async def _open_subsession(
@@ -284,7 +297,9 @@ class EngineHost(Protocol):
 
     async def _abort_active_subsession(self) -> None: ...
 
-    async def _replay_next_subsession(self, name: str) -> dict[str, object]: ...
+    async def _replay_next_subsession(
+        self, name: str, findings_path: str = ""
+    ) -> dict[str, object]: ...
 
     def _display_name(self, agent_name: str) -> str: ...
 

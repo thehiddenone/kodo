@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from kodo.binutils import find_util
+from kodo.findings import apply_findings
 from kodo.project import kodo_user_dir
 from kodo.runtime import ApprovalResponse, SessionState
 from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, RootPath, ToolDispatcher
@@ -148,6 +149,8 @@ def _make_dispatcher(
     root_paths: tuple[RootPath, ...] = (),
     util_paths: dict[str, Path] | None = None,
     output_schema: dict[str, object] | None = None,
+    findings_dir: Path | None = None,
+    findings_path: str = "",
 ) -> ToolDispatcher:
     session = SessionState()
     session.autonomous = autonomous
@@ -165,6 +168,8 @@ def _make_dispatcher(
         mode=mode,
         util_paths=util_paths,
         output_schema=output_schema,
+        findings_dir=findings_dir,
+        findings_path=findings_path,
     )
 
 
@@ -531,6 +536,46 @@ async def test_guided_dev_status_compliance(tmp_path: Path) -> None:
     # Wrong mode → compliant error envelope, not an exception.
     ps = _make_dispatcher(tmp_path, mode="problem_solving", root_paths=roots)
     _assert_compliant("guided_dev_status", await _dispatch(ps, "guided_dev_status", {}))
+
+
+@pytest.mark.asyncio
+async def test_get_findings_compliance(tmp_path: Path) -> None:
+    roots = (RootPath(name="proj", path=str(tmp_path)),)
+    findings_dir = tmp_path / "findings"
+    # No scope bound (outside a review round, or a first pass) → an empty list,
+    # which is a normal answer rather than an error (doc/FINDINGS.md §3).
+    d = _make_dispatcher(tmp_path, mode="guided", root_paths=roots)
+    empty = _assert_compliant("get_findings", await _dispatch(d, "get_findings", {}))
+    assert empty["findings"] == []
+    # Scoped, with a real backlog behind it, in both list modes.
+    apply_findings(
+        findings_dir,
+        "proj/specs/a.md",
+        reviewer="architect_critic",
+        updates=[{"kind": "gap", "description": "missing"}, {"kind": "gap", "description": "two"}],
+    )
+    apply_findings(
+        findings_dir,
+        "proj/specs/a.md",
+        reviewer="architect_critic",
+        updates=[{"id": "F1", "state": "fixed"}],
+    )
+    scoped = _make_dispatcher(
+        tmp_path,
+        mode="guided",
+        root_paths=roots,
+        findings_dir=findings_dir,
+        findings_path="proj/specs/a.md",
+    )
+    outstanding = _assert_compliant("get_findings", await _dispatch(scoped, "get_findings", {}))
+    assert [f["id"] for f in outstanding["findings"]] == ["F2"]  # type: ignore[index,union-attr]
+    everything = _assert_compliant(
+        "get_findings", await _dispatch(scoped, "get_findings", {"show_all": True})
+    )
+    assert [f["id"] for f in everything["findings"]] == ["F1", "F2"]  # type: ignore[index,union-attr]
+    # Wrong mode → compliant error envelope, not an exception.
+    ps = _make_dispatcher(tmp_path, mode="problem_solving", root_paths=roots)
+    _assert_compliant("get_findings", await _dispatch(ps, "get_findings", {}))
 
 
 @pytest.mark.asyncio
@@ -993,6 +1038,7 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "find_files",
         "find_text_in_files",
         "guided_dev_status",
+        "get_findings",
         "toolchain_build",
         "toolchain_deps",
         "ask_user",

@@ -15,10 +15,10 @@ import uuid
 from pathlib import Path
 
 from kodo.common import Envelope
-from kodo.guided_state import append_feedback, read_status
+from kodo.findings import STATE_OUTSTANDING, RoundSummary, apply_findings, read_findings
 from kodo.llms import Message
 from kodo.subagents import AgentLoadError
-from kodo.tools import root_for
+from kodo.tools import document_status, root_for
 from kodo.toolspecs import MAX_ROUNDS_DEFAULT, SCHEMA_COMPLIANCE_KEY
 from kodo.transport import (
     EVT_REVIEW_STARTED,
@@ -76,36 +76,6 @@ def _escalation_reason(output: dict[str, object]) -> str:
     """
     reason = output.get("reason")
     return reason.strip() if isinstance(reason, str) else ""
-
-
-def _revision_instructions(base: str, concerns: list[dict[str, object]]) -> str:
-    """Render round N+1's ``instructions``: the original task, plus the concerns.
-
-    The caller writes its instructions once; the engine — not the caller — folds
-    each round's outstanding concerns in underneath, so an author revising its
-    work reads the same brief it started from *and* exactly what the critic
-    objected to, without the caller having to re-issue either.
-
-    Line references are included when the critic gave them, so the author can go
-    straight to the span rather than re-derive it.
-    """
-    lines = [
-        "## Concerns from review",
-        "",
-        "The reviewer rejected your previous revision. Address every concern below "
-        "in the file named as `for_revision_path`. Do not start over — revise.",
-        "",
-    ]
-    for concern in concerns:
-        kind = str(concern.get("kind", "concern"))
-        description = str(concern.get("description", "")).strip()
-        first, last = concern.get("first_line"), concern.get("last_line")
-        where = ""
-        if isinstance(first, int):
-            single = last is None or last == first
-            where = f" (line {first})" if single else f" (lines {first}-{last})"
-        lines.append(f"- **{kind}**{where} — {description}")
-    return f"{base}\n\n" + "\n".join(lines) if base else "\n".join(lines)
 
 
 class SubagentMixin:
@@ -206,33 +176,35 @@ class SubagentMixin:
         """Drive author→critic rounds until the file is settled or the budget ends.
 
         One round is: spawn the author, hand its ``primary_path`` to the critic,
-        let the engine record the critic's verdict (:meth:`_record_review_verdict`,
-        which also fires the user's acceptance gate on an accept), then read the
-        file's evolution log — the *log* is authoritative, not the critic's
-        return value, because the user's own review decision lands there too and
-        can turn an accepted file back into one needing revision.
+        let the engine apply the critic's findings to that document's
+        session-scoped backlog (:meth:`_record_findings`, which also fires the
+        user's acceptance gate once nothing is outstanding), then read the file's
+        status back — the *stores* are authoritative, not the critic's return
+        value, because the user's own review decision lands there too and can
+        turn an accepted file back into one needing revision.
 
         The loop stops on any of four things, reported as ``review.outcome``:
 
-        - ``accepted`` — the log says ``accepted``/``pending_acceptance``: the
-          critic accepted and (interactively) the user agreed.
+        - ``accepted`` — the round left nothing outstanding and the acceptance
+          flow settled the document (``accepted``/``pending_acceptance``).
         - ``escalated`` — the author returned a non-empty ``reason``: it hit a
           blocker it cannot defensibly resolve. The critic is **not** spawned
           and no further round is spent — no amount of revision fixes a blocker
           whose resolution lives outside the author (an unreconcilable
           contradiction, insufficient inputs, an exhausted cap). The escalation
           rides back on the result for the caller to act on.
-        - ``max_rounds`` — the budget ran out with concerns outstanding.
-        - ``not_converging`` — a round's concern count did not drop below the
-          previous round's. Rounds that stop reducing findings are the
-          documented signal to stop spending budget and surface the matter,
-          rather than orbit until the cap.
+        - ``max_rounds`` — the budget ran out with findings outstanding.
+        - ``not_converging`` — a round closed nothing and opened nothing
+          (:attr:`~kodo.findings.RoundSummary.stalled`). Stateful findings make
+          this an exact no-progress signal rather than the old
+          "the concern count failed to drop" arithmetic, which also fired on a
+          round that fixed two problems and found two others.
 
-        Each subsequent round re-sends the caller's original ``instructions``
-        with the outstanding concerns rendered underneath and
-        ``for_revision_path`` pointing at the file, which is exactly the
-        "revise the prior one per the listed concerns" branch every author's
-        input schema already describes.
+        Every round sends the caller's original ``instructions`` **unchanged**,
+        with ``for_revision_path`` pointing at the file from round two onward.
+        Outstanding findings are no longer rendered into the task: both halves
+        read them through ``get_findings`` (doc/FINDINGS.md), which is what makes
+        a first pass and a tenth identical for the agents.
 
         Returns:
             dict: The last round's author output, plus the ``review`` block
@@ -240,27 +212,24 @@ class SubagentMixin:
         """
         budget = max_rounds if isinstance(max_rounds, int) and max_rounds > 0 else None
         budget = min(budget or _DEFAULT_MAX_REVIEW_ROUNDS, _MAX_REVIEW_ROUNDS)
-        base_instructions = str(task_input.get("instructions", ""))
         path = str(task_input.get("for_revision_path") or "")
 
         author_output: dict[str, object] = {}
-        concerns: list[dict[str, object]] = []
+        summary = RoundSummary(outstanding=0, opened=0, closed=0)
         status = "pending_review"
         outcome = "not_reviewed"
         rounds = 0
-        previous_count: int | None = None
 
         for _round in range(budget):
             rounds += 1
             round_task = dict(task_input)
-            if concerns:
-                round_task["instructions"] = _revision_instructions(base_instructions, concerns)
+            if path:
                 round_task["for_revision_path"] = path
-            author_output = await self._spawn_subagent(author_name, round_task)
+            author_output = await self._spawn_subagent(author_name, round_task, path)
 
             # An escalation ends the loop where it stands: the author is telling
             # its caller the blocker is not one more revision away, so sending it
-            # to the critic would only spend a round producing concerns nobody
+            # to the critic would only spend a round producing findings nobody
             # can act on. The result carries reason/summary/options straight back.
             if _escalation_reason(author_output):
                 outcome = "escalated"
@@ -273,28 +242,28 @@ class SubagentMixin:
                 outcome = "not_reviewed"
                 break
 
-            status, concerns = await self._run_review_round(critic_name, path)
+            status, summary = await self._run_review_round(critic_name, path)
 
             if status in ("accepted", "pending_acceptance"):
                 outcome = "accepted"
                 break
-            # Findings that stop shrinking are the signal to stop spending
-            # rounds: another pass is unlikely to converge, and the caller can
-            # act on the outstanding concerns now rather than in five rounds.
-            if previous_count is not None and len(concerns) >= previous_count:
+            # A round that closed nothing and opened nothing is stalled: another
+            # pass is unlikely to converge, and the caller can act on the
+            # outstanding backlog now rather than in five rounds.
+            if summary.stalled:
                 outcome = "not_converging"
                 break
-            previous_count = len(concerns)
             outcome = "max_rounds"
 
         _log.info(
-            "review loop finished: author=%s critic=%s rounds=%d outcome=%s status=%s concerns=%d",
+            "review loop finished: author=%s critic=%s rounds=%d outcome=%s status=%s "
+            "outstanding=%d",
             author_name,
             critic_name,
             rounds,
             outcome,
             status,
-            len(concerns),
+            summary.outstanding,
         )
         return {
             **author_output,
@@ -302,19 +271,19 @@ class SubagentMixin:
                 "status": status,
                 "outcome": outcome,
                 "rounds": rounds,
-                "concerns": concerns,
+                "outstanding": summary.outstanding,
             },
         }
 
     async def _run_review_round(
         self: EngineHost, critic_name: str, path: str
-    ) -> tuple[str, list[dict[str, object]]]:
-        """Spawn *critic_name* against *path*; return its ``(status, concerns)``.
+    ) -> tuple[str, RoundSummary]:
+        """Spawn *critic_name* against *path*; return its ``(status, summary)``.
 
-        Both are read back from the file's ``.jsonl`` evolution log rather than
-        from the critic's own return value: :meth:`_record_review_verdict` has
-        already written the critic's verdict there, and on an accept it also ran
-        the user's acceptance gate, whose decision is the *later* entry and
+        The status is read back from the document's two stores rather than from
+        the critic's own return value: :meth:`_record_findings` has already
+        applied the round's findings, and once nothing is outstanding it also ran
+        the user's acceptance gate, whose decision is the later event and
         therefore the real current state of the file.
         """
         await self._sink.send(
@@ -327,21 +296,24 @@ class SubagentMixin:
                 },
             )
         )
+        before = await self._findings_snapshot(path)
         await self._spawn_subagent(
-            critic_name, {"instructions": f"Review {path}.", "input_paths": {"target": path}}
+            critic_name,
+            {"instructions": f"Review {path}.", "input_paths": {"target": path}},
+            path,
+        )
+        after = await self._findings_snapshot(path)
+        summary = RoundSummary(
+            outstanding=sum(1 for state in after.values() if state == STATE_OUTSTANDING),
+            opened=sum(1 for finding_id in after if finding_id not in before),
+            closed=sum(
+                1
+                for finding_id, state in after.items()
+                if state != STATE_OUTSTANDING and before.get(finding_id) == STATE_OUTSTANDING
+            ),
         )
 
-        status, concerns = "pending_review", []
-        resolved = self._make_resolver(self._orch_session_id).resolve(path)
-        owning_root = root_for(self._root_paths(), resolved)
-        if owning_root is None:
-            _log.warning("review round: %r is not under any bound root", path)
-        else:
-            entry = await asyncio.to_thread(read_status, resolved, Path(owning_root.path))
-            if entry:
-                status = str(entry["status"])
-                raw = entry.get("concerns")
-                concerns = [c for c in raw if isinstance(c, dict)] if isinstance(raw, list) else []
+        status = await self._document_status(path)
 
         await self._sink.send(
             Envelope.make_event(
@@ -350,75 +322,122 @@ class SubagentMixin:
                     "reviewer_name": critic_name,
                     "target_filename": path,
                     "verdict": status,
-                    "concern_count": len(concerns),
+                    "outstanding": summary.outstanding,
+                    "opened": summary.opened,
+                    "closed": summary.closed,
                 },
             )
         )
-        return status, concerns
+        return status, summary
 
-    async def _record_review_verdict(
-        self: EngineHost, reviewer: str, output: dict[str, object]
-    ) -> None:
-        """Write a finished critic's verdict to the reviewed file's evolution log.
+    def _findings_dir(self: EngineHost) -> Path | None:
+        """This session's ``findings/`` directory, or ``None`` before one is attached.
 
-        The engine-side half of what the retired ``document_feedback`` tool used
-        to do from inside the critic's own run: append the ``feedback`` entry,
-        then — when the critic accepted — drive the acceptance flow
+        The single place the session-scoped findings root is derived
+        (doc/FINDINGS.md §2). Note it cannot be derived from a tool's
+        ``ToolContext.session_id``: inside a sub-agent run that field holds the
+        *subsession* id, which is why the engine injects the directory instead.
+        """
+        try:
+            return self._transient.session_dir / "findings"
+        except (AssertionError, AttributeError):
+            # No session attached yet (``session_dir`` asserts), or a bare test
+            # host with no store at all. Either way there is no backlog to read,
+            # and every caller already treats ``None`` as "empty".
+            return None
+
+    async def _findings_snapshot(self: EngineHost, path: str) -> dict[str, str]:
+        """``{finding id: state}`` for *path* right now, or ``{}`` with no store.
+
+        The round's ``opened``/``closed`` deltas are computed by diffing this
+        before and after the critic's subsession rather than by threading a
+        return value out of :meth:`_record_findings` — which runs several frames
+        down inside :meth:`_drive_subsession`, and does not run at all for a
+        completed subsession replayed from the ledger.
+        """
+        findings_dir = self._findings_dir()
+        if findings_dir is None:
+            return {}
+        findings = await asyncio.to_thread(read_findings, findings_dir, path)
+        return {f["id"]: f["state"] for f in findings}
+
+    async def _document_status(self: EngineHost, path: str) -> str:
+        """Merge *path*'s project evolution log with its session findings backlog.
+
+        Both halves are needed since findings left ``guided_state``; the merge
+        itself lives once, in :func:`kodo.tools.document_status`
+        (doc/FINDINGS.md §6). An unresolvable or unbound path reads as
+        ``pending_review`` — "not settled" — which is what the loop treats it as
+        anyway.
+        """
+        try:
+            resolved = self._make_resolver(self._orch_session_id).resolve(path)
+        except PermissionError:
+            _log.warning("review round: %r cannot be resolved", path)
+            return "pending_review"
+        owning_root = root_for(self._root_paths(), resolved)
+        if owning_root is None:
+            _log.warning("review round: %r is not under any bound root", path)
+            return "pending_review"
+        return await asyncio.to_thread(
+            document_status, resolved, Path(owning_root.path), self._findings_dir(), path
+        )
+
+    async def _record_findings(self: EngineHost, reviewer: str, output: dict[str, object]) -> None:
+        """Apply a finished critic's findings to the reviewed document's backlog.
+
+        The engine-side half of a critic round: create the new findings, patch
+        the ones it updated, close the round with a ``review_round`` entry — then,
+        when nothing is left outstanding, drive the acceptance flow
         (:meth:`~._core.EngineCore._finalize_document`), which auto-accepts in
-        autonomous mode and otherwise asks the user to sign off.
+        autonomous mode or under Edit Control *Allow All* and otherwise asks the
+        user to sign off.
+
+        There is no ``accept`` field to consult: the verdict is *derived* from
+        the resulting backlog, so a critic cannot report a pass while leaving
+        problems open (doc/FINDINGS.md §3).
 
         Called from :meth:`_drive_subsession` for every agent whose frontmatter
         declares ``role: critic``, so it applies to a critic reached through a
         review loop *and* to one resumed mid-flight after a crash, but never to
         a completed subsession being replayed from the ledger (that one returns
-        its stored result without re-running, and its entry is already on disk).
+        its stored result without re-running, and its entries are already on
+        disk).
 
-        A malformed or empty verdict is logged and dropped rather than raised:
-        the loop reads the log for the real status, and a critic that failed to
-        report leaves the file ``pending_review``, which the loop already treats
-        as "not settled".
+        A malformed verdict is logged and dropped rather than raised: the loop
+        reads the stores for the real status, and a critic that failed to report
+        leaves the backlog untouched, which the loop reads as a stalled round.
         """
         path = str(output.get("path", ""))
         if not path:
             _log.warning("critic %s returned no path; nothing recorded", reviewer)
             return
-        accept = bool(output.get("accept", False))
-        raw = output.get("concerns")
-        concerns = [c for c in raw if isinstance(c, dict)] if isinstance(raw, list) else []
-        summary = str(output.get("summary", ""))
-        if not accept and not concerns:
-            _log.warning("critic %s rejected %r with no concerns", reviewer, path)
-
-        try:
-            resolved = self._make_resolver(self._orch_session_id).resolve(path)
-        except PermissionError as exc:
-            _log.warning("critic %s reported an unresolvable path %r: %s", reviewer, path, exc)
-            return
-        owning_root = root_for(self._root_paths(), resolved)
-        if owning_root is None:
-            _log.warning("critic %s reported %r, not under any bound root", reviewer, path)
+        raw = output.get("findings")
+        updates = [f for f in raw if isinstance(f, dict)] if isinstance(raw, list) else []
+        findings_dir = self._findings_dir()
+        if findings_dir is None:
+            _log.warning("critic %s reported on %r with no session store attached", reviewer, path)
             return
         try:
-            await asyncio.to_thread(
-                append_feedback,
-                resolved,
-                Path(owning_root.path),
+            summary = await asyncio.to_thread(
+                apply_findings,
+                findings_dir,
+                path,
                 reviewer=reviewer,
-                accept=accept,
-                concerns=concerns,  # type: ignore[arg-type]
-                summary=summary,
+                updates=updates,
             )
         except ValueError as exc:
-            _log.info("critic %s verdict on %r not recorded: %s", reviewer, path, exc)
+            _log.info("critic %s findings on %r not recorded: %s", reviewer, path, exc)
             return
         _log.info(
-            "critic %s recorded verdict on %s: accept=%s concerns=%d",
+            "critic %s reviewed %s: outstanding=%d opened=%d closed=%d",
             reviewer,
             path,
-            accept,
-            len(concerns),
+            summary.outstanding,
+            summary.opened,
+            summary.closed,
         )
-        if accept:
+        if summary.outstanding == 0:
             await self._finalize_document(path)
 
     async def _run_dependency_manager(
@@ -641,7 +660,7 @@ class SubagentMixin:
         return "\n\n".join(lines) or "(no task)"
 
     async def _spawn_subagent(
-        self: EngineHost, name: str, task_input: dict[str, object]
+        self: EngineHost, name: str, task_input: dict[str, object], findings_path: str = ""
     ) -> dict[str, object]:
         """Invoke a leaf sub-agent and return its structured result.
 
@@ -653,6 +672,11 @@ class SubagentMixin:
         Args:
             name: Sub-agent name from the registry.
             task_input: Structured task conforming to the sub-agent's input schema.
+            findings_path: The document this run's review round targets, which
+                binds ``get_findings``' auto-scope for the whole subsession
+                (doc/FINDINGS.md §3). Empty for any spawn that is not part of a
+                review round, and for an author's first pass — the tool then
+                answers with an empty list rather than an error.
 
         Returns:
             dict: The structured result the sub-agent returned via ``return_result``.
@@ -666,7 +690,7 @@ class SubagentMixin:
         # An exhausted/empty ledger means no marker was recorded for this call
         # (crash landed before the subsession opened) — fall through to a fresh run.
         if self._replay_subsessions:
-            return await self._replay_next_subsession(name)
+            return await self._replay_next_subsession(name, findings_path)
         self._replay_subsessions = None
 
         subsession_id = uuid.uuid4().hex
@@ -680,12 +704,16 @@ class SubagentMixin:
             subsession_id, seed.role, seed.content, kind="subagent_task"
         )
 
-        output = await self._drive_subsession(name, subsession_id, [seed])
+        output = await self._drive_subsession(name, subsession_id, [seed], findings_path)
         await self._close_subsession(name, subsession_id, output)
         return output
 
     async def _drive_subsession(
-        self: EngineHost, name: str, subsession_id: str, messages: list[Message]
+        self: EngineHost,
+        name: str,
+        subsession_id: str,
+        messages: list[Message],
+        findings_path: str = "",
     ) -> dict[str, object]:
         """Run a sub-agent's isolated turn loop and return its structured result.
 
@@ -701,7 +729,7 @@ class SubagentMixin:
         """
         agent = self._registry.get(name, self._session.effective_autonomous)
         plugin, model_id, routing = await self._resolve_plugin(agent.capability)
-        dispatcher = self._make_dispatcher(name, subsession_id)
+        dispatcher = self._make_dispatcher(name, subsession_id, findings_path=findings_path)
         leaf_tools = agent_tool_specs(self._registry, agent)
 
         self._session.phase = "running"
@@ -774,14 +802,14 @@ class SubagentMixin:
             sorted(output.keys()),
         )
         # A critic's result is not a value handed back to whoever spawned it —
-        # it is a verdict on a file, and the file's evolution log is where it
-        # belongs. Recording it here (rather than in the critic's own toolset,
-        # as the retired ``document_feedback`` did) keeps every spawn path
-        # covered: a review loop, and a critic subsession resumed mid-flight
-        # after a crash. Gated on the callee's explicit ``role: critic``, never
-        # inferred from the result's shape.
+        # it is a set of findings against a file, and the session's findings
+        # backlog is where they belong. Recording them here (rather than in the
+        # critic's own toolset, as the retired ``document_feedback`` did) keeps
+        # every spawn path covered: a review loop, and a critic subsession
+        # resumed mid-flight after a crash. Gated on the callee's explicit
+        # ``role: critic``, never inferred from the result's shape.
         if agent.is_critic:
-            await self._record_review_verdict(name, output)
+            await self._record_findings(name, output)
         return output
 
     async def _open_subsession(
@@ -929,7 +957,9 @@ class SubagentMixin:
             )
         )
 
-    async def _replay_next_subsession(self: EngineHost, name: str) -> dict[str, object]:
+    async def _replay_next_subsession(
+        self: EngineHost, name: str, findings_path: str = ""
+    ) -> dict[str, object]:
         """Consume the next pre-crash subsession marker during resume replay.
 
         Completed subsessions return their stored structured result immediately
@@ -954,7 +984,7 @@ class SubagentMixin:
             Message(role=str(m["role"]), content=m["content"])  # type: ignore[arg-type]
             for m in self._transient.read_subsession_messages(subsession_id)
         ]
-        output = await self._drive_subsession(name, subsession_id, rehydrated)
+        output = await self._drive_subsession(name, subsession_id, rehydrated, findings_path)
         await self._close_subsession(name, subsession_id, output)
         return output
 

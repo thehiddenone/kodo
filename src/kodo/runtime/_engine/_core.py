@@ -41,6 +41,7 @@ from pathlib import Path
 
 from kodo.binutils import find_util
 from kodo.common import ApiKeyProvider, Envelope, MessageSink
+from kodo.findings import record_user_feedback
 from kodo.guided_state import append_accepted, append_review_result
 from kodo.llms import LLMGateway, Message
 from kodo.project import (
@@ -946,17 +947,28 @@ class WorkflowEngine(
     # ------------------------------------------------------------------
 
     async def _finalize_document(self, path: str) -> None:
-        """Drive the post-accept flow for a document a critic just approved.
+        """Drive the post-accept flow for a document whose backlog is now empty.
 
-        Called only after a critic returned ``accept: true`` (see
-        ``_record_review_verdict``). Autonomous mode
-        auto-accepts immediately (mirroring every other gate when the user is
-        away). Interactive mode fires the same approval gate
-        ``request_user_review_artifact`` used to — now engine-driven — and
-        records the user's decision: agreement writes ``review_result``
-        (approve) then ``accepted``; feedback writes ``review_result``
-        (reject) only, which the enclosing author/critic loop picks up as
-        ``needs_revision`` and spends another round on.
+        Called when a critic round leaves nothing outstanding (see
+        ``_record_findings``) — there is no ``accept`` field any more; the
+        verdict is derived from the backlog (doc/FINDINGS.md §5).
+
+        The user's sign-off is skipped in two postures, both of which mean "do
+        not stop me for this": autonomous mode (nobody is there to answer) and
+        Edit Control set to *Allow All* (the user has already said file changes
+        need no review — stopping for a document sign-off in that posture
+        contradicted every other gate). Either way the document goes straight to
+        ``accepted`` with **no** ``review_result`` entry: that entry means "the
+        user decided at the gate", and in these two postures no gate fired, so
+        writing one would fabricate a decision nobody made.
+
+        Otherwise the same ``document_review`` approval gate fires and the
+        user's decision is recorded: agreement writes ``review_result``
+        (approve) then ``accepted``; feedback writes ``review_result`` (reject)
+        **and mints that feedback as an outstanding finding**, so the author
+        reaches the user's objection through the same ``get_findings`` call as
+        every critic finding, and the enclosing loop sees ``needs_revision`` and
+        spends another round on it.
         """
         try:
             resolved = self._make_resolver(self._orch_session_id).resolve(path)
@@ -969,7 +981,7 @@ class WorkflowEngine(
             return
         project_root = Path(project_root_entry.path)
 
-        if self._session.effective_autonomous:
+        if self._session.effective_autonomous or self._session.edit_control == "allow_all":
             await asyncio.to_thread(append_accepted, resolved, project_root)
             return
 
@@ -981,14 +993,18 @@ class WorkflowEngine(
                 append_review_result, resolved, project_root, decision="approve", comment=""
             )
             await asyncio.to_thread(append_accepted, resolved, project_root)
-        else:
-            await asyncio.to_thread(
-                append_review_result,
-                resolved,
-                project_root,
-                decision="reject",
-                comment=approval.feedback,
-            )
+            return
+
+        await asyncio.to_thread(
+            append_review_result,
+            resolved,
+            project_root,
+            decision="reject",
+            comment=approval.feedback,
+        )
+        findings_dir = self._findings_dir()
+        if findings_dir is not None:
+            await asyncio.to_thread(record_user_feedback, findings_dir, path, approval.feedback)
 
     # ------------------------------------------------------------------
     # History rebuild (forwarded to the projector)

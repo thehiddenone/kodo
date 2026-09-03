@@ -29,12 +29,14 @@ The shapes mirror the contracts the agent prompts already describe:
   ``_run_review_loop`` stops the moment ``reason`` comes back non-empty
   (``review.outcome: "escalated"``) rather than sending a blocked author to its
   critic.
-- **Critic output** — the reviewed ``path``, an ``accept`` verdict, and a list of
-  structured ``concerns``. Identical for every critic (it takes no arguments):
-  this *is* the shape the retired ``document_feedback`` tool declared, promoted
-  to the critic's own ``return_result`` payload so a critic reports its verdict
-  once instead of twice. The engine writes it to the reviewed document's
-  ``.jsonl`` evolution log as a ``feedback`` entry (see ``kodo.guided_state``).
+- **Critic output** — the reviewed ``path`` and a list of ``findings``: new ones
+  (no ``id``) and updates to existing ones (``id`` plus only the fields that
+  changed). Identical for every critic (it takes no arguments). There is **no
+  ``accept`` field**: a verdict is *derived* — the document is accepted when the
+  round leaves nothing outstanding — so a critic returns evidence and the engine
+  draws the conclusion, which removes the whole class of "accepted with concerns
+  attached" results. The engine applies the list to the document's session-scoped
+  findings backlog (:mod:`kodo.findings`, doc/FINDINGS.md).
 
 Inline agents (``compactor``, ``toolchain_builder``) read and write files
 directly with no structured pipeline contract; they declare their inline/path
@@ -48,8 +50,8 @@ from __future__ import annotations
 
 __all__ = [
     "author_output",
-    "concern_item",
     "critic_output",
+    "finding_item",
     "pipeline_input",
 ]
 
@@ -57,7 +59,8 @@ _INSTRUCTIONS = {
     "type": "string",
     "description": (
         "What to do this round: produce a fresh document, or revise the prior "
-        "one per the listed concerns."
+        "one. The same instructions are re-sent every round — outstanding "
+        "findings are never written in here; call `get_findings` for those."
     ),
 }
 _PROJECT_CODE = {
@@ -219,62 +222,97 @@ def _escalation_properties() -> dict[str, object]:
     }
 
 
-def concern_item() -> dict[str, object]:
-    """Build the schema for one structured critic concern.
+def finding_item() -> dict[str, object]:
+    """Build the schema for one entry of a critic's ``findings`` list.
 
-    Fields: ``kind``, ``description``, and optional ``first_line`` /
-    ``last_line`` / ``excerpt``. This same shape is reused verbatim as a
-    ``feedback`` jsonl entry's ``concerns`` items (see ``kodo.guided_state``).
+    The same object expresses both operations, told apart by ``id``:
 
-    ``kind`` is a free-form string rather than an ``enum``: each critic's own
-    concern catalogue is prose in its ``### Concern vocabulary`` prompt section,
-    which is where it belongs — the catalogue needs the per-kind explanation and
-    the routing rules ("apply production kinds only to production code") that a
-    bare enum cannot carry, and duplicating the bare list here only invited the
-    two to drift. Nothing ever enforced the enum anyway:
+    - **no ``id``** — a new finding. ``kind``/``description`` describe it, and
+      the engine mints its id.
+    - **an ``id``** — an update to that finding. Only the fields present change;
+      everything omitted is preserved verbatim by the store itself
+      (:func:`kodo.findings.apply_findings`). Setting ``state: "fixed"`` is how a
+      critic closes one.
+
+    Nothing is schema-``required``, because an update legitimately carries as
+    little as ``{"id": "F1", "state": "fixed"}``. The obligations that do exist
+    ("a *new* finding needs kind and description") are stated per field in
+    prose and in ``{SHARED:findings_critic}`` — :func:`~kodo.toolspecs.normalize_output`
+    would otherwise backfill the missing halves of every update with ``""`` and
+    flag the whole result non-compliant.
+
+    ``kind`` stays a free-form string rather than an ``enum``: each critic's own
+    catalogue is prose in its ``### Concern vocabulary`` prompt section, which is
+    where the per-kind explanations and routing rules a bare enum cannot carry
+    belong. Nothing ever enforced an enum anyway —
     :func:`~kodo.toolspecs.normalize_output` validates declared keys and required
     fields, never value constraints.
     """
     return {
         "type": "object",
         "properties": {
+            "id": {
+                "type": "string",
+                "description": (
+                    "The id of an EXISTING finding you are updating, exactly as "
+                    "get_findings reported it (e.g. 'F3'). OMIT it entirely to raise a "
+                    "new finding — never invent one."
+                ),
+            },
             "kind": {
                 "type": "string",
                 "description": (
                     "Concern category, from your own concern vocabulary (the "
-                    "'### Concern vocabulary' section of your prompt). Never invent "
-                    "a kind outside it."
+                    "'### Concern vocabulary' section of your prompt). Required on a new "
+                    "finding; never invent a kind outside your vocabulary."
                 ),
             },
             "description": {
                 "type": "string",
-                "description": "Plain English: what's wrong and the concrete fix.",
-            },
-            "first_line": {
-                "type": ["integer", "null"],
-                "description": "First line of the span this concern is about.",
-            },
-            "last_line": {
-                "type": ["integer", "null"],
-                "description": "Last line of that span (equal to first_line for one line).",
+                "description": (
+                    "Plain English: what's wrong and the concrete fix. Required on a new finding."
+                ),
             },
             "excerpt": {
                 "type": ["string", "null"],
                 "description": "The text at that location, verbatim.",
             },
+            "first_line": {
+                "type": ["integer", "null"],
+                "description": "First line of the span this finding is about.",
+            },
+            "last_line": {
+                "type": ["integer", "null"],
+                "description": "Last line of that span (equal to first_line for one line).",
+            },
+            "state": {
+                "type": "string",
+                "enum": ["outstanding", "fixed"],
+                "description": (
+                    "Set 'fixed' (with the finding's `id`) once you have re-read the file "
+                    "and confirmed it is genuinely resolved. Omit on a new finding — it "
+                    "starts outstanding. A finding you do not mention keeps its current "
+                    "state; silence never closes anything."
+                ),
+            },
         },
-        "required": ["kind", "description"],
+        "required": [],
     }
 
 
 def critic_output() -> dict[str, object]:
     """Build the output shape every critic sub-agent returns.
 
-    One shape for all critics — the schema the retired ``document_feedback``
-    tool declared, now the critic's own ``return_result`` payload. The engine
-    appends it to the reviewed file's ``.jsonl`` evolution log as a ``feedback``
-    entry and, on ``accept``, drives the acceptance flow; the critic itself never
-    writes to the log and never decides what happens next.
+    One shape for all critics: the reviewed ``path``, the round's ``findings``
+    (new ones and updates, see :func:`finding_item`), and a one-line ``summary``.
+
+    There is deliberately **no ``accept``**. The verdict is derived by the engine
+    from the resulting backlog — nothing outstanding means accepted — so a critic
+    cannot report a passing verdict while leaving problems open, and the two can
+    never disagree. The engine applies the list to the document's session-scoped
+    findings log and, when that leaves nothing outstanding, drives the acceptance
+    flow; the critic itself never writes to the store and never decides what
+    happens next.
     """
     return {
         "type": "object",
@@ -286,16 +324,15 @@ def critic_output() -> dict[str, object]:
                     "folder-prefixed with its project's name."
                 ),
             },
-            "accept": {
-                "type": "boolean",
-                "description": "True if the file passes review; false if it needs revision.",
-            },
-            "concerns": {
+            "findings": {
                 "type": "array",
-                "items": concern_item(),
+                "items": finding_item(),
                 "description": (
-                    "Every concern you found, aggregated. Non-empty when `accept` is "
-                    "false; empty when it is true."
+                    "This round's findings: every NEW problem you found (no `id`), plus an "
+                    "update for every EXISTING finding whose state or wording changed "
+                    '(its `id` plus only the changed fields — `state: "fixed"` to close '
+                    "one you verified). Empty only when you found nothing new AND had "
+                    "nothing outstanding to act on."
                 ),
             },
             "summary": {
@@ -303,5 +340,5 @@ def critic_output() -> dict[str, object]:
                 "description": "One line summarizing the review.",
             },
         },
-        "required": ["path", "accept", "concerns"],
+        "required": ["path", "findings"],
     }

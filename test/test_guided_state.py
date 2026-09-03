@@ -1,7 +1,11 @@
 """Unit tests for :mod:`kodo.guided_state` — the per-document evolution log.
 
-Replaces the artifact index: a document's current state is always derived
-from the last line of its ``.jsonl`` log, never from any in-memory store.
+Replaces the artifact index: nothing is held in memory; the log on disk is the
+whole record. Since review content moved to :mod:`kodo.findings`, this log holds
+only ``new_revision``/``review_result``/``accepted``, and a document's *status*
+is a function of both stores — :func:`~kodo.guided_state.derive_status` takes the
+findings half as arguments, and the merge itself is tested in
+``test_document_status.py``.
 """
 
 from __future__ import annotations
@@ -10,15 +14,26 @@ from pathlib import Path
 
 from kodo.guided_state import (
     append_accepted,
-    append_feedback,
     append_new_revision,
     append_review_result,
+    derive_status,
     is_tracked,
+    last_revision_timestamp,
+    read_document_state,
     read_history,
-    read_status,
     scan_tracked_files,
     shadow_path,
 )
+
+
+def _status(doc: Path, root: Path, *, reviewed: bool = False, outstanding: int = 0) -> str:
+    """Derive *doc*'s status with an explicit findings half."""
+    state = read_document_state(doc, root)
+    last = state["last_entry"] if state else None
+    return derive_status(
+        last if isinstance(last, dict) else None, reviewed=reviewed, outstanding=outstanding
+    )
+
 
 # ---------------------------------------------------------------------------
 # shadow_path / is_tracked
@@ -45,7 +60,7 @@ def test_is_tracked_matches_shadow_path(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# append_new_revision / read_history / read_status
+# append_new_revision / read_history / read_document_state
 # ---------------------------------------------------------------------------
 
 
@@ -61,12 +76,12 @@ def test_append_new_revision_is_a_noop_outside_tracked_roots(tmp_path: Path) -> 
         workflow="guided",
     )
     assert read_history(doc, tmp_path) == []
-    assert read_status(doc, tmp_path) is None
+    assert read_document_state(doc, tmp_path) is None
 
 
-def test_read_status_is_none_for_untouched_tracked_file(tmp_path: Path) -> None:
+def test_read_document_state_is_none_for_untouched_tracked_file(tmp_path: Path) -> None:
     doc = tmp_path / "specs" / "a.md"
-    assert read_status(doc, tmp_path) is None
+    assert read_document_state(doc, tmp_path) is None
 
 
 def test_new_revision_entry_carries_commit_and_workflow(tmp_path: Path) -> None:
@@ -90,9 +105,10 @@ def test_new_revision_entry_carries_commit_and_workflow(tmp_path: Path) -> None:
     assert entry["workflow"] == "guided"
     assert entry["timestamp"]
 
-    status = read_status(doc, tmp_path)
-    assert status is not None
-    assert status["status"] == "pending_review"
+    state = read_document_state(doc, tmp_path)
+    assert state is not None
+    assert state["last_revision_ts"] == entry["timestamp"]
+    assert _status(doc, tmp_path) == "pending_review"
 
 
 def test_new_revision_tags_problem_solving_writes_distinctly(tmp_path: Path) -> None:
@@ -114,8 +130,8 @@ def test_new_revision_tags_problem_solving_writes_distinctly(tmp_path: Path) -> 
     )
     history = read_history(doc, tmp_path)
     assert history[0]["workflow"] == "problem_solving"
-    # Still just a new_revision — no feedback/review_result/accepted appear
-    # outside Guided mode, because nothing in that flow ever fires there.
+    # Still just a new_revision — no review_result/accepted appear outside
+    # Guided mode, because nothing in that flow ever fires there.
     assert [e["type"] for e in history] == ["new_revision"]
 
 
@@ -125,6 +141,12 @@ def test_new_revision_tags_problem_solving_writes_distinctly(tmp_path: Path) -> 
 
 
 def test_status_derivation_full_lifecycle(tmp_path: Path) -> None:
+    """The whole state machine, with the findings half supplied per step.
+
+    ``reviewed``/``outstanding`` are what a caller reads off the session findings
+    store; here they are passed literally so this test covers the *rule* rather
+    than the plumbing.
+    """
     doc = tmp_path / "specs" / "a.md"
 
     append_new_revision(
@@ -136,19 +158,14 @@ def test_status_derivation_full_lifecycle(tmp_path: Path) -> None:
         summary="create",
         workflow="guided",
     )
-    assert read_status(doc, tmp_path)["status"] == "pending_review"  # type: ignore[index]
+    # Written, never looked at.
+    assert _status(doc, tmp_path) == "pending_review"
 
-    append_feedback(
-        doc,
-        tmp_path,
-        reviewer="architect_critic",
-        accept=False,
-        concerns=[{"kind": "gap", "description": "x"}],
-        summary="rejected",
-    )
-    assert read_status(doc, tmp_path)["status"] == "needs_revision"  # type: ignore[index]
+    # A critic round raised two findings.
+    assert _status(doc, tmp_path, reviewed=True, outstanding=2) == "needs_revision"
 
-    # Author revises — a fresh commit, new sha.
+    # Author revises — a fresh commit, new sha. The findings are still open, so
+    # the document is still in revision, not waiting on a first look.
     append_new_revision(
         doc,
         tmp_path,
@@ -158,18 +175,17 @@ def test_status_derivation_full_lifecycle(tmp_path: Path) -> None:
         summary="revise",
         workflow="guided",
     )
-    assert read_status(doc, tmp_path)["status"] == "pending_review"  # type: ignore[index]
+    assert _status(doc, tmp_path, outstanding=2) == "needs_revision"
 
-    append_feedback(
-        doc, tmp_path, reviewer="architect_critic", accept=True, concerns=[], summary="ok"
-    )
-    assert read_status(doc, tmp_path)["status"] == "pending_acceptance"  # type: ignore[index]
+    # The critic re-reviewed and closed both: reviewed since the last revision,
+    # nothing outstanding.
+    assert _status(doc, tmp_path, reviewed=True, outstanding=0) == "pending_acceptance"
 
-    # Interactive mode: user rejects.
+    # Interactive mode: the user rejects. That decision outranks the backlog.
     append_review_result(doc, tmp_path, decision="reject", comment="not quite")
-    assert read_status(doc, tmp_path)["status"] == "needs_revision"  # type: ignore[index]
+    assert _status(doc, tmp_path, reviewed=True, outstanding=0) == "needs_revision"
 
-    # Author revises again, critic accepts again, user approves this time.
+    # Author revises again, critic clears it again, user approves this time.
     append_new_revision(
         doc,
         tmp_path,
@@ -179,21 +195,65 @@ def test_status_derivation_full_lifecycle(tmp_path: Path) -> None:
         summary="revise again",
         workflow="guided",
     )
-    append_feedback(
-        doc, tmp_path, reviewer="architect_critic", accept=True, concerns=[], summary="ok"
-    )
     append_review_result(doc, tmp_path, decision="approve", comment="")
-    assert read_status(doc, tmp_path)["status"] == "pending_acceptance"  # type: ignore[index]
+    assert _status(doc, tmp_path, reviewed=True) == "pending_acceptance"
 
     append_accepted(doc, tmp_path)
-    final = read_status(doc, tmp_path)
-    assert final is not None
-    assert final["status"] == "accepted"
+    # Terminal: the backlog no longer has any say.
+    assert _status(doc, tmp_path, outstanding=3) == "accepted"
+    final = read_history(doc, tmp_path)[-1]
     # Acceptance never creates a new commit — it reuses the latest new_revision's.
     assert final["commit_hash"] == "sha-c"
 
 
-def test_append_accepted_reuses_most_recent_new_revision_commit_even_through_feedback(
+def test_reviewed_clean_and_never_reviewed_are_distinguished(tmp_path: Path) -> None:
+    """The one thing ``reviewed`` exists for: an empty backlog means two very
+    different things before and after a critic has looked at the file."""
+    doc = tmp_path / "specs" / "a.md"
+    append_new_revision(
+        doc,
+        tmp_path,
+        commit_hash="sha",
+        author="architect",
+        tool="filesystem",
+        summary="create",
+        workflow="guided",
+    )
+    assert _status(doc, tmp_path, reviewed=False, outstanding=0) == "pending_review"
+    assert _status(doc, tmp_path, reviewed=True, outstanding=0) == "pending_acceptance"
+
+
+def test_a_legacy_feedback_entry_is_ignored_rather_than_interpreted(tmp_path: Path) -> None:
+    """A log written by an older build can still hold a ``feedback`` line. It
+    must not be read as a verdict — it falls through to the same branch as a
+    ``new_revision``, so the current stores decide."""
+    assert derive_status({"type": "feedback", "accept": True}) == "pending_review"
+    assert derive_status({"type": "feedback", "accept": True}, outstanding=1) == "needs_revision"
+    assert (
+        derive_status({"type": "feedback", "accept": False}, reviewed=True) == "pending_acceptance"
+    )
+
+
+def test_last_revision_timestamp_finds_the_most_recent_revision(tmp_path: Path) -> None:
+    doc = tmp_path / "specs" / "a.md"
+    assert last_revision_timestamp([]) == ""
+    for sha in ("sha-a", "sha-b"):
+        append_new_revision(
+            doc,
+            tmp_path,
+            commit_hash=sha,
+            author="architect",
+            tool="edit_file",
+            summary="x",
+            workflow="guided",
+        )
+    append_review_result(doc, tmp_path, decision="reject", comment="")
+    history = read_history(doc, tmp_path)
+    # The last new_revision, not the last entry.
+    assert last_revision_timestamp(history) == history[1]["timestamp"]
+
+
+def test_append_accepted_reuses_most_recent_new_revision_commit(
     tmp_path: Path,
 ) -> None:
     doc = tmp_path / "specs" / "a.md"
@@ -206,24 +266,15 @@ def test_append_accepted_reuses_most_recent_new_revision_commit_even_through_fee
         summary="create",
         workflow="guided",
     )
-    append_feedback(
-        doc, tmp_path, reviewer="architect_critic", accept=True, concerns=[], summary="ok"
-    )
+    append_review_result(doc, tmp_path, decision="approve", comment="")
     # No further new_revision before accepted — must still find "first-sha".
     append_accepted(doc, tmp_path)
     final = read_history(doc, tmp_path)[-1]
     assert final["commit_hash"] == "first-sha"
 
 
-def test_append_feedback_and_review_result_raise_for_untracked_path(tmp_path: Path) -> None:
+def test_review_result_raises_for_untracked_path(tmp_path: Path) -> None:
     doc = tmp_path / "README.md"
-    try:
-        append_feedback(doc, tmp_path, reviewer="x", accept=True, concerns=[], summary="")
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("expected ValueError for an untracked path")
-
     try:
         append_review_result(doc, tmp_path, decision="approve", comment="")
     except ValueError:
@@ -264,5 +315,10 @@ def test_scan_tracked_files_reports_every_tracked_document(tmp_path: Path) -> No
     )
     append_accepted(doc_a, tmp_path)
 
-    results = {r["path"]: r["status"] for r in scan_tracked_files(tmp_path)}
-    assert results == {"specs/a.md": "accepted", "src/comp/b.py": "pending_review"}
+    rows = {str(r["path"]): r for r in scan_tracked_files(tmp_path)}
+    assert set(rows) == {"specs/a.md", "src/comp/b.py"}
+    # The scan reports raw inputs, not a status — deriving one needs the findings
+    # store too, which this package deliberately knows nothing about.
+    assert rows["specs/a.md"]["last_entry"]["type"] == "accepted"  # type: ignore[index]
+    assert rows["src/comp/b.py"]["last_entry"]["type"] == "new_revision"  # type: ignore[index]
+    assert rows["src/comp/b.py"]["last_revision_ts"]

@@ -1,5 +1,9 @@
 """Append/read a document's ``.jsonl`` evolution log.
 
+``append_feedback`` is gone along with the ``feedback`` entry type: a critic's
+verdict is no longer review content written here, it is a set of identified,
+stateful findings in :mod:`kodo.findings` (doc/FINDINGS.md).
+
 All functions are synchronous file I/O; callers on a hot async path wrap
 them in ``asyncio.to_thread`` (the same convention
 :mod:`kodo.runtime._checkpoints` uses for its own state file).
@@ -12,22 +16,19 @@ from pathlib import Path
 
 from ._paths import shadow_path
 from ._records import (
-    ConcernItem,
     accepted_entry,
-    derive_status,
-    feedback_entry,
+    last_revision_timestamp,
     new_revision_entry,
     review_result_entry,
 )
 
 __all__ = [
     "append_accepted",
-    "append_feedback",
     "append_new_revision",
     "append_review_result",
+    "read_document_state",
     "read_history",
     "read_jsonl",
-    "read_status",
 ]
 
 
@@ -56,28 +57,6 @@ def append_new_revision(
         new_revision_entry(
             commit_hash=commit_hash, author=author, tool=tool, summary=summary, workflow=workflow
         ),
-    )
-
-
-def append_feedback(
-    real_path: Path,
-    project_root: Path,
-    *,
-    reviewer: str,
-    accept: bool,
-    concerns: list[ConcernItem],
-    summary: str,
-) -> None:
-    """Record a critic's verdict via the ``document_feedback`` tool.
-
-    Raises:
-        ValueError: *real_path* is not a tracked guided-dev document.
-    """
-    path = shadow_path(real_path, project_root)
-    if path is None:
-        raise ValueError(f"{real_path} is not a tracked guided-dev document")
-    _append(
-        path, feedback_entry(reviewer=reviewer, accept=accept, concerns=concerns, summary=summary)
     )
 
 
@@ -131,13 +110,20 @@ def read_history(real_path: Path, project_root: Path) -> list[dict[str, object]]
     return read_jsonl(path)
 
 
-def read_status(real_path: Path, project_root: Path) -> dict[str, object] | None:
-    """The last entry of *real_path*'s log, with a derived ``status`` field.
+def read_document_state(real_path: Path, project_root: Path) -> dict[str, object] | None:
+    """The inputs :func:`derive_status` needs from *real_path*'s own log.
 
-    Returns ``None`` when untracked or the log is empty.
+    Returns ``{"last_entry", "last_revision_ts", "last_event"}``, or ``None``
+    when the path is untracked or its log is empty. It deliberately stops short
+    of a status: the findings half of the answer lives in another store, and the
+    merge belongs to :func:`kodo.tools.document_status`, not here.
     """
     history = read_history(real_path, project_root)
     if not history:
         return None
     last = history[-1]
-    return {**last, "status": derive_status(last)}
+    return {
+        "last_entry": last,
+        "last_revision_ts": last_revision_timestamp(history),
+        "last_event": str(last.get("timestamp", "")),
+    }

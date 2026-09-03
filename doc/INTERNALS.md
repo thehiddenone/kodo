@@ -40,6 +40,7 @@ source:
 | `common` | *(nothing)* |
 | `project` | *(nothing)* |
 | `guided_state` | *(nothing)* |
+| `findings` | *(nothing)* |
 | `state` | *(nothing)* |
 | `security` | `common`, `toolspecs`, `shellparser` |
 | `mirror` | *(nothing)* |
@@ -47,18 +48,25 @@ source:
 | `binutils` | *(nothing)* |
 | `transport` | `common` |
 | `toolspecs` | *(nothing — pure data)* |
-| `tools` | `common`, `guided_state`, `project`, `toolspecs` |
+| `tools` | `common`, `findings`, `guided_state`, `project`, `toolspecs` |
 | `llms` | `common`, `transport`, `toolspecs` |
 | `subagents` | `toolspecs` |
 | `titling` | `project`, `llms` |
-| `runtime` | `common`, `transport`, `toolspecs`, `tools`, `guided_state`, `project`, `state`, `subagents`, `llms`, `titling`, `mirror`, `shellparser`, `binutils` |
+| `runtime` | `common`, `transport`, `toolspecs`, `tools`, `findings`, `guided_state`, `project`, `state`, `subagents`, `llms`, `titling`, `mirror`, `shellparser`, `binutils` |
 | `server` | `common`, `transport`, `project`, `state`, `subagents`, `llms`, `titling`, `runtime`, `binutils` |
 
 `toolspecs` is now a true leaf: the old `toolspecs → workspace` edge (importing
 `ArtifactType` for `list_artifacts`'s schema) is gone along with the artifact
-system. The critic concern-item shape now lives once, in
+system. The critic finding-item shape lives once, in
 `kodo.subagents.specs._shapes`, since the tool that used to duplicate it
 (`document_feedback`) is gone.
+
+`findings` (§7a) is a second leaf alongside `guided_state`, and deliberately
+*not* an edge between them: `guided_state` is project-scoped, `findings` is
+session-scoped, and a project-scoped store must not depend on session state.
+They meet in exactly one place — `kodo.tools.document_status()` — which is why
+that function lives in `tools` (which may import both) rather than inside
+either package.
 
 > **Note — `kodo.workspace` and `kodo.toolchains` were deleted outright** (not
 > merged elsewhere). `workspace` was the artifact-staging + promotion system
@@ -94,7 +102,7 @@ imported); the annotation on each line names the packages pulled in.
           ▼
  T4  ┌──────────┐
      │ runtime  │  ▼ tools · llms · titling · subagents · toolspecs ·
-     └────┬─────┘    guided_state · state · project · transport · common
+     └────┬─────┘    findings · guided_state · state · project · transport · common
           │
  T3a ┌─────────┐
      │ titling │  ▼ llms (only) — sits above llms/T3 (its GGUF download +
@@ -425,11 +433,11 @@ argument, one call per document, regardless of how many roots exist upstream.
 | Module | Defines | Role |
 |---|---|---|
 | [_paths.py](../src/kodo/guided_state/_paths.py) | `shadow_path()`, `is_tracked()` | The real-path ↔ `.jsonl`-path mapping above. |
-| [_records.py](../src/kodo/guided_state/_records.py) | `ConcernItem`, `Status`, `new_revision_entry()`, `feedback_entry()`, `review_result_entry()`, `accepted_entry()`, `derive_status()` | The four entry-type constructors (pure dict builders) and the status-derivation rule (last line's `type` → one of `pending_review`/`needs_revision`/`pending_acceptance`/`accepted`). |
-| [_store.py](../src/kodo/guided_state/_store.py) | `append_new_revision()`, `append_feedback()`, `append_review_result()`, `append_accepted()`, `read_history()`, `read_status()`, `read_jsonl()` | Append/read the `.jsonl` log for one document. `append_new_revision` is a no-op outside the tracked roots; the other three raise `ValueError` for an untracked path (they should never be called for one). `append_accepted` reads the log's most recent `new_revision` to reuse its `commit_hash` — acceptance never produces a new commit. |
-| [_scan.py](../src/kodo/guided_state/_scan.py) | `scan_tracked_files()` | Walks `.kodo/guided_dev_state/` and returns `{path, status, last_event}` per tracked document. Backs the `guided_dev_status` tool (§6). |
+| [_records.py](../src/kodo/guided_state/_records.py) | `Status`, `new_revision_entry()`, `review_result_entry()`, `accepted_entry()`, `derive_status()`, `last_revision_timestamp()` | The three entry-type constructors (pure dict builders) and the status-derivation rule. `derive_status` takes the *findings* half (`reviewed`, `outstanding`) as plain arguments, so this package keeps importing nothing — see §7a. |
+| [_store.py](../src/kodo/guided_state/_store.py) | `append_new_revision()`, `append_review_result()`, `append_accepted()`, `read_history()`, `read_document_state()`, `read_jsonl()` | Append/read the `.jsonl` log for one document. `append_new_revision` is a no-op outside the tracked roots; the other two raise `ValueError` for an untracked path (they should never be called for one). `append_accepted` reads the log's most recent `new_revision` to reuse its `commit_hash` — acceptance never produces a new commit. `read_document_state` returns `{last_entry, last_revision_ts, last_event}` and stops short of a status, because deriving one needs the other store. |
+| [_scan.py](../src/kodo/guided_state/_scan.py) | `scan_tracked_files()` | Walks `.kodo/guided_dev_state/` and returns `{path, last_entry, last_revision_ts, last_event}` per tracked document — raw inputs, not a status, for the same reason. Backs the `guided_dev_status` tool (§6). |
 
-**The four jsonl entry types** (one append-only line each, see the records
+**The three jsonl entry types** (one append-only line each, see the records
 module above for exact fields):
 
 1. **`new_revision`** — engine-written, immediately after a `filesystem`/
@@ -439,15 +447,65 @@ module above for exact fields):
    modes**, so the Guide can reconcile state after a Problem-Solver session
    touched a tracked file. This is the *only* entry type Problem Solver ever
    produces.
-2. **`feedback`** — written by the engine from a critic's returned verdict
-   (`_record_review_verdict`, gated on the callee's `role: critic`):
-   `accept` + `concerns` (the same shape `concern_item` always used).
-3. **`review_result`** — engine-written only, never via a dispatched tool:
+2. **`review_result`** — engine-written only, never via a dispatched tool:
    the user's `approve`/`reject` decision from the interactive review gate.
-4. **`accepted`** — engine-written only: the final marker, `commit_hash`
+3. **`accepted`** — engine-written only: the final marker, `commit_hash`
    copied from the preceding `new_revision`.
 
+> **There is no `feedback` entry any more.** A critic's verdict used to land
+> here as `{accept, concerns}`. Concerns became **findings** — identified,
+> stateful, and session-scoped (§7a, doc/FINDINGS.md) — so this project-scoped
+> log no longer carries review content at all, and a document's status is a
+> function of both stores. A legacy `feedback` line left by an older build is
+> ignored rather than interpreted.
+
 **State:** Complete; high test coverage (`test_guided_state.py`,
+`test_engine_document_flow.py`).
+
+---
+
+## 7a. `findings/` — the shared author/critic backlog (session-scoped)
+
+A **finding** is one defect a critic raised against one document, with an `id`
+that survives the round it was raised in and a `state` of `outstanding` or
+`fixed`. Both halves of an author/critic loop read the backlog through the
+`get_findings` tool; the **critic alone** writes to it, through its own
+`return_result`, and the engine applies the result. **Full design:
+[doc/FINDINGS.md](FINDINGS.md)** — this section is the module map.
+
+Storage is under the **session** directory
+(`~/.kodo/sessions/<id>/findings/<logical document path>.jsonl`), not the
+project's `.kodo/`: two sessions may review the same tree under different models
+and settings, so a backlog is a fact about a session's review rather than about
+the project. The trade-off is explicit — a document reviewed in session A shows
+no outstanding findings in session B; what crosses sessions is the document's own
+evolution log (§7).
+
+| Module | Defines | Role |
+|---|---|---|
+| [_records.py](../src/kodo/findings/_records.py) | `Finding`, `RoundSummary`, `FINDING_FIELDS`, `finding_entry()`, `review_round_entry()`, `merge_finding()` | The two entry types and the merge rule. `RoundSummary.stalled` (closed nothing *and* opened nothing) is the loop's no-progress signal. |
+| [_paths.py](../src/kodo/findings/_paths.py) | `findings_log_path()` | Logical path → session log path. The logical path is agent-supplied, so segments are validated (traversal/absolute → `None`) and sanitised (the first segment is a workspace-folder display name). |
+| [_store.py](../src/kodo/findings/_store.py) | `read_findings()`, `apply_findings()`, `record_user_feedback()`, `last_round_timestamp()`, `outstanding_findings()` | Append/replay one document's log. `apply_findings` mints ids for updates with no `id`, patches the rest, and always closes with a `review_round` line. |
+
+**The two jsonl entry types:**
+
+1. **`finding`** — `{type, timestamp, id, reported_by, …changed fields…}`. The
+   first line for an id *creates*; every later line for it *patches*. Fields
+   absent from a line are unchanged — the "omitted fields remain the same" rule
+   is enforced by the storage layer, not by the engine remembering to preserve
+   them. A finding the round never mentions is untouched: **silence closes
+   nothing.**
+2. **`review_round`** — `{type, timestamp, reviewer, outstanding, opened, closed}`,
+   one per completed critic round, written whether or not anything moved.
+
+**Status is a two-store merge.** `kodo.tools.document_status()`
+([tools/_document_status.py](../src/kodo/tools/_document_status.py)) is the only
+implementation of the rule, used by both `guided_dev_status` and the engine's
+review loop; `guided_state.derive_status` takes the findings half as plain
+`reviewed`/`outstanding` arguments so neither leaf package imports the other.
+See doc/FINDINGS.md §6 for the table.
+
+**State:** Complete (`test_findings.py`, `test_document_status.py`,
 `test_engine_document_flow.py`).
 
 ---
@@ -1025,7 +1083,7 @@ narrow per-collaborator host protocols living next to each collaborator):
 | [_worker.py](../src/kodo/runtime/_engine/_worker.py) | mixin | `WorkerMixin` — `_run_worker` (the single queue-driven coroutine) + `_handle_input_no_agent`. |
 | [_llm.py](../src/kodo/runtime/_engine/_llm.py) | mixin | `LLMPlumbingMixin` — `_resolve_plugin`/`_resolve_model_key`, `_run_silent_return_turn`, `_run_silent_tool_loop_turn` (a silent, multi-round, non-subsession tool-calling turn for the `web_search` agent — deadline- and round-capped, doc/WEB_SEARCH.md), `_security_judge`. |
 | [_turns.py](../src/kodo/runtime/_engine/_turns.py) | mixin | `TurnLoopMixin` — `_run_entry_agent` (+ the two entry wrappers below), `_run_agent_turn` (the generic LLM tool loop), `_dispatch_tool_calls`, `_finalize_tool_result`, `_make_dispatcher`, attachment storing. |
-| [_subagents.py](../src/kodo/runtime/_engine/_subagents.py) | mixin | `SubagentMixin` — `_run_subagent`/`_spawn_subagent` + the `_assert_can_spawn` gate, subsession lifecycle/replay, `_run_dependency_manager`, `_run_web_search_agent` (drives the `web_search` agent via `_run_silent_tool_loop_turn`, doc/WEB_SEARCH.md), `_run_review_loop`/`_run_review_round`/`_record_review_verdict`. |
+| [_subagents.py](../src/kodo/runtime/_engine/_subagents.py) | mixin | `SubagentMixin` — `_run_subagent`/`_spawn_subagent` + the `_assert_can_spawn` gate, subsession lifecycle/replay, `_run_dependency_manager`, `_run_web_search_agent` (drives the `web_search` agent via `_run_silent_tool_loop_turn`, doc/WEB_SEARCH.md), `_run_review_loop`/`_run_review_round`/`_record_findings`, plus the findings scope threading (`_findings_dir`/`_findings_snapshot`/`_document_status`, doc/FINDINGS.md). |
 | [_resume.py](../src/kodo/runtime/_engine/_resume.py) | mixin | `ResumeMixin` — Stop folding (`_persist_interrupted_turn`) + cold-restart resume (`_resume_main_turn`, `_build_replay_ledger`). |
 | [_events.py](../src/kodo/runtime/_engine/_events.py) | collaborator | `EngineEmitters` — every client event emitter + cumulative cost. |
 | [_compaction.py](../src/kodo/runtime/_engine/_compaction.py) | collaborator | `ContextCompactor` (+ `CompactorHost`) — context gauge, in-place compaction, `render_transcript`/`estimate_tokens`. `render_transcript`'s four headers (`## USER` / `## ASSISTANT` / `## TOOL RESULTS` / `## PRIOR COMPACTED CONTEXT`) are load-bearing: they split the three kinds of `role="user"` message the engine emits, and the compactor's verbatim-user-prompt rule keys off `## USER` meaning *only* a real prompt (STATE_AND_LIFECYCLE.md §4.5). |
@@ -1105,26 +1163,34 @@ The package's public surface is unchanged by the split:
   (which would make `_spawn_subagent` short-circuit it) and from every
   `subagents:` list, so the only path to it is the tool.
 - `_run_review_loop` → the author/critic loop `_run_subagent` enters whenever
-  the target sub-agent declares a `critic:`. Each round spawns the author
-  (`for_revision_path` + the rendered concerns set from the previous round),
+  the target sub-agent declares a `critic:`. Each round spawns the author with
+  **identical `instructions`** (only `for_revision_path` is added, from round
+  two) — findings are never rendered into the task; both halves read them
+  through `get_findings`, whose scope this loop binds (doc/FINDINGS.md §4). It
   reads back `author_output.primary_path`, spawns the critic against that path,
-  then reads `kodo.guided_state.read_status(path)` — **the jsonl, not the
-  critic's `return_result`, is what the loop acts on**, because the user's own
-  review decision lands there too. Emits
+  then derives the status via `_document_status` — **the stores, not the
+  critic's `return_result`, are what the loop acts on**, because the user's own
+  review decision lands there too. The round's `opened`/`closed` counters come
+  from diffing `_findings_snapshot` before and after the critic's subsession
+  (rather than threading a value out of `_record_findings`, which runs several
+  frames down and does not run at all for a replayed subsession). Emits
   `EVT_REVIEW_STARTED`/`EVT_REVIEW_VERDICT` per round. Stops on acceptance, on an
   author **escalation** (a non-empty `reason` on its result — the critic is not
   spawned and no further round is spent; `outcome: "escalated"`), on
-  `max_rounds` (caller-sized, default 5, capped at 10), or when a round's
-  concern count fails to drop (`not_converging`).
-- `_record_review_verdict` → called from `_drive_subsession` for every agent
-  declaring `role: critic`: appends the `feedback` jsonl entry from the critic's
-  returned payload, then drives `_finalize_document` on `accept: true`. The
-  engine-side replacement for the retired `document_feedback` tool.
+  `max_rounds` (caller-sized, default 5, capped at 10), or when a round closes
+  nothing and opens nothing (`not_converging` — the stall detector that replaced
+  the old concern-count heuristic).
+- `_record_findings` → called from `_drive_subsession` for every agent declaring
+  `role: critic`: applies the round's findings to that document's session-scoped
+  backlog (`kodo.findings.apply_findings`), closes the round with a
+  `review_round` entry, then drives `_finalize_document` once **nothing is left
+  outstanding**. There is no `accept` field to consult — the verdict is derived.
 - `_finalize_document(path)` (called from the post-dispatch hook below, not
   exposed via `EngineServices` — there is no tool indirection) → autonomous
-  mode immediately `append_accepted`s; interactive mode fires the same
-  approval gate `request_user_review_artifact` used to, then records
-  `append_review_result` (+ `append_accepted` on agreement). Replaces the old
+  mode — and Edit Control `allow_all` — immediately `append_accepted`s;
+  otherwise it fires the same approval gate `request_user_review_artifact` used
+  to, then records `append_review_result` (+ `append_accepted` on agreement, or
+  `kodo.findings.record_user_feedback` on rejection). Replaces the old
   `__complete_artifact`/promotion path entirely — there is nothing to
   materialize, since the document was already a real file.
 - `CheckpointCoordinator.record_guided_revision(...)` (also called from the post-dispatch hook) →
@@ -1330,13 +1396,15 @@ mid-run via the `disable_autonomous_mode` tool (engine `_disable_autonomous`
 clears both `autonomous` and `effective_autonomous` immediately and emits
 `EVT_AUTONOMOUS_CHANGED`).
 
-**Document acceptance:** a critic returns `{path, accept: true, concerns: []}`
-via `return_result` → `_drive_subsession` sees the callee declares
-`role: critic` and calls `_record_review_verdict`, which appends a `feedback`
-jsonl entry (§7) and then, on `accept: true`, calls `_finalize_document(path)`: autonomous mode immediately appends an `accepted`
-entry; interactive mode fires the approval gate, then appends `review_result`
-(+ `accepted` on agreement). There is no promotion step — the file was already
-real.
+**Document acceptance:** a critic returns `{path, findings, summary}` via
+`return_result` → `_drive_subsession` sees the callee declares `role: critic`
+and calls `_record_findings`, which applies the findings to the session backlog
+(§7a) and then, once nothing is outstanding, calls `_finalize_document(path)`:
+autonomous mode — or Edit Control *Allow All* — immediately appends an
+`accepted` entry; otherwise the approval gate fires, then `review_result`
+(+ `accepted` on agreement, or a minted user-feedback finding on rejection).
+There is no promotion step — the file was already real, and no `accept` field —
+the verdict is derived from an empty backlog.
 
 **User gate:** any `ask_user`, or the document-review gate
 inside `_finalize_document` → `GateOrchestrator.fire_*` sends a `kind=request`,

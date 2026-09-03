@@ -81,18 +81,39 @@ def _critic_names() -> list[str]:
     return sorted(a.name for a in registry.all_agents() if a.is_critic)
 
 
-def test_every_critic_declares_the_shared_verdict_shape() -> None:
-    """Every critic returns one shape: the reviewed path, the verdict, and the
-    concerns — the schema the retired ``document_feedback`` tool declared,
-    promoted to the critic's own ``return_result`` payload so a critic reports
-    once instead of twice."""
+def test_every_critic_declares_the_shared_findings_shape() -> None:
+    """Every critic returns one shape: the reviewed path, this round's findings,
+    and a summary. There is deliberately no ``accept``: the verdict is derived
+    from the resulting backlog (doc/FINDINGS.md §3), so a critic cannot report a
+    pass while leaving problems outstanding, and the two can never disagree."""
     critics = _critic_names()
     assert critics, "expected the pipeline to have critics; the fixture is wrong"
     for name in critics:
         out = _SPECS_BY_NAME[name].output_schema
         props = out["properties"]  # type: ignore[index]
-        assert set(props) == {"path", "accept", "concerns", "summary"}, name
-        assert set(out["required"]) == {"path", "accept", "concerns"}, name  # type: ignore[index]
+        assert set(props) == {"path", "findings", "summary"}, name
+        assert set(out["required"]) == {"path", "findings"}, name  # type: ignore[index]
+
+
+def test_a_finding_update_needs_only_an_id_and_the_changed_fields() -> None:
+    """The update half of the protocol: ``{"id": "F1", "state": "fixed"}`` is a
+    complete, compliant finding. Nothing on a finding is schema-required —
+    requiring ``kind``/``description`` would make every close non-compliant,
+    since ``normalize_output`` backfills a missing required field and flags the
+    whole result."""
+    for name in _critic_names():
+        item = _SPECS_BY_NAME[name].output_schema["properties"]["findings"]["items"]  # type: ignore[index]
+        assert item["required"] == [], name
+        assert set(item["properties"]) == {  # type: ignore[index]
+            "id",
+            "kind",
+            "description",
+            "excerpt",
+            "first_line",
+            "last_line",
+            "state",
+        }, name
+        assert item["properties"]["state"]["enum"] == ["outstanding", "fixed"], name  # type: ignore[index]
 
 
 def _escalation_capable_names() -> set[str]:
@@ -160,7 +181,7 @@ def test_concern_kind_is_free_form_with_a_pointer_to_the_prompt() -> None:
     constraints). The schema must therefore point at the prompt instead of
     duplicating a list that would silently drift."""
     for name in _critic_names():
-        item = _SPECS_BY_NAME[name].output_schema["properties"]["concerns"]["items"]  # type: ignore[index]
+        item = _SPECS_BY_NAME[name].output_schema["properties"]["findings"]["items"]  # type: ignore[index]
         kind = item["properties"]["kind"]  # type: ignore[index]
         assert "enum" not in kind, f"{name} reintroduced a concern-kind enum"
         assert "Concern vocabulary" in kind["description"], name

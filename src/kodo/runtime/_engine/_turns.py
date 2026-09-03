@@ -1041,7 +1041,11 @@ class TurnLoopMixin:
     # ------------------------------------------------------------------
 
     def _make_dispatcher(
-        self: EngineHost, agent_name: str, session_id: str, deadline: float | None = None
+        self: EngineHost,
+        agent_name: str,
+        session_id: str,
+        deadline: float | None = None,
+        findings_path: str = "",
     ) -> ToolDispatcher:
         """Build a per-run tool dispatcher for *agent_name*.
 
@@ -1058,6 +1062,14 @@ class TurnLoopMixin:
         ``deadline`` is only ever passed for the ``web_search`` agent's
         silent tool-loop turn (see ``_run_silent_tool_loop_turn``); every
         other caller leaves it ``None`` (untimed).
+
+        ``findings_path`` binds ``get_findings``' auto-scope for this run — the
+        document the enclosing author/critic round targets (doc/FINDINGS.md §3).
+        Only ``_run_review_loop``'s spawns pass one; everything else leaves it
+        empty, and the tool then answers with an empty list. The findings
+        directory is injected alongside it because ``session_id`` here is the
+        *subsession* id inside a sub-agent run, so no tool could derive the
+        session's own store path for itself.
         """
         spec = self._registry.spec_for(agent_name)
         return ToolDispatcher(
@@ -1071,5 +1083,7 @@ class TurnLoopMixin:
             mode=self._session.effective_workflow_mode,
             util_paths=self._util_paths(),
             output_schema=spec.output_schema if spec is not None else None,
+            findings_dir=self._findings_dir(),
+            findings_path=findings_path,
             deadline=deadline,
         )

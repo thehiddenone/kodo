@@ -290,9 +290,9 @@ Protocols**, also defined in `_context.py`:
   `_create_project` / `_init_project` / `_has_workspace` / `_root_paths` /
   `_project_root` methods. There is deliberately **no** `complete_artifact`-
   style method: the accept/review flow (`_finalize_document`) is purely
-  engine-internal, triggered by the engine when a critic sub-agent returns an
-  accepting verdict (`_record_review_verdict`) — never through a tool or a
-  protocol indirection.
+  engine-internal, triggered by the engine when a critic round leaves the
+  document's findings backlog empty (`_record_findings`) — never through a tool
+  or a protocol indirection.
   All three back the single `scaffold_new_project` tool, dispatched on which
   input the agent gave: no `path` and no workspace yet → `bootstrap_project`
   (resolves a workspace-home folder — interactively or, in autonomous mode,
@@ -539,21 +539,23 @@ Whether one call is one pass or a full author/critic loop is decided by the
 `critic: <name>` gets the loop contract: its tool takes an optional
 `max_rounds` (default 5, hard cap 10) and its declared output carries a
 `review` block. `_run_review_loop` then spawns the author, hands its
-`primary_path` to the critic, and re-runs the author with the concerns rendered
-into its `instructions` and `for_revision_path` set — until:
+`primary_path` to the critic, and re-runs the author with **identical
+`instructions`** and `for_revision_path` set — the findings themselves are never
+rendered into the task; both halves read them through `get_findings`
+(doc/FINDINGS.md) — until:
 
 | `review.outcome` | Meaning |
 | --- | --- |
 | `accepted` | the log says `accepted`/`pending_acceptance`; the file is settled |
-| `max_rounds` | budget spent with concerns outstanding |
+| `max_rounds` | budget spent with findings still outstanding (`review.outstanding` counts them) |
 | `escalated` | the author returned a non-empty `reason`: a blocker no revision fixes. The critic is not spawned and no further round is spent (see *An author's escalation* below) |
-| `not_converging` | a round's concern count failed to drop, so the engine stopped early rather than orbit to the cap |
+| `not_converging` | a round closed nothing *and* opened nothing — exact no-progress, so the engine stopped early rather than orbit to the cap |
 | `not_reviewed` | the author reported no `primary_path` to review |
 
-The **evolution log is authoritative**, not the critic's return value: the
-user's own review decision lands there too (see §5A below on verdicts) and can
-turn an accepted file back into one needing revision, which the loop then
-spends another round on.
+The **stores are authoritative**, not the critic's return value: the user's own
+review decision lands in them too (see *A critic's findings* below) and can turn
+an accepted file back into one needing revision, which the loop then spends
+another round on.
 
 ### An author's escalation
 
@@ -591,22 +593,34 @@ re-running the stage with it written into `instructions`.
 > question gate asked the user directly from inside a subsession the caller
 > could not see.
 
-### A critic's verdict
+### A critic's findings
 
 `return_result` is specialized per agent — `result` is bound to that agent's
-`output_schema` — so a critic's terminal call *is* its verdict:
-`{path, accept, concerns, summary}`. There is no separate reporting tool; the
-retired `document_feedback` declared this exact shape, and having a critic
-report the same review twice was the redundancy this replaced.
+`output_schema` — so a critic's terminal call *is* its round:
+`{path, findings, summary}`. There is no separate reporting tool; the retired
+`document_feedback` declared the old shape, and having a critic report the same
+review twice was the redundancy this replaced.
 
-The engine records it in `_drive_subsession`, gated on the callee's explicit
+**There is no `accept` field.** The verdict is *derived*: a document is accepted
+when the round leaves nothing outstanding. A critic therefore returns evidence
+and the engine draws the conclusion, which removes the whole class of "accepted,
+concerns attached" results and makes the two impossible to disagree.
+
+Each entry of `findings` is either a **new** finding (no `id` — the engine mints
+one) or an **update** to an existing one (`id` plus only the fields that
+changed; `state: "fixed"` closes it). A finding the round does not mention keeps
+its state — **silence closes nothing**. Full protocol: doc/FINDINGS.md §3.
+
+The engine applies them in `_drive_subsession`, gated on the callee's explicit
 `role: critic` (never inferred from the result's shape), by calling
-`_record_review_verdict`: append the `feedback` entry to the reviewed file's
-`.jsonl` log, then — on `accept: true` — drive `_finalize_document`, which
-auto-accepts in autonomous mode and otherwise fires the user's sign-off gate.
-Recording it at subsession end rather than mid-run covers both a fresh spawn
-and one resumed after a crash, while a *completed* subsession replayed from the
-ledger returns its stored result without re-running and so cannot double-write.
+`_record_findings`: apply the updates to that document's session-scoped findings
+log, close the round with a `review_round` entry, then — when nothing is left
+outstanding — drive `_finalize_document`, which auto-accepts in autonomous mode
+or under Edit Control *Allow All*, and otherwise fires the user's sign-off gate
+(whose rejection comment is itself minted as a finding). Applying them at
+subsession end rather than mid-run covers both a fresh spawn and one resumed
+after a crash, while a *completed* subsession replayed from the ledger returns
+its stored result without re-running and so cannot double-write.
 
 Each critic's **concern vocabulary is prose** in its own prompt
 (`### Concern vocabulary`), not a schema `enum`: the catalogue needs per-kind
@@ -614,6 +628,25 @@ explanations and routing rules a bare enum cannot carry, and nothing ever
 enforced the enum anyway (`normalize_output` validates declared keys and
 required fields, never value constraints). The `kind` field's description
 points at that section.
+
+### The other side: `get_findings`
+
+The read half of the same protocol, granted to all 8 authors and all 7 critics.
+It is **auto-scoped** — no path argument — because the engine binds the round's
+target document to the run (`ToolContext.findings_path`, threaded from
+`_run_review_loop` through `_spawn_subagent` → `_drive_subsession` →
+`_make_dispatcher`). Outside a review round, or on an author's first pass, the
+scope is empty and the tool returns `{"findings": []}`: a normal answer, not an
+error, which is what lets one prompt be correct on pass 1 and pass N.
+
+The findings *directory* is injected alongside the scope rather than derived by
+the tool, because `ToolContext.session_id` holds the **subsession** id inside a
+sub-agent run — no tool could resolve the session's own store path for itself.
+
+The prompt half is two shared blocks, `{SHARED:findings_author}` and
+`{SHARED:findings_critic}`, and the registry enforces the pairing exactly as it
+does `{SHARED:editing}`: an agent granted `get_findings` must include exactly
+one of them, and neither block may appear without the grant.
 
 ---
 
@@ -754,9 +787,9 @@ blocking. This is deliberate: agent prompts call `ask_user` unconditionally and
 never branch on mode themselves (see `ASK_USER.description` and its `answers`
 output description for how they're expected to read a synthesized answer). The former `request_user_review_artifact` used the same idea before
 it moved into the engine outright: `_finalize_document` (triggered by
-`_record_review_verdict` when a critic returns `accept: true`, not by a
-dispatched tool) checks `effective_autonomous` itself and either auto-accepts
-or fires the gate.
+`_record_findings` when a critic round leaves nothing outstanding, not by a
+dispatched tool) checks `effective_autonomous` — and Edit Control `allow_all` —
+itself, and either auto-accepts or fires the gate.
 
 > **Where `effective_autonomous` comes from.** The user-facing toggle sets
 > `SessionState.autonomous`, but the engine *freezes* that into
@@ -988,6 +1021,8 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [tools/_&lt;tool&gt;.py](../src/kodo/tools/) | One `Tool` subclass per tool, with `handle(self, tool_input) -> str`. |
 | [tools/_dispatch.py](../src/kodo/tools/_dispatch.py) | `_TOOL_CLASSES` table, `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME`. |
 | [tools/_paths.py](../src/kodo/tools/_paths.py) | `resolve_within` path guard (file-I/O + shell). |
+| [tools/_document_status.py](../src/kodo/tools/_document_status.py) | `document_status()` — merges a document's project-scoped evolution log with its session-scoped findings backlog (doc/FINDINGS.md §6). Lives here because `tools` is the lowest tier that may import both leaf packages. |
+| [findings/](../src/kodo/findings/) | The per-session author/critic findings backlog `get_findings` reads and the engine writes (doc/FINDINGS.md). A leaf package, so `tools` may import it. |
 | [project/_layout.py](../src/kodo/project/_layout.py) | `session_temp_dir(session_id)` — `~/.kodo/sessions/<id>/tmp`, the `temporary` scratch root (§5a). |
 | [skills/](../src/kodo/skills/) | `SkillStore`/`load_skill`/`render_catalog` — the user-installed Agent Skills `use_skill` reads (doc/SKILLS.md). A leaf package, so `tools` may import it. |
 | [subagents/_registry.py](../src/kodo/subagents/_registry.py) | Validates each agent's `tools:` frontmatter against `ALL_TOOLS`; autonomous filtering. Renders no tool text into the prompt. |

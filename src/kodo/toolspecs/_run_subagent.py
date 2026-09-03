@@ -176,9 +176,11 @@ def build_run_subagent_spec(
         prose.append(
             f"This runs the full review loop, not a single pass: the engine spawns "
             f"`{subagent_name}`, hands its primary file to `{critic_name}`, and — while "
-            f"the critic rejects — re-runs `{subagent_name}` with the concerns folded "
-            f"into its instructions, until the critic accepts or the round budget runs "
-            f"out. One call is the whole loop; do not call it again to 'iterate'. Call "
+            f"findings are outstanding — re-runs `{subagent_name}` on the same brief, "
+            f"until the backlog is clear or the round budget runs out. The two exchange "
+            f"findings directly through their own tool; nothing about them passes "
+            f"through you. One call is the whole loop; do not call it again to "
+            f"'iterate'. Call "
             f"it again only to start a *new* piece of work, or to resume one the "
             f"`review` block reports as unfinished."
         )

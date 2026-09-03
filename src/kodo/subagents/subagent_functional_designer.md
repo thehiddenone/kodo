@@ -10,6 +10,7 @@ tools:
   - create_directory
   - read_file
   - use_skill
+  - get_findings
 ---
 # Functional Designer
 
@@ -80,9 +81,9 @@ For each component, in plan order, the guide drives:
 
 1. Compose the Functional Design (structure below) and write it to a path of your choosing under `specs/` (e.g. `billing-service/specs/design/<component>.md` — folder-prefixed with the project's name) with `create_file`.
 2. The engine runs Critic on your file automatically once you return.
-3. On `accept: false`, address each concern, revise via `edit_file`. The guide decides how many rounds; do not assume a fixed limit.
+3. When you are re-invoked, call `get_findings` (see *Findings* below) and address every outstanding finding, revising via `edit_file`. Findings are never written into your `instructions`; the backlog is the only place they exist. The engine decides how many rounds; do not assume a fixed limit.
 4. When you are re-invoked with the same dispute unresolved and another revision would not settle it, escalate with `reason: "critic_iteration_cap"` and a `summary` of the dispute naming the design file.
-5. On `accept: true`, the file is presented at the review gate; user feedback returns as your next input (see *Feedback handling*).
+5. Once the backlog is empty, the file is presented at the review gate; the user's own feedback comes back as a finding in the same backlog (see *Feedback handling*).
 6. Once accepted, the design is locked (its content is live); do not revise unless a reopen requires it.
 
 ### Stage 6 — Handling reopens of locked designs
@@ -175,6 +176,8 @@ You act only through tool calls — no free-form text. A complete run: zero or m
 {SHARED:escalation}
 
 {SHARED:editing}
+
+{SHARED:findings_author}
 
 {SHARED:working_rules}
 

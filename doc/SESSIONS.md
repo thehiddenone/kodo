@@ -89,6 +89,13 @@ seamlessly across the change.
                                 to a prompt (one per accepted file), named after
                                 their own UUID4 id. session.jsonl holds only a
                                 link, never the content; see below
+    findings/
+        <logical document path>.jsonl — the author/critic findings backlog for one
+                                reviewed document, keyed by its folder-prefixed
+                                logical path (e.g. proj/specs/architecture.md.jsonl).
+                                Session-scoped on purpose: a backlog is a fact about
+                                *this* session's review, not about the project — see
+                                doc/FINDINGS.md
 ```
 
 `<main-session-id>` is the guide session ID minted at bootstrap (a POSIX

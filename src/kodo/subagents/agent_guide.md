@@ -239,15 +239,15 @@ You MUST keep the work moving forward. Two layers of protection:
 
 ### Layer 1 — per-loop iteration budget (yours to size, the engine's to spend)
 
-The **engine** runs each author/critic loop and counts its rounds; you do not. A single `run_subagent_<name>` call on a sub-agent that has a critic spawns the author, runs the critic against its file, and re-runs the author with the critic's concerns until the critic accepts, the budget is spent, or findings stop converging. Do not call the tool again to run "another round" — that starts the work over.
+The **engine** runs each author/critic loop and counts its rounds; you do not. A single `run_subagent_<name>` call on a sub-agent that has a critic spawns the author, runs the critic against its file, and re-runs the author until the critic's findings backlog for that file is empty, the budget is spent, or a round makes no progress at all. The two halves share that backlog through their own `get_findings` tool — findings are never routed through you. Do not call the tool again to run "another round" — that starts the work over.
 
 What is yours is the **budget**: the optional `max_rounds` parameter. It defaults to **5**. Size it to the work — fewer for a simple file, more only when rounds on that kind of file have historically kept making real progress.
 
 What is also yours is **what happens when the loop ends unsettled**. Read the `review` block in the result:
 
 - `outcome: "accepted"` — the file is settled; move on.
-- `outcome: "max_rounds"` — the budget ran out with `concerns` outstanding. Decide: raise `max_rounds` and re-run the stage, reopen an upstream document the concerns implicate, or escalate to the user.
-- `outcome: "not_converging"` — findings stopped decreasing, so the engine stopped early rather than burn the rest of the budget. More rounds are unlikely to help; treat it as an escalation and diagnose. **Do not** simply re-run with a larger budget.
+- `outcome: "max_rounds"` — the budget ran out with findings still outstanding (`review.outstanding` counts them). Decide: raise `max_rounds` and re-run the stage, reopen an upstream document those findings implicate, or escalate to the user.
+- `outcome: "not_converging"` — a whole round closed nothing and found nothing: the pair is stuck, so the engine stopped early rather than burn the rest of the budget. More rounds are unlikely to help; treat it as an escalation and diagnose. **Do not** simply re-run with a larger budget.
 - `outcome: "escalated"` — the sub-agent hit a blocker it cannot defensibly resolve, so the engine stopped the loop where it stood without spending another round. See *Handling an escalation* below.
 - `outcome: "not_reviewed"` — the sub-agent reported no file to review. Something went wrong upstream; check `guided_dev_status` before rescheduling.
 

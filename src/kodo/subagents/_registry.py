@@ -142,6 +142,7 @@ from kodo.project import kodo_skills_dir
 from kodo.skills import SkillStore, render_catalog
 from kodo.toolspecs import (
     ALL_TOOLS,
+    GET_FINDINGS,
     RETURN_RESULT,
     RUN_SUBAGENT,
     USE_SKILL,
@@ -189,6 +190,15 @@ _FILE_MODIFYING_TOOLS: frozenset[str] = frozenset(t.name for t in ALL_TOOLS if t
 # in an agent the engine seeds from a structured ``task_input`` (i.e. one with a
 # ``SubAgentSpec``); see the module docstring.
 _TASK_INPUT_SHARED = "task_input"
+
+# The findings protocol (doc/FINDINGS.md §7), split in two because the halves
+# have opposite obligations: an author reads the backlog and fixes it, a critic
+# reads it and is the only one that may close anything. ``get_findings`` is the
+# grant that *is* the opt-in, and the pairing is validated in both directions —
+# a grant with neither block leaves an agent holding a tool it was never told to
+# use, and a block without the grant tells it to call a tool it does not have.
+_FINDINGS_SHARED: tuple[str, ...] = ("findings_author", "findings_critic")
+_GET_FINDINGS_TOOL = GET_FINDINGS.name
 
 # The terminal tool every schema-bearing sub-agent is auto-granted (so it can
 # return its result against its declared output schema). Granted in the registry
@@ -241,7 +251,7 @@ def _review_output_schema(output_schema: dict[str, object], critic: str) -> dict
     Args:
         output_schema: The author sub-agent's own declared ``output_schema``.
         critic: Name of the critic that reviewed it (named in the prose so the
-            caller can attribute the concerns).
+            caller can attribute the findings).
 
     Returns:
         dict[str, object]: A new schema; the input is not mutated.
@@ -258,9 +268,8 @@ def _review_output_schema(output_schema: dict[str, object], critic: str) -> dict
             "status": {
                 "type": "string",
                 "description": (
-                    "The file's status in its evolution log after the last round: "
-                    "'accepted', 'pending_acceptance', 'needs_revision', or "
-                    "'pending_review'."
+                    "The file's status after the last round: 'accepted', "
+                    "'pending_acceptance', 'needs_revision', or 'pending_review'."
                 ),
             },
             "outcome": {
@@ -270,10 +279,10 @@ def _review_output_schema(output_schema: dict[str, object], critic: str) -> dict
                     "user sign-off landed), 'escalated' (the author returned a "
                     "blocker in `reason` it cannot resolve, so no critic ran and "
                     "no further round was spent — resolve it and re-run), "
-                    "'max_rounds' (the budget ran out with concerns outstanding), "
-                    "'not_converging' (concerns stopped decreasing, so further "
-                    "rounds were judged wasteful), or 'not_reviewed' (the author "
-                    "reported no file to review). "
+                    "'max_rounds' (the budget ran out with findings still "
+                    "outstanding), 'not_converging' (a round closed nothing and "
+                    "found nothing, so further rounds were judged wasteful), or "
+                    "'not_reviewed' (the author reported no file to review). "
                     "Anything but 'accepted' needs your decision."
                 ),
             },
@@ -281,13 +290,17 @@ def _review_output_schema(output_schema: dict[str, object], critic: str) -> dict
                 "type": "integer",
                 "description": "How many author→critic rounds ran.",
             },
-            "concerns": {
-                "type": "array",
-                "description": "The concerns still outstanding; empty when accepted.",
-                "items": {"type": "object"},
+            "outstanding": {
+                "type": "integer",
+                "description": (
+                    "How many findings are still outstanding against the file; 0 when "
+                    "accepted. The findings themselves live in the author/critic "
+                    "backlog, which is theirs, not yours — you act on the count and "
+                    "the outcome."
+                ),
             },
         },
-        "required": ["status", "outcome", "rounds", "concerns"],
+        "required": ["status", "outcome", "rounds", "outstanding"],
     }
     return {
         **output_schema,
@@ -435,7 +448,7 @@ class AgentRegistry:
         """Check *agent*'s ``{SHARED:…}`` inclusions at construction time.
 
         Nothing is auto-appended to a prompt any more — inclusion is the agent's
-        own declaration — so these four checks are the only thing standing
+        own declaration — so these checks are the only thing standing
         between a forgotten token and an agent running with no injection
         resistance. ``test_agents.py`` re-runs the same rules over every agent
         file so the failure normally lands at build time; this is the last-resort
@@ -443,8 +456,10 @@ class AgentRegistry:
 
         Raises:
             AgentLoadError: an unknown block name, a missing required block, a
-                file-modifying tool without the editing discipline, or a
-                task-input note in an agent that is never seeded with one.
+                file-modifying tool without the editing discipline, a
+                ``get_findings`` grant without exactly one half of the findings
+                protocol (or either half without the grant), or a task-input note
+                in an agent that is never seeded with one.
         """
         included = {m.group(1) for m in _SHARED_TOKEN_RE.finditer(agent.system_prompt)}
 
@@ -469,6 +484,22 @@ class AgentRegistry:
             raise AgentLoadError(
                 f"{agent.source_path}: grants file-modifying tool(s) {granted}, so its "
                 f"prompt must include {shared_token(_EDITING_SHARED)}"
+            )
+
+        # The same pairing rule for the findings protocol: exactly one half of
+        # it, iff the agent can actually read the backlog.
+        findings_blocks = sorted(included.intersection(_FINDINGS_SHARED))
+        if _GET_FINDINGS_TOOL in agent.tools and len(findings_blocks) != 1:
+            raise AgentLoadError(
+                f"{agent.source_path}: grants {_GET_FINDINGS_TOOL}, so its prompt must "
+                f"include exactly one of "
+                f"{', '.join(shared_token(n) for n in _FINDINGS_SHARED)} — found "
+                f"{findings_blocks or 'none'}"
+            )
+        if findings_blocks and _GET_FINDINGS_TOOL not in agent.tools:
+            raise AgentLoadError(
+                f"{agent.source_path}: includes {shared_token(findings_blocks[0])} but does "
+                f"not grant {_GET_FINDINGS_TOOL}, which that block tells it to call"
             )
 
         # Guard the direction that is always a bug: an agent with no

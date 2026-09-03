@@ -194,7 +194,9 @@ def _make_engine(
 
     dispatcher = _FakeDispatcher(returned_output=dispatcher_output)
     engine._last_dispatcher = dispatcher
-    engine._make_dispatcher = lambda agent_name, session_id, deadline=None: dispatcher
+    engine._make_dispatcher = lambda agent_name, session_id, deadline=None, findings_path="": (
+        dispatcher
+    )
 
     engine.run_agent_turn_calls: list[dict[str, object]] = []
 

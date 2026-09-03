@@ -29,6 +29,7 @@ from ._filesystem import FILESYSTEM
 from ._finalize_project import FINALIZE_PROJECT
 from ._find_files import FIND_FILES
 from ._find_text_in_files import FIND_TEXT_IN_FILES
+from ._get_findings import GET_FINDINGS
 from ._get_root_paths import GET_ROOT_PATHS
 from ._get_web_search_state import GET_WEB_SEARCH_STATE
 from ._guided_dev_status import GUIDED_DEV_STATUS
@@ -94,6 +95,7 @@ __all__ = [
     "FINALIZE_PROJECT",
     "FIND_FILES",
     "FIND_TEXT_IN_FILES",
+    "GET_FINDINGS",
     "GET_ROOT_PATHS",
     "GET_WEB_SEARCH_STATE",
     "GUIDED_DEV_STATUS",
@@ -153,6 +155,7 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     EDIT_FILE,
     FILESYSTEM,
     FINALIZE_PROJECT,
+    GET_FINDINGS,
     GET_ROOT_PATHS,
     FIND_FILES,
     FIND_TEXT_IN_FILES,

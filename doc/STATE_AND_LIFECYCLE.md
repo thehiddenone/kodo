@@ -73,6 +73,9 @@ Kodo owns one directory per project:
     │   │   ├── transient.json         ← mutable: stage, last_prompt, autonomous
     │   │   ├── session.jsonl          ← append-only Guide LLM context
     │   │   ├── agents/                ← per-sub-agent invocation JSONL call logs
+    │   │   ├── findings/              ← the author/critic findings backlog, one
+    │   │   │                            .jsonl per reviewed document, keyed by its
+    │   │   │                            logical path (doc/FINDINGS.md)
     │   │   └── subsessions/           ← one JSONL per sub-agent invocation (UUID)
     └── guide.session  ← marker file: current Guide session_id
 ```
@@ -92,22 +95,31 @@ There is no artifact type → directory mapping anymore, and no toolchain-driven
 **The four jsonl entry types** (one append-only line each; full schemas in `kodo.guided_state._records`):
 
 1. **`new_revision`** — engine-written, immediately after a `filesystem`/`edit_file`/`create_file`/`create_directory` call's checkpoint commit lands under a tracked root. Carries `commit_hash`, `author` (the agent name), `tool`, and `workflow: "guided"|"problem_solving"`. Fired in **both** workflow modes whenever the touched path is tracked under the *bound* project — a Problem-Solver edit of a tracked file is recorded too, so the Guide can reconcile state once Guided mode resumes. This is the only entry type Problem Solver ever produces.
-2. **`feedback`** — written by the engine when a critic sub-agent returns its verdict (`_record_review_verdict`; critics only, gated on the callee's `role: critic`): `reviewer`, `accept: bool`, `concerns`, `summary` — exactly the critic's own `return_result` payload.
-3. **`review_result`** — engine-written only, never via a dispatched tool: the user's `decision: "approve"|"reject"` from the interactive document-review gate, plus `comment`.
-4. **`accepted`** — engine-written only: the final marker. `commit_hash` is **copied from the immediately preceding `new_revision`** — acceptance never produces a new commit.
+2. **`review_result`** — engine-written only, never via a dispatched tool: the user's `decision: "approve"|"reject"` from the interactive document-review gate, plus `comment`.
+3. **`accepted`** — engine-written only: the final marker. `commit_hash` is **copied from the immediately preceding `new_revision`** — acceptance never produces a new commit.
 
-**Status derivation** (`kodo.guided_state.derive_status`, from the log's *last* line only):
+**There is no `feedback` entry any more.** A critic's verdict used to land here as `{accept, concerns}`; concerns became **findings** — identified, stateful, and stored per *session* (§1.2, doc/FINDINGS.md) — so this project-scoped log carries no review content at all. A legacy `feedback` line written by an older build is ignored rather than interpreted.
 
-| Last entry | Status |
-|---|---|
-| `new_revision` | `pending_review` |
-| `feedback`, `accept: false` | `needs_revision` |
-| `feedback`, `accept: true` | `pending_acceptance` |
-| `review_result`, `decision: reject` | `needs_revision` |
-| `review_result`, `decision: approve` | `pending_acceptance` (transient — the engine writes `accepted` in the same flow) |
-| `accepted` | `accepted` |
+### 1.2 Findings — the session-scoped review backlog
 
-No file outside those four entry types ever has a status query answered — `read_status`/`scan_tracked_files` simply find nothing for an untracked path.
+A **finding** is one defect a critic raised against one document, with a stable `id` and a state of `outstanding` or `fixed`. Findings live under the **session**, not the project: `~/.kodo/sessions/<id>/findings/<logical document path>.jsonl`. Two sessions may review the same tree under different models and settings, so a backlog is a fact about a session's review rather than about the project — the explicit consequence being that a document reviewed in session A shows **no outstanding findings** in session B. What crosses sessions is the document's own evolution log above.
+
+Two append-only entry types, replayed in order (`kodo.findings`, doc/FINDINGS.md §2): a **`finding`** line (first one for an id creates it, later ones patch it — omitted fields are unchanged, and a finding no round mentions is untouched) and a **`review_round`** line closing each critic round with its `outstanding`/`opened`/`closed` counters.
+
+**Status derivation** is therefore a merge of both stores, implemented once in `kodo.tools.document_status()`:
+
+| Document log's last entry | Findings backlog | Status |
+|---|---|---|
+| `accepted` | — | `accepted` |
+| `review_result`, `decision: approve` | — | `pending_acceptance` (transient — the engine writes `accepted` in the same flow) |
+| `review_result`, `decision: reject` | — | `needs_revision` |
+| `new_revision` / nothing | anything outstanding | `needs_revision` |
+| `new_revision` / nothing | nothing outstanding, and a `review_round` newer than the last `new_revision` | `pending_acceptance` |
+| `new_revision` / nothing | nothing outstanding, no review since the last revision | `pending_review` |
+
+The last two rows are what distinguishes *not yet reviewed* from *reviewed clean* — the one question the retired `feedback` entry used to answer. Both logs timestamp every line in ISO-8601 UTC from the same process, so the comparison is a plain string compare.
+
+No file outside those entry types ever has a status query answered — `read_document_state`/`scan_tracked_files` simply find nothing for an untracked path.
 
 ---
 
@@ -115,18 +127,23 @@ No file outside those four entry types ever has a status query answered — `rea
 
 There is **no `ProjectIndex`, no in-memory catalog, and nothing reconstructed at
 bootstrap.** Every query about a document's state — `guided_dev_status` (the
-Guide's tool), the author/critic loop's verdict read, the interactive
-review gate — reads that one document's `.jsonl` log fresh, every time. This
+Guide's tool), the author/critic loop's status read, the interactive
+review gate — reads that one document's logs fresh, every time. This
 replaced the artifact system's `Workspace`/`ProjectIndex` entirely; there is no
 successor class hierarchy to learn, just the plain functions in
 `kodo.guided_state` (§1.1).
 
-**`guided_dev_status`** (`kodo.guided_state.scan_tracked_files`) is the closest
-analogue to the old per-component "frontier" query: it walks
-`.kodo/guided_dev_state/` and returns `{path, status, last_event}` for every
-tracked document, derived fresh from each log's last line. It is the **only**
-read view the Guide consults to decide what to schedule next, and it is
-Guided-mode only — the tool errors if called from Problem Solver.
+**`guided_dev_status`** (`kodo.guided_state.scan_tracked_files` +
+`kodo.tools.document_status`) is the closest analogue to the old per-component
+"frontier" query: it walks `.kodo/guided_dev_state/`, merges each document's log
+with this session's findings backlog for it (§1.2), and returns
+`{path, status, last_event}` for every tracked document, derived fresh every
+call. It is the **only** read view the Guide consults to decide what to schedule
+next, and it is Guided-mode only — the tool errors if called from Problem Solver.
+
+The author/critic pair's own read view is a *different* tool, `get_findings`,
+which is auto-scoped to the one document under review and never reaches the
+Guide (doc/FINDINGS.md §3).
 
 There is no separate "requirements coverage" or "artifact lineage" view
 anymore. Traceability (which requirement a document satisfies, which revision
@@ -252,7 +269,7 @@ The audit trail is the only place that records *why* a document looks the way it
 
 ### 5.2 Linkage to documents
 
-A `new_revision` jsonl entry carries the `author` agent name; a `feedback` entry carries the `reviewer`. Neither carries a `session_id` — tracing a specific revision back to the full conversation that produced it means correlating the entry's timestamp/author against that agent's subsession logs under `sessions/<main-id>/subsessions/`, not a direct foreign key. This is a deliberate simplification versus the old artifact system, which stamped every artifact with its producing `session_id`.
+A `new_revision` jsonl entry carries the `author` agent name; a findings-log `finding`/`review_round` entry carries the `reported_by`/`reviewer`. Neither carries a `session_id` (the findings log is *inside* a session directory, so it needs none) — tracing a specific revision back to the full conversation that produced it means correlating the entry's timestamp/author against that agent's subsession logs under `sessions/<main-id>/subsessions/`, not a direct foreign key. This is a deliberate simplification versus the old artifact system, which stamped every artifact with its producing `session_id`.
 
 ### 5.3 Storage
 
@@ -311,16 +328,16 @@ There is no orphan-artifact case anymore — a document is just a file, and a fi
 
 ## 8. Document acceptance — no promotion step
 
-Acceptance fires per document, after a critic sub-agent returns `{path, accept: true, concerns: []}` and the engine records it. There is **no promotion** — the document was already a real file the moment its author wrote it; there is nothing to materialize, no toolchain to consult for a target path, no sidecar to write.
+Acceptance fires per document, once a critic round leaves **nothing outstanding** in that document's findings backlog. There is no `accept` field for a critic to set: the verdict is derived, so a critic cannot report a pass while leaving problems open (doc/FINDINGS.md §3). There is also **no promotion** — the document was already a real file the moment its author wrote it; there is nothing to materialize, no toolchain to consult for a target path, no sidecar to write.
 
 ### 8.1 Mechanism
 
-`_record_review_verdict` — which `_drive_subsession` calls for every agent declaring `role: critic`, right after its `return_result` payload is normalized — appends the `feedback` entry and then, on `accept: true`, calls `_finalize_document(path)`:
+`_record_findings` — which `_drive_subsession` calls for every agent declaring `role: critic`, right after its `return_result` payload is normalized — applies the round's findings to the session backlog, closes the round with a `review_round` entry, and then, when nothing is left outstanding, calls `_finalize_document(path)`:
 
-1. **Autonomous mode** — immediately append an `accepted` entry to the document's `.jsonl` log, reusing the most recent `new_revision`'s `commit_hash`.
-2. **Interactive mode** — fire the same approval gate the old `request_user_review_artifact` tool used to, now driven by the engine directly (no tool indirection). On agreement: append `review_result` (`decision: "approve"`) then `accepted`. On feedback: append `review_result` (`decision: "reject"`, the user's comment) — no `accepted` entry; the enclosing author/critic loop re-reads the log, sees `needs_revision`, and spends another round on it.
+1. **Autonomous mode, or Edit Control set to *Allow All*** — immediately append an `accepted` entry to the document's `.jsonl` log, reusing the most recent `new_revision`'s `commit_hash`. No `review_result` is written: that entry means "the user decided at the gate", and in these two postures no gate fired.
+2. **Otherwise** — fire the same approval gate the old `request_user_review_artifact` tool used to, now driven by the engine directly (no tool indirection). On agreement: append `review_result` (`decision: "approve"`) then `accepted`. On feedback: append `review_result` (`decision: "reject"`, the user's comment) **and mint that comment as an outstanding finding** — no `accepted` entry; the enclosing author/critic loop re-reads both stores, sees `needs_revision`, and spends another round on it, with the user's objection reachable through the same `get_findings` call as every critic finding.
 
-A critic never decides what happens after `accept: true` — it has no further obligation once it returns. It holds no tool that writes to the log; the engine owns that side of the contract entirely.
+A critic never decides what happens once its backlog is clear — it has no further obligation after it returns. It holds no tool that writes to either store; the engine owns that side of the contract entirely.
 
 ### 8.2 The unified checkpoint mirror
 
@@ -349,7 +366,8 @@ The user's VCS sees a large file-change set and decides how to record it. Kodo d
 | Author/Critic iteration cap and bail logic | Guide's system prompt | Cap (5) and judgment rules live in the prompt, not the engine. |
 | Per-document evolution log | `kodo.guided_state` | Pure functions: append/read each document's `.jsonl` log; status always derived from the last line. No in-memory index. |
 | Checkpoint mirror (both workflow modes) | `kodo.mirror.ShadowMirror` + `runtime._checkpoints.RootMirrorManager` | Real `GIT_DIR`/`GIT_WORK_TREE` split over the actual project tree; commits after every mutating tool call. |
-| Document acceptance / review gate | Engine (`_finalize_document`, `runtime._engine`) | Triggered by `_record_review_verdict` when a critic returns `accept: true`; no tool fires this — autonomous mode auto-accepts, interactive mode drives the approval gate directly. |
+| Document acceptance / review gate | Engine (`_finalize_document`, `runtime._engine`) | Triggered by `_record_findings` when a critic round leaves the findings backlog empty; no tool fires this — autonomous mode and Edit Control *Allow All* auto-accept, everything else drives the approval gate directly. |
+| Findings backlog | Engine (`_record_findings`) writes, `get_findings` reads | Session-scoped (`kodo.findings`, §1.2). The critic alone changes a finding's state, through its own `return_result`; authors read only. |
 | Session log append (Guide and sub-agents) | Engine (LLM call wrapper) | Append-before-respond invariant (§4.2). |
 | Session rehydration | Engine | Reads session log, computes resume point, resolves pending tool call (spawn replayed, `ask_user` re-asked from scratch, other tools stubbed). |
 | Context compaction | Runtime (`runtime/_engine/`, `compactor` sub-agent) | Auto-triggers at 90% of the current model's context window (or manual `compact.now`, or a switch to a smaller-window model); summarises in place via a `compaction` marker; surfaces `context.stats` / `context.compacting` / `context.compacted` (§4.5). |
