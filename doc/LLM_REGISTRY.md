@@ -1951,6 +1951,41 @@ UUIDs, or how many keys exist, only the resolved secret.
 - Answering `api_key.revoke {vendor}`: forget whichever key is currently
   active for that vendor.
 
+#### The two halves can drift — pruning missing keys
+
+A key is stored in two places with different lifetimes, and only one of them
+is namespaced by the extension's identity:
+
+| Half | Where | Survives an extension rename? |
+| --- | --- | --- |
+| name → UUID map, `active` | `~/.kodo/etc/cloud_settings.json` | **yes** — a plain file |
+| the secret | VS Code SecretStorage, keyed by UUID | **no** — namespaced per `publisher.name` |
+
+Renaming the VSIX (`stanislavmorozov.kodo` → `stanislavmorozov.vs-kodo`,
+July 2026) therefore orphaned every secret stored before it, while
+`cloud_settings.json` kept listing those keys as configured and active. Since
+the Cloud AI tab renders its "Active" badge straight off that file and never
+verified the secret behind the UUID, an unusable key looked perfectly healthy
+and *every* cloud turn popped the reactive "enter your API key" prompt with no
+explanation; cancelling it answers `api_key.request` with `error: cancelled`,
+which the server surfaces as `RuntimeError: API key request rejected`. VS Code
+grants no cross-extension SecretStorage access, so an orphaned secret cannot
+be migrated — only detected.
+
+**Pruning** (`cloudCredentials.pruneMissingKeys`) resolves every configured
+UUID and deletes the entries whose secret is gone, clearing `active` when it
+was one of them, then reports what it dropped so the extension can show a
+single warning naming each removed key. It runs on `hello.ack`, when the Kōdo
+Settings panel is opened (before the key lists are read), and for the
+requested vendor at the top of `api_key.request` handling — so the prompt that
+follows is the honest fallback for a vendor with nothing configured.
+
+Guard rails: a SecretStorage read that *throws* (locked keychain, backend
+hiccup) is never counted as a missing key — configuration is not deleted on a
+read failure; and the removals are applied to a freshly re-read file, only
+where the name still maps to the same dead UUID, so a key added while the
+(awaited) secret reads were in flight is not clobbered.
+
 ### 6a. HuggingFace access token management (kodo-vsix only)
 
 HuggingFace tokens follow the same pull-protocol pattern as cloud API keys

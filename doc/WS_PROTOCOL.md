@@ -993,6 +993,21 @@ vendor (falling back to the reactive add-a-key flow if none is configured
 yet). The server is never aware of key names, UUIDs, or how many keys are
 configured; it only ever sees the resolved secret.
 
+**The client must always answer.** The broker's future is session-scoped, so
+a disconnect does not cancel it (§8) and the engine's turn stays parked on
+this request until a response arrives — an extension-side path that returns
+without sending one (no extension context, an exception thrown while reading
+SecretStorage) hangs the turn indefinitely rather than failing it. Every exit
+from the handler therefore sends a response, `{"error": "cancelled"}` when it
+has no key to give. For the same reason the client-side serialization queue
+swallows failures instead of leaving a rejected promise in the chain, which
+would silently skip every later request in that window.
+
+Before falling back to the prompt, the extension prunes any key whose
+SecretStorage secret has gone missing and tells the user it did
+(LLM_REGISTRY.md §6) — otherwise a key the settings UI still lists as active
+produces an unexplained key prompt on every turn.
+
 ### 6.4 `api_key.revoke` — discard a stored key
 
 A `kind=event` (no reply) telling the extension to delete a stored key, e.g. after a 401. The extension forgets whichever key was active for that vendor (LLM_REGISTRY.md §6) — the user re-adds or activates another from the Cloud AI Settings key list.
