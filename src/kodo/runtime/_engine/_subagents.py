@@ -780,6 +780,12 @@ class SubagentMixin:
                 is_entry_turn=False,
                 subsession_id=subsession_id,
             ),
+            on_repeated_tool_calls=self._make_repeated_tool_call_handler(
+                agent_name=name,
+                routing=routing,
+                is_entry_turn=False,
+                subsession_id=subsession_id,
+            ),
         )
 
         # Safety net for a final round with zero deltas — see the matching

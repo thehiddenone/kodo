@@ -27,6 +27,7 @@ from kodo.llms import (
     ThinkingDelta,
     TokenDelta,
     ToolCallArgDelta,
+    ToolCallEvent,
     TurnEnd,
     Usage,
 )
@@ -34,11 +35,13 @@ from kodo.runtime import WorkflowEngine
 from kodo.runtime._engine import _watchdog
 from kodo.runtime._engine._watchdog import (
     _MAX_CONSECUTIVE_NUDGES,
+    _MIN_TOOL_CALL_REPEATS,
     TurnSignal,
     _stuck_settings,
     detect_red_flags,
 )
 from kodo.runtime._gates import StuckAlertResponse
+from kodo.runtime._repeated_tool_calls import RepeatedToolCallDetector
 from kodo.runtime._session import SessionState
 
 # ---------------------------------------------------------------------------
@@ -214,6 +217,7 @@ def _watchdog_engine(
     engine._cycle_streak = False
     engine._think_tag_streak = False
     engine._tool_call_cycle_streak = False
+    engine._repeat_streak = False
     default_settings: dict[str, object] = {
         "stuck_detection": {
             "active": "local_only",
@@ -1793,3 +1797,402 @@ async def test_run_agent_turn_end_to_end_think_tag_takes_priority_over_repetitio
     assert engine._transient.appended[0][4]["source"] == "think_in_tool_call"
     assert engine._think_tag_streak is True
     assert engine._tool_call_cycle_streak is False
+
+
+# ---------------------------------------------------------------------------
+# Repeated tool calls (doc/STUCK_DETECTION.md §2.11) — the round-boundary
+# no-progress loop detector
+# ---------------------------------------------------------------------------
+#
+# The traced failure (session 1788543589, subsession
+# 7cc7034e6bf44e1a885614407cfa442a): the `requirements_critic` sub-agent on a
+# local model emitted the *identical* `read_file` call — same tool, same
+# arguments — for ~1133 consecutive rounds, each returning the identical
+# "File not found" error, for 32 minutes and 62.4M cumulative input tokens.
+# Every round had stop_reason="tool_use", so no `_DETECTORS` check ever ran
+# (they only see a round with *no* tool call), and `_make_progress_handler`
+# actively counted each repeat as progress. These tests model exactly that.
+
+
+class _FakeCheckpoints:
+    """Minimal CheckpointCoordinator double — no tool here mutates files."""
+
+    async def prepare(self, tool_name: str, tool_input: dict[str, object]) -> list[Path]:
+        return []
+
+    async def commit(self, tool_name, tool_input, paths) -> None:
+        return None
+
+
+_LOOP_TOOL_INPUT = {"path": "kodo-snake/specs/architecture/system.md"}
+_LOOP_TOOL_ERROR = '{"error": "File not found: \'kodo-snake/specs/architecture/system.md\'"}'
+
+
+def _tool_dispatch_engine(engine: WorkflowEngine) -> WorkflowEngine:
+    """Add the few collaborators `_dispatch_tool_calls`/`_finalize_tool_result`
+    need, so a watchdog test can drive a *real* tool-calling round."""
+    engine._checkpoints = _FakeCheckpoints()
+    engine._transient.write_tool_call = lambda tool_use_id, markdown: None
+    return engine
+
+
+def _repeat_round(i: int) -> list[object]:
+    """One round of the traced loop: the same read_file call, every time."""
+    return [
+        ToolCallEvent(
+            tool_use_id=f"tu_{i}",
+            tool_name="read_file",
+            tool_input=dict(_LOOP_TOOL_INPUT),
+        ),
+        TurnEnd(usage=_usage(), stop_reason="tool_use"),
+    ]
+
+
+async def test_repeated_tool_call_subagent_loop_is_caught_and_bounded() -> None:
+    """The traced sub-agent failure: identical call, identical error, forever.
+
+    Scripts 20 identical rounds — far more than remediation should ever let
+    run — and asserts the turn is cut off early with nudges persisted to the
+    subsession. Before the §2.11 detector existed this consumed every single
+    scripted round without emitting anything at all.
+    """
+    gateway = _FakeGateway([_repeat_round(i) for i in range(20)])
+    engine = _tool_dispatch_engine(_watchdog_engine(autonomous=True, gateway=gateway))
+
+    dispatched: list[dict[str, object]] = []
+
+    async def tool_dispatch(name, tool_input, tool_use_id, recovered=False):
+        dispatched.append(tool_input)
+        return _LOOP_TOOL_ERROR
+
+    await engine._run_agent_turn(
+        llm=_FakeLLM(),
+        routing=_LOCAL_ROUTING,
+        model="model-x",
+        system_prompt="sys",
+        messages=[Message(role="user", content="review requirements.md")],
+        tools=[],
+        tool_dispatch=tool_dispatch,
+        stream_id="stream-1",
+        agent_name="requirements_critic",
+        subsession_model_key=None,
+        on_stall=engine._make_stall_handler(
+            agent_name="requirements_critic",
+            routing=_LOCAL_ROUTING,
+            is_entry_turn=False,
+            subsession_id="sub-1",
+            dispatcher=_FakeDispatcher(),
+        ),
+        on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
+            agent_name="requirements_critic",
+            routing=_LOCAL_ROUTING,
+            is_entry_turn=False,
+            subsession_id="sub-1",
+        ),
+    )
+
+    # The crux: the loop was actually stopped, nowhere near the 20 scripted
+    # rounds. Three repeats trip it, then each further repeat is a fresh
+    # strike until the sub-agent nudge cap ends the turn.
+    assert len(gateway.calls) == 5
+    assert len(dispatched) == 5
+
+    nudges = [n for n in engine._emitters.nudges if n[3] == "repeated_tool_call"]
+    assert len(nudges) == _MAX_CONSECUTIVE_NUDGES
+    assert nudges[0][1] == ["repeated_tool_call"]
+    assert nudges[0][2] == "auto"
+    # Persisted into the *subsession* log, kind-tagged, first-person
+    # (role="assistant") like the other self-correction notices.
+    sub_nudges = [e for e in engine._transient.appended_sub if e[3] == "nudge"]
+    assert len(sub_nudges) == _MAX_CONSECUTIVE_NUDGES
+    assert sub_nudges[0][0] == "sub-1"
+    assert sub_nudges[0][1] == "assistant"
+    assert "read_file" in sub_nudges[0][2]
+
+
+async def test_repeated_tool_call_entry_agent_loop_nudges_then_goes_critical() -> None:
+    """Same loop shape on the shared entry-agent turn: one nudge, then the
+    client-only 'gave up' critical on the very next repeat (the two-strike
+    escalation every entry-agent detector uses)."""
+    gateway = _FakeGateway([_repeat_round(i) for i in range(20)])
+    engine = _tool_dispatch_engine(_watchdog_engine(autonomous=True, gateway=gateway))
+
+    async def tool_dispatch(name, tool_input, tool_use_id, recovered=False):
+        return _LOOP_TOOL_ERROR
+
+    await engine._run_agent_turn(
+        llm=_FakeLLM(),
+        routing=_LOCAL_ROUTING,
+        model="model-x",
+        system_prompt="sys",
+        messages=[Message(role="user", content="review requirements.md")],
+        tools=[],
+        tool_dispatch=tool_dispatch,
+        stream_id="stream-1",
+        agent_name="problem_solver",
+        on_stall=engine._make_stall_handler(
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        ),
+        on_tool_calls=engine._make_progress_handler(is_entry_turn=True),
+        on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        ),
+    )
+
+    # Round 3 trips it (nudge), round 4 repeats again -> critical, turn ends.
+    assert len(gateway.calls) == 4
+    nudges = [n for n in engine._emitters.nudges if n[3] == "repeated_tool_call"]
+    assert len(nudges) == 1
+    assert len(engine._emitters.critical_messages) == 1
+    assert "read_file" in engine._emitters.critical_messages[0]
+    assert engine._repeat_streak is True
+
+
+async def test_repeated_tool_call_same_call_different_result_is_not_a_loop() -> None:
+    """Control (the Q1 signature rule): identical call whose *result* changes
+    is real progress — re-reading a file that is being edited, polling a
+    build — and must never be flagged."""
+    gateway = _FakeGateway(
+        [
+            _repeat_round(0),
+            _repeat_round(1),
+            _repeat_round(2),
+            [
+                TokenDelta(text="The file finally appeared, review done."),
+                TurnEnd(usage=_usage(), stop_reason="end_turn"),
+            ],
+        ]
+    )
+    engine = _tool_dispatch_engine(_watchdog_engine(autonomous=True, gateway=gateway))
+    # Varies a *declared* output-schema field: the signature is built from the
+    # normalized, LLM-visible result (what `_finalize_tool_result` returns), not
+    # the raw dispatch string, because what the model actually reads back is the
+    # only thing that can constitute progress for it. An undeclared field would
+    # be normalized away and the three rounds really would be identical.
+    seq = iter(
+        [
+            '{"path": "p", "total_lines": 1}',
+            '{"path": "p", "total_lines": 2}',
+            '{"path": "p", "total_lines": 3}',
+        ]
+    )
+
+    async def tool_dispatch(name, tool_input, tool_use_id, recovered=False):
+        return next(seq)
+
+    await engine._run_agent_turn(
+        llm=_FakeLLM(),
+        routing=_LOCAL_ROUTING,
+        model="model-x",
+        system_prompt="sys",
+        messages=[Message(role="user", content="go")],
+        tools=[],
+        tool_dispatch=tool_dispatch,
+        stream_id="stream-1",
+        agent_name="problem_solver",
+        on_tool_calls=engine._make_progress_handler(is_entry_turn=True),
+        on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        ),
+    )
+
+    assert len(gateway.calls) == 4  # ran to its natural end
+    assert engine._emitters.nudges == []
+    assert engine._emitters.critical_messages == []
+
+
+def test_repeated_tool_call_detector_counts_consecutive_identical_signatures() -> None:
+    det = RepeatedToolCallDetector()
+    assert det.feed("A") == 1
+    assert det.feed("A") == 2
+    assert det.feed("A") == 3
+
+
+def test_repeated_tool_call_detector_resets_on_a_novel_signature() -> None:
+    det = RepeatedToolCallDetector()
+    det.feed("A")
+    det.feed("A")
+    assert det.feed("B") == 1
+    assert det.feed("B") == 2
+
+
+def test_repeated_tool_call_detector_alternating_calls_never_accumulate() -> None:
+    """Exact-adjacent only (the chosen Q2 rule): A,B,A,B is not counted as a
+    repeat streak — each round differs from the one right before it."""
+    det = RepeatedToolCallDetector()
+    for sig in ("A", "B", "A", "B", "A", "B"):
+        assert det.feed(sig) == 1
+
+
+def test_repeated_tool_call_min_repeats_matches_the_shared_cyclic_constant() -> None:
+    """One repetition constant across the codebase — the mid-stream cyclic
+    detector's _MIN_REPEATS and this one must not drift apart."""
+    from kodo.runtime._cyclic_thinking import _MIN_REPEATS as _CYCLIC_MIN_REPEATS
+
+    assert _MIN_TOOL_CALL_REPEATS == _CYCLIC_MIN_REPEATS == 3
+
+
+def test_make_repeated_tool_call_handler_returns_none_when_settings_off() -> None:
+    engine = _watchdog_engine(settings={"stuck_detection": {"active": "off"}})
+    assert (
+        engine._make_repeated_tool_call_handler(
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        )
+        is None
+    )
+
+
+def test_make_repeated_tool_call_handler_returns_none_for_cloud_when_local_only() -> None:
+    engine = _watchdog_engine()
+    assert (
+        engine._make_repeated_tool_call_handler(
+            agent_name="problem_solver", routing=_CLOUD_ROUTING, is_entry_turn=True
+        )
+        is None
+    )
+
+
+def test_make_repeated_tool_call_handler_covers_subagents_by_default() -> None:
+    """The setting that was already on for this session — scope defaults to
+    top_level_and_subagents — must reach the sub-agent that actually looped."""
+    engine = _watchdog_engine()
+    assert (
+        engine._make_repeated_tool_call_handler(
+            agent_name="requirements_critic",
+            routing=_LOCAL_ROUTING,
+            is_entry_turn=False,
+            subsession_id="sub-1",
+        )
+        is not None
+    )
+
+
+def test_make_repeated_tool_call_handler_excluded_when_scope_is_top_level() -> None:
+    engine = _watchdog_engine(
+        settings={"stuck_detection": {"active": "local_only", "scope": "top_level"}}
+    )
+    assert (
+        engine._make_repeated_tool_call_handler(
+            agent_name="requirements_critic",
+            routing=_LOCAL_ROUTING,
+            is_entry_turn=False,
+            subsession_id="sub-1",
+        )
+        is None
+    )
+
+
+async def test_repeated_tool_call_round_does_not_count_as_progress() -> None:
+    """The Q4 rule, and the second half of why this failure mode was invisible:
+    a repeated, no-progress tool call must NOT count as progress. Before the
+    fix, `_run_agent_turn` fired `on_tool_calls` on *every* tool-calling round,
+    so `_make_progress_handler` cleared all four streaks on each lap of the
+    loop and a looping agent looked permanently healthy to every other
+    detector."""
+    gateway = _FakeGateway([_repeat_round(i) for i in range(20)])
+    engine = _tool_dispatch_engine(_watchdog_engine(autonomous=True, gateway=gateway))
+    progress_rounds: list[int] = []
+
+    async def tool_dispatch(name, tool_input, tool_use_id, recovered=False):
+        return _LOOP_TOOL_ERROR
+
+    await engine._run_agent_turn(
+        llm=_FakeLLM(),
+        routing=_LOCAL_ROUTING,
+        model="model-x",
+        system_prompt="sys",
+        messages=[Message(role="user", content="go")],
+        tools=[],
+        tool_dispatch=tool_dispatch,
+        stream_id="stream-1",
+        agent_name="problem_solver",
+        on_tool_calls=lambda: progress_rounds.append(len(gateway.calls)),
+        on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        ),
+    )
+
+    # Four rounds ran (3 to trip + 1 more -> critical), but only the first was
+    # novel, so progress was reported exactly once.
+    assert len(gateway.calls) == 4
+    assert progress_rounds == [1]
+
+
+async def test_progress_handler_still_fires_every_round_without_the_detector() -> None:
+    """Backward compatibility: with the detector disabled (settings off, or a
+    cloud model under local_only) `on_tool_calls` keeps its original
+    every-tool-round behavior — the gating rides on the detector, not on a
+    second settings surface."""
+    gateway = _FakeGateway(
+        [
+            _repeat_round(0),
+            _repeat_round(1),
+            [TokenDelta(text="all done here"), TurnEnd(usage=_usage(), stop_reason="end_turn")],
+        ]
+    )
+    engine = _tool_dispatch_engine(
+        _watchdog_engine(
+            autonomous=True, gateway=gateway, settings={"stuck_detection": {"active": "off"}}
+        )
+    )
+    progress_calls = []
+
+    async def tool_dispatch(name, tool_input, tool_use_id, recovered=False):
+        return _LOOP_TOOL_ERROR
+
+    await engine._run_agent_turn(
+        llm=_FakeLLM(),
+        routing=_LOCAL_ROUTING,
+        model="model-x",
+        system_prompt="sys",
+        messages=[Message(role="user", content="go")],
+        tools=[],
+        tool_dispatch=tool_dispatch,
+        stream_id="stream-1",
+        agent_name="problem_solver",
+        on_tool_calls=lambda: progress_calls.append(1),
+        on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        ),
+    )
+
+    assert len(progress_calls) == 2
+
+
+async def test_repeated_tool_call_signature_uses_the_normalized_llm_visible_result() -> None:
+    """The signature is built from what the model *reads back*, not from the raw
+    string the tool handler returned.
+
+    `_finalize_tool_result` normalizes every result against its tool's declared
+    output schema, dropping undeclared fields. So three rounds whose raw results
+    differ only in an undeclared key are genuinely identical from the model's
+    point of view — it cannot possibly learn anything new — and must still be
+    caught. Pinned because the natural (wrong) implementation fingerprints the
+    dispatch string and silently misses this whole class of loop.
+    """
+    gateway = _FakeGateway([_repeat_round(i) for i in range(20)])
+    engine = _tool_dispatch_engine(_watchdog_engine(autonomous=True, gateway=gateway))
+    counter = iter(range(100))
+
+    async def tool_dispatch(name, tool_input, tool_use_id, recovered=False):
+        # "undeclared_noise" is not in read_file's output_schema -> normalized away.
+        return f'{{"path": "p", "undeclared_noise": {next(counter)}}}'
+
+    await engine._run_agent_turn(
+        llm=_FakeLLM(),
+        routing=_LOCAL_ROUTING,
+        model="model-x",
+        system_prompt="sys",
+        messages=[Message(role="user", content="go")],
+        tools=[],
+        tool_dispatch=tool_dispatch,
+        stream_id="stream-1",
+        agent_name="problem_solver",
+        on_tool_calls=engine._make_progress_handler(is_entry_turn=True),
+        on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        ),
+    )
+
+    assert len(gateway.calls) == 4
+    assert len(engine._emitters.critical_messages) == 1

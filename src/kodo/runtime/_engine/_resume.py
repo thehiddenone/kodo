@@ -304,6 +304,9 @@ class ResumeMixin:
             on_tool_call_cyclic=self._make_tool_call_cyclic_handler(
                 agent_name=entry_agent, routing=routing, is_entry_turn=True
             ),
+            on_repeated_tool_calls=self._make_repeated_tool_call_handler(
+                agent_name=entry_agent, routing=routing, is_entry_turn=True
+            ),
         )
         # Safety net for a final round with zero deltas — see the matching
         # comment in ``_turns.py``'s entry-turn caller.

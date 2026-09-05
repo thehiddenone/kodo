@@ -105,6 +105,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from kodo.llms import LLMRouting, Message
+from kodo.runtime._repeated_tool_calls import _MIN_TOOL_CALL_REPEATS
 from kodo.tools import ToolDispatcher
 
 from ._proto import EngineHost
@@ -185,6 +186,32 @@ _TOOL_CALL_CYCLIC_NOTICE = (
     "rest of the turn. I will not continue down that line — let me regenerate this tool "
     "call's arguments from scratch."
 )
+
+
+def _repeated_tool_call_llm_text(preview: str) -> str:
+    """LLM-visible text for the repeated-tool-call notice (§2.11) — names the calls.
+
+    Names the offending call for the same reason
+    :func:`_think_in_tool_call_llm_text` does: a generic "stop repeating
+    yourself" leaves the model to guess *which* call it is stuck on, and a
+    model already looping is the last one to guess right. First-person and
+    assistant-voice, like the other two self-correction notices, since it is
+    persisted with ``role="assistant"`` and read back as the model's own note.
+
+    The three ways out are spelled out on purpose. A model looping on a
+    failing call is usually missing the idea that giving up on that call is
+    allowed -- the traced run repeated a ``File not found`` read ~1133 times
+    rather than proceed without the file -- so the notice has to say that
+    finishing without it, and reporting that, is a legitimate ending.
+    """
+    return (
+        f"I have now made the same tool call ({preview}) with identical arguments "
+        f"{_MIN_TOOL_CALL_REPEATS} times in a row, and it returned the identical "
+        "result every time. Repeating it again cannot tell me anything new. I will "
+        "stop repeating that call and do one of three things instead: work with the "
+        "result I already have, make a materially different call, or finish the task "
+        "and report plainly what I could not do and why."
+    )
 
 
 def _think_in_tool_call_llm_text(tool_name: str) -> str:
@@ -318,6 +345,7 @@ class WatchdogMixin:
     _cycle_streak: bool
     _think_tag_streak: bool
     _tool_call_cycle_streak: bool
+    _repeat_streak: bool
 
     def _make_stall_handler(
         self: EngineHost,
@@ -404,6 +432,7 @@ class WatchdogMixin:
                     self._cycle_streak = False
                     self._think_tag_streak = False
                     self._tool_call_cycle_streak = False
+                    self._repeat_streak = False
                 return await _end_or_nudge_missing_return_result()
             cfg = _stuck_settings(self._get_settings())
             if not cfg.applies(residence=routing.residence, is_entry_turn=is_entry_turn):
@@ -524,6 +553,7 @@ class WatchdogMixin:
             self._cycle_streak = False
             self._think_tag_streak = False
             self._tool_call_cycle_streak = False
+            self._repeat_streak = False
 
         return _on_tool_calls
 
@@ -988,3 +1018,112 @@ class WatchdogMixin:
             "again — you may need to rephrase the prompt or step in."
         )
         await self._emitters.emit_tool_call_cyclic_critical(message)
+
+    # -- Repeated tool calls (§2.11) ------------------------------------------
+    # The one detector in this module that fires on a round which *did* call a
+    # tool. Everything above is anchored on a stalled (no-tool-call) round or
+    # on mid-stream content, which is exactly why a model looping on one
+    # identical, identically-failing call was invisible to all of them.
+
+    def _make_repeated_tool_call_handler(
+        self: EngineHost,
+        *,
+        agent_name: str,
+        routing: LLMRouting,
+        is_entry_turn: bool,
+        subsession_id: str | None = None,
+    ) -> Callable[[str], Awaitable[StallDecision]] | None:
+        """Build the ``on_repeated_tool_calls`` callback for one ``_run_agent_turn`` call.
+
+        Gated by the same ``stuck_detection`` settings as every other
+        heuristic here — no second settings surface — so returning ``None``
+        both disables remediation *and* tells ``_run_agent_turn`` not to build
+        a :class:`~kodo.runtime._repeated_tool_calls.RepeatedToolCallDetector`
+        at all, which is what keeps ``on_tool_calls``' original
+        every-tool-round behavior intact when the feature is off.
+
+        Escalation mirrors the mid-stream detectors: immediate remediation
+        (the loop is already proven, so there is nothing for
+        ``auto_unstuck_interactive``/``fire_stuck_alert`` to usefully ask
+        about), one nudge per streak for an entry-agent turn then a critical,
+        and :data:`_MAX_CONSECUTIVE_NUDGES` inline retries for a sub-agent.
+        Note that the detector is *not* reset by a nudge: once past the
+        threshold, every further identical round is its own strike. A model
+        that has just been told in plain words to stop repeating a call, and
+        repeats it anyway on the very next round, has answered the question
+        the threshold was asking.
+        """
+        cfg = _stuck_settings(self._get_settings())
+        if not cfg.applies(residence=routing.residence, is_entry_turn=is_entry_turn):
+            return None
+
+        repeat_stall_count = 0  # sub-agent scope only; local to this one call
+
+        async def _on_repeated_tool_calls(preview: str) -> StallDecision:
+            nonlocal repeat_stall_count
+            notice = _repeated_tool_call_llm_text(preview)
+
+            if is_entry_turn:
+                if self._repeat_streak:
+                    await self._persist_repeated_tool_call_critical(
+                        agent_name=agent_name,
+                        display_name=self._display_name(agent_name),
+                        preview=preview,
+                    )
+                    return StallDecision(retry=False)
+                self._repeat_streak = True
+                nudge = Nudge(
+                    llm_text=notice,
+                    ui_text=notice,
+                    reasons=["repeated_tool_call"],
+                    mode="auto",
+                    source="repeated_tool_call",
+                )
+                message = await self._persist_nudge(
+                    agent_name=agent_name, subsession_id=None, nudge=nudge, role="assistant"
+                )
+                return StallDecision(retry=True, message=message)
+
+            if repeat_stall_count >= _MAX_CONSECUTIVE_NUDGES:
+                return StallDecision(retry=False)
+            repeat_stall_count += 1
+            nudge = Nudge(
+                llm_text=notice,
+                ui_text=notice,
+                reasons=["repeated_tool_call"],
+                mode="auto",
+                source="repeated_tool_call",
+            )
+            message = await self._persist_nudge(
+                agent_name=agent_name, subsession_id=subsession_id, nudge=nudge, role="assistant"
+            )
+            return StallDecision(retry=True, message=message)
+
+        return _on_repeated_tool_calls
+
+    async def _persist_repeated_tool_call_critical(
+        self: EngineHost, *, agent_name: str, display_name: str, preview: str
+    ) -> None:
+        """End an entry-agent turn for good after a *second* repeated-call hit.
+
+        Only reached once :data:`_repeat_streak` is already set. Deliberately
+        reuses ``emit_agent_stuck_critical`` rather than introducing a fifth
+        critical event: a tool-call loop *is* the generic "this agent is stuck
+        and I gave up" case as far as the client is concerned, and the three
+        mid-stream detectors only have dedicated events because kodo-vsix's
+        reducer has to flush a live mid-stream buffer for them. This one has
+        no mid-stream buffer to flush, so the wire protocol is unchanged.
+        """
+        _log.warning(
+            "Repeated-tool-call critical (session=%s agent=%s preview=%r)",
+            self._orch_session_id,
+            agent_name,
+            preview,
+        )
+        message = (
+            f"Kōdo already told {display_name} to stop repeating the same tool call "
+            f"({preview}), but it made the identical call again with the identical "
+            "result. Ending the turn instead of letting it loop — you may need to "
+            "rephrase the prompt or step in."
+        )
+        await self._emitters.emit_agent_stuck_critical(message)

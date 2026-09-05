@@ -83,6 +83,7 @@ class EngineHost(Protocol):
     _cycle_streak: bool
     _think_tag_streak: bool
     _tool_call_cycle_streak: bool
+    _repeat_streak: bool
 
     # -- core helpers (defined in _core) ---------------------------------------
     def _agent_available(self, name: str) -> bool: ...
@@ -208,6 +209,7 @@ class EngineHost(Protocol):
         on_cyclic_thinking: Callable[[str], Awaitable[StallDecision]] | None = None,
         on_think_in_tool_call: Callable[[str], Awaitable[StallDecision]] | None = None,
         on_tool_call_cyclic: Callable[[str], Awaitable[StallDecision]] | None = None,
+        on_repeated_tool_calls: Callable[[str], Awaitable[StallDecision]] | None = None,
     ) -> tuple[list[Message], list[Path]]: ...
 
     @staticmethod
@@ -391,6 +393,19 @@ class EngineHost(Protocol):
         subsession_id: str | None = None,
     ) -> Callable[[str], Awaitable[StallDecision]] | None: ...
 
+    def _make_repeated_tool_call_handler(
+        self,
+        *,
+        agent_name: str,
+        routing: LLMRouting,
+        is_entry_turn: bool,
+        subsession_id: str | None = None,
+    ) -> Callable[[str], Awaitable[StallDecision]] | None: ...
+
     async def _persist_tool_call_cyclic_critical(
+        self, *, agent_name: str, display_name: str, preview: str
+    ) -> None: ...
+
+    async def _persist_repeated_tool_call_critical(
         self, *, agent_name: str, display_name: str, preview: str
     ) -> None: ...

@@ -158,6 +158,7 @@ class WorkflowEngine(
     _cycle_streak: bool
     _think_tag_streak: bool
     _tool_call_cycle_streak: bool
+    _repeat_streak: bool
 
     def __init__(
         self,
@@ -236,6 +237,10 @@ class WorkflowEngine(
         # failure modes combine to trip a streak that isn't theirs.
         self._think_tag_streak = False
         self._tool_call_cycle_streak = False
+        # Dedicated streak for the round-boundary repeated-tool-call detector
+        # (doc/STUCK_DETECTION.md §2.11) -- independent of the four above for
+        # the same reason they are independent of each other.
+        self._repeat_streak = False
         # The security layer judging every tool call (doc/SECURITY.md) —
         # deterministic heuristic rules, no LLM involved.
         self._security = SecurityLayer()

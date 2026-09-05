@@ -64,6 +64,12 @@ from .._agenttools import agent_tool_specs
 from .._attachments import MAX_ATTACHMENTS, AttachmentError, inject_attachments, load_attachment
 from .._checkpoints import CheckpointRef
 from .._cyclic_thinking import CyclicThinkingDetector
+from .._repeated_tool_calls import (
+    _MIN_TOOL_CALL_REPEATS,
+    RepeatedToolCallDetector,
+    call_preview,
+    round_signature,
+)
 from .._think_tag_guard import ThinkTagDetector
 from ._checkpointing import _GUIDED_STATE_TOOLS
 from ._proto import EngineHost
@@ -261,6 +267,9 @@ class TurnLoopMixin:
             on_tool_call_cyclic=self._make_tool_call_cyclic_handler(
                 agent_name=agent_name, routing=routing, is_entry_turn=True
             ),
+            on_repeated_tool_calls=self._make_repeated_tool_call_handler(
+                agent_name=agent_name, routing=routing, is_entry_turn=True
+            ),
         )
         # Safety net for a final round that produced zero deltas of any kind
         # (e.g. an immediately empty response) — mirrors kodo-vsix's own
@@ -353,6 +362,7 @@ class TurnLoopMixin:
         on_cyclic_thinking: Callable[[str], Awaitable[StallDecision]] | None = None,
         on_think_in_tool_call: Callable[[str], Awaitable[StallDecision]] | None = None,
         on_tool_call_cyclic: Callable[[str], Awaitable[StallDecision]] | None = None,
+        on_repeated_tool_calls: Callable[[str], Awaitable[StallDecision]] | None = None,
     ) -> tuple[list[Message], list[Path]]:
         """Run one LLM turn with tool-use loop until the model stops calling tools.
 
@@ -469,6 +479,13 @@ class TurnLoopMixin:
             """
             nonlocal persisted_upto
             persisted_upto = len(messages)
+
+        # Spans the whole turn, unlike the three per-round mid-stream detectors
+        # built inside the loop below: a repeated tool call is by definition a
+        # cross-round pattern (doc/STUCK_DETECTION.md §2.11). Left None when the
+        # handler is None, which is what keeps on_tool_calls firing on every
+        # tool round exactly as before whenever the feature is gated off.
+        repeat_detector = RepeatedToolCallDetector() if on_repeated_tool_calls is not None else None
 
         while True:
             call_start_dt = datetime.now(tz=UTC)
@@ -669,9 +686,6 @@ class TurnLoopMixin:
 
                 break
 
-            if on_tool_calls is not None:
-                on_tool_calls()
-
             assistant_content: list[dict[str, object]] = []
             if thinking_text:
                 assistant_content.append(self._thinking_block(thinking_text, thinking_signature))
@@ -713,6 +727,36 @@ class TurnLoopMixin:
             _flush()
             if track_context:
                 self._main_messages = messages
+
+            # Progress and loop detection both live *after* dispatch, because
+            # both hinge on what the tools actually returned (§2.11). A round
+            # whose calls AND results are byte-identical to the round before it
+            # taught the model nothing, so it is not progress and must not clear
+            # anyone's streak -- that reset is precisely what let a 1133-round
+            # loop keep looking healthy to every other detector.
+            repeats = (
+                repeat_detector.feed(
+                    round_signature(
+                        [(n, i) for _id, n, i in calls], [r.get("content") for r in tool_results]
+                    )
+                )
+                if repeat_detector is not None
+                else 1
+            )
+            if on_tool_calls is not None and repeats == 1:
+                on_tool_calls()
+
+            if repeats >= _MIN_TOOL_CALL_REPEATS and on_repeated_tool_calls is not None:
+                decision = await on_repeated_tool_calls(
+                    call_preview([(tc.tool_name, tc.tool_input) for tc in tool_calls])
+                )
+                if decision.retry and decision.message is not None:
+                    messages = messages + [decision.message]
+                    _mark_already_persisted()
+                    if track_context:
+                        self._main_messages = messages
+                    continue
+                break
 
             if stop_after_tools is not None and stop_after_tools():
                 break
