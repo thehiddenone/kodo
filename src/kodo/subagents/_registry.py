@@ -151,6 +151,12 @@ from kodo.toolspecs import (
     build_run_subagent_spec,
 )
 
+from ._artifacts import (
+    ALL_ROLES,
+    ALL_SCOPES,
+    PRODUCES_REMAINDER,
+    SCOPE_UNDER_REVIEW,
+)
 from ._loader import AgentLoadError, SubAgent, load_agent
 from ._subagentspec import SubAgentSpec
 from .specs import ALL_SUBAGENTS
@@ -228,6 +234,26 @@ _RUN_SUBAGENT_TOOL = RUN_SUBAGENT.name
 # Every tool spec, keyed by tool name (names are unique in the catalog).
 _SPECS_BY_NAME: dict[str, ToolSpec] = {t.name: t for t in ALL_TOOLS}
 
+
+def _output_fields(spec: SubAgentSpec) -> frozenset[str]:
+    """Every property name *spec*'s output schema declares.
+
+    Handles the top-level ``oneOf`` a dual-role agent uses by unioning across
+    the branches — a role may legitimately be carried by a field that only one
+    branch declares.
+    """
+    schemas: list[object] = [spec.output_schema]
+    one_of = spec.output_schema.get("oneOf")
+    if isinstance(one_of, list):
+        schemas.extend(one_of)
+    fields: set[str] = set()
+    for schema in schemas:
+        properties = schema.get("properties") if isinstance(schema, dict) else None
+        if isinstance(properties, dict):
+            fields.update(str(k) for k in properties)
+    return frozenset(fields)
+
+
 # Every sub-agent's typed interface, keyed by agent name. An agent that has an
 # entry here is "schema-bearing": it is auto-granted ``return_result`` and may
 # include ``{SHARED:task_input}``. Its schemas reach a *caller* as real JSON
@@ -244,9 +270,9 @@ def _review_output_schema(output_schema: dict[str, object], critic: str) -> dict
 
     What a ``run_subagent_<author>`` call returns when the engine ran a review
     loop: everything the author itself declared, plus how the loop ended. The
-    caller needs both — the author's ``primary_path``/``summary`` to schedule the
-    next stage, and ``review`` to know whether this file is settled or needs its
-    attention.
+    caller needs both — the author's ``paths``/``summary`` to schedule the next
+    stage, and ``review`` to know whether this work product is settled or needs
+    its attention.
 
     Args:
         output_schema: The author sub-agent's own declared ``output_schema``.
@@ -431,6 +457,54 @@ class AgentRegistry:
                     raise AgentLoadError(
                         f"{agent.source_path}: subagents entry {sub!r} has no "
                         f"subagent_{sub}.md in the registry"
+                    )
+        self.__validate_artifact_roles()
+
+    def __validate_artifact_roles(self) -> None:
+        """Check every spec's ``produces``/``consumes`` once the set is known.
+
+        Fail-fast at construction, like every other cross-agent check here: a
+        role that no agent produces resolves to nothing at run time, and an
+        agent handed nothing is an agent left to guess — which is the exact
+        failure this declaration exists to remove (doc/FINDINGS.md). A typo
+        should stop the server, not one sub-agent, four stages later.
+
+        ``SCOPE_UNDER_REVIEW`` is exempt from the "somebody produces it" rule
+        for a reason worth stating: it names the work product the round is
+        already reviewing, which the engine supplies from the round itself and
+        never looks up.
+        """
+        produced: set[str] = set()
+        for spec in SUBAGENT_SPECS_BY_NAME.values():
+            for role, field_name in spec.produces.items():
+                if role not in ALL_ROLES:
+                    raise AgentLoadError(
+                        f"sub-agent {spec.name!r} produces unknown artifact role {role!r}; "
+                        f"known roles: {sorted(ALL_ROLES)}"
+                    )
+                if field_name != PRODUCES_REMAINDER and field_name not in _output_fields(spec):
+                    raise AgentLoadError(
+                        f"sub-agent {spec.name!r} maps role {role!r} to output field "
+                        f"{field_name!r}, which its output_schema does not declare"
+                    )
+                produced.add(role)
+
+        for spec in SUBAGENT_SPECS_BY_NAME.values():
+            for need in spec.consumes:
+                if need.role not in ALL_ROLES:
+                    raise AgentLoadError(
+                        f"sub-agent {spec.name!r} consumes unknown artifact role "
+                        f"{need.role!r}; known roles: {sorted(ALL_ROLES)}"
+                    )
+                if need.scope not in ALL_SCOPES:
+                    raise AgentLoadError(
+                        f"sub-agent {spec.name!r} consumes role {need.role!r} with unknown "
+                        f"scope {need.scope!r}; known scopes: {sorted(ALL_SCOPES)}"
+                    )
+                if need.scope != SCOPE_UNDER_REVIEW and need.role not in produced:
+                    raise AgentLoadError(
+                        f"sub-agent {spec.name!r} consumes artifact role {need.role!r}, "
+                        "which no sub-agent declares that it produces"
                     )
 
     @staticmethod
@@ -685,6 +759,11 @@ class AgentRegistry:
                     ),
                     critic_name=agent.critic,
                     standalone=agent.standalone,
+                    # Only an agent with declared needs has resolution behind
+                    # it; one without keeps its caller-supplied `input_paths`,
+                    # which is exactly what `_resolve_input_paths` leaves
+                    # untouched for it.
+                    engine_resolves_inputs=bool(spec.consumes),
                 )
             )
         return specs

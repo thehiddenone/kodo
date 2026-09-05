@@ -9,6 +9,13 @@ mandate, the rest are the common-sense rules.
 
 from __future__ import annotations
 
+from .._artifacts import (
+    ROLE_E2E_TEST_CODE,
+    ROLE_E2E_TEST_PLAN,
+    ROLE_TECH_STACK,
+    SCOPE_UNDER_REVIEW,
+    Need,
+)
 from .._subagentspec import SubAgentSpec
 from ._shapes import critic_output, pipeline_input
 
@@ -24,4 +31,10 @@ E2E_TEST_CODE_CRITIC: SubAgentSpec = SubAgentSpec(
         ),
     ),
     output_schema=critic_output(),
+    produces={},
+    consumes=(
+        Need(ROLE_E2E_TEST_CODE, SCOPE_UNDER_REVIEW),
+        Need(ROLE_E2E_TEST_PLAN),
+        Need(ROLE_TECH_STACK),
+    ),
 )

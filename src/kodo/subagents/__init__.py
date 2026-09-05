@@ -3,11 +3,54 @@
 Stub for M1; full implementation in M3.
 """
 
+from ._artifacts import (
+    ALL_ROLES,
+    ALL_SCOPES,
+    PRODUCES_REMAINDER,
+    ROLE_ARCHITECTURE,
+    ROLE_CODE,
+    ROLE_DESIGN_PLAN,
+    ROLE_E2E_TEST_CODE,
+    ROLE_E2E_TEST_PLAN,
+    ROLE_FUNCTIONAL_DESIGN,
+    ROLE_NARRATIVE,
+    ROLE_REQUIREMENTS,
+    ROLE_TECH_STACK,
+    ROLE_TEST_CODE,
+    ROLE_TEST_PLAN,
+    SCOPE_ALL,
+    SCOPE_DEPENDENCIES,
+    SCOPE_GLOBAL,
+    SCOPE_SELF,
+    SCOPE_UNDER_REVIEW,
+    Need,
+)
 from ._loader import AgentLoadError, SubAgent, load_agent
 from ._registry import SHARED_FILE_PREFIX, SKILLS_TOKEN, AgentRegistry, shared_token
-from ._subagentspec import SubAgentSpec
+from ._subagentspec import RESPONSIBILITY_CODE_KEY, SubAgentSpec
 
 __all__: list[str] = [
+    "ALL_ROLES",
+    "ALL_SCOPES",
+    "PRODUCES_REMAINDER",
+    "RESPONSIBILITY_CODE_KEY",
+    "ROLE_ARCHITECTURE",
+    "ROLE_CODE",
+    "ROLE_DESIGN_PLAN",
+    "ROLE_E2E_TEST_CODE",
+    "ROLE_E2E_TEST_PLAN",
+    "ROLE_FUNCTIONAL_DESIGN",
+    "ROLE_NARRATIVE",
+    "ROLE_REQUIREMENTS",
+    "ROLE_TECH_STACK",
+    "ROLE_TEST_CODE",
+    "ROLE_TEST_PLAN",
+    "SCOPE_ALL",
+    "SCOPE_DEPENDENCIES",
+    "SCOPE_GLOBAL",
+    "SCOPE_SELF",
+    "SCOPE_UNDER_REVIEW",
+    "Need",
     "SHARED_FILE_PREFIX",
     "SKILLS_TOKEN",
     "AgentLoadError",

@@ -28,6 +28,7 @@ from kodo.runtime._engine import _core
 from kodo.runtime._gates import ApprovalResponse
 from kodo.state import TransientStore
 from kodo.subagents import AgentLoadError
+from kodo.workproducts import WorkProduct
 
 
 class _FakeSink:
@@ -39,16 +40,23 @@ class _FakeSink:
 
 
 class _FakeGate:
-    def __init__(self, *, action: str = "agree", feedback: str = "") -> None:
+    def __init__(
+        self, *, action: str = "agree", feedback: str = "", artifact_path: str = ""
+    ) -> None:
         self.action = action
         self.feedback = feedback
+        self.artifact_path = artifact_path
         self.calls: list[tuple[str, str | None, str]] = []
+        self.paths: list[list[str]] = []
 
     async def fire_approval(
-        self, gate_type: str, *, artifact_id=None, summary: str = ""
+        self, gate_type: str, *, artifact_id=None, summary: str = "", paths=None
     ) -> ApprovalResponse:
         self.calls.append((gate_type, artifact_id, summary))
-        return ApprovalResponse(action=self.action, feedback=self.feedback)
+        self.paths.append(list(paths or []))
+        return ApprovalResponse(
+            action=self.action, feedback=self.feedback, artifact_path=self.artifact_path
+        )
 
 
 class _FakeKeyProvider:
@@ -1402,19 +1410,30 @@ async def test_run_rollback_resets_session_state(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _finalize_document
+# _finalize_work_product
 # ---------------------------------------------------------------------------
 
 
-async def test_finalize_document_unresolvable_path_is_noop(tmp_path: Path) -> None:
+def _work_product(paths: list[str], agent: str = "architect") -> WorkProduct:
+    return WorkProduct(
+        id=f"proj/{agent}",
+        project="proj",
+        agent=agent,
+        responsibility_code="",
+        paths=tuple(paths),
+    )
+
+
+async def test_finalize_work_product_unresolvable_member_is_skipped(tmp_path: Path) -> None:
     project_root = tmp_path / "proj"
     _make_project(project_root)
     engine, _t, _s, _g = _make_engine(tmp_path)
     engine._session_workspace.set_folders({"proj": project_root})
 
     # "../../etc/passwd" names no known bound root as its first segment, so
-    # LogicalPathResolver rejects it outright.
-    await engine._finalize_document("../../etc/passwd")
+    # LogicalPathResolver rejects it outright — and with nothing resolvable
+    # left, the whole finalize is a no-op rather than an error.
+    await engine._finalize_work_product(_work_product(["../../etc/passwd"]))
 
 
 def _seed_tracked_doc(project_root: Path, rel_path: str) -> Path:
@@ -1435,7 +1454,7 @@ def _seed_tracked_doc(project_root: Path, rel_path: str) -> Path:
     return doc
 
 
-async def test_finalize_document_autonomous_auto_accepts(tmp_path: Path) -> None:
+async def test_finalize_work_product_autonomous_auto_accepts(tmp_path: Path) -> None:
     from kodo.guided_state import read_history
 
     project_root = tmp_path / "proj"
@@ -1445,14 +1464,14 @@ async def test_finalize_document_autonomous_auto_accepts(tmp_path: Path) -> None
     engine._session.effective_autonomous = True
     _seed_tracked_doc(project_root, "specs/a.md")
 
-    await engine._finalize_document("proj/specs/a.md")
+    await engine._finalize_work_product(_work_product(["proj/specs/a.md"]))
 
     assert gate.calls == []
     history = read_history(project_root / "specs" / "a.md", project_root)
     assert [e["type"] for e in history] == ["new_revision", "accepted"]
 
 
-async def test_finalize_document_interactive_agree_accepts(tmp_path: Path) -> None:
+async def test_finalize_work_product_interactive_agree_accepts(tmp_path: Path) -> None:
     from kodo.guided_state import read_history
 
     project_root = tmp_path / "proj"
@@ -1463,14 +1482,42 @@ async def test_finalize_document_interactive_agree_accepts(tmp_path: Path) -> No
     engine._session.effective_autonomous = False
     _seed_tracked_doc(project_root, "specs/a.md")
 
-    await engine._finalize_document("proj/specs/a.md")
+    await engine._finalize_work_product(_work_product(["proj/specs/a.md"]))
 
     assert len(gate.calls) == 1
     history = read_history(project_root / "specs" / "a.md", project_root)
     assert [e["type"] for e in history] == ["new_revision", "review_result", "accepted"]
 
 
-async def test_finalize_document_interactive_feedback_rejects(tmp_path: Path) -> None:
+async def test_finalize_work_product_settles_every_member_on_one_decision(
+    tmp_path: Path,
+) -> None:
+    """One sign-off for the whole set. Accepting members one at a time would
+    permit exactly the half-accepted, unbuildable state the unit prevents."""
+    from kodo.guided_state import read_history
+
+    project_root = tmp_path / "proj"
+    _make_project(project_root)
+    gate = _FakeGate(action="agree")
+    engine, _t, _s, _g = _make_engine(tmp_path, gate=gate)
+    engine._session_workspace.set_folders({"proj": project_root})
+    engine._session.effective_autonomous = False
+    _seed_tracked_doc(project_root, "src/a.py")
+    _seed_tracked_doc(project_root, "src/b.py")
+
+    await engine._finalize_work_product(_work_product(["proj/src/a.py", "proj/src/b.py"]))
+
+    # Exactly one gate fired, and it carried both files.
+    assert len(gate.calls) == 1
+    assert gate.paths == [["proj/src/a.py", "proj/src/b.py"]]
+    for rel in ("src/a.py", "src/b.py"):
+        history = read_history(project_root / rel, project_root)
+        assert [e["type"] for e in history] == ["new_revision", "review_result", "accepted"]
+
+
+async def test_finalize_work_product_interactive_feedback_rejects_the_whole_set(
+    tmp_path: Path,
+) -> None:
     from kodo.guided_state import read_history
 
     project_root = tmp_path / "proj"
@@ -1479,13 +1526,66 @@ async def test_finalize_document_interactive_feedback_rejects(tmp_path: Path) ->
     engine, _t, _s, _g = _make_engine(tmp_path, gate=gate)
     engine._session_workspace.set_folders({"proj": project_root})
     engine._session.effective_autonomous = False
-    _seed_tracked_doc(project_root, "specs/a.md")
+    _seed_tracked_doc(project_root, "src/a.py")
+    _seed_tracked_doc(project_root, "src/b.py")
 
-    await engine._finalize_document("proj/specs/a.md")
+    await engine._finalize_work_product(_work_product(["proj/src/a.py", "proj/src/b.py"]))
 
-    history = read_history(project_root / "specs" / "a.md", project_root)
-    assert [e["type"] for e in history] == ["new_revision", "review_result"]
-    assert history[-1]["comment"] == "needs work"
+    for rel in ("src/a.py", "src/b.py"):
+        history = read_history(project_root / rel, project_root)
+        assert [e["type"] for e in history] == ["new_revision", "review_result"]
+        assert history[-1]["comment"] == "needs work"
+
+
+async def test_rejection_feedback_is_minted_as_a_finding_anchored_to_the_named_file(
+    tmp_path: Path,
+) -> None:
+    """The user's objection reaches the author through the same get_findings
+    call as every critic finding, pointing at the file they were looking at."""
+    from kodo.findings import read_findings
+
+    project_root = tmp_path / "proj"
+    _make_project(project_root)
+    gate = _FakeGate(action="feedback", feedback="wrong", artifact_path="proj/src/b.py")
+    engine, transient, _s, _g = _make_engine(tmp_path, gate=gate)
+    transient.attach_session("s1", resumed=False)
+    engine._session_workspace.set_folders({"proj": project_root})
+    engine._session.effective_autonomous = False
+    _seed_tracked_doc(project_root, "src/a.py")
+    _seed_tracked_doc(project_root, "src/b.py")
+    work_product = _work_product(["proj/src/a.py", "proj/src/b.py"])
+
+    await engine._finalize_work_product(work_product)
+
+    findings = read_findings(engine._findings_dir(), work_product.id)
+    assert len(findings) == 1
+    assert findings[0]["description"] == "wrong"
+    assert findings[0]["locations"] == [
+        {"path": "proj/src/b.py", "first_line": None, "last_line": None, "excerpt": ""}
+    ]
+
+
+async def test_rejection_feedback_naming_no_member_is_left_unanchored(
+    tmp_path: Path,
+) -> None:
+    """An objection about the set as a whole, or one naming something that is
+    not a member, must not be pinned to an arbitrary file."""
+    from kodo.findings import read_findings
+
+    project_root = tmp_path / "proj"
+    _make_project(project_root)
+    gate = _FakeGate(action="feedback", feedback="hmm", artifact_path="proj/src/elsewhere.py")
+    engine, transient, _s, _g = _make_engine(tmp_path, gate=gate)
+    transient.attach_session("s1", resumed=False)
+    engine._session_workspace.set_folders({"proj": project_root})
+    engine._session.effective_autonomous = False
+    _seed_tracked_doc(project_root, "src/a.py")
+    work_product = _work_product(["proj/src/a.py"])
+
+    await engine._finalize_work_product(work_product)
+
+    findings = read_findings(engine._findings_dir(), work_product.id)
+    assert findings[0]["locations"] == []
 
 
 # ---------------------------------------------------------------------------

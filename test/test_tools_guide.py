@@ -16,10 +16,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kodo.findings import apply_findings
+from kodo.findings import apply_findings, read_findings
 from kodo.guided_state import append_accepted, append_new_revision
 from kodo.runtime import GateOrchestrator, SessionState
 from kodo.tools import RootPath, ToolDispatcher, canonical_tool_call
+from kodo.workproducts import record_membership
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -171,28 +172,46 @@ async def test_guided_dev_status_merges_the_document_log_with_the_findings_backl
 
     findings_dir = tmp_path / "sess" / "findings"
     logical = "proj/specs/architecture.md"
+    # A file's backlog lives under the work product that produced it, so the
+    # membership log is what maps this row back to its findings. That log is
+    # project-scoped, so it is written under the project root itself.
+    work_product, _removed = record_membership(
+        tmp_path,
+        project="proj",
+        agent="architect",
+        responsibility_code="",
+        paths=[logical],
+    )
     dispatcher = _make_dispatcher(project_root=tmp_path, findings_dir=findings_dir)
 
     # Written, never reviewed.
     result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
     assert len(result["files"]) == 1
     assert result["files"][0]["path"] == logical
+    assert result["files"][0]["work_product"] == work_product.id
     assert result["files"][0]["status"] == "pending_review"
     assert result["files"][0]["last_event"]
 
     # A critic round raised one finding.
-    apply_findings(
+    summary = apply_findings(
         findings_dir,
-        logical,
+        work_product.id,
         reviewer="architect_critic",
-        updates=[{"kind": "gap", "description": "x"}],
+        updates=[{"kind": "gap", "description": "x", "locations": [{"path": logical}]}],
+        project="proj",
+        agent="architect",
     )
+    assert summary.opened == 1
     result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
     assert result["files"][0]["status"] == "needs_revision"
 
     # The critic closed it: reviewed since the last revision, nothing open.
+    opened_id = read_findings(findings_dir, work_product.id)[0]["id"]
     apply_findings(
-        findings_dir, logical, reviewer="architect_critic", updates=[{"id": "F1", "state": "fixed"}]
+        findings_dir,
+        work_product.id,
+        reviewer="architect_critic",
+        updates=[{"id": opened_id, "state": "fixed"}],
     )
     result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
     assert result["files"][0]["status"] == "pending_acceptance"

@@ -57,14 +57,13 @@ DEVELOPER: SubAgentSpec = SubAgentSpec(
     output_schema={
         "type": "object",
         "properties": {
-            "primary_path": {
-                "type": "string",
-                "description": "The main file produced or changed this run.",
-            },
             "paths": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Every path created or edited (production and test).",
+                "description": (
+                    "Every path created or edited (production and test), entry point "
+                    "first — that is what the caller and the UI lead with."
+                ),
             },
             "tests_written": {
                 "type": "boolean",
@@ -83,6 +82,6 @@ DEVELOPER: SubAgentSpec = SubAgentSpec(
                 "description": "One line: what was built or changed. No file content.",
             },
         },
-        "required": ["primary_path", "paths", "summary"],
+        "required": ["paths", "summary"],
     },
 )

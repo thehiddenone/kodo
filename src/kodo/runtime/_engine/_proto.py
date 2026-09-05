@@ -36,6 +36,7 @@ from kodo.security import SecurityLayer
 from kodo.state import TransientStore
 from kodo.subagents import AgentRegistry, SubAgent
 from kodo.tools import PathResolver, RootPath, ToolDispatcher
+from kodo.workproducts import WorkProduct
 
 from .._checkpoints import CheckpointRef
 from .._gates import GateOrchestrator
@@ -90,7 +91,7 @@ class EngineHost(Protocol):
 
     def _freeze_effective_modes(self) -> None: ...
 
-    async def _finalize_document(self, path: str) -> None: ...
+    async def _finalize_work_product(self, work_product: WorkProduct) -> None: ...
 
     def _make_resolver(self, session_id: str) -> PathResolver: ...
 
@@ -251,7 +252,7 @@ class EngineHost(Protocol):
         agent_name: str,
         session_id: str,
         deadline: float | None = None,
-        findings_path: str = "",
+        findings_key: str = "",
     ) -> ToolDispatcher: ...
 
     # -- sub-agent dispatch (defined in _subagents) --------------------------------
@@ -259,8 +260,14 @@ class EngineHost(Protocol):
 
     def _critic_for(self, name: str) -> str: ...
 
+    def _scoped_task_input(self, name: str, task_input: dict[str, object]) -> dict[str, object]: ...
+
+    def _takes_responsibility(self, name: str) -> bool: ...
+
+    def _responsibility_code(self, name: str, task_input: dict[str, object]) -> str: ...
+
     async def _spawn_subagent(
-        self, name: str, task_input: dict[str, object], findings_path: str = ""
+        self, name: str, task_input: dict[str, object], findings_key: str = ""
     ) -> dict[str, object]: ...
 
     async def _run_review_loop(
@@ -271,22 +278,72 @@ class EngineHost(Protocol):
         max_rounds: int | None,
     ) -> dict[str, object]: ...
 
-    async def _run_review_round(self, critic_name: str, path: str) -> tuple[str, RoundSummary]: ...
+    async def _run_review_round(
+        self, critic_name: str, work_product: WorkProduct
+    ) -> tuple[str, RoundSummary]: ...
+
+    async def _run_unreviewed_author(
+        self, name: str, task_input: dict[str, object]
+    ) -> dict[str, object]: ...
+
+    async def _existing_work_product(
+        self, author_name: str, responsibility_code: str
+    ) -> WorkProduct | None: ...
+
+    async def _record_work_product(
+        self,
+        author_name: str,
+        responsibility_code: str,
+        paths: list[str],
+        output: dict[str, object] | None = None,
+    ) -> WorkProduct | None: ...
+
+    def _role_map(
+        self, agent_name: str, paths: list[str], output: dict[str, object]
+    ) -> dict[str, list[str]]: ...
+
+    async def _resolve_input_paths(
+        self,
+        agent_name: str,
+        *,
+        responsibility_code: str = "",
+        under_review: WorkProduct | None = None,
+        caller_paths: object = None,
+    ) -> tuple[dict[str, str], tuple[str, ...]]: ...
+
+    def _resolution_project(self, under_review: WorkProduct | None) -> str: ...
+
+    def _project_root(self, project: str) -> Path | None: ...
+
+    def _component_map(
+        self, agent_name: str, paths: list[str], output: dict[str, object]
+    ) -> dict[str, str]: ...
+
+    async def _record_components(
+        self, agent_name: str, project: str, output: dict[str, object]
+    ) -> None: ...
+
+    @staticmethod
+    def _missing_inputs_result(agent_name: str, missing: tuple[str, ...]) -> dict[str, object]: ...
 
     def _findings_dir(self) -> Path | None: ...
 
-    async def _findings_snapshot(self, path: str) -> dict[str, str]: ...
+    async def _findings_snapshot(self, key: str) -> dict[str, str]: ...
 
-    async def _document_status(self, path: str) -> str: ...
+    async def _work_product_status(self, work_product: WorkProduct) -> str: ...
 
-    async def _record_findings(self, reviewer: str, output: dict[str, object]) -> None: ...
+    async def _member_status(self, path: str, key: str) -> str: ...
+
+    async def _record_findings(
+        self, reviewer: str, output: dict[str, object], key: str
+    ) -> None: ...
 
     async def _drive_subsession(
         self,
         name: str,
         subsession_id: str,
         messages: list[Message],
-        findings_path: str = "",
+        findings_key: str = "",
     ) -> dict[str, object]: ...
 
     async def _open_subsession(
@@ -300,7 +357,7 @@ class EngineHost(Protocol):
     async def _abort_active_subsession(self) -> None: ...
 
     async def _replay_next_subsession(
-        self, name: str, findings_path: str = ""
+        self, name: str, findings_key: str = ""
     ) -> dict[str, object]: ...
 
     def _display_name(self, agent_name: str) -> str: ...

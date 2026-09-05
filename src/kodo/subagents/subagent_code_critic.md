@@ -21,7 +21,7 @@ Your feedback goes to whichever agent wrote the file under review — Coder for 
 
 ## Inputs
 
-- The single file under review — one code or test file just written, named in your task input's `input_paths`.
+- The single file under review — one code or test file just written, delivered under the `code` label in your Input Parameters.
 - The **Tech Stack** document — for language/framework context, so concerns use the correct idioms.
 
 Whether the file lives under `src/` or `test/` determines the rule set: production code → production-specific rules; test code → test-specific rules; common rules apply to both. You do **not** receive Functional Design, requirements, Test Plan, architecture, or Narrative — a concern needing those is out of scope. Call `read_file` only for a referenced file (e.g., a config file the code points at); otherwise rely on the injected contents.

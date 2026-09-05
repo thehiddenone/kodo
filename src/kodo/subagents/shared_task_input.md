@@ -1,1 +1,3 @@
 Your task arrives as your first message: free-form `instructions`, followed by an **Input Parameters** section listing every other value you were given — the last part of that message, with a reminder there of how to return your result.
+
+The paths in that section were resolved for you by the engine from what this project has actually produced — each label says what the file *is* (`architecture`, `requirements`, `functional_design_AUTH.md`, …). They are the inputs you are guaranteed. Read them. If your work needs something not listed, find it with your own tools; never construct a path from a pattern or an example.

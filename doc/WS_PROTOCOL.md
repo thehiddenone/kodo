@@ -945,24 +945,27 @@ Request payload:
 ```json
 { "type": "prompt.approval",
   "gate_type": "document_review",
-  "artifact_id": "specs/design/auth.md" | null,
-  "summary": "Review specs/design/auth.md" }
+  "artifact_id": "billing-service/coder/AUTH" | null,
+  "summary": "Review 3 files written together, starting with billing-service/src/auth.py",
+  "paths": ["billing-service/src/auth.py", "billing-service/src/session.py", "..."] }
 ```
 
-`gate_type` is now always the single literal `"document_review"` (previously a stage name derived from the artifact's type). `artifact_id` is a historical field name kept for wire compatibility — its value is now the document's real, project-relative path, not a workspace artifact UUID.
+`gate_type` is always the single literal `"document_review"`. `artifact_id` is a historical field name kept for wire compatibility — since 2026-09-04 its value is the **work product id** (`<project>/<agent>[/<responsibility>]`, doc/FINDINGS.md §2), not a path and not a workspace artifact UUID.
+
+**`paths` (added 2026-09-04) carries every file the decision covers.** A work product is accepted or rejected as one set — accepting members one at a time would permit exactly the half-accepted, unbuildable state the unit exists to prevent — so the client lists them all and offers a single Accept. One entry for a single-file set.
 
 Response payload:
 
 ```json
 { "type": "prompt.approval.response",
   "action": "agree" | "feedback",
-  "feedback_text": "..." | null }
+  "feedback_text": "..." | null,
+  "artifact_path": "billing-service/src/session.py" | null }
 ```
 
-`feedback_text` accompanies `action = "feedback"`. On `agree`, the engine appends a `review_result` (`decision: "approve"`) entry to the document's `.jsonl` log, then an `accepted` entry — no sub-agent call is involved. On `feedback`, the engine appends `review_result` (`decision: "reject"`, carrying `feedback_text` as `comment`); the enclosing author/critic loop reads this as `needs_revision` and spends another round on it.
+`feedback_text` accompanies `action = "feedback"`. `artifact_path` (added 2026-09-04) names whichever member the user had selected when they rejected, so the engine can anchor the finding it mints from their feedback to that file; `null`/absent means the objection is about the set as a whole, and a value that is not actually a member is ignored rather than trusted.
 
-> The doc'd `artifact_path` field is **not** sent today — the panel correlates by
-> `artifact_id` only.
+On `agree`, the engine appends a `review_result` (`decision: "approve"`) entry to **every member's** `.jsonl` log, then an `accepted` entry — no sub-agent call is involved. On `feedback`, it appends `review_result` (`decision: "reject"`, carrying `feedback_text` as `comment`) to every member; the enclosing author/critic loop reads this as `needs_revision` and spends another round on it.
 
 ### 6.3 `api_key.request` — fetch a vendor API key
 
@@ -1320,7 +1323,7 @@ See the `project_kodo_workspace_session_linkage` memory for the full design-deci
 - **No binding step at all.** `MSG_PROJECT_SET`/`EVT_PROJECT_BOUND` no longer exist on the wire. A Guided session's bound roots are exactly its `workspace.folders` (§7.1, §7.1b) — the live VS Code workspace folders, or the locked/bound-directories fallback (§7.1b's "disconnected/isolated operation" extension) when disconnected — precisely the mechanism §7.1b already documents for Problem Solver. `_root_paths()`/`_has_workspace()`/`_make_resolver()` (`kodo/runtime/_engine/_core.py`) no longer branch on `workflow_mode` at all.
 - **No project validation gate.** A bound root no longer needs a pre-existing `.kodo/kodo.md`; like Problem Solver, `.kodo/kodo.md` is scaffolded lazily on first checkpoint commit (`RootMirrorManager.prepare`), or fully laid out (`specs/`/`src/`/`test/` + `kodo.md`) by `scaffold_new_project` — already granted to the Guide, and now actually reachable: previously calling it from Guided mid-session created an orphaned workspace folder Guided's single-root resolver couldn't see.
 - **A session may have N bound projects.** `get_root_paths` returns one entry per bound project (`{name, path}`, same shape Problem Solver has always returned). The Guide picks which project a given piece of work belongs to and folder-prefixes every path it hands to a pipeline sub-agent accordingly (below) — *how* it should split or sequence work across several projects is a prompt-level policy question left for future work, not something this wire/mechanism change decides.
-- **Pipeline document paths are now logical, folder-prefixed paths** — identical convention to every other `LogicalPathResolver`-resolved path in the system (`find_files`'s `root`, `run_command`'s `working_dir`, ...): `"billing-service/specs/requirements/auth.md"`, not the old bare `"specs/requirements/auth.md"`. This applies to every pipeline sub-agent's `input_paths`/`primary_path`/`for_revision_path` (`kodo.subagents.specs._shapes`), which are exactly the fields a `run_subagent_<name>` tool declares. `kodo.guided_state`'s evolution-log functions (`shadow_path`/`is_tracked`/...) are unaffected — they only ever see an already-resolved absolute path plus the specific bound root it belongs to (looked up via the new `kodo.tools.root_for(roots, resolved_path)` helper, a longest-matching-root lookup — see the callers in `guided_dev_status`, `record_guided_revision`, the engine's critic-verdict recording, and document finalization).
+- **Pipeline document paths are now logical, folder-prefixed paths** — identical convention to every other `LogicalPathResolver`-resolved path in the system (`find_files`'s `root`, `run_command`'s `working_dir`, ...): `"billing-service/specs/requirements/auth.md"`, not the old bare `"specs/requirements/auth.md"`. This applies to every pipeline sub-agent's `input_paths`/`paths`/`for_revision_paths` (`kodo.subagents.specs._shapes`), which are exactly the fields a `run_subagent_<name>` tool declares. `kodo.guided_state`'s evolution-log functions (`shadow_path`/`is_tracked`/...) are unaffected — they only ever see an already-resolved absolute path plus the specific bound root it belongs to (looked up via the new `kodo.tools.root_for(roots, resolved_path)` helper, a longest-matching-root lookup — see the callers in `guided_dev_status`, `record_guided_revision`, the engine's critic-verdict recording, and document finalization).
 - **`rollback` (the LLM-facing tool, Guided-only) gained a required `root` input** — a `get_root_paths` name — since a target commit SHA alone no longer identifies which of N bound projects to roll back. The checkpoint-UI-driven `checkpoint.rollback` WS message (§8) is unaffected — it already took an explicit `root`.
 - **kodo-vsix**: the single-select "Choose the project for this Guided Development session" QuickPick and its "will be locked... cannot be changed" confirmation modal are gone entirely. Guided sessions behave exactly like Problem Solver in the client too — no picker, no lock, no per-session project indicator; the session-picker's "Guided"/"Problem solving" label now reads `session.list`'s `workflow_mode` field (a session's last persisted mode, informational only) instead of the removed `project_root` field.
 

@@ -21,7 +21,7 @@ You do not address the user. Your findings reach End-to-End Test Coder when the 
 
 ## Inputs
 
-- The single suite file under review — one of the harness, mock servers, configuration injection, or scenario tests, named in your task input's `input_paths`.
+- The suite file(s) under review — the harness, mock servers, configuration injection, or scenario tests — delivered under the `e2e_test_code` label in your Input Parameters.
 - The **End-to-End Test Plan** — the accepted design the suite implements (the inventory, Mock Specifications, and the Given/When/Then scenarios with linked requirements), so you can check fidelity and that assertions match the planned behavior.
 - The **Tech Stack** — language/framework, so concerns use the correct idioms.
 

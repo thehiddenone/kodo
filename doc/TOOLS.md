@@ -446,13 +446,21 @@ A caller does not get a generic `run_subagent(name, task_input)` with an opaque
 each declaring that sub-agent's own fields, flattened to the top level:
 
 ```
-run_subagent_coder(instructions, input_paths, responsibility_code,
-                   project_code, for_revision_path, max_rounds)
+run_subagent_coder(instructions, project_code, responsibility_code, max_rounds)
 ```
 
 `AgentRegistry.run_subagent_specs(caller)` mints them from the caller's
 `subagents:` allow-list. A **critic** (`role: critic`) is skipped: no caller
 ever spawns one, so no tool is minted for it.
+
+What is *not* on that signature matters as much as what is. `input_paths` and
+`for_revision_paths` are stripped from every such tool
+(`kodo.toolspecs.ENGINE_OWNED_TASK_FIELDS` — the engine resolves them), and
+`responsibility_code` appears only for a **per-component** stage: `coder` has
+one because it runs once per component, while `run_subagent_architect` and
+`run_subagent_functional_designer` do not offer the field at all. A caller
+cannot set what it is never shown, and the engine drops a stray one anyway
+(doc/GUIDED_DEV_MODE.md §6).
 
 ### What the sub-agent itself receives
 
@@ -538,24 +546,26 @@ Whether one call is one pass or a full author/critic loop is decided by the
 **callee's** frontmatter, never by the caller. A sub-agent that declares
 `critic: <name>` gets the loop contract: its tool takes an optional
 `max_rounds` (default 5, hard cap 10) and its declared output carries a
-`review` block. `_run_review_loop` then spawns the author, hands its
-`primary_path` to the critic, and re-runs the author with **identical
-`instructions`** and `for_revision_path` set — the findings themselves are never
+`review` block. `_run_review_loop` then spawns the author, hands its whole
+reported `paths` set — the work product — to the critic, and re-runs the author
+with **identical `instructions`** and `for_revision_paths` set — the findings themselves are never
 rendered into the task; both halves read them through `get_findings`
 (doc/FINDINGS.md) — until:
 
 | `review.outcome` | Meaning |
 | --- | --- |
-| `accepted` | the log says `accepted`/`pending_acceptance`; the file is settled |
+| `accepted` | the log says `accepted`/`pending_acceptance` for every member; the work product is settled |
 | `max_rounds` | budget spent with findings still outstanding (`review.outstanding` counts them) |
 | `escalated` | the author returned a non-empty `reason`: a blocker no revision fixes. The critic is not spawned and no further round is spent (see *An author's escalation* below) |
 | `not_converging` | a round closed nothing *and* opened nothing — exact no-progress, so the engine stopped early rather than orbit to the cap |
-| `not_reviewed` | the author reported no `primary_path` to review |
+| `not_reviewed` | the author reported no `paths` to review |
+
+A pipeline `run_subagent_<name>` tool carries **no file paths**: `input_paths` and `for_revision_paths` are `ENGINE_OWNED_TASK_FIELDS` (`kodo.toolspecs`), stripped from the generated tool and resolved by the engine from the callee's declared artifact roles against the work-product ledger (doc/FINDINGS.md). A caller supplies `instructions`; a stage invoked before something it requires exists is refused with a `missing_required_input` escalation naming the artifact. The stripping applies only where resolution replaces it — an agent that declares no roles (`developer`) keeps `input_paths`, since its caller is still the one that knows which files it means.
 
 The **stores are authoritative**, not the critic's return value: the user's own
 review decision lands in them too (see *A critic's findings* below) and can turn
-an accepted file back into one needing revision, which the loop then spends
-another round on.
+an accepted work product back into one needing revision, which the loop then
+spends another round on.
 
 ### An author's escalation
 
@@ -574,7 +584,7 @@ the shared `shared_escalation.md` block, opted into per agent by including
 `{SHARED:escalation}` in its body — the two must ship together, and a test
 asserts they do.
 Only `summary` is *schema*-required for such an author: one blocked before it
-wrote anything has no `primary_path`, and a backfilled required field would mark
+wrote anything has no `paths`, and a backfilled required field would mark
 the escalation `schema_compliance: false` — the engine's "this sub-agent failed"
 signal, which an escalation is not.
 
@@ -946,11 +956,11 @@ author that writes a file:
    │                                                          └─► writes the real file on disk
    │                                        (engine, outside the tool) commits the mirror,
    │                                        appends a new_revision jsonl entry (§7, INTERNALS.md)
-   │                          leaf LLM  tool_use: return_result({"primary_path": "specs/a.md", …})
+   │                          leaf LLM  tool_use: return_result({"paths": ["specs/a.md"], …})
    │                                                    └─► self.context.returned_output = {...}
-   │                                        leaf turn ends → returned_output = {"primary_path": …}
+   │                                        leaf turn ends → returned_output = {"paths": […]}
    │                                                    ▼
-   │  tool_result: {"primary_path": "specs/a.md", …} ◄──  json.dumps(returned_output)
+   │  tool_result: {"paths": ["specs/a.md"], …} ◄──  json.dumps(returned_output)
    │  …reasons, calls next tool…
 ```
 

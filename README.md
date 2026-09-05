@@ -51,7 +51,7 @@ The second half of the bet is verification. Kōdo writes tests from requirements
 
 ## Two ways to work
 
-**The guided pipeline** takes a green-field idea to a tested system through staged specification and review — the full workflow below. It's the more ambitious of the two modes, and, right now, the one to trust the least: it's mostly untested end-to-end, and it has not yet produced a delivery good enough to hold up as proof the approach works. The steps are real, they run, the code exists — what's missing is a track record. Treat it as something to watch and poke at, not something to put on a deadline.
+**The guided pipeline** takes a green-field idea to a tested system through staged specification and review — the full workflow below. It's the more ambitious of the two modes, and, right now, the one to trust the least: it's mostly untested end-to-end, and it has not yet produced a delivery good enough to hold up as proof the approach works. The steps are real, they run, the code exists — what's missing is a track record. Treat it as something to watch and poke at, not something to put on a deadline. Its design and flow are written up in full in [`doc/GUIDED_DEV_MODE.md`](doc/GUIDED_DEV_MODE.md).
 
 **The Problem Solver** is the everyday entrance, and the mode actually carrying weight day to day: point it at any codebase (Kōdo-built or not) and ask for a change, a fix, or a written investigation. It orchestrates dedicated Investigator, Planner, and Developer sub-agents for substantial work, and just does small asks directly — no ceremony for a one-file change.
 

@@ -71,10 +71,17 @@ class ApprovalResponse:
     Attributes:
         action: ``'agree'`` or ``'feedback'``.
         feedback: Free-form feedback text; empty when ``action == 'agree'``.
+        artifact_path: Which member file the user was looking at when they
+            responded, for a gate that carried several (a work product's
+            acceptance, doc/FINDINGS.md). Empty when the gate was about one
+            file, or when the objection is about the set as a whole — the
+            engine anchors the minted finding to it only when it is a real
+            member.
     """
 
     action: str
     feedback: str
+    artifact_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -206,15 +213,20 @@ class GateOrchestrator:
         artifact_id: str | None = None,
         summary: str = "",
         component: str | None = None,
+        paths: list[str] | None = None,
     ) -> ApprovalResponse:
         """Emit a ``prompt.approval`` ``kind=request`` and block until the
         user responds.
 
         Args:
             gate_type: Gate type label (e.g. ``'narrative'``).
-            artifact_id: ID of the artifact the user should review.
+            artifact_id: ID of the artifact the user should review — a work
+                product id for a ``document_review`` gate.
             summary: One-paragraph summary shown to the user.
             component: Unused; kept for call-site compatibility.
+            paths: Every file the decision covers. A work product is accepted
+                or rejected as a set, so the client lists all of them and the
+                user's response may name which one they were looking at.
 
         Returns:
             ApprovalResponse: The user's action and optional feedback.
@@ -230,6 +242,7 @@ class GateOrchestrator:
                 "gate_type": gate_type,
                 "artifact_id": artifact_id,
                 "summary": summary,
+                "paths": list(paths or []),
             }
         )
         try:
@@ -242,6 +255,7 @@ class GateOrchestrator:
                         "gate_type": gate_type,
                         "artifact_id": artifact_id,
                         "summary": summary,
+                        "paths": list(paths or []),
                     },
                 )
             )
@@ -250,9 +264,10 @@ class GateOrchestrator:
             response_payload = await future
             action = str(response_payload.get("action", "agree"))
             feedback = str(response_payload.get("feedback_text") or "")
+            artifact_path = str(response_payload.get("artifact_path") or "")
             _log.info("Approval gate resolved: req_id=%s action=%s", req_id[:8], action)
             self.__transient.update(pending_prompt=None)
-            return ApprovalResponse(action=action, feedback=feedback)
+            return ApprovalResponse(action=action, feedback=feedback, artifact_path=artifact_path)
         except asyncio.CancelledError:
             # Leave pending_prompt persisted — the worker is being cancelled
             # (e.g. server shutdown) with the prompt still unanswered, so it

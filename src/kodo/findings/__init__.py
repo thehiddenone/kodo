@@ -6,7 +6,7 @@ identity that survives the round it was raised in and a state that is either
 backlog through the ``get_findings`` tool; the critic alone writes to it, via
 its own ``return_result``.
 
-Storage is **session**-scoped (``<session-dir>/findings/<logical path>.jsonl``),
+Storage is **session**-scoped (``<session-dir>/findings/<work product id>.jsonl``),
 not project-scoped: two sessions may review the same tree under different
 models and settings, so a backlog is a fact about a session's review rather
 than about the project. What survives across sessions is the document's own
@@ -20,15 +20,20 @@ in-memory index — current state is always a replay of the log.
 from ._paths import findings_log_path
 from ._records import (
     FINDING_FIELDS,
+    LOCATION_FIELDS,
     STATE_FIXED,
     STATE_OUTSTANDING,
     Finding,
     FindingState,
+    Location,
     RoundSummary,
+    mint_finding_id,
+    normalize_locations,
 )
 from ._store import (
     USER_FEEDBACK_KIND,
     apply_findings,
+    close_findings_for_paths,
     last_round_timestamp,
     outstanding_findings,
     read_findings,
@@ -37,6 +42,11 @@ from ._store import (
 
 __all__ = [
     "FINDING_FIELDS",
+    "LOCATION_FIELDS",
+    "Location",
+    "close_findings_for_paths",
+    "mint_finding_id",
+    "normalize_locations",
     "STATE_FIXED",
     "STATE_OUTSTANDING",
     "USER_FEEDBACK_KIND",

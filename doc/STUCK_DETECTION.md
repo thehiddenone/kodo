@@ -1,6 +1,6 @@
 # Kodo — Stuck-Agent Detection & Remediation
 
-> Reference: [STATE_AND_LIFECYCLE.md](STATE_AND_LIFECYCLE.md) (turn/session lifecycle), [SETTINGS.md](SETTINGS.md) §2.6 (`stuck_detection`), [WS_PROTOCOL.md](WS_PROTOCOL.md) §5.9e/§6.8, [SECURITY.md](SECURITY.md) (sibling `prompt.*` gate precedent), [TOOLS.md](TOOLS.md) §5A (`return_result`/`run_subagent` contract; §2.8 below is its companion hardening).
+> Reference: [GUIDED_DEV_MODE.md](GUIDED_DEV_MODE.md) (§11 — where the traced incident sits in the pipeline), [STATE_AND_LIFECYCLE.md](STATE_AND_LIFECYCLE.md) (turn/session lifecycle), [SETTINGS.md](SETTINGS.md) §2.6 (`stuck_detection`), [WS_PROTOCOL.md](WS_PROTOCOL.md) §5.9e/§6.8, [SECURITY.md](SECURITY.md) (sibling `prompt.*` gate precedent), [TOOLS.md](TOOLS.md) §5A (`return_result`/`run_subagent` contract; §2.8 below is its companion hardening).
 
 ## 1. The failure this addresses
 

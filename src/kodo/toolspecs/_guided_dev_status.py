@@ -53,6 +53,15 @@ GUIDED_DEV_STATUS: ToolSpec = ToolSpec(
                                 "accepted",
                             ],
                         },
+                        "work_product": {
+                            "type": "string",
+                            "description": (
+                                "The work product this file belongs to — every file one "
+                                "review round produced shares one, and shares its findings "
+                                "backlog. Empty when nothing has reviewed the file this "
+                                "session."
+                            ),
+                        },
                         "last_event": {
                             "type": "string",
                             "description": "ISO-8601 timestamp of the last entry.",

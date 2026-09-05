@@ -25,6 +25,7 @@ from __future__ import annotations
 from ._spec import VISIBILITY_ALWAYS, VISIBILITY_VISIBLE, SecurityImpact, ToolSpec
 
 __all__ = [
+    "ENGINE_OWNED_TASK_FIELDS",
     "MAX_ROUNDS_DEFAULT",
     "MAX_ROUNDS_KEY",
     "RUN_SUBAGENT",
@@ -111,6 +112,28 @@ RUN_SUBAGENT: ToolSpec = ToolSpec(
 )
 
 
+#: Task fields the **engine** fills in, which therefore never appear on the
+#: ``run_subagent_<name>`` tool of an agent whose inputs the engine resolves.
+#: They stay declared on the sub-agent's own ``input_schema`` — that is what
+#: gives them a description in the rendered task brief — but such a caller can
+#: neither set nor be required to supply them.
+#:
+#: ``input_paths`` is resolved from the sub-agent's declared artifact roles
+#: against the work-product ledger, and ``for_revision_paths`` from the prior
+#: round's membership (doc/FINDINGS.md). Leaving either caller-writable was how
+#: a model came to be the source of a file path at all: a critic promised the
+#: architecture and handed a hardcoded single path invented the rest and read a
+#: nonexistent file ~1133 times. Mirrors ``schema_compliance`` on the output
+#: side — engine-owned, and specs must not let a model write it.
+#:
+#: The stripping is conditional for one honest reason: it is only right where
+#: something else fills the gap. An agent that declares no artifact roles has
+#: no resolution behind it, so removing the field would leave nobody able to
+#: name a file — see *engine_resolves_inputs* in
+#: :func:`build_run_subagent_spec`.
+ENGINE_OWNED_TASK_FIELDS: frozenset[str] = frozenset({"input_paths", "for_revision_paths"})
+
+
 def build_run_subagent_spec(
     *,
     subagent_name: str,
@@ -120,11 +143,16 @@ def build_run_subagent_spec(
     output_schema: dict[str, object],
     critic_name: str = "",
     standalone: bool = False,
+    engine_resolves_inputs: bool = True,
 ) -> ToolSpec:
     """Build the ``run_subagent_<name>`` tool one caller sees for one sub-agent.
 
-    The sub-agent's ``input_schema`` becomes the tool's input schema verbatim
-    (plus an optional ``max_rounds`` when *critic_name* is set). Its
+    The sub-agent's ``input_schema`` becomes the tool's input schema, minus the
+    :data:`ENGINE_OWNED_TASK_FIELDS` when the engine resolves this agent's
+    inputs (plus an optional ``max_rounds`` when *critic_name* is set). For a
+    pipeline agent a caller says *what* to do and the engine works out which
+    files that means; for an agent with no artifact roles behind it, naming the
+    files is still the caller's job (*engine_resolves_inputs*). Its
     ``output_schema`` — already merged with the review block by the caller when
     a critic is involved — is carried on the spec and reaches the model through
     :func:`~kodo.toolspecs.tool_description`, exactly like every other tool's;
@@ -154,14 +182,31 @@ def build_run_subagent_spec(
             other agent's output; ``False`` for a workflow stage that consumes
             the artifacts of the stage before it. Stated in the description
             because it is what tells a caller whether ordering matters.
+        engine_resolves_inputs: ``True`` when this sub-agent declares artifact
+            roles the engine resolves for it, which is what makes hiding
+            :data:`ENGINE_OWNED_TASK_FIELDS` safe — something else fills them
+            in. ``False`` for an agent with no ``consumes`` (``developer``,
+            driven by the Problem Solver, which has already read the tree and
+            knows which files it means): nothing would resolve its
+            ``input_paths``, so stripping the field would silently take away
+            the only way to point it at a file.
 
     Returns:
         ToolSpec: The variant spec, ready to hand to the LLM.
     """
+    hidden = ENGINE_OWNED_TASK_FIELDS if engine_resolves_inputs else frozenset()
     props_raw = input_schema.get("properties")
-    properties: dict[str, object] = dict(props_raw) if isinstance(props_raw, dict) else {}
+    properties: dict[str, object] = {
+        k: v
+        for k, v in (dict(props_raw) if isinstance(props_raw, dict) else {}).items()
+        if k not in hidden
+    }
     required_raw = input_schema.get("required")
-    required = [str(r) for r in required_raw] if isinstance(required_raw, list) else []
+    required = [
+        str(r)
+        for r in (required_raw if isinstance(required_raw, list) else [])
+        if str(r) not in hidden
+    ]
 
     prose = [description.strip()]
     prose.append(

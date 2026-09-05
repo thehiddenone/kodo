@@ -158,6 +158,19 @@ Every requirement ID for this component must appear. If any is unsatisfied, the 
 
 ## Reporting
 
+Return `design_plan_path` (the Plan you wrote) and `designs` — which Functional
+Design you wrote for which component:
+
+```json
+"designs": {"AUTH": "billing-service/specs/design/AUTH.md",
+            "LEDGER": "billing-service/specs/design/LEDGER.md"}
+```
+
+Every design in `paths` should appear there. You write them one component at a
+time, so you already know this; declaring it is what lets a later stage be
+handed one component's design and its neighbours' — rather than all of them —
+and it is what keeps the Design Plan from being mistaken for a design.
+
 You act only through tool calls — no free-form text. A complete run: zero or more `read_file` → write the Design Plan → revisions via `edit_file` (Design-Plan gate) → per component in order, write a Functional Design → revisions via `edit_file` (Critic + user feedback) → per reopen, revise via `edit_file`. A failed DAG validation or insufficient inputs end the run early as an escalation instead. The engine detects completion from the jsonl evolution state.
 
 ## What to Avoid

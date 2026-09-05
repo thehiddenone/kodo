@@ -59,6 +59,7 @@ from kodo.transport import (
     EVT_AUTONOMOUS_CHANGED,
     EVT_WORKSPACE_ADD_FOLDER,
 )
+from kodo.workproducts import WorkProduct
 
 from .._attachments import parse_attachment_marker
 from .._checkpoints import CheckpointState
@@ -109,6 +110,15 @@ def _reconcile_workspace_folders(
             key = f"{name} ({suffix})"
         merged[key] = path
     return merged
+
+
+def _review_summary(paths: tuple[str, ...]) -> str:
+    """The one-line summary the acceptance gate shows for a work product."""
+    if not paths:
+        return "Review this work product"
+    if len(paths) == 1:
+        return f"Review {paths[0]}"
+    return f"Review {len(paths)} files written together, starting with {paths[0]}"
 
 
 class WorkflowEngine(
@@ -951,65 +961,106 @@ class WorkflowEngine(
     # Document finalization (accept/review flow)
     # ------------------------------------------------------------------
 
-    async def _finalize_document(self, path: str) -> None:
-        """Drive the post-accept flow for a document whose backlog is now empty.
+    async def _finalize_work_product(self, work_product: WorkProduct) -> None:
+        """Drive the post-accept flow for a work product whose backlog is empty.
 
         Called when a critic round leaves nothing outstanding (see
-        ``_record_findings``) — there is no ``accept`` field any more; the
-        verdict is derived from the backlog (doc/FINDINGS.md §5).
+        ``_record_findings``) — there is no ``accept`` field; the verdict is
+        derived from the backlog (doc/FINDINGS.md §5).
+
+        **One decision settles the whole set.** Until 2026-09-04 this accepted
+        a single document; a work product is several files that were written to
+        land together, and accepting them one at a time would permit exactly
+        the half-accepted, unbuildable state the unit exists to prevent. The
+        user still sees every member — the gate carries the full list — and a
+        rejection can name the file that caused it.
 
         The user's sign-off is skipped in two postures, both of which mean "do
         not stop me for this": autonomous mode (nobody is there to answer) and
         Edit Control set to *Allow All* (the user has already said file changes
-        need no review — stopping for a document sign-off in that posture
-        contradicted every other gate). Either way the document goes straight to
-        ``accepted`` with **no** ``review_result`` entry: that entry means "the
-        user decided at the gate", and in these two postures no gate fired, so
-        writing one would fabricate a decision nobody made.
+        need no review). Either way every member goes straight to ``accepted``
+        with **no** ``review_result`` entry: that entry means "the user decided
+        at the gate", and in these two postures no gate fired, so writing one
+        would fabricate a decision nobody made.
 
-        Otherwise the same ``document_review`` approval gate fires and the
-        user's decision is recorded: agreement writes ``review_result``
-        (approve) then ``accepted``; feedback writes ``review_result`` (reject)
-        **and mints that feedback as an outstanding finding**, so the author
-        reaches the user's objection through the same ``get_findings`` call as
-        every critic finding, and the enclosing loop sees ``needs_revision`` and
-        spends another round on it.
+        Otherwise the ``document_review`` approval gate fires once for the set.
+        Agreement writes ``review_result`` (approve) then ``accepted`` to every
+        member's own project log — that log stays per file, since it is a
+        commit history and is correctly per file. Feedback writes
+        ``review_result`` (reject) to every member **and mints that feedback as
+        one outstanding finding** against the work product, anchored to the
+        file the user was looking at when they objected, so the author reaches
+        it through the same ``get_findings`` call as every critic finding.
         """
-        try:
-            resolved = self._make_resolver(self._orch_session_id).resolve(path)
-        except PermissionError:
-            _log.warning("finalize_document: cannot resolve path %r", path)
+        members = await self._resolve_members(work_product)
+        if not members:
+            _log.warning("finalize: work product %s has no resolvable members", work_product.id)
             return
-        project_root_entry = root_for(self._root_paths(), resolved)
-        if project_root_entry is None:
-            _log.warning("finalize_document: %r is not under any bound root", path)
-            return
-        project_root = Path(project_root_entry.path)
 
         if self._session.effective_autonomous or self._session.edit_control == "allow_all":
-            await asyncio.to_thread(append_accepted, resolved, project_root)
+            for resolved, project_root in members:
+                await asyncio.to_thread(append_accepted, resolved, project_root)
             return
 
         approval = await self._gate.fire_approval(
-            "document_review", artifact_id=path, summary=f"Review {path}"
+            "document_review",
+            artifact_id=work_product.id,
+            summary=_review_summary(work_product.paths),
+            paths=list(work_product.paths),
         )
         if approval.action == "agree":
-            await asyncio.to_thread(
-                append_review_result, resolved, project_root, decision="approve", comment=""
-            )
-            await asyncio.to_thread(append_accepted, resolved, project_root)
+            for resolved, project_root in members:
+                await asyncio.to_thread(
+                    append_review_result, resolved, project_root, decision="approve", comment=""
+                )
+                await asyncio.to_thread(append_accepted, resolved, project_root)
             return
 
-        await asyncio.to_thread(
-            append_review_result,
-            resolved,
-            project_root,
-            decision="reject",
-            comment=approval.feedback,
-        )
+        for resolved, project_root in members:
+            await asyncio.to_thread(
+                append_review_result,
+                resolved,
+                project_root,
+                decision="reject",
+                comment=approval.feedback,
+            )
         findings_dir = self._findings_dir()
         if findings_dir is not None:
-            await asyncio.to_thread(record_user_feedback, findings_dir, path, approval.feedback)
+            # `artifact_path` is whichever member the user had selected when
+            # they rejected; empty means the objection is about the set.
+            anchor = approval.artifact_path if approval.artifact_path in work_product.paths else ""
+            await asyncio.to_thread(
+                record_user_feedback,
+                findings_dir,
+                work_product.id,
+                approval.feedback,
+                path=anchor,
+                project=work_product.project,
+                agent=work_product.agent,
+                responsibility_code=work_product.responsibility_code,
+            )
+
+    async def _resolve_members(self, work_product: WorkProduct) -> list[tuple[Path, Path]]:
+        """Resolve each member to ``(absolute path, owning project root)``.
+
+        A member that cannot be resolved or sits under no bound root is skipped
+        with a warning rather than failing the whole acceptance: the rest of the
+        set is still real work the user should be able to sign off on.
+        """
+        resolver = self._make_resolver(self._orch_session_id)
+        members: list[tuple[Path, Path]] = []
+        for path in work_product.paths:
+            try:
+                resolved = resolver.resolve(path)
+            except PermissionError:
+                _log.warning("finalize: cannot resolve member %r", path)
+                continue
+            project_root_entry = root_for(self._root_paths(), resolved)
+            if project_root_entry is None:
+                _log.warning("finalize: member %r is not under any bound root", path)
+                continue
+            members.append((resolved, Path(project_root_entry.path)))
+        return members
 
     # ------------------------------------------------------------------
     # History rebuild (forwarded to the projector)

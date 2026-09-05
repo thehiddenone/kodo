@@ -485,6 +485,9 @@ evolution log (§7).
 |---|---|---|
 | [_records.py](../src/kodo/findings/_records.py) | `Finding`, `RoundSummary`, `FINDING_FIELDS`, `finding_entry()`, `review_round_entry()`, `merge_finding()` | The two entry types and the merge rule. `RoundSummary.stalled` (closed nothing *and* opened nothing) is the loop's no-progress signal. |
 | [_paths.py](../src/kodo/findings/_paths.py) | `findings_log_path()` | Logical path → session log path. The logical path is agent-supplied, so segments are validated (traversal/absolute → `None`) and sanitised (the first segment is a workspace-folder display name). |
+| [workproducts/\_\_init\_\_.py](../src/kodo/workproducts/__init__.py) | `WorkProduct`, `work_product_id()`, `record_membership()`, `read_work_product()`, `work_product_for_path()`, `work_products_log_path()` | **New 2026-09-04.** The reviewable unit: every file one `run_subagent_<author>` review loop wrote. Replaced `primary_path`, whose one-file model came from the first authors each writing a single document — a multi-file change must land in one go or the build breaks, so the critic has to see the whole set. Leaf package, one append-only **project**-scoped `<root>/.kodo/workproducts.jsonl` (the findings backlog beside it is session-scoped — a backlog is this session's judgment, membership is a fact about the project), replayed on read (no index), same shape as `findings`/`guided_state`. Identity is derived and stable across *separate* `run_subagent` calls (the Guide re-invokes the same author on the same subject); membership is per-revision, and what leaves is reported so the caller can auto-close its findings. |
+| [workproducts/_resolve.py](../src/kodo/workproducts/_resolve.py) | `ResolvedNeed`, `resolve_needs()` | **New 2026-09-05.** Resolves a consumer's declared artifact needs against the ledger — the pure `(work products, needs, scope inputs) -> paths` function the engine's `_resolve_input_paths` wraps. Scope names are duplicated here rather than imported (this is a leaf package, same rule as `findings`/`guided_state`); a test pins them equal to `kodo.subagents.ALL_SCOPES`. |
+| [subagents/_artifacts.py](../src/kodo/subagents/_artifacts.py) | `Need`, `ALL_ROLES`, `ALL_SCOPES`, `PRODUCES_REMAINDER`, the `ROLE_*`/`SCOPE_*` constants | **New 2026-09-05.** The closed artifact-role vocabulary every spec's `produces`/`consumes` is written in. Closed on purpose: `AgentRegistry` refuses to load an agent naming a role or scope that is not here, so a typo fails at startup rather than resolving to nothing mid-run. |
 | [_store.py](../src/kodo/findings/_store.py) | `read_findings()`, `apply_findings()`, `record_user_feedback()`, `last_round_timestamp()`, `outstanding_findings()` | Append/replay one document's log. `apply_findings` mints ids for updates with no `id`, patches the rest, and always closes with a `review_round` line. |
 
 **The two jsonl entry types:**
@@ -1078,7 +1081,7 @@ narrow per-collaborator host protocols living next to each collaborator):
 
 | Module | Kind | Contents |
 | ------ | ---- | -------- |
-| [_core.py](../src/kodo/runtime/_engine/_core.py) | class | `WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin, ResumeMixin)` — constructor wiring, `start()`, every public `handle_*` WS entry point, project create/init, `_root_paths`/`_has_workspace`/`_make_resolver`, `_run_rollback`, `_finalize_document`, `_disable_autonomous`. |
+| [_core.py](../src/kodo/runtime/_engine/_core.py) | class | `WorkflowEngine(LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin, ResumeMixin)` — constructor wiring, `start()`, every public `handle_*` WS entry point, project create/init, `_root_paths`/`_has_workspace`/`_make_resolver`, `_run_rollback`, `_finalize_work_product`, `_disable_autonomous`. |
 | [_proto.py](../src/kodo/runtime/_engine/_proto.py) | protocol | `EngineHost` — the typed mixin seam. |
 | [_worker.py](../src/kodo/runtime/_engine/_worker.py) | mixin | `WorkerMixin` — `_run_worker` (the single queue-driven coroutine) + `_handle_input_no_agent`. |
 | [_llm.py](../src/kodo/runtime/_engine/_llm.py) | mixin | `LLMPlumbingMixin` — `_resolve_plugin`/`_resolve_model_key`, `_run_silent_return_turn`, `_run_silent_tool_loop_turn` (a silent, multi-round, non-subsession tool-calling turn for the `web_search` agent — deadline- and round-capped, doc/WEB_SEARCH.md), `_security_judge`. |
@@ -1164,11 +1167,12 @@ The package's public surface is unchanged by the split:
   `subagents:` list, so the only path to it is the tool.
 - `_run_review_loop` → the author/critic loop `_run_subagent` enters whenever
   the target sub-agent declares a `critic:`. Each round spawns the author with
-  **identical `instructions`** (only `for_revision_path` is added, from round
-  two) — findings are never rendered into the task; both halves read them
+  **identical `instructions`** (only `for_revision_paths` is added — the previous
+  round's whole member set, from round two, and seeded from the ledger when the
+  Guide re-invokes the same author) — findings are never rendered into the task; both halves read them
   through `get_findings`, whose scope this loop binds (doc/FINDINGS.md §4). It
-  reads back `author_output.primary_path`, spawns the critic against that path,
-  then derives the status via `_document_status` — **the stores, not the
+  reads back `author_output.paths` (the whole work product — `primary_path` was removed 2026-09-04), records its membership, spawns the critic against every member,
+  then derives the status via `_work_product_status` (weakest member wins) — **the stores, not the
   critic's `return_result`, are what the loop acts on**, because the user's own
   review decision lands there too. The round's `opened`/`closed` counters come
   from diffing `_findings_snapshot` before and after the critic's subsession
@@ -1183,9 +1187,9 @@ The package's public surface is unchanged by the split:
 - `_record_findings` → called from `_drive_subsession` for every agent declaring
   `role: critic`: applies the round's findings to that document's session-scoped
   backlog (`kodo.findings.apply_findings`), closes the round with a
-  `review_round` entry, then drives `_finalize_document` once **nothing is left
+  `review_round` entry, then drives `_finalize_work_product` once **nothing is left
   outstanding**. There is no `accept` field to consult — the verdict is derived.
-- `_finalize_document(path)` (called from the post-dispatch hook below, not
+- `_finalize_work_product(work_product)` (called from the post-dispatch hook below, not
   exposed via `EngineServices` — there is no tool indirection) → autonomous
   mode — and Edit Control `allow_all` — immediately `append_accepted`s;
   otherwise it fires the same approval gate `request_user_review_artifact` used
@@ -1270,7 +1274,7 @@ guide-vs-leaf split.
 | [_bootstrap.py](../src/kodo/runtime/_bootstrap.py) | `locate_guide_session()` | Workspace-tier session location only: locate/create the Guide session marker + `sessions/` dir. There is no project-tier bootstrap anymore — a document's state lives entirely in its own `.jsonl` evolution log (§7), read on demand. |
 | [_guide.py](../src/kodo/runtime/_guide.py) | `GuideMarker` | Reads/writes `.kodo/guide.session`. Used by `locate_guide_session`. |
 | [_checkpoints.py](../src/kodo/runtime/_checkpoints.py) | `RootMirrorManager`, `CheckpointRef` (frozen), `command_may_mutate()` | The **single** shadow-git mirror coordinator, now driving both workflow modes (§12.1) — there is no longer a second, Guided-only mirror at the same path to collide with. Bridges the path-agnostic `mirror.ShadowMirror` to Kōdo's conventions: every root a session may touch gets its own independent mirror at `<root>/.kodo/checkpoints`, created **lazily** the first time a file-mutating tool writes under that root (scaffolding `<root>/.kodo/` + `kodo.md` via `ProjectLayout.scaffold_kodo_dir()`, §5, at that moment). `_root_for(path)` maps a path to its enclosing root by longest-prefix match. `_KODO_EXCLUDES` (node_modules/.venv/`__pycache__`/dist/build/egg-info/caches + always `.kodo/`+`.git/`) seed each mirror's `info/exclude` **on top of** the project's own `.gitignore` — this is *why* `.kodo/guided_dev_state/*.jsonl` (§7) is never committed by this same mirror. One `asyncio.Lock` serialises `prepare`/`commit_for_path`/`sweep_initialized`/`undo`/`rollback`. The free function `command_may_mutate(parsed: ParsedCommand) -> bool` is the caller-side mutation heuristic the parser (§10b) deliberately omits: `True` if any redirection is an output redirect (`> >> >\| &> &>> <>`), else `True` unless every executable's basename is on a small read-only allow-list (`ls cat grep find rg fd pwd wc diff …` — notably **not** `git`, since even read-only-looking git subcommands can touch `.git/` state) — **defaults to `True` (mutating) whenever uncertain**, so a missed checkpoint is never the failure mode; an unnecessary no-op commit is. |
-| [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse`, `PermissionResponse` | **Composes** `ResponseChannel` (production: `SessionChannel`) + `TransientStore`. `fire_approval`/`fire_questions`/`fire_permission` send `kind=request`, register a future, and await. Approvals persist `pending_prompt`; permission prompts persist `pending_security_alert` (just the `tool_call_id`, for the duration of the wait) — both for process-restart re-surface, mirroring each other's cleared-on-resolve/kept-on-cancel pattern; a question batch has neither and is re-driven from scratch (SESSIONS.md "Resume", SECURITY.md §7a). None of the three needs anything special for a *live* disconnect/reconnect — the future and its request envelope live on `SessionChannel`, which survives that regardless (SECURITY.md §7b). `fire_questions(questions, tool_call_id)` carries the whole `ask_user` batch plus the calling tool_use id and returns normalized `{selected, free_text}` answers. `fire_permission(...)` carries one gated tool call's preview (tool/risk/intent/reason/params) and returns the user's allow/deny + optional feedback (`prompt.permission`, doc/SECURITY.md §6); malformed actions coerce to deny. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by `_finalize_document` (§12.1) for the interactive document-review gate. |
+| [_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator`, `ApprovalResponse`, `PermissionResponse` | **Composes** `ResponseChannel` (production: `SessionChannel`) + `TransientStore`. `fire_approval`/`fire_questions`/`fire_permission` send `kind=request`, register a future, and await. Approvals persist `pending_prompt`; permission prompts persist `pending_security_alert` (just the `tool_call_id`, for the duration of the wait) — both for process-restart re-surface, mirroring each other's cleared-on-resolve/kept-on-cancel pattern; a question batch has neither and is re-driven from scratch (SESSIONS.md "Resume", SECURITY.md §7a). None of the three needs anything special for a *live* disconnect/reconnect — the future and its request envelope live on `SessionChannel`, which survives that regardless (SECURITY.md §7b). `fire_questions(questions, tool_call_id)` carries the whole `ask_user` batch plus the calling tool_use id and returns normalized `{selected, free_text}` answers. `fire_permission(...)` carries one gated tool call's preview (tool/risk/intent/reason/params) and returns the user's allow/deny + optional feedback (`prompt.permission`, doc/SECURITY.md §6); malformed actions coerce to deny. `fire = fire_approval` alias. Satisfies `tools.GateLike`; reached by `_finalize_work_product` (§12.1) for the interactive document-review gate, which carries every member file as `paths` so one decision settles the whole set. |
 | [_agenttools.py](../src/kodo/runtime/_agenttools.py) | `agent_tool_specs(registry, agent)` | The **only** place an agent's LLM-facing tool list is assembled, and the join between `kodo.subagents` and `kodo.tools` — sibling T3 packages that may not import each other. Resolves the agent's declared `tools:` through `tools_for_agent`, with two names expanded from the registry instead of the static catalog: `run_subagent` → one `run_subagent_<name>` tool per invocable sub-agent (each carrying that sub-agent's own `input_schema`, plus a `max_rounds`/`review` loop contract when it declares a `critic:`), and `return_result` → the same tool with `result` bound to this agent's own `output_schema`. Every caller goes through it — the live turn loop, crash-resume, subsessions, the silent engine-driven turns, and `kodo --tools` — so the surface a model sees cannot differ by code path (doc/TOOLS.md §5A). |
 | [_session.py](../src/kodo/runtime/_session.py) | `SessionState` | Mutable `phase`/`agent`/`component` plus the two mode fields: `autonomous` (user-facing Autonomous/Interactive, set by `handle_mode_set`, reported in `to_dict()`/`EVT_STATE`) and `effective_autonomous` (frozen per prompt by `_run_worker`; what tools/registry actually read), and `workflow_mode` (`"guided"`/`"problem_solving"`/`"judge"`, in `to_dict()`; the last is validator-only). Shared by the engine; satisfies `tools.SessionLike` (`finalize_project` writes `phase`; tools read `effective_autonomous`). |
 | [_session_log.py](../src/kodo/runtime/_session_log.py) | `SessionLog` | Append-only JSONL per session. |
@@ -1399,7 +1403,7 @@ clears both `autonomous` and `effective_autonomous` immediately and emits
 **Document acceptance:** a critic returns `{path, findings, summary}` via
 `return_result` → `_drive_subsession` sees the callee declares `role: critic`
 and calls `_record_findings`, which applies the findings to the session backlog
-(§7a) and then, once nothing is outstanding, calls `_finalize_document(path)`:
+(§7a) and then, once nothing is outstanding, calls `_finalize_work_product(work_product)`:
 autonomous mode — or Edit Control *Allow All* — immediately appends an
 `accepted` entry; otherwise the approval gate fires, then `review_result`
 (+ `accepted` on agreement, or a minted user-feedback finding on rejection).
@@ -1407,7 +1411,7 @@ There is no promotion step — the file was already real, and no `accept` field 
 the verdict is derived from an empty backlog.
 
 **User gate:** any `ask_user`, or the document-review gate
-inside `_finalize_document` → `GateOrchestrator.fire_*` sends a `kind=request`,
+inside `_finalize_work_product` → `GateOrchestrator.fire_*` sends a `kind=request`,
 registers a future, and awaits the client's `kind=response` (approvals also
 persist `pending_prompt`; question batches don't — they re-drive from the
 flushed `tool_use` on restart). `ask_user`'s batch renders as an in-feed

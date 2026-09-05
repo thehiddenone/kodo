@@ -1,5 +1,7 @@
 # Adding a Sub-Agent
 
+> The pipeline these agents run in, end to end: [GUIDED_DEV_MODE.md](GUIDED_DEV_MODE.md).
+
 A checklist for adding (or restructuring) a Guided-Dev sub-agent, distilled from
 real changes. A sub-agent is **"a tool with agentic behavior"**: a prompt
 (`subagent_<name>.md`) + a typed I/O contract (`SubAgentSpec`). Both halves must
@@ -113,6 +115,89 @@ Everything follows from those two. `run_subagent_<author>` becomes a **loop**
 tool — it takes an optional `max_rounds` and returns a `review` block — and the
 engine spawns the critic inside that call. A caller never names a critic, never
 gets a tool for one, and never iterates by hand (doc/TOOLS.md §5A).
+
+### What an agent receives as `input_paths`
+
+Nothing is hand-written and nothing is inherited. Each spec declares, in
+artifact **roles**, what it produces and what it needs
+(`kodo.subagents._artifacts`), and the engine resolves those needs against the
+session's work-product ledger (`kodo.workproducts`):
+
+```python
+REQUIREMENTS_CRITIC = SubAgentSpec(
+    name="requirements_critic",
+    produces={},                                    # critics write findings, not artifacts
+    consumes=(
+        Need(ROLE_REQUIREMENTS, SCOPE_UNDER_REVIEW),
+        Need(ROLE_ARCHITECTURE),                    # SCOPE_GLOBAL by default
+        Need(ROLE_NARRATIVE),
+    ),
+)
+```
+
+- **`produces`** maps a role to the output field carrying its paths. An
+  ordinary author maps its one role to `PRODUCES_REMAINDER` (`"paths"`) —
+  "everything I reported". An agent filling two roles names a field per role,
+  and the role mapped to the remainder gets whatever no named field claimed;
+  that is how `functional_designer` keeps the Design Plan out of the pile of
+  Functional Designs it wrote in the same run.
+- **`consumes`** is a tuple of `Need(role, scope, required=True)`. Scopes:
+  `SCOPE_GLOBAL` (the current one for the project), `SCOPE_SELF` (narrowed to
+  this spawn's `responsibility_code`), `SCOPE_ALL` (every one), and
+  `SCOPE_UNDER_REVIEW` (the work product this critic round is reviewing, which
+  the engine supplies from the round rather than looking up), and
+  `SCOPE_DEPENDENCIES` (the components this one consumes or is consumed by,
+  from the architect's `components` graph). Declare a scope that can
+  legitimately be empty as `required=False`.
+- Labels are the role itself for a single file, `<role>_<basename>` for several.
+  A role declared at two scopes (`coder` wants its own design *and* its
+  neighbours') is accumulated into one labelled group, not labelled twice.
+- **Callers never pass paths.** `input_paths` and `for_revision_paths` are in
+  `kodo.toolspecs.ENGINE_OWNED_TASK_FIELDS`: declared on your agent's
+  `input_schema` (so the rendered task brief describes them) but stripped from
+  the `run_subagent_<name>` tool, so no caller can set them or be asked for
+  them. Do not write a prompt that tells a caller to supply a path. The
+  stripping follows the declaration: an agent with an empty `consumes` has no
+  resolution behind it, so it keeps a caller-supplied `input_paths` (the
+  non-pipeline `developer` is the only one today). Declare roles or own your
+  paths — never neither.
+- **Only a per-component agent declares `responsibility_code`.** Pass
+  `require_responsibility=True` to `pipeline_input` *only* if your agent
+  genuinely runs once per component (stages 5–7); it is what puts the field on
+  your schema and on your tool at all. Everything else — every product-level
+  stage, every critic — leaves it out, and the engine drops a stray one before
+  it can reach the work-product id or `self`/`dependencies` resolution
+  (`SubAgentSpec.takes_responsibility_code`). A critic never declares it: the
+  engine builds a critic's whole task, and its `SCOPE_SELF` needs are narrowed
+  from the work product under review.
+
+The registry validates all of this **at load time**: an unknown role or scope,
+a `produces` entry naming an output field the schema does not declare, or a
+consumed role that no agent produces, all raise `AgentLoadError`. A typo stops
+the server rather than one sub-agent, four stages later.
+
+> Until 2026-09-04 the engine passed a hardcoded `{"target": <path>}` — one
+> path, under a label in no agent's vocabulary — to every critic. Six of the
+> seven declared more inputs than they received; `requirements_critic`,
+> promised the architecture and given only the document, reconstructed the
+> architecture's path from the worked example in its own schema description and
+> read the resulting nonexistent file ~1133 times. A short-lived
+> `inherit_author_inputs` stopgap forwarded the author's paths instead; declared
+> roles replaced it on 2026-09-05.
+
+**When you add an agent**, declare both halves. If it writes files, give it a
+`produces` entry so later stages can find them; if it reads any, declare the
+roles rather than expecting a caller to pass paths.
+
+An unmet **required** need **refuses the spawn** — the caller gets an escalation
+naming the role instead of an agent that will invent the missing input. So mark
+a need `required=False` when it can legitimately be absent (a component with no
+neighbours has no dependency designs), and make sure the stage that produces
+each required role really does run first.
+
+If your agent writes artifacts for several components in one run, also set
+`component_paths` to the name of an output field holding `{codename: path}` —
+without it, `SELF` and `DEPENDENCIES` can only match all of its files or none.
 
 **Both halves also need the findings protocol** (doc/FINDINGS.md), which is how
 they actually communicate — the loop passes no findings through the task:

@@ -282,7 +282,7 @@ class ToolDispatcher:
         util_paths: dict[str, Path] | None = None,
         output_schema: dict[str, object] | None = None,
         findings_dir: Path | None = None,
-        findings_path: str = "",
+        findings_key: str = "",
         deadline: float | None = None,
     ) -> None:
         self.__ctx = ToolContext(
@@ -297,7 +297,7 @@ class ToolDispatcher:
             util_paths=dict(util_paths or {}),
             output_schema=output_schema,
             findings_dir=findings_dir,
-            findings_path=findings_path,
+            findings_key=findings_key,
             deadline=deadline,
         )
 

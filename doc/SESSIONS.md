@@ -195,7 +195,7 @@ order):
   a sub-agent took over and when it handed control back. They carry
   `subsession_id`, `agent`, `display_name`, and `parent_display_name`;
   `subsession_end` also carries the sub-agent's structured `result` from
-  `return_result` (e.g. an author's `primary_path`). `compaction` records a
+  `return_result` (e.g. an author's `paths`). `compaction` records a
   context reset (`summary`, `reason`, `tokens_before`/`tokens_after`). `error`
   records an `EngineEmitters.emit_error` runtime failure (`message`,
   `recoverable`). `security_rule_added` and `agent_stuck_critical` similarly
@@ -408,18 +408,20 @@ schemas either — those reach the caller as real JSON Schema on its own
 - **Author/critic.** When the spawned sub-agent declares a `critic:`, that same
   `run_subagent_<name>` call runs the *whole* loop (`_run_review_loop`; see
   doc/TOOLS.md §5A). Each round spawns the author with
-  `{instructions, input_paths, for_revision_path}` (the last two set by the
-  engine from the previous round), reads the author's
-  `output_schema.primary_path` from its `return_result`, then spawns the critic
-  against that same path. The critic's own `return_result` **is** its verdict
-  (`{path, accept, concerns, summary}`), which the engine appends to that file's
-  `.jsonl` evolution log; but the **status the loop acts on is read back from
-  the log**, not from that payload, because the user's own review decision lands
-  there too (and can turn an accepted file back into one needing revision). The
-  jsonl remains the single source of truth for status. There is no
-  `previous_artifact_id`/`for_revision_artifact_ids` plumbing —
-  `for_revision_path` is a single path, since the loop always concerns exactly
-  one file per round.
+  `{instructions, input_paths, for_revision_paths}` (the last two set by the
+  engine — resolved artifact roles, and the previous round's whole member set),
+  reads the author's `output_schema.paths` from its `return_result`, records
+  that set as its **work product** (`kodo.workproducts`), then spawns the critic
+  against every member. The critic returns `{findings, summary}` — no `path`
+  (the engine already knows what it spawned the critic against) and no `accept`
+  (the verdict is derived from the resulting backlog) — which the engine applies
+  to the work product's session-scoped findings log. The **status the loop acts
+  on is read back from the stores**, not from that payload, because the user's
+  own review decision lands there too (and can turn an accepted work product
+  back into one needing revision); a set is settled only when every member is.
+  There is no `previous_artifact_id`/`for_revision_artifact_ids` plumbing —
+  `for_revision_paths` is the member list, since one round revises the whole
+  set.
 - **Engine-driven agents.** `compactor` carries a spec and returns through
   `return_result` (`{summary}`); the silent `_run_silent_return_turn` grants
   it the tool and captures the payload, with raw text as a fallback. Session

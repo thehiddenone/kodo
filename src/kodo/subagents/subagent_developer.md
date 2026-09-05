@@ -81,7 +81,7 @@ Re-read the code and tests together; confirm they agree and the behavior matches
 
 ### 6 — Return
 
-Call `return_result` once: `primary_path`, every `path` touched, `tests_written`, a `verification` line (build/test outcome or why it couldn't run), and a one-line `summary`.
+Call `return_result` once: every `path` touched (entry point first), `tests_written`, a `verification` line (build/test outcome or why it couldn't run), and a one-line `summary`.
 
 ## What to avoid
 

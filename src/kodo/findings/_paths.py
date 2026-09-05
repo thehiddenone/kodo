@@ -1,15 +1,18 @@
-"""Maps a logical document path to its per-session findings-log path.
+"""Maps a work product's id to its per-session findings-log path.
 
 Findings are **session**-scoped, not project-scoped (doc/FINDINGS.md §2): the
 log lives under ``<session-dir>/findings/`` rather than beside the document's
-project-scoped evolution log in ``.kodo/guided_dev_state/``. The key is the
-folder-prefixed *logical* path agents already use everywhere
-(``billing-service/specs/architecture.md``), so a session bound to several
-projects keeps their backlogs apart without any extra bookkeeping.
+project-scoped evolution log in ``.kodo/guided_dev_state/``.
 
-The logical path is agent-supplied, so every segment is validated here: a path
-that is absolute, empty, or contains a traversal segment yields ``None`` rather
-than a file outside the findings directory.
+The key is a **work product id** (``billing-service/coder/AUTH``), not a
+document path — the reviewable unit became a whole set of files on 2026-09-04.
+Both are slash-joined and project-prefixed, so the mapping below is unchanged:
+the leading project segment is still what keeps a multi-project session's
+backlogs apart without any extra bookkeeping.
+
+The key can reach here from agent-supplied data, so every segment is validated:
+a key that is absolute, empty, or contains a traversal segment yields ``None``
+rather than a file outside the findings directory.
 """
 
 from __future__ import annotations
@@ -30,20 +33,19 @@ def _sanitize(segment: str) -> str:
     return _UNSAFE.sub("_", segment).strip() or "_"
 
 
-def findings_log_path(findings_dir: Path, logical_path: str) -> Path | None:
-    """The findings log for *logical_path*, or ``None`` when it is unusable.
+def findings_log_path(findings_dir: Path, key: str) -> Path | None:
+    """The findings log for *key*, or ``None`` when it is unusable.
 
     Args:
         findings_dir: This session's ``findings/`` directory.
-        logical_path: Folder-prefixed logical document path, e.g.
-            ``"billing-service/specs/architecture.md"``.
+        key: A work product id, e.g. ``"billing-service/coder/AUTH"``.
 
     Returns:
         Path | None: ``<findings_dir>/<sanitised segments>.jsonl``, or ``None``
             when *logical_path* is empty, absolute, or contains a ``.``/``..``
             segment.
     """
-    candidate = logical_path.strip().replace("\\", "/")
+    candidate = key.strip().replace("\\", "/")
     if not candidate or candidate.startswith("/"):
         return None
     parts = [p for p in PurePosixPath(candidate).parts if p]

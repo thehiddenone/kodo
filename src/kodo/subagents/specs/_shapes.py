@@ -8,13 +8,20 @@ a fresh dict so callers never share mutable schema state.
 The shapes mirror the contracts the agent prompts already describe:
 
 - **Pipeline input** — the structured task a file-backed sub-agent receives when
-  delegated to: free-form ``instructions`` plus the real file paths it should
-  read (a named collection, since a single round often needs several distinct
-  inputs — e.g. requirements *and* architecture) and (for authors revising
-  existing work) the path being revised. Every path is folder-prefixed with
-  its owning project's name (a ``get_root_paths`` entry — the same logical-path
-  convention ``LogicalPathResolver`` uses everywhere else), since a Guided
-  session may have more than one bound project.
+  delegated to: free-form ``instructions`` from its caller, plus the real file
+  paths the **engine** resolved for it (``input_paths``, and for a revision
+  round ``for_revision_paths``). Those two are engine-owned
+  (:data:`~kodo.toolspecs.ENGINE_OWNED_TASK_FIELDS`): they are declared here so
+  the rendered task brief can describe them, and stripped from the
+  ``run_subagent_<name>`` tool so no caller can write them. Every path is
+  folder-prefixed with its owning project's name (a ``get_root_paths`` entry —
+  the same logical-path convention ``LogicalPathResolver`` uses everywhere
+  else), since a Guided session may have more than one bound project.
+  ``responsibility_code`` is the third field the engine — not the caller —
+  has the last word on: it is declared **only** by the per-component stages
+  (``require_responsibility=True``), and a task carrying one for any other
+  agent has it dropped before anything reads it
+  (:attr:`~kodo.subagents.SubAgentSpec.takes_responsibility_code`).
 - **Author/solo output** — the path(s) a producing sub-agent wrote, plus which
   one is primary (what a critic reviews / what the author-critic loop tracks) —
   *or*, when the author is blocked, the escalation described next.
@@ -48,6 +55,8 @@ all.)
 
 from __future__ import annotations
 
+from .._subagentspec import RESPONSIBILITY_CODE_KEY
+
 __all__ = [
     "author_output",
     "critic_output",
@@ -69,14 +78,17 @@ _PROJECT_CODE = {
 }
 _RESPONSIBILITY_CODE = {
     "type": "string",
-    "description": "Component codename (per-codename stages only).",
+    "description": "Component codename this run is scoped to.",
 }
-_FOR_REVISION_PATH = {
-    "type": ["string", "null"],
+_FOR_REVISION_PATHS = {
+    "type": ["array", "null"],
+    "items": {"type": "string"},
     "description": (
-        "Path of the prior document to revise this round (authors only; "
-        "omitted/null on the first round). Folder-prefixed with the owning "
-        "project's name, like every other path here — see input_paths."
+        "The files your previous round produced, to revise this round (authors "
+        "only; omitted/null when there is no prior round). This is your whole "
+        "prior work product, not just its entry point — revise it as one "
+        "change. Supplied by the engine from what you last wrote, like "
+        "input_paths; each path is folder-prefixed with its project's name."
     ),
 }
 
@@ -93,39 +105,55 @@ def pipeline_input(
 
     Args:
         input_paths: Human description of which real files this agent must
-            read (rendered as the ``input_paths`` field description).
-        require_input_paths: Whether ``input_paths`` is required
-            (``narrative_author`` works from the user prompt, so it is not).
-        require_responsibility: Whether ``responsibility_code`` is required
-            (per-codename stages).
+            read (rendered as the ``input_paths`` field description). Prose
+            only — what is actually delivered comes from the spec's declared
+            ``consumes`` roles, and the two should say the same thing.
+        require_input_paths: Whether ``input_paths`` is listed in ``required``.
+            Since 2026-09-05 this is documentation rather than a caller
+            obligation: ``input_paths`` is engine-owned
+            (:data:`~kodo.toolspecs.ENGINE_OWNED_TASK_FIELDS`) and is stripped
+            from the ``run_subagent_<name>`` tool along with its ``required``
+            entry, so no caller is ever asked for it.
+        require_responsibility: Whether this agent runs **per component**.
+            ``True`` declares ``responsibility_code`` and requires it; ``False``
+            (every product-level stage and every critic) leaves the property out
+            of the schema entirely, so it never appears on the
+            ``run_subagent_<name>`` tool and the caller is not invited to send
+            one. The engine drops a stray one anyway
+            (:attr:`~kodo.subagents.SubAgentSpec.takes_responsibility_code`) —
+            omitting it here is what keeps the tool honest, not what enforces
+            it.
         extra_properties: Agent-specific extra input properties to merge in.
         extra_required: Agent-specific extra required field names.
     """
     properties: dict[str, object] = {
         "instructions": dict(_INSTRUCTIONS),
         "project_code": dict(_PROJECT_CODE),
-        "responsibility_code": dict(_RESPONSIBILITY_CODE),
         "input_paths": {
             "type": "object",
             "additionalProperties": {"type": "string"},
             "description": (
-                f"{input_paths} A named collection (label -> path), so several "
-                "distinct inputs can be passed in one round. Each path is "
-                "folder-prefixed with the owning project's name (a "
-                "get_root_paths entry), e.g. "
-                '{"requirements": "billing-service/specs/requirements/auth.md", '
-                '"architecture": "billing-service/specs/architecture/system.md"}.'
+                f"{input_paths} Supplied by the engine, not by your caller: it "
+                "resolves the artifact roles you declared against what this "
+                "project has actually produced. Each label names what the file "
+                "*is* (`architecture`, `requirements`, …; `<role>_<filename>` "
+                "when a role is filled by several), and each path is "
+                "folder-prefixed with its project's name. These are the inputs "
+                "you are guaranteed — read them. If you need more, find it with "
+                "your own tools; never guess at a path."
             ),
         },
-        "for_revision_path": dict(_FOR_REVISION_PATH),
+        "for_revision_paths": dict(_FOR_REVISION_PATHS),
     }
+    if require_responsibility:
+        properties[RESPONSIBILITY_CODE_KEY] = dict(_RESPONSIBILITY_CODE)
     if extra_properties:
         properties.update(extra_properties)
     required = ["instructions"]
     if require_input_paths:
         required.append("input_paths")
     if require_responsibility:
-        required.append("responsibility_code")
+        required.append(RESPONSIBILITY_CODE_KEY)
     if extra_required:
         required.extend(extra_required)
     return {"type": "object", "properties": properties, "required": required}
@@ -141,13 +169,13 @@ def author_output(
     ``return_result`` is its only way out (see the module docstring's
     "Escalation" note):
 
-    - the normal one — ``primary_path`` / ``paths`` / ``summary`` plus whatever
-      the spec adds through ``extra_properties``;
+    - the normal one — ``paths`` / ``summary`` plus whatever the spec adds
+      through ``extra_properties``;
     - the blocked one — a non-empty ``reason`` (plus the blocker's ``summary``
       and any ``options``), which the engine reads as an escalation.
 
     Only ``summary`` is *schema*-required: an author blocked before it wrote
-    anything has no ``primary_path`` to report, and forcing one would make every
+    anything has no ``paths`` to report, and forcing them would make every
     escalation non-compliant (:func:`~kodo.toolspecs.normalize_output` backfills
     a missing required field with ``""`` and flags the whole result), which is
     exactly the "sub-agent failed" signal an escalation is not. The obligation
@@ -155,23 +183,17 @@ def author_output(
     escalating" — including for the fields individual specs add.
     """
     properties: dict[str, object] = {
-        "primary_path": {
-            "type": "string",
-            "description": (
-                "The path a critic should review / the author-critic loop tracks. "
-                "Required even when only one file was touched (omit it only when "
-                "escalating — see `reason`). Folder-prefixed with the owning "
-                "project's name, matching the convention input_paths used (see "
-                "pipeline_input)."
-            ),
-        },
         "paths": {
             "type": "array",
             "items": {"type": "string"},
             "description": (
-                "Every path this agent created or edited this round, "
-                "folder-prefixed like primary_path. Required unless you are "
-                "escalating; [] when a blocker stopped you before any write."
+                "EVERY path you created or edited this round, folder-prefixed with the "
+                "owning project's name. This is your work product: the whole set is "
+                "reviewed, accepted and (for code) built together, so a change spanning "
+                "several files must list all of them — a file you omit is never reviewed. "
+                "List your entry point first; it is what the UI leads with. Required "
+                "unless you are escalating (see `reason`); [] when a blocker stopped you "
+                "before any write."
             ),
         },
         "summary": {
@@ -235,7 +257,7 @@ def finding_item() -> dict[str, object]:
       critic closes one.
 
     Nothing is schema-``required``, because an update legitimately carries as
-    little as ``{"id": "F1", "state": "fixed"}``. The obligations that do exist
+    little as ``{"id": "<some-id>", "state": "fixed"}``. The obligations that do exist
     ("a *new* finding needs kind and description") are stated per field in
     prose and in ``{SHARED:findings_critic}`` — :func:`~kodo.toolspecs.normalize_output`
     would otherwise backfill the missing halves of every update with ``""`` and
@@ -273,17 +295,42 @@ def finding_item() -> dict[str, object]:
                     "Plain English: what's wrong and the concrete fix. Required on a new finding."
                 ),
             },
-            "excerpt": {
-                "type": ["string", "null"],
-                "description": "The text at that location, verbatim.",
-            },
-            "first_line": {
-                "type": ["integer", "null"],
-                "description": "First line of the span this finding is about.",
-            },
-            "last_line": {
-                "type": ["integer", "null"],
-                "description": "Last line of that span (equal to first_line for one line).",
+            "locations": {
+                "type": "array",
+                "description": (
+                    "Where this finding is, as a list — one entry per place it appears. "
+                    "Use several entries when a single problem spans files (a function "
+                    "defined in one and mis-called in another): that is ONE finding with "
+                    "two locations, never two findings. Required on a new finding unless "
+                    "it is genuinely about the work as a whole."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": (
+                                "The file this location is in, folder-prefixed with its "
+                                "project's name, exactly as it appeared in your input_paths."
+                            ),
+                        },
+                        "first_line": {
+                            "type": ["integer", "null"],
+                            "description": "First line of the span this location covers.",
+                        },
+                        "last_line": {
+                            "type": ["integer", "null"],
+                            "description": (
+                                "Last line of that span (equal to first_line for one line)."
+                            ),
+                        },
+                        "excerpt": {
+                            "type": ["string", "null"],
+                            "description": "The text at that location, verbatim.",
+                        },
+                    },
+                    "required": ["path"],
+                },
             },
             "state": {
                 "type": "string",
@@ -303,8 +350,14 @@ def finding_item() -> dict[str, object]:
 def critic_output() -> dict[str, object]:
     """Build the output shape every critic sub-agent returns.
 
-    One shape for all critics: the reviewed ``path``, the round's ``findings``
-    (new ones and updates, see :func:`finding_item`), and a one-line ``summary``.
+    One shape for all critics: the round's ``findings`` (new ones and updates,
+    see :func:`finding_item`) and a one-line ``summary``.
+
+    There is deliberately **no ``path``** either, as of 2026-09-04. A critic
+    reviews a whole work product — several files — so a single reviewed path
+    could not describe it; and the engine already knows which work product it
+    spawned the critic against, so asking the model to restate it only created
+    a way for findings to land in the wrong backlog.
 
     There is deliberately **no ``accept``**. The verdict is derived by the engine
     from the resulting backlog — nothing outstanding means accepted — so a critic
@@ -317,13 +370,6 @@ def critic_output() -> dict[str, object]:
     return {
         "type": "object",
         "properties": {
-            "path": {
-                "type": "string",
-                "description": (
-                    "Path of the file you reviewed (delivered as task input), "
-                    "folder-prefixed with its project's name."
-                ),
-            },
             "findings": {
                 "type": "array",
                 "items": finding_item(),
@@ -340,5 +386,5 @@ def critic_output() -> dict[str, object]:
                 "description": "One line summarizing the review.",
             },
         },
-        "required": ["path", "findings"],
+        "required": ["findings"],
     }

@@ -24,12 +24,15 @@ from ._records import (
     RoundSummary,
     finding_entry,
     merge_finding,
+    mint_finding_id,
     new_finding,
+    normalize_locations,
     review_round_entry,
 )
 
 __all__ = [
     "apply_findings",
+    "close_findings_for_paths",
     "last_round_timestamp",
     "outstanding_findings",
     "read_findings",
@@ -37,13 +40,16 @@ __all__ = [
     "record_user_feedback",
 ]
 
-_ID_PREFIX = "F"
-
 # ``kind`` for the finding minted from a user's rejection comment at the
 # document-review gate (doc/FINDINGS.md §3). Deliberately outside every critic's
 # vocabulary — no critic raises it, and an author can tell it apart at a glance.
 USER_FEEDBACK_KIND = "user_feedback"
 USER_FEEDBACK_REPORTER = "user"
+
+# ``reported_by`` on the auto-close line written when a file leaves a work
+# product. Distinct from a critic and from the user, so the log says plainly
+# that nobody judged this finding fixed — its subject simply went away.
+_REMOVED_FILE_REPORTER = "engine:file_removed"
 
 
 def read_jsonl(jsonl_path: Path) -> list[dict[str, object]]:
@@ -75,31 +81,19 @@ def _replay(history: list[dict[str, object]]) -> dict[str, Finding]:
     return current
 
 
-def _next_id(current: dict[str, Finding]) -> str:
-    """Mint the next per-document id: ``F1``, ``F2``, … .
-
-    Derived from the highest numeric suffix already present rather than from the
-    count, so a log that somehow skipped a number never reissues an id.
-    """
-    highest = 0
-    for finding_id in current:
-        if finding_id.startswith(_ID_PREFIX) and finding_id[len(_ID_PREFIX) :].isdigit():
-            highest = max(highest, int(finding_id[len(_ID_PREFIX) :]))
-    return f"{_ID_PREFIX}{highest + 1}"
-
-
-def read_findings(findings_dir: Path, logical_path: str) -> list[Finding]:
-    """Every finding recorded for *logical_path*, in the order they were opened.
+def read_findings(findings_dir: Path, key: str) -> list[Finding]:
+    """Every finding recorded under *key*, in the order they were opened.
 
     Args:
         findings_dir: This session's ``findings/`` directory.
-        logical_path: Folder-prefixed logical document path.
+        key: The work product's id (:func:`kodo.workproducts.work_product_id`).
 
     Returns:
-        list[Finding]: Current state of each finding; ``[]`` when the document
-            has no log (never reviewed in this session) or the path is unusable.
+        list[Finding]: Current state of each finding; ``[]`` when the work
+            product has no log (never reviewed this session) or *key* is
+            unusable.
     """
-    path = findings_log_path(findings_dir, logical_path)
+    path = findings_log_path(findings_dir, key)
     if path is None:
         return []
     return list(_replay(read_jsonl(path)).values())
@@ -110,14 +104,14 @@ def outstanding_findings(findings: list[Finding]) -> list[Finding]:
     return [f for f in findings if f["state"] == STATE_OUTSTANDING]
 
 
-def last_round_timestamp(findings_dir: Path, logical_path: str) -> str:
+def last_round_timestamp(findings_dir: Path, key: str) -> str:
     """ISO-8601 timestamp of the most recent ``review_round``, or ``""``.
 
     Consumed by :func:`kodo.tools.document_status` to answer "has this document
     been reviewed since its last revision?" — the one question the retired
     ``feedback`` entry used to answer from the document's own log.
     """
-    path = findings_log_path(findings_dir, logical_path)
+    path = findings_log_path(findings_dir, key)
     if path is None:
         return ""
     stamp = ""
@@ -129,14 +123,17 @@ def last_round_timestamp(findings_dir: Path, logical_path: str) -> str:
 
 def apply_findings(
     findings_dir: Path,
-    logical_path: str,
+    key: str,
     *,
     reviewer: str,
     updates: list[dict[str, object]],
+    project: str = "",
+    agent: str = "",
+    responsibility_code: str = "",
 ) -> RoundSummary:
     """Apply one critic round's findings and close the round.
 
-    An update with no ``id`` (or an ``id`` this document has never seen) creates
+    An update with no ``id`` (or an ``id`` this backlog has never seen) creates
     a new finding, ``outstanding``, under a freshly minted id. An update
     carrying a known ``id`` patches that finding with whichever of
     :data:`~kodo.findings.FINDING_FIELDS` it names, leaving the rest alone. A
@@ -144,24 +141,30 @@ def apply_findings(
     closes anything (doc/FINDINGS.md §3).
 
     A ``review_round`` line is appended last, whether or not any finding
-    changed: the round happened, and the document's status derivation depends on
-    knowing that.
+    changed: the round happened, and status derivation depends on knowing that.
 
     Args:
         findings_dir: This session's ``findings/`` directory.
-        logical_path: Folder-prefixed logical document path.
+        key: The work product's id — the backlog's identity (doc/FINDINGS.md
+            §2). Until 2026-09-04 this was a single document's logical path;
+            a reviewable unit is now a whole set of files.
         reviewer: Agent name recorded as the reporter of anything created here.
         updates: The critic's returned ``findings`` list.
+        project: Bound root folder name, for id minting.
+        agent: The *authoring* agent whose work product this is — not the
+            reviewer. Ids describe the subject, so every finding against one
+            work product shares a prefix regardless of which critic raised it.
+        responsibility_code: Component codename, or ``""``.
 
     Returns:
         RoundSummary: ``outstanding``/``opened``/``closed`` for this round.
 
     Raises:
-        ValueError: *logical_path* cannot be mapped to a findings log.
+        ValueError: *key* cannot be mapped to a findings log.
     """
-    path = findings_log_path(findings_dir, logical_path)
+    path = findings_log_path(findings_dir, key)
     if path is None:
-        raise ValueError(f"{logical_path!r} is not a usable findings key")
+        raise ValueError(f"{key!r} is not a usable findings key")
 
     current = _replay(read_jsonl(path))
     lines: list[dict[str, object]] = []
@@ -179,7 +182,16 @@ def apply_findings(
                 closed += 1
             current[finding_id] = merged
         else:
-            finding_id = _next_id(current)
+            # Minted from the *new* finding's own locations, so the id
+            # describes what it points at. `taken` spans the whole backlog,
+            # including ids minted earlier in this same round.
+            finding_id = mint_finding_id(
+                project=project,
+                agent=agent or reviewer,
+                responsibility_code=responsibility_code,
+                locations=normalize_locations(changes.get("locations")),
+                taken=set(current),
+            )
             current[finding_id] = merge_finding(new_finding(finding_id, reviewer), changes)
             opened += 1
         lines.append(finding_entry(finding_id=finding_id, reported_by=reviewer, changes=changes))
@@ -194,7 +206,60 @@ def apply_findings(
     return summary
 
 
-def record_user_feedback(findings_dir: Path, logical_path: str, comment: str) -> str:
+def close_findings_for_paths(findings_dir: Path, key: str, paths: tuple[str, ...]) -> list[str]:
+    """Auto-close every outstanding finding that points only at *paths*.
+
+    Called when files leave a work product's membership. A finding against a
+    file that is no longer part of the work product can never be verified
+    fixed — nothing will re-read it — so leaving it outstanding would block
+    the review loop forever on work nobody can do.
+
+    A finding spanning several files is closed **only** when every one of its
+    locations names a removed file: a cross-file finding whose other side is
+    still present is still actionable, and silently closing it would discard
+    exactly the defect the multi-file model exists to catch.
+
+    No ``review_round`` line is written — this is bookkeeping, not a review.
+
+    Returns:
+        list[str]: The ids closed, for the caller to log.
+    """
+    log_path = findings_log_path(findings_dir, key)
+    if log_path is None or not paths:
+        return []
+    removed = set(paths)
+    current = _replay(read_jsonl(log_path))
+    closed: list[str] = []
+    lines: list[dict[str, object]] = []
+    for finding_id, finding in current.items():
+        if finding["state"] != STATE_OUTSTANDING:
+            continue
+        locations = finding["locations"]
+        if not locations or not all(loc["path"] in removed for loc in locations):
+            continue
+        closed.append(finding_id)
+        lines.append(
+            finding_entry(
+                finding_id=finding_id,
+                reported_by=_REMOVED_FILE_REPORTER,
+                changes={"state": STATE_FIXED},
+            )
+        )
+    if lines:
+        _append(log_path, lines)
+    return closed
+
+
+def record_user_feedback(
+    findings_dir: Path,
+    key: str,
+    comment: str,
+    *,
+    path: str = "",
+    project: str = "",
+    agent: str = "",
+    responsibility_code: str = "",
+) -> str:
     """Mint the user's rejection comment as one outstanding finding.
 
     The user's objection reaches the author through the same ``get_findings``
@@ -203,23 +268,38 @@ def record_user_feedback(findings_dir: Path, logical_path: str, comment: str) ->
 
     Args:
         findings_dir: This session's ``findings/`` directory.
-        logical_path: Folder-prefixed logical document path.
+        key: The work product's id.
         comment: The user's feedback text.
+        path: The member file the user was looking at when they objected, so
+            the author knows which one to revisit. Empty for feedback about
+            the set as a whole.
+        project: Bound root folder name, for id minting.
+        agent: The authoring agent whose work product this is.
+        responsibility_code: Component codename, or ``""``.
 
     Returns:
         str: The minted finding's id, or ``""`` when nothing was recorded
-            (empty comment, or an unusable path).
+            (empty comment, or an unusable key).
     """
     text = comment.strip()
     if not text:
         return ""
-    path = findings_log_path(findings_dir, logical_path)
-    if path is None:
+    log_path = findings_log_path(findings_dir, key)
+    if log_path is None:
         return ""
-    current = _replay(read_jsonl(path))
-    finding_id = _next_id(current)
+    current = _replay(read_jsonl(log_path))
+    locations = (
+        [{"path": path, "first_line": None, "last_line": None, "excerpt": ""}] if path else []
+    )
+    finding_id = mint_finding_id(
+        project=project,
+        agent=agent or USER_FEEDBACK_REPORTER,
+        responsibility_code=responsibility_code,
+        locations=normalize_locations(locations),
+        taken=set(current),
+    )
     _append(
-        path,
+        log_path,
         [
             finding_entry(
                 finding_id=finding_id,
@@ -227,6 +307,7 @@ def record_user_feedback(findings_dir: Path, logical_path: str, comment: str) ->
                 changes={
                     "kind": USER_FEEDBACK_KIND,
                     "description": text,
+                    "locations": locations,
                     "state": STATE_OUTSTANDING,
                 },
             )

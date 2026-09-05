@@ -194,7 +194,7 @@ def _make_engine(
 
     dispatcher = _FakeDispatcher(returned_output=dispatcher_output)
     engine._last_dispatcher = dispatcher
-    engine._make_dispatcher = lambda agent_name, session_id, deadline=None, findings_path="": (
+    engine._make_dispatcher = lambda agent_name, session_id, deadline=None, findings_key="": (
         dispatcher
     )
 
@@ -417,12 +417,12 @@ def test_render_task_input_nested_dict_value_renders_as_bullets() -> None:
 def test_render_task_input_null_value_renders_as_none_not_python_literal() -> None:
     schema = {
         "type": "object",
-        "properties": {"for_revision_path": {"type": ["string", "null"]}},
+        "properties": {"for_revision_paths": {"type": ["array", "null"]}},
     }
     text = WorkflowEngine._render_task_input(
-        {"instructions": "Do it", "for_revision_path": None}, schema
+        {"instructions": "Do it", "for_revision_paths": None}, schema
     )
-    assert "- **for_revision_path**: (none)" in text
+    assert "- **for_revision_paths**: (none)" in text
 
 
 # ---------------------------------------------------------------------------

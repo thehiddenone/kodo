@@ -8,11 +8,16 @@ from pathlib import Path
 import pytest
 
 from kodo.subagents import (
+    ROLE_ARCHITECTURE,
+    ROLE_NARRATIVE,
+    SCOPE_UNDER_REVIEW,
     SHARED_FILE_PREFIX,
     SKILLS_TOKEN,
     AgentLoadError,
     AgentRegistry,
+    Need,
     SubAgent,
+    SubAgentSpec,
     load_agent,
     shared_token,
 )
@@ -998,3 +1003,121 @@ def test_every_shared_file_is_used_by_some_agent() -> None:
     for path in sorted(_REAL_AGENTS_DIR.glob(f"{SHARED_FILE_PREFIX}*.md")):
         name = path.stem[len(SHARED_FILE_PREFIX) :]
         assert shared_token(name) in bodies, f"{path.name} is never included by any agent"
+
+
+# ---------------------------------------------------------------------------
+# Artifact-role validation at registry load
+# ---------------------------------------------------------------------------
+#
+# Resolution is silent when it fails: an unknown role simply matches nothing,
+# and the agent is spawned under-supplied — which is exactly the failure the
+# declaration exists to remove. So the checks run at construction, where a typo
+# stops the server rather than one sub-agent four stages later.
+
+
+def _registry_with_specs(monkeypatch, specs: dict[str, object]) -> None:
+    """Point the registry's spec table at *specs* for one test."""
+    from kodo.subagents import _registry
+
+    monkeypatch.setattr(_registry, "SUBAGENT_SPECS_BY_NAME", specs)
+
+
+def _spec(name: str, *, produces=None, consumes=(), output_properties=None) -> SubAgentSpec:
+    return SubAgentSpec(
+        name=name,
+        input_schema={"type": "object", "properties": {}, "required": []},
+        output_schema={
+            "type": "object",
+            "properties": output_properties or {"paths": {"type": "array"}},
+            "required": [],
+        },
+        produces=produces or {},
+        consumes=consumes,
+    )
+
+
+def test_registry_rejects_an_unknown_produced_role(tmp_path: Path, monkeypatch) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "architect", "name: architect\n", _shared("Architect."))
+    _registry_with_specs(
+        monkeypatch, {"architect": _spec("architect", produces={"nonsense": "paths"})}
+    )
+
+    with pytest.raises(AgentLoadError, match="unknown artifact role"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_rejects_an_unknown_consumed_role(tmp_path: Path, monkeypatch) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "architect", "name: architect\n", _shared("Architect."))
+    _registry_with_specs(
+        monkeypatch, {"architect": _spec("architect", consumes=(Need("nonsense"),))}
+    )
+
+    with pytest.raises(AgentLoadError, match="unknown artifact role"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_rejects_an_unknown_scope(tmp_path: Path, monkeypatch) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "architect", "name: architect\n", _shared("Architect."))
+    _registry_with_specs(
+        monkeypatch,
+        {
+            "narrative_author": _spec("narrative_author", produces={ROLE_NARRATIVE: "paths"}),
+            "architect": _spec("architect", consumes=(Need(ROLE_NARRATIVE, "sideways"),)),
+        },
+    )
+
+    with pytest.raises(AgentLoadError, match="unknown scope"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_rejects_a_role_nobody_produces(tmp_path: Path, monkeypatch) -> None:
+    """The traced failure's shape: an agent promised an input that never
+    arrives. It must be impossible to ship, not discovered at run time."""
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "architect", "name: architect\n", _shared("Architect."))
+    _registry_with_specs(
+        monkeypatch, {"architect": _spec("architect", consumes=(Need(ROLE_NARRATIVE),))}
+    )
+
+    with pytest.raises(AgentLoadError, match="no sub-agent declares that it produces"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_rejects_produces_naming_a_field_the_schema_lacks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "architect", "name: architect\n", _shared("Architect."))
+    _registry_with_specs(
+        monkeypatch,
+        {"architect": _spec("architect", produces={ROLE_NARRATIVE: "no_such_field"})},
+    )
+
+    with pytest.raises(AgentLoadError, match="output_schema does not declare"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_accepts_under_review_without_a_producer(tmp_path: Path, monkeypatch) -> None:
+    """`under_review` names the work product the round is already reviewing —
+    the engine supplies it from the round and never looks it up, so it is
+    deliberately exempt from the "somebody produces it" rule."""
+    _write_preamble(tmp_path)
+    _write_agent(
+        tmp_path,
+        "architect_critic",
+        "name: architect_critic\nrole: critic\n",
+        _shared("Architect Critic."),
+    )
+    _registry_with_specs(
+        monkeypatch,
+        {
+            "architect_critic": _spec(
+                "architect_critic", consumes=(Need(ROLE_ARCHITECTURE, SCOPE_UNDER_REVIEW),)
+            )
+        },
+    )
+
+    AgentRegistry(tmp_path)  # must not raise

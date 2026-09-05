@@ -43,6 +43,7 @@ from ._return_result import RETURN_RESULT, build_return_result_spec
 from ._rollback import ROLLBACK
 from ._run_command import RUN_COMMAND
 from ._run_subagent import (
+    ENGINE_OWNED_TASK_FIELDS,
     MAX_ROUNDS_DEFAULT,
     MAX_ROUNDS_KEY,
     RUN_SUBAGENT,
@@ -101,6 +102,7 @@ __all__ = [
     "GUIDED_DEV_STATUS",
     "INTENT_KEY",
     "INTENT_PROPERTY",
+    "ENGINE_OWNED_TASK_FIELDS",
     "MAX_ROUNDS_DEFAULT",
     "MAX_ROUNDS_KEY",
     "NO_PROJECT_ERROR",

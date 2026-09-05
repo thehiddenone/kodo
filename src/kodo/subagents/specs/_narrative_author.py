@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from .._artifacts import (
+    ROLE_NARRATIVE,
+    ROLE_TECH_STACK,
+    Need,
+)
 from .._subagentspec import SubAgentSpec
 from ._shapes import pipeline_input
 
@@ -40,4 +45,10 @@ NARRATIVE_AUTHOR: SubAgentSpec = SubAgentSpec(
         },
         "required": ["narrative_path", "tech_stack_path", "project_code", "summary"],
     },
+    produces={ROLE_NARRATIVE: "narrative_path", ROLE_TECH_STACK: "tech_stack_path"},
+    consumes=(
+        # Its own prior documents, when the user sends it back with feedback.
+        Need(ROLE_NARRATIVE, required=False),
+        Need(ROLE_TECH_STACK, required=False),
+    ),
 )

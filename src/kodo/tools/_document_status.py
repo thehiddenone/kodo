@@ -7,8 +7,11 @@ function of one log's last line. It depends on:
 * the document's own **project-scoped** evolution log
   (:mod:`kodo.guided_state`) — has the user approved it, rejected it, or is it
   merely written; and
-* the **session-scoped** findings backlog for the same document — is anything
-  still outstanding, and has a critic round run since the last revision.
+* the **session-scoped** findings backlog of the *work product* the document
+  belongs to — is anything still outstanding, and has a critic round run since
+  the last revision. Since 2026-09-04 that backlog is shared by every file the
+  same review loop produced, so two files written together report the same
+  outstanding count; their own ``last_entry`` still differs per file.
 
 Both the ``guided_dev_status`` tool and the engine's review loop need the
 answer, and neither may own it privately, so it lives here — a plain function in
@@ -29,7 +32,7 @@ __all__ = ["document_status", "status_from_state"]
 def status_from_state(
     state: dict[str, object] | None,
     findings_dir: Path | None,
-    logical_path: str,
+    findings_key: str,
 ) -> Status:
     """Merge one document's project-log state with its session findings backlog.
 
@@ -40,7 +43,10 @@ def status_from_state(
             document with no log at all.
         findings_dir: This session's ``findings/`` directory, or ``None`` when
             no session store is available (the backlog then reads as empty).
-        logical_path: Folder-prefixed logical path keying the findings log.
+        findings_key: The work product id keying the findings log
+            (:func:`kodo.workproducts.work_product_id`). Empty for a file that
+            belongs to no work product — its backlog reads as empty, which is
+            correct: nothing has ever reviewed it.
 
     Returns:
         Status: The document's current status.
@@ -48,10 +54,10 @@ def status_from_state(
     last_entry = state.get("last_entry") if state else None
     reviewed = False
     outstanding = 0
-    if findings_dir is not None and logical_path:
-        findings = read_findings(findings_dir, logical_path)
+    if findings_dir is not None and findings_key:
+        findings = read_findings(findings_dir, findings_key)
         outstanding = len(outstanding_findings(findings))
-        round_ts = last_round_timestamp(findings_dir, logical_path)
+        round_ts = last_round_timestamp(findings_dir, findings_key)
         revision_ts = str(state.get("last_revision_ts", "")) if state else ""
         reviewed = bool(round_ts) and round_ts > revision_ts
     return derive_status(
@@ -65,7 +71,7 @@ def document_status(
     real_path: Path,
     project_root: Path,
     findings_dir: Path | None,
-    logical_path: str,
+    findings_key: str,
 ) -> Status:
     """Read both stores for one document and derive its status.
 
@@ -73,11 +79,11 @@ def document_status(
         real_path: The resolved absolute path of the document.
         project_root: The bound root it lives under.
         findings_dir: This session's ``findings/`` directory, or ``None``.
-        logical_path: The document's folder-prefixed logical path.
+        findings_key: The work product id whose backlog covers this document.
 
     Returns:
         Status: The document's current status.
     """
     return status_from_state(
-        read_document_state(real_path, project_root), findings_dir, logical_path
+        read_document_state(real_path, project_root), findings_dir, findings_key
     )

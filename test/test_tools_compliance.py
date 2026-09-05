@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from kodo.binutils import find_util
-from kodo.findings import apply_findings
+from kodo.findings import apply_findings, read_findings
 from kodo.project import kodo_user_dir
 from kodo.runtime import ApprovalResponse, SessionState
 from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, RootPath, ToolDispatcher
@@ -150,7 +150,7 @@ def _make_dispatcher(
     util_paths: dict[str, Path] | None = None,
     output_schema: dict[str, object] | None = None,
     findings_dir: Path | None = None,
-    findings_path: str = "",
+    findings_key: str = "",
 ) -> ToolDispatcher:
     session = SessionState()
     session.autonomous = autonomous
@@ -169,7 +169,7 @@ def _make_dispatcher(
         util_paths=util_paths,
         output_schema=output_schema,
         findings_dir=findings_dir,
-        findings_path=findings_path,
+        findings_key=findings_key,
     )
 
 
@@ -547,32 +547,52 @@ async def test_get_findings_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path, mode="guided", root_paths=roots)
     empty = _assert_compliant("get_findings", await _dispatch(d, "get_findings", {}))
     assert empty["findings"] == []
-    # Scoped, with a real backlog behind it, in both list modes.
+    # Scoped, with a real backlog behind it, in both list modes. The key is a
+    # work product id, and ids are minted from each finding's own first location
+    # rather than a per-log counter — so they are read back, never hardcoded.
+    work_product = "proj/architect"
     apply_findings(
         findings_dir,
-        "proj/specs/a.md",
+        work_product,
         reviewer="architect_critic",
-        updates=[{"kind": "gap", "description": "missing"}, {"kind": "gap", "description": "two"}],
+        updates=[
+            {
+                "kind": "gap",
+                "description": "missing",
+                "locations": [{"path": "proj/specs/a.md", "first_line": 4, "last_line": 4}],
+            },
+            {
+                "kind": "gap",
+                "description": "two",
+                "locations": [{"path": "proj/specs/a.md", "first_line": 9, "last_line": 9}],
+            },
+        ],
+        project="proj",
+        agent="architect",
     )
+    first_id, second_id = [f["id"] for f in read_findings(findings_dir, work_product)]
     apply_findings(
         findings_dir,
-        "proj/specs/a.md",
+        work_product,
         reviewer="architect_critic",
-        updates=[{"id": "F1", "state": "fixed"}],
+        updates=[{"id": first_id, "state": "fixed"}],
     )
     scoped = _make_dispatcher(
         tmp_path,
         mode="guided",
         root_paths=roots,
         findings_dir=findings_dir,
-        findings_path="proj/specs/a.md",
+        findings_key=work_product,
     )
     outstanding = _assert_compliant("get_findings", await _dispatch(scoped, "get_findings", {}))
-    assert [f["id"] for f in outstanding["findings"]] == ["F2"]  # type: ignore[index,union-attr]
+    assert [f["id"] for f in outstanding["findings"]] == [second_id]  # type: ignore[index,union-attr]
     everything = _assert_compliant(
         "get_findings", await _dispatch(scoped, "get_findings", {"show_all": True})
     )
-    assert [f["id"] for f in everything["findings"]] == ["F1", "F2"]  # type: ignore[index,union-attr]
+    assert [f["id"] for f in everything["findings"]] == [  # type: ignore[index,union-attr]
+        first_id,
+        second_id,
+    ]
     # Wrong mode → compliant error envelope, not an exception.
     ps = _make_dispatcher(tmp_path, mode="problem_solving", root_paths=roots)
     _assert_compliant("get_findings", await _dispatch(ps, "get_findings", {}))

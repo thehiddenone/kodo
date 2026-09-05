@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+from .._artifacts import (
+    PRODUCES_REMAINDER,
+    ROLE_ARCHITECTURE,
+    ROLE_DESIGN_PLAN,
+    ROLE_E2E_TEST_PLAN,
+    ROLE_FUNCTIONAL_DESIGN,
+    ROLE_NARRATIVE,
+    ROLE_REQUIREMENTS,
+    ROLE_TECH_STACK,
+    SCOPE_ALL,
+    Need,
+)
 from .._subagentspec import SubAgentSpec
 from ._shapes import author_output, pipeline_input
 
@@ -26,5 +38,14 @@ E2E_TEST_DESIGNER: SubAgentSpec = SubAgentSpec(
                 ),
             },
         },
+    ),
+    produces={ROLE_E2E_TEST_PLAN: PRODUCES_REMAINDER},
+    consumes=(
+        Need(ROLE_ARCHITECTURE),
+        Need(ROLE_REQUIREMENTS),
+        Need(ROLE_NARRATIVE),
+        Need(ROLE_TECH_STACK),
+        Need(ROLE_DESIGN_PLAN),
+        Need(ROLE_FUNCTIONAL_DESIGN, SCOPE_ALL),
     ),
 )

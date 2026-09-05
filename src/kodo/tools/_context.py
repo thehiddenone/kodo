@@ -660,12 +660,13 @@ class ToolContext:
             engine so ``get_findings`` never has to derive a session path for
             itself — ``session_id`` is the *subsession* id inside a sub-agent
             run, so it could not.
-        findings_path: The folder-prefixed logical path of the document this
-            run's author/critic round targets, or ``""`` when the run is not a
-            review round (or is an author's first pass, before a file exists).
-            This is what makes ``get_findings`` auto-scoped: the agent never
-            names a path, and an empty scope answers with an empty list rather
-            than an error.
+        findings_key: The id of the **work product** this run's author/critic
+            round targets, or ``""`` when the run is not a review round (or is
+            an author's first pass, before anything is written). This is what
+            makes ``get_findings`` auto-scoped: the agent never names a scope,
+            and an empty one answers with an empty list rather than an error.
+            Was a single document's path until 2026-09-04; a reviewable unit is
+            now every file one review loop produced.
         deadline: Unix timestamp this run must wrap up by, or ``None`` if the
             run is not time-boxed. Populated only for the ``web_search``
             agent's dispatcher (from its caller-supplied, 600s-capped
@@ -687,7 +688,7 @@ class ToolContext:
     stop_requested: bool = False
     returned_output: dict[str, object] | None = None
     findings_dir: Path | None = None
-    findings_path: str = ""
+    findings_key: str = ""
     deadline: float | None = None
 
     @property

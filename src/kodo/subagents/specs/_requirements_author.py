@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from .._artifacts import (
+    PRODUCES_REMAINDER,
+    ROLE_ARCHITECTURE,
+    ROLE_NARRATIVE,
+    ROLE_REQUIREMENTS,
+    Need,
+)
 from .._subagentspec import SubAgentSpec
 from ._shapes import author_output, pipeline_input
 
@@ -25,4 +32,6 @@ REQUIREMENTS_AUTHOR: SubAgentSpec = SubAgentSpec(
             },
         },
     ),
+    produces={ROLE_REQUIREMENTS: PRODUCES_REMAINDER},
+    consumes=(Need(ROLE_ARCHITECTURE), Need(ROLE_NARRATIVE)),
 )
