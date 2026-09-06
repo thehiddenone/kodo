@@ -45,12 +45,21 @@ thinking block runs.
 
 One instance is constructed fresh per LLM round -- a repetition loop is
 scoped to a single thinking block, never carried across rounds. The same
-class is reused, unmodified, for the mid-stream tool-call-argument
-repetition detector (doc/STUCK_DETECTION.md §2.10,
-:mod:`kodo.runtime._engine._watchdog`'s ``_make_tool_call_cyclic_handler``)
--- there is nothing thinking-specific about the algorithm, only about this
-module's name and docstring, so a second instance is simply fed
-``ToolCallArgDelta.text`` fragments instead of ``ThinkingDelta.text`` ones.
+class is reused for the mid-stream tool-call-argument repetition detector
+(doc/STUCK_DETECTION.md §2.10, :mod:`kodo.runtime._engine._watchdog`'s
+``_make_tool_call_cyclic_handler``), which simply feeds it
+``ToolCallArgDelta.text`` fragments instead of ``ThinkingDelta.text`` ones
+-- but *not* unmodified: see :meth:`CyclicThinkingDetector.for_tool_call_arguments`.
+The algorithm is not thinking-specific; the calibration above very much is.
+Thinking blocks are prose, where a 24-character block repeating three times
+running really is a loop. Tool-call arguments are JSON payloads carrying
+markdown, source code, tables, padding and indentation, where the very same
+pattern is ordinary *formatting* -- a run of 72 identical characters (a
+``---`` rule, or 72 spaces of alignment), a column-aligned markdown table
+separator, or three identical template rows all satisfy the exact check
+inside the first ~150 characters. Firing there killed a real turn that was
+writing a perfectly good architecture document (session 1788649506), so the
+tool-call-argument profile adds two floors of its own.
 """
 
 from __future__ import annotations
@@ -95,18 +104,65 @@ _FUZZY_RATIO_THRESHOLD = 0.90
 _MAX_NEEDED_CHARS = max(_MIN_REPEATS * _MAX_PERIOD, 2 * _FUZZY_CHUNK_LEN)
 _TRIM_TRIGGER_CHARS = _MAX_NEEDED_CHARS * 2
 
+# The tool-call-argument profile (doc/STUCK_DETECTION.md §2.10) -- see the
+# module docstring for why that stream needs floors a thinking block does not.
+#
+# _ARGS_MIN_DISTINCT_CHARS: how many *distinct* characters the repeated block
+# must contain before a repeat counts as content rather than formatting. This
+# is what disqualifies the low-entropy cases outright -- a rule of dashes, a
+# run of alignment spaces, a padded `| ---- | ---- |` separator row -- while
+# leaving any repeat of real prose or code (which clears 8 distinct
+# characters within a few words) fully detectable.
+#
+# _ARGS_MIN_BUFFERED_CHARS: no hit counts at all until this many characters of
+# arguments have streamed, so a verdict is never reached on a sample too small
+# to mean anything. Deliberately generous: the whole point of the detector is
+# to save a turn from a loop that would otherwise run for minutes, and letting
+# it write ~1200 characters first costs a couple of seconds. Kept under
+# _MAX_NEEDED_CHARS so the floor is always reached before the buffer is ever
+# trimmed -- though the counter below is a true running total either way.
+_ARGS_MIN_DISTINCT_CHARS = 8
+_ARGS_MIN_BUFFERED_CHARS = 1200
+
 
 class CyclicThinkingDetector:
     """Fed each streamed thinking-delta fragment; flags an in-progress repetition loop.
 
     One instance per LLM round -- construct fresh, never reused/reset across
     rounds.
+
+    Args:
+        min_distinct_chars: A repeat only counts when its period contains at
+            least this many distinct characters. ``1`` (the thinking-block
+            default) accepts anything, including a run of one character.
+        min_buffered_chars: No check may fire until this many characters have
+            been fed. ``0`` (the thinking-block default) fires as early as the
+            checks themselves allow.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, min_distinct_chars: int = 1, min_buffered_chars: int = 0) -> None:
         self._buf = ""
         self._chars_since_fuzzy_check = 0
         self._fuzzy_streak = 0
+        self._min_distinct_chars = min_distinct_chars
+        self._min_buffered_chars = min_buffered_chars
+        # A true running total, not len(self._buf), which stops growing once
+        # the buffer starts being trimmed.
+        self._total_chars = 0
+
+    @classmethod
+    def for_tool_call_arguments(cls) -> CyclicThinkingDetector:
+        """The §2.10 instance: same algorithm, calibrated for JSON tool arguments.
+
+        The single source of truth for that calibration -- ``_turns.py`` builds
+        its tool-call-argument detector through here rather than passing the
+        constants itself, so the two profiles can never drift apart in the
+        caller.
+        """
+        return cls(
+            min_distinct_chars=_ARGS_MIN_DISTINCT_CHARS,
+            min_buffered_chars=_ARGS_MIN_BUFFERED_CHARS,
+        )
 
     def feed(self, fragment: str) -> bool:
         """Incorporate one streamed fragment; return True the instant a cycle fires."""
@@ -114,6 +170,16 @@ class CyclicThinkingDetector:
             return False
         self._buf += fragment
         self._chars_since_fuzzy_check += len(fragment)
+        self._total_chars += len(fragment)
+
+        # Below the evidence floor nothing may fire, but the buffer is still
+        # accumulated (and the fuzzy throttle still counts down) so the checks
+        # start from a full window the moment the floor is cleared.
+        if self._total_chars < self._min_buffered_chars:
+            if self._chars_since_fuzzy_check >= _FUZZY_CHECK_INTERVAL_CHARS:
+                self._chars_since_fuzzy_check = 0
+            self._trim()
+            return False
 
         if self._check_exact_repeat():
             return True
@@ -123,10 +189,13 @@ class CyclicThinkingDetector:
             if self._check_fuzzy_repeat():
                 return True
 
+        self._trim()
+        return False
+
+    def _trim(self) -> None:
+        """Settle the retained buffer back to exactly the window both checks need."""
         if len(self._buf) > _TRIM_TRIGGER_CHARS:
             self._buf = self._buf[-_MAX_NEEDED_CHARS:]
-
-        return False
 
     def _check_exact_repeat(self) -> bool:
         """True iff the buffer's tail is ``_MIN_REPEATS`` copies of one block.
@@ -164,8 +233,10 @@ class CyclicThinkingDetector:
             # A run of `_MIN_REPEATS` identical period-p blocks is exactly a
             # tail of `_MIN_REPEATS * p` characters that equals itself shifted
             # by one period -- one comparison instead of `_MIN_REPEATS - 1`.
-            if n >= _MIN_REPEATS * p and (
-                buf[n - _MIN_REPEATS * p : n - p] == buf[n - (_MIN_REPEATS - 1) * p : n]
+            if (
+                n >= _MIN_REPEATS * p
+                and buf[n - _MIN_REPEATS * p : n - p] == buf[n - (_MIN_REPEATS - 1) * p : n]
+                and self._carries_content(buf[n - p :])
             ):
                 return True
             search_end = idx + _MIN_PERIOD - 1  # keep looking strictly further back
@@ -182,6 +253,12 @@ class CyclicThinkingDetector:
         # as "popular"/junk and excludes it from matching, which would
         # understate similarity on exactly the repetitive text this exists
         # to catch.
+        if not self._carries_content(chunk):
+            # Same bar as the exact check: 200 characters of one repeated
+            # character are similar to the 200 before them by definition, and
+            # that says nothing about whether the model is looping.
+            self._fuzzy_streak = 0
+            return False
         ratio = difflib.SequenceMatcher(None, prev_chunk, chunk, autojunk=False).ratio()
         if ratio < _FUZZY_RATIO_THRESHOLD:
             self._fuzzy_streak = 0
@@ -196,3 +273,16 @@ class CyclicThinkingDetector:
         # exact check's own >= _MIN_REPEATS requirement.
         self._fuzzy_streak += 1
         return self._fuzzy_streak >= _MIN_REPEATS - 1
+
+    def _carries_content(self, block: str) -> bool:
+        """True iff *block* is varied enough for a repeat of it to mean anything.
+
+        Formatting repeats; so does a loop. Distinct-character count is what
+        separates them cheaply: a rule, an indentation run or a padded table
+        separator is built from one or two characters, whereas any repeat of
+        real prose, code or JSON clears the bar within a few words. Always
+        true for the thinking-block profile, whose floor is 1.
+        """
+        if self._min_distinct_chars <= 1:
+            return True
+        return len(set(block)) >= self._min_distinct_chars

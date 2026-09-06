@@ -32,6 +32,7 @@ from kodo.llms import (
     Usage,
 )
 from kodo.runtime import WorkflowEngine
+from kodo.runtime._cyclic_thinking import _ARGS_MIN_BUFFERED_CHARS
 from kodo.runtime._engine import _watchdog
 from kodo.runtime._engine._watchdog import (
     _MAX_CONSECUTIVE_NUDGES,
@@ -952,23 +953,28 @@ async def test_cyclic_thinking_handler_entry_turn_strike_one_notices_and_sets_st
 
     assert decision.retry is True
     assert decision.message is not None
-    assert decision.message.role == "assistant"
+    # role="user", NOT "assistant": this fires mid-stream with no tool calls,
+    # so _run_agent_turn has just appended the round's own assistant message
+    # and a second one in a row is rejected outright by llama.cpp's chat
+    # templates (doc/STUCK_DETECTION.md §2.7).
+    assert decision.message.role == "user"
     assert "repetitive" in decision.message.content.lower()
+    # The LLM reads a second-person instruction; the user still sees the
+    # first-person callout. The two texts are deliberately different.
+    assert decision.message.content.startswith("Your reasoning")
     assert engine._cycle_streak is True
-    # Single artifact: the notice is both the LLM-visible retry message and
-    # the one thing persisted (kind-tagged, so it round-trips as a <kodo_warn>
-    # callout on replay -- doc/STUCK_DETECTION.md §2.7).
     assert len(engine._transient.appended) == 1
     role, content, entry_agent, kind, detail = engine._transient.appended[0]
     assert (role, content, entry_agent, kind) == (
-        "assistant",
+        "user",
         decision.message.content,
         "problem_solver",
         "nudge",
     )
     assert detail["source"] == "cyclic_thinking"
+    assert detail["ui_text"].startswith("I noticed my own reasoning")
     assert engine._emitters.nudges == [
-        (decision.message.content, ["cyclic_thinking"], "auto", "cyclic_thinking")
+        (detail["ui_text"], ["cyclic_thinking"], "auto", "cyclic_thinking")
     ]
     assert engine._emitters.cyclic_critical_messages == []
 
@@ -1234,19 +1240,22 @@ async def test_tool_call_cyclic_handler_entry_turn_strike_one_notices_and_sets_s
 
     assert decision.retry is True
     assert decision.message is not None
-    assert decision.message.role == "assistant"
+    # Same alternation rule as the cyclic-thinking notice above: role="user".
+    assert decision.message.role == "user"
     assert "repetitive loop" in decision.message.content.lower()
+    assert decision.message.content.startswith("Your tool call's arguments")
     assert engine._tool_call_cycle_streak is True
     role, content, entry_agent, kind, detail = engine._transient.appended[0]
     assert (role, content, entry_agent, kind) == (
-        "assistant",
+        "user",
         decision.message.content,
         "problem_solver",
         "nudge",
     )
     assert detail["source"] == "tool_call_cyclic"
+    assert detail["ui_text"].startswith("I noticed my tool call's arguments")
     assert engine._emitters.nudges == [
-        (decision.message.content, ["tool_call_cyclic"], "auto", "tool_call_cyclic")
+        (detail["ui_text"], ["tool_call_cyclic"], "auto", "tool_call_cyclic")
     ]
 
 
@@ -1724,10 +1733,15 @@ async def test_run_agent_turn_end_to_end_think_in_tool_call_fires_with_stuck_det
 # ---------------------------------------------------------------------------
 
 _TOOL_CALL_LOOP_BLOCK = '"do the exact same repetitive thing over and over," '
+# Enough repeats to clear the §2.10 profile's evidence floor
+# (_ARGS_MIN_BUFFERED_CHARS). That floor is the whole point of the profile --
+# a handful of repeats is what ordinary markdown/JSON formatting looks like --
+# so a fixture sized just past _MIN_REPEATS would no longer exercise anything.
+_TOOL_CALL_LOOP_REPEATS = _ARGS_MIN_BUFFERED_CHARS // len(_TOOL_CALL_LOOP_BLOCK) + 4
 
 
 async def test_run_agent_turn_end_to_end_tool_call_cyclic_aborts_and_recovers() -> None:
-    loop_text = _TOOL_CALL_LOOP_BLOCK * 4
+    loop_text = _TOOL_CALL_LOOP_BLOCK * _TOOL_CALL_LOOP_REPEATS
     stuck_round = [
         *_tool_call_arg_deltas(loop_text),
         ToolCallArgDelta(tool_name="run_subagent", text="this must never be consumed"),
@@ -1768,7 +1782,7 @@ async def test_run_agent_turn_end_to_end_think_tag_takes_priority_over_repetitio
     """When both detectors are wired and the streamed text would trip both
     (a repeated block that also contains a stray <think> tag), the
     think-tag abort wins -- it is checked first on every fragment."""
-    loop_text = "<think>" + (_TOOL_CALL_LOOP_BLOCK * 4)
+    loop_text = "<think>" + (_TOOL_CALL_LOOP_BLOCK * _TOOL_CALL_LOOP_REPEATS)
     stuck_round = [
         *_tool_call_arg_deltas(loop_text),
         TurnEnd(usage=_usage(), stop_reason="end_turn"),

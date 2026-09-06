@@ -28,6 +28,7 @@ from ._interface import (
     ThinkingDelta,
     ThinkingSignature,
     TokenDelta,
+    ToolCallArgDelta,
     ToolCallEvent,
     ToolSpec,
     TurnEnd,
@@ -176,6 +177,18 @@ def _event_to_dict(event: StreamEvent) -> dict[str, object]:
         return {"type": "thinking_signature", "signature": event.signature}
     if isinstance(event, TokenDelta):
         return {"type": "token_delta", "text": event.text}
+    if isinstance(event, ToolCallArgDelta):
+        # Worth its own branch despite being display-only: when a mid-stream
+        # detector (doc/STUCK_DETECTION.md §2.9/§2.10) cancels a stream, this
+        # is the *only* record of the argument text that tripped it — the
+        # ToolCallEvent it would have become is never emitted. Without it the
+        # fallback below logged a bare {"type": "ToolCallArgDelta"} and the
+        # evidence for a false positive was simply gone (session 1788649506).
+        return {
+            "type": "tool_call_arg_delta",
+            "tool_name": event.tool_name,
+            "text": event.text,
+        }
     if isinstance(event, ToolCallEvent):
         return {
             "type": "tool_call",

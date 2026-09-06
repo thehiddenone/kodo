@@ -6,9 +6,11 @@ how the detector is wired into the real streaming loop.
 
 from __future__ import annotations
 
+import json
 import random
 
 from kodo.runtime._cyclic_thinking import (
+    _ARGS_MIN_BUFFERED_CHARS,
     _MAX_PERIOD,
     _MIN_PERIOD,
     _MIN_REPEATS,
@@ -209,3 +211,77 @@ def test_empty_fragment_is_a_noop() -> None:
     detector = CyclicThinkingDetector()
 
     assert detector.feed("") is False
+
+
+# ---------------------------------------------------------------------------
+# The tool-call-argument profile (doc/STUCK_DETECTION.md §2.10)
+#
+# Every case below is a real false positive the default (thinking-block)
+# calibration produces, taken from the session-1788649506 incident: an
+# architect writing a perfectly good architecture document had its turn killed
+# inside the first ~150 characters of a `create_file` call. Tool-call arguments
+# are JSON carrying markdown, code, tables, padding and indentation, where a
+# 24-character block repeating three times is *formatting*.
+# ---------------------------------------------------------------------------
+
+_PADDED_TABLE_SEPARATOR = "# Doc\n\n| A | B | C |\n| " + " | ".join(["-" * 24] * 3) + " |\n"
+
+
+def _args(content: str) -> str:
+    """Wrap *content* the way a real create_file call's arguments carry it."""
+    return json.dumps({"intent": "write it", "path": "proj/specs/x.md", "content": content})
+
+
+def test_padded_markdown_table_separator_fires_by_default_but_not_for_arguments() -> None:
+    """A column-aligned separator row is three identical 24-char dash runs."""
+    assert _feed_chunks(CyclicThinkingDetector(), _args(_PADDED_TABLE_SEPARATOR)) is True
+    assert (
+        _feed_chunks(
+            CyclicThinkingDetector.for_tool_call_arguments(), _args(_PADDED_TABLE_SEPARATOR)
+        )
+        is False
+    )
+
+
+def test_low_entropy_runs_never_fire_for_arguments() -> None:
+    """A horizontal rule, or alignment padding, is not a repetition loop --
+    at any length, so this must not be merely postponed by the char floor."""
+    for filler in ("-", "=", "#", " "):
+        long_run = "x" + filler * (_ARGS_MIN_BUFFERED_CHARS * 2) + "y"
+        detector = CyclicThinkingDetector.for_tool_call_arguments()
+        assert _feed_chunks(detector, _args(long_run)) is False, filler
+
+
+def test_identical_template_rows_do_not_fire_for_arguments() -> None:
+    # Four rows, not the bare _MIN_REPEATS three: the checks only run on
+    # fragment boundaries, so at exactly three the one offset where the tail
+    # is a whole number of periods can fall between two fragments.
+    row = "| Not yet determined | Not yet determined |\n"
+    assert _feed_chunks(CyclicThinkingDetector(), _args(row * 4)) is True
+    assert _feed_chunks(CyclicThinkingDetector.for_tool_call_arguments(), _args(row * 4)) is False
+
+
+def test_arguments_profile_still_catches_a_real_loop() -> None:
+    """The floors delay the verdict; they must not remove it."""
+    looped = "The snake grows one segment every 10 units of food eaten.\n" * 40
+    detector = CyclicThinkingDetector.for_tool_call_arguments()
+
+    assert _feed_chunks(detector, _args(looped)) is True
+
+
+def test_arguments_profile_withholds_its_verdict_below_the_char_floor() -> None:
+    """Nothing fires on a sample too small to mean anything, however
+    blatantly it repeats."""
+    looped = "The same sentence over and over and over again.\n" * 40
+    short = looped[: _ARGS_MIN_BUFFERED_CHARS - 100]
+    assert _feed_chunks(CyclicThinkingDetector.for_tool_call_arguments(), short) is False
+    assert _feed_chunks(CyclicThinkingDetector.for_tool_call_arguments(), looped) is True
+
+
+def test_thinking_profile_is_unchanged_by_the_arguments_floors() -> None:
+    """The default calibration must keep firing as early as it always did --
+    a thinking block has a budget to burn, and no formatting to speak of."""
+    block = "The reasoning loop keeps repeating here in exactly this way!\n"
+    detector = CyclicThinkingDetector()
+
+    assert _feed_chunks(detector, block * _MIN_REPEATS) is True

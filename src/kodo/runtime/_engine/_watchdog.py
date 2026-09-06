@@ -76,13 +76,18 @@ same three call sites:
   streak, :data:`WatchdogMixin._think_tag_streak`.
 - The same tool-call-argument stream is also fed to a second, independent
   :class:`~kodo.runtime._cyclic_thinking.CyclicThinkingDetector` instance
-  (that class has nothing thinking-specific about it — only its module does)
+  (the algorithm has nothing thinking-specific about it; its default
+  calibration does)
   to catch *repeated* tool-call-argument content, exactly the failure mode
   that motivated both of these: a model embedding a thinking block inside a
   ``run_subagent`` call's task text, then repeating the same sentence inside
   it forever. :meth:`WatchdogMixin._make_tool_call_cyclic_handler` is gated
   by ``stuck_detection`` settings like the thinking-block detector (this one
   *is* a heuristic). Own streak, :data:`WatchdogMixin._tool_call_cycle_streak`.
+  The instance is built by
+  :meth:`~kodo.runtime._cyclic_thinking.CyclicThinkingDetector.for_tool_call_arguments`,
+  which is where that stream's own calibration lives — JSON arguments repeat
+  for formatting reasons prose never does.
 
 All three mid-stream detectors share one shape once a cycle/tag is found:
 the stream is already dead and the bad content already generated, so
@@ -165,26 +170,55 @@ _MISSING_RETURN_RESULT_LLM_TEXT = (
     "your final result."
 )
 
-# Strike 1 of the mid-stream cyclic-thinking detector (kodo.runtime._cyclic_thinking):
-# a single Nudge whose llm_text and ui_text are the same first-person sentence — the
-# LLM-visible course-correction the model reads back next round *is* the <kodo_warn>
-# callout the user sees (source="cyclic_thinking"). First-person, assistant-voice: this
-# is read back to the model as its own note, not a user instruction.
-_CYCLIC_THINKING_NOTICE = (
+# Strike 1 of the two mid-stream repetition detectors (§2.7 thinking blocks,
+# §2.10 tool-call arguments). Each has a *pair* of texts, unlike the notices that
+# reuse one string for both halves of their Nudge:
+#
+#   _*_UI_TEXT  — the <kodo_warn> callout the user reads in the feed. First
+#                 person, the agent's own voice, unchanged from when these
+#                 notices were introduced.
+#   _*_LLM_TEXT — what the model actually reads back next round. Second person
+#                 and user-voice, matching _MISSING_RETURN_RESULT_LLM_TEXT and
+#                 _think_in_tool_call_llm_text, *because these are persisted with
+#                 role="user"*.
+#
+# The role is not a stylistic choice. Both detectors abort mid-stream with no
+# tool calls parsed, so _run_agent_turn always appends the round's own assistant
+# message first (the `if not tool_calls:` branch) and only then appends this
+# nudge. Persisting it as another assistant message left two assistant messages
+# at the end of the list, which llama.cpp's chat templates reject outright
+# ("Cannot have 2 or more assistant messages at the end of the list", HTTP 400)
+# — so the nudge that exists to recover the turn was what actually killed it
+# (session 1788649506). §2.9's think-in-tool-call notice sits in the identical
+# structural position and has always used role="user"; these two now match it.
+#
+# _make_repeated_tool_call_handler is deliberately NOT part of this: §2.11 fires
+# after a tool_result, i.e. after a *user* message, so its notice must stay
+# assistant-voice and role="assistant" to keep the same alternation intact.
+_CYCLIC_THINKING_UI_TEXT = (
     "I noticed my own reasoning had fallen into a repetitive loop, generating the "
     "same thoughts over and over, and stopped it before it could burn through the "
     "rest of my thinking budget. I will not continue down that line of reasoning — "
     "let me reconsider a different approach to this task."
 )
+_CYCLIC_THINKING_LLM_TEXT = (
+    "Your reasoning fell into a repetitive loop, generating the same thoughts over "
+    "and over, and it was stopped before it could burn through the rest of your "
+    "thinking budget. Do not continue down that line of reasoning — take a "
+    "different approach to this task."
+)
 
-# Strike 1 of the mid-stream tool-call-argument cyclic detector (§2.10) — same
-# dual-role shape as _CYCLIC_THINKING_NOTICE above, distinct wording naming the
-# actual channel (tool-call arguments, not a thinking block).
-_TOOL_CALL_CYCLIC_NOTICE = (
+_TOOL_CALL_CYCLIC_UI_TEXT = (
     "I noticed my tool call's arguments had fallen into a repetitive loop, generating "
     "the same content over and over, and stopped it before it could burn through the "
     "rest of the turn. I will not continue down that line — let me regenerate this tool "
     "call's arguments from scratch."
+)
+_TOOL_CALL_CYCLIC_LLM_TEXT = (
+    "Your tool call's arguments fell into a repetitive loop, generating the same "
+    "content over and over, and the call was stopped before it could burn through "
+    "the rest of the turn. Do not continue down that line — make the call again, "
+    "generating its arguments from scratch."
 )
 
 
@@ -195,8 +229,10 @@ def _repeated_tool_call_llm_text(preview: str) -> str:
     :func:`_think_in_tool_call_llm_text` does: a generic "stop repeating
     yourself" leaves the model to guess *which* call it is stuck on, and a
     model already looping is the last one to guess right. First-person and
-    assistant-voice, like the other two self-correction notices, since it is
-    persisted with ``role="assistant"`` and read back as the model's own note.
+    assistant-voice — and, alone among the notices in this module, genuinely
+    persisted with ``role="assistant"``, because §2.11 fires after a
+    ``tool_result`` (a user message) rather than after an assistant one. See
+    the notice constants above.
 
     The three ways out are spelled out on purpose. A model looping on a
     failing call is usually missing the idea that giving up on that call is
@@ -579,11 +615,17 @@ class WatchdogMixin:
         pushes :data:`~kodo.transport.EVT_NUDGE` live, since the client has
         no local echo for a turn it never typed.
 
-        ``role`` matters: an ordinary stall/missing-``return_result`` nudge
-        is a ``"user"`` turn the model responds to; the two mid-stream
-        notices (cyclic-thinking, tool-call-cyclic) are ``"assistant"`` —
-        first-person, read back as the model's own course-correction, not an
-        instruction from someone else.
+        ``role`` matters, and it is decided by *what the nudge lands after*,
+        never by the notice's voice. Every detector that aborts mid-stream
+        (§2.7 cyclic thinking, §2.9 think-in-tool-call, §2.10 cyclic tool-call
+        arguments) does so with no tool calls parsed, so ``_run_agent_turn``
+        has just appended the round's own **assistant** message — those nudges
+        must be ``"user"``, as must an ordinary stall/missing-``return_result``
+        nudge. Only §2.11's repeated-tool-call notice is ``"assistant"``: it
+        fires after a ``tool_result``, i.e. after a **user** message. Get this
+        backwards and the provider rejects the whole request rather than
+        recovering the turn (see the notice constants near the top of this
+        module for the incident).
         """
         detail: dict[str, object] = {
             "ui_text": nudge.ui_text,
@@ -756,6 +798,16 @@ class WatchdogMixin:
         async def _on_cyclic_thinking(thinking_excerpt: str) -> StallDecision:
             nonlocal cycle_stall_count
             preview = thinking_excerpt[-200:]
+            # Log every hit, not just the critical below. This is a heuristic
+            # that can be wrong, and until it was logged here the only record
+            # of *what* it fired on was the nudge itself — which carries the
+            # generic notice text, not the offending content.
+            _log.warning(
+                "Cyclic-thinking detected (session=%s agent=%s preview=%r)",
+                self._orch_session_id,
+                agent_name,
+                preview,
+            )
 
             if is_entry_turn:
                 if self._cycle_streak:
@@ -771,14 +823,14 @@ class WatchdogMixin:
                 # note in hand, exactly like an ordinary nudge's retry.
                 self._cycle_streak = True
                 nudge = Nudge(
-                    llm_text=_CYCLIC_THINKING_NOTICE,
-                    ui_text=_CYCLIC_THINKING_NOTICE,
+                    llm_text=_CYCLIC_THINKING_LLM_TEXT,
+                    ui_text=_CYCLIC_THINKING_UI_TEXT,
                     reasons=["cyclic_thinking"],
                     mode="auto",
                     source="cyclic_thinking",
                 )
                 message = await self._persist_nudge(
-                    agent_name=agent_name, subsession_id=None, nudge=nudge, role="assistant"
+                    agent_name=agent_name, subsession_id=None, nudge=nudge, role="user"
                 )
                 return StallDecision(retry=True, message=message)
 
@@ -789,14 +841,14 @@ class WatchdogMixin:
                 return StallDecision(retry=False)
             cycle_stall_count += 1
             nudge = Nudge(
-                llm_text=_CYCLIC_THINKING_NOTICE,
-                ui_text=_CYCLIC_THINKING_NOTICE,
+                llm_text=_CYCLIC_THINKING_LLM_TEXT,
+                ui_text=_CYCLIC_THINKING_UI_TEXT,
                 reasons=["cyclic_thinking"],
                 mode="auto",
                 source="cyclic_thinking",
             )
             message = await self._persist_nudge(
-                agent_name=agent_name, subsession_id=subsession_id, nudge=nudge, role="assistant"
+                agent_name=agent_name, subsession_id=subsession_id, nudge=nudge, role="user"
             )
             return StallDecision(retry=True, message=message)
 
@@ -958,6 +1010,16 @@ class WatchdogMixin:
         async def _on_tool_call_cyclic(preview: str) -> StallDecision:
             nonlocal cycle_stall_count
             preview = preview[-200:]
+            # See the twin call in _make_cyclic_thinking_handler: the argument
+            # text that tripped this never becomes a ToolCallEvent, so this
+            # line and the request log's tool_call_arg_delta entries are the
+            # only two places it survives at all.
+            _log.warning(
+                "Cyclic tool-call arguments detected (session=%s agent=%s preview=%r)",
+                self._orch_session_id,
+                agent_name,
+                preview,
+            )
 
             if is_entry_turn:
                 if self._tool_call_cycle_streak:
@@ -969,14 +1031,14 @@ class WatchdogMixin:
                     return StallDecision(retry=False)
                 self._tool_call_cycle_streak = True
                 nudge = Nudge(
-                    llm_text=_TOOL_CALL_CYCLIC_NOTICE,
-                    ui_text=_TOOL_CALL_CYCLIC_NOTICE,
+                    llm_text=_TOOL_CALL_CYCLIC_LLM_TEXT,
+                    ui_text=_TOOL_CALL_CYCLIC_UI_TEXT,
                     reasons=["tool_call_cyclic"],
                     mode="auto",
                     source="tool_call_cyclic",
                 )
                 message = await self._persist_nudge(
-                    agent_name=agent_name, subsession_id=None, nudge=nudge, role="assistant"
+                    agent_name=agent_name, subsession_id=None, nudge=nudge, role="user"
                 )
                 return StallDecision(retry=True, message=message)
 
@@ -984,14 +1046,14 @@ class WatchdogMixin:
                 return StallDecision(retry=False)
             cycle_stall_count += 1
             nudge = Nudge(
-                llm_text=_TOOL_CALL_CYCLIC_NOTICE,
-                ui_text=_TOOL_CALL_CYCLIC_NOTICE,
+                llm_text=_TOOL_CALL_CYCLIC_LLM_TEXT,
+                ui_text=_TOOL_CALL_CYCLIC_UI_TEXT,
                 reasons=["tool_call_cyclic"],
                 mode="auto",
                 source="tool_call_cyclic",
             )
             message = await self._persist_nudge(
-                agent_name=agent_name, subsession_id=subsession_id, nudge=nudge, role="assistant"
+                agent_name=agent_name, subsession_id=subsession_id, nudge=nudge, role="user"
             )
             return StallDecision(retry=True, message=message)
 

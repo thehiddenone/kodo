@@ -447,10 +447,14 @@ class TurnLoopMixin:
             on_tool_call_cyclic: Every streamed ``ToolCallArgDelta`` is also
                 fed to a second, independent
                 :class:`~.._cyclic_thinking.CyclicThinkingDetector` instance
-                for this round; the instant it flags a repetition loop inside
-                the tool-call-argument text, the stream is cancelled early and
-                this callback is awaited with the accumulated argument text,
-                in place of ``on_stall`` (doc/STUCK_DETECTION.md §2.10).
+                for this round — built via
+                :meth:`~.._cyclic_thinking.CyclicThinkingDetector.for_tool_call_arguments`,
+                so it carries that stream's own calibration rather than the
+                thinking-block one; the instant it flags a repetition loop
+                inside the tool-call-argument text, the stream is cancelled
+                early and this callback is awaited with the accumulated
+                argument text, in place of ``on_stall``
+                (doc/STUCK_DETECTION.md §2.10).
 
         Returns:
             tuple[list[Message], list[Path]]: Updated messages and (unused) files.
@@ -502,8 +506,13 @@ class TurnLoopMixin:
             # repetition loop inside tool-call arguments is scoped to the
             # calls this one round makes (doc/STUCK_DETECTION.md §2.9/§2.10).
             think_tag_detector = ThinkTagDetector() if on_think_in_tool_call is not None else None
+            # The §2.10 profile, not the thinking-block one: same algorithm,
+            # its own floors, because JSON tool arguments repeat for formatting
+            # reasons a thinking block never does (_cyclic_thinking docstring).
             tool_call_cyclic_detector = (
-                CyclicThinkingDetector() if on_tool_call_cyclic is not None else None
+                CyclicThinkingDetector.for_tool_call_arguments()
+                if on_tool_call_cyclic is not None
+                else None
             )
             think_tag_abort = False
             tool_call_cyclic_abort = False
