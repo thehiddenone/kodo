@@ -2,6 +2,7 @@
 name: e2e_test_designer
 display_name: End-to-End Test Designer
 critic: e2e_test_design_critic
+user_review: true
 capability: medium
 tools:
   - filesystem
@@ -95,6 +96,31 @@ One document:
 - **External dependency inventory and mock specifications** — every external dependency with its Mock Specification.
 - **Scenarios** — all scenarios, ordered primary flows first, then failure/recovery, then boundary conditions.
 - **Requirements coverage** — the coverage table plus the out-of-scope note.
+
+{PHASE:initial}
+
+## This Round: First Pass
+
+This is a **first pass**: no End-to-End Test Plan exists yet. Produce the dependency inventory, the mock specifications and the scenarios, with their requirements coverage.
+
+Call `get_findings` anyway, as the findings protocol below tells you to. It comes back empty on a first pass — that empty answer is the confirmation, and it costs you one call.
+
+{/PHASE}
+
+{PHASE:revision}
+
+## This Round: Resolving Findings
+
+You are **not** writing this from scratch. A version already exists — the files named in `for_revision_paths` — and your whole job this round is the findings backlog against it.
+
+- **Start with `get_findings`** and work the list by `id`. It is the only statement of what is wrong; your instructions are the same ones you were given the first time and say nothing about it.
+- **Make the smallest edit that resolves each finding.** Edit in place. Do not rewrite a file to reorganize it, and do not re-derive decisions no finding questions.
+- **Leave everything no finding names exactly as it is.** A round that also changes settled work forces the reviewer to re-read all of it and buries the fix you actually made.
+- **Scenario IDs and their requirement coverage are stable.** Never renumber; a new scenario takes the next unused ID and states what it covers.
+- Stay at the **product boundary**. A finding about a gap is closed by a scenario at the boundary, never by reaching into a component's internals to observe it.
+- If two findings cannot both be satisfied, or one contradicts your inputs, **escalate** naming the `id` rather than picking one and hoping.
+
+{/PHASE}
 
 ## Workflow
 

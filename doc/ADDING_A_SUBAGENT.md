@@ -23,9 +23,11 @@ A new sub-agent named `foo` needs **all** of these, or the registry raises
      default `medium`), `tools:` (each must resolve to a `ToolSpec` in
      `kodo.toolspecs`). For an **author** add `critic: <critic_name>`; for a
      **critic** add `role: critic`; for an on-demand specialist add
-     `standalone: true`. An agent that is simply invoked and returns declares
-     none of them. There is no frontmatter for shared prompt text — see the
-     `{SHARED:…}` list below.
+     `standalone: true`; add `user_review: true` when the **user** must sign the
+     agent's work product off before it is accepted. An agent that is simply
+     invoked and returns declares none of them. There is no frontmatter for
+     shared prompt text — see the `{SHARED:…}` list below, and no frontmatter
+     for phase-conditional text either — see *Phase blocks* below.
    - Body **must** contain a `## Purpose` section (caller-agnostic, third
      person). It becomes the **description of your agent's
      `run_subagent_foo` tool** — the only thing a caller ever reads about it —
@@ -115,6 +117,48 @@ Everything follows from those two. `run_subagent_<author>` becomes a **loop**
 tool — it takes an optional `max_rounds` and returns a `review` block — and the
 engine spawns the critic inside that call. A caller never names a critic, never
 gets a tool for one, and never iterates by hand (doc/TOOLS.md §5A).
+
+## The user as a reviewer (`user_review:`)
+
+`user_review: true` is the second, independent review declaration: it puts the
+agent's finished work product to the **user** at the approval gate before it is
+accepted. It is opt-in and off by default, and it composes with `critic:` in
+every combination — see GUIDED_DEV_MODE.md §5a for the four shapes.
+
+Two things to know when adding it:
+
+- **It also makes the call a loop**, even with no critic. A rejection is minted
+  as a finding, so the agent needs `get_findings` in its `tools:` and
+  `{SHARED:findings_author}` in its body — the registry enforces that pairing
+  anyway, but the reason is this one.
+- **The registry refuses it** on a `role: critic` agent, and on any agent whose
+  spec `produces` nothing. In both cases there is no work product to sign off
+  and the flag would silently never fire.
+
+## Phase blocks (`{PHASE:…}`)
+
+An agent spawned in a review loop does two different jobs across rounds: writing
+from its inputs, and resolving a findings backlog against what it already wrote.
+Give it different text for each by wrapping the text in a phase block:
+
+```markdown
+{PHASE:initial}
+…only on a first pass…
+{/PHASE}
+
+{PHASE:revision}
+…only when working the backlog…
+{/PHASE}
+```
+
+The two phases are `initial` and `revision`; the engine picks between them from
+whether a work product with members already exists. Writing the block *is* the
+opt-in — there is no frontmatter flag — and an agent with no blocks renders
+identically in every phase. Blocks may not nest, must be closed with a bare
+`{/PHASE}` (never `{/PHASE:name}`), and are only valid in an agent that has a
+`SubAgentSpec`; each of those is a load-time error. See GUIDED_DEV_MODE.md §5b,
+including why this is a conditional section rather than a separate `corrector`
+sub-agent.
 
 ### What an agent receives as `input_paths`
 

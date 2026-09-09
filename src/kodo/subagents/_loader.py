@@ -93,6 +93,25 @@ class SubAgent:
             artifacts of the stage before it. Stated as a sentence in the
             generated ``run_subagent_<name>`` tool's description, since it is
             what tells a caller whether ordering matters.
+        user_review: ``True`` when this agent's work product must be signed off
+            by the **user** before it is accepted (frontmatter
+            ``user_review: true``). Opt-in and ``False`` by default: an agent
+            that does not declare it has its work product accepted the moment
+            nothing is outstanding against it, with no gate. Orthogonal to
+            ``critic`` — the two compose in every combination:
+
+            =============  ==============  ==================================
+            ``critic``     ``user_review``  What one ``run_subagent`` call does
+            =============  ==============  ==================================
+            set            ``False``        author→critic rounds; auto-accept
+            set            ``True``         author→critic rounds, then the gate
+            ``""``         ``True``         author→gate rounds (no critic)
+            ``""``         ``False``        one pass, no review at all
+            =============  ==============  ==================================
+
+            Which artifacts are worth a human's attention is a property of the
+            artifact, not of whether someone happened to pair a critic with its
+            author — which is what decided it before this flag existed.
     """
 
     name: str
@@ -107,6 +126,7 @@ class SubAgent:
     role: str = ""
     critic: str = ""
     standalone: bool = False
+    user_review: bool = False
 
     @property
     def is_critic(self) -> bool:
@@ -183,6 +203,13 @@ def load_agent(path: Path) -> SubAgent:
     if role == ROLE_CRITIC and critic:
         raise AgentLoadError(f"{path}: a 'role: critic' agent cannot itself declare a 'critic:'")
     standalone = _scalar(fm_dict.get("standalone")).lower() in ("true", "yes", "1")
+    user_review = _scalar(fm_dict.get("user_review")).lower() in ("true", "yes", "1")
+    if role == ROLE_CRITIC and user_review:
+        raise AgentLoadError(
+            f"{path}: a 'role: critic' agent cannot declare 'user_review:' — a critic "
+            f"writes findings, not a work product, so there is nothing for the user to "
+            f"sign off on; declare it on the author whose work it reviews"
+        )
     purpose = _extract_purpose(body)
 
     return SubAgent(
@@ -198,6 +225,7 @@ def load_agent(path: Path) -> SubAgent:
         role=role,
         critic=critic,
         standalone=standalone,
+        user_review=user_review,
     )
 
 

@@ -38,9 +38,10 @@ __all__ = [
 # Every per-sub-agent variant is named ``run_subagent_<subagent name>``.
 RUN_SUBAGENT_PREFIX = "run_subagent_"
 
-# Optional caller-supplied cap on author/critic rounds, and the engine's default
-# when the caller omits it. Only meaningful for a sub-agent that declares a
-# critic; the engine drives the loop, the caller only sizes its budget.
+# Optional caller-supplied cap on review rounds, and the engine's default when
+# the caller omits it. Only meaningful for a sub-agent whose call is a loop --
+# one that declares a ``critic:``, a ``user_review: true``, or both; the engine
+# drives the loop, the caller only sizes its budget.
 MAX_ROUNDS_KEY = "max_rounds"
 MAX_ROUNDS_DEFAULT = 5
 
@@ -88,8 +89,9 @@ RUN_SUBAGENT: ToolSpec = ToolSpec(
             MAX_ROUNDS_KEY: {
                 "type": "integer",
                 "description": (
-                    "Cap on author/critic rounds when the target sub-agent declares a "
-                    f"critic; defaults to {MAX_ROUNDS_DEFAULT}."
+                    "Cap on review rounds when the target sub-agent runs a review "
+                    "loop (it declares a critic, a user review gate, or both); "
+                    f"defaults to {MAX_ROUNDS_DEFAULT}."
                 ),
             },
         },
@@ -142,6 +144,7 @@ def build_run_subagent_spec(
     input_schema: dict[str, object],
     output_schema: dict[str, object],
     critic_name: str = "",
+    user_review: bool = False,
     standalone: bool = False,
     engine_resolves_inputs: bool = True,
 ) -> ToolSpec:
@@ -149,7 +152,8 @@ def build_run_subagent_spec(
 
     The sub-agent's ``input_schema`` becomes the tool's input schema, minus the
     :data:`ENGINE_OWNED_TASK_FIELDS` when the engine resolves this agent's
-    inputs (plus an optional ``max_rounds`` when *critic_name* is set). For a
+    inputs (plus an optional ``max_rounds`` when the call runs a review loop —
+    i.e. when *critic_name* or *user_review* is set). For a
     pipeline agent a caller says *what* to do and the engine works out which
     files that means; for an agent with no artifact roles behind it, naming the
     files is still the caller's job (*engine_resolves_inputs*). Its
@@ -178,6 +182,12 @@ def build_run_subagent_spec(
             has none. A non-empty value means the engine runs the whole
             author→critic loop inside one call, so the description says so and
             ``max_rounds`` is offered.
+        user_review: ``True`` when this sub-agent's work product needs the
+            **user's** sign-off before it is accepted (frontmatter
+            ``user_review: true``). Orthogonal to *critic_name*: either one on
+            its own makes the call a bounded loop rather than a single pass —
+            which is why ``max_rounds`` is offered for both — and together they
+            mean critic rounds followed by the gate.
         standalone: ``True`` for an on-demand specialist that depends on no
             other agent's output; ``False`` for a workflow stage that consumes
             the artifacts of the stage before it. Stated in the description
@@ -220,19 +230,37 @@ def build_run_subagent_spec(
     if critic_name:
         prose.append(
             f"This runs the full review loop, not a single pass: the engine spawns "
-            f"`{subagent_name}`, hands its primary file to `{critic_name}`, and — while "
-            f"findings are outstanding — re-runs `{subagent_name}` on the same brief, "
-            f"until the backlog is clear or the round budget runs out. The two exchange "
-            f"findings directly through their own tool; nothing about them passes "
-            f"through you. One call is the whole loop; do not call it again to "
-            f"'iterate'. Call "
-            f"it again only to start a *new* piece of work, or to resume one the "
-            f"`review` block reports as unfinished."
+            f"`{subagent_name}`, hands every file it wrote to `{critic_name}` as one "
+            f"work product, and — while findings are outstanding — re-runs "
+            f"`{subagent_name}` on the same brief, until the backlog is clear or the "
+            f"round budget runs out. The two exchange findings directly through their "
+            f"own tool; nothing about them passes through you. One call is the whole "
+            f"loop; do not call it again to 'iterate'. Call it again only to start a "
+            f"*new* piece of work, or to resume one the `review` block reports as "
+            f"unfinished."
         )
+    if user_review and critic_name:
+        prose.append(
+            "Once nothing is outstanding, the work product goes to the **user** for "
+            "sign-off before it is accepted. A rejection is added to the same backlog "
+            "as a finding, so the loop simply continues; you are not asked anything."
+        )
+    elif user_review:
+        prose.append(
+            f"This runs a review loop, not a single pass — but the reviewer is the "
+            f"**user**, not a critic. The engine spawns `{subagent_name}`, records "
+            f"every file it wrote as one work product, and puts that to the user for "
+            f"sign-off. A rejection is minted as a finding for `{subagent_name}` to "
+            f"resolve, and the loop re-runs it until the user accepts or the round "
+            f"budget runs out. One call is the whole loop; do not call it again to "
+            f"'iterate'. Call it again only to start a *new* piece of work, or to "
+            f"resume one the `review` block reports as unfinished."
+        )
+    if critic_name or user_review:
         properties[MAX_ROUNDS_KEY] = {
             "type": "integer",
             "description": (
-                f"Optional cap on author/critic rounds (default {MAX_ROUNDS_DEFAULT}). "
+                f"Optional cap on review rounds (default {MAX_ROUNDS_DEFAULT}). "
                 "Size it to the work: fewer for a simple file, more only when rounds "
                 "are still making real progress."
             ),

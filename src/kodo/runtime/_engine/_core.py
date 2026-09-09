@@ -41,7 +41,14 @@ from pathlib import Path
 
 from kodo.binutils import find_util
 from kodo.common import ApiKeyProvider, Envelope, MessageSink
-from kodo.findings import record_user_feedback
+from kodo.findings import (
+    STATE_FIXED,
+    USER_FEEDBACK_REPORTER,
+    apply_findings,
+    outstanding_findings,
+    read_findings,
+    record_user_feedback,
+)
 from kodo.guided_state import append_accepted, append_review_result
 from kodo.llms import LLMGateway, Message
 from kodo.project import (
@@ -52,7 +59,7 @@ from kodo.project import (
 )
 from kodo.security import SecurityLayer, add_global_path_rule, add_global_rule
 from kodo.state import TransientStore
-from kodo.subagents import AgentLoadError, AgentRegistry
+from kodo.subagents import AgentLoadError, AgentRegistry, SubAgent
 from kodo.titling import generate_project_name
 from kodo.tools import LogicalPathResolver, PathResolver, RootPath, root_for
 from kodo.transport import (
@@ -964,9 +971,19 @@ class WorkflowEngine(
     async def _finalize_work_product(self, work_product: WorkProduct) -> None:
         """Drive the post-accept flow for a work product whose backlog is empty.
 
-        Called when a critic round leaves nothing outstanding (see
-        ``_record_findings``) — there is no ``accept`` field; the verdict is
-        derived from the backlog (doc/FINDINGS.md §5).
+        Called from two places: a critic round that left nothing outstanding
+        (``_record_findings``) — there is no ``accept`` field, the verdict is
+        derived from the backlog (doc/FINDINGS.md §5) — and, for an author whose
+        only reviewer is the user, straight from the loop
+        (``_run_user_review_round``).
+
+        **Whether the gate fires at all is the author's own declaration.** Its
+        frontmatter ``user_review: true`` says this artifact is worth a human's
+        attention; without it the work product is accepted the moment nothing is
+        outstanding. That used to be engine policy — every reviewed work product
+        was gated and every unreviewed one was not — which meant "does a human
+        sign this off?" was answered by whether somebody had paired a critic
+        with the author, a question with nothing to do with the artifact.
 
         **One decision settles the whole set.** Until 2026-09-04 this accepted
         a single document; a work product is several files that were written to
@@ -975,13 +992,14 @@ class WorkflowEngine(
         user still sees every member — the gate carries the full list — and a
         rejection can name the file that caused it.
 
-        The user's sign-off is skipped in two postures, both of which mean "do
-        not stop me for this": autonomous mode (nobody is there to answer) and
-        Edit Control set to *Allow All* (the user has already said file changes
-        need no review). Either way every member goes straight to ``accepted``
-        with **no** ``review_result`` entry: that entry means "the user decided
-        at the gate", and in these two postures no gate fired, so writing one
-        would fabricate a decision nobody made.
+        The user's sign-off is skipped in three cases, all of which mean "do not
+        stop me for this": the author does not declare ``user_review``,
+        autonomous mode (nobody is there to answer), and Edit Control set to
+        *Allow All* (the user has already said file changes need no review).
+        Either way every member goes straight to ``accepted`` with **no**
+        ``review_result`` entry: that entry means "the user decided at the
+        gate", and in these cases no gate fired, so writing one would fabricate
+        a decision nobody made.
 
         Otherwise the ``document_review`` approval gate fires once for the set.
         Agreement writes ``review_result`` (approve) then ``accepted`` to every
@@ -991,13 +1009,23 @@ class WorkflowEngine(
         one outstanding finding** against the work product, anchored to the
         file the user was looking at when they objected, so the author reaches
         it through the same ``get_findings`` call as every critic finding.
+
+        When the author has **no critic**, approval also closes whatever is left
+        outstanding (:meth:`_close_findings_on_approval`) — see there for why
+        that does not contradict "only a critic closes a finding".
         """
         members = await self._resolve_members(work_product)
         if not members:
             _log.warning("finalize: work product %s has no resolvable members", work_product.id)
             return
 
-        if self._session.effective_autonomous or self._session.edit_control == "allow_all":
+        author = self._author_of(work_product)
+        gated = author is not None and author.user_review
+        if (
+            not gated
+            or self._session.effective_autonomous
+            or self._session.edit_control == "allow_all"
+        ):
             for resolved, project_root in members:
                 await asyncio.to_thread(append_accepted, resolved, project_root)
             return
@@ -1014,6 +1042,8 @@ class WorkflowEngine(
                     append_review_result, resolved, project_root, decision="approve", comment=""
                 )
                 await asyncio.to_thread(append_accepted, resolved, project_root)
+            if author is not None and not author.critic:
+                await self._close_findings_on_approval(work_product)
             return
 
         for resolved, project_root in members:
@@ -1039,6 +1069,72 @@ class WorkflowEngine(
                 agent=work_product.agent,
                 responsibility_code=work_product.responsibility_code,
             )
+
+    def _author_of(self, work_product: WorkProduct) -> SubAgent | None:
+        """The agent that wrote *work_product*, or ``None`` if it is unknown.
+
+        A work product's id carries its author's name, so the frontmatter that
+        declares whether this artifact needs a human sign-off is always one
+        registry lookup away — no flag has to be threaded through the review
+        loop and no engine state has to remember it.
+
+        ``None`` (an agent that has since been renamed or removed) is treated as
+        "not gated" by the caller, which fails *open*: the work is accepted
+        rather than left waiting at a gate for an author nobody can re-run.
+        """
+        try:
+            return self._registry.get(work_product.agent)
+        except AgentLoadError:
+            _log.warning(
+                "finalize: work product %s names unknown agent %r",
+                work_product.id,
+                work_product.agent,
+            )
+            return None
+
+    async def _close_findings_on_approval(self, work_product: WorkProduct) -> None:
+        """Close every outstanding finding when the user approves un-critiqued work.
+
+        The rule everywhere else is that **only a critic closes a finding** — an
+        author saying it fixed something is not the same as the fix being
+        verified, which is why verification is a separate agent's job
+        (doc/FINDINGS.md §3).
+
+        An author with no ``critic:`` has no such agent. Its findings can only
+        have come from the user's own rejections at this gate, and the user has
+        now looked at the revised work and approved it. That approval *is* the
+        verification; there is nobody else to do it. Without this the very first
+        rejection would leave a finding outstanding forever — the backlog would
+        never empty, and the user's findings table would keep showing a defect
+        they had already accepted a fix for.
+
+        Recorded as a review round by ``user``, so the log says who closed them.
+        """
+        findings_dir = self._findings_dir()
+        if findings_dir is None:
+            return
+        findings = await asyncio.to_thread(read_findings, findings_dir, work_product.id)
+        updates: list[dict[str, object]] = [
+            {"id": finding["id"], "state": STATE_FIXED}
+            for finding in outstanding_findings(findings)
+        ]
+        if not updates:
+            return
+        await asyncio.to_thread(
+            apply_findings,
+            findings_dir,
+            work_product.id,
+            reviewer=USER_FEEDBACK_REPORTER,
+            updates=updates,
+            project=work_product.project,
+            agent=work_product.agent,
+            responsibility_code=work_product.responsibility_code,
+        )
+        _log.info(
+            "user approval closed %d outstanding finding(s) on %s (author has no critic)",
+            len(updates),
+            work_product.id,
+        )
 
     async def _resolve_members(self, work_product: WorkProduct) -> list[tuple[Path, Path]]:
         """Resolve each member to ``(absolute path, owning project root)``.

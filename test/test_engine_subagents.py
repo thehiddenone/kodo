@@ -32,7 +32,7 @@ class _FakeRegistry:
     def allowed_subagents(self, name: str) -> frozenset[str]:
         return self._allowed.get(name, frozenset())
 
-    def get(self, name: str, autonomous: bool = False):
+    def get(self, name: str, autonomous: bool = False, phase: str = "initial"):
         if name == "unknown_agent":
             raise AgentLoadError(f"no such agent {name!r}")
         return SimpleNamespace(
@@ -42,6 +42,7 @@ class _FakeRegistry:
             system_prompt="sys",
             display_name="" if name != "architect" else "The Architect",
             critic="",
+            user_review=False,
             role="",
             is_critic=False,
         )

@@ -261,7 +261,7 @@ class _FakeDispatcher:
 
 
 class _FakeRegistry:
-    def get(self, name: str, autonomous: bool = False):
+    def get(self, name: str, autonomous: bool = False, phase: str = "initial"):
         from types import SimpleNamespace
 
         return SimpleNamespace(

@@ -1121,3 +1121,184 @@ def test_registry_accepts_under_review_without_a_producer(tmp_path: Path, monkey
     )
 
     AgentRegistry(tmp_path)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# user_review — the frontmatter flag that decides whether a human signs off
+# ---------------------------------------------------------------------------
+
+
+def test_user_review_defaults_to_off(tmp_path: Path) -> None:
+    path = _write_agent(tmp_path, "leaf", "name: leaf\n", "A leaf agent.")
+    assert load_agent(path).user_review is False
+
+
+def test_user_review_is_parsed_from_frontmatter(tmp_path: Path) -> None:
+    path = _write_agent(tmp_path, "leaf", "name: leaf\nuser_review: true\n", "A leaf agent.")
+    assert load_agent(path).user_review is True
+
+
+def test_a_critic_cannot_declare_user_review(tmp_path: Path) -> None:
+    """A critic writes findings, not a work product — there is nothing for the
+    user to sign off on, so the flag belongs on the author it reviews."""
+    path = _write_agent(
+        tmp_path, "arch_critic", "name: arch_critic\nrole: critic\nuser_review: true\n", "Reviews."
+    )
+    with pytest.raises(AgentLoadError, match="cannot declare 'user_review:'"):
+        load_agent(path)
+
+
+def test_registry_rejects_user_review_on_an_agent_that_produces_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The gate signs off a work product. Without a produced artifact role there
+    is none, and the flag would simply never fire — silently."""
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "architect", "name: architect\nuser_review: true\n", _shared("Arch."))
+    _registry_with_specs(monkeypatch, {"architect": _spec("architect")})
+
+    with pytest.raises(AgentLoadError, match="produces no"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_accepts_user_review_on_a_producing_agent(tmp_path: Path, monkeypatch) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "architect", "name: architect\nuser_review: true\n", _shared("Arch."))
+    _registry_with_specs(
+        monkeypatch, {"architect": _spec("architect", produces={ROLE_ARCHITECTURE: "paths"})}
+    )
+
+    assert AgentRegistry(tmp_path).get("architect").user_review is True
+
+
+# ---------------------------------------------------------------------------
+# Phase blocks — round-aware prompt text
+# ---------------------------------------------------------------------------
+
+
+_PHASED_BODY = (
+    "Always true.\n\n"
+    "{PHASE:initial}\nWriting it for the first time.\n{/PHASE}\n\n"
+    "{PHASE:revision}\nFixing what the reviewer found.\n{/PHASE}\n\n"
+    "Also always true."
+)
+
+
+def _phased_registry(tmp_path: Path, monkeypatch, body: str = _PHASED_BODY) -> AgentRegistry:
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "architect", "name: architect\n", _shared(body))
+    _registry_with_specs(monkeypatch, {"architect": _spec("architect")})
+    return AgentRegistry(tmp_path)
+
+
+def test_initial_phase_keeps_only_the_initial_block(tmp_path: Path, monkeypatch) -> None:
+    prompt = _phased_registry(tmp_path, monkeypatch).get("architect", phase="initial").system_prompt
+
+    assert "Writing it for the first time." in prompt
+    assert "Fixing what the reviewer found." not in prompt
+    # Unphased text is untouched, and no token survives into the prompt.
+    assert "Always true." in prompt and "Also always true." in prompt
+    assert "{PHASE:" not in prompt and "{/PHASE}" not in prompt
+
+
+def test_revision_phase_keeps_only_the_revision_block(tmp_path: Path, monkeypatch) -> None:
+    registry = _phased_registry(tmp_path, monkeypatch)
+    prompt = registry.get("architect", phase="revision").system_prompt
+
+    assert "Fixing what the reviewer found." in prompt
+    assert "Writing it for the first time." not in prompt
+
+
+def test_phase_defaults_to_initial(tmp_path: Path, monkeypatch) -> None:
+    """The fuller instruction set is the safe default: a spawn path that forgets
+    to pass a phase must degrade to "say everything", never to "say nothing"."""
+    registry = _phased_registry(tmp_path, monkeypatch)
+    assert registry.get("architect").system_prompt == (
+        registry.get("architect", phase="initial").system_prompt
+    )
+
+
+def test_an_agent_with_no_phase_blocks_renders_identically_in_every_phase(
+    tmp_path: Path, monkeypatch
+) -> None:
+    registry = _phased_registry(tmp_path, monkeypatch, body="No phases here at all.")
+    assert (
+        registry.get("architect", phase="initial").system_prompt
+        == registry.get("architect", phase="revision").system_prompt
+    )
+
+
+def test_registry_rejects_an_unknown_phase(tmp_path: Path, monkeypatch) -> None:
+    with pytest.raises(AgentLoadError, match="unknown phase"):
+        _phased_registry(tmp_path, monkeypatch, body="{PHASE:polishing}\nsomething\n{/PHASE}")
+
+
+def test_registry_rejects_an_unclosed_phase_block(tmp_path: Path, monkeypatch) -> None:
+    """An unbalanced block swallows the rest of the prompt into one phase, which
+    nothing at run time would report."""
+    with pytest.raises(AgentLoadError, match="never closed"):
+        _phased_registry(tmp_path, monkeypatch, body="{PHASE:initial}\nsomething")
+
+
+def test_registry_rejects_a_stray_closing_token(tmp_path: Path, monkeypatch) -> None:
+    with pytest.raises(AgentLoadError, match="no phase block open"):
+        _phased_registry(tmp_path, monkeypatch, body="something\n{/PHASE}")
+
+
+def test_registry_rejects_nested_phase_blocks(tmp_path: Path, monkeypatch) -> None:
+    with pytest.raises(AgentLoadError, match="must not nest"):
+        _phased_registry(
+            tmp_path,
+            monkeypatch,
+            body="{PHASE:initial}\n{PHASE:revision}\nx\n{/PHASE}\n{/PHASE}",
+        )
+
+
+def test_registry_rejects_a_closing_token_that_names_its_phase(tmp_path: Path, monkeypatch) -> None:
+    """`{/PHASE:revision}` matches no close, so the block would stay open — the
+    nastiest of these failures, and the one most likely to be typed."""
+    with pytest.raises(AgentLoadError, match="must not name a phase"):
+        _phased_registry(tmp_path, monkeypatch, body="{PHASE:revision}\nx\n{/PHASE:revision}")
+
+
+def test_registry_rejects_a_phase_block_in_an_agent_with_no_spec(tmp_path: Path) -> None:
+    """Only a schema-bearing agent is ever spawned *with* a phase, so a block
+    anywhere else renders nowhere and nothing would say so."""
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "guide", "name: guide\n", _shared("{PHASE:initial}\nx\n{/PHASE}"))
+    (tmp_path / "subagent_guide.md").rename(tmp_path / "agent_guide.md")
+
+    with pytest.raises(AgentLoadError, match="phase blocks are only valid"):
+        AgentRegistry(tmp_path)
+
+
+def test_shipped_authors_declare_both_phases() -> None:
+    """Every agent the shipped registry renders per phase must actually say
+    something different in each — a phased spawn path with no phased prompt is
+    the failure mode this whole mechanism exists to avoid."""
+    registry = AgentRegistry(_REAL_AGENTS_DIR)
+    phased = [
+        agent.name
+        for agent in registry.all_agents()
+        if "{PHASE:" in agent.source_path.read_text(encoding="utf-8")
+    ]
+    assert phased, "expected the pipeline authors to declare phase blocks"
+    for name in phased:
+        initial = registry.get(name, phase="initial").system_prompt
+        revision = registry.get(name, phase="revision").system_prompt
+        assert initial != revision, name
+        for prompt in (initial, revision):
+            assert "{PHASE:" not in prompt and "{/PHASE}" not in prompt, name
+
+
+def test_every_reviewable_author_can_read_its_backlog() -> None:
+    """An author that can receive findings — from a critic, from the user's own
+    rejection, or both — needs `get_findings` and the author half of the
+    protocol, or the objection reaches it nowhere."""
+    registry = AgentRegistry(_REAL_AGENTS_DIR)
+    reviewable = [a for a in registry.all_agents() if a.critic or a.user_review]
+    assert reviewable, "expected the pipeline to contain reviewable authors"
+    for agent in reviewable:
+        assert "get_findings" in agent.tools, agent.name
+        source = agent.source_path.read_text(encoding="utf-8")
+        assert shared_token("findings_author") in source, agent.name

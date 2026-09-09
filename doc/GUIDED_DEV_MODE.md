@@ -6,9 +6,14 @@
 
 Guided mode builds a product by running a **fixed, ordered pipeline of
 specialist sub-agents**, each writing one kind of document or code, each
-reviewed by a paired critic before the user is asked to accept it. It is the
-opposite of a free-form coding assistant: the order is fixed, the artifacts are
-tracked, and nothing advances until the thing before it is settled.
+reviewed before it is accepted. It is the opposite of a free-form coding
+assistant: the order is fixed, the artifacts are tracked, and nothing advances
+until the thing before it is settled.
+
+*How* each stage is reviewed is the agent's own declaration, not engine policy:
+its frontmatter names a `critic:`, sets `user_review: true`, both, or neither
+(§5a). The same frontmatter can also give the agent different prompt text for a
+first pass than for a correction round (§5b).
 
 The alternative mode, **Problem Solver**, is the free-form one — an
 investigator/planner/developer trio driven by whatever the user asks. Both modes
@@ -54,6 +59,9 @@ Guide cannot invoke a critic, cannot iterate a loop by hand, and never sees a
 finding — the author and critic exchange those directly through their own
 `get_findings` tool.
 
+The **user** is the pipeline's other reviewer, and which stages they review is
+declared the same way — see §5a.
+
 The Guide's own tools are deliberately few: `guided_dev_status`,
 `get_root_paths`, `find_files`, `find_text_in_files`, `read_attachment`,
 `run_subagent`, `ask_user`, `rollback`, `finalize_project`,
@@ -64,16 +72,23 @@ enforced by the toolset, not merely asserted in prose.
 ## 4. The pipeline
 
 ```
- 1  narrative_author                    (solo)          → Narrative + Tech Stack
- 2  architect        ↔ architect_critic                 → architecture + component graph
- 3  requirements_author ↔ requirements_critic           → requirements
- 4  functional_designer ↔ functional_design_critic      → Design Plan + one design per component
- 5  test_designer    ↔ test_design_critic     per comp. → one Test Plan per component
+ 1  narrative_author                            👤      → Narrative + Tech Stack
+ 2  architect        ↔ architect_critic         👤      → architecture + component graph
+ 3  requirements_author ↔ requirements_critic   👤      → requirements
+ 4  functional_designer ↔ functional_design_critic 👤   → Design Plan + one design per component
+ 5  test_designer    ↔ test_design_critic  👤 per comp. → one Test Plan per component
  6  test_coder       ↔ code_critic            per comp. → test code + stubs (all failing)
  7  coder            ↔ code_critic            per comp. → implementation (all passing)
- 8  e2e_test_designer ↔ e2e_test_design_critic          → End-to-End Test Plan
+ 8  e2e_test_designer ↔ e2e_test_design_critic  👤      → End-to-End Test Plan
  9  e2e_test_coder   ↔ e2e_test_code_critic             → the integration suite (run to green)
 ```
+
+`👤` marks a stage whose frontmatter declares `user_review: true` — the user
+signs its work product off before it is accepted (§5a). Stage 1 has **no**
+critic, so the user is its only reviewer; the three code stages have a critic
+and no gate, because code correctness is settled by the critic and by the tests
+going green, and gating every multi-file code change is where a gate stops being
+read and starts being clicked through.
 
 Stages **5–7 run per component**, in the order the Design Plan sets — their
 specs are the only ones that declare a `responsibility_code`, and so the only
@@ -125,15 +140,19 @@ has to know this; it is why the engine-run build gate is still unbuilt (§12).
    unmet required role refuses the spawn outright.
 2. **Spawn the author** with the caller's `instructions` **unchanged** every
    round, plus `for_revision_paths` — the whole prior member set, seeded from
-   the ledger so a re-invocation continues rather than restarting. Outstanding
-   findings are *never* written into the task; the author reads them itself.
+   the ledger so a re-invocation continues rather than restarting — and in the
+   round's **phase** (§5b). Outstanding findings are *never* written into the
+   task; the author reads them itself.
 3. **Escalation check** — a non-empty `reason` ends the loop where it stands
-   (`outcome: "escalated"`). No critic is spawned: no amount of revision fixes a
+   (`outcome: "escalated"`). No review is run: no amount of revision fixes a
    blocker whose resolution lives outside the author.
 4. **Record the work product** — every path the author reported, as one
    reviewable set (§7), auto-closing findings for any file that left it.
-5. **Spawn the critic** against the whole set, with its own resolved inputs.
-6. **Apply its findings** to the work product's backlog and close the round.
+5. **Review it** — spawn the critic against the whole set with its own resolved
+   inputs, or, for an author with no critic, put the set straight to the user's
+   approval gate (§5a).
+6. **Apply the round's findings** to the work product's backlog, push the user's
+   findings table (§8a), and close the round.
 7. **Derive the verdict**: nothing outstanding → drive acceptance (§8) and read
    the status back.
 
@@ -159,6 +178,104 @@ A critic returns **evidence, not a verdict**: its `findings` list, and nothing
 else. The verdict is *derived* — the work product is accepted when the backlog
 is empty. A critic therefore cannot report a pass while leaving problems open,
 and the two can never disagree. See FINDINGS.md §3.
+
+## 5a. Who reviews a stage is frontmatter, not policy
+
+Two independent frontmatter flags decide what one `run_subagent_<author>` call
+actually does. Both live on the **author**, and neither is ever named by a
+caller:
+
+| `critic:` | `user_review:` | One call is |
+| --- | --- | --- |
+| set | absent | author→critic rounds; accepted the moment the backlog empties |
+| set | `true` | author→critic rounds, then the user signs the set off |
+| absent | `true` | author→**user** rounds — the gate *is* the review |
+| absent | absent | a single pass, no review at all |
+
+`user_review` is **opt-in and off by default**. Before it existed, whether a
+human saw an artifact was decided by whether somebody had paired a critic with
+its author: `_finalize_work_product` only ever ran from the critic path, so every
+critic-reviewed work product was gated and `narrative_author` — the one document
+written *with* the user, and the one every later stage derives from — never was.
+That is a question about the artifact, and it now gets asked about the artifact.
+
+**A gate-only author still runs a loop.** `_run_review_loop` takes an empty
+critic name and calls `_run_user_review_round` in place of the critic round: the
+rejection is minted as a `user_feedback` finding, so round two's author reaches
+the objection through the same `get_findings` call it would use for a critic's,
+and `not_converging`/`max_rounds` bound it exactly as they bound a critic loop.
+Such an author therefore needs `get_findings` and `{SHARED:findings_author}` in
+its own frontmatter and body — `narrative_author` gained both here.
+
+Two load-bearing consequences:
+
+- The registry **refuses** `user_review: true` on an agent whose spec produces
+  no artifact role, and on any `role: critic`. In both cases there is no work
+  product to sign off and the flag would simply never fire.
+- **Approval closes the backlog when there is no critic.** The rule everywhere
+  else is that only a critic closes a finding, because only a critic verifies.
+  An author with no critic has nobody to do that, its findings can only have come
+  from the user's own earlier rejections, and the user has now looked at the
+  revised work and approved it — so their approval *is* the verification
+  (`_close_findings_on_approval`). Without it the first rejection would leave a
+  finding outstanding forever.
+
+An unknown author (renamed, removed) fails **open**: no gate, straight to
+accepted. Work nobody can re-run is better accepted than parked at a gate
+forever.
+
+## 5b. Phases — the same author, a different job
+
+An author's two jobs are genuinely different work: writing a document from
+nothing, and surgically resolving a backlog against one that already exists.
+Until now both got the same prompt, so every authoring standard was restated on a
+round whose whole task was "fix these three things and change nothing else".
+
+An agent opts in by writing **phase blocks** in its body — the inclusion *is* the
+declaration, exactly as with `{SHARED:…}`; there is deliberately no `phases:`
+frontmatter key:
+
+```markdown
+{PHASE:initial}
+…text used only on a first pass…
+{/PHASE}
+
+{PHASE:revision}
+…text used only when working the findings backlog…
+{/PHASE}
+```
+
+`AgentRegistry.get(name, autonomous, phase)` keeps the matching blocks and drops
+the rest, after `{SHARED:…}` and `{SKILLS}` substitution. An agent with no phase
+blocks renders identically in every phase, and `initial` is the default because
+it is the *fuller* text — a spawn path that forgets the phase must degrade to
+"say everything", never to "say nothing".
+
+**The engine picks the phase from the same signal that drives
+`for_revision_paths`**: whether a work product with members already exists for
+this author and responsibility. Because the ledger is read *before* round 1, a
+re-invocation continuing earlier work is correctly a `revision` from its very
+first round.
+
+There are **two** phases, not three. A user's rejection lands in the same backlog
+as every critic finding, distinguished by `reported_by` (FINDINGS.md); splitting
+`revision` into critic and user variants would re-divide what that design
+deliberately unified, and the author reads the merged backlog either way.
+
+> **Why not a `corrector` sub-agent?** It was the obvious alternative and it is
+> the wrong shape. The reviewable unit is keyed by *agent name*
+> (`<project>/<agent>[/<responsibility>]`), so a second name forks the
+> work-product ledger and the findings backlog with it. A corrector would also
+> need its author's entire domain standards — you cannot fix a "compound
+> requirement" finding without knowing the requirement rules — and a twin
+> `SubAgentSpec`. A conditional section buys the same behavioural shaping with
+> none of that, and stays reversible.
+
+Malformed blocks are load-time errors: an unknown phase name, an unclosed or
+stray token, a nested block, a closing token that names its phase
+(`{/PHASE:revision}` matches no close, so the block would silently swallow the
+rest of the prompt), or a phase block in an agent with no `SubAgentSpec` — which
+is never spawned with a phase, so the text would render nowhere.
 
 ## 6. Where files come from
 
@@ -276,10 +393,12 @@ Consequences worth knowing:
 
 ## 8. Acceptance
 
-`_finalize_work_product` runs when a round leaves zero outstanding findings.
+`_finalize_work_product` runs when a round leaves zero outstanding findings, and
+directly each round of a gate-only loop (§5a).
 
 | Posture | Behaviour |
 | --- | --- |
+| Author does not declare `user_review` | straight to `accepted`, no gate |
 | Autonomous mode | straight to `accepted`, no gate |
 | Edit Control `allow_all` | straight to `accepted`, no gate |
 | User agrees at the gate | `review_result: approve`, then `accepted` |
@@ -296,8 +415,38 @@ A rejection is anchored to whichever member the user had selected, minted as a
 `user_feedback` finding so the author reaches the objection through the same
 `get_findings` call as every critic finding. One backlog, one procedure.
 
-The two shortcut rows write **no** `review_result`: that entry means "the user
+The three shortcut rows write **no** `review_result`: that entry means "the user
 decided at the gate", and in those postures no gate fired.
+
+## 8a. The findings table — what the *user* is shown
+
+Findings were, until now, entirely invisible to the user: `review.verdict`
+carries counts, and the findings themselves never left the author/critic pair.
+So a user watching a loop grind through five rounds saw collapsed subsession
+blocks and no statement of what was actually wrong or whether it was shrinking.
+
+`review.findings` (WS_PROTOCOL.md §5.6) fixes that. It is emitted after **every
+round that could have changed the backlog** — each critic round, and each trip
+through the approval gate — carrying the whole backlog, fixed items included,
+plus `iteration`/`max_rounds` so the reader can see the loop converging. It is
+silent when the backlog is empty: work that was right first time has nothing to
+table, and an empty one on every clean accept would train the reader to skip it.
+
+**No LLM ever sees it, structurally.** The event is persisted as a *marker*, and
+markers carry no `role`, so they are never rebuilt into the LLM-facing message
+history. The author reaches the same backlog through its own `get_findings` tool
+— a separate path with its own auto-scoping — so what the user is shown and what
+the model is told cannot become entangled.
+
+Two rules the client does not get to re-decide:
+
+- **Order is server-side** (`kodo.findings.sort_for_display`): outstanding
+  before fixed; within each group by the first location's path, then line, then
+  id for a stable total order. One implementation, not one per client.
+- **One row is one finding**, placed by its first location — never one row per
+  location. `locations` is a list precisely so a cross-file defect stays a single
+  finding (§7); splitting it into rows would recreate the unlinked pair that
+  model removed.
 
 ## 9. The Guide's control loop
 
@@ -438,11 +587,13 @@ building per iteration is too expensive to be worth it.
 | [subagents/_artifacts.py](../src/kodo/subagents/_artifacts.py) | Artifact roles, scopes, `Need` |
 | [subagents/_subagentspec.py](../src/kodo/subagents/_subagentspec.py) | `produces` / `consumes` / `component_paths` |
 | [subagents/specs/](../src/kodo/subagents/specs/) | One spec per sub-agent; `_shapes.py` builds the shared envelopes, including which stages declare a `responsibility_code` |
-| [subagents/_registry.py](../src/kodo/subagents/_registry.py) | Load-time validation, `run_subagent_specs` |
+| [subagents/_loader.py](../src/kodo/subagents/_loader.py) | Frontmatter: `critic:`, `user_review:`, `role:`, `standalone:` |
+| [subagents/_registry.py](../src/kodo/subagents/_registry.py) | Load-time validation, `run_subagent_specs`, `render_phase` |
 | [runtime/_engine/_subagents.py](../src/kodo/runtime/_engine/_subagents.py) | `_run_review_loop`, resolution, refusal, work-product recording |
 | [runtime/_engine/_core.py](../src/kodo/runtime/_engine/_core.py) | `_finalize_work_product` — the acceptance flow |
 | [workproducts/](../src/kodo/workproducts/) | Membership, roles, component graph, `resolve_needs` |
-| [findings/](../src/kodo/findings/) | The author/critic backlog |
+| [findings/](../src/kodo/findings/) | The author/critic backlog, and `sort_for_display` |
+| [runtime/_engine/_events.py](../src/kodo/runtime/_engine/_events.py) | `emit_review_findings` — the user's findings table |
 | [guided_state/](../src/kodo/guided_state/) | Per-file revision/acceptance history |
 | [tools/_document_status.py](../src/kodo/tools/_document_status.py) | The one status-merge rule |
 | [tools/_guided_dev_status.py](../src/kodo/tools/_guided_dev_status.py) | The Guide's view of the whole project |

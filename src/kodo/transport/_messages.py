@@ -885,15 +885,36 @@ EVT_TOOL_INCOMPLIANT = "tool.incompliant"
 EVT_WEB_SEARCH_NOTE = "web_search.note"
 
 # Server → Client event. Bracket the Guide pipeline's author→critic document
-# review step (``run_author_critic_iteration``): ``review.started`` fires right
+# review step (``_run_review_round``): ``review.started`` fires right
 # before the critic sub-agent is spawned, ``review.verdict`` right after,
-# carrying the ``document_feedback``-derived status (``accepted`` /
-# ``needs_revision`` / ``pending_acceptance``) and ``concern_count`` — never
-# file content, diffs, or feedback text (low-fidelity by design). NOTE: emitted
-# by the server today, but the current VSIX client has no handler for either —
-# the events are silently dropped on arrival (no UI surfaces them yet).
+# carrying the ``document_status``-derived status (``accepted`` /
+# ``needs_revision`` / ``pending_acceptance``) and the round's finding counters
+# — never file content, diffs, or finding text (low-fidelity by design). NOTE:
+# emitted by the server, but the VSIX client has no handler for either — they
+# are silently dropped on arrival. ``review.findings`` below is what the UI
+# actually renders.
 EVT_REVIEW_STARTED = "review.started"
 EVT_REVIEW_VERDICT = "review.verdict"
+
+# Server → Client event. The **user-only** findings table: the full backlog of
+# one work product after a round that could have changed it — every critic
+# round, and every rejection at the user approval gate. Carries each finding's
+# id/kind/description/state/reporter and all of its `locations`, plus the
+# round counter (`iteration` of `max_rounds`) so the user can see whether the
+# loop is converging.
+#
+# "User-only" is structural, not a convention: this is persisted as a *marker*
+# (``type: "review_findings"``), and markers carry no ``role``, so they are
+# never rebuilt into the LLM-facing message history (``_resume.py`` filters on
+# ``"role" in line``). No agent — author, critic or Guide — ever sees this
+# event. The author reads the same backlog through its own `get_findings` tool,
+# which is deliberately a separate path with its own scoping.
+#
+# Findings arrive **pre-sorted** for display (``kodo.findings.sort_for_display``):
+# outstanding first, then fixed; within each group by the first location's path,
+# then line. Sorting server-side keeps one implementation of the order rather
+# than one per client. Replayed on reload via ``session.history``.
+EVT_REVIEW_FINDINGS = "review.findings"
 
 # Context-compaction events (in-place compaction of an entry agent's main
 # context; see runtime/_engine/_compaction.py + doc/STATE_AND_LIFECYCLE.md §4.5).

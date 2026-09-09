@@ -34,7 +34,7 @@ from kodo.llms import (
 from kodo.project import WorkspaceLayout
 from kodo.security import SecurityLayer
 from kodo.state import TransientStore
-from kodo.subagents import AgentRegistry, SubAgent
+from kodo.subagents import PHASE_INITIAL, AgentRegistry, SubAgent
 from kodo.tools import PathResolver, RootPath, ToolDispatcher
 from kodo.workproducts import WorkProduct
 
@@ -260,6 +260,8 @@ class EngineHost(Protocol):
 
     def _critic_for(self, name: str) -> str: ...
 
+    def _user_reviews(self, name: str) -> bool: ...
+
     def _scoped_task_input(self, name: str, task_input: dict[str, object]) -> dict[str, object]: ...
 
     def _takes_responsibility(self, name: str) -> bool: ...
@@ -267,7 +269,11 @@ class EngineHost(Protocol):
     def _responsibility_code(self, name: str, task_input: dict[str, object]) -> str: ...
 
     async def _spawn_subagent(
-        self, name: str, task_input: dict[str, object], findings_key: str = ""
+        self,
+        name: str,
+        task_input: dict[str, object],
+        findings_key: str = "",
+        phase: str = PHASE_INITIAL,
     ) -> dict[str, object]: ...
 
     async def _run_review_loop(
@@ -279,8 +285,25 @@ class EngineHost(Protocol):
     ) -> dict[str, object]: ...
 
     async def _run_review_round(
-        self, critic_name: str, work_product: WorkProduct
+        self,
+        critic_name: str,
+        work_product: WorkProduct,
+        iteration: int = 1,
+        max_rounds: int = 5,
     ) -> tuple[str, RoundSummary]: ...
+
+    async def _run_user_review_round(
+        self, work_product: WorkProduct, iteration: int, max_rounds: int
+    ) -> tuple[str, RoundSummary]: ...
+
+    async def _emit_review_findings(
+        self,
+        work_product: WorkProduct,
+        *,
+        reviewer: str,
+        iteration: int,
+        max_rounds: int,
+    ) -> None: ...
 
     async def _run_unreviewed_author(
         self, name: str, task_input: dict[str, object]
@@ -344,6 +367,7 @@ class EngineHost(Protocol):
         subsession_id: str,
         messages: list[Message],
         findings_key: str = "",
+        phase: str = PHASE_INITIAL,
     ) -> dict[str, object]: ...
 
     async def _open_subsession(
@@ -357,7 +381,7 @@ class EngineHost(Protocol):
     async def _abort_active_subsession(self) -> None: ...
 
     async def _replay_next_subsession(
-        self, name: str, findings_key: str = ""
+        self, name: str, findings_key: str = "", phase: str = PHASE_INITIAL
     ) -> dict[str, object]: ...
 
     def _display_name(self, agent_name: str) -> str: ...

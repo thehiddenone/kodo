@@ -206,7 +206,7 @@ class _FakeHost:
 
 
 class _FakeRegistry:
-    def get(self, name: str, autonomous: bool = False) -> SimpleNamespace:
+    def get(self, name: str, autonomous: bool = False, phase: str = "initial") -> SimpleNamespace:
         return SimpleNamespace(capability="medium", name=name)
 
     def run_subagent_specs(self, caller: str) -> list[object]:

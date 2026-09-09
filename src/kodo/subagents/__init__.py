@@ -26,12 +26,25 @@ from ._artifacts import (
     Need,
 )
 from ._loader import AgentLoadError, SubAgent, load_agent
-from ._registry import SHARED_FILE_PREFIX, SKILLS_TOKEN, AgentRegistry, shared_token
+from ._registry import (
+    ALL_PHASES,
+    PHASE_INITIAL,
+    PHASE_REVISION,
+    SHARED_FILE_PREFIX,
+    SKILLS_TOKEN,
+    AgentRegistry,
+    phase_token,
+    render_phase,
+    shared_token,
+)
 from ._subagentspec import RESPONSIBILITY_CODE_KEY, SubAgentSpec
 
 __all__: list[str] = [
+    "ALL_PHASES",
     "ALL_ROLES",
     "ALL_SCOPES",
+    "PHASE_INITIAL",
+    "PHASE_REVISION",
     "PRODUCES_REMAINDER",
     "RESPONSIBILITY_CODE_KEY",
     "ROLE_ARCHITECTURE",
@@ -58,5 +71,7 @@ __all__: list[str] = [
     "SubAgent",
     "SubAgentSpec",
     "load_agent",
+    "phase_token",
+    "render_phase",
     "shared_token",
 ]

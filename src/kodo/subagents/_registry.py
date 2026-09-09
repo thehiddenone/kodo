@@ -168,6 +168,139 @@ from .specs import ALL_SUBAGENTS
 SHARED_FILE_PREFIX = "shared_"
 _SHARED_TOKEN_RE = re.compile(r"\{SHARED:([a-z0-9_]+)\}")
 
+# ---------------------------------------------------------------------------
+# Phase blocks — round-aware prompt text
+# ---------------------------------------------------------------------------
+#
+# A ``{PHASE:<name>} … {/PHASE}`` block in an agent body is kept only when the
+# engine spawns that agent in phase ``<name>``, and removed otherwise. It exists
+# because an author's two jobs are genuinely different work: writing a document
+# from nothing, and surgically resolving a backlog of findings against one that
+# already exists. Before this, both got the same prompt — every authoring
+# standard restated on a round whose whole task was "fix these three things and
+# change nothing else".
+#
+# The alternative considered and rejected was a separate ``corrector`` sub-agent
+# per author. The reviewable unit is keyed by *agent name*
+# (``<project>/<agent>[/<responsibility>]``, doc/FINDINGS.md §2), so a second
+# name would fork the work-product ledger and the findings backlog with it; the
+# corrector would also need its author's entire domain standards (you cannot fix
+# a "compound requirement" finding without knowing the requirement rules) and a
+# twin ``SubAgentSpec``. A conditional section buys the same behavioural shaping
+# with none of that.
+#
+# Opting in is the *inclusion*, exactly like ``{SHARED:…}``: an agent that writes
+# no phase block renders identically in every phase. There is deliberately no
+# ``phases:`` frontmatter key — that would be the ``callouts:`` flag this module
+# already retired once.
+PHASE_INITIAL = "initial"
+PHASE_REVISION = "revision"
+
+#: Every phase the engine can render an agent in.
+#:
+#: ``initial`` — no work product exists yet for this author (and responsibility):
+#: it is writing from its inputs. ``revision`` — one does, so the agent is
+#: resolving the findings backlog against files it already wrote.
+#:
+#: Two, not three: a user's rejection at the approval gate is minted as a
+#: finding in the *same* backlog as every critic finding, distinguished by
+#: ``reported_by`` (doc/FINDINGS.md §6). Splitting ``revision`` into critic and
+#: user variants would re-divide what that design deliberately unified, and the
+#: agent has to read the merged backlog either way.
+ALL_PHASES: frozenset[str] = frozenset({PHASE_INITIAL, PHASE_REVISION})
+
+_PHASE_OPEN_RE = re.compile(r"\{PHASE:([a-z0-9_]+)\}")
+_PHASE_CLOSE = "{/PHASE}"
+_PHASE_BLOCK_RE = re.compile(r"\{PHASE:([a-z0-9_]+)\}(.*?)\{/PHASE\}", re.DOTALL)
+# A closing token that mistakenly names its phase. Caught explicitly because the
+# silent failure is nasty: ``{/PHASE:revision}`` matches no close, so the block
+# stays open and swallows the rest of the prompt into one phase.
+_PHASE_NAMED_CLOSE_RE = re.compile(r"\{/PHASE:[^}]*\}")
+_BLANK_RUN_RE = re.compile(r"\n{3,}")
+
+
+def phase_token(phase: str) -> str:
+    """Return the token that opens a *phase* block — ``{PHASE:<phase>}``.
+
+    One place builds this string, so tests and error messages cannot drift from
+    what :data:`_PHASE_OPEN_RE` actually matches.
+    """
+    return f"{{PHASE:{phase}}}"
+
+
+def render_phase(text: str, phase: str) -> str:
+    """Return *text* with only the *phase* blocks kept, unwrapped.
+
+    Every ``{PHASE:<name>} … {/PHASE}`` block whose name is *phase* is replaced
+    by its own contents; every other block is removed entirely. The blank lines
+    a removed block leaves behind are collapsed so a stripped prompt does not
+    read as though something is missing.
+
+    Text with no phase block at all is returned **unchanged** — not merely
+    equal, but untouched — so the ~30 agents that use none pay nothing and
+    cannot be affected by the whitespace normalization.
+    """
+    if "{PHASE:" not in text:
+        return text
+
+    def _keep(match: re.Match[str]) -> str:
+        return match.group(2).strip() if match.group(1) == phase else ""
+
+    return _BLANK_RUN_RE.sub("\n\n", _PHASE_BLOCK_RE.sub(_keep, text)).strip()
+
+
+def _validate_phase_tokens(text: str, source: Path) -> None:
+    """Check every phase token in *text* is known, closed, and not nested.
+
+    All three failures are silent at run time and expensive to trace — an
+    unknown name renders nothing, an unbalanced block swallows the remainder of
+    the prompt, and a nested one is matched non-greedily into something nobody
+    wrote — so each is a load-time error, like every other check in this module.
+
+    Args:
+        text: The raw body (an agent's, or a ``shared_*.md`` file's).
+        source: Path named in the error, so the author knows which file to open.
+
+    Raises:
+        AgentLoadError: An unknown phase name, a named closing token, a
+            close with no open (or vice versa), or a nested block.
+    """
+    named_close = _PHASE_NAMED_CLOSE_RE.search(text)
+    if named_close:
+        raise AgentLoadError(
+            f"{source}: closing phase token {named_close.group(0)!r} must not name a "
+            f"phase — write {_PHASE_CLOSE!r}"
+        )
+
+    unknown = sorted({m.group(1) for m in _PHASE_OPEN_RE.finditer(text)} - ALL_PHASES)
+    if unknown:
+        raise AgentLoadError(
+            f"{source}: unknown phase(s) {unknown} — known phases: {sorted(ALL_PHASES)}"
+        )
+
+    # Walk opens and closes in document order: a well-formed body alternates
+    # open, close, open, close. Anything else is a nesting error or a stray.
+    tokens = sorted(
+        [(m.start(), "open") for m in _PHASE_OPEN_RE.finditer(text)]
+        + [(m.start(), "close") for m in re.finditer(re.escape(_PHASE_CLOSE), text)]
+    )
+    depth = 0
+    for _position, kind in tokens:
+        if kind == "open":
+            depth += 1
+            if depth > 1:
+                raise AgentLoadError(
+                    f"{source}: phase blocks must not nest — a "
+                    f"{phase_token('<name>')} was opened before the previous "
+                    f"{_PHASE_CLOSE}"
+                )
+        else:
+            depth -= 1
+            if depth < 0:
+                raise AgentLoadError(f"{source}: a {_PHASE_CLOSE} appears with no phase block open")
+    if depth:
+        raise AgentLoadError(f"{source}: a phase block is never closed with {_PHASE_CLOSE}")
+
 
 def shared_token(name: str) -> str:
     """Return the token that includes ``shared_<name>.md`` — ``{SHARED:<name>}``.
@@ -266,7 +399,7 @@ SUBAGENT_SPECS_BY_NAME: dict[str, SubAgentSpec] = {s.name: s for s in ALL_SUBAGE
 
 
 def _review_output_schema(output_schema: dict[str, object], critic: str) -> dict[str, object]:
-    """Return *output_schema* with the author/critic loop's ``review`` block added.
+    """Return *output_schema* with the review loop's ``review`` block added.
 
     What a ``run_subagent_<author>`` call returns when the engine ran a review
     loop: everything the author itself declared, plus how the loop ended. The
@@ -277,7 +410,11 @@ def _review_output_schema(output_schema: dict[str, object], critic: str) -> dict
     Args:
         output_schema: The author sub-agent's own declared ``output_schema``.
         critic: Name of the critic that reviewed it (named in the prose so the
-            caller can attribute the findings).
+            caller can attribute the findings), or ``""`` for an author whose
+            only reviewer is the **user** at the approval gate
+            (``user_review: true`` with no ``critic:``). The block itself is
+            identical either way — the loop shape differs, what it reports does
+            not — so only the one-line description changes.
 
     Returns:
         dict[str, object]: A new schema; the input is not mutated.
@@ -289,7 +426,11 @@ def _review_output_schema(output_schema: dict[str, object], critic: str) -> dict
 
     properties["review"] = {
         "type": "object",
-        "description": f"How the `{critic}` review loop ended.",
+        "description": (
+            f"How the `{critic}` review loop ended."
+            if critic
+            else "How the user review loop ended."
+        ),
         "properties": {
             "status": {
                 "type": "string",
@@ -301,9 +442,14 @@ def _review_output_schema(output_schema: dict[str, object], critic: str) -> dict
             "outcome": {
                 "type": "string",
                 "description": (
-                    "Why the loop stopped: 'accepted' (the critic accepted and any "
-                    "user sign-off landed), 'escalated' (the author returned a "
-                    "blocker in `reason` it cannot resolve, so no critic ran and "
+                    "Why the loop stopped: 'accepted' ("
+                    + (
+                        "the critic accepted and any user sign-off landed"
+                        if critic
+                        else "the user signed off on the work product"
+                    )
+                    + "), 'escalated' (the author returned a "
+                    "blocker in `reason` it cannot resolve, so no review ran and "
                     "no further round was spent — resolve it and re-run), "
                     "'max_rounds' (the budget ran out with findings still "
                     "outstanding), 'not_converging' (a round closed nothing and "
@@ -314,7 +460,7 @@ def _review_output_schema(output_schema: dict[str, object], critic: str) -> dict
             },
             "rounds": {
                 "type": "integer",
-                "description": "How many author→critic rounds ran.",
+                "description": "How many review rounds ran.",
             },
             "outstanding": {
                 "type": "integer",
@@ -389,6 +535,13 @@ class AgentRegistry:
                     f"{path}: shared files must not include other shared files "
                     f"(found {nested.group(0)}); inclusion is a single pass"
                 )
+            # Phase blocks *are* allowed here, unlike nested shared tokens:
+            # substitution happens once at construction and phase stripping per
+            # `get()`, so the order is well defined and a shared block can carry
+            # revision-only text. Only its well-formedness is checked — whether
+            # the including agent is ever spawned with a phase is checked on the
+            # agent itself.
+            _validate_phase_tokens(text, path)
             self.__shared[name] = text
         self.__agents: dict[str, SubAgent] = {}
         # Sub-agents (``subagent_*.md``) and the user-facing entry agents
@@ -404,6 +557,8 @@ class AgentRegistry:
             self.__validate_tools(agent.tools, path)
             self.__validate_shared(agent)
             self.__validate_skills(agent)
+            self.__validate_phases(agent)
+            self.__validate_user_review(agent)
             self.__agents[agent.name] = agent
         # Every sub-agent some caller may spawn — the union of all
         # ``subagents:`` allow-lists. Exactly these get a generated
@@ -626,14 +781,71 @@ class AgentRegistry:
                 f"{_USE_SKILL_TOOL!r} — the agent would be shown skills it cannot load"
             )
 
-    def __finalize(self, agent: SubAgent, autonomous: bool) -> SubAgent:
-        """Render *agent* for the requested mode.
+    @staticmethod
+    def __validate_phases(agent: SubAgent) -> None:
+        """Check *agent*'s ``{PHASE:…}`` blocks at construction time.
+
+        Two rules. The tokens must be well formed
+        (:func:`_validate_phase_tokens`), and they are only meaningful in an
+        agent the engine spawns *with* a phase — i.e. a schema-bearing one. An
+        entry agent or an inline agent carrying a ``{PHASE:revision}`` block
+        would render it never, and nothing at run time would say so; that is the
+        same class of dead-prose bug the ``{SHARED:task_input}`` guard catches,
+        and it gets the same treatment.
+
+        A phase block reaching an agent through a ``shared_*.md`` file is not
+        covered here (this runs on the raw body, before substitution). No shared
+        block uses one today; one that does should be included only by phased
+        agents.
+
+        Raises:
+            AgentLoadError: A malformed token, or a phase block in an agent with
+                no :class:`SubAgentSpec`.
+        """
+        _validate_phase_tokens(agent.system_prompt, agent.source_path)
+        if _PHASE_OPEN_RE.search(agent.system_prompt) and agent.name not in SUBAGENT_SPECS_BY_NAME:
+            raise AgentLoadError(
+                f"{agent.source_path}: phase blocks are only valid in an agent that "
+                f"declares a SubAgentSpec — this one has none, so the engine never "
+                f"spawns it in a phase and the block would render nowhere"
+            )
+
+    @staticmethod
+    def __validate_user_review(agent: SubAgent) -> None:
+        """Check a ``user_review: true`` agent has something to gate.
+
+        The gate signs off a **work product** — every file one review loop wrote
+        — so it only means anything for an agent that produces artifacts, which
+        in this codebase is exactly an agent whose :class:`SubAgentSpec`
+        declares a non-empty ``produces``. Declared on anything else the flag
+        would simply never fire, silently.
+
+        Raises:
+            AgentLoadError: The agent declares ``user_review`` but produces no
+                artifact role.
+        """
+        if not agent.user_review:
+            return
+        spec = SUBAGENT_SPECS_BY_NAME.get(agent.name)
+        if spec is None or not spec.produces:
+            raise AgentLoadError(
+                f"{agent.source_path}: declares 'user_review: true' but produces no "
+                f"artifact role, so there would be no work product for the user to "
+                f"sign off on"
+            )
+
+    def __finalize(self, agent: SubAgent, autonomous: bool, phase: str = PHASE_INITIAL) -> SubAgent:
+        """Render *agent* for the requested mode and round phase.
 
         Filters autonomous-disabled tools out of the effective tool set and
         expands every ``{SHARED:<name>}`` token in the body. One pass suffices:
         shared files are rejected at construction if they contain tokens of
         their own, and every name is known to resolve (also checked there), so
         the substitution here cannot fail.
+
+        Phase blocks are resolved **last**, after both substitutions, so a
+        ``{PHASE:…}`` block that arrived through a shared file or the skills
+        catalog is stripped on the same rules as one written inline.
         """
         spec = SUBAGENT_SPECS_BY_NAME.get(agent.name)
         effective_tools = agent.tools
@@ -654,15 +866,24 @@ class AgentRegistry:
             system_prompt = system_prompt.replace(
                 SKILLS_TOKEN, render_catalog(self.__skills.usable())
             )
-        return replace(agent, tools=effective_tools, system_prompt=system_prompt)
+        return replace(
+            agent, tools=effective_tools, system_prompt=render_phase(system_prompt, phase)
+        )
 
-    def get(self, name: str, autonomous: bool = False) -> SubAgent:
+    def get(self, name: str, autonomous: bool = False, phase: str = PHASE_INITIAL) -> SubAgent:
         """Return the subagent for ``name``, rendered for the requested mode.
 
         Args:
             name: Subagent name (e.g. ``'narrative_author'``).
             autonomous: When ``True``, tools whose ``ToolSpec.autonomous_mode``
                 is ``unavailable`` are excluded from the agent's tool set.
+            phase: Which ``{PHASE:…}`` blocks to keep — :data:`PHASE_INITIAL`
+                (writing from its inputs) or :data:`PHASE_REVISION` (resolving
+                findings against files it already wrote). Defaults to
+                ``initial`` because that is the *fuller* instruction set: a
+                caller that forgets to pass a phase degrades to "say
+                everything", never to "say nothing". An agent with no phase
+                blocks renders identically either way.
 
         Returns:
             SubAgent: The matching subagent definition.
@@ -675,7 +896,7 @@ class AgentRegistry:
                 f"No agent file for {name!r}. Expected: subagents/subagent_{name}.md "
                 f"or subagents/agent_{name}.md"
             )
-        return self.__finalize(self.__agents[name], autonomous)
+        return self.__finalize(self.__agents[name], autonomous, phase)
 
     def allowed_subagents(self, name: str) -> frozenset[str]:
         """Return the set of sub-agent names *name* is permitted to spawn.
@@ -717,11 +938,11 @@ class AgentRegistry:
         pipeline stage or an on-demand specialist (``standalone:``) and, for an
         author, the review-loop contract (``critic:``).
 
-        A sub-agent that declares a ``critic:`` gets the *loop* contract: its
-        tool takes an optional ``max_rounds`` and its declared output is the
-        agent's own output schema plus a ``review`` block (see
-        :func:`_review_output_schema`), because one call runs the whole
-        author→critic loop.
+        A sub-agent that declares a ``critic:`` **or** ``user_review: true``
+        gets the *loop* contract: its tool takes an optional ``max_rounds`` and
+        its declared output is the agent's own output schema plus a ``review``
+        block (see :func:`_review_output_schema`), because one call runs the
+        whole loop — author→critic rounds, author→user-gate rounds, or both.
 
         Returns them in allow-list order; an empty list when *caller* declares
         no sub-agents (the default for every agent that isn't an entry agent).
@@ -752,12 +973,17 @@ class AgentRegistry:
                     display_name=agent.display_name,
                     description=agent.purpose,
                     input_schema=spec.input_schema,
+                    # Both reviewed shapes report through the same `review`
+                    # block: an author gated only by the user still runs a
+                    # bounded loop (produce → gate → revise), so its caller
+                    # needs the same outcome/rounds/outstanding answer.
                     output_schema=(
                         _review_output_schema(spec.output_schema, agent.critic)
-                        if agent.critic
+                        if agent.critic or agent.user_review
                         else spec.output_schema
                     ),
                     critic_name=agent.critic,
+                    user_review=agent.user_review,
                     standalone=agent.standalone,
                     # Only an agent with declared needs has resolution behind
                     # it; one without keeps its caller-supplied `input_paths`,

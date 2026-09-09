@@ -32,12 +32,14 @@ from ._records import (
 )
 from ._store import (
     USER_FEEDBACK_KIND,
+    USER_FEEDBACK_REPORTER,
     apply_findings,
     close_findings_for_paths,
     last_round_timestamp,
     outstanding_findings,
     read_findings,
     record_user_feedback,
+    sort_for_display,
 )
 
 __all__ = [
@@ -50,6 +52,7 @@ __all__ = [
     "STATE_FIXED",
     "STATE_OUTSTANDING",
     "USER_FEEDBACK_KIND",
+    "USER_FEEDBACK_REPORTER",
     "Finding",
     "FindingState",
     "RoundSummary",
@@ -59,4 +62,5 @@ __all__ = [
     "outstanding_findings",
     "read_findings",
     "record_user_feedback",
+    "sort_for_display",
 ]

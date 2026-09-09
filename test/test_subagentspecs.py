@@ -368,10 +368,36 @@ def test_callee_schemas_reach_the_guide_through_its_tools() -> None:
     assert "max_rounds" in architect.input_schema["properties"]  # type: ignore[index]
     assert "review" in architect.output_schema["properties"]  # type: ignore[index]
 
-    # An unreviewed one gets neither.
-    narrative = specs["run_subagent_narrative_author"]
-    assert "max_rounds" not in narrative.input_schema["properties"]  # type: ignore[index]
-    assert "review" not in narrative.output_schema["properties"]  # type: ignore[index]
+    # A sub-agent with neither a critic nor a user gate gets neither field. Read
+    # off the live registry rather than naming an agent: which agents are
+    # reviewed is a frontmatter decision that moves, and hardcoding one here
+    # turns an intentional flag change into a spurious test failure.
+    unreviewed = [
+        name
+        for name in registry.allowed_subagents("guide")
+        if f"run_subagent_{name}" in specs
+        and not registry.get(name).critic
+        and not registry.get(name).user_review
+    ]
+    assert unreviewed, "expected at least one sub-agent the guide calls with no review at all"
+    for name in unreviewed:
+        spec = specs[f"run_subagent_{name}"]
+        assert "max_rounds" not in spec.input_schema["properties"], name  # type: ignore[index]
+        assert "review" not in spec.output_schema["properties"], name  # type: ignore[index]
+
+    # And the third shape: a user gate with no critic is still a loop, so it
+    # reports through the same `review` block and takes the same budget.
+    gate_only = [
+        name
+        for name in registry.allowed_subagents("guide")
+        if f"run_subagent_{name}" in specs
+        and registry.get(name).user_review
+        and not registry.get(name).critic
+    ]
+    for name in gate_only:
+        spec = specs[f"run_subagent_{name}"]
+        assert "max_rounds" in spec.input_schema["properties"], name  # type: ignore[index]
+        assert "review" in spec.output_schema["properties"], name  # type: ignore[index]
 
 
 def test_return_result_is_bound_to_each_agents_own_output_schema() -> None:

@@ -27,6 +27,7 @@ from kodo.findings import (
     outstanding_findings,
     read_findings,
     record_user_feedback,
+    sort_for_display,
 )
 
 # The work product under review, and two of its member files.
@@ -615,3 +616,79 @@ def test_user_feedback_does_not_count_as_a_review_round(tmp_path: Path) -> None:
 def test_empty_user_feedback_records_nothing(tmp_path: Path) -> None:
     assert record_user_feedback(tmp_path, _WP, "   ") == ""
     assert read_findings(tmp_path, _WP) == []
+
+
+# ---------------------------------------------------------------------------
+# sort_for_display — the order the user's findings table reads in
+# ---------------------------------------------------------------------------
+
+
+def _finding(
+    finding_id: str, *, state: str = STATE_OUTSTANDING, locations: list[dict[str, object]] | None
+) -> dict[str, object]:
+    return {
+        "id": finding_id,
+        "kind": "gap",
+        "description": "…",
+        "locations": locations if locations is not None else [],
+        "state": state,
+        "reported_by": "architect_critic",
+    }
+
+
+def test_display_order_puts_outstanding_above_fixed(tmp_path: Path) -> None:
+    """The top of the table is the work still to do; the bottom is the record of
+    what the loop has closed."""
+    findings = [
+        _finding("f_fixed", state=STATE_FIXED, locations=[_loc("proj/a.md", 1)]),
+        _finding("f_open", locations=[_loc("proj/z.md", 99)]),
+    ]
+    assert [f["id"] for f in sort_for_display(findings)] == ["f_open", "f_fixed"]
+
+
+def test_display_order_is_by_path_then_line_within_a_state(tmp_path: Path) -> None:
+    findings = [
+        _finding("b_md_2", locations=[_loc("proj/b.md", 2)]),
+        _finding("a_md_40", locations=[_loc("proj/a.md", 40)]),
+        _finding("a_md_7", locations=[_loc("proj/a.md", 7)]),
+    ]
+    # Line 7 before line 40: ordered numerically, not by the id's own text.
+    assert [f["id"] for f in sort_for_display(findings)] == ["a_md_7", "a_md_40", "b_md_2"]
+
+
+def test_a_multi_location_finding_is_placed_by_its_first_location(tmp_path: Path) -> None:
+    """One row per finding, never one per location: `locations` is a list
+    precisely so a cross-file defect stays a single finding."""
+    cross_file = _finding("f_cross", locations=[_loc("proj/a.md", 5), _loc("proj/z.md", 1)])
+    later = _finding("f_later", locations=[_loc("proj/m.md", 1)])
+
+    ordered = sort_for_display([later, cross_file])
+
+    assert [f["id"] for f in ordered] == ["f_cross", "f_later"]
+    assert len(ordered) == 2
+
+
+def test_a_finding_with_no_location_or_line_still_sorts(tmp_path: Path) -> None:
+    """The user's own rejection about a set as a whole is anchored nowhere, and
+    a critic may raise a document-wide finding with no line."""
+    findings = [
+        _finding("f_lined", locations=[_loc("proj/a.md", 3)]),
+        _finding("f_unlined", locations=[_loc("proj/a.md")]),
+        _finding("f_unanchored", locations=[]),
+    ]
+    assert [f["id"] for f in sort_for_display(findings)] == [
+        "f_unanchored",
+        "f_unlined",
+        "f_lined",
+    ]
+
+
+def test_display_order_is_total_so_it_does_not_shuffle_between_rounds(tmp_path: Path) -> None:
+    """Two findings on the same line would otherwise swap places between
+    emissions for no reason the reader can see."""
+    same_spot = [
+        _finding("f_b", locations=[_loc("proj/a.md", 3)]),
+        _finding("f_a", locations=[_loc("proj/a.md", 3)]),
+    ]
+    assert [f["id"] for f in sort_for_display(same_spot)] == ["f_a", "f_b"]
+    assert [f["id"] for f in sort_for_display(list(reversed(same_spot)))] == ["f_a", "f_b"]

@@ -63,6 +63,43 @@ def _history_attachment_links(attachments: object, session_dir: Path) -> list[di
     return links
 
 
+def _finding_to_entry(finding: dict[str, object]) -> dict[str, object]:
+    """Project one persisted finding into the client's camelCase shape.
+
+    The findings table is the one feed entry whose payload is a nested
+    structure rather than a few scalars, so the snake→camel mapping the client
+    boundary applies everywhere else has to be spelled out once. It is spelled
+    out **twice** on purpose — here for the replayed marker, and in kodo-vsix's
+    ``agent-event-translation.ts`` for the live event — because the two arrive
+    by genuinely different routes; what matters is that both produce the same
+    shape, which is what lets the reducer treat live and replayed rows
+    identically.
+    """
+    raw_locations = finding.get("locations")
+    locations: list[dict[str, object]] = []
+    for location in raw_locations if isinstance(raw_locations, list) else []:
+        if not isinstance(location, dict):
+            continue
+        first_line = location.get("first_line")
+        last_line = location.get("last_line")
+        locations.append(
+            {
+                "path": str(location.get("path", "")),
+                "firstLine": first_line if isinstance(first_line, int) else None,
+                "lastLine": last_line if isinstance(last_line, int) else None,
+                "excerpt": str(location.get("excerpt", "")),
+            }
+        )
+    return {
+        "id": str(finding.get("id", "")),
+        "kind": str(finding.get("kind", "")),
+        "description": str(finding.get("description", "")),
+        "state": str(finding.get("state", "")),
+        "reportedBy": str(finding.get("reported_by", "")),
+        "locations": locations,
+    }
+
+
 class HistoryProjector:
     """Rebuilds the client feed and the live LLM context from ``session.jsonl``."""
 
@@ -280,6 +317,30 @@ class HistoryProjector:
                 {
                     "type": "agent_tool_call_cyclic_critical",
                     "message": str(line.get("message", "")),
+                }
+            ]
+        if kind == "review_findings":
+            iteration = line.get("iteration")
+            max_rounds = line.get("max_rounds")
+            raw_paths = line.get("paths")
+            raw_findings = line.get("findings")
+            return [
+                {
+                    "type": "review_findings",
+                    "workProductId": str(line.get("work_product_id", "")),
+                    "agent": str(line.get("agent", "")),
+                    "reviewerName": str(line.get("reviewer_name", "")),
+                    "iteration": iteration if isinstance(iteration, int) else 0,
+                    "maxRounds": max_rounds if isinstance(max_rounds, int) else 0,
+                    "paths": [str(p) for p in raw_paths] if isinstance(raw_paths, list) else [],
+                    # The client's own shape, so a replayed table is byte-identical
+                    # to the live one it renders (see `agent-event-translation.ts`,
+                    # which does this same mapping for the live event).
+                    "findings": [
+                        _finding_to_entry(f)
+                        for f in (raw_findings if isinstance(raw_findings, list) else [])
+                        if isinstance(f, dict)
+                    ],
                 }
             ]
         if kind == "usage":

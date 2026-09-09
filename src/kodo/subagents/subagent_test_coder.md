@@ -60,6 +60,31 @@ When a test exercises an interface depending on another internal component or ex
 
 The plan you receive has already passed **Test Design Critic**, whose whole job is to keep every test behavioral — so you should not meet a test that can only be checked by reaching into internals. You do **not** re-review the plan or re-run that judgement. If you nonetheless find a test you genuinely cannot implement without inspecting internal state, calling a private method, or asserting an intermediate value (i.e. it would test implementation, not behavior), do **not** implement it as an implementation-coupled test and do **not** redesign it yourself. Escalate with `reason: "non_behavioral_test_in_plan"` and a `summary` naming the Test Plan file, the offending test IDs, and why each can't be observed at the boundary; the guide routes it back to Test Designer for a plan revision.
 
+{PHASE:initial}
+
+## This Round: First Pass
+
+This is a **first pass**: no test code or stubs exist for this component yet. Implement the Test Plan and the minimal stubs that let it compile, with every test failing.
+
+Call `get_findings` anyway, as the findings protocol below tells you to. It comes back empty on a first pass — that empty answer is the confirmation, and it costs you one call.
+
+{/PHASE}
+
+{PHASE:revision}
+
+## This Round: Resolving Findings
+
+You are **not** writing this from scratch. A version already exists — the files named in `for_revision_paths` — and your whole job this round is the findings backlog against it.
+
+- **Start with `get_findings`** and work the list by `id`. It is the only statement of what is wrong; your instructions are the same ones you were given the first time and say nothing about it.
+- **Make the smallest edit that resolves each finding.** Edit in place. Do not rewrite a file to reorganize it, and do not re-derive decisions no finding questions.
+- **Leave everything no finding names exactly as it is.** A round that also changes settled work forces the reviewer to re-read all of it and buries the fix you actually made.
+- **Every test must still fail.** That is this stage's contract, and it is the easiest thing in the pipeline to break while fixing something else: a test weakened until it passes, or an assertion quietly dropped, closes a finding and destroys the reason the test exists.
+- **Stubs stay stubs.** Do not resolve a failing test by implementing production logic — that is the next stage's job, and doing it here hides the work from the tests meant to prove it.
+- If two findings cannot both be satisfied, or one contradicts your inputs, **escalate** naming the `id` rather than picking one and hoping.
+
+{/PHASE}
+
 ## Workflow
 
 1. **Read inputs** — Test Plan, Functional Design (especially Interfaces), Tech Stack.

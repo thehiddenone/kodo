@@ -27,7 +27,7 @@ from kodo.runtime._checkpoints import CheckpointState
 from kodo.runtime._engine import _core
 from kodo.runtime._gates import ApprovalResponse
 from kodo.state import TransientStore
-from kodo.subagents import AgentLoadError
+from kodo.subagents import AgentLoadError, SubAgent
 from kodo.workproducts import WorkProduct
 
 
@@ -68,7 +68,7 @@ class _FakeRegistry:
     def __init__(self, *, known: dict[str, object] | None = None) -> None:
         self._known = known or {}
 
-    def get(self, name: str, autonomous: bool = False):
+    def get(self, name: str, autonomous: bool = False, phase: str = "initial"):
         if name not in self._known:
             raise AgentLoadError(f"unknown agent {name!r}")
         return self._known[name]
@@ -440,7 +440,7 @@ def _make_project(root: Path) -> None:
 
 async def test_resume_pending_prompt_approval_agree_requeues_text(tmp_path: Path) -> None:
     gate = _FakeGate(action="agree")
-    engine, _t, _s, _g = _make_engine(tmp_path, gate=gate)
+    engine, _t, _s, _g = _make_engine(tmp_path, gate=gate, registry=_registry_with(_author()))
 
     await engine._resume_pending_prompt(
         {
@@ -1424,6 +1424,30 @@ def _work_product(paths: list[str], agent: str = "architect") -> WorkProduct:
     )
 
 
+def _author(
+    name: str = "architect", *, user_review: bool = True, critic: str = "architect_critic"
+) -> SubAgent:
+    """A minimal loaded author, for the frontmatter flags finalize reads.
+
+    ``user_review`` decides whether the approval gate fires at all, and
+    ``critic`` decides whether approving also closes the backlog — both are
+    read off the agent, never off engine policy, which is the whole point of
+    the flag.
+    """
+    return SubAgent(
+        name=name,
+        tools=frozenset(),
+        system_prompt="body",
+        source_path=Path(f"subagent_{name}.md"),
+        critic=critic,
+        user_review=user_review,
+    )
+
+
+def _registry_with(agent: SubAgent) -> _FakeRegistry:
+    return _FakeRegistry(known={agent.name: agent})
+
+
 async def test_finalize_work_product_unresolvable_member_is_skipped(tmp_path: Path) -> None:
     project_root = tmp_path / "proj"
     _make_project(project_root)
@@ -1459,7 +1483,7 @@ async def test_finalize_work_product_autonomous_auto_accepts(tmp_path: Path) -> 
 
     project_root = tmp_path / "proj"
     _make_project(project_root)
-    engine, _t, _s, gate = _make_engine(tmp_path)
+    engine, _t, _s, gate = _make_engine(tmp_path, registry=_registry_with(_author()))
     engine._session_workspace.set_folders({"proj": project_root})
     engine._session.effective_autonomous = True
     _seed_tracked_doc(project_root, "specs/a.md")
@@ -1477,7 +1501,7 @@ async def test_finalize_work_product_interactive_agree_accepts(tmp_path: Path) -
     project_root = tmp_path / "proj"
     _make_project(project_root)
     gate = _FakeGate(action="agree")
-    engine, _t, _s, _g = _make_engine(tmp_path, gate=gate)
+    engine, _t, _s, _g = _make_engine(tmp_path, gate=gate, registry=_registry_with(_author()))
     engine._session_workspace.set_folders({"proj": project_root})
     engine._session.effective_autonomous = False
     _seed_tracked_doc(project_root, "specs/a.md")
@@ -1499,7 +1523,7 @@ async def test_finalize_work_product_settles_every_member_on_one_decision(
     project_root = tmp_path / "proj"
     _make_project(project_root)
     gate = _FakeGate(action="agree")
-    engine, _t, _s, _g = _make_engine(tmp_path, gate=gate)
+    engine, _t, _s, _g = _make_engine(tmp_path, gate=gate, registry=_registry_with(_author()))
     engine._session_workspace.set_folders({"proj": project_root})
     engine._session.effective_autonomous = False
     _seed_tracked_doc(project_root, "src/a.py")
@@ -1523,7 +1547,7 @@ async def test_finalize_work_product_interactive_feedback_rejects_the_whole_set(
     project_root = tmp_path / "proj"
     _make_project(project_root)
     gate = _FakeGate(action="feedback", feedback="needs work")
-    engine, _t, _s, _g = _make_engine(tmp_path, gate=gate)
+    engine, _t, _s, _g = _make_engine(tmp_path, gate=gate, registry=_registry_with(_author()))
     engine._session_workspace.set_folders({"proj": project_root})
     engine._session.effective_autonomous = False
     _seed_tracked_doc(project_root, "src/a.py")
@@ -1547,7 +1571,9 @@ async def test_rejection_feedback_is_minted_as_a_finding_anchored_to_the_named_f
     project_root = tmp_path / "proj"
     _make_project(project_root)
     gate = _FakeGate(action="feedback", feedback="wrong", artifact_path="proj/src/b.py")
-    engine, transient, _s, _g = _make_engine(tmp_path, gate=gate)
+    engine, transient, _s, _g = _make_engine(
+        tmp_path, gate=gate, registry=_registry_with(_author())
+    )
     transient.attach_session("s1", resumed=False)
     engine._session_workspace.set_folders({"proj": project_root})
     engine._session.effective_autonomous = False
@@ -1565,6 +1591,116 @@ async def test_rejection_feedback_is_minted_as_a_finding_anchored_to_the_named_f
     ]
 
 
+async def test_finalize_work_product_without_user_review_never_gates(tmp_path: Path) -> None:
+    """The flag is opt-in: an author that does not declare it is accepted the
+    moment nothing is outstanding, with no gate and no `review_result` — that
+    entry means "the user decided", and here no user was asked."""
+    from kodo.guided_state import read_history
+
+    project_root = tmp_path / "proj"
+    _make_project(project_root)
+    gate = _FakeGate(action="agree")
+    engine, _t, _s, _g = _make_engine(
+        tmp_path, gate=gate, registry=_registry_with(_author(user_review=False))
+    )
+    engine._session_workspace.set_folders({"proj": project_root})
+    engine._session.effective_autonomous = False
+    _seed_tracked_doc(project_root, "specs/a.md")
+
+    await engine._finalize_work_product(_work_product(["proj/specs/a.md"]))
+
+    assert gate.calls == []
+    history = read_history(project_root / "specs" / "a.md", project_root)
+    assert [e["type"] for e in history] == ["new_revision", "accepted"]
+
+
+async def test_finalize_work_product_unknown_author_fails_open(tmp_path: Path) -> None:
+    """An agent that has been renamed or removed leaves work nobody can re-run;
+    accepting it beats parking it at a gate forever."""
+    from kodo.guided_state import read_history
+
+    project_root = tmp_path / "proj"
+    _make_project(project_root)
+    gate = _FakeGate(action="agree")
+    engine, _t, _s, _g = _make_engine(tmp_path, gate=gate)
+    engine._session_workspace.set_folders({"proj": project_root})
+    engine._session.effective_autonomous = False
+    _seed_tracked_doc(project_root, "specs/a.md")
+
+    await engine._finalize_work_product(_work_product(["proj/specs/a.md"]))
+
+    assert gate.calls == []
+    history = read_history(project_root / "specs" / "a.md", project_root)
+    assert [e["type"] for e in history] == ["new_revision", "accepted"]
+
+
+async def test_approval_closes_the_backlog_when_the_author_has_no_critic(
+    tmp_path: Path,
+) -> None:
+    """With no critic there is nobody to verify a fix, so the user's approval of
+    the revised work is the verification. Otherwise the finding minted by their
+    own earlier rejection would stay outstanding forever."""
+    from kodo.findings import read_findings, record_user_feedback
+
+    project_root = tmp_path / "proj"
+    _make_project(project_root)
+    gate = _FakeGate(action="agree")
+    engine, transient, _s, _g = _make_engine(
+        tmp_path, gate=gate, registry=_registry_with(_author(critic=""))
+    )
+    transient.attach_session("s1", resumed=False)
+    engine._session_workspace.set_folders({"proj": project_root})
+    engine._session.effective_autonomous = False
+    _seed_tracked_doc(project_root, "specs/a.md")
+    work_product = _work_product(["proj/specs/a.md"])
+    record_user_feedback(
+        engine._findings_dir(),
+        work_product.id,
+        "an earlier objection",
+        path="proj/specs/a.md",
+        project="proj",
+        agent="architect",
+    )
+
+    await engine._finalize_work_product(work_product)
+
+    findings = read_findings(engine._findings_dir(), work_product.id)
+    assert [f["state"] for f in findings] == ["fixed"]
+
+
+async def test_approval_leaves_the_backlog_alone_when_a_critic_exists(
+    tmp_path: Path,
+) -> None:
+    """The engine only stands in for a missing critic. Where one exists, closing
+    a finding stays its job — the user approved the set, not each fix."""
+    from kodo.findings import read_findings, record_user_feedback
+
+    project_root = tmp_path / "proj"
+    _make_project(project_root)
+    gate = _FakeGate(action="agree")
+    engine, transient, _s, _g = _make_engine(
+        tmp_path, gate=gate, registry=_registry_with(_author())
+    )
+    transient.attach_session("s1", resumed=False)
+    engine._session_workspace.set_folders({"proj": project_root})
+    engine._session.effective_autonomous = False
+    _seed_tracked_doc(project_root, "specs/a.md")
+    work_product = _work_product(["proj/specs/a.md"])
+    record_user_feedback(
+        engine._findings_dir(),
+        work_product.id,
+        "an earlier objection",
+        path="proj/specs/a.md",
+        project="proj",
+        agent="architect",
+    )
+
+    await engine._finalize_work_product(work_product)
+
+    findings = read_findings(engine._findings_dir(), work_product.id)
+    assert [f["state"] for f in findings] == ["outstanding"]
+
+
 async def test_rejection_feedback_naming_no_member_is_left_unanchored(
     tmp_path: Path,
 ) -> None:
@@ -1575,7 +1711,9 @@ async def test_rejection_feedback_naming_no_member_is_left_unanchored(
     project_root = tmp_path / "proj"
     _make_project(project_root)
     gate = _FakeGate(action="feedback", feedback="hmm", artifact_path="proj/src/elsewhere.py")
-    engine, transient, _s, _g = _make_engine(tmp_path, gate=gate)
+    engine, transient, _s, _g = _make_engine(
+        tmp_path, gate=gate, registry=_registry_with(_author())
+    )
     transient.attach_session("s1", resumed=False)
     engine._session_workspace.set_folders({"proj": project_root})
     engine._session.effective_autonomous = False

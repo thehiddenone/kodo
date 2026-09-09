@@ -40,6 +40,7 @@ from kodo.transport import (
     EVT_CONTEXT_STATS,
     EVT_ERROR,
     EVT_NUDGE,
+    EVT_REVIEW_FINDINGS,
     EVT_SECURITY_RULE_ADDED,
     EVT_SESSION_GREETING,
     EVT_SESSION_NAMING,
@@ -444,6 +445,59 @@ class EngineEmitters:
         await self._sink.send(
             Envelope.make_event(EVT_AGENT_TOOL_CALL_CYCLIC_CRITICAL, {"message": message})
         )
+
+    async def emit_review_findings(
+        self,
+        *,
+        work_product_id: str,
+        agent: str,
+        reviewer_name: str,
+        iteration: int,
+        max_rounds: int,
+        paths: list[str],
+        findings: list[dict[str, object]],
+    ) -> None:
+        """Push+persist the user's findings table for one review round.
+
+        Fired after every round that could have changed a work product's
+        backlog — each critic round, and each rejection at the user approval
+        gate — so the user can read what is actually outstanding and watch it
+        shrink, which no other event in the protocol tells them.
+
+        **No LLM ever sees this.** That is structural, not a convention: the
+        marker carries no ``role``, and the LLM-facing history is rebuilt only
+        from lines that have one (``_resume.py``). The author reaches the same
+        backlog through its own ``get_findings`` tool, a separate path with its
+        own auto-scoping — deliberately, so what the user is shown and what the
+        model is told can never be entangled.
+
+        *findings* must already be ordered by
+        :func:`kodo.findings.sort_for_display`; the client renders the list as
+        given.
+
+        Args:
+            work_product_id: The reviewed set's id (``<project>/<agent>[/<resp>]``).
+            agent: The **author** that owns the work product, not the reviewer.
+            reviewer_name: The critic that just ran, or ``"user"`` when this
+                round was a rejection at the approval gate.
+            iteration: 1-based round number within the current loop.
+            max_rounds: The loop's budget, so the counter reads "2 of 5".
+            paths: The work product's member files.
+            findings: The whole backlog — outstanding *and* fixed. Fixed ones
+                are the record of what the loop has closed, which is what makes
+                the table readable as progress rather than a snapshot.
+        """
+        payload: dict[str, object] = {
+            "work_product_id": work_product_id,
+            "agent": agent,
+            "reviewer_name": reviewer_name,
+            "iteration": iteration,
+            "max_rounds": max_rounds,
+            "paths": paths,
+            "findings": findings,
+        }
+        self._append_marker({"type": "review_findings", **payload})
+        await self._sink.send(Envelope.make_event(EVT_REVIEW_FINDINGS, payload))
 
     async def emit_agent_started(self, agent_name: str) -> None:
         """Announce that *agent_name* took the floor."""

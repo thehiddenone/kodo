@@ -377,7 +377,14 @@ rather than a `concerns` list.
 
 ## 5. Acceptance
 
-`_finalize_work_product` runs when a round leaves zero outstanding findings.
+`_finalize_work_product` runs when a round leaves zero outstanding findings, and
+directly on each round of a gate-only loop (GUIDED_DEV_MODE.md §5a).
+
+**Whether the gate fires at all is the author's own frontmatter.**
+`user_review: true` says this artifact is worth a human's attention; without it
+the work product is accepted the moment nothing is outstanding. Before that flag,
+"does a human sign this off?" was answered by whether somebody had paired a
+critic with the author, since the gate could only ever fire from the critic path.
 
 **One decision settles the whole set.** Accepting members one at a time would
 permit exactly the half-accepted, unbuildable state the unit exists to prevent,
@@ -388,6 +395,7 @@ history, and is correctly per file — so acceptance fans out rather than moving
 
 | Condition | Behaviour |
 | --- | --- |
+| the author does not declare `user_review` | straight to `accepted`, no gate |
 | Autonomous mode | straight to `accepted`, no gate |
 | `edit_control == "allow_all"` | straight to `accepted`, no gate |
 | user agrees at the gate | `review_result: approve`, then `accepted` |
@@ -397,13 +405,30 @@ The `allow_all` shortcut is new. Edit Control set to *Allow All* already means
 "don't stop me for file changes"; stopping for a document sign-off in that
 posture was inconsistent with every other gate.
 
-Note what the two shortcut rows do *not* write: no `review_result`. That entry
-means "the user decided at the gate", and in those two postures no gate fired —
+Note what the three shortcut rows do *not* write: no `review_result`. That entry
+means "the user decided at the gate", and in those postures no gate fired —
 writing one would fabricate a decision nobody made.
 
 A rejection puts the whole work product back to `needs_revision` and gives the
 enclosing loop another round with the user's objection sitting in the backlog alongside
 the critic's own findings.
+
+### The one exception to "only a critic closes a finding"
+
+§3's rule holds because a critic *verifies*: an author saying it fixed something
+is not the same as the fix being real, which is why verification is a separate
+agent's job.
+
+An author with **no `critic:`** has no such agent. Every finding on its work
+product came from the user's own rejections at this gate, and the user has now
+read the revised work and approved it — so their approval is the verification,
+and `_close_findings_on_approval` closes whatever is still outstanding, recorded
+as a review round by `user`. Without it the very first rejection would leave a
+finding outstanding forever: the backlog would never empty, and the user's own
+findings table would keep showing a defect they had already accepted a fix for.
+
+This applies **only** where there is no critic. Where one exists, closing stays
+its job — the user approved the set, not each individual fix.
 
 ## 6. Document status, after `feedback` was dropped
 

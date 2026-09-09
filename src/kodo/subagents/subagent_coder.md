@@ -60,6 +60,31 @@ Production code in the Tech Stack language, under the project's `src/`. You edit
 
 The **Functional Design and Requirements are the specification**; tests are downstream verification. Implement what the spec says. If your implementation correctly fulfills the spec and a test still fails, the test is potentially wrong — route a finding to Test Coder; do not adjust the implementation to satisfy a test that contradicts the spec. If you catch yourself reasoning "the test wants X but the spec says Y, so I'll implement X" — stop; implement Y and route the discrepancy.
 
+{PHASE:initial}
+
+## This Round: First Pass
+
+This is a **first pass**: the component's tests exist and all fail. Implement the production code, working from the Functional Design, until every one of them passes.
+
+Call `get_findings` anyway, as the findings protocol below tells you to. It comes back empty on a first pass — that empty answer is the confirmation, and it costs you one call.
+
+{/PHASE}
+
+{PHASE:revision}
+
+## This Round: Resolving Findings
+
+You are **not** writing this from scratch. A version already exists — the files named in `for_revision_paths` — and your whole job this round is the findings backlog against it.
+
+- **Start with `get_findings`** and work the list by `id`. It is the only statement of what is wrong; your instructions are the same ones you were given the first time and say nothing about it.
+- **Make the smallest edit that resolves each finding.** Edit in place. Do not rewrite a file to reorganize it, and do not re-derive decisions no finding questions.
+- **Leave everything no finding names exactly as it is.** A round that also changes settled work forces the reviewer to re-read all of it and buries the fix you actually made.
+- **Re-run the build and the component's tests before you finish.** A fix that closes a review finding and breaks a passing test has made things worse, and the next round will be spent discovering that.
+- **Do not edit the tests.** If a test is itself wrong, that is a finding for its author — say so in your summary and route it; do not make it pass by changing what it asserts.
+- If two findings cannot both be satisfied, or one contradicts your inputs, **escalate** naming the `id` rather than picking one and hoping.
+
+{/PHASE}
+
 ## Workflow
 
 ### Stage 1 — Read inputs

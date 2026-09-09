@@ -17,13 +17,17 @@ from pathlib import Path, PurePosixPath
 from kodo.common import Envelope
 from kodo.findings import (
     STATE_OUTSTANDING,
+    USER_FEEDBACK_REPORTER,
     RoundSummary,
     apply_findings,
     close_findings_for_paths,
     read_findings,
+    sort_for_display,
 )
 from kodo.llms import Message
 from kodo.subagents import (
+    PHASE_INITIAL,
+    PHASE_REVISION,
     PRODUCES_REMAINDER,
     RESPONSIBILITY_CODE_KEY,
     ROLE_ARCHITECTURE,
@@ -270,13 +274,25 @@ class SubagentMixin:
         task_input: dict[str, object],
         max_rounds: int | None = None,
     ) -> dict[str, object]:
-        """Gate a caller's sub-agent spawn, then run it — with its critic, if any.
+        """Gate a caller's sub-agent spawn, then run it — with whatever review it declares.
 
-        Two shapes, chosen by the *callee's* own frontmatter, never by the
-        caller: a sub-agent with no ``critic:`` runs once and returns its
-        result; a sub-agent that declares one runs the entire author→critic
-        loop (:meth:`_run_review_loop`) and returns its result plus a ``review``
-        block. The caller never names a critic and never iterates by hand.
+        The shape is chosen by the *callee's* own frontmatter, never by the
+        caller, from two independent flags:
+
+        - ``critic:`` — a critic reviews every round.
+        - ``user_review: true`` — the **user** signs the work product off at the
+          approval gate before it is accepted.
+
+        Either one makes the call a bounded loop (:meth:`_run_review_loop`)
+        returning the agent's result plus a ``review`` block; neither makes it a
+        single pass (:meth:`_run_unreviewed_author`). They compose: with both,
+        critic rounds run first and the gate fires once the backlog is clear.
+
+        The caller never names a critic, never asks for a gate, and never
+        iterates by hand — which is the point of putting both declarations in
+        the callee's frontmatter. Before ``user_review`` existed, "does a human
+        sign this off?" was answered by whether the agent happened to have a
+        critic, since the gate could only ever fire from the critic path.
 
         Args:
             caller: Agent making the call (the running agent — not assumed to be
@@ -287,30 +303,34 @@ class SubagentMixin:
                 (:meth:`_scoped_task_input`), so a ``responsibility_code``
                 aimed at an agent that is not per-component never reaches
                 anything that reads it — the brief included.
-            max_rounds: Caller's cap on author/critic rounds, or ``None`` for
+            max_rounds: Caller's cap on review rounds, or ``None`` for
                 :data:`_DEFAULT_MAX_REVIEW_ROUNDS`. Ignored when the sub-agent
-                has no critic.
+                declares neither a critic nor a user review gate.
 
         Returns:
             dict: The sub-agent's structured result (its ``output_schema``),
-            plus ``review`` when a critic loop ran.
+            plus ``review`` when a review loop ran.
 
         Raises:
             PermissionError: ``caller`` is not permitted to spawn ``name`` (or,
-                for a reviewed sub-agent, its critic).
+                for a critic-reviewed sub-agent, its critic).
         """
         self._assert_can_spawn(caller, name)
         critic = self._critic_for(name)
-        if not critic:
-            # Unreviewed authors still fill artifact roles — `narrative_author`
-            # writes the two documents every later stage resolves against — so
-            # they go through the same resolve-then-record path as a reviewed
-            # one, just without the loop around it.
+        if not critic and not self._user_reviews(name):
+            # Unreviewed authors still fill artifact roles — an author that
+            # neither has a critic nor needs a sign-off still writes documents
+            # every later stage resolves against — so they go through the same
+            # resolve-then-record path as a reviewed one, just without the loop
+            # around it.
             return await self._run_unreviewed_author(name, task_input)
-        # The critic is spawned by the engine, but on this caller's behalf, so
-        # it is gated against the same allow-list — a caller may not reach a
-        # sub-agent it was never granted just because an author points at it.
-        self._assert_can_spawn(caller, critic)
+        if critic:
+            # The critic is spawned by the engine, but on this caller's behalf,
+            # so it is gated against the same allow-list — a caller may not
+            # reach a sub-agent it was never granted just because an author
+            # points at it. A user gate needs no such check: the reviewer is a
+            # person, not an agent.
+            self._assert_can_spawn(caller, critic)
         return await self._run_review_loop(name, critic, task_input, max_rounds)
 
     def _critic_for(self: EngineHost, name: str) -> str:
@@ -320,15 +340,36 @@ class SubagentMixin:
         except AgentLoadError:
             return ""
 
+    def _user_reviews(self: EngineHost, name: str) -> bool:
+        """Whether sub-agent *name*'s work product needs the user's sign-off.
+
+        Read from frontmatter (``user_review:``) every time rather than cached,
+        for the same reason :meth:`_critic_for` is: the registry is the single
+        source of truth for an agent's declared flow shape, and nothing in the
+        engine should hold a second opinion about it.
+        """
+        try:
+            return self._registry.get(name).user_review
+        except AgentLoadError:
+            return False
+
     async def _run_unreviewed_author(
         self: EngineHost, name: str, task_input: dict[str, object]
     ) -> dict[str, object]:
-        """Spawn a sub-agent that has no critic, recording what it produced.
+        """Spawn a sub-agent with no review at all, recording what it produced.
+
+        Reached only when the callee declares neither a ``critic:`` nor
+        ``user_review: true`` — one pass, no loop, no gate.
 
         The ledger is not a review-loop artefact: a role has to be resolvable
-        whether or not its producer happens to be reviewed, and stage 1's
-        ``narrative_author`` — unreviewed — produces the Narrative and Tech
-        Stack that every later stage asks for by name.
+        whether or not its producer happens to be reviewed, so an unreviewed
+        author's output is recorded exactly like a reviewed one's.
+
+        Its prior work product is still read first, for two reasons that both
+        apply even without a review loop: it seeds ``for_revision_paths``, so a
+        re-invocation on the same subject continues rather than starting over,
+        and it decides the **phase** — an agent asked to redo work it has
+        already done is in ``revision``, not ``initial``.
 
         A sub-agent that reports no paths (a pure-query specialist, an author
         that escalated before writing) simply records nothing; there is no work
@@ -337,6 +378,19 @@ class SubagentMixin:
         task_input = self._scoped_task_input(name, task_input)
         responsibility = self._responsibility_code(name, task_input)
         round_task = dict(task_input)
+        spec = self._registry.spec_for(name)
+        # Only an agent that fills an artifact role can have a prior work
+        # product, so a pure-query specialist (`investigator`, `web_search`)
+        # skips the ledger read entirely rather than looking up an id nothing
+        # ever wrote.
+        work_product = (
+            await self._existing_work_product(name, responsibility)
+            if spec is not None and spec.produces
+            else None
+        )
+        revising = work_product is not None and bool(work_product.paths)
+        if revising and work_product is not None:
+            round_task["for_revision_paths"] = list(work_product.paths)
         resolved, missing = await self._resolve_input_paths(
             name,
             responsibility_code=responsibility,
@@ -347,9 +401,11 @@ class SubagentMixin:
             return self._missing_inputs_result(name, missing)
         if resolved:
             round_task["input_paths"] = resolved
-        output = await self._spawn_subagent(name, round_task)
+        output = await self._spawn_subagent(
+            name, round_task, phase=PHASE_REVISION if revising else PHASE_INITIAL
+        )
 
-        paths = _reported_paths(output) or _produced_paths(self._registry.spec_for(name), output)
+        paths = _reported_paths(output) or _produced_paths(spec, output)
         if paths and not _escalation_reason(output):
             await self._record_work_product(name, responsibility, paths, output)
         return output
@@ -361,16 +417,25 @@ class SubagentMixin:
         task_input: dict[str, object],
         max_rounds: int | None,
     ) -> dict[str, object]:
-        """Drive author→critic rounds until the work product settles or the budget ends.
+        """Drive review rounds until the work product settles or the budget ends.
 
         One round is: spawn the author, record the **whole set of files** it
-        reported (its work product), hand that set to the critic, let the engine
-        apply the critic's findings to the work product's session-scoped backlog
-        (:meth:`_record_findings`, which also fires the user's acceptance gate
-        once nothing is outstanding), then read the status back — the *stores*
-        are authoritative, not the critic's return value, because the user's own
-        review decision lands there too and can turn an accepted work product
-        back into one needing revision.
+        reported (its work product), then review it. *How* it is reviewed is the
+        callee's own declaration, and this method drives both shapes:
+
+        - **A critic** (``critic_name`` non-empty) — hand the set to it, let the
+          engine apply its findings to the work product's session-scoped backlog
+          (:meth:`_record_findings`, which also fires the user's acceptance gate
+          once nothing is outstanding), then read the status back.
+        - **The user alone** (``critic_name`` empty, reached only for an author
+          declaring ``user_review: true``) — put the set straight to the
+          approval gate (:meth:`_run_user_review_round`). A rejection is minted
+          as a finding, so the *next* round's author reaches the objection
+          through the same ``get_findings`` call it would use for a critic's.
+
+        Either way the status comes from the *stores*, not from a return value:
+        the user's own review decision lands there too and can turn an accepted
+        work product back into one needing revision.
 
         Until 2026-09-04 the unit here was a single ``primary_path``: the first
         authors each wrote one document, and the rest of the pipeline inherited
@@ -384,9 +449,9 @@ class SubagentMixin:
         - ``accepted`` — the round left nothing outstanding and the acceptance
           flow settled the work product.
         - ``escalated`` — the author returned a non-empty ``reason``: it hit a
-          blocker it cannot defensibly resolve. The critic is **not** spawned
-          and no further round is spent — no amount of revision fixes a blocker
-          whose resolution lives outside the author.
+          blocker it cannot defensibly resolve. No review is run and no further
+          round is spent — no amount of revision fixes a blocker whose
+          resolution lives outside the author.
         - ``max_rounds`` — the budget ran out with findings outstanding.
         - ``not_converging`` — a round closed nothing and opened nothing
           (:attr:`~kodo.findings.RoundSummary.stalled`).
@@ -395,6 +460,21 @@ class SubagentMixin:
         with ``for_revision_paths`` listing the previous round's whole member
         set from round two onward. Outstanding findings are never rendered into
         the task: both halves read them through ``get_findings``.
+
+        What *does* change between rounds is the author's own prompt. A round
+        with a prior member set is spawned in :data:`~kodo.subagents.PHASE_REVISION`
+        and one without in :data:`~kodo.subagents.PHASE_INITIAL`, so an author
+        that declares ``{PHASE:…}`` blocks speaks to the job it is actually
+        doing — writing from its inputs, or resolving a backlog against files it
+        already wrote. Note this is seeded from the ledger *before* round 1, so
+        a re-invocation's first round is correctly a revision.
+
+        Args:
+            author_name: The producing sub-agent.
+            critic_name: Its critic, or ``""`` when the only reviewer is the
+                user at the approval gate.
+            task_input: The caller's structured task.
+            max_rounds: Round budget, or ``None`` for the default.
 
         Returns:
             dict: The last round's author output, plus the ``review`` block
@@ -421,7 +501,8 @@ class SubagentMixin:
         for _round in range(budget):
             rounds += 1
             round_task = dict(task_input)
-            if work_product is not None and work_product.paths:
+            revising = work_product is not None and bool(work_product.paths)
+            if revising and work_product is not None:
                 round_task["for_revision_paths"] = list(work_product.paths)
             resolved, missing = await self._resolve_input_paths(
                 author_name,
@@ -438,7 +519,10 @@ class SubagentMixin:
             if resolved:
                 round_task["input_paths"] = resolved
             author_output = await self._spawn_subagent(
-                author_name, round_task, work_product.id if work_product else ""
+                author_name,
+                round_task,
+                work_product.id if work_product else "",
+                phase=PHASE_REVISION if revising else PHASE_INITIAL,
             )
 
             # An escalation ends the loop where it stands: the author is telling
@@ -462,7 +546,12 @@ class SubagentMixin:
                 outcome = "not_reviewed"
                 break
 
-            status, summary = await self._run_review_round(critic_name, work_product)
+            if critic_name:
+                status, summary = await self._run_review_round(
+                    critic_name, work_product, rounds, budget
+                )
+            else:
+                status, summary = await self._run_user_review_round(work_product, rounds, budget)
 
             if status in ("accepted", "pending_acceptance"):
                 outcome = "accepted"
@@ -479,7 +568,7 @@ class SubagentMixin:
             "review loop finished: author=%s critic=%s work_product=%s rounds=%d outcome=%s "
             "status=%s outstanding=%d",
             author_name,
-            critic_name,
+            critic_name or "(user gate)",
             work_product.id if work_product else "-",
             rounds,
             outcome,
@@ -720,15 +809,19 @@ class SubagentMixin:
         return roles
 
     async def _run_review_round(
-        self: EngineHost, critic_name: str, work_product: WorkProduct
+        self: EngineHost,
+        critic_name: str,
+        work_product: WorkProduct,
+        iteration: int = 1,
+        max_rounds: int = _DEFAULT_MAX_REVIEW_ROUNDS,
     ) -> tuple[str, RoundSummary]:
         """Spawn *critic_name* against *work_product*; return its ``(status, summary)``.
 
         The status is read back from the stores rather than from the critic's
         own return value: :meth:`_record_findings` has already applied the
         round's findings, and once nothing is outstanding it also ran the user's
-        acceptance gate, whose decision is the later event and therefore the
-        real current state.
+        acceptance gate (when the author declares one), whose decision is the
+        later event and therefore the real current state.
 
         Args:
             critic_name: The critic to run this round.
@@ -736,6 +829,8 @@ class SubagentMixin:
                 through its ``under_review`` need — the whole point of the unit
                 is that cross-file defects are only visible with all of it in
                 hand — alongside whatever else its ``consumes`` declares.
+            iteration: 1-based round number, for the user's findings table.
+            max_rounds: The loop's budget, so that table reads "2 of 5".
         """
         await self._sink.send(
             Envelope.make_event(
@@ -804,7 +899,102 @@ class SubagentMixin:
                 },
             )
         )
+        await self._emit_review_findings(
+            work_product, reviewer=critic_name, iteration=iteration, max_rounds=max_rounds
+        )
         return status, summary
+
+    async def _run_user_review_round(
+        self: EngineHost, work_product: WorkProduct, iteration: int, max_rounds: int
+    ) -> tuple[str, RoundSummary]:
+        """Put *work_product* straight to the user's approval gate; report the outcome.
+
+        The critic-free half of :meth:`_run_review_loop`, for an author that
+        declares ``user_review: true`` and no ``critic:``. The user *is* the
+        reviewer, so this round is the gate itself: approval settles the work
+        product, a rejection is minted as a ``user_feedback`` finding
+        (:meth:`~._core.EngineCore._finalize_work_product`) and the loop spends
+        another round on it — the author reading that objection through the same
+        ``get_findings`` call it would use for a critic's finding.
+
+        The ``(status, summary)`` contract matches :meth:`_run_review_round`
+        exactly, so the loop above needs no special case: the counters come from
+        the backlog either side of the gate, which keeps the ``not_converging``
+        stall guard working here too.
+
+        Note the gate can decline to fire at all — autonomous mode and Edit
+        Control *Allow All* both accept without asking — in which case this
+        returns ``accepted`` on the first round, which is the correct answer.
+        """
+        before = await self._findings_snapshot(work_product.id)
+        await self._finalize_work_product(work_product)
+        after = await self._findings_snapshot(work_product.id)
+        summary = RoundSummary(
+            outstanding=sum(1 for state in after.values() if state == STATE_OUTSTANDING),
+            opened=sum(1 for finding_id in after if finding_id not in before),
+            closed=sum(
+                1
+                for finding_id, state in after.items()
+                if state != STATE_OUTSTANDING and before.get(finding_id) == STATE_OUTSTANDING
+            ),
+        )
+        status = await self._work_product_status(work_product)
+        _log.info(
+            "user review round: work_product=%s round=%d/%d status=%s outstanding=%d",
+            work_product.id,
+            iteration,
+            max_rounds,
+            status,
+            summary.outstanding,
+        )
+        await self._emit_review_findings(
+            work_product,
+            reviewer=USER_FEEDBACK_REPORTER,
+            iteration=iteration,
+            max_rounds=max_rounds,
+        )
+        return status, summary
+
+    async def _emit_review_findings(
+        self: EngineHost,
+        work_product: WorkProduct,
+        *,
+        reviewer: str,
+        iteration: int,
+        max_rounds: int,
+    ) -> None:
+        """Push the user's findings table for the round that just finished.
+
+        Emitted after any round that could have changed the backlog, which is
+        every critic round and every trip through the approval gate. It is the
+        only thing in the protocol that tells the *user* what is actually wrong
+        with a work product — ``review.verdict`` carries counts, and the
+        findings themselves otherwise never leave the author/critic pair.
+
+        Silent when the backlog is empty. A work product that was right first
+        time has nothing to table, and emitting an empty one on every clean
+        accept would train the reader to skip it.
+
+        Called after the critic's subsession has closed, so
+        ``EngineEmitters._append_marker`` writes to the **main** session log
+        rather than the subsession's — the table belongs in the feed next to the
+        collapsed review block, not buried inside it.
+        """
+        findings_dir = self._findings_dir()
+        if findings_dir is None:
+            return
+        findings = await asyncio.to_thread(read_findings, findings_dir, work_product.id)
+        if not findings:
+            return
+        await self._emitters.emit_review_findings(
+            work_product_id=work_product.id,
+            agent=work_product.agent,
+            reviewer_name=reviewer,
+            iteration=iteration,
+            max_rounds=max_rounds,
+            paths=list(work_product.paths),
+            findings=[dict(finding) for finding in sort_for_display(findings)],
+        )
 
     async def _resolve_input_paths(
         self: EngineHost,
@@ -1267,7 +1457,11 @@ class SubagentMixin:
         return "\n\n".join(lines) or "(no task)"
 
     async def _spawn_subagent(
-        self: EngineHost, name: str, task_input: dict[str, object], findings_key: str = ""
+        self: EngineHost,
+        name: str,
+        task_input: dict[str, object],
+        findings_key: str = "",
+        phase: str = PHASE_INITIAL,
     ) -> dict[str, object]:
         """Invoke a leaf sub-agent and return its structured result.
 
@@ -1284,6 +1478,13 @@ class SubagentMixin:
                 (doc/FINDINGS.md §3). Empty for any spawn that is not part of a
                 review round, and for an author's first pass — the tool then
                 answers with an empty list rather than an error.
+            phase: Which ``{PHASE:…}`` blocks the agent's prompt keeps —
+                ``initial`` when it is producing from its inputs, ``revision``
+                when it is resolving findings against files it already wrote.
+                Defaults to ``initial``, the fuller text, so an engine-driven
+                spawn that has no notion of rounds (``compactor``,
+                ``web_search``, the dependency manager) is never silently
+                under-instructed.
 
         Returns:
             dict: The structured result the sub-agent returned via ``return_result``.
@@ -1297,7 +1498,7 @@ class SubagentMixin:
         # An exhausted/empty ledger means no marker was recorded for this call
         # (crash landed before the subsession opened) — fall through to a fresh run.
         if self._replay_subsessions:
-            return await self._replay_next_subsession(name, findings_key)
+            return await self._replay_next_subsession(name, findings_key, phase)
         self._replay_subsessions = None
 
         subsession_id = uuid.uuid4().hex
@@ -1311,7 +1512,7 @@ class SubagentMixin:
             subsession_id, seed.role, seed.content, kind="subagent_task"
         )
 
-        output = await self._drive_subsession(name, subsession_id, [seed], findings_key)
+        output = await self._drive_subsession(name, subsession_id, [seed], findings_key, phase)
         await self._close_subsession(name, subsession_id, output)
         return output
 
@@ -1321,6 +1522,7 @@ class SubagentMixin:
         subsession_id: str,
         messages: list[Message],
         findings_key: str = "",
+        phase: str = PHASE_INITIAL,
     ) -> dict[str, object]:
         """Run a sub-agent's isolated turn loop and return its structured result.
 
@@ -1334,7 +1536,7 @@ class SubagentMixin:
         ``_run_review_loop``) just sees an empty result and treats
         it as if nothing happened.
         """
-        agent = self._registry.get(name, self._session.effective_autonomous)
+        agent = self._registry.get(name, self._session.effective_autonomous, phase)
         plugin, model_id, routing = await self._resolve_plugin(agent.capability)
         dispatcher = self._make_dispatcher(name, subsession_id, findings_key=findings_key)
         leaf_tools = agent_tool_specs(self._registry, agent)
@@ -1571,7 +1773,7 @@ class SubagentMixin:
         )
 
     async def _replay_next_subsession(
-        self: EngineHost, name: str, findings_key: str = ""
+        self: EngineHost, name: str, findings_key: str = "", phase: str = PHASE_INITIAL
     ) -> dict[str, object]:
         """Consume the next pre-crash subsession marker during resume replay.
 
@@ -1597,7 +1799,7 @@ class SubagentMixin:
             Message(role=str(m["role"]), content=m["content"])  # type: ignore[arg-type]
             for m in self._transient.read_subsession_messages(subsession_id)
         ]
-        output = await self._drive_subsession(name, subsession_id, rehydrated, findings_key)
+        output = await self._drive_subsession(name, subsession_id, rehydrated, findings_key, phase)
         await self._close_subsession(name, subsession_id, output)
         return output
 

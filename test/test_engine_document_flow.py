@@ -101,7 +101,21 @@ def _bare_engine(*, project_root: Path, autonomous: bool, gate: _FakeGate) -> ob
     )
     # Input resolution and the role map both read the callee's SubAgentSpec.
     engine._registry = _FakeAgentRegistry()
+    # The user-only findings table is pushed through the emitters; capturing it
+    # here is what lets a test read what the *user* was shown, separately from
+    # what any agent was told.
+    engine._emitters = _FakeEmitters()
     return engine
+
+
+class _FakeEmitters:
+    """Captures the findings tables the engine pushes to the client."""
+
+    def __init__(self) -> None:
+        self.review_findings: list[dict[str, object]] = []
+
+    async def emit_review_findings(self, **payload: object) -> None:
+        self.review_findings.append(payload)
 
 
 class _FakeAgentRegistry:
@@ -112,13 +126,29 @@ class _FakeAgentRegistry:
     that needs a bespoke contract passes its own.
     """
 
-    def __init__(self, *, specs: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        specs: dict[str, object] | None = None,
+        user_review: bool = True,
+        critics: dict[str, str] | None = None,
+    ) -> None:
         self._specs = specs
+        self._user_review = user_review
+        self._critics = critics or {}
 
-    def get(self, name: str, autonomous: bool = False):
+    def get(self, name: str, autonomous: bool = False, phase: str = "initial"):
         from types import SimpleNamespace
 
-        return SimpleNamespace(name=name)
+        # `user_review` gates the approval prompt and `critic` decides whether
+        # approval also closes the backlog; both are read off the agent, so the
+        # double has to carry them. Default True keeps these tests aimed at the
+        # gate's own behaviour rather than at whether it fires.
+        return SimpleNamespace(
+            name=name,
+            critic=self._critics.get(name, ""),
+            user_review=self._user_review,
+        )
 
     def spec_for(self, name: str):
         from kodo.subagents._registry import SUBAGENT_SPECS_BY_NAME
@@ -335,7 +365,10 @@ async def test_review_loop_reviews_the_authors_whole_reported_set(tmp_path: Path
     calls: list[tuple[str, dict[str, object], str]] = []
 
     async def _fake_spawn(
-        name: str, task_input: dict[str, object], findings_key: str = ""
+        name: str,
+        task_input: dict[str, object],
+        findings_key: str = "",
+        phase: str = "initial",
     ) -> dict[str, object]:
         calls.append((name, task_input, findings_key))
         if name == "architect":
@@ -405,7 +438,10 @@ async def test_review_loop_auto_closes_findings_for_a_file_that_leaves_the_set(
     author_paths = iter([[_ARCH_DOC, doomed], [_ARCH_DOC]])
 
     async def _fake_spawn(
-        name: str, task_input: dict[str, object], findings_key: str = ""
+        name: str,
+        task_input: dict[str, object],
+        findings_key: str = "",
+        phase: str = "initial",
     ) -> dict[str, object]:
         if name == "architect":
             return _author_result(*next(author_paths))
@@ -447,7 +483,10 @@ async def test_review_loop_resends_identical_instructions_every_round(tmp_path: 
     round_no = iter(range(3))
 
     async def _fake_spawn(
-        name: str, task_input: dict[str, object], findings_key: str = ""
+        name: str,
+        task_input: dict[str, object],
+        findings_key: str = "",
+        phase: str = "initial",
     ) -> dict[str, object]:
         calls.append((name, dict(task_input), findings_key))
         if name == "architect":
@@ -509,7 +548,10 @@ async def test_review_loop_stops_when_a_round_closes_and_opens_nothing(tmp_path:
     first = True
 
     async def _fake_spawn(
-        name: str, task_input: dict[str, object], findings_key: str = ""
+        name: str,
+        task_input: dict[str, object],
+        findings_key: str = "",
+        phase: str = "initial",
     ) -> dict[str, object]:
         nonlocal first
         if name == "architect":
@@ -548,7 +590,10 @@ async def test_review_loop_keeps_going_while_a_round_fixes_and_finds_in_equal_nu
     round_no = iter(range(3))
 
     async def _fake_spawn(
-        name: str, task_input: dict[str, object], findings_key: str = ""
+        name: str,
+        task_input: dict[str, object],
+        findings_key: str = "",
+        phase: str = "initial",
     ) -> dict[str, object]:
         if name == "architect":
             return _author_result()
@@ -609,7 +654,10 @@ async def test_review_loop_reports_max_rounds_when_budget_runs_out(tmp_path: Pat
     counter = iter(range(100))
 
     async def _fake_spawn(
-        name: str, task_input: dict[str, object], findings_key: str = ""
+        name: str,
+        task_input: dict[str, object],
+        findings_key: str = "",
+        phase: str = "initial",
     ) -> dict[str, object]:
         if name == "architect":
             return _author_result()
@@ -640,7 +688,10 @@ async def test_review_loop_reports_not_reviewed_when_author_names_no_file(
     spawned: list[str] = []
 
     async def _fake_spawn(
-        name: str, task_input: dict[str, object], findings_key: str = ""
+        name: str,
+        task_input: dict[str, object],
+        findings_key: str = "",
+        phase: str = "initial",
     ) -> dict[str, object]:
         spawned.append(name)
         return {"paths": [], "summary": "nothing written"}
@@ -668,7 +719,10 @@ async def test_review_loop_stops_on_an_escalation_without_spawning_the_critic(
     spawned: list[str] = []
 
     async def _fake_spawn(
-        name: str, task_input: dict[str, object], findings_key: str = ""
+        name: str,
+        task_input: dict[str, object],
+        findings_key: str = "",
+        phase: str = "initial",
     ) -> dict[str, object]:
         spawned.append(name)
         return {
@@ -703,7 +757,10 @@ async def test_review_loop_treats_an_empty_reason_as_a_normal_result(tmp_path: P
     spawned: list[str] = []
 
     async def _fake_spawn(
-        name: str, task_input: dict[str, object], findings_key: str = ""
+        name: str,
+        task_input: dict[str, object],
+        findings_key: str = "",
+        phase: str = "initial",
     ) -> dict[str, object]:
         spawned.append(name)
         if name == "architect":
@@ -1011,7 +1068,10 @@ async def test_review_block_matches_the_generated_run_subagent_output_schema(
     _seed_revision(tmp_path, "specs/architecture.md")
 
     async def _fake_spawn(
-        name: str, task_input: dict[str, object], findings_key: str = ""
+        name: str,
+        task_input: dict[str, object],
+        findings_key: str = "",
+        phase: str = "initial",
     ) -> dict[str, object]:
         if name == "architect":
             return _author_result()
@@ -1404,7 +1464,7 @@ async def test_a_reinvoked_author_is_handed_what_it_wrote_last_time(
 
     calls: list[tuple[str, dict[str, object], str]] = []
 
-    async def _fake_spawn(name, task_input, findings_key=""):
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
         calls.append((name, dict(task_input), findings_key))
         if name == "architect":
             return _author_result()
@@ -1433,7 +1493,7 @@ async def test_a_first_ever_round_has_nothing_to_revise(tmp_path: Path) -> None:
 
     calls: list[tuple[str, dict[str, object], str]] = []
 
-    async def _fake_spawn(name, task_input, findings_key=""):
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
         calls.append((name, dict(task_input), findings_key))
         if name == "architect":
             return _author_result()
@@ -1462,7 +1522,7 @@ async def test_engine_resolved_paths_replace_anything_a_caller_still_sends(
 
     calls: list[dict[str, object]] = []
 
-    async def _fake_spawn(name, task_input, findings_key=""):
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
         calls.append(dict(task_input))
         if name == "architect":
             return _author_result()
@@ -1500,7 +1560,7 @@ async def test_a_responsibility_code_aimed_at_a_product_level_stage_is_dropped(
 
     calls: list[dict[str, object]] = []
 
-    async def _fake_spawn(name, task_input, findings_key=""):
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
         calls.append(dict(task_input))
         if name == "architect":
             return _author_result()
@@ -1559,7 +1619,7 @@ async def test_a_per_component_stage_still_carries_its_responsibility_code(
 
     calls: list[dict[str, object]] = []
 
-    async def _fake_spawn(name, task_input, findings_key=""):
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
         calls.append(dict(task_input))
         if name == "test_designer":
             return {"paths": [plan], "summary": "wrote it"}
@@ -1577,3 +1637,176 @@ async def test_a_per_component_stage_still_carries_its_responsibility_code(
 
     assert read_work_product(tmp_path, work_product_id("proj", "test_designer", "AUTH")) is not None
     assert calls[0]["responsibility_code"] == "AUTH"
+
+
+# ---------------------------------------------------------------------------
+# The user-review gate as a loop of its own, and the phase each round runs in
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_gate_only_author_loops_until_the_user_accepts(tmp_path: Path) -> None:
+    """An author with `user_review: true` and no critic still runs a loop: the
+    user is the reviewer, their rejection is a finding, and the next round is
+    the author resolving it."""
+    gate = _FakeGate(action="feedback", feedback="not what I meant")
+    engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
+    await _seed_architect_inputs(engine)
+    _seed_revision(tmp_path, "specs/architecture.md")
+    engine._registry = _FakeAgentRegistry(critics={"architect": ""})
+    engine._emitters = _FakeEmitters()
+
+    rounds: list[str] = []
+
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
+        rounds.append(phase)
+        return _author_result(_ARCH_DOC)
+
+    engine._spawn_subagent = _fake_spawn
+
+    result = await engine._run_review_loop("architect", "", {"instructions": "go"}, 3)
+
+    # The user rejected every round, so the budget is what ended it — and no
+    # critic was ever spawned.
+    assert result["review"]["outcome"] == "max_rounds"
+    assert result["review"]["rounds"] == 3
+    assert len(gate.calls) == 3
+    # Round 1 writes from the inputs; every later round is a correction pass.
+    assert rounds == ["initial", "revision", "revision"]
+    # Each rejection reached the author the same way a critic's finding would.
+    assert len(_ids(_findings_dir(tmp_path))) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_gate_only_author_stops_the_moment_the_user_agrees(tmp_path: Path) -> None:
+    gate = _FakeGate(action="agree")
+    engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
+    await _seed_architect_inputs(engine)
+    _seed_revision(tmp_path, "specs/architecture.md")
+    engine._registry = _FakeAgentRegistry(critics={"architect": ""})
+    engine._emitters = _FakeEmitters()
+
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
+        return _author_result(_ARCH_DOC)
+
+    engine._spawn_subagent = _fake_spawn
+
+    result = await engine._run_review_loop("architect", "", {"instructions": "go"}, 5)
+
+    assert result["review"]["outcome"] == "accepted"
+    assert result["review"]["rounds"] == 1
+    assert len(gate.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_first_round_is_initial_and_the_next_is_a_revision(tmp_path: Path) -> None:
+    """The phase follows the same signal as `for_revision_paths`: whether a work
+    product with members already exists."""
+    engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
+    await _seed_architect_inputs(engine)
+    _seed_revision(tmp_path, "specs/architecture.md")
+    phases: list[str] = []
+    round_no = 0
+
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
+        nonlocal round_no
+        if name == "architect":
+            phases.append(phase)
+            return _author_result(_ARCH_DOC)
+        round_no += 1
+        # Round 1 opens a finding so a second round runs; round 2 closes it.
+        updates = (
+            [{"kind": "gap", "description": "missing", "locations": [{"path": _ARCH_DOC}]}]
+            if round_no == 1
+            else [{"id": _ids(_findings_dir(tmp_path))[0], "state": "fixed"}]
+        )
+        await engine._record_findings("architect_critic", {"findings": updates}, findings_key)
+        return {"findings": updates}
+
+    engine._spawn_subagent = _fake_spawn
+
+    await engine._run_review_loop("architect", "architect_critic", {"instructions": "go"}, 3)
+
+    assert phases == ["initial", "revision"]
+
+
+@pytest.mark.asyncio
+async def test_a_reinvoked_author_starts_in_the_revision_phase(tmp_path: Path) -> None:
+    """The ledger is read before round 1, so a *separate* call continuing the
+    same work is a correction pass from its very first round."""
+    engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
+    await _seed_architect_inputs(engine)
+    _seed_revision(tmp_path, "specs/architecture.md")
+    await engine._record_work_product("architect", "", [_ARCH_DOC], _author_result(_ARCH_DOC))
+    phases: list[str] = []
+
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
+        if name == "architect":
+            phases.append(phase)
+            return _author_result(_ARCH_DOC)
+        await engine._record_findings("architect_critic", {"findings": []}, findings_key)
+        return {"findings": []}
+
+    engine._spawn_subagent = _fake_spawn
+
+    await engine._run_review_loop("architect", "architect_critic", {"instructions": "go"}, 3)
+
+    assert phases == ["revision"]
+
+
+@pytest.mark.asyncio
+async def test_each_review_round_pushes_the_users_findings_table(tmp_path: Path) -> None:
+    """The table is the only thing that tells the *user* what is wrong. It is
+    pushed as an event, never into any agent's context."""
+    engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
+    await _seed_architect_inputs(engine)
+    _seed_revision(tmp_path, "specs/architecture.md")
+
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
+        if name == "architect":
+            return _author_result(_ARCH_DOC)
+        updates = [
+            {
+                "kind": "gap",
+                "description": "missing",
+                "locations": [{"path": _ARCH_DOC, "first_line": 12}],
+            }
+        ]
+        await engine._record_findings("architect_critic", {"findings": updates}, findings_key)
+        return {"findings": updates}
+
+    engine._spawn_subagent = _fake_spawn
+
+    await engine._run_review_loop("architect", "architect_critic", {"instructions": "go"}, 2)
+
+    tables = engine._emitters.review_findings
+    assert len(tables) == 2
+    first = tables[0]
+    assert first["work_product_id"] == _ARCH_WP
+    assert first["agent"] == "architect"
+    assert first["reviewer_name"] == "architect_critic"
+    assert (first["iteration"], first["max_rounds"]) == (1, 2)
+    assert [f["description"] for f in first["findings"]] == ["missing"]
+    # The counter rises, which is what makes the table readable as progress.
+    assert tables[1]["iteration"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_clean_first_round_pushes_no_table(tmp_path: Path) -> None:
+    """Work that was right first time has nothing to table; emitting an empty
+    one on every clean accept would train the reader to skip it."""
+    engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
+    await _seed_architect_inputs(engine)
+    _seed_revision(tmp_path, "specs/architecture.md")
+
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
+        if name == "architect":
+            return _author_result(_ARCH_DOC)
+        await engine._record_findings("architect_critic", {"findings": []}, findings_key)
+        return {"findings": []}
+
+    engine._spawn_subagent = _fake_spawn
+
+    await engine._run_review_loop("architect", "architect_critic", {"instructions": "go"}, 2)
+
+    assert engine._emitters.review_findings == []

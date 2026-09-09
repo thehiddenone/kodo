@@ -511,9 +511,9 @@ Emitted by `_run_web_search_agent` (doc/WEB_SEARCH.md §6) once per tool-loop ro
 
 Live-only on the wire: a crash mid-run loses whatever notes weren't flushed yet. The durable copy is a best-effort sidecar file the engine writes once the run ends (`TransientStore.write_web_search_notes`, keyed by `tool_call_id`, never `session.jsonl`/the subsession log — see doc/WEB_SEARCH.md §6 for why), replayed on reload as the `tool_call` entry's `webSearchNotes: string[]` field (§5.11) rather than by replaying this event.
 
-### 5.6 `review.started` / `review.verdict` — low-fi review activity
+### 5.6 `review.started` / `review.verdict` / `review.findings` — review activity
 
-Review activity is intentionally low-fidelity: the design is for the user to see that critic loops are happening and roughly how they go, but not file content, diffs, or feedback bodies. **Emitted by the server today, but the current VSIX client has no handler for either event** — they arrive and are silently dropped; no UI surfaces them yet.
+`review.started`/`review.verdict` are intentionally low-fidelity: the design is for the user to see that critic loops are happening and roughly how they go, but not file content or diffs. **Emitted by the server, but the VSIX client has no handler for either** — they arrive and are silently dropped. `review.findings` below is what the UI actually renders.
 
 ```json
 { "type": "review.started",
@@ -531,6 +531,37 @@ Review activity is intentionally low-fidelity: the design is for the user to see
 ```
 
 `target_filename` is now the document's real, project-relative path (previously an 8-character artifact-id prefix the panel couldn't open) — content still stays off the wire, just the path. `verdict` is whatever `kodo.tools.document_status` derives from the file's evolution log *and* this session's findings backlog after the engine applies the critic's returned findings (STATE_AND_LIFECYCLE.md §1.2, doc/FINDINGS.md), not a value the critic invents — critics no longer return a verdict at all. The event also carries `outstanding`/`opened`/`closed` counters for the round (nothing in kodo-vsix consumes this event today).
+
+#### `review.findings` — the user-only findings table
+
+The one place the user is told *what* a reviewer objected to rather than just how many things it found. Emitted after every round that could have changed a work product's backlog: each critic round, and each trip through the user approval gate (`reviewer_name: "user"`). Silent when the backlog is empty.
+
+```json
+{ "type": "review.findings",
+  "work_product_id": "billing-service/architect",
+  "agent": "architect",
+  "reviewer_name": "architect_critic",
+  "iteration": 2,
+  "max_rounds": 5,
+  "paths": ["billing-service/specs/architecture.md"],
+  "findings": [
+    { "id": "billing_architect_architecture_md_12",
+      "kind": "gap",
+      "description": "no responsibility covers session expiry",
+      "state": "outstanding",
+      "reported_by": "architect_critic",
+      "locations": [
+        { "path": "billing-service/specs/architecture.md",
+          "first_line": 12, "last_line": null, "excerpt": "## Auth" } ] } ] }
+```
+
+`agent` is the **author** that owns the work product, not the reviewer. `iteration`/`max_rounds` are the round counter, so the user can see the loop converging. `findings` is the whole backlog — `fixed` entries included, since they are the record of what the loop has closed.
+
+**No LLM ever sees this**, and that is structural rather than a convention: the engine persists it as a *marker*, and markers carry no `role`, so they are never rebuilt into the model's message history. The author reaches the same backlog through its own `get_findings` tool, a separate path with its own auto-scoping.
+
+Findings arrive **pre-sorted for display** (`kodo.findings.sort_for_display`): outstanding before fixed, then by the first location's path, then line, then id. Sorting server-side keeps one implementation of the order rather than one per client — a client renders the given order and does not re-sort. **One row is one finding**, placed by its first location; `locations` is a list precisely so a cross-file defect stays a single finding (doc/FINDINGS.md), and splitting it per location would undo that.
+
+Persisted as a `review_findings` marker and replayed by `session.history` in the client's camelCase shape (`workProductId`, `reviewerName`, `maxRounds`, `reportedBy`, `firstLine`, `lastLine`), so a reloaded table is identical to the live one.
 
 ### 5.7 `usage.update` — usage accounting
 
@@ -2301,7 +2332,7 @@ Only genuine session teardown — explicit deletion, or the whole server process
 The following are deliberately **not** on the wire. Future contributors should not add them without a design conversation.
 
 - **Session log content.** The audit trail (STATE_AND_LIFECYCLE.md §5) lives on disk; the protocol carries no message that exposes session JSONL. (`session.history` replays the *conversation*, not the raw log.)
-- **Document content, paths, or diffs beyond `review.*` (MVP).** Review activity is conveyed only by `review.*` (§5.6), now carrying the real path but never content. Detailed per-document events are the planned "verbose review mode" (§9.1).
+- **Document content or diffs.** Review activity is conveyed only by `review.*` (§5.6): paths, statuses, round counters, and — since `review.findings` — each finding's own text and locations. File *content* and diffs still never travel this way; a fuller per-document view (e.g. a document's whole `.jsonl` history) is the planned "verbose review mode" (§9.1).
 - **Checkpoint mirror operation internals.** Its commits, trees, and refs are not exposed beyond the `{root, sha, parent}` already on `agent.tool_call_detail`/`session.history` (§5.5b) and the flat `{sha, undone}` list `checkpoint.list`/`checkpoint.state` return (§7.4d/§5.5d) — no tree/ref/log browsing exists beyond that flat list.
 - **Stage-machine transitions.** Internal workflow stages are not pushed as events. The user-visible signal is the `agent.started`/`agent.finished` sequence plus `state.phase`.
 - **A document's `.jsonl` evolution log** as a distinct event class — its existence and status are summarized only via `review.*` and the Guide's own `guided_dev_status` tool calls (visible as ordinary `agent.tool_call_prep`/`agent.tool_call_detail` events), never pushed as its own message type.
@@ -2315,7 +2346,7 @@ These are anticipated and structured so adding them is purely additive — no ex
 - **Richer `state` snapshot** (§5.1): `cumulative_usd`, `last_checkpoint_sha`. (A `pending_prompts` field was previously anticipated here to let a reconnecting client discover an outstanding prompt; §8's request-replay mechanism solves that need directly — the client just receives the original `prompt.*`/`api_key.request` frame again — so it is no longer planned.)
 - **Checkpoint-browsing UI.** `checkpoint.list` (§7.4d) is already implemented server-side and returns the full per-root checkpoint list today; only a client-side UI that calls it is planned — the undo/redo/rollback/roll-forward commands (§7.4c) are already implemented and in use, in both workflow modes.
 - **Standalone rules management UI** (§7.7): `security.add_rule`/`security.rules.list`/`security.rules.delete`. (Granting a rule via `prompt.permission.response.remember`, §6.7, is implemented; there is no way to list or revoke one yet.)
-- **Verbose review mode.** New event type(s) gated by a settings flag, carrying a document's real path and richer status detail (e.g. its full `.jsonl` history). The `review.*` events stay as the low-fi default.
+- **Verbose review mode.** New event type(s) gated by a settings flag, carrying richer per-document status detail (e.g. a document's full `.jsonl` history). `review.started`/`review.verdict` stay as the low-fi default; `review.findings` (§5.6) already delivers the finding-level half of what this was originally meant to cover.
 - **Streamed tool output.** A streamed form of `agent.tool_call_prep` for long-running shell commands; the single-event form remains valid for short calls.
 
 ---

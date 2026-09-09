@@ -179,7 +179,7 @@ class _FakeDispatcher:
 
 
 class _FakeRegistry:
-    def get(self, name: str, autonomous: bool = False):
+    def get(self, name: str, autonomous: bool = False, phase: str = "initial"):
         return SimpleNamespace(display_name=name.replace("_", " ").title())
 
     def run_subagent_specs(self, caller: str) -> list[object]:

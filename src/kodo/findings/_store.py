@@ -31,6 +31,8 @@ from ._records import (
 )
 
 __all__ = [
+    "USER_FEEDBACK_KIND",
+    "USER_FEEDBACK_REPORTER",
     "apply_findings",
     "close_findings_for_paths",
     "last_round_timestamp",
@@ -38,6 +40,7 @@ __all__ = [
     "read_findings",
     "read_jsonl",
     "record_user_feedback",
+    "sort_for_display",
 ]
 
 # ``kind`` for the finding minted from a user's rejection comment at the
@@ -102,6 +105,48 @@ def read_findings(findings_dir: Path, key: str) -> list[Finding]:
 def outstanding_findings(findings: list[Finding]) -> list[Finding]:
     """The subset of *findings* still in the ``outstanding`` state."""
     return [f for f in findings if f["state"] == STATE_OUTSTANDING]
+
+
+def sort_for_display(findings: list[Finding]) -> list[Finding]:
+    """Order *findings* the way the user's findings table reads them.
+
+    Outstanding first, fixed last — the top of the table is the work still to
+    do, and the bottom is the record of what the loop has already closed.
+    Within each group, by the **first location**'s path (lexicographic) then its
+    ``first_line``, so a table read top-to-bottom walks the work product file by
+    file and down each file.
+
+    A finding is one row, never one row per location, even when it spans
+    several files: ``locations`` is a list precisely so a cross-file defect is a
+    single finding (doc/FINDINGS.md), and splitting it per location would
+    recreate the unlinked pair that model removed. Its first location is what
+    places it.
+
+    ``id`` breaks ties so the order is total and stable across rounds — two
+    findings on the same line otherwise swap places between emissions for no
+    reason the reader can see.
+
+    Sorting lives here, server-side, so there is one implementation of the rule
+    rather than one per client. Read-only: a new list, same finding objects.
+    """
+
+    def _key(finding: Finding) -> tuple[int, str, int, str]:
+        locations = finding.get("locations") or []
+        path = ""
+        line = 0
+        if locations:
+            first = locations[0]
+            path = str(first.get("path", ""))
+            first_line = first.get("first_line")
+            line = first_line if isinstance(first_line, int) else 0
+        return (
+            0 if finding["state"] == STATE_OUTSTANDING else 1,
+            path,
+            line,
+            finding.get("id", ""),
+        )
+
+    return sorted(findings, key=_key)
 
 
 def last_round_timestamp(findings_dir: Path, key: str) -> str:

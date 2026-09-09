@@ -483,6 +483,72 @@ async def test_history_entries_security_rule_added_marker(tmp_path: Path) -> Non
     ]
 
 
+async def test_history_entries_review_findings_marker(tmp_path: Path) -> None:
+    """The user's findings table replays on reload in the client's own camelCase
+    shape, so a reloaded table is identical to the live one."""
+    projector, transient, _c = _make_projector(tmp_path)
+    transient._lines = [
+        {
+            "type": "review_findings",
+            "work_product_id": "proj/architect",
+            "agent": "architect",
+            "reviewer_name": "architect_critic",
+            "iteration": 2,
+            "max_rounds": 5,
+            "paths": ["proj/specs/architecture.md"],
+            "findings": [
+                {
+                    "id": "proj_architect_architecture_md_12",
+                    "kind": "gap",
+                    "description": "no requirement covers logout",
+                    "state": "outstanding",
+                    "reported_by": "architect_critic",
+                    "locations": [
+                        {
+                            "path": "proj/specs/architecture.md",
+                            "first_line": 12,
+                            "last_line": None,
+                            "excerpt": "## Auth",
+                        }
+                    ],
+                }
+            ],
+            "ts": "2026-09-08T00:00:00+00:00",
+        }
+    ]
+
+    entries = await projector.history_entries()
+
+    assert entries == [
+        {
+            "type": "review_findings",
+            "workProductId": "proj/architect",
+            "agent": "architect",
+            "reviewerName": "architect_critic",
+            "iteration": 2,
+            "maxRounds": 5,
+            "paths": ["proj/specs/architecture.md"],
+            "findings": [
+                {
+                    "id": "proj_architect_architecture_md_12",
+                    "kind": "gap",
+                    "description": "no requirement covers logout",
+                    "state": "outstanding",
+                    "reportedBy": "architect_critic",
+                    "locations": [
+                        {
+                            "path": "proj/specs/architecture.md",
+                            "firstLine": 12,
+                            "lastLine": None,
+                            "excerpt": "## Auth",
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+
+
 async def test_history_entries_does_not_splice_subsession_transcript(tmp_path: Path) -> None:
     """history_entries() (main log only) emits dividers, never inline content —
     that is now subsession_entries()'s job, read from its own file alone."""

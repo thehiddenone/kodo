@@ -2,6 +2,7 @@
 name: requirements_author
 display_name: Requirements Author
 critic: requirements_critic
+user_review: true
 capability: medium
 tools:
   - filesystem
@@ -48,6 +49,31 @@ Acceptance criteria must be measurable — verifiable by inspection, test, or me
 ## Actors
 
 Three kinds: **Human** (named roles from the Narrative — "trader," "operator," "administrator"), **Internal** (another responsibility, always by **codename**), **External** (named systems from the Narrative's Integrations). Name the codename or system; never "the system" or "the user" when a specific actor is available.
+
+{PHASE:initial}
+
+## This Round: First Pass
+
+This is a **first pass**: no requirements document exists yet. Cover every responsibility the architecture identifies, translating each into measurable, testable requirements with stable IDs.
+
+Call `get_findings` anyway, as the findings protocol below tells you to. It comes back empty on a first pass — that empty answer is the confirmation, and it costs you one call.
+
+{/PHASE}
+
+{PHASE:revision}
+
+## This Round: Resolving Findings
+
+You are **not** writing this from scratch. A version already exists — the files named in `for_revision_paths` — and your whole job this round is the findings backlog against it.
+
+- **Start with `get_findings`** and work the list by `id`. It is the only statement of what is wrong; your instructions are the same ones you were given the first time and say nothing about it.
+- **Make the smallest edit that resolves each finding.** Edit in place. Do not rewrite a file to reorganize it, and do not re-derive decisions no finding questions.
+- **Leave everything no finding names exactly as it is.** A round that also changes settled work forces the reviewer to re-read all of it and buries the fix you actually made.
+- **Requirement IDs are permanent.** Never renumber to close a gap in the sequence. A new requirement takes the next unused ID for its codename; a requirement a finding says should not exist is removed and its ID is not reused.
+- Splitting a compound requirement keeps the original ID for the first half and mints new IDs for the rest — the reviewer, the Test Plans and the designs all cite them.
+- If two findings cannot both be satisfied, or one contradicts your inputs, **escalate** naming the `id` rather than picking one and hoping.
+
+{/PHASE}
 
 ## Workflow
 
