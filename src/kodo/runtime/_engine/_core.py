@@ -48,6 +48,7 @@ from kodo.findings import (
     outstanding_findings,
     read_findings,
     record_user_feedback,
+    sort_for_display,
 )
 from kodo.guided_state import append_accepted, append_review_result
 from kodo.llms import LLMGateway, Message
@@ -1013,6 +1014,14 @@ class WorkflowEngine(
         When the author has **no critic**, approval also closes whatever is left
         outstanding (:meth:`_close_findings_on_approval`) — see there for why
         that does not contradict "only a critic closes a finding".
+
+        The gate also carries the work product's outstanding findings, and the
+        user may tick individual ones off as done
+        (:meth:`_close_resolved_findings`). That matters on a **rejection**:
+        without it, an author whose only reviewer is the user accumulates every
+        objection ever raised in the loop, since nothing closes a finding until
+        the whole product is finally approved — so round three's author would
+        re-read a complaint it fixed in round one.
         """
         members = await self._resolve_members(work_product)
         if not members:
@@ -1030,12 +1039,23 @@ class WorkflowEngine(
                 await asyncio.to_thread(append_accepted, resolved, project_root)
             return
 
+        # What is still outstanding at the moment the gate fires. Non-empty only
+        # for a critic-less author: with a critic, this gate is reached only
+        # once the backlog is empty. Offering it lets a rejection settle the
+        # earlier objections the user now considers done, instead of leaving
+        # every one of them outstanding until the whole product is approved.
+        open_findings = await self._outstanding_for_gate(work_product)
         approval = await self._gate.fire_approval(
             "document_review",
             artifact_id=work_product.id,
             summary=_review_summary(work_product.paths),
             paths=list(work_product.paths),
+            findings=open_findings,
         )
+        # Applied before either branch: the user ticked these off while looking
+        # at this exact set, and that judgement stands whether they went on to
+        # approve the whole thing or reject it over something else.
+        await self._close_resolved_findings(work_product, approval.resolved_finding_ids)
         if approval.action == "agree":
             for resolved, project_root in members:
                 await asyncio.to_thread(
@@ -1091,6 +1111,71 @@ class WorkflowEngine(
                 work_product.agent,
             )
             return None
+
+    async def _outstanding_for_gate(self, work_product: WorkProduct) -> list[dict[str, object]]:
+        """The still-outstanding findings to show at the approval gate.
+
+        The user cannot act on what they cannot see: a gate that simply says
+        "approve or reject" while three of their own earlier objections sit
+        unresolved gives them no way to say which are done. Ordered the same way
+        as their findings table (:func:`kodo.findings.sort_for_display`), so the
+        two read alike.
+        """
+        findings_dir = self._findings_dir()
+        if findings_dir is None:
+            return []
+        findings = await asyncio.to_thread(read_findings, findings_dir, work_product.id)
+        return [dict(f) for f in sort_for_display(outstanding_findings(findings))]
+
+    async def _close_resolved_findings(
+        self, work_product: WorkProduct, finding_ids: tuple[str, ...]
+    ) -> None:
+        """Close the findings the user ticked off at the gate.
+
+        The narrow, explicit counterpart to :meth:`_close_findings_on_approval`:
+        that one closes everything on a wholesale approval, this one closes
+        exactly what the user named while rejecting over something else.
+
+        **Ids are validated, never trusted.** Only an id that is genuinely
+        outstanding on *this* work product is closed, so a stale or malformed
+        response cannot reach into another work product's backlog or resurrect
+        a finding that is already fixed.
+        """
+        if not finding_ids:
+            return
+        findings_dir = self._findings_dir()
+        if findings_dir is None:
+            return
+        current = await asyncio.to_thread(read_findings, findings_dir, work_product.id)
+        open_ids = {f["id"] for f in outstanding_findings(current)}
+        updates: list[dict[str, object]] = [
+            {"id": finding_id, "state": STATE_FIXED}
+            for finding_id in finding_ids
+            if finding_id in open_ids
+        ]
+        ignored = [f for f in finding_ids if f not in open_ids]
+        if ignored:
+            _log.warning(
+                "gate response named %d finding(s) not outstanding on %s; ignored: %s",
+                len(ignored),
+                work_product.id,
+                ignored,
+            )
+        if not updates:
+            return
+        await asyncio.to_thread(
+            apply_findings,
+            findings_dir,
+            work_product.id,
+            reviewer=USER_FEEDBACK_REPORTER,
+            updates=updates,
+            project=work_product.project,
+            agent=work_product.agent,
+            responsibility_code=work_product.responsibility_code,
+        )
+        _log.info(
+            "user resolved %d finding(s) at the gate on %s", len(updates), work_product.id
+        )
 
     async def _close_findings_on_approval(self, work_product: WorkProduct) -> None:
         """Close every outstanding finding when the user approves un-critiqued work.

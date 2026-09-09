@@ -969,7 +969,9 @@ Response payload — one entry per question, in order:
 
 ### 6.2 `prompt.approval` — document review gate
 
-Surfaced by the engine itself — never by a sub-agent tool call — right after a critic round leaves the document's findings backlog empty and the engine acts on it (`_record_findings`; STATE_AND_LIFECYCLE.md §8.1). In autonomous mode, **and when Edit Control is set to `allow_all`**, the gate auto-accepts and no `prompt.approval` is emitted (the engine writes the `accepted` jsonl entry directly). A rejection with feedback additionally mints that comment as an outstanding finding, which is how the author sees it (doc/FINDINGS.md §3).
+Surfaced by the engine itself — never by a sub-agent tool call — from two places: after a critic round leaves the findings backlog empty (`_record_findings`; STATE_AND_LIFECYCLE.md §8.1), and once per round of an author whose only reviewer is the user (`_run_user_review_round`; GUIDED_DEV_MODE.md §5a).
+
+**Whether it fires at all is the author's frontmatter.** `user_review: true` opts an agent in; without it the work product is accepted with no gate. In autonomous mode, **and when Edit Control is set to `allow_all`**, the gate also auto-accepts and no `prompt.approval` is emitted (the engine writes the `accepted` jsonl entry directly). A rejection with feedback mints that comment as an outstanding finding, which is how the author sees it (doc/FINDINGS.md §3).
 
 Request payload:
 
@@ -978,12 +980,22 @@ Request payload:
   "gate_type": "document_review",
   "artifact_id": "billing-service/coder/AUTH" | null,
   "summary": "Review 3 files written together, starting with billing-service/src/auth.py",
-  "paths": ["billing-service/src/auth.py", "billing-service/src/session.py", "..."] }
+  "paths": ["billing-service/src/auth.py", "billing-service/src/session.py", "..."],
+  "findings": [
+    { "id": "billing_narrative_author_narrative_md_4",
+      "kind": "user_feedback",
+      "description": "the North Star is too vague",
+      "reported_by": "user",
+      "locations": [{ "path": "billing-service/specs/narrative.md",
+                      "first_line": 4, "last_line": null, "excerpt": "" }] }
+  ] }
 ```
 
 `gate_type` is always the single literal `"document_review"`. `artifact_id` is a historical field name kept for wire compatibility — since 2026-09-04 its value is the **work product id** (`<project>/<agent>[/<responsibility>]`, doc/FINDINGS.md §2), not a path and not a workspace artifact UUID.
 
 **`paths` (added 2026-09-04) carries every file the decision covers.** A work product is accepted or rejected as one set — accepting members one at a time would permit exactly the half-accepted, unbuildable state the unit exists to prevent — so the client lists them all and offers a single Accept. One entry for a single-file set.
+
+**`findings` carries what is still outstanding**, ordered as in the user's findings table (§5.6), so the client can offer each one for individual resolution. It is non-empty only for an author with **no critic**: with one in the loop this gate is reached only once the backlog is already empty. Its purpose is the rejection case — see the response below.
 
 Response payload:
 
@@ -991,12 +1003,15 @@ Response payload:
 { "type": "prompt.approval.response",
   "action": "agree" | "feedback",
   "feedback_text": "..." | null,
-  "artifact_path": "billing-service/src/session.py" | null }
+  "artifact_path": "billing-service/src/session.py" | null,
+  "resolved_finding_ids": ["billing_narrative_author_narrative_md_4"] }
 ```
 
 `feedback_text` accompanies `action = "feedback"`. `artifact_path` (added 2026-09-04) names whichever member the user had selected when they rejected, so the engine can anchor the finding it mints from their feedback to that file; `null`/absent means the objection is about the set as a whole, and a value that is not actually a member is ignored rather than trusted.
 
-On `agree`, the engine appends a `review_result` (`decision: "approve"`) entry to **every member's** `.jsonl` log, then an `accepted` entry — no sub-agent call is involved. On `feedback`, it appends `review_result` (`decision: "reject"`, carrying `feedback_text` as `comment`) to every member; the enclosing author/critic loop reads this as `needs_revision` and spends another round on it.
+`resolved_finding_ids` are findings the user ticked off as done. **It matters on a rejection**: an author whose only reviewer is the user would otherwise accumulate every objection ever raised in the loop, since nothing closes a finding until the whole product is finally approved — so round three's author would re-read a complaint it fixed in round one. Applied before the accept/reject branch, because the judgement stands either way. Ids are **validated, never trusted**: only one that is genuinely outstanding on this work product is closed, so a stale or malformed response cannot reach into another backlog or resurrect a fixed finding.
+
+On `agree`, the engine appends a `review_result` (`decision: "approve"`) entry to **every member's** `.jsonl` log, then an `accepted` entry — no sub-agent call is involved; for an author with no critic it also closes whatever is left outstanding (doc/FINDINGS.md §5). On `feedback`, it appends `review_result` (`decision: "reject"`, carrying `feedback_text` as `comment`) to every member; the enclosing loop reads this as `needs_revision` and spends another round on it.
 
 ### 6.3 `api_key.request` — fetch a vendor API key
 

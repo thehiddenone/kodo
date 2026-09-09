@@ -533,7 +533,17 @@ class SubagentMixin:
                 outcome = "escalated"
                 break
 
-            paths = _reported_paths(author_output)
+            # The `produces` fallback matters here, not just on the unreviewed
+            # path: `narrative_author` reports `narrative_path`/`tech_stack_path`
+            # rather than a `paths` list, and since it gained `user_review` it
+            # reaches *this* loop. Reading only `paths` would report
+            # `not_reviewed`, record no work product, and silently skip the very
+            # gate the flag exists to fire — while also leaving the Narrative and
+            # Tech Stack out of the ledger, so every later stage would be refused
+            # for missing them.
+            paths = _reported_paths(author_output) or _produced_paths(
+                self._registry.spec_for(author_name), author_output
+            )
             if not paths:
                 _log.warning("run_subagent: %s reported no paths", author_name)
                 outcome = "not_reviewed"

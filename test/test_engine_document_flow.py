@@ -14,7 +14,9 @@ standing up the full LLM/transport stack.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,12 +39,30 @@ from kodo.workproducts import (
 
 
 class _FakeGate:
-    def __init__(self, action: str = "agree", feedback: str = "", artifact_path: str = "") -> None:
+    """A user at the approval gate.
+
+    *responses* lets one gate answer differently across the rounds of a single
+    loop — a real user rejecting once and approving the revision, which a fixed
+    `action` cannot express. The last entry repeats once the list runs out.
+    """
+
+    def __init__(
+        self,
+        action: str = "agree",
+        feedback: str = "",
+        artifact_path: str = "",
+        responses: list[tuple[str, str]] | None = None,
+        resolves: list[tuple[str, ...]] | None = None,
+    ) -> None:
+        # Findings the user ticks off, per gate visit (last entry repeats).
+        self.resolves = resolves
         self.action = action
         self.feedback = feedback
         self.artifact_path = artifact_path
+        self.responses = responses
         self.calls: list[tuple[str, str | None, str]] = []
         self.paths: list[list[str]] = []
+        self.findings: list[list[dict[str, object]]] = []
 
     async def fire_approval(
         self,
@@ -51,11 +71,28 @@ class _FakeGate:
         artifact_id: str | None = None,
         summary: str = "",
         paths: list[str] | None = None,
+        findings: list[dict[str, object]] | None = None,
     ) -> ApprovalResponse:
         self.calls.append((gate_type, artifact_id, summary))
         self.paths.append(list(paths or []))
+        # What the user was actually shown to tick off, per gate visit.
+        self.findings.append(list(findings or []))
+        resolved: tuple[str, ...] = ()
+        if self.resolves:
+            resolved = self.resolves[min(len(self.calls) - 1, len(self.resolves) - 1)]
+        if self.responses:
+            action, feedback = self.responses[min(len(self.calls) - 1, len(self.responses) - 1)]
+            return ApprovalResponse(
+                action=action,
+                feedback=feedback,
+                artifact_path=self.artifact_path,
+                resolved_finding_ids=resolved,
+            )
         return ApprovalResponse(
-            action=self.action, feedback=self.feedback, artifact_path=self.artifact_path
+            action=self.action,
+            feedback=self.feedback,
+            artifact_path=self.artifact_path,
+            resolved_finding_ids=resolved,
         )
 
 
@@ -1810,3 +1847,301 @@ async def test_a_clean_first_round_pushes_no_table(tmp_path: Path) -> None:
     await engine._run_review_loop("architect", "architect_critic", {"instructions": "go"}, 2)
 
     assert engine._emitters.review_findings == []
+
+
+@pytest.mark.asyncio
+async def test_the_narrative_reaches_the_user_gate_with_its_real_output_shape(
+    tmp_path: Path,
+) -> None:
+    """`narrative_author` is the reason `user_review` exists — the one document
+    written *with* the user, which no gate ever saw because the gate could only
+    fire from the critic path and it has no critic.
+
+    It is also the one author that reports `narrative_path`/`tech_stack_path`
+    instead of a `paths` list, so this drives its **real** output shape: reading
+    only `paths` would report `not_reviewed`, record no work product, skip the
+    gate entirely, and leave the Narrative out of the ledger every later stage
+    resolves against.
+    """
+    gate = _FakeGate(action="agree")
+    engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
+    _seed_revision(tmp_path, "specs/narrative.md")
+    _seed_revision(tmp_path, "specs/tech_stack.md")
+    engine._registry = _FakeAgentRegistry(critics={"narrative_author": ""})
+    engine._emitters = _FakeEmitters()
+
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
+        return {
+            "narrative_path": "proj/specs/narrative.md",
+            "tech_stack_path": "proj/specs/tech_stack.md",
+            "project_code": "ACME",
+            "summary": "wrote the narrative",
+        }
+
+    engine._spawn_subagent = _fake_spawn
+
+    result = await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 3)
+
+    # The user was actually asked, and about both documents at once.
+    assert len(gate.calls) == 1
+    assert gate.paths == [["proj/specs/narrative.md", "proj/specs/tech_stack.md"]]
+    assert result["review"]["outcome"] == "accepted"
+    # Both documents are accepted, and both are in the ledger for stage 2.
+    for rel in ("specs/narrative.md", "specs/tech_stack.md"):
+        history = read_history(tmp_path / rel, tmp_path)
+        assert [e["type"] for e in history] == ["new_revision", "review_result", "accepted"]
+    work_product = await engine._existing_work_product("narrative_author", "")
+    assert work_product is not None
+    assert work_product.paths == ("proj/specs/narrative.md", "proj/specs/tech_stack.md")
+
+
+@pytest.mark.asyncio
+async def test_the_users_rejection_of_the_narrative_comes_back_as_a_finding(
+    tmp_path: Path,
+) -> None:
+    """The other half: a rejection has to reach an author with no critic, or the
+    gate is a dead end rather than a review."""
+    gate = _FakeGate(action="feedback", feedback="the North Star is too vague")
+    engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
+    _seed_revision(tmp_path, "specs/narrative.md")
+    _seed_revision(tmp_path, "specs/tech_stack.md")
+    engine._registry = _FakeAgentRegistry(critics={"narrative_author": ""})
+    engine._emitters = _FakeEmitters()
+    phases: list[str] = []
+
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
+        phases.append(phase)
+        return {
+            "narrative_path": "proj/specs/narrative.md",
+            "tech_stack_path": "proj/specs/tech_stack.md",
+            "project_code": "ACME",
+            "summary": "wrote the narrative",
+        }
+
+    engine._spawn_subagent = _fake_spawn
+
+    await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 2)
+
+    findings = read_findings(_findings_dir(tmp_path), "proj/narrative_author")
+    assert [f["description"] for f in findings] == ["the North Star is too vague"] * 2
+    assert all(f["reported_by"] == "user" for f in findings)
+    # Round 2 spoke to the author as a correction pass, and the findings key was
+    # bound so `get_findings` can actually answer.
+    assert phases == ["initial", "revision"]
+    # The user sees what they objected to, in their own table.
+    assert engine._emitters.review_findings[0]["reviewer_name"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_the_users_objection_is_readable_through_get_findings(tmp_path: Path) -> None:
+    """The claim the whole gate rests on: a rejection reaches the author through
+    the *same* `get_findings` call as any critic finding.
+
+    That needs two things to line up, and neither is obvious from either side
+    alone — the round after a rejection must be spawned with the work product
+    bound as its findings scope, and the key the gate wrote under must be the
+    key the tool reads. So this drives the real `GetFindingsTool` with the
+    context the engine actually binds, rather than reading the store directly.
+    """
+    from kodo.tools import GetFindingsTool
+
+    gate = _FakeGate(
+        responses=[("feedback", "the North Star is too vague"), ("agree", "")],
+    )
+    engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
+    _seed_revision(tmp_path, "specs/narrative.md")
+    _seed_revision(tmp_path, "specs/tech_stack.md")
+    engine._registry = _FakeAgentRegistry(critics={"narrative_author": ""})
+    engine._emitters = _FakeEmitters()
+    scopes: list[str] = []
+    seen: list[list[dict[str, object]]] = []
+
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
+        scopes.append(findings_key)
+        # Read the backlog exactly where the author would: inside its own run,
+        # through the real tool, with the scope the engine bound for this round.
+        tool = GetFindingsTool(
+            SimpleNamespace(
+                mode="guided",
+                findings_dir=_findings_dir(tmp_path),
+                findings_key=findings_key,
+            )
+        )
+        seen.append(json.loads(await tool.handle({}))["findings"])
+        return {
+            "narrative_path": "proj/specs/narrative.md",
+            "tech_stack_path": "proj/specs/tech_stack.md",
+            "project_code": "ACME",
+            "summary": "wrote the narrative",
+        }
+
+    engine._spawn_subagent = _fake_spawn
+
+    await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 2)
+
+    # Round 1 has nothing written yet, so no scope and an empty backlog.
+    assert scopes == ["", "proj/narrative_author"]
+    assert seen[0] == []
+
+    # Round 2 — the author sees the user's objection, in the same shape and
+    # through the same call it would read a critic's finding.
+    (objection,) = seen[1]
+    assert objection["description"] == "the North Star is too vague"
+    assert objection["reported_by"] == "user"
+    assert objection["state"] == "outstanding"
+    assert objection["kind"] == "user_feedback"
+
+    # And once the user approves the revision, it is closed rather than left
+    # outstanding forever — nobody else can verify a fix here.
+    assert read_findings(_findings_dir(tmp_path), "proj/narrative_author")[0]["state"] == "fixed"
+
+
+@pytest.mark.asyncio
+async def test_get_findings_is_empty_on_a_first_pass_rather_than_an_error(
+    tmp_path: Path,
+) -> None:
+    """The same prompt has to be correct on every round, so an unbound scope
+    answers with an empty list — which is why round 1 above passes `""`."""
+    from kodo.tools import GetFindingsTool
+
+    tool = GetFindingsTool(
+        SimpleNamespace(mode="guided", findings_dir=_findings_dir(tmp_path), findings_key="")
+    )
+    assert json.loads(await tool.handle({})) == {"findings": []}
+
+
+# ---------------------------------------------------------------------------
+# Resolving individual findings at the gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_gate_shows_the_user_what_is_still_outstanding(tmp_path: Path) -> None:
+    """The user cannot tick off what they are not shown. Round 2's gate carries
+    round 1's objection; round 1's carries nothing, since nothing had been
+    raised yet."""
+    gate = _FakeGate(action="feedback", feedback="still not right")
+    engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
+    _seed_revision(tmp_path, "specs/narrative.md")
+    _seed_revision(tmp_path, "specs/tech_stack.md")
+    engine._registry = _FakeAgentRegistry(critics={"narrative_author": ""})
+    engine._emitters = _FakeEmitters()
+
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
+        return {
+            "narrative_path": "proj/specs/narrative.md",
+            "tech_stack_path": "proj/specs/tech_stack.md",
+            "project_code": "ACME",
+            "summary": "wrote it",
+        }
+
+    engine._spawn_subagent = _fake_spawn
+
+    await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 2)
+
+    assert gate.findings[0] == []
+    assert [f["description"] for f in gate.findings[1]] == ["still not right"]
+
+
+@pytest.mark.asyncio
+async def test_a_rejection_can_settle_earlier_objections_it_does_not_repeat(
+    tmp_path: Path,
+) -> None:
+    """The accumulation fix. Without it, an author whose only reviewer is the
+    user re-reads every complaint ever raised in the loop, because nothing
+    closes a finding until the whole product is finally approved."""
+    engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=_FakeGate())
+    _seed_revision(tmp_path, "specs/narrative.md")
+    _seed_revision(tmp_path, "specs/tech_stack.md")
+    engine._registry = _FakeAgentRegistry(critics={"narrative_author": ""})
+    engine._emitters = _FakeEmitters()
+    key = "proj/narrative_author"
+
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
+        return {
+            "narrative_path": "proj/specs/narrative.md",
+            "tech_stack_path": "proj/specs/tech_stack.md",
+            "project_code": "ACME",
+            "summary": "wrote it",
+        }
+
+    engine._spawn_subagent = _fake_spawn
+
+    # Round 1: reject over the North Star.
+    engine._gate = _FakeGate(action="feedback", feedback="the North Star is too vague")
+    await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 1)
+    first = _ids(_findings_dir(tmp_path), key)
+    assert len(first) == 1
+
+    # Round 2: that one is done, but the tech stack is now wrong. The user ticks
+    # the first off while rejecting over the second.
+    engine._gate = _FakeGate(
+        action="feedback", feedback="use Postgres, not MySQL", resolves=[tuple(first)]
+    )
+    await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 1)
+
+    states = {f["id"]: f["state"] for f in read_findings(_findings_dir(tmp_path), key)}
+    assert states[first[0]] == "fixed"
+    new_ids = [fid for fid in states if fid != first[0]]
+    assert len(new_ids) == 1 and states[new_ids[0]] == "outstanding"
+
+
+@pytest.mark.asyncio
+async def test_the_gate_cannot_close_a_finding_that_is_not_outstanding_here(
+    tmp_path: Path,
+) -> None:
+    """Ids from a response are validated, never trusted: a stale or malformed
+    one must not reach into another work product's backlog."""
+    engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=_FakeGate())
+    _seed_revision(tmp_path, "specs/narrative.md")
+    _seed_revision(tmp_path, "specs/tech_stack.md")
+    engine._registry = _FakeAgentRegistry(critics={"narrative_author": ""})
+    engine._emitters = _FakeEmitters()
+    key = "proj/narrative_author"
+
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
+        return {
+            "narrative_path": "proj/specs/narrative.md",
+            "tech_stack_path": "proj/specs/tech_stack.md",
+            "project_code": "ACME",
+            "summary": "wrote it",
+        }
+
+    engine._spawn_subagent = _fake_spawn
+
+    engine._gate = _FakeGate(action="feedback", feedback="not right")
+    await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 1)
+
+    engine._gate = _FakeGate(
+        action="feedback",
+        feedback="still not right",
+        resolves=[("proj/some_other_agent_file_1", "made_up_id")],
+    )
+    await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 1)
+
+    # Both real findings are untouched; the invented ids closed nothing.
+    states = [f["state"] for f in read_findings(_findings_dir(tmp_path), key)]
+    assert states == ["outstanding", "outstanding"]
+
+
+@pytest.mark.asyncio
+async def test_a_critic_backed_gate_is_offered_nothing_to_resolve(tmp_path: Path) -> None:
+    """With a critic in the loop this gate is only reached on an empty backlog,
+    so the per-finding controls never appear there — closing stays the critic's
+    job, as it should."""
+    gate = _FakeGate(action="agree")
+    engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
+    await _seed_architect_inputs(engine)
+    _seed_revision(tmp_path, "specs/architecture.md")
+
+    async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
+        if name == "architect":
+            return _author_result(_ARCH_DOC)
+        await engine._record_findings("architect_critic", {"findings": []}, findings_key)
+        return {"findings": []}
+
+    engine._spawn_subagent = _fake_spawn
+
+    await engine._run_review_loop("architect", "architect_critic", {"instructions": "go"}, 2)
+
+    assert gate.findings == [[]]

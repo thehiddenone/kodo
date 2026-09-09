@@ -41,21 +41,39 @@ class _FakeSink:
 
 class _FakeGate:
     def __init__(
-        self, *, action: str = "agree", feedback: str = "", artifact_path: str = ""
+        self,
+        *,
+        action: str = "agree",
+        feedback: str = "",
+        artifact_path: str = "",
+        resolved_finding_ids: tuple[str, ...] = (),
     ) -> None:
         self.action = action
         self.feedback = feedback
         self.artifact_path = artifact_path
+        self.resolved_finding_ids = resolved_finding_ids
         self.calls: list[tuple[str, str | None, str]] = []
         self.paths: list[list[str]] = []
+        # What the user was actually shown to tick off, per gate visit.
+        self.findings: list[list[dict[str, object]]] = []
 
     async def fire_approval(
-        self, gate_type: str, *, artifact_id=None, summary: str = "", paths=None
+        self,
+        gate_type: str,
+        *,
+        artifact_id=None,
+        summary: str = "",
+        paths=None,
+        findings=None,
     ) -> ApprovalResponse:
         self.calls.append((gate_type, artifact_id, summary))
         self.paths.append(list(paths or []))
+        self.findings.append(list(findings or []))
         return ApprovalResponse(
-            action=self.action, feedback=self.feedback, artifact_path=self.artifact_path
+            action=self.action,
+            feedback=self.feedback,
+            artifact_path=self.artifact_path,
+            resolved_finding_ids=self.resolved_finding_ids,
         )
 
 

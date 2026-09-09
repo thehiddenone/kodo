@@ -77,11 +77,20 @@ class ApprovalResponse:
             file, or when the objection is about the set as a whole — the
             engine anchors the minted finding to it only when it is a real
             member.
+        resolved_finding_ids: Findings the user ticked off as done while
+            responding. Only meaningful on a gate that carried an outstanding
+            backlog — i.e. an author whose only reviewer is the user, where
+            nothing else can ever close a finding. It is what lets a rejection
+            say "these two are done, but *this* is still wrong" instead of
+            leaving every earlier objection outstanding until the whole work
+            product is finally approved. Never trusted as-is: the engine closes
+            only ids that are genuinely outstanding on the work product in hand.
     """
 
     action: str
     feedback: str
     artifact_path: str = ""
+    resolved_finding_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -214,6 +223,7 @@ class GateOrchestrator:
         summary: str = "",
         component: str | None = None,
         paths: list[str] | None = None,
+        findings: list[dict[str, object]] | None = None,
     ) -> ApprovalResponse:
         """Emit a ``prompt.approval`` ``kind=request`` and block until the
         user responds.
@@ -227,9 +237,15 @@ class GateOrchestrator:
             paths: Every file the decision covers. A work product is accepted
                 or rejected as a set, so the client lists all of them and the
                 user's response may name which one they were looking at.
+            findings: The work product's still-outstanding findings, so the
+                client can offer them for individual resolution. Non-empty only
+                where the user is the sole reviewer (doc/FINDINGS.md §5): with a
+                critic in the loop this gate fires on an empty backlog, so there
+                is never anything to show.
 
         Returns:
-            ApprovalResponse: The user's action and optional feedback.
+            ApprovalResponse: The user's action, optional feedback, and any
+            findings they marked resolved.
         """
         req_id = uuid.uuid4().hex
         loop = asyncio.get_event_loop()
@@ -243,6 +259,7 @@ class GateOrchestrator:
                 "artifact_id": artifact_id,
                 "summary": summary,
                 "paths": list(paths or []),
+                "findings": list(findings or []),
             }
         )
         try:
@@ -256,6 +273,7 @@ class GateOrchestrator:
                         "artifact_id": artifact_id,
                         "summary": summary,
                         "paths": list(paths or []),
+                        "findings": list(findings or []),
                     },
                 )
             )
@@ -265,9 +283,23 @@ class GateOrchestrator:
             action = str(response_payload.get("action", "agree"))
             feedback = str(response_payload.get("feedback_text") or "")
             artifact_path = str(response_payload.get("artifact_path") or "")
-            _log.info("Approval gate resolved: req_id=%s action=%s", req_id[:8], action)
+            raw_resolved = response_payload.get("resolved_finding_ids")
+            resolved = tuple(
+                str(f) for f in raw_resolved if isinstance(f, str) and f
+            ) if isinstance(raw_resolved, list) else ()
+            _log.info(
+                "Approval gate resolved: req_id=%s action=%s resolved_findings=%d",
+                req_id[:8],
+                action,
+                len(resolved),
+            )
             self.__transient.update(pending_prompt=None)
-            return ApprovalResponse(action=action, feedback=feedback, artifact_path=artifact_path)
+            return ApprovalResponse(
+                action=action,
+                feedback=feedback,
+                artifact_path=artifact_path,
+                resolved_finding_ids=resolved,
+            )
         except asyncio.CancelledError:
             # Leave pending_prompt persisted — the worker is being cancelled
             # (e.g. server shutdown) with the prompt still unanswered, so it

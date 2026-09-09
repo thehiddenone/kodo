@@ -430,6 +430,29 @@ findings table would keep showing a defect they had already accepted a fix for.
 This applies **only** where there is no critic. Where one exists, closing stays
 its job — the user approved the set, not each individual fix.
 
+### Resolving findings one at a time at the gate
+
+Wholesale closing on approval is not enough on its own, because a gate-only loop
+does not *reach* an approval while the user keeps rejecting. Round 1 raises A;
+round 2 the author fixes A and the user now objects to B; nothing closes A, so
+round 3's author re-reads a complaint it already fixed — and the user's findings
+table keeps showing it outstanding.
+
+So the gate carries the work product's outstanding findings (`findings` on
+`prompt.approval`, WS_PROTOCOL.md §6.2) and the response carries
+`resolved_finding_ids` — whatever the user ticked off as done. The engine closes
+those **before** the accept/reject branch: the user made that judgement looking
+at this exact set, and it stands whether they went on to approve the whole thing
+or reject it over something else.
+
+Ids are **validated, never trusted**. Only an id genuinely outstanding on the
+work product in hand is closed, so a stale or malformed response cannot reach
+into another backlog or resurrect a fixed finding.
+
+With a critic in the loop the list is always empty — that gate is reached only
+once the backlog is clear — so the controls simply never appear there, and
+closing stays the critic's job.
+
 ## 6. Document status, after `feedback` was dropped
 
 `guided_state` no longer has a `feedback` entry type, and `ConcernItem` /

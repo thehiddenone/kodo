@@ -224,6 +224,15 @@ An unknown author (renamed, removed) fails **open**: no gate, straight to
 accepted. Work nobody can re-run is better accepted than parked at a gate
 forever.
 
+**The gate also settles individual findings.** A gate-only loop does not reach an
+approval while the user keeps rejecting, so without this the backlog only grows:
+round 1 raises A, round 2 the author fixes A and the user objects to B, and round
+3's author re-reads a complaint it already fixed. So `prompt.approval` carries
+the outstanding findings and the response carries `resolved_finding_ids`, applied
+before the accept/reject branch and validated against what is actually
+outstanding. With a critic the list is always empty — that gate is reached only
+on a clear backlog — so the controls never appear there. FINDINGS.md §5.
+
 ## 5b. Phases — the same author, a different job
 
 An author's two jobs are genuinely different work: writing a document from
