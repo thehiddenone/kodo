@@ -139,6 +139,12 @@ class WorkerMixin:
                 await self._emitters.emit_state()
             except Exception as exc:
                 _log.exception("Unhandled error in runtime worker: %s", exc)
+                # Last-resort backstop for a crash that escaped every guard
+                # closer to the failure (`_drive_subsession`'s and
+                # `_spawn_subagent`'s) while a subsession was open. Runs before
+                # the error notice so the client's subsession block closes
+                # first, then the red callout lands outside it.
+                crashed = await self._recover_crashed_subsession(exc)
                 await self._emitters.emit_error(str(exc), recoverable=True)
                 # Reset to an idle phase so the client unlocks its input and the
                 # user can retry. Without this the phase stays "running" (set when
@@ -150,8 +156,91 @@ class WorkerMixin:
                     self._session.phase = "awaiting_user"
                 self._session.agent = None
                 await self._emitters.emit_state()
+                if crashed:
+                    self._enqueue_subsession_crash_report(crashed, exc)
             finally:
                 self._queue.task_done()
+
+    async def _recover_crashed_subsession(
+        self: EngineHost, exc: BaseException
+    ) -> dict[str, object] | None:
+        """Close out a subsession a crash left open; return what it was, or ``None``.
+
+        Reached only when an exception got past ``_drive_subsession``'s and
+        ``_spawn_subagent``'s own guards — a sub-agent crash is normally
+        converted into an escalation right where it happened, and the calling
+        agent carries on inside the same turn. By the time it reaches here the
+        turn is over and the calling agent's message history has an unanswered
+        ``run_subagent`` tool call in it, so this half does the *bookkeeping*
+        (:meth:`~._subagents.SubagentMixin._abort_active_subsession` writes the
+        ``subsession_end`` marker, clears ``active_subsession``, resets the
+        compactor gauge and pushes ``EVT_SUBSESSION_ENDED``) and
+        :meth:`_enqueue_subsession_crash_report` does the *telling*.
+
+        Returns the ``active_subsession`` record as it was before the abort, so
+        the caller can name the agent in the crash report; ``None`` when no
+        subsession was open (an ordinary entry-turn failure — nothing extra to
+        do beyond the error notice the caller already sends).
+        """
+        active = self._transient.active_subsession
+        if active is None:
+            return None
+        _log.error(
+            "Subsession %s (%s) left open by an unhandled worker error — closing it out",
+            active.get("subsession_id"),
+            active.get("agent"),
+        )
+        try:
+            await self._abort_active_subsession()
+        except Exception:
+            # Never let the recovery path itself wedge the worker; the marker
+            # may be missing but the loop must keep serving prompts.
+            _log.exception("Failed to close out crashed subsession")
+        return dict(active)
+
+    def _enqueue_subsession_crash_report(
+        self: EngineHost, active: dict[str, object], exc: BaseException
+    ) -> None:
+        """Hand the crash back to the calling agent as its next turn.
+
+        The calling agent asked for a sub-agent and — on this path — never got
+        an answer, so it is queued a continuation that says exactly that and
+        cites the exception. Queued rather than persisted directly:
+        ``_run_entry_agent``'s ``nudge_detail`` branch is the established way a
+        turn the user never typed enters the history (doc/STUCK_DETECTION.md
+        §2.5), and going through the queue keeps this from racing the turn that
+        just died.
+
+        Guarded against a crash loop: only the *first* crash in a chain
+        re-enters the agent. If the queued continuation crashes the same way,
+        ``_subsession_crash_recovered`` is still set and the session simply
+        goes idle with the error notice — a human decides what to do next
+        rather than the engine spinning on a broken environment. The flag is
+        cleared by :meth:`~._turns.TurnLoopMixin._run_entry_agent` on any turn
+        that completes.
+        """
+        if self._subsession_crash_recovered:
+            _log.warning("Subsession crash recovery already used this chain — not re-entering")
+            return
+        self._subsession_crash_recovered = True
+        display = str(active.get("display_name") or active.get("agent") or "A sub-agent")
+        detail = {
+            "ui_text": (
+                f"{display} crashed and its run was abandoned — control is back with you. "
+                f"({type(exc).__name__}: {exc})"
+            ),
+            "reasons": ["subsession_crashed"],
+            "mode": "auto",
+            "source": "subsession_crash",
+        }
+        text = (
+            f"The {display} sub-agent you invoked crashed before returning a result, and "
+            f"its run was abandoned: {type(exc).__name__}: {exc}\n\n"
+            "Nothing it may have written can be relied on. Decide what to do next: retry "
+            "the stage, route around it, or — if this looks environmental (a missing "
+            "directory, tool, or permission) — resolve that first, or ask the user."
+        )
+        self._queue.put_nowait({"text": text, "attachments": [], "nudge_detail": detail})
 
     async def _handle_input_no_agent(self: EngineHost, name: str, text: str) -> None:
         self._session.phase = "running"

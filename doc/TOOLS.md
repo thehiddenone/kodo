@@ -844,6 +844,40 @@ between tools.
 
 ---
 
+## 8B. Handler-level hard refusals (added 2026-09-09)
+
+A tool handler may refuse a call outright, independently of the security layer.
+There is exactly one such refusal today, and the reason it lives in the handler
+rather than in a security rule is the point: a security verdict is *posture
+dependent* — permissive Command Control and autonomous mode both let a
+HIGH-impact call through — while this must hold everywhere.
+
+**`filesystem` will not delete or move a bound project root.**
+`FilesystemTool._assert_not_bound_root` refuses `delete_dir`/`move_dir` whose
+resolved target either *is* one of `ToolContext.root_paths`, or *contains* one
+(an ancestor — destroying the workspace home destroys the root just as
+thoroughly, and aiming one directory too high is the likelier slip). The
+refusal is an ordinary `{"error": …}` result the agent must deal with, exactly
+like a missing source file.
+
+Why: a bound root is what `get_root_paths` reports, what every logical path
+resolves through, what the checkpoint mirrors track, and what
+`TransientStore.lock_workspace_path` has permanently written into the session's
+remembered workspace shape. Removing one from underneath all of that leaves
+nothing recoverable. This is not hypothetical — a `toolchain_builder`
+sub-agent issued `{operation: "delete_dir", path: "<its own project root>"}`
+with an `intent` reading *"List the project root directory to see current
+state"*; the model had simply picked the wrong operation, and permissive
+posture allowed it (doc/CHECKPOINTS.md §10).
+
+A `temporary: true` call is unaffected — its paths resolve under the session's
+scratch directory (§5a), which is never a bound root. Ordinary cleanup
+*inside* a root is unaffected too; only the root itself and its ancestors are
+off limits. The `filesystem` spec's `description` states the rule, so the model
+knows before it tries.
+
+---
+
 ## 9. The dispatcher
 
 [`ToolDispatcher`](../src/kodo/tools/_dispatch.py) is built **once per agent
@@ -932,6 +966,22 @@ this loop, around the `tool_dispatch` call — so every dispatch in this diagram
 that touches a file also earns a mirror commit. The one exception: a call
 made with `temporary: true` (§5a) is skipped by `prepare` outright and never
 earns one, since it never touches the project at all.
+
+### Every call has its own failure boundary (added 2026-09-09)
+
+The `for each tool call` body above is `_dispatch_one_tool_call`, and both it
+and `_dispatch_tool_calls`'s loop body carry a `try`. An unexpected exception
+from *any* stage — the checkpoint baseline, the handler, the post-dispatch
+commit, result normalization — becomes an `{"error": …}` `tool_result` for that
+one call, and the batch continues; the agent gets to deal with the failure the
+same way it deals with any other tool error, because it *is* the same envelope
+(`normalize_output` treats `{"error": …}` as a compliant result, so a crashed
+call still logs and still renders a completed detail card). Only
+`asyncio.CancelledError` (a Stop) and `UnrecoverableError` (an LLM 401/4xx from
+a nested sub-agent turn, which the worker must see to revoke the API key) still
+propagate. Before this existed, one unhandled exception here tore down the
+whole turn — and inside a sub-agent, killed the subsession with no handback.
+See doc/STATE_AND_LIFECYCLE.md §10 and doc/CHECKPOINTS.md §10.
 
 ---
 

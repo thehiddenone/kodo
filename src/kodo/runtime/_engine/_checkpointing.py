@@ -11,6 +11,19 @@ A call carrying ``temporary: true`` (the session-scoped scratch directory —
 :func:`kodo.project.session_temp_dir`, doc/SECURITY.md) is skipped by
 :meth:`CheckpointCoordinator.prepare` outright: it never earns a mirror
 commit, an undo/rollback entry, or a ``new_revision`` jsonl attribution.
+
+**Checkpointing is best-effort and never fatal.** :meth:`prepare` and
+:meth:`commit` sit on either side of every mutating tool call in the turn
+loop, so an exception out of either one used to abort the whole turn — and,
+inside a sub-agent, kill the subsession mid-run with no handback. Both now
+degrade to "no checkpoint for this call" and log, because losing an undo
+entry is strictly better than losing the turn. The trigger in the wild: an
+agent ``filesystem`` call deleted its own project root, and the very next
+line — this coordinator committing that deletion — could not spawn git in a
+directory that no longer existed. The tool result stays clean either way; a
+degrade is a server-log warning, not something the model is told about (the
+model cannot act on it, and inventing a field on every mutating tool''s
+output schema to say so would be worse).
 """
 
 from __future__ import annotations
@@ -22,12 +35,19 @@ from typing import Protocol
 
 from kodo.common import Envelope, MessageSink
 from kodo.guided_state import append_new_revision, is_tracked
+from kodo.mirror import ShadowMirrorError
 from kodo.shellparser import flatten_command
 from kodo.state import TransientStore
 from kodo.tools import NoWorkspaceError, PathResolver, RootPath
 from kodo.transport import EVT_CHECKPOINT_STATE
 
-from .._checkpoints import CheckpointRef, CheckpointState, RootMirrorManager, command_may_mutate
+from .._checkpoints import (
+    CheckpointRef,
+    CheckpointState,
+    RootMirrorManager,
+    UnsafeCheckpointRootError,
+    command_may_mutate,
+)
 from .._session import SessionState
 
 _log = logging.getLogger(__name__)
@@ -42,6 +62,13 @@ _MUTATING_TOOLS = frozenset(
 # tracked document's .jsonl evolution log (run_command's targets are too
 # coarse-grained — a whole cwd, not a specific file — to attribute cleanly).
 _GUIDED_STATE_TOOLS = frozenset({"filesystem", "edit_file", "create_file", "create_directory"})
+
+# Everything a mirror operation can fail with that must never reach the turn
+# loop (see the module docstring). ``ShadowMirrorError`` covers a failed *or
+# unstartable* git; ``UnsafeCheckpointRootError`` a root the manager refuses
+# outright; ``OSError`` the non-git filesystem work around it (scaffolding
+# ``.kodo/``, writing ``info/exclude``) when the root has gone away.
+_CHECKPOINT_FAILURES = (ShadowMirrorError, UnsafeCheckpointRootError, OSError)
 
 
 class CheckpointHost(Protocol):
@@ -103,6 +130,11 @@ class CheckpointCoordinator:
         checked here via ``root_paths`` (empty exactly when
         ``EngineCore._has_workspace`` is false) so that never happens; nothing
         is tracked and the dispatch gate goes on to reject the call normally.
+
+        Never raises: a mirror that cannot be initialised (see
+        :data:`_CHECKPOINT_FAILURES`) yields an empty list, which also skips
+        the matching :meth:`commit` — the tool still runs, it just isn't
+        checkpointed.
         """
         if (
             not self._enabled()
@@ -115,7 +147,16 @@ class CheckpointCoordinator:
         if paths:
             self.sync_roots()
             for path in paths:
-                await self._mirrors.prepare(path)
+                try:
+                    await self._mirrors.prepare(path)
+                except _CHECKPOINT_FAILURES as exc:
+                    _log.warning(
+                        "Checkpoint baseline for %s (%s) skipped — mirror unavailable: %s",
+                        path,
+                        tool_name,
+                        exc,
+                    )
+                    return []
         return paths
 
     async def commit(
@@ -133,15 +174,34 @@ class CheckpointCoordinator:
         ``TransientStore.lock_workspace_path`` /
         ``WorkflowEngine.handle_workspace_folders``). This is the sole place
         that lock is ever set.
+
+        Never raises: a mirror that cannot be committed (see
+        :data:`_CHECKPOINT_FAILURES`) yields ``None``, so the call carries no
+        ``checkpoint_sha`` and earns no undo entry, and the turn continues.
+        The ``run_command`` sweep is guarded separately from the primary
+        commit — one dead root must not cost the others their checkpoint.
         """
         if not paths:
             return None
         label = self.label(tool_name, tool_input)
-        ref = await self._mirrors.commit_for_path(paths[0], label)
+        ref: CheckpointRef | None = None
+        try:
+            ref = await self._mirrors.commit_for_path(paths[0], label)
+        except _CHECKPOINT_FAILURES as exc:
+            _log.warning(
+                "Checkpoint commit for %s (%s) skipped — mirror unavailable: %s",
+                paths[0],
+                tool_name,
+                exc,
+            )
         if ref is not None:
             self._host._transient.lock_workspace_path(ref.root)
         if tool_name == "run_command":
-            swept_roots = await self._mirrors.sweep_initialized(label)
+            try:
+                swept_roots = await self._mirrors.sweep_initialized(label)
+            except _CHECKPOINT_FAILURES as exc:
+                _log.warning("Checkpoint sweep after run_command skipped: %s", exc)
+                swept_roots = []
             for root in swept_roots:
                 self._host._transient.lock_workspace_path(str(root))
         return ref

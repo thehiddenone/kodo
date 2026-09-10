@@ -9,9 +9,11 @@ against a real mirror manager rooted at a temp directory.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
-from kodo.runtime._checkpoints import CheckpointRef
+from kodo.mirror import ShadowMirrorError
+from kodo.runtime._checkpoints import CheckpointRef, UnsafeCheckpointRootError
 from kodo.runtime._engine._checkpointing import CheckpointCoordinator
 from kodo.runtime._session import SessionState
 from kodo.state import TransientStore
@@ -272,6 +274,64 @@ async def test_prepare_and_commit_round_trip(tmp_path: Path) -> None:
 async def test_commit_with_no_paths_returns_none(tmp_path: Path) -> None:
     coordinator, _host, _sink = _make_coordinator(tmp_path)
     assert await coordinator.commit("edit_file", {}, []) is None
+
+
+async def test_commit_degrades_when_the_root_vanished(tmp_path: Path) -> None:
+    """A deleted work tree costs the checkpoint, never the turn.
+
+    The original incident: a sub-agent's ``filesystem`` call deleted its own
+    project root, and the very next line — committing that deletion — could
+    not spawn git in a directory that no longer existed. The resulting
+    ``FileNotFoundError`` escaped the whole turn loop and killed the
+    subsession with no handback.
+    """
+    coordinator, host, _sink = _make_coordinator(tmp_path)
+    paths = await coordinator.prepare("edit_file", {"path": "a.txt"})
+    (tmp_path / "a.txt").write_text("hello\n")
+    shutil.rmtree(tmp_path)
+
+    assert await coordinator.commit("edit_file", {"path": "a.txt"}, paths) is None
+    # Nothing was committed, so nothing gets locked into the workspace shape.
+    assert host._transient.workspace_locked_paths == frozenset()
+
+
+async def test_prepare_degrades_when_the_mirror_cannot_be_initialised(tmp_path: Path) -> None:
+    """An un-initialisable mirror yields no paths, which also skips the commit.
+
+    ``prepare`` does not fail on a merely *missing* root — ``_ensure`` scaffolds
+    ``.kodo/`` and so recreates the directory — so the failure is injected at
+    the mirror manager, which is where every real variant (a refused root, a
+    git that will not run, an unwritable parent) surfaces.
+    """
+    coordinator, _host, _sink = _make_coordinator(tmp_path)
+
+    async def _boom(path: Path) -> None:
+        raise ShadowMirrorError("git init could not be started")
+
+    coordinator.mirrors.prepare = _boom  # type: ignore[method-assign]
+
+    assert await coordinator.prepare("edit_file", {"path": "a.txt"}) == []
+
+
+async def test_prepare_degrades_on_a_refused_root(tmp_path: Path) -> None:
+    """``UnsafeCheckpointRootError`` is tolerated the same way, not propagated."""
+    coordinator, _host, _sink = _make_coordinator(tmp_path)
+
+    async def _refuse(path: Path) -> None:
+        raise UnsafeCheckpointRootError("refusing to mirror $HOME")
+
+    coordinator.mirrors.prepare = _refuse  # type: ignore[method-assign]
+
+    assert await coordinator.prepare("edit_file", {"path": "a.txt"}) == []
+
+
+async def test_run_command_sweep_failure_does_not_raise(tmp_path: Path) -> None:
+    coordinator, _host, _sink = _make_coordinator(tmp_path)
+    paths = await coordinator.prepare("run_command", {"command": "touch a.txt"})
+    (tmp_path / "a.txt").write_text("x\n")
+    shutil.rmtree(tmp_path)
+
+    assert await coordinator.commit("run_command", {"command": "touch a.txt"}, paths) is None
 
 
 async def test_commit_run_command_sweeps_other_mirrors(tmp_path: Path) -> None:

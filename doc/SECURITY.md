@@ -746,6 +746,29 @@ be *reached* for a homeless session's `run_command` before checkpointing
 crashed first. That "count everything as outside" property is what §3.1a
 preserves when the empty `default_cwd` became a real scratch-directory path.
 
+**A handler-level refusal the security layer deliberately does not own
+(2026-09-09):** `filesystem` will not `delete_dir`/`move_dir` a bound project
+root, or any directory containing one — `FilesystemTool._assert_not_bound_root`
+raises before touching disk and the agent gets an ordinary `{"error": …}`
+result. This is *not* a security rule and does not go through
+`SecurityLayer.evaluate`, on purpose: a security verdict is posture dependent
+(permissive Command Control passes every impact level, and autonomous mode
+never prompts), while "do not destroy the directory the whole session is
+anchored on" has to hold unconditionally. It is the same reasoning as the
+`_is_unsafe_checkpoint_root` refusal in `RootMirrorManager._ensure` (never
+mirror `$HOME` or `/`) — a structural invariant, enforced where it cannot be
+configured away. Details and the incident: doc/TOOLS.md §8B,
+doc/CHECKPOINTS.md §10.
+
+**Checkpointing never ends a turn any more (2026-09-09):** the fix above made
+`prepare` skip a homeless session; it did not make either half *tolerate a
+failure*. A sub-agent that deleted its own project root left the immediately
+following `commit` unable to spawn git in a directory that no longer existed,
+and the resulting `FileNotFoundError` escaped all the way to the worker. Both
+`prepare` and `commit` now degrade to "no checkpoint for this call", and each
+tool call in the turn loop has its own failure boundary — see
+doc/CHECKPOINTS.md §10 and doc/STATE_AND_LIFECYCLE.md §10.
+
 `add_security_rule` (`kodo.tools.EngineServices` protocol) reaches
 `WorkflowEngine.add_security_rule` (`kodo/runtime/_engine/_core.py`):
 `"session"` updates `SessionState.security_rules` and

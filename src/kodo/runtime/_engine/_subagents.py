@@ -24,7 +24,7 @@ from kodo.findings import (
     read_findings,
     sort_for_display,
 )
-from kodo.llms import Message
+from kodo.llms import Message, UnrecoverableError
 from kodo.subagents import (
     PHASE_INITIAL,
     PHASE_REVISION,
@@ -706,6 +706,34 @@ class SubagentMixin:
                 f"Run the stage that produces {listed}, then retry this one.",
                 "If that stage was skipped deliberately, the pipeline order needs revisiting.",
             ],
+        }
+
+    @staticmethod
+    def _crashed_subsession_result(agent_name: str, exc: BaseException) -> dict[str, object]:
+        """The escalation returned when a subsession died on an exception.
+
+        Shaped like every other escalation (a non-empty ``reason``, see
+        :func:`_escalation_reason`) so the calling agent reads a crash through
+        the path it already has for "this could not be done": the review loop
+        stops on it without spending a round, no work product is recorded, and
+        the ``schema_compliance: False`` flag makes ``_close_subsession`` mark
+        the handback ``failed`` so the WebView renders the red callout.
+
+        Returning something is the whole point. The exception used to unwind
+        past ``_close_subsession`` to the worker, which reported the error and
+        went idle — leaving ``transient.active_subsession`` set, the
+        client's subsession block never closed, and the calling agent never
+        told anything at all. A crash is now data the caller can act on.
+        """
+        return {
+            "summary": (f"{agent_name} crashed and produced nothing: {type(exc).__name__}: {exc}"),
+            "reason": "subsession_crashed",
+            "options": [
+                "Retry the stage — the failure may be transient.",
+                "If it repeats, the blocker is environmental (a missing directory, "
+                "tool, or permission); resolve that first or ask the user.",
+            ],
+            SCHEMA_COMPLIANCE_KEY: False,
         }
 
     def _project_root(self: EngineHost, project: str) -> Path | None:
@@ -1522,7 +1550,24 @@ class SubagentMixin:
             subsession_id, seed.role, seed.content, kind="subagent_task"
         )
 
-        output = await self._drive_subsession(name, subsession_id, [seed], findings_key, phase)
+        try:
+            output = await self._drive_subsession(name, subsession_id, [seed], findings_key, phase)
+        except (asyncio.CancelledError, UnrecoverableError):
+            # A Stop (WorkflowEngine.stop -> _abort_active_subsession closes the
+            # subsession itself) and an unrecoverable LLM error (the worker
+            # revokes the vendor's API key) both have to keep unwinding.
+            raise
+        except Exception as exc:
+            # Reached only for a failure *outside* the turn loop —
+            # _drive_subsession already converts a crash in its own body,
+            # having first torn down the live stream. Registry/plugin
+            # resolution is what remains, and a subsession is already open by
+            # now, so it still has to be closed rather than abandoned.
+            _log.exception("subsession %s (%s) failed to start: %s", subsession_id, name, exc)
+            await self._emitters.emit_error(
+                f"{self._display_name(name)} could not be started: {exc}", recoverable=True
+            )
+            output = self._crashed_subsession_result(name, exc)
         await self._close_subsession(name, subsession_id, output)
         return output
 
@@ -1545,6 +1590,14 @@ class SubagentMixin:
         artifact index to recover a partial result from, so the caller (e.g.
         ``_run_review_loop``) just sees an empty result and treats
         it as if nothing happened.
+
+        An exception out of the turn loop does not propagate: it is folded into
+        the crash escalation :meth:`_crashed_subsession_result` builds, *after*
+        the stream teardown below has run, so the calling agent is handed a
+        result it can act on and the client's subsession block still closes.
+        ``asyncio.CancelledError`` (Stop) and
+        :class:`~kodo.llms.UnrecoverableError` are the two deliberate
+        exceptions — both belong to the session, not to this sub-agent.
         """
         agent = self._registry.get(name, self._session.effective_autonomous, phase)
         plugin, model_id, routing = await self._resolve_plugin(agent.capability)
@@ -1562,56 +1615,82 @@ class SubagentMixin:
             for msg in batch:
                 self._transient.append_subsession_message(subsession_id, msg.role, msg.content)
 
-        await self._run_agent_turn(
-            llm=plugin,
-            routing=routing,
-            model=model_id,
-            system_prompt=agent.system_prompt,
-            messages=messages,
-            tools=leaf_tools,
-            tool_dispatch=dispatcher.dispatch,
-            stream_id=stream_id,
-            agent_name=name,
-            stop_after_tools=lambda: dispatcher.stop_requested,
-            persist=_persist,
-            subsession_model_key=model_id,
-            on_stall=self._make_stall_handler(
-                agent_name=name,
+        crash: Exception | None = None
+        try:
+            await self._run_agent_turn(
+                llm=plugin,
                 routing=routing,
-                is_entry_turn=False,
-                subsession_id=subsession_id,
-                dispatcher=dispatcher,
-            ),
-            on_cyclic_thinking=self._make_cyclic_thinking_handler(
+                model=model_id,
+                system_prompt=agent.system_prompt,
+                messages=messages,
+                tools=leaf_tools,
+                tool_dispatch=dispatcher.dispatch,
+                stream_id=stream_id,
                 agent_name=name,
-                routing=routing,
-                is_entry_turn=False,
-                subsession_id=subsession_id,
-            ),
-            on_think_in_tool_call=self._make_think_in_tool_call_handler(
-                agent_name=name,
-                is_entry_turn=False,
-                subsession_id=subsession_id,
-            ),
-            on_tool_call_cyclic=self._make_tool_call_cyclic_handler(
-                agent_name=name,
-                routing=routing,
-                is_entry_turn=False,
-                subsession_id=subsession_id,
-            ),
-            on_repeated_tool_calls=self._make_repeated_tool_call_handler(
-                agent_name=name,
-                routing=routing,
-                is_entry_turn=False,
-                subsession_id=subsession_id,
-            ),
-        )
+                stop_after_tools=lambda: dispatcher.stop_requested,
+                persist=_persist,
+                subsession_model_key=model_id,
+                on_stall=self._make_stall_handler(
+                    agent_name=name,
+                    routing=routing,
+                    is_entry_turn=False,
+                    subsession_id=subsession_id,
+                    dispatcher=dispatcher,
+                ),
+                on_cyclic_thinking=self._make_cyclic_thinking_handler(
+                    agent_name=name,
+                    routing=routing,
+                    is_entry_turn=False,
+                    subsession_id=subsession_id,
+                ),
+                on_think_in_tool_call=self._make_think_in_tool_call_handler(
+                    agent_name=name,
+                    is_entry_turn=False,
+                    subsession_id=subsession_id,
+                ),
+                on_tool_call_cyclic=self._make_tool_call_cyclic_handler(
+                    agent_name=name,
+                    routing=routing,
+                    is_entry_turn=False,
+                    subsession_id=subsession_id,
+                ),
+                on_repeated_tool_calls=self._make_repeated_tool_call_handler(
+                    agent_name=name,
+                    routing=routing,
+                    is_entry_turn=False,
+                    subsession_id=subsession_id,
+                ),
+            )
+        except (asyncio.CancelledError, UnrecoverableError):
+            # A Stop unwinds (stop() closes the subsession out itself); an
+            # unrecoverable LLM error must reach the worker, which revokes the
+            # vendor's API key on a 401 rather than treating it as this
+            # sub-agent's problem.
+            raise
+        except Exception as exc:
+            # Everything else is *this sub-agent's* failure, not the session's.
+            # Recorded here rather than re-raised so the stream teardown below
+            # still runs (a re-raise leaves the client's spinner and the open
+            # `stream_id` dangling) and the caller gets a result it can act on.
+            crash = exc
+            _log.exception("subsession %s (%s) crashed: %s", subsession_id, name, exc)
 
         # Safety net for a final round with zero deltas — see the matching
         # comment in ``_turns.py``'s entry-turn caller.
         self._session.awaiting_first_chunk = False
         await self._sink.send(Envelope.make_stream_end(stream_id))
         await self._emitters.emit_agent_finished(name)
+        if crash is not None:
+            # The human needs the exception itself (rendered as a red
+            # <kodo_crit> callout, inside this subsession's own block since it
+            # is emitted before the handback); the caller gets the escalation.
+            # No findings are recorded from a crashed critic — there is no
+            # verdict, and a partial one would silently close real objections.
+            await self._emitters.emit_error(
+                f"{self._display_name(name)} crashed: {type(crash).__name__}: {crash}",
+                recoverable=True,
+            )
+            return self._crashed_subsession_result(name, crash)
         output = dispatcher.returned_output
         if output is None:
             _log.warning(
@@ -1722,11 +1801,10 @@ class SubagentMixin:
     async def _abort_active_subsession(self: EngineHost) -> None:
         """Close out a subsession a user Stop left open mid-run.
 
-        ``_spawn_subagent`` awaits :meth:`_drive_subsession` then
-        :meth:`_close_subsession` as two sequential, unguarded calls (no
-        ``try/finally``): when :meth:`~._core.WorkflowEngine.stop` cancels the
-        worker task, the cancellation unwinds through ``_drive_subsession``
-        and skips ``_close_subsession`` entirely, leaving
+        ``_spawn_subagent``'s guard around :meth:`_drive_subsession`
+        deliberately re-raises ``asyncio.CancelledError`` (a Stop belongs to
+        the session, not to the sub-agent), so a cancellation still unwinds
+        straight past :meth:`_close_subsession`, leaving
         ``_transient.active_subsession`` set, the compactor's subsession gauge
         stale, and the client's collapsible block permanently unclosed (no
         ``subsession_end`` marker/``EVT_SUBSESSION_ENDED`` ever arrives) — see
@@ -1734,6 +1812,11 @@ class SubagentMixin:
         ``session.jsonl`` and before flipping ``phase`` to ``"stopped"``, so
         the client's ``subsession_ended`` handling lands before its
         ``interrupted`` one.
+
+        Also the worker's last-resort backstop for a *crash* that somehow
+        escapes both of ``_spawn_subagent``'s guards (see
+        ``WorkerMixin._recover_crashed_subsession``) — the same three problems
+        would otherwise outlive the failed turn.
 
         Reads the closing agent/display names from ``active_subsession``
         itself (captured correctly at :meth:`_open_subsession` time) rather

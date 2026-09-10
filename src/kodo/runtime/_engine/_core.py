@@ -259,6 +259,12 @@ class WorkflowEngine(
         # (doc/STUCK_DETECTION.md §2.11) -- independent of the four above for
         # the same reason they are independent of each other.
         self._repeat_streak = False
+        # One-shot guard for the worker's subsession-crash backstop
+        # (``WorkerMixin._enqueue_subsession_crash_report``): set when a crash
+        # report has been queued back to the calling agent, cleared by
+        # ``_run_entry_agent`` on any turn that completes, so a repeating
+        # environmental failure goes idle for the human instead of looping.
+        self._subsession_crash_recovered = False
         # The security layer judging every tool call (doc/SECURITY.md) —
         # deterministic heuristic rules, no LLM involved.
         self._security = SecurityLayer()
@@ -1173,9 +1179,7 @@ class WorkflowEngine(
             agent=work_product.agent,
             responsibility_code=work_product.responsibility_code,
         )
-        _log.info(
-            "user resolved %d finding(s) at the gate on %s", len(updates), work_product.id
-        )
+        _log.info("user resolved %d finding(s) at the gate on %s", len(updates), work_product.id)
 
     async def _close_findings_on_approval(self, work_product: WorkProduct) -> None:
         """Close every outstanding finding when the user approves un-critiqued work.

@@ -9,11 +9,12 @@ dependency-manager/web_search entry points, the subsession lifecycle
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
-from kodo.llms import Message
+from kodo.llms import Message, UnrecoverableError
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._engine._watchdog import _MAX_CONSECUTIVE_NUDGES
 from kodo.runtime._session import SessionState
@@ -93,6 +94,10 @@ class _FakeEmitters:
         self.cyclic_critical_messages: list[str] = []
         self.think_in_tool_call_critical_messages: list[str] = []
         self.tool_call_cyclic_critical_messages: list[str] = []
+        self.errors: list[tuple[str, bool]] = []
+
+    async def emit_error(self, message: str, *, recoverable: bool = True) -> None:
+        self.errors.append((message, recoverable))
 
     async def emit_state(self) -> None:
         self.events.append(("state",))
@@ -652,6 +657,74 @@ async def test_drive_subsession_wires_on_cyclic_thinking_for_subagent_scope() ->
     assert engine._emitters.cyclic_critical_messages == []
 
 
+async def test_drive_subsession_folds_a_turn_crash_into_an_escalation() -> None:
+    """A crashed sub-agent hands its caller a result, not an exception.
+
+    The exception used to unwind past ``_close_subsession`` to the worker,
+    which reported it and went idle — leaving ``active_subsession`` set, the
+    client''s subsession block never closed, and the calling agent told
+    nothing. It is now the ordinary escalation shape (non-empty ``reason``),
+    which the review loop already stops on and which records no work product.
+    """
+    engine = _make_engine(dispatcher_output={"ok": True})
+
+    async def _boom(**kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "/gone")
+
+    engine._run_agent_turn = _boom
+
+    output = await engine._drive_subsession("investigator", "sub1", [])
+
+    assert output["reason"] == "subsession_crashed"
+    assert output[SCHEMA_COMPLIANCE_KEY] is False
+    assert "/gone" in str(output["summary"])
+    # The stream is still torn down, so no client spinner is left hanging.
+    assert ("finished", "investigator") in engine._emitters.events
+    assert engine._sink.sent[-1].kind == "stream_end"
+    # ...and the human sees the exception itself.
+    assert any("crashed" in msg for msg, _rec in engine._emitters.errors)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [asyncio.CancelledError(), UnrecoverableError("bad key", status_code=401)],
+    ids=["cancelled", "unrecoverable"],
+)
+async def test_drive_subsession_reraises_session_level_failures(exc: BaseException) -> None:
+    """A Stop and an unrecoverable LLM error belong to the session, not the agent."""
+    engine = _make_engine(dispatcher_output={"ok": True})
+
+    async def _boom(**kwargs):
+        raise exc
+
+    engine._run_agent_turn = _boom
+
+    with pytest.raises(type(exc)):
+        await engine._drive_subsession("investigator", "sub1", [])
+
+
+async def test_drive_subsession_crash_records_no_findings_from_a_critic() -> None:
+    """A crashed critic has no verdict — recording a partial one would close
+    real objections that were never actually judged."""
+    engine = _make_engine(dispatcher_output={"findings": [], "summary": "fine"})
+
+    async def _boom(**kwargs):
+        raise RuntimeError("died mid-review")
+
+    engine._run_agent_turn = _boom
+    engine.recorded_findings: list[tuple[str, dict[str, object], str]] = []
+
+    async def _record_findings(name, output, key) -> None:
+        engine.recorded_findings.append((name, output, key))
+
+    engine._record_findings = _record_findings
+
+    output = await engine._drive_subsession("code_critic", "sub1", [], "wp-1")
+
+    assert output["reason"] == "subsession_crashed"
+    assert engine.recorded_findings == []
+
+
 # ---------------------------------------------------------------------------
 # _spawn_subagent
 # ---------------------------------------------------------------------------
@@ -697,6 +770,45 @@ async def test_spawn_subagent_clears_replay_flag_when_ledger_empty() -> None:
     await engine._spawn_subagent("investigator", {})
 
     assert engine._replay_subsessions is None
+
+
+async def test_spawn_subagent_closes_the_subsession_when_startup_crashes() -> None:
+    """A failure *before* the turn loop still has to close what it opened.
+
+    ``_drive_subsession`` converts its own crashes, so this outer guard covers
+    what is left — registry/plugin resolution — reached with a subsession
+    already open.
+    """
+    engine = _make_engine(dispatcher_output={"ok": True})
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("no plugin for that capability")
+
+    engine._drive_subsession = _boom
+
+    result = await engine._spawn_subagent("investigator", {"instructions": "look"})
+
+    assert result["reason"] == "subsession_crashed"
+    kinds = [m["type"] for m in engine._transient.markers]
+    assert kinds == ["subsession_start", "subsession_end"]
+    assert engine._transient.markers[-1]["failed"] is True
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [asyncio.CancelledError(), UnrecoverableError("bad key", status_code=401)],
+    ids=["cancelled", "unrecoverable"],
+)
+async def test_spawn_subagent_reraises_session_level_failures(exc: BaseException) -> None:
+    engine = _make_engine(dispatcher_output={"ok": True})
+
+    async def _boom(*args, **kwargs):
+        raise exc
+
+    engine._drive_subsession = _boom
+
+    with pytest.raises(type(exc)):
+        await engine._spawn_subagent("investigator", {"instructions": "look"})
 
 
 # ---------------------------------------------------------------------------

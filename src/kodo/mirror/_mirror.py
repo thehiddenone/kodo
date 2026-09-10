@@ -24,7 +24,17 @@ _GIT_USER_EMAIL = "kodo@localhost"
 
 
 class ShadowMirrorError(Exception):
-    """Raised when a git subprocess exits non-zero."""
+    """Raised when a git subprocess exits non-zero, or cannot be launched at all.
+
+    The second case is not hypothetical: the work tree is the *real* project
+    directory, and an agent's own ``filesystem`` call can delete it under a
+    live session, after which every ``Popen(cwd=work_tree)`` here fails with
+    ``FileNotFoundError``. Folding that into this one mirror-level exception
+    (see :meth:`ShadowMirror._ShadowMirror__spawn`) keeps callers from having
+    to know that a checkpoint can fail as a bare ``OSError`` — which is
+    exactly how one used to escape the whole turn loop and kill a subsession
+    mid-run.
+    """
 
 
 @dataclass(frozen=True)
@@ -304,16 +314,7 @@ class ShadowMirror:
 
     async def __index_clean(self) -> bool:
         """Return ``True`` when nothing is staged for commit."""
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            "diff",
-            "--cached",
-            "--quiet",
-            cwd=str(self.__work_tree),
-            env=self.__env(),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        proc = await self.__spawn("diff", "--cached", "--quiet")
         await proc.communicate()
         return proc.returncode == 0
 
@@ -329,15 +330,32 @@ class ShadowMirror:
         env["GIT_WORK_TREE"] = str(self.__work_tree)
         return env
 
+    async def __spawn(self, *args: str) -> asyncio.subprocess.Process:
+        """Launch ``git *args`` against this mirror, or raise ShadowMirrorError.
+
+        The single place a git subprocess is started, so the one failure mode
+        that is *not* a non-zero exit — the launch itself raising ``OSError``
+        — is translated in exactly one place. ``cwd`` is the work tree, i.e.
+        the live project directory, so a directory deleted under a running
+        session (or a ``git`` that is not on ``PATH``) surfaces as
+        ``FileNotFoundError`` from ``Popen``, not as a git error code.
+        """
+        try:
+            return await asyncio.create_subprocess_exec(
+                "git",
+                *args,
+                cwd=str(self.__work_tree),
+                env=self.__env(),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise ShadowMirrorError(
+                f"git {' '.join(args)} could not be started (work_tree={self.__work_tree}): {exc}"
+            ) from exc
+
     async def __git(self, *args: str) -> str:
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            *args,
-            cwd=str(self.__work_tree),
-            env=self.__env(),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        proc = await self.__spawn(*args)
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
             raise ShadowMirrorError(

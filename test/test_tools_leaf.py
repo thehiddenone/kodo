@@ -517,6 +517,71 @@ async def test_delete_dir_rejects_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_delete_dir_refuses_a_bound_project_root(tmp_path: Path) -> None:
+    """A bound root is not deletable, whatever the Command Control posture.
+
+    A sub-agent once issued ``delete_dir`` on its own freshly scaffolded
+    project root with an ``intent`` that read "List the project root directory
+    to see current state"; permissive posture allowed the High-impact call and
+    the session was left bound to a directory that no longer existed.
+    """
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("filesystem", {"operation": "delete_dir", "path": str(tmp_path)})
+    )
+    assert "error" in result
+    assert "bound project root" in result["error"]
+    assert tmp_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_dir_refuses_an_ancestor_of_a_bound_root(tmp_path: Path) -> None:
+    """Deleting the workspace home destroys the root just as thoroughly."""
+    root = tmp_path / "workspace" / "proj"
+    root.mkdir(parents=True)
+    dispatcher = _make_dispatcher(root)
+    result = json.loads(
+        await dispatcher.dispatch(
+            "filesystem", {"operation": "delete_dir", "path": str(tmp_path / "workspace")}
+        )
+    )
+    assert "error" in result
+    assert "contains the bound project root" in result["error"]
+    assert root.exists()
+
+
+@pytest.mark.asyncio
+async def test_move_dir_refuses_a_bound_project_root(tmp_path: Path) -> None:
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch(
+            "filesystem",
+            {
+                "operation": "move_dir",
+                "source": str(tmp_path),
+                "destination": str(tmp_path.parent / "moved"),
+            },
+        )
+    )
+    assert "error" in result
+    assert "bound project root" in result["error"]
+    assert tmp_path.exists()
+    assert not (tmp_path.parent / "moved").exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_dir_still_allows_a_directory_inside_a_bound_root(tmp_path: Path) -> None:
+    """The guard is about the root itself — ordinary cleanup is untouched."""
+    (tmp_path / "build").mkdir()
+    dispatcher = _make_dispatcher(tmp_path)
+    result = json.loads(
+        await dispatcher.dispatch("filesystem", {"operation": "delete_dir", "path": "build"})
+    )
+    assert result["status"] == "deleted"
+    assert not (tmp_path / "build").exists()
+
+
+@pytest.mark.asyncio
 async def test_copy_dir_copies_tree(tmp_path: Path) -> None:
     (tmp_path / "src" / "sub").mkdir(parents=True)
     (tmp_path / "src" / "sub" / "f.txt").write_text("x", encoding="utf-8")

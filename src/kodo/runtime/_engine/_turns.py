@@ -39,6 +39,7 @@ from kodo.llms import (
     ToolCallLogger,
     ToolSpec,
     TurnEnd,
+    UnrecoverableError,
     default_cache_breakpoints,
 )
 from kodo.state import render_tool_call_markdown
@@ -84,6 +85,27 @@ from ._shared import (
 from ._subagents import _DEFAULT_WEB_SEARCH_TIMEOUT_S
 
 _log = logging.getLogger(__name__)
+
+
+def _tool_failure_envelope(tool_name: str, exc: BaseException) -> str:
+    """The ``tool_result`` content for a call that raised instead of returning.
+
+    An ``{"error": …}`` object is the sanctioned failure envelope every tool
+    handler already uses for an anticipated failure
+    (``normalize_output`` treats it as compliant), so an *unanticipated* one
+    reaches the agent through the exact same shape — nothing downstream, and
+    nothing in any agent's prompt, needs a second notion of "the call failed".
+    The wording names the three things the agent can actually do about it.
+    """
+    return json.dumps(
+        {
+            "error": (
+                f"{tool_name} failed unexpectedly: {exc}. The call did not complete. "
+                "Either retry with different arguments, work around it, or report "
+                "the blocker."
+            )
+        }
+    )
 
 
 class TurnLoopMixin:
@@ -282,6 +304,12 @@ class TurnLoopMixin:
         if self._session.phase != "done":
             self._session.phase = "awaiting_user"
         self._session.agent = None
+        # This turn reached its end, so any subsession-crash recovery that led
+        # into it did its job: re-arm the worker's one-shot backstop
+        # (``WorkerMixin._enqueue_subsession_crash_report``) for the next,
+        # unrelated failure. Cleared here rather than when the report is
+        # queued, so a crash *while recovering from a crash* is not re-entered.
+        self._subsession_crash_recovered = False
         await self._emitters.emit_state()
         await self._compactor.maybe_auto_compact()
 
@@ -866,6 +894,22 @@ class TurnLoopMixin:
         covers the live turn loop and crash-resume alike, since both funnel
         through this method.
 
+        Every call is dispatched inside its own failure boundary: an unexpected
+        exception out of *any* stage of one call (the pre-dispatch checkpoint
+        baseline, the handler itself, the post-dispatch commit, the result
+        normalization) becomes an ``{"error": …}`` ``tool_result`` for that one
+        call, and the batch continues. The agent then gets to *deal* with the
+        failure — retry differently, work around it, or escalate — which is the
+        whole point: before this boundary existed, a single unhandled
+        ``FileNotFoundError`` from the checkpoint commit tore down the entire
+        turn, and inside a sub-agent that killed the subsession with no
+        handback to its caller at all. Two exceptions deliberately still
+        propagate: ``asyncio.CancelledError`` (a user Stop — it must unwind, and
+        ``WorkflowEngine.stop`` closes out any open subsession itself) and
+        :class:`~kodo.llms.UnrecoverableError` (an LLM 401/4xx raised by a
+        nested sub-agent turn, which the worker handles specially — revoking the
+        vendor's API key — and must not see laundered into a tool result).
+
         Returns:
             list[dict[str, object]]: ``tool_result`` content blocks, in order.
         """
@@ -873,41 +917,29 @@ class TurnLoopMixin:
         tool_results: list[dict[str, object]] = []
         for tool_use_id, raw_name, raw_input in calls:
             tool_name, tool_input = canonical_tool_call(raw_name, raw_input)
-            # ask_user never gets the generic tool-call card: its handler fires
-            # a prompt.question request (carrying this tool_use_id) that the
-            # client renders as the interactive question panel instead.
-            if tool_name != "ask_user":
-                payload: dict[str, object] = {
-                    "tool_name": tool_name,
-                    "description": tool_desc.get(tool_name, ""),
-                    "tool_call_id": tool_use_id,
-                }
-                # run_command carries a mandatory timeout; web_search's is
-                # optional (defaults to _DEFAULT_WEB_SEARCH_TIMEOUT_S when the
-                # caller omits it — mirroring the clamp WebSearchTool applies
-                # at dispatch time). Either way, surface it so the client can
-                # render a progress bar that fills over the timeout window
-                # while the call runs.
-                if tool_name == "run_command":
-                    payload["timeout_seconds"] = tool_input.get("timeout")
-                elif tool_name == "web_search":
-                    payload["timeout_seconds"] = (
-                        tool_input.get("timeout") or _DEFAULT_WEB_SEARCH_TIMEOUT_S
-                    )
-                await self._sink.send(Envelope.make_event(EVT_AGENT_TOOL_CALL_PREP, payload))
-            tc_n = tool_logger.log_invocation(tool_name, tool_input)
-            # Snapshot the pre-mutation baseline of any root this tool is about
-            # to write to, so the post-dispatch commit records the change as its
-            # own checkpoint (see CheckpointCoordinator.prepare / .commit).
-            ck_paths = await self._checkpoints.prepare(tool_name, tool_input)
-            result_text = await tool_dispatch(
-                tool_name, tool_input, tool_use_id, tool_use_id in recovered_ids
-            )
-            tool_logger.log_result(tool_name, tc_n, result_text)
-            checkpoint = await self._checkpoints.commit(tool_name, tool_input, ck_paths)
-            content = await self._finalize_tool_result(
-                tool_use_id, tool_name, tool_input, result_text, checkpoint, agent_name
-            )
+            try:
+                content = await self._dispatch_one_tool_call(
+                    tool_use_id,
+                    tool_name,
+                    tool_input,
+                    tool_dispatch=tool_dispatch,
+                    tool_desc=tool_desc,
+                    tool_logger=tool_logger,
+                    agent_name=agent_name,
+                    recovered=tool_use_id in recovered_ids,
+                )
+            except (asyncio.CancelledError, UnrecoverableError):
+                raise
+            except Exception as exc:
+                _log.exception(
+                    "Tool call %s (%s) failed outside its handler for %s: %s",
+                    tool_name,
+                    tool_use_id,
+                    agent_name,
+                    exc,
+                )
+                content = _tool_failure_envelope(tool_name, exc)
+                await self._emitters.emit_error(f"{tool_name} failed: {exc}", recoverable=True)
             tool_results.append(
                 {
                     "type": "tool_result",
@@ -916,6 +948,81 @@ class TurnLoopMixin:
                 }
             )
         return tool_results
+
+    async def _dispatch_one_tool_call(
+        self: EngineHost,
+        tool_use_id: str,
+        tool_name: str,
+        tool_input: dict[str, object],
+        *,
+        tool_dispatch: Callable[[str, dict[str, object], str, bool], Awaitable[str]],
+        tool_desc: dict[str, str],
+        tool_logger: ToolCallLogger,
+        agent_name: str,
+        recovered: bool,
+    ) -> str:
+        """Run one already-canonicalized tool call end to end; return its result text.
+
+        Split out of :meth:`_dispatch_tool_calls` purely so that method can wrap
+        a single call in one ``try`` without the loop body being the ``try``
+        body — the failure boundary is per call, not per batch, so a later call
+        in the same batch still runs after an earlier one blows up.
+
+        The inner boundary here is the one that normally fires: it covers the
+        pre-dispatch checkpoint baseline and the handler itself, and turns a
+        failure into an error envelope *before* ``log_result`` and
+        ``_finalize_tool_result`` run — so a crashed call still gets its entry
+        in the per-call log and its detail card in the feed (an ``{"error": …}``
+        object is a sanctioned, compliant result envelope, so this raises no
+        spurious incompliance warning). ``_dispatch_tool_calls``'s own ``try``
+        remains the last net, for a failure in the prep event, the commit, or
+        the finalization itself.
+        """
+        # ask_user never gets the generic tool-call card: its handler fires
+        # a prompt.question request (carrying this tool_use_id) that the
+        # client renders as the interactive question panel instead.
+        if tool_name != "ask_user":
+            payload: dict[str, object] = {
+                "tool_name": tool_name,
+                "description": tool_desc.get(tool_name, ""),
+                "tool_call_id": tool_use_id,
+            }
+            # run_command carries a mandatory timeout; web_search's is
+            # optional (defaults to _DEFAULT_WEB_SEARCH_TIMEOUT_S when the
+            # caller omits it — mirroring the clamp WebSearchTool applies
+            # at dispatch time). Either way, surface it so the client can
+            # render a progress bar that fills over the timeout window
+            # while the call runs.
+            if tool_name == "run_command":
+                payload["timeout_seconds"] = tool_input.get("timeout")
+            elif tool_name == "web_search":
+                payload["timeout_seconds"] = (
+                    tool_input.get("timeout") or _DEFAULT_WEB_SEARCH_TIMEOUT_S
+                )
+            await self._sink.send(Envelope.make_event(EVT_AGENT_TOOL_CALL_PREP, payload))
+        tc_n = tool_logger.log_invocation(tool_name, tool_input)
+        checkpoint: CheckpointRef | None = None
+        try:
+            # Snapshot the pre-mutation baseline of any root this tool is about
+            # to write to, so the post-dispatch commit records the change as its
+            # own checkpoint (see CheckpointCoordinator.prepare / .commit).
+            ck_paths = await self._checkpoints.prepare(tool_name, tool_input)
+            result_text = await tool_dispatch(tool_name, tool_input, tool_use_id, recovered)
+        except (asyncio.CancelledError, UnrecoverableError):
+            raise
+        except Exception as exc:
+            _log.exception(
+                "Tool call %s (%s) failed for %s: %s", tool_name, tool_use_id, agent_name, exc
+            )
+            await self._emitters.emit_error(f"{tool_name} failed: {exc}", recoverable=True)
+            result_text = _tool_failure_envelope(tool_name, exc)
+        else:
+            # Only a call that actually ran can have produced a checkpoint.
+            checkpoint = await self._checkpoints.commit(tool_name, tool_input, ck_paths)
+        tool_logger.log_result(tool_name, tc_n, result_text)
+        return await self._finalize_tool_result(
+            tool_use_id, tool_name, tool_input, result_text, checkpoint, agent_name
+        )
 
     async def _finalize_tool_result(
         self: EngineHost,

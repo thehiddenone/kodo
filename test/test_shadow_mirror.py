@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from kodo.mirror import ShadowMirror
+from kodo.mirror import ShadowMirror, ShadowMirrorError
 
 _EXCLUDES = (".kodo/", ".git/", "node_modules/")
 
@@ -59,6 +60,27 @@ async def _new_mirror(root: Path) -> ShadowMirror:
     mirror = ShadowMirror(root, root / ".kodo" / "checkpoints" / ".git")
     await mirror.init(_EXCLUDES)
     return mirror
+
+
+async def test_missing_work_tree_raises_shadow_mirror_error(tmp_path: Path) -> None:
+    """A deleted work tree is a mirror failure, never a bare OSError.
+
+    ``cwd`` for every git call is the real project directory, so a root deleted
+    under a live session makes ``Popen`` raise ``FileNotFoundError``. That used
+    to escape as-is and tear down the whole turn loop; it is now folded into
+    the one exception mirror callers already handle.
+    """
+    root = tmp_path / "gone"
+    root.mkdir()
+    mirror = await _new_mirror(root)
+    shutil.rmtree(root)
+
+    with pytest.raises(ShadowMirrorError) as excinfo:
+        await mirror.head_sha()
+    assert "could not be started" in str(excinfo.value)
+
+    with pytest.raises(ShadowMirrorError):
+        await mirror.commit("after the root vanished")
 
 
 async def test_init_baselines_existing_files_and_respects_excludes(tmp_path: Path) -> None:

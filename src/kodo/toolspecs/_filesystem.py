@@ -12,6 +12,12 @@ Dispatch lives in :mod:`kodo.tools` (``_filesystem.py``), which resolves every
 path via ``LogicalPathResolver``: a relative path's first segment must name a
 bound root (see ``get_root_paths``); an absolute path is taken as-is,
 unrestricted.
+
+One target is refused outright there rather than judged by the security layer:
+``delete_dir``/``move_dir`` aimed at a bound project root, or at any directory
+containing one. A hard handler-level refusal is deliberate — it holds under
+every Command Control posture and in autonomous runs, which a security verdict
+does not (see ``FilesystemTool._assert_not_bound_root``, doc/TOOLS.md).
 """
 
 from __future__ import annotations
@@ -58,7 +64,10 @@ FILESYSTEM: ToolSpec = ToolSpec(
         "- `delete_file` — needs `path`. Permanently deletes a file. Fails if it "
         "does not exist or is a directory.\n"
         "- `delete_dir` — needs `path`. Permanently deletes a directory AND all "
-        "of its contents, recursively. Fails if it does not exist or is a file.\n"
+        "of its contents, recursively. Fails if it does not exist, is a file, "
+        "or is a bound project root (or contains one) — a root anchors the "
+        "whole session and is never deletable; remove the contents you meant "
+        "instead.\n"
         "- `copy_file` — needs `source` + `destination`. Copies a file, "
         "preserving metadata. Fails if `source` does not exist.\n"
         "- `copy_dir` — needs `source` + `destination`. Recursively copies a "
@@ -67,7 +76,8 @@ FILESYSTEM: ToolSpec = ToolSpec(
         "- `move_file` — needs `source` + `destination`. Moves or renames a file. "
         "Fails if `source` does not exist.\n"
         "- `move_dir` — needs `source` + `destination`. Moves or renames a "
-        "directory tree. Fails if `source` does not exist.\n\n"
+        "directory tree. Fails if `source` does not exist, or is a bound "
+        "project root (or contains one) — same reason as `delete_dir`.\n\n"
         "To create a directory, use `create_directory` instead; to create a "
         "brand-new file, use `create_file` instead; to change the contents of "
         "an existing file, use `edit_file` instead — this tool only "

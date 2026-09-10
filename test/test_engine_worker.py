@@ -68,6 +68,13 @@ class _FakeSink:
         self.sent.append(env)
 
 
+class _FakeTransient:
+    """Only the one field the worker's subsession-crash backstop reads."""
+
+    def __init__(self, active_subsession: dict[str, object] | None = None) -> None:
+        self.active_subsession = active_subsession
+
+
 def _make_engine(*, workflow_mode: str = "guided") -> WorkflowEngine:
     engine = object.__new__(WorkflowEngine)
     engine._resume_subsession_pending = False
@@ -80,9 +87,21 @@ def _make_engine(*, workflow_mode: str = "guided") -> WorkflowEngine:
     engine._titler = _FakeTitler()
     engine._sink = _FakeSink()
     engine._current_vendor = None
+    engine._transient = _FakeTransient()
+    engine._subsession_crash_recovered = False
+    engine.aborted_subsessions: list[dict[str, object] | None] = []
+
+    async def _abort_active_subsession() -> None:
+        engine.aborted_subsessions.append(engine._transient.active_subsession)
+        engine._transient.active_subsession = None
+
+    engine._abort_active_subsession = _abort_active_subsession
     engine._freeze_effective_modes = lambda: None
     engine._agent_available = lambda name: True
     engine.calls: list[tuple[str, str, list[str] | None]] = []
+    # Every `nudge_detail` an entry-agent turn was invoked with, in order — the
+    # client-only rendering half of a turn the user never typed.
+    engine.nudge_details: list[dict[str, object]] = []
 
     def _recorder(label: str):
         async def _fn(
@@ -91,6 +110,8 @@ def _make_engine(*, workflow_mode: str = "guided") -> WorkflowEngine:
             nudge_detail: dict[str, object] | None = None,
         ) -> None:
             engine.calls.append((label, text, attachments))
+            if nudge_detail is not None:
+                engine.nudge_details.append(nudge_detail)
 
         return _fn
 
@@ -384,6 +405,134 @@ async def test_generic_exception_resets_phase_to_awaiting_user() -> None:
     assert engine._emitters.errors == [("kaboom", True)]
     assert engine._session.phase == "awaiting_user"
     assert engine._session.agent is None
+    # No subsession was open, so the backstop does nothing beyond the notice.
+    assert engine.aborted_subsessions == []
+    assert engine._queue.empty()
+
+
+def _crashing_engine(
+    active: dict[str, object] | None, *, crash_every_turn: bool = False
+) -> WorkflowEngine:
+    """Engine whose guide turn raises, with *active* as the open subsession.
+
+    By default only the *first* turn raises, so the queued recovery turn is
+    observable in ``engine.calls`` — the realistic shape, and the one that
+    proves the recovery terminates. ``crash_every_turn`` models an
+    environmental failure that keeps reproducing.
+    """
+    engine = _make_engine(workflow_mode="guided")
+    engine._transient = _FakeTransient(active)
+
+    async def _abort_active_subsession() -> None:
+        engine.aborted_subsessions.append(engine._transient.active_subsession)
+        engine._transient.active_subsession = None
+
+    engine._abort_active_subsession = _abort_active_subsession
+
+    async def _fail(
+        text: str,
+        attachments: list[str] | None = None,
+        nudge_detail: dict[str, object] | None = None,
+    ) -> None:
+        engine.calls.append(("guide", text, attachments))
+        if nudge_detail is not None:
+            engine.nudge_details.append(nudge_detail)
+        if crash_every_turn or len(engine.calls) == 1:
+            raise ValueError("kaboom")
+
+    engine._run_guide_with_input = _fail
+    return engine
+
+
+@pytest.mark.asyncio
+async def test_crash_with_open_subsession_closes_it_and_reports_to_caller() -> None:
+    """A crash that escaped every closer guard must not leak the subsession.
+
+    Before the backstop existed, `transient.active_subsession` stayed set, the
+    client's collapsible block never closed, and the calling agent was told
+    nothing at all — the original incident (a checkpoint commit raising
+    FileNotFoundError after a sub-agent deleted its own project root).
+    """
+    active = {
+        "subsession_id": "sub1",
+        "agent": "toolchain_builder",
+        "display_name": "Toolchain Builder",
+    }
+    engine = _crashing_engine(active)
+    engine._queue.put_nowait({"text": "hi"})
+
+    await _drive(engine)
+
+    assert engine.aborted_subsessions == [active]
+    assert engine._transient.active_subsession is None
+    # The human sees the exception via the ordinary recoverable-error notice
+    # (kodo-vsix renders it as a red <kodo_crit> card plus a toast).
+    assert engine._emitters.errors == [("kaboom", True)]
+    # ...and the calling agent got a second, real turn naming the crash.
+    assert [label for label, _text, _att in engine.calls] == ["guide", "guide"]
+    recovery_text = engine.calls[1][1]
+    assert "Toolchain Builder" in recovery_text
+    assert "kaboom" in recovery_text
+    assert engine._queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_crash_recovery_turn_carries_a_subsession_crash_nudge_detail() -> None:
+    """The recovery turn is a nudge, not a user prompt — so it renders as one.
+
+    ``source`` must be ``"subsession_crash"``: kodo-vsix's reducer branches on
+    it only to decide whether to flush a live mid-stream buffer, and this one
+    needs no flush, which is why the new value costs no client change.
+    """
+    engine = _crashing_engine(
+        {"subsession_id": "sub1", "agent": "toolchain_builder"}, crash_every_turn=True
+    )
+    engine._queue.put_nowait({"text": "hi"})
+
+    await _drive(engine)
+
+    queued = engine.nudge_details
+    assert len(queued) == 1
+    detail = queued[0]
+    assert detail["source"] == "subsession_crash"
+    assert detail["reasons"] == ["subsession_crashed"]
+    assert detail["mode"] == "auto"
+    assert "toolchain_builder" in str(detail["ui_text"])
+    assert "kaboom" in str(detail["ui_text"])
+
+
+@pytest.mark.asyncio
+async def test_crash_recovery_is_one_shot_per_chain() -> None:
+    """A crash *while recovering from a crash* goes idle instead of looping."""
+    engine = _crashing_engine({"subsession_id": "sub1", "agent": "developer"})
+    engine._subsession_crash_recovered = True
+    engine._queue.put_nowait({"text": "hi"})
+
+    await _drive(engine)
+
+    # The subsession is still closed out — that half is never skipped.
+    assert engine.aborted_subsessions == [{"subsession_id": "sub1", "agent": "developer"}]
+    # But no second recovery turn is queued.
+    assert engine._queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_crash_recovery_survives_a_failing_abort() -> None:
+    """The backstop must never wedge the worker, even if the abort itself fails."""
+    engine = _crashing_engine({"subsession_id": "sub1", "agent": "developer"})
+
+    async def _bad_abort() -> None:
+        raise RuntimeError("marker write failed")
+
+    engine._abort_active_subsession = _bad_abort
+    engine._queue.put_nowait({"text": "hi"})
+
+    await _drive(engine)
+
+    assert engine._session.phase == "awaiting_user"
+    assert engine._emitters.errors == [("kaboom", True)]
+    # Still reported to the caller — the abort failing does not lose the crash.
+    assert [label for label, _text, _att in engine.calls] == ["guide", "guide"]
 
 
 @pytest.mark.asyncio

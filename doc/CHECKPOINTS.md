@@ -398,3 +398,77 @@ See doc/SECURITY.md §4 ("Checkpointing's own crash") for the companion note —
 this is a checkpointing-side gap the earlier 2026-07-21b security-gate fix
 didn't cover, since that fix only guarded `SecurityLayer.evaluate`'s read of
 `default_cwd`, not the checkpoint coordinator's.
+
+## 10. Checkpointing is best-effort — it never ends a turn (added 2026-09-09)
+
+`CheckpointCoordinator.prepare` / `.commit` (§2) sit on either side of *every*
+mutating tool call in the turn loop
+(`TurnLoopMixin._dispatch_one_tool_call`). An exception out of either used to
+abort the whole turn — and inside a sub-agent, kill the subsession mid-run
+with no handback to its caller. Both now degrade to "no checkpoint for this
+call" and log a warning instead: losing an undo entry is strictly better than
+losing the turn.
+
+### What went wrong
+
+A `toolchain_builder` sub-agent called
+`filesystem {operation: "delete_dir", path: "<its own project root>"}` — with
+an `intent` that read *"List the project root directory to see current
+state"*, so the model had simply picked the wrong operation; permissive
+Command Control allowed the High-impact call. The tool succeeded. The very
+next line, this coordinator committing that deletion, could not spawn git:
+
+```
+CheckpointCoordinator.commit -> RootMirrorManager.commit_for_path
+  -> ShadowMirror.head_sha -> git rev-parse HEAD
+  -> Popen(cwd=<the directory just deleted>) -> FileNotFoundError [Errno 2]
+```
+
+Nothing between there and `WorkerMixin._run_worker` caught it, so the worker
+reported `Error — [Errno 2] No such file or directory: …` and went idle with
+`transient.active_subsession` still set — the subsession never closed and the
+Guide was never told anything.
+
+### The three layers that now stop it
+
+1. **`kodo.mirror`** — `ShadowMirror.__spawn` is the single place a git
+   subprocess is started, and it folds an `OSError` from the launch itself
+   (deleted work tree, `git` not on `PATH`) into `ShadowMirrorError`. Callers
+   already handle that one exception; they never had to know a checkpoint
+   could fail as a bare `OSError`.
+2. **This coordinator** — `prepare` and `commit` catch
+   `_CHECKPOINT_FAILURES` = (`ShadowMirrorError`, `UnsafeCheckpointRootError`,
+   `OSError`). `prepare` returns `[]`, which also skips the matching `commit`;
+   `commit` returns `None`, so the call carries no `checkpoint_sha`, earns no
+   undo entry, and locks no folder (§8). `run_command`'s sweep is guarded
+   separately from the primary commit — one dead root must not cost the others
+   their checkpoint. **The model is not told**: a degrade is a server-log
+   warning only. It cannot act on the information, and inventing a field on
+   every mutating tool's output schema to carry it would be worse.
+3. **The turn loop** — `_dispatch_tool_calls` wraps each call in its own
+   failure boundary, so anything still unexpected becomes an `{"error": …}`
+   `tool_result` for that one call. See doc/STATE_AND_LIFECYCLE.md §10.
+
+### The companion guard: a bound root is not deletable
+
+Independently of all three, `FilesystemTool._assert_not_bound_root` now
+refuses `delete_dir`/`move_dir` whose target *is*, or *contains*, a bound
+project root. That is a hard refusal in the handler rather than a
+security-layer verdict, precisely so it holds under every Command Control
+posture and in autonomous runs (doc/TOOLS.md).
+
+Note what `prepare` does *not* do: it will happily recreate a root that has
+gone away, because `RootMirrorManager._ensure` scaffolds `.kodo/` on the way
+in. So a *later* call against a deleted root re-establishes an empty
+skeleton — only the commit of the deleting call itself has no directory to
+work with. That asymmetry is why the incident looked like a one-off.
+
+### Not covered
+
+The user-initiated checkpoint WS handlers (`checkpoint.undo` / `.redo` /
+`.rollback` / `.roll_forward` in `kodo/server/_app.py`) still let a
+`ShadowMirrorError` escape, and `ConnectionRegistry.__dispatch` does not catch
+— so clicking undo on a root whose directory has vanished drops the
+WebSocket. Fixing it needs a reply shape the client understands for "the
+mirror is gone" (today it only knows `.done` and `.needs_confirmation`), i.e.
+a cross-repo protocol decision. Deliberately left open.

@@ -284,9 +284,11 @@ class GateOrchestrator:
             feedback = str(response_payload.get("feedback_text") or "")
             artifact_path = str(response_payload.get("artifact_path") or "")
             raw_resolved = response_payload.get("resolved_finding_ids")
-            resolved = tuple(
-                str(f) for f in raw_resolved if isinstance(f, str) and f
-            ) if isinstance(raw_resolved, list) else ()
+            resolved = (
+                tuple(str(f) for f in raw_resolved if isinstance(f, str) and f)
+                if isinstance(raw_resolved, list)
+                else ()
+            )
             _log.info(
                 "Approval gate resolved: req_id=%s action=%s resolved_findings=%d",
                 req_id[:8],

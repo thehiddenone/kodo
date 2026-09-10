@@ -85,6 +85,7 @@ class EngineHost(Protocol):
     _think_tag_streak: bool
     _tool_call_cycle_streak: bool
     _repeat_streak: bool
+    _subsession_crash_recovered: bool
 
     # -- core helpers (defined in _core) ---------------------------------------
     def _agent_available(self, name: str) -> bool: ...
@@ -155,6 +156,12 @@ class EngineHost(Protocol):
 
     # -- worker (defined in _worker) --------------------------------------------
     async def _handle_input_no_agent(self, name: str, text: str) -> None: ...
+
+    async def _recover_crashed_subsession(self, exc: BaseException) -> dict[str, object] | None: ...
+
+    def _enqueue_subsession_crash_report(
+        self, active: dict[str, object], exc: BaseException
+    ) -> None: ...
 
     # -- turn loop (defined in _turns) -------------------------------------------
     async def _run_guide_with_input(
@@ -236,6 +243,19 @@ class EngineHost(Protocol):
         agent_name: str,
         recovered_ids: set[str] | None = None,
     ) -> list[dict[str, object]]: ...
+
+    async def _dispatch_one_tool_call(
+        self,
+        tool_use_id: str,
+        tool_name: str,
+        tool_input: dict[str, object],
+        *,
+        tool_dispatch: Callable[[str, dict[str, object], str, bool], Awaitable[str]],
+        tool_desc: dict[str, str],
+        tool_logger: ToolCallLogger,
+        agent_name: str,
+        recovered: bool,
+    ) -> str: ...
 
     async def _finalize_tool_result(
         self,
@@ -348,6 +368,9 @@ class EngineHost(Protocol):
 
     @staticmethod
     def _missing_inputs_result(agent_name: str, missing: tuple[str, ...]) -> dict[str, object]: ...
+
+    @staticmethod
+    def _crashed_subsession_result(agent_name: str, exc: BaseException) -> dict[str, object]: ...
 
     def _findings_dir(self) -> Path | None: ...
 

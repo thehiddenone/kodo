@@ -12,6 +12,7 @@ dispatch, cancellation, context tracking), ``_dispatch_tool_calls``,
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,6 +27,7 @@ from kodo.llms import (
     ToolCallEvent,
     ToolCallLogger,
     TurnEnd,
+    UnrecoverableError,
     Usage,
 )
 from kodo.runtime import WorkflowEngine
@@ -830,6 +832,127 @@ async def test_dispatch_tool_calls_passes_recovered_flag(tmp_path: Path) -> None
     )
 
     assert seen == [True, False]
+
+
+async def test_dispatch_tool_calls_turns_a_handler_crash_into_a_tool_result(
+    tmp_path: Path,
+) -> None:
+    """An unexpected exception is the agent''s problem, not the turn''s.
+
+    Before this boundary existed a single unhandled exception anywhere in a
+    call''s pipeline (the incident: a checkpoint commit raising
+    ``FileNotFoundError`` after the tool deleted its own project root) tore
+    down the whole turn — and inside a sub-agent it killed the subsession with
+    no handback to its caller at all.
+    """
+    engine = _base_engine()
+
+    async def tool_dispatch(name, tool_input, tool_use_id, recovered):
+        raise FileNotFoundError(2, "No such file or directory", "/gone")
+
+    results = await engine._dispatch_tool_calls(
+        [("tu_1", "run_command", {"command": "ls"})],
+        tool_dispatch,
+        {},
+        _tool_logger(tmp_path),
+        "guide",
+    )
+
+    assert len(results) == 1
+    assert results[0]["tool_use_id"] == "tu_1"
+    payload = json.loads(str(results[0]["content"]))
+    assert "run_command failed unexpectedly" in payload["error"]
+    assert "/gone" in payload["error"]
+    # The human is told too, as a recoverable error notice.
+    assert any("run_command failed" in msg for msg, _rec in engine._emitters.errors)
+    # ...and the call still earned its detail card, so the feed's tool-call
+    # entry is completed rather than left in its "prep" state forever. An
+    # {"error": ...} envelope is a compliant result, so no incompliance
+    # warning rides along with it.
+    details = [e for e in engine._sink.sent if e.payload.get("type") == "agent.tool_call_detail"]
+    assert len(details) == 1
+    assert not [e for e in engine._sink.sent if e.payload.get("type") == "tool.incompliant"]
+
+
+async def test_dispatch_tool_calls_failure_boundary_is_per_call(tmp_path: Path) -> None:
+    """A later call in the same batch still runs after an earlier one blows up."""
+    engine = _base_engine()
+    dispatched: list[str] = []
+
+    async def tool_dispatch(name, tool_input, tool_use_id, recovered):
+        dispatched.append(tool_use_id)
+        if tool_use_id == "tu_1":
+            raise RuntimeError("boom")
+        return "{}"
+
+    results = await engine._dispatch_tool_calls(
+        [("tu_1", "run_command", {}), ("tu_2", "run_command", {})],
+        tool_dispatch,
+        {},
+        _tool_logger(tmp_path),
+        "guide",
+    )
+
+    assert dispatched == ["tu_1", "tu_2"]
+    assert [r["tool_use_id"] for r in results] == ["tu_1", "tu_2"]
+    assert "error" in json.loads(str(results[0]["content"]))
+    assert "error" not in json.loads(str(results[1]["content"]))
+
+
+async def test_dispatch_tool_calls_checkpoint_commit_crash_becomes_a_tool_result(
+    tmp_path: Path,
+) -> None:
+    """The exact incident: the *post-dispatch* commit is inside the boundary."""
+    engine = _base_engine()
+
+    class _CrashingCommit(_FakeCheckpoints):
+        async def commit(self, tool_name, tool_input, paths):
+            raise FileNotFoundError(2, "No such file or directory", "/gone")
+
+    engine._checkpoints = _CrashingCommit(prepare_paths=[Path("/gone/a.txt")])
+
+    async def tool_dispatch(name, tool_input, tool_use_id, recovered):
+        return "{}"
+
+    results = await engine._dispatch_tool_calls(
+        [("tu_1", "filesystem", {"operation": "delete_dir", "path": "/gone"})],
+        tool_dispatch,
+        {},
+        _tool_logger(tmp_path),
+        "guide",
+    )
+
+    assert "error" in json.loads(str(results[0]["content"]))
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [asyncio.CancelledError(), UnrecoverableError("quota exceeded", status_code=429)],
+    ids=["cancelled", "unrecoverable"],
+)
+async def test_dispatch_tool_calls_reraises_session_level_failures(
+    tmp_path: Path, exc: BaseException
+) -> None:
+    """Stop and an unrecoverable LLM error belong to the session, not the call.
+
+    A Stop must keep unwinding (``WorkflowEngine.stop`` closes out any open
+    subsession itself), and an ``UnrecoverableError`` must reach the worker,
+    which revokes the vendor''s API key on a 401 — laundering either into a
+    tool result would lose that handling.
+    """
+    engine = _base_engine()
+
+    async def tool_dispatch(name, tool_input, tool_use_id, recovered):
+        raise exc
+
+    with pytest.raises(type(exc)):
+        await engine._dispatch_tool_calls(
+            [("tu_1", "run_command", {})],
+            tool_dispatch,
+            {},
+            _tool_logger(tmp_path),
+            "guide",
+        )
 
 
 async def test_dispatch_tool_calls_uses_checkpoint_coordinator(tmp_path: Path) -> None:

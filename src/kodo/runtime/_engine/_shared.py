@@ -131,6 +131,14 @@ class Nudge:
             ``reasons`` (open-ended — new red-flag codes can appear), this is
             what kodo-vsix's reducer switches on to decide whether replaying
             this nudge also needs to flush a live mid-stream buffer.
+
+            One value on that wire is *not* a watchdog detector and so never
+            reaches this dataclass: ``"subsession_crash"``, queued as a raw
+            ``nudge_detail`` dict by
+            ``WorkerMixin._enqueue_subsession_crash_report`` when a sub-agent
+            crash escaped every guard and the calling agent has to be told.
+            It needs no mid-stream flush, which is exactly why it can join
+            the set without a kodo-vsix change.
     """
 
     llm_text: str

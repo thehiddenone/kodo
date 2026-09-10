@@ -376,3 +376,121 @@ The user's VCS sees a large file-change set and decides how to record it. Kodo d
 | Rollback UI trigger | Extension / Kodo panel | User triggers via the panel; the engine accepts the request and reports completion. |
 | Rollback execution | Guide + engine | Guide calls `rollback(target_sha)` (after `ask_user` confirmation in interactive mode; directly in autonomous mode); engine delegates to `RootMirrorManager.rollback`; conversation resets. |
 | Stuck-agent detection & remediation | `runtime/_engine/_watchdog.py` | Detects a turn ending with no tool call and no finished task (empty final response, or output cut short by the token cap) and nudges the agent to continue — immediately in autonomous mode, gated behind a `prompt.stuck_alert` otherwise. See doc/STUCK_DETECTION.md. |
+
+---
+
+## 10. A crashing tool call, and a crashing subsession (added 2026-09-09)
+
+Three nested failure boundaries, innermost first. Each exists because the next
+one out is too coarse: by the time a failure reaches the worker, the turn is
+over and nothing can be told anything.
+
+### 10.1 Per tool call — the failure becomes a `tool_result`
+
+An unexpected exception from *any* stage of one call — the pre-dispatch
+checkpoint baseline, the handler, the post-dispatch commit, result
+normalization — becomes an
+
+```json
+{"error": "<tool> failed unexpectedly: <exc>. The call did not complete. …"}
+```
+
+`tool_result` for that one call, and the batch continues (a later call in the
+same batch still runs). The agent then gets to *deal* with it — retry
+differently, work around it, escalate. The human gets the same thing as a
+recoverable error notice. `{"error": …}` is deliberately the *same* envelope a
+handler already returns for an anticipated failure (`_tool_failure_envelope`),
+which `normalize_output` treats as compliant — so nothing downstream, and
+nothing in any agent's prompt, needed a second notion of "the call failed".
+
+Two tiers, because where the boundary sits decides how much of the call's
+bookkeeping still happens:
+
+- **Inner** (`_dispatch_one_tool_call`, around `prepare` + the handler) is the
+  one that normally fires. It converts the failure *before* `log_result` and
+  `_finalize_tool_result` run, so a crashed call still gets its entry in the
+  per-call log and a completed detail card in the feed instead of a card stuck
+  in its "prep" state. `checkpoint` stays `None` — only a call that actually
+  ran can have produced one.
+- **Outer** (`_dispatch_tool_calls`, around the whole per-call body) is the
+  last net: the prep event, the commit, or the finalization itself failing.
+  That path yields a bare error result with no detail card, which is the
+  correct trade when the machinery that *builds* detail cards is what broke.
+
+Two exceptions deliberately still propagate, in this and every boundary below:
+
+- `asyncio.CancelledError` — a user Stop. It must unwind, and
+  `WorkflowEngine.stop` closes out any open subsession itself
+  (`_abort_active_subsession`).
+- `kodo.llms.UnrecoverableError` — an LLM 401/4xx raised by a nested
+  sub-agent turn. The worker handles it specially (revoking the vendor's API
+  key, `EVT_API_KEY_REVOKE`); laundering it into a tool result would lose
+  that.
+
+### 10.2 Per subsession — the crash becomes an escalation
+
+`SubagentMixin._drive_subsession` wraps its `_run_agent_turn` call. A crash is
+recorded, the stream teardown below it still runs (`stream_end` +
+`emit_agent_finished`, so no client spinner is left hanging), the human gets
+the exception as an error notice, and the caller gets
+`_crashed_subsession_result(name, exc)`:
+
+```python
+{"summary": "<agent> crashed and produced nothing: <Type>: <exc>",
+ "reason": "subsession_crashed",
+ "options": [...],
+ "schema_compliance": False}
+```
+
+That is the **ordinary escalation shape** (a non-empty `reason`, see
+`_escalation_reason`), chosen so nothing downstream needed a new branch: the
+review loop already stops on an escalation without spending a round,
+`_run_unreviewed_author` already records no work product for one, and
+`schema_compliance: False` already makes `_close_subsession` mark the handback
+`failed` (the red `<kodo_crit>` callout in the WebView). A crashed **critic**
+records no findings — there is no verdict, and a partial one would silently
+close real objections that were never judged.
+
+`_spawn_subagent` has a second, thinner guard around the same call, covering a
+failure *before* the turn loop (registry/plugin resolution) reached with a
+subsession already open — that subsession still has to be closed rather than
+abandoned.
+
+### 10.3 The worker backstop — end the subsession, tell the calling agent
+
+If something escapes both, `WorkerMixin._run_worker`'s generic handler now:
+
+1. `_recover_crashed_subsession(exc)` — when `transient.active_subsession` is
+   set, calls `_abort_active_subsession()` (writes the `subsession_end`
+   marker, clears `active_subsession`, resets the compactor's subsession
+   gauge, pushes `EVT_SUBSESSION_ENDED`) and returns what it was. Wrapped in
+   its own `try`: the recovery path must never wedge the worker.
+2. `emit_error(str(exc))` — the red `<kodo_crit>` card + toast, ordered after
+   the abort so the client's subsession block closes first.
+3. `_enqueue_subsession_crash_report(active, exc)` — queues a continuation
+   turn for the calling agent naming the sub-agent and citing the exception,
+   with `nudge_detail` `source: "subsession_crash"`. It goes through the queue
+   rather than being persisted directly, so it cannot race the turn that just
+   died; `_run_entry_agent`'s `nudge_detail` branch persists it as
+   `kind="nudge"`. No kodo-vsix change was needed — its reducer branches on
+   `source` only to decide whether to flush a live mid-stream buffer, and this
+   one needs no flush.
+
+**One-shot per chain.** `_subsession_crash_recovered` is set when a report is
+queued and cleared by `_run_entry_agent` only when a turn *completes*. A crash
+while recovering from a crash therefore goes idle with the error notice — a
+human decides what to do about a broken environment, rather than the engine
+spinning on it.
+
+### 10.4 The invariant this protects
+
+`transient.active_subsession` is non-null **only while a subsession is
+genuinely running.** A stale pointer is not cosmetic: on the next cold start
+§7.1 treats it as an interrupted subsession to resume, the client's
+collapsible transcript block never closes, and the compactor's subsession
+context gauge stays stale. It is now cleared on all four exits — normal
+handback, Stop, sub-agent crash, and worker-level crash.
+
+See doc/CHECKPOINTS.md §10 for the incident that motivated all of this (a
+sub-agent deleted its own project root; the checkpoint commit for that very
+call then could not spawn git in a directory that no longer existed).
