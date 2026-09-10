@@ -328,7 +328,7 @@ MSG_STUCK_DETECTION_SET = "stuck_detection.set"
 # and the currently selected option (doc/SETTINGS.md §2.7,
 # kodo.titling.HOUSEKEEPER_LLM_OPTIONS) — backs the Kōdo Settings panel's
 # "General" section's "Housekeeper LLM" subsection. No payload. Replies
-# ``housekeeper_llm.get.ack`` ``{selected: "qwen35-4b-titler", options:
+# ``housekeeper_llm.get.ack`` ``{selected: "minicpm5-2b-titler", options:
 # [{id, name, description}, ...]}`` — ``options`` mirrors
 # ``HOUSEKEEPER_LLM_OPTIONS`` verbatim (in dict order) so the panel renders
 # one radio button per catalog entry with no id hardcoded client-side; adding

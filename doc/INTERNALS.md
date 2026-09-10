@@ -690,12 +690,32 @@ whatever model the main chat session is using. *Which* small model it runs
 is user-selectable (added 2026-08-09) — a "housekeeper LLM" catalog,
 `kodo.titling.HOUSEKEEPER_LLM_OPTIONS` (a `dict[str, HousekeeperLlmOption]`
 keyed by `model_id`, each entry a HuggingFace `repo_id`/`filename` to
-download plus a customer-facing `display_name`/`description`), defaulting to
-`DEFAULT_HOUSEKEEPER_LLM_ID` (`"qwen35-4b-titler"`, Qwen3.5 4B). The Kōdo
+download, a customer-facing `display_name`/`description`, and the per-task
+sampling temperatures `title_temp`/`project_name_temp`/`greeting_temp` that
+this model wants), defaulting to
+`DEFAULT_HOUSEKEEPER_LLM_ID` (`"minicpm5-2b-titler"`, MiniCPM5 2B — small
+enough for background work, while the 1B below it needs a noticeably hotter
+temperature to stop repeating itself). The Kōdo
 Settings panel's "General" section lists every catalog entry as a radio
 button (`housekeeper_llm.get`/`.set`, WS_PROTOCOL.md §7.6f, doc/SETTINGS.md
 §2.7) — picking a different one persists the choice and silently restarts
 the titler's `llama-server` on the newly selected model.
+
+**Sampling is per-model and per-task** (added 2026-09-09). Each catalog entry
+declares `title_temp`/`project_name_temp`/`greeting_temp`, passed as the
+request-body `temperature` by the matching `generate_*` call. The field
+defaults cover every entry that declares nothing, so retuning them retunes
+most of the catalog at once. Per-*task* because a title and a project name
+are identifiers that should reproduce, while a greeting exists to vary — one
+temperature cannot serve both. Per-*model* because how much temperature that
+takes is a property of the model: the MiniCPM5 1B runs hotter than the shared
+defaults because at anything colder it hands back near-identical phrasing
+every session. The exact values are tuned by ear and change; read the catalog
+rather than trusting a number quoted here. Note a request-body `temperature`
+always overrides
+`_LLAMA_ARGS`' `--temp` (which is consequently dead — nothing reaches the
+server without one), while `--min-p`/`--top-p` are *not* overridden per
+request and are what keep a hot setting like `1.5` from going incoherent.
 
 This whole dedicated-llama-server design replaced (2026-07-18) the previous
 design: an in-process `transformers`/`torch` encoder-decoder

@@ -1998,10 +1998,11 @@ fixed catalog `kodo.titling.HOUSEKEEPER_LLM_OPTIONS`.
 { "type": "housekeeper_llm.get" }
 ```
 
-→ `housekeeper_llm.get.ack` `{ "selected": "qwen35-4b-titler", "options": [
-  { "id": "qwen35-4b-titler", "name": "Qwen3.5 4B", "description": "..." },
+→ `housekeeper_llm.get.ack` `{ "selected": "minicpm5-2b-titler", "options": [
+  { "id": "minicpm5-1b-titler", "name": "MiniCPM5 1B", "description": "..." },
+  { "id": "minicpm5-2b-titler", "name": "MiniCPM5 2B", "description": "..." },
   { "id": "qwen25-3b-titler", "name": "Qwen2.5 3B", "description": "..." },
-  { "id": "nanbeige42-3b-titler", "name": "Nanbeige4.2 3B", "description": "..." }
+  ...
 ] }` — `options` mirrors `HOUSEKEEPER_LLM_OPTIONS` verbatim, in catalog order;
 the panel renders one radio button per entry, so adding a new dict entry is
 the only server-side change needed for a new radio button to appear.

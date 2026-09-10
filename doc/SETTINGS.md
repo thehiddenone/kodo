@@ -270,8 +270,10 @@ Which small local model backs session titling and the opening greeting
 instance that turns a first prompt into a short session title, invents a
 short project name, and writes a brand-new session's opening greeting. A key
 into the fixed catalog `kodo.titling.HOUSEKEEPER_LLM_OPTIONS`, each entry
-carrying a HuggingFace `repo_id`/`filename` to download plus a customer-facing
-`display_name`/`description`. Exposed in the Kōdo Settings webview panel's
+carrying a HuggingFace `repo_id`/`filename` to download, a customer-facing
+`display_name`/`description`, and its own per-task sampling temperatures
+(`title_temp`/`project_name_temp`/`greeting_temp` — see doc/INTERNALS.md §10c;
+not user-configurable, a code-level property of the model). Exposed in the Kōdo Settings webview panel's
 "General" section as a "Housekeeper LLM" radio group via the
 `housekeeper_llm.get`/`.set` WS commands (WS_PROTOCOL.md §7.6f); picking a
 different option persists the change here and silently restarts the titler's
@@ -279,12 +281,15 @@ own `llama-server` on the newly selected model.
 
 | Value | Meaning |
 |---|---|
-| `"qwen35-4b-titler"` | Qwen3.5 4B (Alibaba) — the default; best balance of title/greeting quality and speed for most machines. |
-| `"qwen25-3b-titler"` | Qwen2.5 3B (Alibaba) — lighter/faster, smaller download and memory footprint. |
+| `"minicpm5-1b-titler"` | MiniCPM5 1B (OpenBMB) — the smallest and fastest option; tiny download and memory footprint, at some cost to variety. |
+| `"minicpm5-2b-titler"` | MiniCPM5 2B (OpenBMB) — **the default**; the same on-device family one size up, a little more nuance and variety. |
+| `"qwen25-3b-titler"` | Qwen2.5 3B (Alibaba) — lighter/faster than the 4B, smaller download and memory footprint. |
+| `"qwen35-4b-titler"` | Qwen3.5 4B (Alibaba) — the largest option; best title/greeting nuance, biggest download. |
+| `"phi4-mini-titler"` | Phi-4 mini 3.8B (Microsoft) — a compact, cost-effective reasoner. |
 | `"nanbeige42-3b-titler"` | Nanbeige4.2 3B (Nanbeige) — another compact option, a different model family. |
 
 ```json
-{ "housekeeper_llm": "qwen35-4b-titler" }
+{ "housekeeper_llm": "minicpm5-2b-titler" }
 ```
 
 A missing or unrecognised value (e.g. hand-edited to an id no longer in the

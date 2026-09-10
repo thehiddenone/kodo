@@ -109,6 +109,13 @@ def test_housekeeper_llm_options_catalog_entries_are_self_consistent() -> None:
         assert option.description
         assert option.repo_id
         assert option.filename
+        # Sampling temperatures are per-task on purpose, and the greeting --
+        # the one task that exists to vary -- is never the coldest of the
+        # three (HousekeeperLlmOption's docstring).
+        for temp in (option.title_temp, option.project_name_temp, option.greeting_temp):
+            assert 0.0 <= temp <= 2.0
+        assert option.greeting_temp >= option.title_temp
+        assert option.greeting_temp >= option.project_name_temp
 
 
 # ---------------------------------------------------------------------------
@@ -697,13 +704,17 @@ class _FakeAsyncOpenAI:
 class _FakeRunningServer:
     is_running = True
     base_url = "http://127.0.0.1:1"
-    model_id = "qwen35-4b-titler"
+
+    def __init__(self, model_id: str = "qwen35-4b-titler") -> None:
+        self.model_id = model_id
 
 
 def _install_fake_server_and_client(
-    monkeypatch: pytest.MonkeyPatch, content: str | None
+    monkeypatch: pytest.MonkeyPatch,
+    content: str | None,
+    model_id: str = "qwen35-4b-titler",
 ) -> _FakeAsyncOpenAI:
-    _server._active = cast(TitlerServer, _FakeRunningServer())
+    _server._active = cast(TitlerServer, _FakeRunningServer(model_id))
     fake_client = _FakeAsyncOpenAI(content)
     monkeypatch.setattr(_server.openai, "AsyncOpenAI", lambda **kwargs: fake_client)
     return fake_client
@@ -760,6 +771,20 @@ async def test_generate_title_sends_guardrailed_messages_and_disables_thinking(
     assert call["messages"] == _build_title_messages("do something")
 
 
+async def test_generate_title_uses_the_running_models_title_temperature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Read the expected value off the live catalog rather than restating it:
+    # the assertion is "whatever this entry declares is what gets sent", which
+    # must keep holding as entries are added or retuned.
+    for model_id, option in _server.HOUSEKEEPER_LLM_OPTIONS.items():
+        fake_client = _install_fake_server_and_client(monkeypatch, "A Title", model_id)
+
+        await generate_title("do something")
+
+        assert fake_client.chat.completions.calls[0]["temperature"] == option.title_temp
+
+
 # ---------------------------------------------------------------------------
 # generate_project_name
 # ---------------------------------------------------------------------------
@@ -810,6 +835,17 @@ async def test_generate_project_name_sends_guardrailed_messages_and_disables_thi
     call = fake_client.chat.completions.calls[0]
     assert call["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
     assert call["messages"] == _build_project_name_messages("build me a weather dashboard")
+
+
+async def test_generate_project_name_uses_the_running_models_project_name_temperature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for model_id, option in _server.HOUSEKEEPER_LLM_OPTIONS.items():
+        fake_client = _install_fake_server_and_client(monkeypatch, "Weather Dashboard", model_id)
+
+        await generate_project_name("build me a weather dashboard")
+
+        assert fake_client.chat.completions.calls[0]["temperature"] == option.project_name_temp
 
 
 # ---------------------------------------------------------------------------
@@ -873,7 +909,7 @@ async def test_generate_greeting_sends_a_themed_prompt_with_thinking_disabled(
 
     call = fake_client.chat.completions.calls[0]
     assert call["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
-    assert call["temperature"] == 0.9
+    assert call["temperature"] == _server.HOUSEKEEPER_LLM_OPTIONS["qwen35-4b-titler"].greeting_temp
     # Whichever theme random.choice picked, the resulting messages must match
     # what _build_greeting_messages would build for that same theme — proves
     # the prompt is actually themed rather than static.
@@ -884,3 +920,35 @@ async def test_generate_greeting_sends_a_themed_prompt_with_thinking_disabled(
         if _build_greeting_messages(theme)[0]["content"] == sent_system_content
     ]
     assert len(matching_themes) == 1
+
+
+async def test_generate_greeting_uses_the_running_models_greeting_temperature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for model_id, option in _server.HOUSEKEEPER_LLM_OPTIONS.items():
+        fake_client = _install_fake_server_and_client(monkeypatch, "A greeting", model_id)
+
+        await generate_greeting()
+
+        assert fake_client.chat.completions.calls[0]["temperature"] == option.greeting_temp
+
+
+def test_minicpm5_entries_never_sample_colder_than_the_catalog_defaults() -> None:
+    """The MiniCPM5 family is peaked enough that cold sampling repeats itself.
+
+    Deliberately an invariant rather than pinned numbers: these temperatures
+    are tuned by hand against how repetitive the models actually sound, and a
+    test that restates the current values just breaks on every tweak. What
+    must not silently regress is the direction — neither MiniCPM5 entry may
+    end up colder than the shared field defaults, and the smaller (so more
+    peaked) 1B is never colder than the 2B.
+    """
+    declared = _server.HousekeeperLlmOption.__dataclass_fields__
+    axes = ("title_temp", "project_name_temp", "greeting_temp")
+    one_b = _server.HOUSEKEEPER_LLM_OPTIONS["minicpm5-1b-titler"]
+    two_b = _server.HOUSEKEEPER_LLM_OPTIONS["minicpm5-2b-titler"]
+    for axis in axes:
+        field_default = declared[axis].default
+        assert getattr(one_b, axis) >= field_default
+        assert getattr(two_b, axis) >= field_default
+        assert getattr(one_b, axis) >= getattr(two_b, axis)
