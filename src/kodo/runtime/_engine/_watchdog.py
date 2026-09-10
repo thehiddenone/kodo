@@ -1129,7 +1129,6 @@ class WatchdogMixin:
                 if self._repeat_streak:
                     await self._persist_repeated_tool_call_critical(
                         agent_name=agent_name,
-                        display_name=self._display_name(agent_name),
                         preview=preview,
                     )
                     return StallDecision(retry=False)
@@ -1164,7 +1163,7 @@ class WatchdogMixin:
         return _on_repeated_tool_calls
 
     async def _persist_repeated_tool_call_critical(
-        self: EngineHost, *, agent_name: str, display_name: str, preview: str
+        self: EngineHost, *, agent_name: str, preview: str
     ) -> None:
         """End an entry-agent turn for good after a *second* repeated-call hit.
 
@@ -1183,9 +1182,8 @@ class WatchdogMixin:
             preview,
         )
         message = (
-            f"Kōdo already told {display_name} to stop repeating the same tool call "
-            f"({preview}), but it made the identical call again with the identical "
-            "result. Ending the turn instead of letting it loop — you may need to "
-            "rephrase the prompt or step in."
+            f"The same tool call ({preview}) kept being repeated with an identical "
+            "result, even after a reminder to stop. Ending the turn instead of letting "
+            "it loop — you may need to rephrase the prompt or step in."
         )
         await self._emitters.emit_agent_stuck_critical(message)

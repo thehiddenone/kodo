@@ -511,5 +511,5 @@ class EngineHost(Protocol):
     ) -> None: ...
 
     async def _persist_repeated_tool_call_critical(
-        self, *, agent_name: str, display_name: str, preview: str
+        self, *, agent_name: str, preview: str
     ) -> None: ...
