@@ -208,9 +208,15 @@ while this is on (same non-destructive-override shape as
 was picked per-tier, with no data loss. The four per-tier pickers are disabled
 client-side while this is on.
 
+Both this key and `models.cloud.<vendor>` are editable from **two** kodo-vsix
+surfaces as of 2026-09-10: the Kōdo Settings → Cloud AI tab, and cloud mode's
+sidebar band (doc/LLM_REGISTRY.md §7.2). They are two views onto one setting
+— the same host-side setters, refreshed together — not independent copies.
+
 **OpenRouter is a special case**: this shortcut and `openrouter_auto_mode`
 are mutually exclusive at the UI layer — the Cloud AI Settings webview
-disables each checkbox while the other is checked, so a user can never have
+disables each checkbox while the other is checked (the sidebar band locks
+outright, with a note, while Auto mode is on), so a user can never have
 both active from the UI. If a hand-edited `settings.json` somehow sets both,
 `_resolve_model_key` checks `openrouter_auto_mode` first, so Auto mode wins.
 

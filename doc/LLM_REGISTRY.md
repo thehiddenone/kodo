@@ -835,6 +835,19 @@ vendor's already-fetched catalog. Host-side: `extension/cloud-ai-settings.ts`'s
 missing from `settings.json`, same merge-over-defaults shape as
 `readCloudModels()`.
 
+**Also reachable from the sidebar** — as of 2026-09-10 the checkbox and its
+picker are no longer exclusive to the Kōdo Settings panel: cloud mode's
+sidebar renders the same shortcut, and the same four per-tier rows beneath it,
+in a bottom-anchored "Select LLM model" band (§7). It is a second *view* onto
+one setting, not a copy — it posts the very same `setCloudModel`/
+`setCloudUniformEnabled`/`setCloudUniformModel` host-side setters, and
+`pushCloudAiSettingsState()` now refreshes both surfaces, so a model picked in
+either place shows up in the other immediately. The sidebar deliberately drops
+the four tiers' "example workload" blurbs (`EFFORT_EXAMPLES`) — there is no
+room for them at sidebar width — but keeps every other rule intact, including
+OpenRouter's Auto-mode mutual exclusion (the whole band locks, with a note,
+while Auto mode is on).
+
 ---
 
 ## 4. Local registry
@@ -1282,6 +1295,8 @@ dialog in kodo-vsix, all of which are native modals.
 the WS connection.
 
 **Display convention: `name` is never shown to the user, `description` always is.** For a `hardcoded_hf` entry, `name` is an internal registry-key slug (e.g. `unsloth-qwen36-27b-q8-k-xl`); `description` is the human-readable label (e.g. "Qwen 3.6 27B UD-Q8_K_XL by Unsloth"). Every kodo-vsix surface that lists local models — the sidebar model-picker cards, the Local Inference Settings model cards, the "running: …" status line, the Configure and Manage-profiles modal titles, and download-progress rows — titles itself off `entry.description`, falling back to `entry.name` only where `description` can legitimately be empty (a `custom_*` kind entry, where `name` is whatever display text the user typed when adding it, per §4). `name` still flows through the wire/DOM as a plain identifier (dataset keys, radio values, postMessage payload fields) — that's fine; the rule is only about user-visible text.
+
+The cards themselves live in the sidebar's one scrolling band; the layout around them — what stays pinned above and below, and why the flex rules are what they are — is §7.
 
 Each sidebar model-picker card also shows two meta lines below its title: `Quant: <entry.quant_type>` (falling back to `"—"` for a `custom_*` entry, which never has one — see above) and `Context: <resolved size>`. The context figure is **not** `entry.context_window` verbatim — it's resolved the same way `resolve_context_window` resolves it server-side (§4.6), just computed client-side against the card's *currently selected* profile: `resolveContextSize(entry, args)` in `llm-registry-types.ts` calls `llamaArgsContextSize(args)` (mirroring `LlmProfile.get_context_size()` — scans for `--ctx-size`/`-c`) and falls back to `entry.context_window` when that's absent or `0` (including the base args' `--ctx-size: "0"` "use the GGUF's own trained length" sentinel). The args come from the *selected* profile: a user-defined profile's own `llama_args`, or the server-computed `default_profile_args` for the Default profile — which is why the picker recomputes the line on `change` without a server round trip. `sidebar-provider.ts`'s webview script can't import that TS module directly (it's a plain string-embedded `<script>`, not a bundled module — see §4.4's `_local_registry_payload` note), so it carries its own inline JS copy of the same functions; keep them in sync by hand if either side's resolution rule changes.
 
@@ -2029,3 +2044,96 @@ and retry.
 Only one key per vendor may be active at a time; only Anthropic is wired up
 today (single-vendor cloud registry, §3), but the shape is per-vendor from
 the start.
+
+---
+
+## 7. The kodo-vsix sidebar layout (kodo-vsix only)
+
+`src/sidebar-provider.ts` is a single plain-JS webview — a string-embedded
+`<script>`, not a bundled module, which is why it carries hand-maintained
+copies of a few helpers rather than importing them (§4.4, §4.6).
+
+### 7.1 Three bands, one scroll region
+
+Until 2026-09-10 the sidebar was one long scrolling document. With enough
+installed local LLMs (or cloud providers) the card list simply pushed the
+connection status, the session buttons and the local/cloud radios off the top
+of the view, where they could only be reached by scrolling back. The body is
+now a **flex column of three bands**:
+
+| Band | Element | Scrolls? | Holds |
+|---|---|---|---|
+| 1 | `#header` | no (see below) | status row, the three session/settings buttons, the local/cloud radios, then `#mode-fixed` |
+| 2 | `#scroll-area` > `#cards-section` | **yes — the only one** | local LLM cards, or cloud provider cards |
+| 3 | `#footer-section` | no | cloud mode's "Select LLM model" band; empty (`:empty { display: none }`) in local mode |
+
+`#mode-fixed` is what each mode pins into band 1: in local mode the
+llama.cpp install/start/stop button, "Local inference settings" and the
+version line; in cloud mode the "heads up before you switch to cloud AI"
+disclaimer and the "Cloud AI settings" button. Both close with an `<hr>`.
+
+**The flex declarations are load-bearing, in a way that is easy to undo by
+accident:**
+
+- `#scroll-area { flex: 1 1 0 }` — the **`0` basis orders the degradation**.
+  Flexbox shares a shortfall out in proportion to each item's flex-basis, so
+  with `flex-basis: auto` this band and the header would be squeezed together
+  on any sidebar too short for both — including comfortably sized ones, since
+  the card list's natural height is large. With basis `0` this band absorbs
+  none of the shortfall and merely takes the leftover space, so the header
+  keeps its full height until there is none left.
+- `#scroll-area { min-height: 0 }` — separately required. Without *some*
+  non-`auto` min-height a flex item cannot shrink below its content, so the
+  band would grow to fit every card and nothing would ever scroll. This was
+  the original bug.
+- `#header { flex: 0 1 auto; min-height: 0; overflow-y: auto }` — full height
+  whenever it fits; shrinks and scrolls internally **only** after band 2 has
+  given up everything. A sidebar sharing its column with several other views
+  can genuinely be shorter than band 1 + band 3, and nothing may become
+  unreachable.
+- `#footer-section { flex: 0 0 auto }` and **no `overflow`** — it never
+  shrinks (it is the band that is meant to stay anchored) and must never
+  establish a scroll container, because the model picker's dropdown
+  deliberately overflows *upward* out of this box (§7.2).
+
+Degradation order is therefore: card list, then header, never the footer. At
+every viewport the three bands sum exactly to the height — nothing is clipped.
+
+`renderCards()` rebuilds all three bands on every state push, so it explicitly
+carries across the two things a rebuild would otherwise destroy: the scroll
+position of band 2, and which model search box had focus (its text lives in
+`_pickerUi`, outside the DOM, for the same reason). Without that, an unrelated
+update — a session's stage ticking over, a llama.cpp status change — would
+yank the list back to the top mid-scroll or wipe a half-typed query.
+
+### 7.2 Cloud mode's "Select LLM model" band
+
+Band 3 renders the **active** cloud vendor's model selection: the
+`models.cloud_uniform` checkbox ("Use the same LLM for all agents", §3c) and,
+when it is unchecked, the four `models.cloud` per-tier rows (§2) as a compact
+caption-over-picker stack. The four tiers' `EFFORT_EXAMPLES` blurbs are
+deliberately omitted — there is no room at sidebar width.
+
+Which picker each row gets follows the same vendor-shape split as the Kōdo
+Settings panel:
+
+- the seven compiled-in vendors get a plain `<select>` over their
+  `cloudRegistry` entry (`makeModelSelect`), falling back to the first model
+  when the stored id is not in the list, exactly as `EffortSection` does;
+- OpenRouter and Bedrock get `makeCatalogPicker`, a search-as-you-type
+  combobox — the sidebar twin of `CatalogModelPicker` (§3a) — because a
+  several-hundred-option `<select>` is unusable at any width. Its dropdown
+  opens **upward** (`bottom`, not `top`), since a bottom-anchored section has
+  no room below it and `body { overflow: hidden }` would clip it.
+
+A vendor in neither the registry nor the catalog vendors (a not-yet-supported
+one) renders no band at all.
+
+**Payload note.** The two fetched catalogs are hundreds of entries each and
+would otherwise ride along on every unrelated sidebar update. `SidebarState`
+holds them, but `SidebarProvider._post` narrows them to the *active* vendor's
+rows, as `cloudCatalogOptions` — the same "derive it host-side" move
+`_computeLocalWarnings` makes (§4.6). Host-side the band is wired through
+`extension/cloud-ai-settings.ts`'s `cloudModelStateForSidebar()`, pushed from
+`pushCloudAiSettingsState()` so both surfaces refresh together.
+
