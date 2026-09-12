@@ -304,6 +304,7 @@ class WorkflowEngine(
             init_project=self._init_project,
             bootstrap_project=self._bootstrap_project,
             notify_tool_call_in_progress=self._emitters.notify_tool_call_in_progress,
+            emit_plan_state=self._emitters.emit_plan_state,
             add_security_rule=self.add_security_rule,
             add_security_path_rule=self.add_security_path_rule,
             has_workspace=self._has_workspace,

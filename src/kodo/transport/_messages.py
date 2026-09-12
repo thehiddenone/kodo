@@ -916,6 +916,35 @@ EVT_REVIEW_VERDICT = "review.verdict"
 # than one per client. Replayed on reload via ``session.history``.
 EVT_REVIEW_FINDINGS = "review.findings"
 
+# Server → Client event. The user's **plan widget**: the whole current state of
+# this session's work plan (doc/PLANNING.md §6). Emitted three times over a
+# plan's life — when a ``planner: true`` sub-agent's result creates it, on every
+# ``get_plan`` call, and on every ``plan_step_forward`` call — carrying
+# ``created_by``, ``context``, the ordered ``tasks`` with their
+# ``not_started``/``in_progress``/``done`` statuses, ``current_task`` and
+# ``complete``, plus a ``reason`` of ``created``/``read``/``step`` so the widget
+# can title itself.
+#
+# Unlike ``review.findings`` this is NOT user-only information — it is a user-only
+# *rendering*. The model is told the same thing by the plan tool's own JSON
+# result, which is where its copy comes from; this event exists so the human
+# reads a widget instead of a tool payload. The marker (``type: "plan_state"``)
+# still carries no ``role``, so the widget itself never enters any agent's
+# message history and the two paths cannot feed each other.
+#
+# Statuses arrive **derived** server-side from the plan log — the client renders
+# what it is given and never computes a status from a step count of its own.
+# Replayed on reload via ``session.history``.
+EVT_PLAN_STATE = "plan.state"
+
+# Server → Client event. A planner returned a new plan while the live one still
+# had unfinished tasks — the one hard failure in the planning feature
+# (doc/PLANNING.md §4). Carries a single ``message``; the client renders it as a
+# red ``<kodo_crit>`` callout, exactly like the stuck-agent criticals, and the
+# session phase goes to ``stopped`` in the same breath. Persisted as a
+# ``plan_conflict_critical`` marker so a reload still shows why the session ended.
+EVT_PLAN_CONFLICT_CRITICAL = "plan.conflict_critical"
+
 # Context-compaction events (in-place compaction of an entry agent's main
 # context; see runtime/_engine/_compaction.py + doc/STATE_AND_LIFECYCLE.md §4.5).
 # Server → Client events.

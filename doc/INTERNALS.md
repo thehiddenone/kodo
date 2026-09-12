@@ -41,6 +41,8 @@ source:
 | `project` | *(nothing)* |
 | `guided_state` | *(nothing)* |
 | `findings` | *(nothing)* |
+| `plan` | *(nothing)* |
+| `workproducts` | *(nothing)* |
 | `state` | *(nothing)* |
 | `security` | `common`, `toolspecs`, `shellparser` |
 | `mirror` | *(nothing)* |
@@ -48,11 +50,11 @@ source:
 | `binutils` | *(nothing)* |
 | `transport` | `common` |
 | `toolspecs` | *(nothing — pure data)* |
-| `tools` | `common`, `findings`, `guided_state`, `project`, `toolspecs` |
+| `tools` | `common`, `findings`, `guided_state`, `plan`, `project`, `toolspecs` |
 | `llms` | `common`, `transport`, `toolspecs` |
-| `subagents` | `toolspecs` |
+| `subagents` | `plan`, `toolspecs` |
 | `titling` | `project`, `llms` |
-| `runtime` | `common`, `transport`, `toolspecs`, `tools`, `findings`, `guided_state`, `project`, `state`, `subagents`, `llms`, `titling`, `mirror`, `shellparser`, `binutils` |
+| `runtime` | `common`, `transport`, `toolspecs`, `tools`, `findings`, `plan`, `workproducts`, `guided_state`, `project`, `state`, `subagents`, `llms`, `titling`, `mirror`, `shellparser`, `binutils` |
 | `server` | `common`, `transport`, `project`, `state`, `subagents`, `llms`, `titling`, `runtime`, `binutils` |
 
 `toolspecs` is now a true leaf: the old `toolspecs → workspace` edge (importing
@@ -67,6 +69,13 @@ session-scoped, and a project-scoped store must not depend on session state.
 They meet in exactly one place — `kodo.tools.document_status()` — which is why
 that function lives in `tools` (which may import both) rather than inside
 either package.
+
+`plan` (doc/PLANNING.md) is a leaf on the same pattern: a session-scoped
+append-only store of plain functions, importing nothing. It is the one leaf
+`subagents` reaches for besides `toolspecs` — `AgentRegistry` validates a
+`planner: true` agent's output schema against `kodo.plan.PLAN_OUTPUT_FIELDS`, so
+the planner contract is checked at load time rather than restated in the
+registry. `workproducts` is likewise a leaf.
 
 > **Note — `kodo.workspace` and `kodo.toolchains` were deleted outright** (not
 > merged elsewhere). `workspace` was the artifact-staging + promotion system
@@ -510,6 +519,68 @@ See doc/FINDINGS.md §6 for the table.
 
 **State:** Complete (`test_findings.py`, `test_document_status.py`,
 `test_engine_document_flow.py`).
+
+---
+
+## 7b. `kodo.plan` — the session's work plan
+
+A **plan** is an ordered list of tasks plus the development context that produced
+it. One sub-agent declares `planner: true` in its frontmatter; the engine reads
+`tasks` and `codebase_context` off that agent's result and records the plan. The
+agent that commissioned it then tracks progress through `get_plan` and
+`plan_step_forward`. **Full design: [doc/PLANNING.md](PLANNING.md)** — this
+section is the module map.
+
+Storage is session-scoped (`~/.kodo/sessions/<id>/plan/plan.jsonl`), on the same
+reasoning as `findings` (§7a): a plan is a fact about one session's attempt at
+some work, not about the project tree.
+
+| Module | Defines | Role |
+|---|---|---|
+| [_records.py](../src/kodo/plan/_records.py) | `PlanTask`, `PlanState`, `PlanConflictError`, `STATUS_*`, `PLAN_OUTPUT_FIELDS`, `PLAN_REASON_*`, `closed()`, `normalize_tasks()`, `derive_state()`, the three entry builders | The status rule, and the planner↔engine output contract. `derive_state` is the single definition of what a step means, used both on replay and when reporting the step just taken; `closed()` is the single definition of the supersede precondition. |
+| [_store.py](../src/kodo/plan/_store.py) | `read_plan()`, `create_plan()`, `step_plan()`, `abandon_plan()`, `plan_log_path()` | Append/replay. `create_plan` is the enforcement point for one-plan-per-session: superseding an **open** plan raises `PlanConflictError`. `abandon_plan` is the legal way to close one unfinished. |
+
+**The three jsonl entry types:**
+
+1. **`plan_created`** — `{type, timestamp, created_by, context, tasks}`. A whole
+   plan arriving at once, superseding any before it. Only ever appended when the
+   previous plan is **closed**, so a log is a sequence of closed plans followed by
+   at most one live plan; replay reads the **last** one.
+2. **`plan_step`** — `{type, timestamp}` and nothing else. A step is a *pointer
+   move*: statuses are derived from how many steps follow the live
+   `plan_created`. Because no line ever names a status, there is no way to write a
+   ledger that contradicts itself.
+3. **`plan_abandoned`** — `{type, timestamp, reason}`. Closes the live plan
+   without finishing it, so a replacement may supersede it. Records no status
+   either: the unfinished tasks stay unfinished, which is the point — stepping to
+   the end instead would have recorded work nobody did as `done`.
+
+**Three statuses, no failure state.** `not_started` / `in_progress` / `done`. A
+plan only moves forward; work that turns out to be misjudged is replaced wholesale
+once the plan finishes, never annotated. *n* tasks take *n+1* steps — the first
+starts task 1 without completing anything, the last completes task *n* without
+starting anything — so `current_task` is `None` both before the first step and
+after the last, and only `complete` distinguishes them.
+
+**One hard failure.** `PlanConflictError` — a planner superseding a plan that is
+still **open** — propagates untouched through both per-tool-call failure boundaries
+in `_turns.py` (the third member of that re-raise tuple beside `CancelledError`
+and `UnrecoverableError`); `_run_worker` turns it into a `plan.conflict_critical`
+notice and a `stopped` phase, ending the turn (the worker keeps serving later
+prompts). The *legal* route for an agent whose work moved on is
+`plan_step_forward {abandon_plan: true}`; reaching the error means it replanned
+without acknowledging that. Every other plan failure is a soft `{"error": …}` tool
+result.
+
+**Unusable tasks are reported, not swallowed.** `normalize_output` checks field
+*presence*, never type, so a planner answering with prose or bare strings is
+"compliant" and yields nothing. `_initialize_plan` compares reported against
+usable task counts (`_reported_task_count`/`_plan_issue`) and surfaces any
+shortfall on the caller's result (`plan_issue`) and, when a plan was still
+created, on the user's widget (`issue`) — see doc/PLANNING.md §8.
+
+**State:** Complete (`test_plan.py`, `test_agents.py`, `test_engine_subagents.py`,
+`test_tools_compliance.py`).
 
 ---
 
@@ -1106,7 +1177,7 @@ narrow per-collaborator host protocols living next to each collaborator):
 | [_worker.py](../src/kodo/runtime/_engine/_worker.py) | mixin | `WorkerMixin` — `_run_worker` (the single queue-driven coroutine) + `_handle_input_no_agent`, plus the subsession-crash backstop `_recover_crashed_subsession`/`_enqueue_subsession_crash_report` (STATE_AND_LIFECYCLE.md §10.3). |
 | [_llm.py](../src/kodo/runtime/_engine/_llm.py) | mixin | `LLMPlumbingMixin` — `_resolve_plugin`/`_resolve_model_key`, `_run_silent_return_turn`, `_run_silent_tool_loop_turn` (a silent, multi-round, non-subsession tool-calling turn for the `web_search` agent — deadline- and round-capped, doc/WEB_SEARCH.md), `_security_judge`. |
 | [_turns.py](../src/kodo/runtime/_engine/_turns.py) | mixin | `TurnLoopMixin` — `_run_entry_agent` (+ the two entry wrappers below), `_run_agent_turn` (the generic LLM tool loop), `_dispatch_tool_calls` → `_dispatch_one_tool_call` (one call end to end; split out purely so the batch loop can wrap each call in its own failure boundary — STATE_AND_LIFECYCLE.md §10.1), `_finalize_tool_result`, `_make_dispatcher`, attachment storing. |
-| [_subagents.py](../src/kodo/runtime/_engine/_subagents.py) | mixin | `SubagentMixin` — `_run_subagent`/`_spawn_subagent` + the `_assert_can_spawn` gate, subsession lifecycle/replay, `_run_dependency_manager`, `_run_web_search_agent` (drives the `web_search` agent via `_run_silent_tool_loop_turn`, doc/WEB_SEARCH.md), `_run_review_loop`/`_run_review_round`/`_record_findings`, plus the findings scope threading (`_findings_dir`/`_findings_snapshot`/`_document_status`, doc/FINDINGS.md). |
+| [_subagents.py](../src/kodo/runtime/_engine/_subagents.py) | mixin | `SubagentMixin` — `_run_subagent`/`_spawn_subagent` + the `_assert_can_spawn` gate, subsession lifecycle/replay, `_run_dependency_manager`, `_run_web_search_agent` (drives the `web_search` agent via `_run_silent_tool_loop_turn`, doc/WEB_SEARCH.md), `_run_review_loop`/`_run_review_round`/`_record_findings`, plus the findings scope threading (`_findings_dir`/`_findings_snapshot`/`_document_status`, doc/FINDINGS.md) and the plan hook (`_is_planner`/`_initialize_plan`/`_plan_dir`, doc/PLANNING.md — reads a `planner: true` callee's result after whichever flow it declared, and lets `PlanConflictError` propagate). |
 | [_resume.py](../src/kodo/runtime/_engine/_resume.py) | mixin | `ResumeMixin` — Stop folding (`_persist_interrupted_turn`) + cold-restart resume (`_resume_main_turn`, `_build_replay_ledger`). |
 | [_events.py](../src/kodo/runtime/_engine/_events.py) | collaborator | `EngineEmitters` — every client event emitter + cumulative cost. |
 | [_compaction.py](../src/kodo/runtime/_engine/_compaction.py) | collaborator | `ContextCompactor` (+ `CompactorHost`) — context gauge, in-place compaction, `render_transcript`/`estimate_tokens`. `render_transcript`'s four headers (`## USER` / `## ASSISTANT` / `## TOOL RESULTS` / `## PRIOR COMPACTED CONTEXT`) are load-bearing: they split the three kinds of `role="user"` message the engine emits, and the compactor's verbatim-user-prompt rule keys off `## USER` meaning *only* a real prompt (STATE_AND_LIFECYCLE.md §4.5). |

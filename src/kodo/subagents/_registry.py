@@ -138,6 +138,12 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
+from kodo.plan import (
+    PLAN_CONTEXT_FIELD,
+    PLAN_OUTPUT_FIELDS,
+    PLAN_TASK_TITLE_FIELD,
+    PLAN_TASKS_FIELD,
+)
 from kodo.project import kodo_skills_dir
 from kodo.skills import SkillStore, render_catalog
 from kodo.toolspecs import (
@@ -559,6 +565,7 @@ class AgentRegistry:
             self.__validate_skills(agent)
             self.__validate_phases(agent)
             self.__validate_user_review(agent)
+            self.__validate_planner(agent)
             self.__agents[agent.name] = agent
         # Every sub-agent some caller may spawn — the union of all
         # ``subagents:`` allow-lists. Exactly these get a generated
@@ -832,6 +839,78 @@ class AgentRegistry:
                 f"{agent.source_path}: declares 'user_review: true' but produces no "
                 f"artifact role, so there would be no work product for the user to "
                 f"sign off on"
+            )
+
+    @staticmethod
+    def __validate_planner(agent: SubAgent) -> None:
+        """Check a ``planner: true`` agent returns something the engine can read.
+
+        The plan contract (doc/PLANNING.md §2): a planner's ``output_schema``
+        must declare both fields the engine initializes a plan from — ``tasks``
+        (the ordered list) and ``codebase_context`` (the development context
+        carried alongside it) — **and declare them with the right types**.
+
+        Both halves matter, and the second is not pedantry. ``normalize_output``
+        checks that a result's required fields are *present*, never that they
+        hold the declared type, so a planner whose schema says ``tasks`` is a
+        string (or an array of strings) passes compliance, reaches
+        ``normalize_tasks``, has every element dropped, and creates **no plan** —
+        while the agent holds a result that looks like it worked. Catching the
+        bad declaration at load time is the only place that failure is cheap.
+
+        Checked here rather than trusted because the two halves live in different
+        files: the flag is frontmatter, the schema is a
+        :class:`SubAgentSpec`, and nothing otherwise keeps them in step.
+
+        Raises:
+            AgentLoadError: The agent declares ``planner`` but has no spec, omits
+                either required field, or declares one with a type the engine
+                cannot read a plan out of.
+        """
+        if not agent.planner:
+            return
+        spec = SUBAGENT_SPECS_BY_NAME.get(agent.name)
+        if spec is None:
+            raise AgentLoadError(
+                f"{agent.source_path}: declares 'planner: true' but has no SubAgentSpec, "
+                f"so it has no output schema for the engine to read a plan out of"
+            )
+        properties = spec.output_schema.get("properties")
+        props: dict[str, object] = properties if isinstance(properties, dict) else {}
+        missing = sorted(PLAN_OUTPUT_FIELDS - set(props))
+        if missing:
+            raise AgentLoadError(
+                f"{agent.source_path}: declares 'planner: true' but its output_schema "
+                f"does not declare {missing} — a planner's result must carry "
+                f"{sorted(PLAN_OUTPUT_FIELDS)} for the engine to initialize a plan from "
+                f"(doc/PLANNING.md)"
+            )
+
+        def _fail(detail: str) -> None:
+            raise AgentLoadError(
+                f"{agent.source_path}: declares 'planner: true' but {detail}. The engine "
+                f"reads a plan out of these fields, and a mis-typed declaration fails "
+                f"silently at run time — no plan is created (doc/PLANNING.md §2)"
+            )
+
+        context = props[PLAN_CONTEXT_FIELD]
+        if not isinstance(context, dict) or context.get("type") != "string":
+            _fail(f"its {PLAN_CONTEXT_FIELD!r} is not declared as a string")
+
+        tasks = props[PLAN_TASKS_FIELD]
+        if not isinstance(tasks, dict) or tasks.get("type") != "array":
+            _fail(f"its {PLAN_TASKS_FIELD!r} is not declared as an array")
+            return  # unreachable; keeps the type narrowing below honest
+        items = tasks.get("items")
+        if not isinstance(items, dict) or items.get("type") != "object":
+            _fail(f"its {PLAN_TASKS_FIELD!r} items are not declared as objects")
+            return
+        item_props = items.get("properties")
+        if not isinstance(item_props, dict) or PLAN_TASK_TITLE_FIELD not in item_props:
+            _fail(
+                f"its {PLAN_TASKS_FIELD!r} items do not declare a "
+                f"{PLAN_TASK_TITLE_FIELD!r} property — a task with no title is not a task "
+                f"the user could read, so the engine drops it"
             )
 
     def __finalize(self, agent: SubAgent, autonomous: bool, phase: str = PHASE_INITIAL) -> SubAgent:

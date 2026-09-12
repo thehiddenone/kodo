@@ -38,12 +38,14 @@ from kodo.toolspecs import (
     FIND_FILES,
     FIND_TEXT_IN_FILES,
     GET_FINDINGS,
+    GET_PLAN,
     GET_ROOT_PATHS,
     GET_WEB_SEARCH_STATE,
     GUIDED_DEV_STATUS,
     INTENT_KEY,
     MAX_ROUNDS_KEY,
     NO_PROJECT_ERROR,
+    PLAN_STEP_FORWARD,
     QUERY_SEARCH_ENGINE,
     READ_ATTACHMENT,
     READ_FILE,
@@ -85,10 +87,12 @@ from ._finalize_project import FinalizeProjectTool
 from ._find_files import FindFilesTool
 from ._find_text_in_files import FindTextInFilesTool
 from ._get_findings import GetFindingsTool
+from ._get_plan import GetPlanTool
 from ._get_root_paths import GetRootPathsTool
 from ._get_web_search_state import GetWebSearchStateTool
 from ._guided_dev_status import GuidedDevStatusTool
 from ._paths import PathResolver
+from ._plan_step_forward import PlanStepForwardTool
 from ._query_search_engine import QuerySearchEngineTool
 from ._read_attachment import ReadAttachmentTool
 from ._read_file import ReadFileTool
@@ -135,6 +139,8 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (FIND_TEXT_IN_FILES, FindTextInFilesTool),
     (GUIDED_DEV_STATUS, GuidedDevStatusTool),
     (GET_FINDINGS, GetFindingsTool),
+    (GET_PLAN, GetPlanTool),
+    (PLAN_STEP_FORWARD, PlanStepForwardTool),
     (RUN_SUBAGENT, RunSubagentTool),
     (RETURN_RESULT, ReturnResultTool),
     (ROLLBACK, RollbackTool),
@@ -261,6 +267,9 @@ class ToolDispatcher:
         output_schema: The running sub-agent's ``output_schema`` (from its
             ``SubAgentSpec``), so ``return_result`` can validate its result.
             ``None`` for entry agents that never call ``return_result``.
+        plan_dir: This session's ``plan/`` directory, so the plan tools can
+            read and advance the one plan this session holds
+            (:attr:`ToolContext.plan_dir`).
         deadline: Unix timestamp this run must wrap up by, or ``None`` if
             untimed. Populated only for the ``web_search`` agent's dispatcher;
             see :attr:`ToolContext.deadline`.
@@ -283,6 +292,7 @@ class ToolDispatcher:
         output_schema: dict[str, object] | None = None,
         findings_dir: Path | None = None,
         findings_key: str = "",
+        plan_dir: Path | None = None,
         deadline: float | None = None,
     ) -> None:
         self.__ctx = ToolContext(
@@ -298,6 +308,7 @@ class ToolDispatcher:
             output_schema=output_schema,
             findings_dir=findings_dir,
             findings_key=findings_key,
+            plan_dir=plan_dir,
             deadline=deadline,
         )
 

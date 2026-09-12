@@ -10,11 +10,13 @@ dependency-manager/web_search entry points, the subsession lifecycle
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from kodo.llms import Message, UnrecoverableError
+from kodo.plan import PlanConflictError, abandon_plan, create_plan, read_plan, step_plan
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._engine._watchdog import _MAX_CONSECUTIVE_NUDGES
 from kodo.runtime._session import SessionState
@@ -27,8 +29,14 @@ from kodo.toolspecs import SCHEMA_COMPLIANCE_KEY
 
 
 class _FakeRegistry:
-    def __init__(self, *, allowed: dict[str, frozenset[str]] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        allowed: dict[str, frozenset[str]] | None = None,
+        planners: frozenset[str] = frozenset(),
+    ) -> None:
         self._allowed = allowed or {}
+        self._planners = planners
 
     def allowed_subagents(self, name: str) -> frozenset[str]:
         return self._allowed.get(name, frozenset())
@@ -44,6 +52,7 @@ class _FakeRegistry:
             display_name="" if name != "architect" else "The Architect",
             critic="",
             user_review=False,
+            planner=name in self._planners,
             role="",
             is_critic=False,
         )
@@ -95,6 +104,12 @@ class _FakeEmitters:
         self.think_in_tool_call_critical_messages: list[str] = []
         self.tool_call_cyclic_critical_messages: list[str] = []
         self.errors: list[tuple[str, bool]] = []
+        self.plan_states: list[tuple[dict[str, object], str]] = []
+        self.plan_issues: list[str] = []
+
+    async def emit_plan_state(self, plan: dict[str, object], reason: str, issue: str = "") -> None:
+        self.plan_states.append((plan, reason))
+        self.plan_issues.append(issue)
 
     async def emit_error(self, message: str, *, recoverable: bool = True) -> None:
         self.errors.append((message, recoverable))
@@ -163,11 +178,17 @@ def _make_engine(
     *,
     allowed: dict[str, frozenset[str]] | None = None,
     dispatcher_output: dict[str, object] | None = None,
+    planners: frozenset[str] = frozenset(),
+    session_dir: Path | None = None,
 ) -> WorkflowEngine:
     engine = object.__new__(WorkflowEngine)
-    engine._registry = _FakeRegistry(allowed=allowed)
+    engine._registry = _FakeRegistry(allowed=allowed, planners=planners)
     engine._replay_subsessions = None
     engine._transient = _FakeTransient()
+    # Left unset by default, so `_plan_dir()` answers None (AttributeError) exactly
+    # as it does on a bare host with no store — only a plan test binds one.
+    if session_dir is not None:
+        engine._transient.session_dir = session_dir
     engine._session = SessionState(session_id="s1")
     engine._emitters = _FakeEmitters()
     engine._sink = _FakeSink()
@@ -261,6 +282,187 @@ async def test_run_subagent_spawns_when_permitted() -> None:
     )
     result = await engine._run_subagent("guide", "investigator", {"instructions": "go look"})
     assert result == {"result": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# `planner: true` → the engine initializes the session's plan (doc/PLANNING.md §2)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_planner_result_initializes_the_session_plan(tmp_path: Path) -> None:
+    """The whole point of the flag: the engine reads `tasks`/`codebase_context`
+    off the result and records them, with nothing written by any model."""
+    engine = _make_engine(
+        allowed={"guide": frozenset({"planner"})},
+        planners=frozenset({"planner"}),
+        session_dir=tmp_path,
+        dispatcher_output={
+            "plan_warranted": True,
+            "codebase_context": "the parser lives in src/parse.py",
+            "tasks": [{"title": "Extract parser"}, {"title": "Rewire CLI"}],
+        },
+    )
+    await engine._run_subagent("guide", "planner", {"instructions": "split the parser out"})
+    plan = read_plan(tmp_path / "plan")
+    assert plan is not None
+    assert [t["title"] for t in plan["tasks"]] == ["Extract parser", "Rewire CLI"]
+    assert plan["created_by"] == "planner"
+    assert plan["context"] == "the parser lives in src/parse.py"
+    # The user is shown the plan the moment it exists — a plan they cannot see is
+    # one they cannot object to before the work starts.
+    assert [reason for _, reason in engine._emitters.plan_states] == ["created"]
+
+
+async def test_a_planner_result_with_no_tasks_creates_no_plan(tmp_path: Path) -> None:
+    """`plan_warranted: false` is not a field the engine reads — "it gave me no
+    tasks" is the same fact, and the session is simply left with no plan."""
+    engine = _make_engine(
+        allowed={"guide": frozenset({"planner"})},
+        planners=frozenset({"planner"}),
+        session_dir=tmp_path,
+        dispatcher_output={
+            "plan_warranted": False,
+            "codebase_context": "one indivisible change",
+            "tasks": [],
+        },
+    )
+    await engine._run_subagent("guide", "planner", {"instructions": "tiny fix"})
+    assert read_plan(tmp_path / "plan") is None
+    assert engine._emitters.plan_states == []
+
+
+async def test_a_non_planner_result_never_creates_a_plan(tmp_path: Path) -> None:
+    """Gated on the declaration, not on the shape of the result: an agent that
+    happens to return a `tasks` array is not thereby a planner."""
+    engine = _make_engine(
+        allowed={"guide": frozenset({"investigator"})},
+        session_dir=tmp_path,
+        dispatcher_output={"tasks": [{"title": "not a plan"}], "codebase_context": "x"},
+    )
+    await engine._run_subagent("guide", "investigator", {"instructions": "look"})
+    assert read_plan(tmp_path / "plan") is None
+
+
+async def test_replanning_over_an_unfinished_plan_raises_out_of_run_subagent(
+    tmp_path: Path,
+) -> None:
+    """The one hard failure — it must propagate, not become part of the result,
+    because the worker turns it into a stopped session (doc/PLANNING.md §4)."""
+    plan_dir = tmp_path / "plan"
+    create_plan(plan_dir, created_by="planner", context="c", tasks=[{"title": "half-done work"}])
+    step_plan(plan_dir)  # task 1 now in progress — the plan is live and unfinished
+    engine = _make_engine(
+        allowed={"guide": frozenset({"planner"})},
+        planners=frozenset({"planner"}),
+        session_dir=tmp_path,
+        dispatcher_output={"codebase_context": "c2", "tasks": [{"title": "replacement"}]},
+    )
+    with pytest.raises(PlanConflictError, match="half-done work"):
+        await engine._run_subagent("guide", "planner", {"instructions": "re-plan"})
+    # The live plan is untouched: a refused supersede changes nothing.
+    live = read_plan(plan_dir)
+    assert live is not None
+    assert [t["title"] for t in live["tasks"]] == ["half-done work"]
+
+
+async def test_replanning_after_the_plan_completes_supersedes_it(tmp_path: Path) -> None:
+    plan_dir = tmp_path / "plan"
+    create_plan(plan_dir, created_by="planner", context="c", tasks=[{"title": "finished work"}])
+    step_plan(plan_dir)
+    step_plan(plan_dir)
+    engine = _make_engine(
+        allowed={"guide": frozenset({"planner"})},
+        planners=frozenset({"planner"}),
+        session_dir=tmp_path,
+        dispatcher_output={"codebase_context": "c2", "tasks": [{"title": "next phase"}]},
+    )
+    await engine._run_subagent("guide", "planner", {"instructions": "plan the next phase"})
+    live = read_plan(plan_dir)
+    assert live is not None
+    assert [t["title"] for t in live["tasks"]] == ["next phase"]
+
+
+async def test_unusable_tasks_are_reported_to_the_caller(tmp_path: Path) -> None:
+    """The silent-failure case. `normalize_output` type-checks nothing, so a
+    planner answering with bare strings is "compliant" and yields no plan — the
+    caller must be told, or it meets a contradictory "there is no plan" later."""
+    engine = _make_engine(
+        allowed={"guide": frozenset({"planner"})},
+        planners=frozenset({"planner"}),
+        session_dir=tmp_path,
+        dispatcher_output={"codebase_context": "c", "tasks": ["step one", "step two"]},
+    )
+    result = await engine._run_subagent("guide", "planner", {"instructions": "go"})
+    assert read_plan(tmp_path / "plan") is None
+    assert "none were usable" in str(result["plan_issue"])
+    # No widget: there is no plan to render.
+    assert engine._emitters.plan_states == []
+
+
+async def test_a_partially_usable_plan_is_created_and_flagged(tmp_path: Path) -> None:
+    """The plan is real but short, so the warning rides on the very widget that is
+    missing the tasks — as well as going back to the caller."""
+    engine = _make_engine(
+        allowed={"guide": frozenset({"planner"})},
+        planners=frozenset({"planner"}),
+        session_dir=tmp_path,
+        dispatcher_output={
+            "codebase_context": "c",
+            "tasks": [{"title": "a"}, {"no_title": 1}, {"title": "c"}],
+        },
+    )
+    result = await engine._run_subagent("guide", "planner", {"instructions": "go"})
+    plan = read_plan(tmp_path / "plan")
+    assert plan is not None
+    assert [t["title"] for t in plan["tasks"]] == ["a", "c"]
+    assert "only 2 were usable" in str(result["plan_issue"])
+    assert [reason for _, reason in engine._emitters.plan_states] == ["created"]
+    assert "only 2 were usable" in engine._emitters.plan_issues[0]
+
+
+async def test_reporting_no_tasks_is_not_an_issue(tmp_path: Path) -> None:
+    """`plan_warranted: false` is a legitimate answer, not a failure — nothing is
+    flagged and the caller's result stays clean."""
+    engine = _make_engine(
+        allowed={"guide": frozenset({"planner"})},
+        planners=frozenset({"planner"}),
+        session_dir=tmp_path,
+        dispatcher_output={"codebase_context": "c", "tasks": []},
+    )
+    result = await engine._run_subagent("guide", "planner", {"instructions": "go"})
+    assert "plan_issue" not in result
+
+
+async def test_a_planner_may_supersede_an_abandoned_plan(tmp_path: Path) -> None:
+    """The escape route, end to end through the engine hook."""
+    plan_dir = tmp_path / "plan"
+    create_plan(plan_dir, created_by="planner", context="c", tasks=[{"title": "half-done"}])
+    step_plan(plan_dir)
+    abandon_plan(plan_dir, "user redirected")
+    engine = _make_engine(
+        allowed={"guide": frozenset({"planner"})},
+        planners=frozenset({"planner"}),
+        session_dir=tmp_path,
+        dispatcher_output={"codebase_context": "c2", "tasks": [{"title": "next phase"}]},
+    )
+    await engine._run_subagent("guide", "planner", {"instructions": "re-plan"})
+    live = read_plan(plan_dir)
+    assert live is not None
+    assert [t["title"] for t in live["tasks"]] == ["next phase"]
+    assert live["abandoned"] is False
+
+
+async def test_a_planner_with_no_session_store_is_a_no_op() -> None:
+    """A bare host (no `session_dir`) cannot hold a plan; the spawn still succeeds
+    and returns its result rather than failing on the bookkeeping."""
+    engine = _make_engine(
+        allowed={"guide": frozenset({"planner"})},
+        planners=frozenset({"planner"}),
+        dispatcher_output={"codebase_context": "c", "tasks": [{"title": "a"}]},
+    )
+    result = await engine._run_subagent("guide", "planner", {"instructions": "go"})
+    assert result["tasks"] == [{"title": "a"}]
+    assert engine._emitters.plan_states == []
 
 
 async def test_run_dependency_manager_is_ungated() -> None:

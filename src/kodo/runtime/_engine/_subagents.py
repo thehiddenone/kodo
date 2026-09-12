@@ -25,6 +25,12 @@ from kodo.findings import (
     sort_for_display,
 )
 from kodo.llms import Message, UnrecoverableError
+from kodo.plan import (
+    PLAN_CONTEXT_FIELD,
+    PLAN_REASON_CREATED,
+    PLAN_TASKS_FIELD,
+    create_plan,
+)
 from kodo.subagents import (
     PHASE_INITIAL,
     PHASE_REVISION,
@@ -162,6 +168,54 @@ def _review_instructions(paths: tuple[str, ...]) -> str:
     return (
         "Review the following files. They are one change and must be judged "
         f"together, including how they fit with each other:\n{listed}"
+    )
+
+
+#: Engine-owned key added to a planner's result when its ``tasks`` did not all
+#: survive (:meth:`SubagentMixin._initialize_plan`). Absent when everything the
+#: planner reported became a task, which is the normal case — the caller should
+#: read it as "something about my plan did not land", not as routine metadata.
+_PLAN_ISSUE_KEY = "plan_issue"
+
+
+def _reported_task_count(raw_tasks: object) -> int:
+    """How many tasks the planner *appears* to have reported, before normalization.
+
+    Counts what a reader of the raw result would count, so it can be compared
+    against what ``normalize_tasks`` actually accepted. A list contributes its
+    length; a non-empty string (a planner that wrote its plan as prose where an
+    array was declared) contributes 1, because it is plainly an attempt at a plan
+    rather than an empty answer. Anything else — ``None``, ``""``, the ``""``
+    that ``normalize_output`` backfills for a missing required field — is zero:
+    no plan was offered, which is a legitimate outcome and not a failure.
+    """
+    if isinstance(raw_tasks, list):
+        return len(raw_tasks)
+    if isinstance(raw_tasks, str) and raw_tasks.strip():
+        return 1
+    return 0
+
+
+def _plan_issue(agent_name: str, *, reported: int, usable: int) -> str:
+    """One sentence for the caller when *reported* tasks did not all become tasks.
+
+    Empty when nothing was lost (including the ordinary "no tasks at all" case).
+    Names the shortfall and the one requirement a task has, so the caller can
+    tell a mis-shaped result from a deliberate refusal to plan and re-invoke the
+    planner rather than discovering the problem later as "there is no plan".
+    """
+    if reported <= usable:
+        return ""
+    if usable == 0:
+        return (
+            f"{agent_name} reported {reported} task(s) but none were usable, so no plan was "
+            f"created — `tasks` must be an array of objects each carrying a non-empty "
+            f"`title`. There is no plan in this session; re-invoke the planner for one."
+        )
+    return (
+        f"{agent_name} reported {reported} task(s) but only {usable} were usable, so the "
+        f"plan is short by {reported - usable} — `tasks` must be an array of objects each "
+        f"carrying a non-empty `title`. Check the plan covers the work before relying on it."
     )
 
 
@@ -307,6 +361,12 @@ class SubagentMixin:
                 :data:`_DEFAULT_MAX_REVIEW_ROUNDS`. Ignored when the sub-agent
                 declares neither a critic nor a user review gate.
 
+        A third, independent declaration is read *after* the run rather than
+        before it: ``planner: true`` makes the callee's result a **plan**, which
+        the engine parses into the session's plan ledger
+        (:meth:`_initialize_plan`). It composes with the other two for free,
+        because whatever shape the flow took, what comes back is one result.
+
         Returns:
             dict: The sub-agent's structured result (its ``output_schema``),
             plus ``review`` when a review loop ran.
@@ -314,6 +374,10 @@ class SubagentMixin:
         Raises:
             PermissionError: ``caller`` is not permitted to spawn ``name`` (or,
                 for a critic-reviewed sub-agent, its critic).
+            PlanConflictError: ``name`` is a planner and returned a plan while
+                this session's existing plan was still unfinished. Deliberately
+                propagated rather than folded into the result — see
+                :meth:`_initialize_plan`.
         """
         self._assert_can_spawn(caller, name)
         critic = self._critic_for(name)
@@ -323,15 +387,113 @@ class SubagentMixin:
             # every later stage resolves against — so they go through the same
             # resolve-then-record path as a reviewed one, just without the loop
             # around it.
-            return await self._run_unreviewed_author(name, task_input)
-        if critic:
-            # The critic is spawned by the engine, but on this caller's behalf,
-            # so it is gated against the same allow-list — a caller may not
-            # reach a sub-agent it was never granted just because an author
-            # points at it. A user gate needs no such check: the reviewer is a
-            # person, not an agent.
-            self._assert_can_spawn(caller, critic)
-        return await self._run_review_loop(name, critic, task_input, max_rounds)
+            output = await self._run_unreviewed_author(name, task_input)
+        else:
+            if critic:
+                # The critic is spawned by the engine, but on this caller's
+                # behalf, so it is gated against the same allow-list — a caller
+                # may not reach a sub-agent it was never granted just because an
+                # author points at it. A user gate needs no such check: the
+                # reviewer is a person, not an agent.
+                self._assert_can_spawn(caller, critic)
+            output = await self._run_review_loop(name, critic, task_input, max_rounds)
+        if self._is_planner(name):
+            await self._initialize_plan(name, output)
+        return output
+
+    def _is_planner(self: EngineHost, name: str) -> bool:
+        """Whether sub-agent *name*'s result is a plan (frontmatter ``planner:``).
+
+        Read from the registry every time, for the same reason
+        :meth:`_critic_for` and :meth:`_user_reviews` are: an agent's declared
+        flow shape has exactly one source of truth, and the engine holds no
+        second opinion — in particular no list of "the agents that plan".
+        """
+        try:
+            return self._registry.get(name).planner
+        except AgentLoadError:
+            return False
+
+    async def _initialize_plan(self: EngineHost, name: str, output: dict[str, object]) -> None:
+        """Turn a planner's result into this session's plan (doc/PLANNING.md §2).
+
+        Reads exactly two fields — :data:`~kodo.plan.PLAN_TASKS_FIELD` and
+        :data:`~kodo.plan.PLAN_CONTEXT_FIELD` — which the registry has already
+        checked this agent's ``output_schema`` declares, so a planner whose
+        result the engine could not read never loads in the first place.
+
+        Three outcomes, and each one is deliberate:
+
+        * **A plan is created.** Every task starts ``not_started``; the user gets
+          the widget immediately, because a plan they cannot see is one they
+          cannot object to before the work starts.
+        * **Nothing happens.** The planner reported no tasks at all — it judged
+          the work indivisible (``plan_warranted: false``, a field this method
+          deliberately does not read: "it gave me no tasks" is the same fact and
+          needs no planner-specific vocabulary in the engine), or it escalated
+          instead of planning. The session is left with no plan, so a later
+          planner call can still create the first one without tripping the
+          conflict rule. This is a normal outcome and nothing is reported.
+        * **The turn ends.** A plan arrived while the live one was still open
+          — :class:`~kodo.plan.PlanConflictError`, raised by the store and
+          propagated untouched through the tool-call failure boundaries. It is
+          *not* an escalation in the result and *not* a tool error: the agent
+          replanned over live work without abandoning it first (which
+          ``plan_step_forward(abandon_plan=true)`` exists for), so nothing it
+          does next can be trusted to follow a plan. ``_run_worker`` turns it
+          into a ``kodo_crit`` notice and a stopped turn.
+
+        **Tasks that were reported but unusable are a reported failure**, not a
+        quiet one — the case this method exists to make visible. ``normalize_output``
+        validates that a result's fields are *present*, never that they hold the
+        declared type, so a planner answering with prose or an array of bare
+        strings is "compliant" and yet yields nothing: without the check below the
+        caller would hold a healthy-looking ``tasks`` array while ``get_plan``
+        insisted there was no plan. So the count is compared, and any shortfall
+        comes back to the caller on :data:`_PLAN_ISSUE_KEY` (and, when a plan was
+        still created, to the user on the widget). Declaring the wrong type is
+        caught earlier still, at load time, by ``AgentRegistry``.
+        """
+        plan_dir = self._plan_dir()
+        if plan_dir is None:
+            _log.warning("planner %s returned a plan but no session store is attached", name)
+            return
+        raw_tasks = output.get(PLAN_TASKS_FIELD)
+        reported = _reported_task_count(raw_tasks)
+        plan = await asyncio.to_thread(
+            create_plan,
+            plan_dir,
+            created_by=name,
+            context=str(output.get(PLAN_CONTEXT_FIELD, "")),
+            tasks=raw_tasks,
+        )
+        usable = len(plan["tasks"]) if plan is not None else 0
+        issue = _plan_issue(name, reported=reported, usable=usable)
+        if issue:
+            _log.warning("%s", issue)
+            output[_PLAN_ISSUE_KEY] = issue
+        if plan is None:
+            if not issue:
+                _log.info("planner %s reported no tasks — no plan created", name)
+            return
+        _log.info("plan created by %s with %d task(s)", name, usable)
+        # The issue rides along on the creation event so the user sees the
+        # shortfall on the very widget that is missing the tasks.
+        await self._emitters.emit_plan_state(dict(plan), PLAN_REASON_CREATED, issue=issue)
+
+    def _plan_dir(self: EngineHost) -> Path | None:
+        """This session's ``plan/`` directory, or ``None`` before one is attached.
+
+        The single place the session-scoped plan root is derived
+        (doc/PLANNING.md §5) — the exact sibling of :meth:`_findings_dir`, and
+        ``None`` for the same reasons: no session attached yet, or a bare test
+        host with no store. Every caller treats ``None`` as "this session cannot
+        hold a plan".
+        """
+        try:
+            return self._transient.session_dir / "plan"
+        except (AssertionError, AttributeError):
+            return None
 
     def _critic_for(self: EngineHost, name: str) -> str:
         """The critic paired with sub-agent *name*, or ``""`` when it has none."""

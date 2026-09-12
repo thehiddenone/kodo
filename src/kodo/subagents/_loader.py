@@ -112,6 +112,26 @@ class SubAgent:
             Which artifacts are worth a human's attention is a property of the
             artifact, not of whether someone happened to pair a critic with its
             author — which is what decided it before this flag existed.
+        planner: ``True`` when this agent's result **is a plan** (frontmatter
+            ``planner: true``). The engine parses such a result and initializes
+            the session's plan from it — the ordered ``tasks`` and the
+            ``codebase_context`` — so the agent that commissioned the plan then
+            tracks it through ``get_plan``/``plan_step_forward`` instead of
+            re-describing it every round (doc/PLANNING.md).
+
+            A declaration, never an inference: nothing in the engine knows that
+            the agent *named* ``planner`` plans, and a second or third planner
+            added later needs no engine change. What it does imply is a
+            **contract** on the agent's :class:`~kodo.subagents.SubAgentSpec` —
+            its ``output_schema`` must declare ``tasks`` and
+            ``codebase_context``, which
+            :class:`~kodo.subagents.AgentRegistry` checks at load time so a
+            planner whose result the engine could not read fails fast rather
+            than at first spawn.
+
+            Orthogonal to ``critic``/``user_review`` and to ``standalone``: the
+            plan is initialized from whatever result the declared flow finally
+            produces.
     """
 
     name: str
@@ -127,6 +147,7 @@ class SubAgent:
     critic: str = ""
     standalone: bool = False
     user_review: bool = False
+    planner: bool = False
 
     @property
     def is_critic(self) -> bool:
@@ -210,6 +231,13 @@ def load_agent(path: Path) -> SubAgent:
             f"writes findings, not a work product, so there is nothing for the user to "
             f"sign off on; declare it on the author whose work it reviews"
         )
+    planner = _scalar(fm_dict.get("planner")).lower() in ("true", "yes", "1")
+    if role == ROLE_CRITIC and planner:
+        raise AgentLoadError(
+            f"{path}: a 'role: critic' agent cannot declare 'planner:' — a critic returns "
+            f"a review verdict, not a plan, and the engine would have no tasks to "
+            f"initialize a plan from"
+        )
     purpose = _extract_purpose(body)
 
     return SubAgent(
@@ -226,6 +254,7 @@ def load_agent(path: Path) -> SubAgent:
         critic=critic,
         standalone=standalone,
         user_review=user_review,
+        planner=planner,
     )
 
 

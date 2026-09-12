@@ -1083,6 +1083,7 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [tools/_paths.py](../src/kodo/tools/_paths.py) | `resolve_within` path guard (file-I/O + shell). |
 | [tools/_document_status.py](../src/kodo/tools/_document_status.py) | `document_status()` — merges a document's project-scoped evolution log with its session-scoped findings backlog (doc/FINDINGS.md §6). Lives here because `tools` is the lowest tier that may import both leaf packages. |
 | [findings/](../src/kodo/findings/) | The per-session author/critic findings backlog `get_findings` reads and the engine writes (doc/FINDINGS.md). A leaf package, so `tools` may import it. |
+| [plan/](../src/kodo/plan/) | The per-session work plan `get_plan` reads and `plan_step_forward` advances, created by the engine from a `planner: true` sub-agent's result (doc/PLANNING.md). A leaf package, so `tools` may import it. |
 | [project/_layout.py](../src/kodo/project/_layout.py) | `session_temp_dir(session_id)` — `~/.kodo/sessions/<id>/tmp`, the `temporary` scratch root (§5a). |
 | [skills/](../src/kodo/skills/) | `SkillStore`/`load_skill`/`render_catalog` — the user-installed Agent Skills `use_skill` reads (doc/SKILLS.md). A leaf package, so `tools` may import it. |
 | [subagents/_registry.py](../src/kodo/subagents/_registry.py) | Validates each agent's `tools:` frontmatter against `ALL_TOOLS`; autonomous filtering. Renders no tool text into the prompt. |

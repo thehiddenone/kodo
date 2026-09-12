@@ -50,6 +50,7 @@ from ._finalize_project import FinalizeProjectTool
 from ._find_files import FindFilesTool
 from ._find_text_in_files import FindTextInFilesTool
 from ._get_findings import GetFindingsTool
+from ._get_plan import GetPlanTool
 from ._get_root_paths import GetRootPathsTool
 from ._get_web_search_state import GetWebSearchStateTool
 from ._guided_dev_status import GuidedDevStatusTool
@@ -61,6 +62,7 @@ from ._paths import (
     resolve_within,
     root_for,
 )
+from ._plan_step_forward import PlanStepForwardTool
 from ._query_search_engine import QuerySearchEngineTool
 from ._read_attachment import ReadAttachmentTool
 from ._read_file import ReadFileTool
@@ -96,6 +98,8 @@ __all__ = [
     "FindTextInFilesTool",
     "GateLike",
     "GetFindingsTool",
+    "GetPlanTool",
+    "PlanStepForwardTool",
     "GetRootPathsTool",
     "GetWebSearchStateTool",
     "GuidedDevStatusTool",

@@ -563,6 +563,47 @@ Findings arrive **pre-sorted for display** (`kodo.findings.sort_for_display`): o
 
 Persisted as a `review_findings` marker and replayed by `session.history` in the client's camelCase shape (`workProductId`, `reviewerName`, `maxRounds`, `reportedBy`, `firstLine`, `lastLine`), so a reloaded table is identical to the live one.
 
+### 5.6a `plan.state` / `plan.conflict_critical` — the session's work plan
+
+Spec: [PLANNING.md](PLANNING.md).
+
+#### `plan.state` — the plan widget
+
+The whole current state of this session's work plan. Emitted when a `planner: true` sub-agent's result creates it (`reason: "created"`), and on every `get_plan` (`"read"`), `plan_step_forward` (`"step"`) and `plan_step_forward {abandon_plan: true}` (`"abandoned"`) call.
+
+```json
+{ "type": "plan.state",
+  "reason": "step",
+  "created_by": "planner",
+  "context": "the parser lives in src/parse.py; the CLI calls it from main()",
+  "tasks": [
+    { "id": 1, "title": "Extract the parser", "status": "done" },
+    { "id": 2, "title": "Rewire the CLI", "status": "in_progress" },
+    { "id": 3, "title": "Migrate the config loader", "status": "not_started" } ],
+  "current_task": 2,
+  "complete": false,
+  "abandoned": false,
+  "abandon_reason": "",
+  "issue": "" }
+```
+
+`status` is one of `not_started` / `in_progress` / `done` — **there is no `failed`**; a plan only moves forward (PLANNING.md §3). `current_task` is `null` both *before* the first step and *after* the last, so `complete` is the only thing that distinguishes "not begun" from "finished".
+
+`abandoned` marks a plan closed **without** being finished (PLANNING.md §4): its unfinished tasks deliberately keep their statuses, so render them as given — the record says how far the work got, and an abandoned plan is not a complete one. `abandon_reason` carries why, or is empty. `issue` is a warning for this card, set only on a `created` event whose planner reported tasks the engine could not use (PLANNING.md §8); it describes the event, not the plan, so it never repeats on later reads. `reason` is never shown to a model; it exists so the widget can title itself.
+
+Unlike `review.findings` this is **not** user-only *information* — it is a user-only *rendering*. The model is handed the identical state as that tool call's own JSON result, so the widget adds nothing to its context and the two cannot disagree. The marker still carries no `role`, so the widget itself never enters any message history.
+
+Statuses arrive **already derived** server-side from the plan log (`kodo.plan.derive_state`); a client renders them as given and never recomputes one from a step count. Persisted as a `plan_state` marker and replayed by `session.history` in the client's camelCase shape (`createdBy`, `currentTask`) — each snapshot keeping the statuses it was emitted with, deliberately **not** restamped with the plan's state today, so the feed reads as a record of the plan advancing.
+
+#### `plan.conflict_critical` — a re-plan over an unfinished plan
+
+```json
+{ "type": "plan.conflict_critical",
+  "message": "planner returned a new plan while the current plan still has 2 unfinished task(s): …" }
+```
+
+The one hard failure in the planning feature (PLANNING.md §4): a planner returned a plan while the live one was still **open** — neither finished nor abandoned. (The legal route is `plan_step_forward {abandon_plan: true}` first; the message says so.) The client renders it as a red `<kodo_crit>` callout, and the session phase goes to `stopped` in the same breath (a `state` event follows) — the turn ends, though the worker keeps serving later prompts. Client-only, like the stuck-agent criticals — the agent is never told, because the session is ending. Persisted as a `plan_conflict_critical` marker and replayed on reload.
+
 ### 5.7 `usage.update` — usage accounting
 
 Pushed after each LLM call, plus once (with `last_call_tokens: null`) right after every `hello.ack` (§5.1) so a (re)connecting client sees the current running totals without waiting for the next call.

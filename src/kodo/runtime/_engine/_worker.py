@@ -12,6 +12,7 @@ import logging
 
 from kodo.common import Envelope
 from kodo.llms import UnrecoverableError
+from kodo.plan import PlanConflictError
 from kodo.transport import EVT_API_KEY_REVOKE
 
 from ._proto import EngineHost
@@ -123,6 +124,22 @@ class WorkerMixin:
 
             except asyncio.CancelledError:
                 raise
+            except PlanConflictError as exc:
+                # A planner returned a new plan while the live one still had
+                # unfinished tasks (doc/PLANNING.md §4). The agent has abandoned
+                # work it already committed to, so there is nothing useful for it
+                # to do next — the session stops rather than continuing against a
+                # plan nobody is tracking. Phase "stopped", not "awaiting_user":
+                # this is a deliberate halt, not a recoverable error the user
+                # should just retry into.
+                # No subsession recovery here, unlike the generic backstop below:
+                # the conflict is raised *after* the planner's spawn returned, so
+                # its subsession is already closed by the time this fires.
+                _log.error("Plan conflict — stopping the session: %s", exc)
+                await self._emitters.emit_plan_conflict_critical(str(exc))
+                self._session.phase = "stopped"
+                self._session.agent = None
+                await self._emitters.emit_state()
             except UnrecoverableError as exc:
                 _log.error("Unrecoverable LLM error (HTTP %d): %s", exc.status_code, exc)
                 if exc.status_code == 401 and self._current_vendor:

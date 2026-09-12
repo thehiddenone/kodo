@@ -24,7 +24,9 @@ A new sub-agent named `foo` needs **all** of these, or the registry raises
      `kodo.toolspecs`). For an **author** add `critic: <critic_name>`; for a
      **critic** add `role: critic`; for an on-demand specialist add
      `standalone: true`; add `user_review: true` when the **user** must sign the
-     agent's work product off before it is accepted. An agent that is simply
+     agent's work product off before it is accepted; add `planner: true` when the
+     agent's result **is a plan** the engine should record (see *A sub-agent whose
+     result is a plan* below, and PLANNING.md). An agent that is simply
      invoked and returns declares none of them. There is no frontmatter for
      shared prompt text — see the `{SHARED:…}` list below, and no frontmatter
      for phase-conditional text either — see *Phase blocks* below.
@@ -134,6 +136,28 @@ Two things to know when adding it:
 - **The registry refuses it** on a `role: critic` agent, and on any agent whose
   spec `produces` nothing. In both cases there is no work product to sign off
   and the flag would silently never fire.
+
+## A sub-agent whose result is a plan (`planner:`)
+
+`planner: true` makes the agent's result **the session's work plan**: the engine
+reads `tasks` and `codebase_context` off it and records them, and the agent that
+commissioned the plan then tracks it with `get_plan` / `plan_step_forward`
+instead of restating it every round. Full spec: [PLANNING.md](PLANNING.md).
+
+Three things to know when adding one:
+
+- **The two output field names are fixed** (`kodo.plan.PLAN_OUTPUT_FIELDS`), and
+  the agent's `SubAgentSpec.output_schema` must declare both **with the right
+  types** — `tasks` an array of objects each carrying a `title`,
+  `codebase_context` a string. The registry checks all of that at load time,
+  because `normalize_output` type-checks nothing at run time: a mis-typed
+  declaration would yield no plan, silently.
+- **Orthogonal to everything else.** It composes with `critic:`, `user_review:`
+  and `standalone:` for free, because the plan is initialized from whatever
+  result the declared flow finally produces. A planner needs no
+  `produces`/`consumes` — a plan is not a work product.
+- **The registry refuses it** on a `role: critic` agent (a verdict is not a plan)
+  and on any agent with no spec at all.
 
 ## Phase blocks (`{PHASE:…}`)
 

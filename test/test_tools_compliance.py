@@ -23,6 +23,7 @@ import pytest
 
 from kodo.binutils import find_util
 from kodo.findings import apply_findings, read_findings
+from kodo.plan import create_plan
 from kodo.project import kodo_user_dir
 from kodo.runtime import ApprovalResponse, SessionState
 from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, RootPath, ToolDispatcher
@@ -87,6 +88,9 @@ class _FakeServices:
     ) -> None:
         self._has_workspace = has_workspace
         self._root_paths = root_paths
+        # Every plan widget this dispatcher pushed, so a plan test can assert the
+        # user was shown the same state the model was told.
+        self.plan_states: list[tuple[dict[str, object], str]] = []
 
     def has_workspace(self) -> bool:
         return self._has_workspace
@@ -138,6 +142,9 @@ class _FakeServices:
     async def notify_tool_call_in_progress(self, tool_call_id: str) -> None:
         return None
 
+    async def emit_plan_state(self, plan: dict[str, object], reason: str, issue: str = "") -> None:
+        self.plan_states.append((plan, reason))
+
 
 def _make_dispatcher(
     tmp_path: Path,
@@ -151,6 +158,8 @@ def _make_dispatcher(
     output_schema: dict[str, object] | None = None,
     findings_dir: Path | None = None,
     findings_key: str = "",
+    plan_dir: Path | None = None,
+    services: _FakeServices | None = None,
 ) -> ToolDispatcher:
     session = SessionState()
     session.autonomous = autonomous
@@ -159,7 +168,8 @@ def _make_dispatcher(
         resolver=_FakeResolver(tmp_path),
         gate=_FakeGate(),
         session=session,
-        services=_FakeServices(
+        services=services
+        or _FakeServices(
             has_workspace=has_workspace,
             root_paths=root_paths,
         ),
@@ -170,6 +180,7 @@ def _make_dispatcher(
         output_schema=output_schema,
         findings_dir=findings_dir,
         findings_key=findings_key,
+        plan_dir=plan_dir,
     )
 
 
@@ -596,6 +607,103 @@ async def test_get_findings_compliance(tmp_path: Path) -> None:
     # Wrong mode → compliant error envelope, not an exception.
     ps = _make_dispatcher(tmp_path, mode="problem_solving", root_paths=roots)
     _assert_compliant("get_findings", await _dispatch(ps, "get_findings", {}))
+
+
+@pytest.mark.asyncio
+async def test_get_plan_compliance(tmp_path: Path) -> None:
+    roots = (RootPath(name="proj", path=str(tmp_path)),)
+    plan_dir = tmp_path / "plan"
+    # No plan in the session → `plan: null`, a normal answer rather than an error
+    # (doc/PLANNING.md §3), and no widget pushed — there is nothing to show.
+    services = _FakeServices(root_paths=roots)
+    d = _make_dispatcher(tmp_path, root_paths=roots, plan_dir=plan_dir, services=services)
+    empty = _assert_compliant("get_plan", await _dispatch(d, "get_plan", {}))
+    assert empty["plan"] is None
+    assert services.plan_states == []
+    # With a plan behind it, the tool reports it and pushes the same state to the
+    # user's widget — the two halves are one payload by construction.
+    create_plan(
+        plan_dir,
+        created_by="planner",
+        context="the parser lives in src/parse.py",
+        tasks=[{"title": "Extract the parser"}, {"title": "Rewire the CLI"}],
+    )
+    read = _assert_compliant("get_plan", await _dispatch(d, "get_plan", {}))
+    plan = read["plan"]
+    assert [t["status"] for t in plan["tasks"]] == ["not_started", "not_started"]  # type: ignore[index,union-attr]
+    assert plan["current_task"] is None and plan["complete"] is False  # type: ignore[index,call-overload]
+    assert services.plan_states == [(plan, "read")]  # type: ignore[comparison-overlap]
+    # No plan directory bound at all (a run with no session store) → same empty
+    # answer, still not an exception.
+    unbound = _make_dispatcher(tmp_path, root_paths=roots)
+    assert _assert_compliant("get_plan", await _dispatch(unbound, "get_plan", {}))["plan"] is None
+
+
+@pytest.mark.asyncio
+async def test_plan_step_forward_compliance(tmp_path: Path) -> None:
+    roots = (RootPath(name="proj", path=str(tmp_path)),)
+    plan_dir = tmp_path / "plan"
+    services = _FakeServices(root_paths=roots)
+    d = _make_dispatcher(tmp_path, root_paths=roots, plan_dir=plan_dir, services=services)
+    # Stepping with no plan is a *soft* failure: a compliant error envelope the
+    # agent can act on, never an exception (doc/PLANNING.md §4).
+    no_plan = _assert_compliant("plan_step_forward", await _dispatch(d, "plan_step_forward", {}))
+    assert "error" in no_plan  # type: ignore[operator]
+    create_plan(plan_dir, created_by="planner", context="ctx", tasks=[{"title": "Only task"}])
+    # One task takes two steps: the first starts it, the second completes it.
+    started = _assert_compliant("plan_step_forward", await _dispatch(d, "plan_step_forward", {}))
+    assert started["plan"]["current_task"] == 1  # type: ignore[index,call-overload]
+    assert started["plan"]["complete"] is False  # type: ignore[index,call-overload]
+    finished = _assert_compliant("plan_step_forward", await _dispatch(d, "plan_step_forward", {}))
+    assert finished["plan"]["complete"] is True  # type: ignore[index,call-overload]
+    assert finished["plan"]["current_task"] is None  # type: ignore[index,call-overload]
+    # Past the end is the other soft failure, not a step and not a crash.
+    past_end = _assert_compliant("plan_step_forward", await _dispatch(d, "plan_step_forward", {}))
+    assert "error" in past_end  # type: ignore[operator]
+    # Every successful step showed the user the state it returned; the refused
+    # ones showed nothing.
+    assert [reason for _, reason in services.plan_states] == ["step", "step"]
+
+
+@pytest.mark.asyncio
+async def test_plan_step_forward_abandon_compliance(tmp_path: Path) -> None:
+    """``abandon_plan: true`` is the legal escape from an unfinished plan — the
+    same tool, because advancing and closing are one decision's two sides."""
+    roots = (RootPath(name="proj", path=str(tmp_path)),)
+    plan_dir = tmp_path / "plan"
+    services = _FakeServices(root_paths=roots)
+    d = _make_dispatcher(tmp_path, root_paths=roots, plan_dir=plan_dir, services=services)
+    # Abandoning with no plan is a soft failure, like stepping with no plan.
+    empty = _assert_compliant(
+        "plan_step_forward", await _dispatch(d, "plan_step_forward", {"abandon_plan": True})
+    )
+    assert "error" in empty  # type: ignore[operator]
+    create_plan(
+        plan_dir,
+        created_by="planner",
+        context="ctx",
+        tasks=[{"title": "first"}, {"title": "second"}],
+    )
+    await _dispatch(d, "plan_step_forward", {})  # task 1 underway
+    closed_out = _assert_compliant(
+        "plan_step_forward",
+        await _dispatch(
+            d, "plan_step_forward", {"abandon_plan": True, "reason": "user redirected"}
+        ),
+    )
+    plan = closed_out["plan"]
+    assert plan["abandoned"] is True  # type: ignore[index,call-overload]
+    assert plan["complete"] is False  # type: ignore[index,call-overload]
+    assert plan["abandon_reason"] == "user redirected"  # type: ignore[index,call-overload]
+    # The statuses are untouched: abandoning closes a plan, it never backfills it.
+    assert [t["status"] for t in plan["tasks"]] == [  # type: ignore[index,union-attr]
+        "in_progress",
+        "not_started",
+    ]
+    # Stepping an abandoned plan is refused, softly.
+    stepped = _assert_compliant("plan_step_forward", await _dispatch(d, "plan_step_forward", {}))
+    assert "error" in stepped  # type: ignore[operator]
+    assert [reason for _, reason in services.plan_states] == ["step", "abandoned"]
 
 
 @pytest.mark.asyncio
@@ -1059,6 +1167,8 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "find_text_in_files",
         "guided_dev_status",
         "get_findings",
+        "get_plan",
+        "plan_step_forward",
         "toolchain_build",
         "toolchain_deps",
         "ask_user",

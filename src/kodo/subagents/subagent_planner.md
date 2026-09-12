@@ -2,6 +2,7 @@
 name: planner
 display_name: Planner
 standalone: true
+planner: true
 capability: high
 tools:
   - read_file

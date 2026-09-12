@@ -30,10 +30,12 @@ from ._finalize_project import FINALIZE_PROJECT
 from ._find_files import FIND_FILES
 from ._find_text_in_files import FIND_TEXT_IN_FILES
 from ._get_findings import GET_FINDINGS
+from ._get_plan import GET_PLAN
 from ._get_root_paths import GET_ROOT_PATHS
 from ._get_web_search_state import GET_WEB_SEARCH_STATE
 from ._guided_dev_status import GUIDED_DEV_STATUS
 from ._intent import INTENT_KEY, INTENT_PROPERTY, requires_intent
+from ._plan_step_forward import PLAN_STEP_FORWARD
 from ._query_search_engine import QUERY_SEARCH_ENGINE
 from ._read_attachment import READ_ATTACHMENT
 from ._read_file import READ_FILE
@@ -97,9 +99,11 @@ __all__ = [
     "FIND_FILES",
     "FIND_TEXT_IN_FILES",
     "GET_FINDINGS",
+    "GET_PLAN",
     "GET_ROOT_PATHS",
     "GET_WEB_SEARCH_STATE",
     "GUIDED_DEV_STATUS",
+    "PLAN_STEP_FORWARD",
     "INTENT_KEY",
     "INTENT_PROPERTY",
     "ENGINE_OWNED_TASK_FIELDS",
@@ -158,11 +162,13 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     FILESYSTEM,
     FINALIZE_PROJECT,
     GET_FINDINGS,
+    GET_PLAN,
     GET_ROOT_PATHS,
     FIND_FILES,
     FIND_TEXT_IN_FILES,
     GET_WEB_SEARCH_STATE,
     GUIDED_DEV_STATUS,
+    PLAN_STEP_FORWARD,
     QUERY_SEARCH_ENGINE,
     READ_ATTACHMENT,
     READ_FILE,

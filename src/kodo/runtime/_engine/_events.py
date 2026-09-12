@@ -40,6 +40,8 @@ from kodo.transport import (
     EVT_CONTEXT_STATS,
     EVT_ERROR,
     EVT_NUDGE,
+    EVT_PLAN_CONFLICT_CRITICAL,
+    EVT_PLAN_STATE,
     EVT_REVIEW_FINDINGS,
     EVT_SECURITY_RULE_ADDED,
     EVT_SESSION_GREETING,
@@ -498,6 +500,58 @@ class EngineEmitters:
         }
         self._append_marker({"type": "review_findings", **payload})
         await self._sink.send(Envelope.make_event(EVT_REVIEW_FINDINGS, payload))
+
+    async def emit_plan_state(self, plan: dict[str, object], reason: str, issue: str = "") -> None:
+        """Push+persist the user's plan widget for the session's current plan.
+
+        Fired three times over a plan's life (doc/PLANNING.md §6): once when a
+        ``planner: true`` sub-agent's result creates it, and then on every
+        ``get_plan``/``plan_step_forward`` call. So the feed carries a running
+        record of the plan as it advanced, not just its latest state — the same
+        reason each review round leaves its own findings table behind.
+
+        Unlike :meth:`emit_review_findings` the *information* here is not
+        user-only; the **rendering** is. The model was handed the identical state
+        as that tool call's JSON result, so the widget adds nothing to its
+        context and the two can never disagree. The marker still carries no
+        ``role``, so the widget itself is never rebuilt into any message history.
+
+        Statuses are already derived server-side from the plan log
+        (:func:`kodo.plan.derive_state`); the client renders the list as given and
+        never recomputes one.
+
+        Args:
+            plan: A :class:`kodo.plan.PlanState` as a plain dict.
+            reason: ``"created"`` / ``"read"`` / ``"step"`` / ``"abandoned"`` — what
+                produced this view, so the widget can title itself. Never shown to
+                a model.
+            issue: A warning to render on the card, or ``""``. Set only on a
+                creation whose planner reported tasks the engine could not use, so
+                the shortfall appears on the very widget that is missing them
+                rather than only in the agent's own result. Deliberately *not*
+                part of :class:`kodo.plan.PlanState`: it describes the one event
+                that created the plan, not the plan, and carrying it on the state
+                would repeat it on every later read.
+        """
+        payload: dict[str, object] = {"reason": reason, "issue": issue, **plan}
+        self._append_marker({"type": "plan_state", **payload})
+        await self._sink.send(Envelope.make_event(EVT_PLAN_STATE, payload))
+
+    async def emit_plan_conflict_critical(self, message: str) -> None:
+        """Push+persist the notice that a re-plan against an unfinished plan ended the session.
+
+        The one hard failure in the planning feature (doc/PLANNING.md §4): a
+        ``planner: true`` sub-agent returned a plan while the live one still had
+        tasks outstanding. Same marker-plus-event shape as the stuck-agent
+        criticals, and rendered the same way — a red ``<kodo_crit>`` callout —
+        but its own type, since the cause and the remedy are entirely different.
+
+        Client-only, like every critical: the agent is never told, because by the
+        time this fires the session is being stopped and there is no next round
+        for it to read anything in.
+        """
+        self._append_marker({"type": "plan_conflict_critical", "message": message})
+        await self._sink.send(Envelope.make_event(EVT_PLAN_CONFLICT_CRITICAL, {"message": message}))
 
     async def emit_agent_started(self, agent_name: str) -> None:
         """Announce that *agent_name* took the floor."""

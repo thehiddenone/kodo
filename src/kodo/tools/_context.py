@@ -591,6 +591,29 @@ class EngineServices(Protocol):
         """
         ...
 
+    async def emit_plan_state(self, plan: dict[str, object], reason: str, issue: str = "") -> None:
+        """Show the user the session's plan as it stands right now.
+
+        Fired by ``get_plan`` and ``plan_step_forward`` after each call, and by
+        the engine itself when a planner's result creates a plan. The *same*
+        state the tool returns to the model reaches the user as a rendered
+        widget, so the two can never disagree about where the work stands
+        (doc/PLANNING.md §6).
+
+        This is the only half of the plan the user sees; they never read the
+        tool's JSON. And it is only a *view* — the widget is persisted as a
+        marker, which carries no ``role`` and so is never rebuilt into any
+        agent's message history. The model's copy comes from the tool result,
+        the user's from here, and neither path feeds the other.
+
+        ``plan`` is a :class:`kodo.plan.PlanState` as a plain dict. ``reason``
+        says which call produced it (``"created"`` / ``"read"`` / ``"step"`` /
+        ``"abandoned"``) so the widget can title itself; it is never shown to a
+        model. ``issue`` is an optional warning for the card, set only by the
+        engine when a planner's result carried tasks it could not use.
+        """
+        ...
+
     async def add_security_path_rule(self, scope: str, executable: str, path: str) -> None:
         """Persist a workspace-escape path rule at the given scope
         (doc/SECURITY_RULES_PLAN.md §2.7) — the sibling of
@@ -667,6 +690,13 @@ class ToolContext:
             and an empty one answers with an empty list rather than an error.
             Was a single document's path until 2026-09-04; a reviewable unit is
             now every file one review loop produced.
+        plan_dir: This session's ``plan/`` directory (doc/PLANNING.md), or
+            ``None`` when no session store is attached. Injected for the same
+            reason :attr:`findings_dir` is — inside a sub-agent run
+            ``session_id`` is the *subsession* id, so no tool could derive the
+            session's own store path. Unlike findings there is no key to go with
+            it: a session has exactly one plan, which is what lets ``get_plan``
+            and ``plan_step_forward`` take no arguments at all.
         deadline: Unix timestamp this run must wrap up by, or ``None`` if the
             run is not time-boxed. Populated only for the ``web_search``
             agent's dispatcher (from its caller-supplied, 600s-capped
@@ -689,6 +719,7 @@ class ToolContext:
     returned_output: dict[str, object] | None = None
     findings_dir: Path | None = None
     findings_key: str = ""
+    plan_dir: Path | None = None
     deadline: float | None = None
 
     @property

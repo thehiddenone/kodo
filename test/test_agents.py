@@ -7,6 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from kodo.plan import (
+    PLAN_CONTEXT_FIELD,
+    PLAN_OUTPUT_FIELDS,
+    PLAN_TASK_TITLE_FIELD,
+    PLAN_TASKS_FIELD,
+)
 from kodo.subagents import (
     ROLE_ARCHITECTURE,
     ROLE_NARRATIVE,
@@ -21,6 +27,7 @@ from kodo.subagents import (
     load_agent,
     shared_token,
 )
+from kodo.subagents.specs import ALL_SUBAGENTS
 from kodo.toolspecs import ALL_TOOLS, USE_SKILL, ToolSpec
 
 # ---------------------------------------------------------------------------
@@ -1006,6 +1013,139 @@ def test_every_shared_file_is_used_by_some_agent() -> None:
 
 
 # ---------------------------------------------------------------------------
+# planner: true — the frontmatter flag whose contract lives in another file
+# ---------------------------------------------------------------------------
+#
+# Every other frontmatter check above can be settled inside the file it scans.
+# This one cannot: the flag is written in the agent's `.md`, while the schema
+# the engine reads a plan out of is declared in a `SubAgentSpec` under
+# `kodo/subagents/specs/` (doc/PLANNING.md §2). Nothing in either file mentions
+# the other, so the scan below reads the raw frontmatter of every shipped agent
+# — what the author actually wrote — and holds each one that claims the flag to
+# the whole output contract.
+#
+# `AgentRegistry.__validate_planner` re-checks the properties and their types at
+# construction, but that is the last-resort copy and it runs on a starting
+# server. This copy runs in CI, off the files, and goes one step further: it
+# also checks the `required` lists, which the registry does not. `required` is
+# what makes `normalize_output` mark a result that omitted `tasks` entirely as
+# non-compliant; declare the field but leave it optional and a planner that
+# returns no plan at all looks like a clean success.
+
+
+# The frontmatter block, verbatim: everything between the opening `---` line and
+# the first closing one.
+_FRONTMATTER_RE = re.compile(r"\A---\r?\n(?P<fm>.*?)\r?\n---\r?\n", re.DOTALL)
+_PLANNER_LINE_RE = re.compile(r"(?m)^planner:(?P<value>.*)$")
+# How `_loader.py` spells a true boolean flag. Restated rather than imported —
+# this scan exists to read the file the way an author wrote it, independently of
+# the loader — and `test_shipped_agent_planner_flag_survives_the_loader` below
+# proves the two readings agree on every shipped file.
+_TRUE_VALUES = frozenset({"true", "yes", "1"})
+
+_SPECS_BY_NAME: dict[str, SubAgentSpec] = {s.name: s for s in ALL_SUBAGENTS}
+
+
+def _frontmatter(path: Path) -> str:
+    match = _FRONTMATTER_RE.match(path.read_text(encoding="utf-8"))
+    assert match is not None, f"{path.name}: no --- frontmatter block"
+    return match.group("fm")
+
+
+def _declares_planner(path: Path) -> bool:
+    """Whether *path*'s raw frontmatter says ``planner: true``."""
+    match = _PLANNER_LINE_RE.search(_frontmatter(path))
+    return match is not None and match.group("value").strip().lower() in _TRUE_VALUES
+
+
+def _assert_plan_output_contract(path: Path) -> None:
+    """Check the spec behind a ``planner: true`` agent can carry a plan.
+
+    Each assertion names the run-time failure it prevents, because every one of
+    them fails *silently* otherwise: a planner whose schema is off by a type or
+    a `required` entry still returns a result the agent reads as a success,
+    while the engine creates no plan and `get_plan` answers that there is none.
+    """
+    agent = load_agent(path)
+    spec = _SPECS_BY_NAME.get(agent.name)
+    assert spec is not None, (
+        f"{path.name} declares 'planner: true' but no SubAgentSpec is named "
+        f"{agent.name!r}, so the engine has no output schema to read a plan out of"
+    )
+
+    properties = spec.output_schema.get("properties")
+    assert isinstance(properties, dict), f"{path.name}: output_schema declares no properties"
+    missing = sorted(PLAN_OUTPUT_FIELDS - set(properties))
+    assert not missing, (
+        f"{path.name} declares 'planner: true' but its output_schema omits {missing} — "
+        f"a planner's result must carry {sorted(PLAN_OUTPUT_FIELDS)}"
+    )
+
+    context = properties[PLAN_CONTEXT_FIELD]
+    assert isinstance(context, dict) and context.get("type") == "string", (
+        f"{path.name}: {PLAN_CONTEXT_FIELD!r} must be declared as a string — the engine "
+        f"carries it alongside the plan as prose"
+    )
+
+    tasks = properties[PLAN_TASKS_FIELD]
+    assert isinstance(tasks, dict) and tasks.get("type") == "array", (
+        f"{path.name}: {PLAN_TASKS_FIELD!r} must be declared as an array; a prose plan "
+        f"normalizes to no tasks at all"
+    )
+    items = tasks.get("items")
+    assert isinstance(items, dict) and items.get("type") == "object", (
+        f"{path.name}: {PLAN_TASKS_FIELD!r} items must be declared as objects"
+    )
+    item_properties = items.get("properties")
+    assert isinstance(item_properties, dict) and PLAN_TASK_TITLE_FIELD in item_properties, (
+        f"{path.name}: each task must declare {PLAN_TASK_TITLE_FIELD!r} — it is the one "
+        f"field the engine reads off a task, and `normalize_tasks` drops the rest"
+    )
+
+    # The `required` halves. Presence in `properties` only describes a field;
+    # `required` is what makes its absence from a result visible.
+    required = spec.output_schema.get("required")
+    assert isinstance(required, list), f"{path.name}: output_schema declares no required list"
+    not_required = sorted(PLAN_OUTPUT_FIELDS - set(required))
+    assert not not_required, (
+        f"{path.name} declares 'planner: true' but {not_required} are optional in its "
+        f"output_schema — a result that simply omits them is then fully compliant, and "
+        f"the missing plan surfaces nowhere"
+    )
+    item_required = items.get("required")
+    assert isinstance(item_required, list) and PLAN_TASK_TITLE_FIELD in item_required, (
+        f"{path.name}: {PLAN_TASK_TITLE_FIELD!r} must be required of every task — a "
+        f"title-less task is dropped, so an optional title silently shortens the plan"
+    )
+
+
+@pytest.mark.parametrize("path", _shipped_agent_files(), ids=lambda p: p.stem)
+def test_shipped_agent_planner_flag_survives_the_loader(path: Path) -> None:
+    """What the frontmatter says and what the loader reports are the same thing.
+
+    The scan below decides which agents to hold to the plan contract by reading
+    the raw `planner:` line; the engine decides the same thing from
+    `SubAgent.planner`. A misspelled value (`planner: True.`) or a key the loader
+    stopped reading would quietly split the two, and the contract would go
+    unchecked for exactly the agent that needed it.
+    """
+    assert load_agent(path).planner is _declares_planner(path), path.name
+
+
+def test_every_planner_frontmatter_is_backed_by_the_plan_output_contract() -> None:
+    """Any agent claiming `planner: true` declares a plan the engine can read.
+
+    Not written against the one planner in the tree: a second one — a planner
+    tuned for a different caller, say — is a supported thing to add, and it must
+    meet the same contract without anybody remembering to extend a test.
+    """
+    planners = [path for path in _shipped_agent_files() if _declares_planner(path)]
+    assert planners, "no shipped agent declares 'planner: true' — this scan checks nothing"
+    for path in planners:
+        _assert_plan_output_contract(path)
+
+
+# ---------------------------------------------------------------------------
 # Artifact-role validation at registry load
 # ---------------------------------------------------------------------------
 #
@@ -1169,6 +1309,120 @@ def test_registry_accepts_user_review_on_a_producing_agent(tmp_path: Path, monke
     )
 
     assert AgentRegistry(tmp_path).get("architect").user_review is True
+
+
+# ---------------------------------------------------------------------------
+# planner — the frontmatter flag that makes an agent's result a plan
+# ---------------------------------------------------------------------------
+
+# A planner's output contract, read off the plan package rather than spelled out
+# here: the registry validates against exactly this set, so a test that hardcoded
+# the names could pass while the two sides disagreed.
+_PLANNER_OUTPUT: dict[str, object] = {
+    "tasks": {"type": "array", "items": {"type": "object", "properties": {"title": {}}}},
+    "codebase_context": {"type": "string"},
+}
+# Pinned to the live contract so a renamed field fails here rather than silently
+# testing a shape the engine no longer reads.
+assert set(_PLANNER_OUTPUT) == set(PLAN_OUTPUT_FIELDS), _PLANNER_OUTPUT
+
+
+def test_planner_defaults_to_off(tmp_path: Path) -> None:
+    path = _write_agent(tmp_path, "leaf", "name: leaf\n", "A leaf agent.")
+    assert load_agent(path).planner is False
+
+
+def test_planner_is_parsed_from_frontmatter(tmp_path: Path) -> None:
+    path = _write_agent(tmp_path, "leaf", "name: leaf\nplanner: true\n", "A leaf agent.")
+    assert load_agent(path).planner is True
+
+
+def test_a_critic_cannot_declare_planner(tmp_path: Path) -> None:
+    """A critic returns a review verdict, not a plan — the engine would have no
+    tasks to initialize one from."""
+    path = _write_agent(
+        tmp_path, "arch_critic", "name: arch_critic\nrole: critic\nplanner: true\n", "Reviews."
+    )
+    with pytest.raises(AgentLoadError, match="cannot declare 'planner:'"):
+        load_agent(path)
+
+
+def test_registry_rejects_a_planner_whose_schema_omits_the_plan_fields(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The flag is frontmatter and the schema is a SubAgentSpec — nothing else
+    keeps them in step, so a planner the engine could not read must fail at load
+    rather than silently create no plan at first spawn."""
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "architect", "name: architect\nplanner: true\n", _shared("Arch."))
+    _registry_with_specs(monkeypatch, {"architect": _spec("architect")})
+
+    with pytest.raises(AgentLoadError, match="does not declare"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_rejects_a_planner_with_no_spec_at_all(tmp_path: Path, monkeypatch) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "architect", "name: architect\nplanner: true\n", _shared("Arch."))
+    _registry_with_specs(monkeypatch, {})
+
+    with pytest.raises(AgentLoadError, match="no SubAgentSpec"):
+        AgentRegistry(tmp_path)
+
+
+def test_registry_accepts_a_planner_declaring_both_plan_fields(tmp_path: Path, monkeypatch) -> None:
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "architect", "name: architect\nplanner: true\n", _shared("Arch."))
+    _registry_with_specs(
+        monkeypatch, {"architect": _spec("architect", output_properties=_PLANNER_OUTPUT)}
+    )
+
+    assert AgentRegistry(tmp_path).get("architect").planner is True
+
+
+@pytest.mark.parametrize(
+    ("label", "override"),
+    [
+        ("tasks as a string", {"tasks": {"type": "string"}}),
+        ("tasks items as strings", {"tasks": {"type": "array", "items": {"type": "string"}}}),
+        (
+            "task items with no title",
+            {"tasks": {"type": "array", "items": {"type": "object", "properties": {"x": {}}}}},
+        ),
+        ("context as an array", {"codebase_context": {"type": "array"}}),
+    ],
+    ids=lambda v: v if isinstance(v, str) else "",
+)
+def test_registry_rejects_a_planner_whose_plan_fields_are_mis_typed(
+    tmp_path: Path, monkeypatch, label: str, override: dict[str, object]
+) -> None:
+    """Declaring the names is not enough. `normalize_output` checks that a
+    result's fields are *present*, never that they hold the declared type — so a
+    planner whose schema says `tasks` is a string passes compliance, yields no
+    usable tasks, and creates no plan while the agent holds a result that looks
+    fine. Load time is the only place that failure is cheap."""
+    _write_preamble(tmp_path)
+    _write_agent(tmp_path, "architect", "name: architect\nplanner: true\n", _shared("Arch."))
+    _registry_with_specs(
+        monkeypatch,
+        {"architect": _spec("architect", output_properties={**_PLANNER_OUTPUT, **override})},
+    )
+
+    with pytest.raises(AgentLoadError, match="planner: true"):
+        AgentRegistry(tmp_path)
+
+
+def test_the_shipped_planner_satisfies_its_own_contract() -> None:
+    """The one planner in the tree, checked against the live registry rather than
+    against a copy of its frontmatter — so renaming its output fields fails here."""
+    registry = AgentRegistry(_REAL_AGENTS_DIR)
+    planners = [a.name for a in registry.all_agents() if a.planner]
+    assert planners == ["planner"], planners
+    spec = registry.spec_for("planner")
+    assert spec is not None
+    properties = spec.output_schema["properties"]
+    assert isinstance(properties, dict)
+    assert set(properties) >= PLAN_OUTPUT_FIELDS
 
 
 # ---------------------------------------------------------------------------

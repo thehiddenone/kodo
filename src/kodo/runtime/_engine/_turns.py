@@ -42,6 +42,7 @@ from kodo.llms import (
     UnrecoverableError,
     default_cache_breakpoints,
 )
+from kodo.plan import PlanConflictError
 from kodo.state import render_tool_call_markdown
 from kodo.subagents import AgentLoadError
 from kodo.tools import ToolDispatcher, canonical_tool_call
@@ -903,12 +904,16 @@ class TurnLoopMixin:
         whole point: before this boundary existed, a single unhandled
         ``FileNotFoundError`` from the checkpoint commit tore down the entire
         turn, and inside a sub-agent that killed the subsession with no
-        handback to its caller at all. Two exceptions deliberately still
+        handback to its caller at all. Three exceptions deliberately still
         propagate: ``asyncio.CancelledError`` (a user Stop — it must unwind, and
-        ``WorkflowEngine.stop`` closes out any open subsession itself) and
+        ``WorkflowEngine.stop`` closes out any open subsession itself),
         :class:`~kodo.llms.UnrecoverableError` (an LLM 401/4xx raised by a
         nested sub-agent turn, which the worker handles specially — revoking the
-        vendor's API key — and must not see laundered into a tool result).
+        vendor's API key — and must not see laundered into a tool result), and
+        :class:`~kodo.plan.PlanConflictError` (a ``run_subagent`` call whose
+        planner re-planned over an unfinished plan — doc/PLANNING.md §4: the
+        session is ending, so turning it into a tool result the agent could
+        "deal with" would defeat the whole rule).
 
         Returns:
             list[dict[str, object]]: ``tool_result`` content blocks, in order.
@@ -928,7 +933,7 @@ class TurnLoopMixin:
                     agent_name=agent_name,
                     recovered=tool_use_id in recovered_ids,
                 )
-            except (asyncio.CancelledError, UnrecoverableError):
+            except (asyncio.CancelledError, UnrecoverableError, PlanConflictError):
                 raise
             except Exception as exc:
                 _log.exception(
@@ -1008,7 +1013,7 @@ class TurnLoopMixin:
             # own checkpoint (see CheckpointCoordinator.prepare / .commit).
             ck_paths = await self._checkpoints.prepare(tool_name, tool_input)
             result_text = await tool_dispatch(tool_name, tool_input, tool_use_id, recovered)
-        except (asyncio.CancelledError, UnrecoverableError):
+        except (asyncio.CancelledError, UnrecoverableError, PlanConflictError):
             raise
         except Exception as exc:
             _log.exception(
@@ -1245,5 +1250,6 @@ class TurnLoopMixin:
             output_schema=spec.output_schema if spec is not None else None,
             findings_dir=self._findings_dir(),
             findings_key=findings_key,
+            plan_dir=self._plan_dir(),
             deadline=deadline,
         )

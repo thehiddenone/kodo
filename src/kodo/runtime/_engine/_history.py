@@ -319,6 +319,43 @@ class HistoryProjector:
                     "message": str(line.get("message", "")),
                 }
             ]
+        if kind == "plan_conflict_critical":
+            return [
+                {
+                    "type": "plan_conflict_critical",
+                    "message": str(line.get("message", "")),
+                }
+            ]
+        if kind == "plan_state":
+            raw_tasks = line.get("tasks")
+            current = line.get("current_task")
+            return [
+                {
+                    "type": "plan_state",
+                    "reason": str(line.get("reason", "")),
+                    "issue": str(line.get("issue", "")),
+                    "createdBy": str(line.get("created_by", "")),
+                    "context": str(line.get("context", "")),
+                    # Statuses are replayed exactly as they were derived when the
+                    # widget was emitted — NOT re-derived from the live plan. The
+                    # feed is a record of the plan as it advanced, so a reload
+                    # must show each step's snapshot, not today's state stamped
+                    # over every one of them.
+                    "tasks": [
+                        {
+                            "id": t.get("id") if isinstance(t.get("id"), int) else 0,
+                            "title": str(t.get("title", "")),
+                            "status": str(t.get("status", "")),
+                        }
+                        for t in (raw_tasks if isinstance(raw_tasks, list) else [])
+                        if isinstance(t, dict)
+                    ],
+                    "currentTask": current if isinstance(current, int) else None,
+                    "complete": bool(line.get("complete")),
+                    "abandoned": bool(line.get("abandoned")),
+                    "abandonReason": str(line.get("abandon_reason", "")),
+                }
+            ]
         if kind == "review_findings":
             iteration = line.get("iteration")
             max_rounds = line.get("max_rounds")

@@ -32,6 +32,7 @@ class _EngineServices:
         init_project: Callable[[str], Awaitable[dict[str, object]]],
         bootstrap_project: Callable[[str], Awaitable[dict[str, object]]],
         notify_tool_call_in_progress: Callable[[str], Awaitable[None]],
+        emit_plan_state: Callable[[dict[str, object], str, str], Awaitable[None]],
         add_security_rule: Callable[[str, str, str], Awaitable[None]],
         add_security_path_rule: Callable[[str, str, str], Awaitable[None]],
         has_workspace: Callable[[], bool],
@@ -46,6 +47,7 @@ class _EngineServices:
         self.__init_project = init_project
         self.__bootstrap_project = bootstrap_project
         self.__notify_tool_call_in_progress = notify_tool_call_in_progress
+        self.__emit_plan_state = emit_plan_state
         self.__add_security_rule = add_security_rule
         self.__add_security_path_rule = add_security_path_rule
         self.__has_workspace = has_workspace
@@ -100,6 +102,10 @@ class _EngineServices:
     async def notify_tool_call_in_progress(self, tool_call_id: str) -> None:
         """Delegate to the emitters' ``notify_tool_call_in_progress``."""
         await self.__notify_tool_call_in_progress(tool_call_id)
+
+    async def emit_plan_state(self, plan: dict[str, object], reason: str, issue: str = "") -> None:
+        """Delegate to the emitters' ``emit_plan_state`` (the user's plan widget)."""
+        await self.__emit_plan_state(plan, reason, issue)
 
     async def add_security_rule(self, scope: str, executable: str, subcommand: str) -> None:
         """Delegate to the engine's ``add_security_rule``."""
