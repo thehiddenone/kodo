@@ -497,8 +497,9 @@ conditional-forwarding (built for `LlamaPlugin`) needed no changes at all. Reaso
 `delta.reasoning_content` string Kimi/DeepSeek/Alibaba/Gemini use — a flat
 `delta.reasoning` string is also checked as a defensive fallback.
 
-Client-side this surfaces as the ordinary footer Thinking toggle in kodo-vsix
-(`ModeControls.tsx`), cycling Low → Medium → High → Max, enabled whenever
+Client-side this surfaces as the ordinary Thinking toggle in kodo-vsix
+(`ModeControls.tsx`, the composer's left-hand toggle column), cycling
+Low → Medium → High → Max, enabled whenever
 OpenRouter is the active cloud vendor — **not** gated on the selected model's
 `supports_reasoning` catalog flag. The tier is a session-level setting that is
 deliberately independent of which model an effort tier resolves to (and under
@@ -1306,7 +1307,7 @@ Each card also shows a ⚠ warning icon to the left of the pin/favorite star whe
 
 Some `base_llm` families support a controllable "thinking budget" — how much
 of the model's reasoning/`<think>` output llama-server is allowed to produce
-before it must answer. Two mechanisms exist, keyed off `base_llm` (never
+before it must answer. Three mechanisms exist, keyed off `base_llm` (never
 `entry.name`, so every quant of a base model shares one setting):
 
 - **`qwen_reasoning_budget`** (6 tiers: `minimal`, `low`, `medium`, `high`,
@@ -1350,16 +1351,34 @@ before it must answer. Two mechanisms exist, keyed off `base_llm` (never
   launch-time flags. Each request sets a **nested**
   `chat_template_kwargs: {"reasoning_effort": "<tier>"}` — not a top-level
   field. Default tier is `medium` (the model's own native default).
+- **`qwen4exp_reasoning_effort`** (3 tiers: `low`, `medium`, `xhigh`) —
+  `Qwen38-Flash-Next` (`QWEN4EXP_REASONING_EFFORT_FAMILY`). Mechanically
+  identical to `gpt_oss_reasoning_effort` — no launch-time flags, the same
+  nested `chat_template_kwargs: {"reasoning_effort": "<tier>"}` per request,
+  and `_build_thinking_extra_body` returns both from the same branch — but a
+  **separate family**, because the two tier *vocabularies* are disjoint at
+  the top: Qwen3.8-Flash-Next's chat template accepts only
+  `low`/`medium`/`xhigh` and raises a Jinja exception on GPT-OSS's `high`, so
+  one shared 3-tier list would send an invalid value to one model or the
+  other. Default tier is `xhigh`, which is also what the template itself
+  falls back to when the field is absent. The model thinks by default, so —
+  unlike `Qwen35-9B` in the budget family — it needs no
+  `chat_template_kwargs.enable_thinking` alongside it. It is deliberately
+  **not** in `QWEN_REASONING_BUDGET_FAMILY`: a token budget and a graded
+  effort are two different controls, and only one thinking control is
+  exposed per model.
 
-`MuseGlimmer-30B` is deliberately in **neither** family, despite the base
+`MuseGlimmer-30B` is deliberately in **none** of the three, despite the base
 model itself supporting a graded low/medium/high/xhigh reasoning strength
 (matching Meta's cloud "Muse Spark" — see `kodo/llms/meta/_muse.py`'s
 `_REASONING_EFFORTS`, which also has a `minimal` tier the local GGUF's model
-card doesn't mention). Neither existing mechanism fits: Muse Glimmer's
+card doesn't mention). No existing mechanism fits — `qwen4exp_reasoning_effort`
+comes closest on tier names, but it is still a `chat_template_kwargs` field and
+Muse Glimmer ships no chat template to consume one. Muse Glimmer's
 reasoning strength is set by a literal `Reasoning strength: <value>` line in
 the *system prompt*, not a CLI token budget or a `chat_template_kwargs` field
 consumed by the GGUF's own Jinja template — its base model ships no
-`chat_template` at all. Wiring it would need a third,
+`chat_template` at all. Wiring it would need a fourth,
 system-prompt-injection thinking-tier mechanism (new code in `_llama.py` and
 wherever the request's system prompt gets assembled, well beyond a
 `local_registry/` change), and upstream llama.cpp support for the tiers

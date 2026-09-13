@@ -64,6 +64,7 @@ from ._tool_logger import ToolCallLogger
 from .local_registry import (
     BASE_LLAMA_ARGS,
     GPT_OSS_REASONING_EFFORT_FAMILY,
+    QWEN4EXP_REASONING_EFFORT_FAMILY,
     QWEN_REASONING_BUDGET_FAMILY,
     QWEN_TIER_TOKEN_BUDGETS,
     REASONING_BUDGET_MESSAGE,
@@ -113,6 +114,7 @@ __all__ = [
     "CloudThinkingFamily",
     "EventSink",
     "GPT_OSS_REASONING_EFFORT_FAMILY",
+    "QWEN4EXP_REASONING_EFFORT_FAMILY",
     "LLAMA_ARG_CATALOG",
     "LLMGateway",
     "LLMPlugin",

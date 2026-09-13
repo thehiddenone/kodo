@@ -9,6 +9,7 @@ import logging
 
 __all__ = [
     "GPT_OSS_REASONING_EFFORT_FAMILY",
+    "QWEN4EXP_REASONING_EFFORT_FAMILY",
     "QWEN_REASONING_BUDGET_FAMILY",
     "QWEN_TIER_TOKEN_BUDGETS",
     "REASONING_BUDGET_MESSAGE",
@@ -48,8 +49,20 @@ QWEN_REASONING_BUDGET_FAMILY: frozenset[str] = frozenset(
 #: launch-time CLI flags needed — the model's own default is "medium".
 GPT_OSS_REASONING_EFFORT_FAMILY: frozenset[str] = frozenset({"GPT-OSS-120B", "GPT-OSS-20B"})
 
+#: base_llm values that take a per-request nested
+#: ``chat_template_kwargs.reasoning_effort`` of ``"low"|"medium"|"xhigh"`` —
+#: the same *mechanism* as :data:`GPT_OSS_REASONING_EFFORT_FAMILY` but a
+#: different *vocabulary*, which is why it is a family of its own rather than
+#: a second member of that one. Qwen3.8-Flash-Next's chat template raises a
+#: Jinja exception on any value outside those three (there is no ``"high"``),
+#: so the two tier lists can never be merged; its own default is ``xhigh``.
+#: No launch-time CLI flags: like GPT-OSS, the tiering is purely a per-request
+#: template argument, so ``--reasoning-budget`` plays no part.
+QWEN4EXP_REASONING_EFFORT_FAMILY: frozenset[str] = frozenset({"Qwen38-Flash-Next"})
+
 _QWEN_TIERS: tuple[str, ...] = ("minimal", "low", "medium", "high", "huge", "unlimited")
 _GPT_OSS_TIERS: tuple[str, ...] = ("low", "medium", "high")
+_QWEN4EXP_TIERS: tuple[str, ...] = ("low", "medium", "xhigh")
 
 #: Per-base_llm token budget for each Qwen-family tier, including
 #: "unlimited" — despite the name this is now a real finite cap (1.5x the
@@ -164,6 +177,9 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
 
 _QWEN_DEFAULT_TIER = "high"
 _GPT_OSS_DEFAULT_TIER = "medium"
+#: Qwen3.8-Flash-Next's chat template defaults ``reasoning_effort`` to
+#: ``xhigh`` when the field is absent, so kodo starts where the model does.
+_QWEN4EXP_DEFAULT_TIER = "xhigh"
 
 #: Injected before the end-of-thinking tag whenever a finite Qwen-family
 #: budget is exhausted (``--reasoning-budget-message``).
@@ -215,14 +231,17 @@ def local_thinking_family(base_llm: str) -> str | None:
         base_llm (str): The ``LocalLLMEntry.base_llm`` slug to look up.
 
     Returns:
-        str | None: ``"qwen_reasoning_budget"``, ``"gpt_oss_reasoning_effort"``,
-        or ``None`` (includes every ``custom_*`` entry, whose ``base_llm`` is
+        str | None: ``"qwen_reasoning_budget"``,
+        ``"gpt_oss_reasoning_effort"``, ``"qwen4exp_reasoning_effort"``, or
+        ``None`` (includes every ``custom_*`` entry, whose ``base_llm`` is
         always ``""``).
     """
     if base_llm in QWEN_REASONING_BUDGET_FAMILY:
         return "qwen_reasoning_budget"
     if base_llm in GPT_OSS_REASONING_EFFORT_FAMILY:
         return "gpt_oss_reasoning_effort"
+    if base_llm in QWEN4EXP_REASONING_EFFORT_FAMILY:
+        return "qwen4exp_reasoning_effort"
     return None
 
 
@@ -240,6 +259,8 @@ def local_thinking_tiers(base_llm: str) -> tuple[str, ...]:
         return _QWEN_TIERS
     if family == "gpt_oss_reasoning_effort":
         return _GPT_OSS_TIERS
+    if family == "qwen4exp_reasoning_effort":
+        return _QWEN4EXP_TIERS
     return ()
 
 
@@ -250,12 +271,15 @@ def local_thinking_default_tier(base_llm: str) -> str:
         base_llm (str): The ``LocalLLMEntry.base_llm`` slug to look up.
 
     Returns:
-        str: ``"unlimited"`` for the Qwen family, ``"medium"`` for GPT-OSS,
-        or ``""`` if *base_llm* has no thinking family.
+        str: ``"high"`` for the Qwen reasoning-budget family, ``"medium"``
+        for GPT-OSS, ``"xhigh"`` for Qwen3.8-Flash-Next, or ``""`` if
+        *base_llm* has no thinking family.
     """
     family = local_thinking_family(base_llm)
     if family == "gpt_oss_reasoning_effort":
         return _GPT_OSS_DEFAULT_TIER
+    if family == "qwen4exp_reasoning_effort":
+        return _QWEN4EXP_DEFAULT_TIER
     if family == "qwen_reasoning_budget":
         return _QWEN_DEFAULT_TIER
     return ""

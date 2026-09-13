@@ -18,6 +18,7 @@ from kodo.llms.llamacpp._installer import (
     _current_platform_key,
     _meta_path,
     _read_llama_meta,
+    _required_asset_names,
     _url_accessible,
     _write_llama_meta,
     fetch_latest_build_number,
@@ -364,81 +365,127 @@ def test_build_exists_calls_url_accessible(monkeypatch: pytest.MonkeyPatch) -> N
 # ---------------------------------------------------------------------------
 
 
-def test_fetch_latest_build_number_parses_tag(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Parses the build number from a GitHub releases latest response."""
-    import urllib.request as _urllib
+def _mock_release_pages(
+    monkeypatch: pytest.MonkeyPatch, pages: list[list[dict[str, object]]]
+) -> MagicMock:
+    """Mock urllib so each ``/releases`` request returns the next page of *pages*.
 
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = json.dumps({"tag_name": "b5143"}).encode()
-    mock_req = MagicMock()
-    mock_req.__enter__ = MagicMock(return_value=mock_resp)
-    mock_req.__exit__ = MagicMock(return_value=False)
-
-    monkeypatch.setattr(_urllib, "Request", MagicMock(return_value=mock_req))
-    monkeypatch.setattr(_urllib, "urlopen", MagicMock(return_value=mock_req))
-
-    result = fetch_latest_build_number()
-    assert result == 5143
-
-
-def test_fetch_latest_build_number_invalid_tag_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A tag without the b prefix and no nightly-tag.txt asset raises RuntimeError."""
-    import urllib.request as _urllib
-
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = json.dumps({"tag_name": "v5143"}).encode()
-    mock_req = MagicMock()
-    mock_req.__enter__ = MagicMock(return_value=mock_resp)
-    mock_req.__exit__ = MagicMock(return_value=False)
-
-    monkeypatch.setattr(_urllib, "Request", MagicMock(return_value=mock_req))
-    monkeypatch.setattr(_urllib, "urlopen", MagicMock(return_value=mock_req))
-
-    with pytest.raises(RuntimeError, match="Cannot parse build number"):
-        fetch_latest_build_number()
-
-
-def test_fetch_latest_build_number_falls_back_to_nightly_tag_asset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A semver 'latest' release resolves its build via the nightly-tag.txt asset.
-
-    Mirrors ggml-org/llama.cpp's release scheme change (see
-    https://github.com/ggml-org/ggml/discussions/1579): ``/releases/latest``
-    now returns e.g. ``v0.2.0`` with a ``nightly-tag.txt`` asset whose content
-    is the real ``bNNNN`` build tag.
+    Returns the ``urllib.request.Request`` mock so callers can assert on the
+    URLs that were built.
     """
     import urllib.request as _urllib
 
-    release_resp = MagicMock()
-    release_resp.read.return_value = json.dumps(
-        {
-            "tag_name": "v0.2.0",
-            "assets": [
-                {
-                    "name": "nightly-tag.txt",
-                    "browser_download_url": (
-                        "https://github.com/ggml-org/llama.cpp/releases/download/v0.2.0/nightly-tag.txt"
-                    ),
-                }
-            ],
-        }
-    ).encode()
-    release_req = MagicMock()
-    release_req.__enter__ = MagicMock(return_value=release_resp)
-    release_req.__exit__ = MagicMock(return_value=False)
+    contexts = []
+    for page in pages:
+        resp = MagicMock()
+        resp.read.return_value = json.dumps(page).encode()
+        ctx = MagicMock()
+        ctx.__enter__ = MagicMock(return_value=resp)
+        ctx.__exit__ = MagicMock(return_value=False)
+        contexts.append(ctx)
 
-    nightly_resp = MagicMock()
-    nightly_resp.read.return_value = b"b10566\n"
-    nightly_req = MagicMock()
-    nightly_req.__enter__ = MagicMock(return_value=nightly_resp)
-    nightly_req.__exit__ = MagicMock(return_value=False)
+    request_mock = MagicMock(side_effect=lambda *a, **kw: MagicMock())
+    monkeypatch.setattr(_urllib, "Request", request_mock)
+    monkeypatch.setattr(_urllib, "urlopen", MagicMock(side_effect=contexts))
+    return request_mock
 
-    monkeypatch.setattr(_urllib, "Request", MagicMock(side_effect=lambda *a, **kw: MagicMock()))
-    monkeypatch.setattr(_urllib, "urlopen", MagicMock(side_effect=[release_req, nightly_req]))
 
-    result = fetch_latest_build_number()
-    assert result == 10566
+def _release(build: int, *, with_assets: bool = True) -> dict[str, object]:
+    """A fake release object for *build*, carrying this platform's assets or none.
+
+    Asset names come from the module's own platform tables so the test stays
+    correct on whichever platform it runs.
+    """
+    assets: list[dict[str, object]] = []
+    if with_assets:
+        names = _required_asset_names(build, _current_platform_key())
+        assets = [{"name": name} for name in names]
+    return {"tag_name": f"b{build}", "assets": assets}
+
+
+def test_fetch_latest_build_number_picks_highest_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Returns the highest bNNNN tag, not whichever release is listed first."""
+    request_mock = _mock_release_pages(
+        monkeypatch, [[_release(10940), _release(10941), _release(10939)]]
+    )
+
+    assert fetch_latest_build_number() == 10941
+
+    url = request_mock.call_args[0][0]
+    assert url.startswith("https://api.github.com/repos/ggml-org/llama.cpp/releases?")
+    assert "per_page=100" in url and "page=1" in url
+
+
+def test_fetch_latest_build_number_ignores_semver_wrapper_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A semver wrapper release is skipped rather than followed to a stale build.
+
+    Regression test: ``/releases/latest`` resolves to ggml-org's semver wrapper
+    (every ``bNNNN`` nightly is a prerelease), and that wrapper's
+    ``nightly-tag.txt`` is written once and never refreshed. Resolving through
+    it reported b10809 while b10941 was current.
+    """
+    wrapper: dict[str, object] = {
+        "tag_name": "v0.4.0",
+        "assets": [
+            {
+                "name": "nightly-tag.txt",
+                "browser_download_url": (
+                    "https://github.com/ggml-org/llama.cpp/releases/download/v0.4.0/nightly-tag.txt"
+                ),
+            }
+        ],
+    }
+    _mock_release_pages(monkeypatch, [[_release(10941), wrapper, _release(10809)]])
+
+    assert fetch_latest_build_number() == 10941
+
+
+def test_fetch_latest_build_number_skips_build_without_platform_assets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tag whose assets are missing is skipped for the newest complete build.
+
+    Nightlies exist as tags before/without their CI artifacts (observed live:
+    b10931 had zero assets while its neighbours had 27 each).
+    """
+    _mock_release_pages(
+        monkeypatch, [[_release(10932, with_assets=False), _release(10931), _release(10930)]]
+    )
+
+    assert fetch_latest_build_number() == 10931
+
+
+def test_fetch_latest_build_number_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Falls through to the next page when no build on this one is installable."""
+    _mock_release_pages(
+        monkeypatch,
+        [[_release(10941, with_assets=False)], [_release(10940)]],
+    )
+
+    assert fetch_latest_build_number() == 10940
+
+
+def test_fetch_latest_build_number_no_releases_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty listing raises RuntimeError rather than returning a stale build."""
+    _mock_release_pages(monkeypatch, [[]])
+
+    with pytest.raises(RuntimeError, match="No llama.cpp bNNNN releases"):
+        fetch_latest_build_number()
+
+
+def test_fetch_latest_build_number_no_installable_build_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Releases exist but none carry this platform's binaries."""
+    _mock_release_pages(
+        monkeypatch,
+        [[_release(10941, with_assets=False)], [_release(10940, with_assets=False)], []],
+    )
+
+    with pytest.raises(RuntimeError, match="newest seen: b10941"):
+        fetch_latest_build_number()
 
 
 # ---------------------------------------------------------------------------

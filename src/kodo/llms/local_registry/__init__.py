@@ -104,6 +104,7 @@ from ._profiles import (
 from ._reserved import RESERVED_LLAMA_ARGS, strip_reserved_llama_args
 from ._thinking import (
     GPT_OSS_REASONING_EFFORT_FAMILY,
+    QWEN4EXP_REASONING_EFFORT_FAMILY,
     QWEN_REASONING_BUDGET_FAMILY,
     QWEN_TIER_TOKEN_BUDGETS,
     REASONING_BUDGET_MESSAGE,
@@ -117,6 +118,7 @@ from ._types import LlmProfile, LocalLLMEntry
 __all__ = [
     "BASE_LLAMA_ARGS",
     "GPT_OSS_REASONING_EFFORT_FAMILY",
+    "QWEN4EXP_REASONING_EFFORT_FAMILY",
     "QWEN_REASONING_BUDGET_FAMILY",
     "QWEN_TIER_TOKEN_BUDGETS",
     "REASONING_BUDGET_MESSAGE",

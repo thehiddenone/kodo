@@ -97,8 +97,9 @@ def _build_thinking_extra_body(
         plus ``_QWEN_MAX_TOKENS_HEADROOM``, so the model always has room left
         over for the forced end-of-thinking tag, ``REASONING_BUDGET_MESSAGE``,
         and real answer content even at the tier's full budget (see doc/
-        LOCAL_INFERENCE.md §2a). Families with no numeric budget (GPT-OSS) or
-        no thinking family at all get the flat ``_DEFAULT_MAX_TOKENS``.
+        LOCAL_INFERENCE.md §2a). Families with no numeric budget (GPT-OSS,
+        Qwen3.8-Flash-Next) or no thinking family at all get the flat
+        ``_DEFAULT_MAX_TOKENS``.
     """
     family = local_thinking_family(base_llm)
     if family is None:
@@ -122,8 +123,12 @@ def _build_thinking_extra_body(
         max_tokens = budget + _QWEN_MAX_TOKENS_HEADROOM if budget >= 0 else _DEFAULT_MAX_TOKENS
         return extra_body, max_tokens
 
-    # gpt_oss_reasoning_effort — the tier slug IS the wire value, and there's
-    # no numeric budget to size max_tokens against.
+    # gpt_oss_reasoning_effort / qwen4exp_reasoning_effort — the tier slug IS
+    # the wire value in both, and neither has a numeric budget to size
+    # max_tokens against. They stay separate families only because their tier
+    # vocabularies differ (GPT-OSS tops out at "high", Qwen3.8-Flash-Next at
+    # "xhigh", and each chat template rejects the other's top tier), which
+    # `local_thinking_tiers` has already resolved by the time we get here.
     return {"chat_template_kwargs": {"reasoning_effort": tier}}, _DEFAULT_MAX_TOKENS
 
 

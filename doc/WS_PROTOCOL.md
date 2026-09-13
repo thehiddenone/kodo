@@ -879,6 +879,8 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                      "default": "unlimited" },
     "GPT-OSS-20B": { "family": "gpt_oss_reasoning_effort",
                       "tiers": ["low", "medium", "high"], "default": "medium" },
+    "Qwen38-Flash-Next": { "family": "qwen4exp_reasoning_effort",
+                            "tiers": ["low", "medium", "xhigh"], "default": "xhigh" },
     "anthropic": { "family": "anthropic_effort",
                     "tiers": ["low", "medium", "high", "xhigh", "max"], "default": "high" },
     "google": { "family": "google_thinking_level",
@@ -1901,8 +1903,9 @@ Notes:
 - Thinking-tier resolution (doc/LLM_REGISTRY.md §4.5) happens inside
   `LlamaPlugin` by the selected model's `base_llm`, regardless of caller —
   this call has no session, so it always falls back to the model's family
-  default (a `qwen_reasoning_budget`/`gpt_oss_reasoning_effort` family
-  member thinks at its default tier) *unless* `thinking_level` is given.
+  default (a `qwen_reasoning_budget`/`gpt_oss_reasoning_effort`/
+  `qwen4exp_reasoning_effort` family member thinks at its default tier)
+  *unless* `thinking_level` is given.
 - `thinking_level` (a valid tier slug for the selected model's thinking
   family) is a pure per-call override — nothing is persisted anywhere, so it
   cannot bleed into any other call (this request has no session to persist

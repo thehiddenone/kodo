@@ -74,10 +74,14 @@ thinking-mode feature to work at all. llama.cpp only honors a per-request
 `thinking_budget_tokens` override (sent by `LlamaPlugin.__raw_stream` via
 `_build_thinking_extra_body`, `_llama.py`) when the launch-time budget is
 exactly `-1` (unrestricted); any other explicit CLI value locks the budget
-server-side and silently ignores every per-request override. GPT-OSS models
-(`GPT_OSS_REASONING_EFFORT_FAMILY`) get no launch flags at all — their tiering
-is purely a per-request `chat_template_kwargs.reasoning_effort` field, with no
-CLI-side counterpart to configure.
+server-side and silently ignores every per-request override. The two
+reasoning-*effort* families — GPT-OSS (`GPT_OSS_REASONING_EFFORT_FAMILY`) and
+Qwen3.8-Flash-Next (`QWEN4EXP_REASONING_EFFORT_FAMILY`) — get no launch flags
+at all: their tiering is purely a per-request
+`chat_template_kwargs.reasoning_effort` field, with no CLI-side counterpart to
+configure. `ensure_llama_running` gates the two flags on an exact
+`local_thinking_family(...) == "qwen_reasoning_budget"` match, so a new family
+never inherits them by accident.
 
 `--reasoning-budget-message` is llama.cpp's own mechanism for injecting text
 right before the forced end-of-thinking tag once a finite budget is

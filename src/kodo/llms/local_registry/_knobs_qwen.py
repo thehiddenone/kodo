@@ -18,6 +18,13 @@ not something derivable from the registry entry. Both scale off the same
 The ``ornith10`` families are Qwen-architecture MoE builds and use
 :data:`QWEN_MOE_CONTEXT_KNOB` too — they always shared the MoE flavor builders
 for the same reason.
+
+Qwen3.8-Flash-Next is a third architecture again (``qwen4exp``), which is why
+it gets :data:`QWEN4EXP_CONTEXT_KNOB` rather than reusing the MoE knob above:
+same 262144-token native context and the same YaRN factors, but its GGUF
+records the context length under its own architecture key, so an
+``--override-kv`` aimed at ``qwen35moe.context_length`` would be silently
+ignored and llama.cpp would keep capping the KV cache at the trained length.
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ from __future__ import annotations
 from ._knobs_context import make_yarn_context_knob
 
 __all__ = [
+    "QWEN4EXP_CONTEXT_KNOB",
     "QWEN_CONTEXT_KNOB",
     "QWEN_MOE_CONTEXT_KNOB",
 ]
@@ -48,6 +56,18 @@ QWEN_CONTEXT_KNOB = make_yarn_context_knob(
 QWEN_MOE_CONTEXT_KNOB = make_yarn_context_knob(
     knob_id="context-qwen35moe",
     arch_key="qwen35moe",
+    native_context=_QWEN_NATIVE_CONTEXT,
+    sizes=_QWEN_EXTENDED_SIZES,
+)
+
+#: Qwen3.8-Flash-Next (``qwen4exp``) — a hybrid Gated DeltaNet / Qwen Sparse
+#: Attention MoE build. The model card documents the same YaRN recipe as the
+#: other Qwen families (``factor`` 2.0 for 512K, 4.0 for 1M over the native
+#: 262144), and only 12 of its 48 layers carry a real KV cache, so the extended
+#: sizes cost far less memory here than the shared description implies.
+QWEN4EXP_CONTEXT_KNOB = make_yarn_context_knob(
+    knob_id="context-qwen4exp",
+    arch_key="qwen4exp",
     native_context=_QWEN_NATIVE_CONTEXT,
     sizes=_QWEN_EXTENDED_SIZES,
 )

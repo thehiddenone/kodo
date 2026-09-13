@@ -47,7 +47,7 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-_GITHUB_RELEASES_LATEST = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+_GITHUB_RELEASES_LIST = "https://api.github.com/repos/ggml-org/llama.cpp/releases"
 _RELEASE_BASE = "https://github.com/ggml-org/llama.cpp/releases/download"
 _USER_AGENT = "kodo-llm-utils/0.1 (github.com/thehiddenone/kodo)"
 _META_FILE = "llama-meta.json"
@@ -66,7 +66,14 @@ _ASSET_NAMES: dict[str, str] = {
     "linux-x64": "llama-b{N}-bin-ubuntu-x64.tar.gz",
 }
 
-_WINDOWS_CUDA_DLLS_URL = "https://github.com/ggml-org/llama.cpp/releases/download/b{N}/cudart-llama-bin-win-cuda-13.3-x64.zip"
+_WINDOWS_CUDA_DLLS_ASSET = "cudart-llama-bin-win-cuda-13.3-x64.zip"
+_WINDOWS_CUDA_DLLS_URL = f"{_RELEASE_BASE}/b{{N}}/{_WINDOWS_CUDA_DLLS_ASSET}"
+
+# `GET /releases` is paginated newest-first. One page of 100 covers roughly a
+# week of nightlies; the extra pages only matter if the current platform's
+# build has been broken for longer than that.
+_RELEASES_PER_PAGE = 100
+_RELEASES_MAX_PAGES = 3
 
 # Backoff between attempts to delete a build directory. Stopping a process is
 # asynchronous on Windows — TerminateProcess returns before the kernel has
@@ -163,51 +170,111 @@ def _asset_url(build_number: int, platform_key: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def fetch_latest_build_number() -> int:
-    """Fetch the latest llama.cpp build number from GitHub Releases.
+def _required_asset_names(build_number: int, platform_key: str) -> list[str]:
+    """Release asset filenames this platform needs to install *build_number*.
 
-    ``/releases/latest`` used to always be a rolling ``bNNNN`` tag. ggml-org
-    now publishes it as a semver wrapper (e.g. ``v0.2.0``) that points at the
-    real nightly build via a ``nightly-tag.txt`` release asset instead — see
-    https://github.com/ggml-org/ggml/discussions/1579. Handle both shapes:
-    parse the tag directly when it still matches ``bNNNN``, otherwise fetch
-    ``nightly-tag.txt`` and parse that.
+    Mirrors what :func:`build_exists` HEAD-probes, so "the newest installable
+    build" and "this pinned build is installable" agree on what installable
+    means.
+
+    Args:
+        build_number (int): Release build number, e.g. ``12345``.
+        platform_key (str): Key into :data:`_ASSET_NAMES`.
 
     Returns:
-        int: Build number (e.g. ``5143`` for tag ``b5143``).
-
-    Raises:
-        RuntimeError: If the build number cannot be determined either way.
+        list[str]: Asset filenames that must be present in the release.
     """
+    names = [_ASSET_NAMES[platform_key].format(N=build_number)]
+    if platform_key == "win-x64":
+        names.append(_WINDOWS_CUDA_DLLS_ASSET)
+    return names
+
+
+def _fetch_releases_page(page: int) -> list[dict[str, object]]:
+    """Fetch one page of the llama.cpp releases listing, newest first.
+
+    Args:
+        page (int): 1-based page number.
+
+    Returns:
+        list[dict[str, object]]: Decoded release objects (empty past the end).
+    """
+    url = f"{_GITHUB_RELEASES_LIST}?per_page={_RELEASES_PER_PAGE}&page={page}"
     req = urllib.request.Request(
-        _GITHUB_RELEASES_LATEST,
+        url,
         headers={
             "User-Agent": _USER_AGENT,
             "Accept": "application/vnd.github+json",
         },
     )
     with urllib.request.urlopen(req, timeout=30, context=_SSL_CONTEXT) as resp:
-        release = cast(dict[str, object], json.loads(resp.read()))
-    tag = str(release["tag_name"])
-    match = re.match(r"^b(\d+)$", tag)
-    if match:
-        return int(match.group(1))
+        return cast("list[dict[str, object]]", json.loads(resp.read()))
 
-    assets = cast("list[dict[str, object]]", release.get("assets") or [])
-    nightly_url = next(
-        (str(a["browser_download_url"]) for a in assets if a.get("name") == "nightly-tag.txt"),
-        None,
+
+def fetch_latest_build_number() -> int:
+    """Fetch the newest installable llama.cpp build number from GitHub Releases.
+
+    Scans the ``/releases`` listing for the highest ``bNNNN`` tag that actually
+    carries this platform's binaries, rather than asking ``/releases/latest``.
+    Two reasons that endpoint cannot be used:
+
+    * Every ``bNNNN`` nightly is published with ``prerelease: true``, and
+      ``/releases/latest`` excludes prereleases — so it resolves to ggml-org's
+      occasional semver wrapper release (e.g. ``v0.4.0``) instead, never to a
+      nightly. See https://github.com/ggml-org/ggml/discussions/1579.
+    * That wrapper's ``nightly-tag.txt`` asset is written once when the wrapper
+      is cut and never refreshed, so it names whichever nightly was current on
+      that day and goes stale immediately — it is a snapshot, not a pointer.
+      Trusting it pinned kodo to a build ~130 nightlies behind.
+
+    Releases whose assets are missing are skipped: a nightly can exist as a tag
+    while its CI build failed or is still uploading, and per-platform assets
+    appear independently.
+
+    Returns:
+        int: Build number (e.g. ``5143`` for tag ``b5143``).
+
+    Raises:
+        RuntimeError: If no release with this platform's assets is found.
+    """
+    platform_key = _current_platform_key()
+    newest_seen: int | None = None
+
+    for page in range(1, _RELEASES_MAX_PAGES + 1):
+        releases = _fetch_releases_page(page)
+        if not releases:
+            break
+
+        builds: list[tuple[int, set[str]]] = []
+        for release in releases:
+            match = re.match(r"^b(\d+)$", str(release.get("tag_name", "")))
+            if match is None:
+                continue
+            assets = cast("list[dict[str, object]]", release.get("assets") or [])
+            builds.append((int(match.group(1)), {str(a.get("name")) for a in assets}))
+
+        # Sort rather than trusting listing order: it is by publish date, which
+        # only usually matches build order.
+        builds.sort(key=lambda item: item[0], reverse=True)
+        for build, asset_names in builds:
+            if newest_seen is None:
+                newest_seen = build
+            if all(name in asset_names for name in _required_asset_names(build, platform_key)):
+                if build != newest_seen:
+                    _log.info(
+                        "llama.cpp: newest build b%d has no %s assets, using b%d",
+                        newest_seen,
+                        platform_key,
+                        build,
+                    )
+                return build
+
+    if newest_seen is None:
+        raise RuntimeError("No llama.cpp bNNNN releases found on GitHub")
+    raise RuntimeError(
+        f"No llama.cpp release with {platform_key} binaries found in the last "
+        f"{_RELEASES_PER_PAGE * _RELEASES_MAX_PAGES} releases (newest seen: b{newest_seen})"
     )
-    if nightly_url is None:
-        raise RuntimeError(f"Cannot parse build number from GitHub tag {tag!r}")
-
-    req = urllib.request.Request(nightly_url, headers={"User-Agent": _USER_AGENT})
-    with urllib.request.urlopen(req, timeout=30, context=_SSL_CONTEXT) as resp:
-        nightly_tag = resp.read().decode().strip()
-    match = re.match(r"^b(\d+)$", nightly_tag)
-    if not match:
-        raise RuntimeError(f"Cannot parse build number from nightly tag {nightly_tag!r}")
-    return int(match.group(1))
 
 
 # ---------------------------------------------------------------------------
