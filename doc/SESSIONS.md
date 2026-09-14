@@ -374,7 +374,7 @@ instead.
 
 Agent↔sub-agent interaction is typed, mirroring tools. Every sub-agent except
 the entry agents (`guide`, `problem_solver`) has a `SubAgentSpec`
-(`kodo.subagents.specs`, one literal per file) declaring an `input_schema` and an
+(`kodo.subagents.specs`, one JSON file per agent) declaring an `input_schema` and an
 `output_schema`. Neither schema is ever restated as prose in a system prompt.
 The registry auto-grants such agents the terminal `return_result` tool and a
 short, fixed note pointing at where its real task lands (no schema, no

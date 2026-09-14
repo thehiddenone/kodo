@@ -31,7 +31,14 @@ kodo-validator = "kodo.validator.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kodo"]
-include = ["src/kodo/**/*.md"]
+# Non-Python assets that are part of the package, not docs about it: the agent
+# prompts (``subagent_*.md``/``shared_*.md``) and the sub-agent spec catalog
+# (``kodo/subagents/specs/*.json``). Both are read from the installed package
+# directory at startup, so a wheel without them cannot build its AgentRegistry.
+include = ["src/kodo/**/*.md", "src/kodo/**/*.json"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/kodo/**/*.md", "src/kodo/**/*.json", "src", "test", "doc", "scripts"]
 
 [tool.hatch.envs.default]
 dependencies = [

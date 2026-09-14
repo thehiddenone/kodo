@@ -1,0 +1,42 @@
+{
+  "name": "coder",
+  "notes": "SubAgentSpec for `coder` (stage 7 author, paired with code_critic).",
+  "input_schema": {
+    "shape": "pipeline_input",
+    "input_paths": "This component's Functional Design, requirements, Test Plan, Tech Stack, the Functional Designs of consumed/consuming components, and the current stub code (written by test_coder) to supersede. Never the test source or peer code.",
+    "require_responsibility": true
+  },
+  "output_schema": {
+    "shape": "author_output"
+  },
+  "produces": {
+    "code": "paths"
+  },
+  "consumes": [
+    {
+      "role": "functional_design",
+      "scope": "self"
+    },
+    {
+      "role": "functional_design",
+      "scope": "dependencies",
+      "required": false
+    },
+    {
+      "role": "test_plan",
+      "scope": "self"
+    },
+    {
+      "role": "test_code",
+      "scope": "self"
+    },
+    {
+      "role": "requirements",
+      "scope": "global"
+    },
+    {
+      "role": "tech_stack",
+      "scope": "global"
+    }
+  ]
+}

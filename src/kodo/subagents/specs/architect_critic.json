@@ -1,0 +1,17 @@
+{
+  "name": "architect_critic",
+  "notes": "SubAgentSpec for `architect_critic` (stage 2 critic).",
+  "input_schema": {
+    "shape": "pipeline_input",
+    "input_paths": "The architecture document under review."
+  },
+  "output_schema": {
+    "shape": "critic_output"
+  },
+  "consumes": [
+    {
+      "role": "architecture",
+      "scope": "under_review"
+    }
+  ]
+}

@@ -595,7 +595,7 @@ building per iteration is too expensive to be worth it.
 | [subagents/agent_guide.md](../src/kodo/subagents/agent_guide.md) | The pipeline order, triage rules, cascade, forward-progress layers |
 | [subagents/_artifacts.py](../src/kodo/subagents/_artifacts.py) | Artifact roles, scopes, `Need` |
 | [subagents/_subagentspec.py](../src/kodo/subagents/_subagentspec.py) | `produces` / `consumes` / `component_paths` |
-| [subagents/specs/](../src/kodo/subagents/specs/) | One spec per sub-agent; `_shapes.py` builds the shared envelopes, including which stages declare a `responsibility_code` |
+| [subagents/specs/](../src/kodo/subagents/specs/) | One `<name>.json` spec per sub-agent, loaded by `_loader.py`; `_shapes.py` builds the shared envelopes a spec names as a *shape*, including which stages declare a `responsibility_code`; `_order.py` derives the catalog order from `produces`/`consumes` |
 | [subagents/_loader.py](../src/kodo/subagents/_loader.py) | Frontmatter: `critic:`, `user_review:`, `role:`, `standalone:` |
 | [subagents/_registry.py](../src/kodo/subagents/_registry.py) | Load-time validation, `run_subagent_specs`, `render_phase` |
 | [runtime/_engine/_subagents.py](../src/kodo/runtime/_engine/_subagents.py) | `_run_review_loop`, resolution, refusal, work-product recording |

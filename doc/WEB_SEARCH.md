@@ -71,7 +71,7 @@ completed", never an error surfaced to the run.
 | `curl` backend extraction (no live DOM) | [kodo/websearch/_htmlextract.py](../src/kodo/websearch/_htmlextract.py), [_engines_static.py](../src/kodo/websearch/_engines_static.py) | T0 leaf |
 | Agent-managed pacing/memory store | [kodo/websearch/_state.py](../src/kodo/websearch/_state.py) (`WebSearchStateStore`) | T0 leaf |
 | `web_search` agent prompt | [subagents/subagent_web_search.md](../src/kodo/subagents/subagent_web_search.md) | T3 (`kodo.subagents`) |
-| `web_search` agent spec | [subagents/specs/_web_search_agent.py](../src/kodo/subagents/specs/_web_search_agent.py) | T3 |
+| `web_search` agent spec | [subagents/specs/web_search.json](../src/kodo/subagents/specs/web_search.json) | T3 |
 | Silent tool-loop turn primitive | [runtime/_engine/_llm.py](../src/kodo/runtime/_engine/_llm.py) (`_run_silent_tool_loop_turn`) | T4 |
 | Engine service (`run_web_search_agent`) | [runtime/_engine/_subagents.py](../src/kodo/runtime/_engine/_subagents.py) (`_run_web_search_agent`) | T4 |
 | Agent-memory state file | `~/.kodo/websearch/agent_state.json` | on disk |

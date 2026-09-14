@@ -1,9 +1,15 @@
 """Declarative schema builders shared by the sub-agent specs.
 
-These are pure schema *constructors* (no dispatch or runtime logic) used by the
-one-spec-per-file modules in this package to assemble their ``input_schema`` /
-``output_schema`` without copy-pasting the common envelopes. Each builder returns
-a fresh dict so callers never share mutable schema state.
+These are pure schema *constructors* (no dispatch or runtime logic). A spec's
+JSON file names one of them as its ``shape`` and supplies its arguments, and
+:mod:`._loader` calls it — so the common envelopes are defined here once instead
+of being copy-pasted into every spec file. Each builder returns a fresh dict so
+callers never share mutable schema state.
+
+Keeping them in Python is the point: a shape is a *reference* to the envelope,
+not a copy of it, so editing one of these functions updates every spec that
+names it. Expanding them into each JSON file would have frozen seventeen copies
+of the same text.
 
 The shapes mirror the contracts the agent prompts already describe:
 
@@ -47,7 +53,8 @@ The shapes mirror the contracts the agent prompts already describe:
 
 Inline agents (``compactor``, ``toolchain_builder``) read and write files
 directly with no structured pipeline contract; they declare their inline/path
-shapes directly in their own modules rather than through these builders.
+shapes literally, through ``{"shape": "raw", "schema": {…}}`` in their own JSON
+file, rather than through these builders.
 (Session titling used to be a third inline agent here; it is now
 :mod:`kodo.titling`, a local summarization model with no sub-agent spec at
 all.)

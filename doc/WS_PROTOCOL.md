@@ -467,6 +467,13 @@ Emitted **after** a tool call is dispatched and its output normalized. Carries t
 
 Each row is one property the customer may see: `always` rows are shown in full, `visible` rows are cropped client-side (3 lines / 200 chars); `hidden` properties (and any property absent from the visibility map) are omitted entirely. The panel renders these rows as a clickable table beneath the `agent.tool_call_prep` one-liner; clicking opens `file`. On reconnect the same fields ride along on `session.history` `tool_call` entries (`rows`, `detailFile`, `schemaCompliance`).
 
+`file` is written by `kodo.state._toolcall_store` (`render_tool_call_markdown`), a generic JSON→Markdown renderer: keys become headings, scalars render inline, and a multi-line or long (>120 char) scalar becomes a fenced code block. kodo-vsix opens it with VS Code's `markdown.showPreview`, so the document must be **valid CommonMark**, and two rules protect that:
+
+- **The fence is as long as the value needs, never a fixed ```` ``` ````.** Field values are routinely Markdown in their own right — a planner's `codebase_context`, a sub-agent's report, a file excerpt — and carry their own fences. CommonMark closes a fenced block at the first line whose backtick run is at least as long as the opener, so a fixed three-backtick fence is terminated by the value's *first inner fence*: the rest of that value escapes into the document (its headings become real headings, its indented lines reflow as prose) and its inner closing fence re-opens a block that swallows the following fields. The renderer therefore opens with one backtick more than the longest run anywhere in the value (`_fence_for`).
+- **A multi-line element of an all-scalar list is indented into its bullet.** A fenced block only belongs to a list item if its continuation lines are indented past the `- ` marker; otherwise the opener sits alone in the bullet and the content escapes the list.
+
+Both rules are regression-tested in `test/test_toolcall_store.py`, which scans the rendered document with the real CommonMark fence rule rather than matching substrings.
+
 `checkpoint` is `null` unless the call was a `filesystem`/`edit_file`/`create_file`/`create_directory`/`run_command` dispatch in the **problem-solving** workflow that produced a commit in that path's per-root shadow mirror (see §7.4c). When present, the panel renders an "↩ undo this change" link next to the `agent.tool_call_prep` line and a "⟲ Rollback to this state" control below the detail table; both are absent when `checkpoint` is `null` (e.g. every call in the Guided workflow, or a no-op in Problem Solver).
 
 A successful (`success: true`, §5.5a) `create_file`/`edit_file` call's `path` output row, or `filesystem`'s `copy_file`/`move_file` `destination` row, also drives a "📂 open this file" link next to the checkpoint controls (`openablePath` in kodo-vsix's `webview/SessionEntryView.tsx`). That value is the agent's *logical* path (folder-name-prefixed, per each tool's own `path`/`destination` description) — kodo-vsix resolves it client-side against its own `workspace.folders` folder map (§7, `resolveLogicalPath` in `src/logical-path.ts`), the same map the server resolves the call's `path` against via `LogicalPathResolver`/`resolve_logical` (`kodo.tools._paths`), rather than against the single project root — resolving against the root instead double-counts that root's own folder name in a single-root workspace, and picks the wrong root once more than one folder is open. The link is suppressed (`resolveLogicalPath` returns `null`, or `openablePath` never calls it) when `success` is not `true` — a rejected Edit Control review still echoes `path` back, but nothing was written there — or when the call resolved under a `temporary: true` scratch directory, whose real on-disk location the client is never told.
@@ -1684,6 +1691,19 @@ installed build alongside the latest one available on GitHub Releases
 request/response; a GitHub-fetch failure (network, rate limit, unparsable
 tag) is reported via the response's `error` field rather than raised, so the
 panel can show "unknown" instead of failing the whole request.
+
+Note for clients: this request is **slow** — resolving "latest" pages through
+the GitHub Releases listing looking for the newest `bNNNN` that carries this
+platform's assets, which takes seconds, and nothing caches the answer. It must
+therefore never be awaited on a path that gates opening UI. kodo-vsix fires it
+off *without* awaiting when the Kōdo Settings panel opens
+(`refreshLlamaCppVersionInfo`, `extension/llamacpp.ts`), seeding the panel from
+its cached `hello.ack` install state with a `latestChecking` flag set; the
+"Llama.cpp" section renders "checking…" in place of the latest build and
+disables its install/update button until the ack lands (the two versions can't
+be compared before then), then a second push fills both in. Awaiting it before
+creating the panel is what made every "Kōdo Settings" button lag by the length
+of the GitHub scan.
 
 `local_llm.check_updates` and `local_llm.update` are the model-*content*
 analogue of the `llamacpp.*` binary-update commands above, but for an

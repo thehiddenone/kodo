@@ -27,8 +27,11 @@ was removed both wanted the same destination — the generated
 text, it lives with the prose, and it was already written caller-agnostic), so
 the schemas here and the prose there no longer overlap at all.
 
-One spec per file under :mod:`kodo.subagents.specs`, mirroring the
-``kodo.toolspecs`` one-literal-per-file convention.
+One spec per file under :mod:`kodo.subagents.specs` — but a **JSON** file, not a
+Python literal: the catalog is data, built at import time by
+:mod:`kodo.subagents.specs._loader`, so a contract can be added or changed
+without editing this package. This is where it diverges from the
+``kodo.toolspecs`` one-literal-per-file convention it otherwise mirrors.
 """
 
 from __future__ import annotations
@@ -90,6 +93,13 @@ class SubAgentSpec:
             the session's work-product ledger and hands over a fully-formed
             ``input_paths``; declaring nothing means the engine builds nothing
             and the caller's own ``input_paths`` stands unchanged.
+        notes: Engineer-facing rationale for why this contract looks the way it
+            does — the prose that used to be a spec module's docstring, now the
+            ``notes`` key of its JSON file (which has no comments). **Never
+            shown to a model**: it reaches no schema, no tool description and no
+            rendered brief, and nothing in the engine reads it. It is not a
+            second ``description`` — that field was removed on purpose, and the
+            caller-facing text is the agent's ``## Purpose``.
     """
 
     name: str
@@ -98,6 +108,7 @@ class SubAgentSpec:
     produces: dict[str, str] = field(default_factory=dict)
     consumes: tuple[Need, ...] = ()
     component_paths: str = ""
+    notes: str = ""
 
     @property
     def takes_responsibility_code(self) -> bool:

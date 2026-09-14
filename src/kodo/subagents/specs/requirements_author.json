@@ -1,0 +1,33 @@
+{
+  "name": "requirements_author",
+  "notes": "SubAgentSpec for `requirements_author` (stage 3 author).",
+  "input_schema": {
+    "shape": "pipeline_input",
+    "input_paths": "Must include the architecture and the Narrative (for the North Star)."
+  },
+  "output_schema": {
+    "shape": "author_output",
+    "extra_properties": {
+      "requirement_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "All PROJECTCODE_RESPONSIBILITYCODE_REQUIREMENTCODE IDs produced. Required unless you are escalating (see `reason`)."
+      }
+    }
+  },
+  "produces": {
+    "requirements": "paths"
+  },
+  "consumes": [
+    {
+      "role": "architecture",
+      "scope": "global"
+    },
+    {
+      "role": "narrative",
+      "scope": "global"
+    }
+  ]
+}

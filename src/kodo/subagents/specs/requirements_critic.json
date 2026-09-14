@@ -1,0 +1,25 @@
+{
+  "name": "requirements_critic",
+  "notes": "SubAgentSpec for `requirements_critic` (stage 3 critic).",
+  "input_schema": {
+    "shape": "pipeline_input",
+    "input_paths": "The requirements document under review and the architecture for sub-narratives and decomposition decisions."
+  },
+  "output_schema": {
+    "shape": "critic_output"
+  },
+  "consumes": [
+    {
+      "role": "requirements",
+      "scope": "under_review"
+    },
+    {
+      "role": "architecture",
+      "scope": "global"
+    },
+    {
+      "role": "narrative",
+      "scope": "global"
+    }
+  ]
+}

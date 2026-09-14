@@ -1,101 +1,80 @@
 """Sub-agent specifications — the typed input/output contract of each sub-agent.
 
-This package contains **only** :class:`~kodo.subagents.SubAgentSpec` catalog
-entries — one module per agent, named ``_<name>.py``, each exporting a single
-module-level ``SubAgentSpec`` constant (e.g. ``_coder.py`` exports ``CODER``).
-It mirrors the :mod:`kodo.toolspecs` one-literal-per-file convention; the only
-shared code is :mod:`._shapes`, declarative schema *builders* (no runtime logic).
+This package holds **one ``<name>.json`` file per sub-agent**, each describing a
+single :class:`~kodo.subagents.SubAgentSpec`, plus the code that turns them into
+objects. Nothing in the catalog is hardcoded in Python: :data:`ALL_SUBAGENTS` is
+built at import time by globbing this directory, so adding a sub-agent's
+contract is adding a file and nothing else — no import to write, no ``__all__``
+entry, no tuple to append to.
 
 Every sub-agent **except** the user-facing entry agents (``guide``,
-``problem_solver``) has a spec here. The registry cross-references a spec to its
-``subagent_<name>.md`` by ``name`` and fails fast if either side is missing.
+``problem_solver``, ``judge``) has a spec here. The registry cross-references a
+spec to its ``subagent_<name>.md`` by ``name`` and fails fast if either side is
+missing; ``name`` must equal the filename stem, so the JSON, the prompt and the
+file name cannot drift apart.
 
-When adding a sub-agent, add a new ``_<name>.py`` module and list its constant in
-:data:`ALL_SUBAGENTS`.
+The three pieces
+================
+
+- :mod:`._loader` turns one JSON file into a spec, and documents the file
+  format. Schemas are written as a **shape** — the name of a builder plus its
+  arguments — so the shared envelopes stay defined once in Python; ``{"shape":
+  "raw", "schema": {…}}`` declares a literal schema for an agent whose contract
+  is its own.
+- :mod:`._shapes` holds those builders (``pipeline_input``/``author_output``/
+  ``critic_output``), declarative schema constructors with no runtime logic.
+- :mod:`._order` derives the catalog's order from the ``produces``/``consumes``
+  graph, replacing the hand-maintained tuple that used to encode it.
+
+Why files rather than literals
+==============================
+
+The catalog was 23 Python modules, each exporting one constant, listed by hand
+in a tuple here. Every one of those layers was a chance for the list and the
+modules to disagree, and none of it was reachable by anyone who was not editing
+the package: a contract could only be added by writing Python inside an
+installed distribution. The specs are **data** — two JSON Schemas, a role
+mapping and a list of needs — and are now stored as data. This is phase 1, which
+reads only this package's own directory; user-authored spec directories build on
+the same loader.
+
+The per-agent constants (``CODER``, ``PLANNER``, …) are gone with the modules
+that defined them. Nothing outside this package ever imported one — the registry
+and the tests consume :data:`ALL_SUBAGENTS` — and a name bound at import time is
+exactly what a runtime-built catalog cannot provide. Look one up with
+:data:`~kodo.subagents.SUBAGENT_SPECS_BY_NAME`.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from .._subagentspec import SubAgentSpec
-from ._architect import ARCHITECT
-from ._architect_critic import ARCHITECT_CRITIC
-from ._code_critic import CODE_CRITIC
-from ._coder import CODER
-from ._compactor import COMPACTOR
-from ._developer import DEVELOPER
-from ._e2e_test_code_critic import E2E_TEST_CODE_CRITIC
-from ._e2e_test_coder import E2E_TEST_CODER
-from ._e2e_test_design_critic import E2E_TEST_DESIGN_CRITIC
-from ._e2e_test_designer import E2E_TEST_DESIGNER
-from ._functional_design_critic import FUNCTIONAL_DESIGN_CRITIC
-from ._functional_designer import FUNCTIONAL_DESIGNER
-from ._investigator import INVESTIGATOR
-from ._narrative_author import NARRATIVE_AUTHOR
-from ._planner import PLANNER
-from ._requirements_author import REQUIREMENTS_AUTHOR
-from ._requirements_critic import REQUIREMENTS_CRITIC
-from ._test_coder import TEST_CODER
-from ._test_design_critic import TEST_DESIGN_CRITIC
-from ._test_designer import TEST_DESIGNER
-from ._toolchain_builder import TOOLCHAIN_BUILDER
-from ._toolchain_depsmgr import TOOLCHAIN_DEPSMGR
-from ._web_search_agent import WEB_SEARCH_AGENT
+from ._loader import SPEC_SUFFIX, SpecLoadError, load_spec, load_specs
+from ._order import SpecOrderError, pipeline_order
 
 __all__ = [
     "ALL_SUBAGENTS",
-    "ARCHITECT",
-    "ARCHITECT_CRITIC",
-    "CODER",
-    "CODE_CRITIC",
-    "COMPACTOR",
-    "DEVELOPER",
-    "E2E_TEST_CODER",
-    "E2E_TEST_CODE_CRITIC",
-    "E2E_TEST_DESIGNER",
-    "E2E_TEST_DESIGN_CRITIC",
-    "FUNCTIONAL_DESIGNER",
-    "FUNCTIONAL_DESIGN_CRITIC",
-    "INVESTIGATOR",
-    "NARRATIVE_AUTHOR",
-    "PLANNER",
-    "REQUIREMENTS_AUTHOR",
-    "REQUIREMENTS_CRITIC",
-    "TEST_CODER",
-    "TEST_DESIGNER",
-    "TEST_DESIGN_CRITIC",
-    "TOOLCHAIN_BUILDER",
-    "TOOLCHAIN_DEPSMGR",
-    "WEB_SEARCH_AGENT",
+    "SPECS_DIR",
+    "SPEC_SUFFIX",
+    "SpecLoadError",
+    "SpecOrderError",
     "SubAgentSpec",
+    "load_spec",
+    "load_specs",
+    "pipeline_order",
 ]
 
-# Every sub-agent spec in the catalog. Consumed by kodo.subagents._registry to
-# auto-grant `return_result` (bound to each spec's output_schema) and the
-# Input Parameters note, to mint each caller's `run_subagent_<name>` tools and
-# per-caller `run_subagent_<name>` tools, and to validate spec<->subagent_<name>.md
-# correspondence.
-ALL_SUBAGENTS: tuple[SubAgentSpec, ...] = (
-    NARRATIVE_AUTHOR,
-    ARCHITECT,
-    ARCHITECT_CRITIC,
-    REQUIREMENTS_AUTHOR,
-    REQUIREMENTS_CRITIC,
-    FUNCTIONAL_DESIGNER,
-    FUNCTIONAL_DESIGN_CRITIC,
-    TEST_DESIGNER,
-    TEST_DESIGN_CRITIC,
-    TEST_CODER,
-    CODER,
-    CODE_CRITIC,
-    E2E_TEST_DESIGNER,
-    E2E_TEST_DESIGN_CRITIC,
-    E2E_TEST_CODER,
-    E2E_TEST_CODE_CRITIC,
-    INVESTIGATOR,
-    PLANNER,
-    DEVELOPER,
-    TOOLCHAIN_BUILDER,
-    TOOLCHAIN_DEPSMGR,
-    COMPACTOR,
-    WEB_SEARCH_AGENT,
-)
+#: The directory the built-in specs are read from — this package's own.
+#: Ships inside the wheel alongside the ``.py`` files (see ``pyproject.toml``'s
+#: ``tool.hatch.build.targets.wheel.include``).
+SPECS_DIR: Path = Path(__file__).parent
+
+# Every sub-agent spec in the catalog, in declared-dependency order. Consumed by
+# kodo.subagents._registry to auto-grant `return_result` (bound to each spec's
+# output_schema) and the Input Parameters note, to mint each caller's
+# `run_subagent_<name>` tools, and to validate spec <-> subagent_<name>.md
+# correspondence. Built from the JSON files at import time: a malformed file or
+# a cycle in the declared graph raises here, at startup, rather than at first
+# spawn.
+ALL_SUBAGENTS: tuple[SubAgentSpec, ...] = pipeline_order(load_specs(SPECS_DIR))
