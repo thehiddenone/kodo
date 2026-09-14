@@ -13,9 +13,35 @@ The renderer is intentionally dumb and total: any JSON-shaped value renders to
 
 from __future__ import annotations
 
+import re
+
 __all__ = ["json_to_markdown", "render_tool_call_markdown"]
 
 _MULTILINE_THRESHOLD = 120
+
+_BACKTICK_RUN = re.compile(r"`+")
+
+
+def _fence_for(text: str) -> str:
+    """Return a backtick fence long enough to wrap `text` verbatim.
+
+    Field values are routinely Markdown in their own right — a plan's
+    ``codebase_context``, an agent's report, a file excerpt — and therefore
+    contain their own ``` fences. CommonMark ends a fenced block at the first
+    line whose backtick run is *at least as long* as the opener, so a fixed
+    three-backtick fence is closed by the value's first inner fence and the
+    remainder of the document renders as garbage (headings, bullets and the
+    following fields all leak out, and the inner closing fence re-opens a
+    block that swallows whatever comes next).
+
+    Opening with one backtick more than the longest run anywhere in the text
+    keeps the value in a single block with its content intact. Runs are
+    counted anywhere, not just at line starts: that can pick a fence a
+    backtick longer than strictly necessary, which is harmless, and it avoids
+    having to reason about CommonMark's indentation rules for a closing fence.
+    """
+    longest = max((len(m.group(0)) for m in _BACKTICK_RUN.finditer(text)), default=0)
+    return "`" * max(3, longest + 1)
 
 
 def _scalar_to_markdown(value: object) -> str:
@@ -28,8 +54,23 @@ def _scalar_to_markdown(value: object) -> str:
         return f"`{value}`"
     text = str(value)
     if "\n" in text or len(text) > _MULTILINE_THRESHOLD:
-        return f"```\n{text}\n```"
+        fence = _fence_for(text)
+        return f"{fence}\n{text}\n{fence}"
     return text
+
+
+def _bullet(value: object) -> str:
+    """Render one element of an all-scalar list as a Markdown bullet.
+
+    A multi-line element becomes a fenced block, and a fenced block only
+    belongs to the list item if its continuation lines are indented past the
+    ``- `` marker — otherwise the opener sits alone in the bullet and the
+    content lines escape the list. So every line after the first is indented
+    by two spaces (blank lines are left blank rather than padded, which keeps
+    them blank inside the code block and still continues the item).
+    """
+    first, *rest = _scalar_to_markdown(value).split("\n")
+    return "\n".join([f"- {first}", *(f"  {line}" if line else "" for line in rest)])
 
 
 def _list_to_markdown(value: list[object], level: int, label: str | None) -> str:
@@ -45,7 +86,7 @@ def _list_to_markdown(value: list[object], level: int, label: str | None) -> str
     if not value:
         return "_(empty list)_"
     if all(not isinstance(item, (dict, list)) for item in value):
-        return "\n".join(f"- {_scalar_to_markdown(item)}" for item in value)
+        return "\n".join(_bullet(item) for item in value)
     heading = "#" * min(level, 6)
     effective_label = label if label is not None else "item"
     parts = [
