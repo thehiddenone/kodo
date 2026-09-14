@@ -18,14 +18,23 @@ client's reply is a ``kind=response`` correlated by ``id``.
   review gate (``prompt.edit_review``, WS_PROTOCOL.md §6.9) for a
   ``create_file``/``edit_file`` call and blocks until the user approves or
   rejects it, optionally with line-anchored feedback.
+- :meth:`GateOrchestrator.fire_confirm_workspace_folder` — asks the client to
+  add a freshly scaffolded directory to the open workspace
+  (``workspace.confirm_folder``, WS_PROTOCOL.md §6.11) and blocks until it is
+  really there. The odd one out: it prompts nobody (no UI at all) and it is
+  the only one with a timeout, because the thing it waits on is a VS Code
+  window reload rather than a human.
 
-All five register a :class:`asyncio.Future` via
+All six register a :class:`asyncio.Future` via
 :meth:`~kodo.transport.SessionChannel.register_response_future` and await it.
 The connection registry resolves the future when the matching
 ``kind=response`` arrives. The future (and the request envelope that fired
 it) is session-scoped, not tied to whichever socket was live at the time —
 see :mod:`kodo.transport._connection` — so a client disconnect/reconnect
-never loses one of these waits; only genuine session teardown does.
+never loses one of these waits; only genuine session teardown does — and, for
+the one bounded wait, its own timeout, which then
+:meth:`~kodo.transport.SessionChannel.discard_response_future`\ s the request
+so it is not replayed to every future reconnect.
 
 ``fire()`` is an alias for ``fire_approval()`` kept for call-site
 compatibility. :class:`GateOrchestrator` satisfies the ``GateLike`` protocol
@@ -49,11 +58,13 @@ from kodo.transport import (
     SREQ_PROMPT_PERMISSION,
     SREQ_PROMPT_QUESTION,
     SREQ_PROMPT_STUCK_ALERT,
+    SREQ_WORKSPACE_CONFIRM_FOLDER,
 )
 
 __all__ = [
     "ApprovalResponse",
     "ChooseFolderResponse",
+    "ConfirmFolderResponse",
     "EditReviewFeedbackEntry",
     "EditReviewResponse",
     "GateOrchestrator",
@@ -139,6 +150,30 @@ class ChooseFolderResponse:
     """
 
     path: str
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class ConfirmFolderResponse:
+    """Client's answer to a ``workspace.confirm_folder`` request.
+
+    Attributes:
+        attached: True once the directory is genuinely one of the window's
+            workspace folders and this session has re-pushed
+            ``workspace.folders`` for it. False means VS Code refused it or
+            the wait timed out.
+        reloaded: True when the client had to restart the extension host to
+            take the folder (adding a window's first folder, or turning a
+            single-folder window multi-root). Informational — it is the
+            *reason* this gate exists, and it is what the log needs to
+            explain a 20-second tool call.
+        error: Why ``attached`` is False — ``'timeout'`` when the server gave
+            up waiting, otherwise the client's own message. ``None`` on
+            success.
+    """
+
+    attached: bool
+    reloaded: bool = False
     error: str | None = None
 
 
@@ -554,6 +589,91 @@ class GateOrchestrator:
         path = str(response_payload.get("path", ""))
         _log.info("Choose-project-folder resolved: req_id=%s path=%r", req_id[:8], path)
         return ChooseFolderResponse(path=path)
+
+    async def fire_confirm_workspace_folder(
+        self, path: str, name: str, timeout: float
+    ) -> ConfirmFolderResponse:
+        """Emit a ``workspace.confirm_folder`` ``kind=request`` and block until
+        the directory is really open in the client's workspace.
+
+        Fired by :meth:`~kodo.runtime._engine._core.EngineCore._attach_folder`
+        on the ``scaffold_new_project`` path only (WS_PROTOCOL.md §6.11). Unlike
+        every other gate here this shows the user nothing: it exists purely so
+        the tool call does not return while VS Code is mid window-reload —
+        ``updateWorkspaceFolders`` restarts the extension host when it adds a
+        window's first folder or turns a single-folder window multi-root, and
+        an agent that carries on scaffolding files into that gap is operating
+        against a workspace nobody is showing it.
+
+        Surviving that reload needs no special handling: the request and its
+        future live on the :class:`~kodo.transport.SessionChannel`, so the
+        doomed pre-reload host simply never answers and
+        :meth:`~kodo.transport.SessionChannel.replay_pending_requests` re-sends
+        the request to the reconnected one, which finds the folder already
+        present and answers at once.
+
+        The timeout is the one thing this gate does not share with the others:
+        a human prompt may legitimately go unanswered for an hour, but nothing
+        is waiting on a human here, so a window that never comes back must not
+        wedge the turn. On expiry the pending future is *discarded* (not just
+        abandoned) so the request stops being replayed to every subsequent
+        reconnect.
+
+        Args:
+            path: Absolute path of the scaffolded directory.
+            name: Workspace-folder label to register it under.
+            timeout: Seconds to wait before giving up (see
+                ``EngineCore.WORKSPACE_ATTACH_TIMEOUT_S``).
+
+        Returns:
+            ConfirmFolderResponse: ``attached=True`` once the window has it,
+            else ``attached=False`` with ``error`` set.
+        """
+        req_id = uuid.uuid4().hex
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[dict[str, object]] = loop.create_future()
+        self.__app_state.register_response_future(req_id, future)
+
+        await self.__app_state.send(
+            Envelope(
+                kind="request",
+                id=req_id,
+                payload={
+                    "type": SREQ_WORKSPACE_CONFIRM_FOLDER,
+                    "path": path,
+                    "name": name,
+                },
+            )
+        )
+        _log.info("Confirm-workspace-folder fired: req_id=%s path=%r", req_id[:8], path)
+
+        try:
+            response_payload = await asyncio.wait_for(future, timeout)
+        except TimeoutError:
+            self.__app_state.discard_response_future(req_id)
+            _log.warning(
+                "Confirm-workspace-folder timed out after %.0fs: req_id=%s path=%r",
+                timeout,
+                req_id[:8],
+                path,
+            )
+            return ConfirmFolderResponse(attached=False, error="timeout")
+
+        attached = bool(response_payload.get("attached", False))
+        reloaded = bool(response_payload.get("reloaded", False))
+        error = response_payload.get("error")
+        _log.info(
+            "Confirm-workspace-folder resolved: req_id=%s attached=%s reloaded=%s error=%r",
+            req_id[:8],
+            attached,
+            reloaded,
+            error,
+        )
+        return ConfirmFolderResponse(
+            attached=attached,
+            reloaded=reloaded,
+            error=None if attached else str(error or "the editor did not add the folder"),
+        )
 
     async def fire_edit_review(
         self,

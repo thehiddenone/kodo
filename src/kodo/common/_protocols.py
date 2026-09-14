@@ -53,6 +53,8 @@ class ResponseChannel(Protocol):
         self, request_id: str, future: asyncio.Future[dict[str, object]]
     ) -> None: ...
 
+    def discard_response_future(self, request_id: str) -> None: ...
+
 
 class ApiKeyProvider(Protocol):
     """Requests API keys from the connected client (e.g. VSIX SecretStorage)."""

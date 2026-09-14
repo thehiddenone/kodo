@@ -99,6 +99,15 @@ SCAFFOLD_NEW_PROJECT: ToolSpec = ToolSpec(
         "After calling this you can immediately read and write files "
         "inside the returned path (call `get_root_paths` to see it listed "
         "as a workspace root).\n\n"
+        "This call can take a while — it does not return until the editor "
+        "has finished opening the directory as a workspace folder, which "
+        "may require the editor window to restart. That wait is deliberate: "
+        "when it returns, the workspace is settled and safe to work in. "
+        "Check 'workspace_attached' in the result; if it is false the "
+        "directory still exists and you can still read and write files in "
+        "it, but the user may not see it in their file explorer — mention "
+        "that to them, and do NOT call this tool again for the same "
+        "directory.\n\n"
         "When to use: any time a directory needs to become (or already is) "
         "a checkpoint-tracked Kodo project — a brand-new, self-contained "
         "project built from scratch (omit 'path'), or an existing directory "
@@ -165,8 +174,34 @@ SCAFFOLD_NEW_PROJECT: ToolSpec = ToolSpec(
                     "no-op success and nothing was changed on disk."
                 ),
             },
+            "workspace_attached": {
+                "type": "boolean",
+                "description": (
+                    "True if the directory is now open in the editor's "
+                    "workspace (or there is no editor window attached to "
+                    "this session, in which case there is nothing to open). "
+                    "False means the editor did not take it: the project "
+                    "still exists on disk and is bound to this session, so "
+                    "reads and writes work normally, but the user may not "
+                    "see it. See 'warning'."
+                ),
+            },
+            "warning": {
+                "type": "string",
+                "description": (
+                    "Present only when 'workspace_attached' is false — "
+                    "explains what happened and what to tell the user. Never "
+                    "a reason to retry this call."
+                ),
+            },
         },
-        "required": ["path", "name", "scaffolded", "already_scaffolded"],
+        "required": [
+            "path",
+            "name",
+            "scaffolded",
+            "already_scaffolded",
+            "workspace_attached",
+        ],
     },
     security_impact=SecurityImpact.LOW,
     input_visibility={"intent": "always", "name": "always", "path": "always"},
@@ -175,6 +210,8 @@ SCAFFOLD_NEW_PROJECT: ToolSpec = ToolSpec(
         "name": "always",
         "scaffolded": "always",
         "already_scaffolded": "always",
+        "workspace_attached": "always",
+        "warning": "always",
     },
     modifies_files=True,
 )

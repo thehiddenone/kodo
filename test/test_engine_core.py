@@ -25,7 +25,7 @@ from kodo.project import SessionWorkspace, WorkspaceLayout
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._checkpoints import CheckpointState
 from kodo.runtime._engine import _core
-from kodo.runtime._gates import ApprovalResponse
+from kodo.runtime._gates import ApprovalResponse, ConfirmFolderResponse
 from kodo.state import TransientStore
 from kodo.subagents import AgentLoadError, SubAgent
 from kodo.workproducts import WorkProduct
@@ -47,6 +47,7 @@ class _FakeGate:
         feedback: str = "",
         artifact_path: str = "",
         resolved_finding_ids: tuple[str, ...] = (),
+        confirm_folder: ConfirmFolderResponse | None = None,
     ) -> None:
         self.action = action
         self.feedback = feedback
@@ -56,6 +57,10 @@ class _FakeGate:
         self.paths: list[list[str]] = []
         # What the user was actually shown to tick off, per gate visit.
         self.findings: list[list[dict[str, object]]] = []
+        # `workspace.confirm_folder` round-trips: what the client answered,
+        # and one (path, name, timeout) tuple per call.
+        self.confirm_folder = confirm_folder or ConfirmFolderResponse(attached=True)
+        self.confirm_folder_calls: list[tuple[str, str, float]] = []
 
     async def fire_approval(
         self,
@@ -75,6 +80,12 @@ class _FakeGate:
             artifact_path=self.artifact_path,
             resolved_finding_ids=self.resolved_finding_ids,
         )
+
+    async def fire_confirm_workspace_folder(
+        self, path: str, name: str, timeout: float
+    ) -> ConfirmFolderResponse:
+        self.confirm_folder_calls.append((path, name, timeout))
+        return self.confirm_folder
 
 
 class _FakeKeyProvider:
@@ -1798,7 +1809,9 @@ async def test_create_project_with_explicit_path(tmp_path: Path) -> None:
 
     result = await engine.handle_project_create(name="My Project", path=str(target))
 
-    assert result == {"path": str(target), "name": "My Project"}
+    # `handle_project_create` (the "Create Project" command) keeps the
+    # fire-and-forget push, so it reports attached without waiting for anyone.
+    assert result == {"path": str(target), "name": "My Project", "workspace_attached": True}
     assert (target / ".kodo" / "kodo.md").exists()
     assert "My Project" in engine._session_workspace.folders
     add_folder_events = [e for e in sink.sent if e.payload.get("type") == "workspace.add_folder"]
@@ -1895,6 +1908,7 @@ async def test_init_project_scaffolds_empty_directory(tmp_path: Path) -> None:
         "name": "existing-empty",
         "scaffolded": True,
         "already_scaffolded": False,
+        "workspace_attached": True,
     }
     assert (target / "specs").is_dir()
     assert (target / "src").is_dir()
@@ -2117,6 +2131,117 @@ async def test_bootstrap_project_interactive_cancelled_returns_error(tmp_path: P
     result = await engine._bootstrap_project()
 
     assert result == {"error": "cancelled"}
+
+
+# ---------------------------------------------------------------------------
+# _attach_folder — the scaffold_new_project window-reload wait (WS_PROTOCOL §6.11)
+# ---------------------------------------------------------------------------
+
+
+async def test_create_project_waits_for_client_confirmation_when_asked(tmp_path: Path) -> None:
+    """The tool path fires `workspace.confirm_folder` and reports the answer —
+    and does NOT also push the fire-and-forget `workspace.add_folder` event."""
+    gate = _FakeGate()
+    engine, _t, sink, _g = _make_engine(tmp_path, gate=gate, physical_root=tmp_path)
+
+    result = await engine._create_project("My Project", wait_for_attach=True)
+
+    assert result["workspace_attached"] is True
+    assert "warning" not in result
+    assert gate.confirm_folder_calls == [
+        (result["path"], "My Project", engine.WORKSPACE_ATTACH_TIMEOUT_S)
+    ]
+    add_folder_events = [e for e in sink.sent if e.payload.get("type") == "workspace.add_folder"]
+    assert add_folder_events == []
+
+
+async def test_create_project_without_wait_pushes_the_event_and_never_gates(
+    tmp_path: Path,
+) -> None:
+    """`handle_project_create`'s path is unchanged: a human is watching the
+    window, so it pushes and returns rather than blocking on a confirmation."""
+    gate = _FakeGate()
+    engine, _t, sink, _g = _make_engine(tmp_path, gate=gate, physical_root=tmp_path)
+
+    result = await engine._create_project("My Project")
+
+    assert result["workspace_attached"] is True
+    assert gate.confirm_folder_calls == []
+    add_folder_events = [e for e in sink.sent if e.payload.get("type") == "workspace.add_folder"]
+    assert len(add_folder_events) == 1
+
+
+async def test_create_project_reports_a_warning_when_the_client_never_attaches(
+    tmp_path: Path,
+) -> None:
+    """A timed-out/refused confirmation is NOT an error: the directory exists
+    on disk and is bound to the session, so the agent is told it can keep
+    working in it — and told explicitly not to scaffold it again."""
+    gate = _FakeGate(confirm_folder=ConfirmFolderResponse(attached=False, error="timeout"))
+    engine, transient, _s, _g = _make_engine(tmp_path, gate=gate, physical_root=tmp_path)
+
+    result = await engine._create_project("My Project", wait_for_attach=True)
+
+    assert result["workspace_attached"] is False
+    warning = str(result["warning"])
+    assert "timeout" in warning
+    assert "Do NOT scaffold it again" in warning
+    # The project is real regardless of what the window did with it.
+    assert (Path(str(result["path"])) / ".kodo" / "kodo.md").exists()
+    assert str(Path(str(result["path"])).resolve()) in transient.workspace_locked_paths
+    assert "My Project" in engine._session_workspace.folders
+
+
+async def test_init_project_waits_for_client_confirmation_when_asked(tmp_path: Path) -> None:
+    gate = _FakeGate()
+    engine, _t, _s, _g = _make_engine(tmp_path, gate=gate)
+    target = tmp_path / "existing-empty"
+    target.mkdir()
+
+    result = await engine._init_project(str(target), wait_for_attach=True)
+
+    assert result["workspace_attached"] is True
+    assert gate.confirm_folder_calls == [
+        (str(target), "existing-empty", engine.WORKSPACE_ATTACH_TIMEOUT_S)
+    ]
+
+
+async def test_attach_folder_never_gates_a_disconnected_session(tmp_path: Path) -> None:
+    """No live matching window means nothing to add and nothing to wait on —
+    a background agent must not block on a confirmation nobody will send."""
+    gate = _FakeGate()
+    engine, transient, sink, _g = _make_engine(tmp_path, gate=gate)
+    bound = tmp_path / "bound"
+    bound.mkdir()
+    engine._session_workspace.set_folders({"bound": bound})
+    transient.lock_workspace_path(str(bound.resolve()))
+    await engine.handle_workspace_folders("", {})  # disconnect
+    sink.sent.clear()
+
+    result = await engine._create_project("", str(tmp_path / "new-proj"), wait_for_attach=True)
+
+    assert result["workspace_attached"] is True
+    assert gate.confirm_folder_calls == []
+    add_folder_events = [e for e in sink.sent if e.payload.get("type") == "workspace.add_folder"]
+    assert add_folder_events == []
+
+
+async def test_init_project_never_gates_a_folder_already_in_the_workspace(
+    tmp_path: Path,
+) -> None:
+    """Re-scaffolding an already-open directory adds nothing to the window, so
+    there is nothing to confirm — the tool must not stall on a round-trip the
+    client would answer trivially."""
+    gate = _FakeGate()
+    engine, _t, _s, _g = _make_engine(tmp_path, gate=gate)
+    target = tmp_path / "already-open"
+    target.mkdir()
+    engine._session_workspace.set_folders({"already-open": target})
+
+    result = await engine._init_project(str(target), wait_for_attach=True)
+
+    assert result["workspace_attached"] is True
+    assert gate.confirm_folder_calls == []
 
 
 async def test_init_project_skips_workspace_add_when_already_present(tmp_path: Path) -> None:

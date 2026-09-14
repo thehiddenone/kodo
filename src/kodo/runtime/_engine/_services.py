@@ -28,8 +28,8 @@ class _EngineServices:
         run_web_search_agent: Callable[[dict[str, object], str], Awaitable[dict[str, object]]],
         rollback: Callable[[str, str], Awaitable[None]],
         disable_autonomous: Callable[[], Awaitable[None]],
-        create_project: Callable[[str, str | None, bool], Awaitable[dict[str, object]]],
-        init_project: Callable[[str], Awaitable[dict[str, object]]],
+        create_project: Callable[..., Awaitable[dict[str, object]]],
+        init_project: Callable[..., Awaitable[dict[str, object]]],
         bootstrap_project: Callable[[str], Awaitable[dict[str, object]]],
         notify_tool_call_in_progress: Callable[[str], Awaitable[None]],
         emit_plan_state: Callable[[dict[str, object], str, str], Awaitable[None]],
@@ -88,15 +88,28 @@ class _EngineServices:
     async def create_project(
         self, name: str = "", path: str | None = None, force: bool = False
     ) -> dict[str, object]:
-        """Delegate to the engine's ``_create_project``."""
+        """Delegate to the engine's ``_create_project``.
+
+        Bound by the engine with ``wait_for_attach=True``, so this does not
+        return until the client confirms the new directory is open in its
+        workspace (or the confirmation times out) — the result carries
+        ``workspace_attached`` and, when that is False, a ``warning``.
+        """
         return await self.__create_project(name, path, force)
 
     async def init_project(self, path: str) -> dict[str, object]:
-        """Delegate to the engine's ``_init_project``."""
+        """Delegate to the engine's ``_init_project``.
+
+        Same ``wait_for_attach=True`` binding as :meth:`create_project`.
+        """
         return await self.__init_project(path)
 
     async def bootstrap_project(self, name: str = "") -> dict[str, object]:
-        """Delegate to the engine's ``_bootstrap_project``."""
+        """Delegate to the engine's ``_bootstrap_project``.
+
+        It reaches :meth:`create_project`'s primitive by its own route, and
+        passes ``wait_for_attach=True`` there too.
+        """
         return await self.__bootstrap_project(name)
 
     async def notify_tool_call_in_progress(self, tool_call_id: str) -> None:

@@ -165,6 +165,39 @@ async def test_replay_pending_requests_skips_already_resolved_ones() -> None:
 
 
 @pytest.mark.asyncio
+async def test_discard_response_future_stops_the_request_being_replayed() -> None:
+    """A request the *server* gave up on (the bounded workspace-folder
+    confirmation) must leave nothing behind: otherwise every subsequent
+    reconnect for the rest of the session re-sends a prompt whose future is
+    long gone."""
+    channel = SessionChannel()
+    conn, _ws = _conn()
+    await channel.attach(conn)
+
+    loop = asyncio.get_event_loop()
+    future: asyncio.Future[dict[str, object]] = loop.create_future()
+    channel.register_response_future("req-1", future)
+    await channel.send(_request_env("req-1"))
+
+    channel.discard_response_future("req-1")
+
+    conn2, ws2 = _conn()
+    await channel.attach(conn2)
+    await channel.replay_pending_requests()
+    assert ws2.sent == []
+
+    # A late answer from the client is ignored rather than blowing up.
+    channel.resolve_response("req-1", {"attached": True})
+    assert not future.done()
+
+
+@pytest.mark.asyncio
+async def test_discard_response_future_is_a_noop_for_an_unknown_id() -> None:
+    channel = SessionChannel()
+    channel.discard_response_future("never-registered")
+
+
+@pytest.mark.asyncio
 async def test_replay_pending_requests_resends_with_the_same_request_id() -> None:
     """The replayed envelope must carry the original request id, so whichever
     connection eventually delivers the client's answer still resolves the

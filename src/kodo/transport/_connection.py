@@ -200,6 +200,22 @@ class SessionChannel:
         """
         self.__pending_futures[request_id] = future
 
+    def discard_response_future(self, request_id: str) -> None:
+        """Forget a server-initiated request the server has stopped waiting for.
+
+        The counterpart to :meth:`register_response_future` for a wait the
+        *server* abandons rather than the client answering — today only the
+        bounded workspace-folder confirmation
+        (``GateOrchestrator.fire_confirm_workspace_folder``) times out this
+        way. Drops both the future and the remembered request envelope, so a
+        late answer is ignored and, crucially,
+        :meth:`replay_pending_requests` stops re-sending a prompt nothing is
+        listening for on every subsequent reconnect. A no-op for an id that
+        has already been resolved.
+        """
+        self.__pending_futures.pop(request_id, None)
+        self.__pending_requests.pop(request_id, None)
+
     def resolve_response(self, correlation_id: str, payload: dict[str, object]) -> None:
         """Resolve a pending server-initiated request by its correlation id."""
         future = self.__pending_futures.pop(correlation_id, None)

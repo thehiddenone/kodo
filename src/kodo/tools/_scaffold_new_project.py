@@ -20,6 +20,16 @@ this package in the import graph (the engine's
 message sink) — this handler is a thin shim that delegates and formats the
 result. See :mod:`kodo.toolspecs._scaffold_new_project` for the full
 behavior contract.
+
+All three engine primitives are bound with ``wait_for_attach=True``, so each
+of them blocks until the VS Code window confirms the new directory is really
+one of its workspace folders — across the window reload that adding it can
+trigger (``EngineCore._attach_folder``). That makes this tool call slow in
+exactly the case where returning early used to leave the agent poking at a
+workspace mid-restart. A confirmation that fails or times out is reported as
+``workspace_attached: false`` plus a ``warning``, never as an error: the
+project genuinely exists on disk and is bound to the session either way, and
+an agent told "error" would scaffold it a second time.
 """
 
 from __future__ import annotations
@@ -59,17 +69,21 @@ class ScaffoldNewProjectTool(Tool):
         if "error" in result:
             return json.dumps({"error": result["error"]})
         _log.info(
-            "scaffold_new_project by %s: path=%r name=%r -> %s",
+            "scaffold_new_project by %s: path=%r name=%r -> %s (workspace_attached=%s)",
             self.context.agent_name,
             path,
             name,
             result.get("path"),
+            result.get("workspace_attached", True),
         )
-        return json.dumps(
-            {
-                "path": result["path"],
-                "name": result["name"],
-                "scaffolded": result.get("scaffolded", True),
-                "already_scaffolded": result.get("already_scaffolded", False),
-            }
-        )
+        payload: dict[str, object] = {
+            "path": result["path"],
+            "name": result["name"],
+            "scaffolded": result.get("scaffolded", True),
+            "already_scaffolded": result.get("already_scaffolded", False),
+            "workspace_attached": result.get("workspace_attached", True),
+        }
+        warning = result.get("warning")
+        if warning:
+            payload["warning"] = warning
+        return json.dumps(payload)

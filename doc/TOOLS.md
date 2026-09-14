@@ -301,8 +301,7 @@ Protocols**, also defined in `_context.py`:
   `name`; `path` given → `init_project`. `create_project` slugifies the
   requested name, makes a fresh directory under the session workspace root
   (auto-suffixing on collision), scaffolds its `.kodo/`+mirror via
-  `RootMirrorManager.prepare`, and pushes `EVT_WORKSPACE_ADD_FOLDER` so the
-  extension adds it to the open VS Code workspace. `init_project` is the
+  `RootMirrorManager.prepare`, and hands the directory to the VS Code window. `init_project` is the
   "augment an existing directory" counterpart: *path* must already exist
   (`ProjectLayout.init_existing` raises `ProjectLayoutError` otherwise); if
   `.kodo/` is already there — already a Kodo project — it's a no-op success
@@ -313,8 +312,26 @@ Protocols**, also defined in `_context.py`:
   `create_project`; a non-empty directory keeps its content untouched. Either
   way (including the already-scaffolded no-op) `.kodo/`+mirror are scaffolded
   via the same `RootMirrorManager.prepare` (with its mandatory baseline
-  commit), and `EVT_WORKSPACE_ADD_FOLDER` is only pushed when *path* isn't
+  commit), and the window hand-off only happens when *path* isn't
   already one of the session's registered workspace folders.
+
+  **The hand-off blocks.** All three are bound with `wait_for_attach=True`, so
+  the tool does not return until the client confirms the directory is really
+  one of its workspace folders — a `workspace.confirm_folder` request
+  (WS_PROTOCOL.md §6.11), not the fire-and-forget `EVT_WORKSPACE_ADD_FOLDER`
+  the `project.create` message still uses. This exists because
+  `updateWorkspaceFolders` *reloads the VS Code window* when it adds a window's
+  first folder or turns a single-folder window multi-root: without the wait the
+  agent went straight on to creating files and running commands through the
+  extension-host restart, against a workspace being rebuilt under it. The wait
+  costs nothing when no reload is needed, and spans the reload when one is
+  (the request is replayed to the reconnected window). It is skipped entirely —
+  reported as attached — when there is no live matching window or the folder is
+  already open, so a background agent never blocks. A confirmation that fails
+  or times out (`EngineCore.WORKSPACE_ATTACH_TIMEOUT_S`, 60s) yields
+  `workspace_attached: false` plus a `warning` in the tool result, never an
+  error: the project exists on disk and is bound to the session either way, and
+  an agent told "error" would scaffold a second one.
 
 This is the dependency inversion that lets the tool layer sit *below* the engine
 while still calling back into it. `runtime` constructs the concrete objects and

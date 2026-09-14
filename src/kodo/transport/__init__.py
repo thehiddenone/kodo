@@ -117,6 +117,7 @@ from ._messages import (
     SREQ_PROMPT_PERMISSION,
     SREQ_PROMPT_QUESTION,
     SREQ_PROMPT_STUCK_ALERT,
+    SREQ_WORKSPACE_CONFIRM_FOLDER,
 )
 from ._outbox import Outbox
 from ._ws import APP_STATE_KEY, HandlerFn, WebSocketDispatcher, get_state
@@ -203,6 +204,7 @@ __all__ = [
     "SREQ_PROMPT_STUCK_ALERT",
     "SREQ_PROMPT_EDIT_REVIEW",
     "SREQ_PROMPT_CHOOSE_PROJECT_FOLDER",
+    "SREQ_WORKSPACE_CONFIRM_FOLDER",
     "EVT_API_KEY_REVOKE",
     "EVT_HF_TOKEN_REVOKE",
     "EVT_AUTONOMOUS_CHANGED",

@@ -815,6 +815,35 @@ SREQ_PROMPT_EDIT_REVIEW = "prompt.edit_review"
 # overwrite) at any step.
 SREQ_PROMPT_CHOOSE_PROJECT_FOLDER = "prompt.choose_project_folder"
 
+# Server → Client request. Fired by ``GateOrchestrator.fire_confirm_workspace_folder``
+# for the ``scaffold_new_project`` tool only (WS_PROTOCOL.md §6.11): add this
+# directory to the open workspace and answer only once it is really there.
+# Request fields: ``{path, name}`` (``path`` absolute) — the same body
+# ``EVT_WORKSPACE_ADD_FOLDER`` carries, which this *replaces* on the tool path
+# (the fire-and-forget event is still what ``project.create`` sends, since the
+# user driving that command is already watching the window).
+#
+# The point of the round-trip is the window reload: adding a window's FIRST
+# folder, or turning a single-folder window into a multi-root one, makes
+# ``vscode.workspace.updateWorkspaceFolders`` restart the extension host. The
+# pre-reload host never answers — it is gone. That is fine and expected: the
+# request lives on the ``SessionChannel``, not the socket, so
+# ``replay_pending_requests`` re-sends it verbatim to the freshly reconnected
+# window, which finds the folder already present and answers immediately. The
+# tool therefore returns only *after* the reload has finished and the new host
+# has re-pushed ``workspace.folders`` — agents no longer touch the workspace
+# mid-reload.
+#
+# Response: ``{"attached": true, "reloaded": <bool>}`` once the directory is in
+# ``vscode.workspace.workspaceFolders`` and this session has re-pushed
+# ``workspace.folders``, or ``{"attached": false, "error": <message>}`` if
+# VS Code refused the folder. No ``pending_prompt`` is persisted — same
+# reasoning as ``SREQ_PROMPT_CHOOSE_PROJECT_FOLDER``. The server also caps the
+# wait (``WORKSPACE_ATTACH_TIMEOUT_S``) and, on expiry, discards the pending
+# future so a window that never comes back cannot wedge the turn or leave a
+# request to be replayed forever.
+SREQ_WORKSPACE_CONFIRM_FOLDER = "workspace.confirm_folder"
+
 # ---------------------------------------------------------------------------
 # Server → Client event payload types — visibility  (WS_PROTOCOL.md §5)
 # ---------------------------------------------------------------------------

@@ -93,6 +93,15 @@ class WebSocketDispatcher:
         """
         self.__pending_responses[request_id] = future
 
+    def discard_response_future(self, request_id: str) -> None:
+        """Forget a pending response future the server stopped waiting for.
+
+        See ``SessionChannel.discard_response_future`` — this single-socket
+        dispatcher keeps no request backlog to replay, so here it only drops
+        the future. A no-op for an unknown id.
+        """
+        self.__pending_responses.pop(request_id, None)
+
     async def send(self, env: Envelope) -> None:
         """Deliver an envelope immediately or buffer it if disconnected.
 

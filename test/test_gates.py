@@ -14,13 +14,18 @@ import pytest
 
 from kodo.common import Envelope
 from kodo.runtime import ApprovalResponse, GateOrchestrator
-from kodo.runtime._gates import EditReviewFeedbackEntry, EditReviewResponse
+from kodo.runtime._gates import (
+    ConfirmFolderResponse,
+    EditReviewFeedbackEntry,
+    EditReviewResponse,
+)
 from kodo.security import AskPart
 from kodo.transport import (
     SREQ_PROMPT_APPROVAL,
     SREQ_PROMPT_EDIT_REVIEW,
     SREQ_PROMPT_PERMISSION,
     SREQ_PROMPT_QUESTION,
+    SREQ_WORKSPACE_CONFIRM_FOLDER,
 )
 
 # ---------------------------------------------------------------------------
@@ -742,3 +747,59 @@ async def test_fire_edit_review_leaves_pending_edit_review_on_cancellation() -> 
         if call.kwargs == {"pending_edit_review": None}
     ]
     assert calls_clearing == []
+
+
+# ---------------------------------------------------------------------------
+# fire_confirm_workspace_folder (WS_PROTOCOL.md §6.11)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fire_confirm_workspace_folder_sends_the_request_and_returns_the_answer() -> None:
+    state = _make_app_state()
+    gate = GateOrchestrator(state, _make_transient())
+
+    task = asyncio.create_task(gate.fire_confirm_workspace_folder("/x/proj", "proj", 5.0))
+    await asyncio.sleep(0)
+
+    payload = _get_sent_payloads(state)[0]
+    assert payload["type"] == SREQ_WORKSPACE_CONFIRM_FOLDER
+    assert payload["path"] == "/x/proj"
+    assert payload["name"] == "proj"
+    assert _get_sent_envelopes(state)[0].kind == "request"
+
+    req_id = next(iter(state._captured))
+    state._captured[req_id].set_result({"attached": True, "reloaded": True})
+
+    assert await task == ConfirmFolderResponse(attached=True, reloaded=True, error=None)
+
+
+@pytest.mark.asyncio
+async def test_fire_confirm_workspace_folder_reports_a_client_refusal() -> None:
+    state = _make_app_state()
+    gate = GateOrchestrator(state, _make_transient())
+
+    task = asyncio.create_task(gate.fire_confirm_workspace_folder("/x/proj", "proj", 5.0))
+    await asyncio.sleep(0)
+    req_id = next(iter(state._captured))
+    state._captured[req_id].set_result({"attached": False, "error": "VS Code refused the folder"})
+
+    response = await task
+    assert response.attached is False
+    assert response.error == "VS Code refused the folder"
+
+
+@pytest.mark.asyncio
+async def test_fire_confirm_workspace_folder_times_out_and_discards_the_request() -> None:
+    """The one gate here with a deadline. On expiry it must *discard* the
+    pending request, not merely stop awaiting it: a request left in the
+    channel's pending map is re-sent to every future reconnect forever, and
+    nothing is listening for the answer any more."""
+    state = _make_app_state()
+    gate = GateOrchestrator(state, _make_transient())
+
+    response = await gate.fire_confirm_workspace_folder("/x/proj", "proj", 0.01)
+
+    assert response == ConfirmFolderResponse(attached=False, reloaded=False, error="timeout")
+    req_id = next(iter(state._captured))
+    state.discard_response_future.assert_called_once_with(req_id)

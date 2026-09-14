@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -178,6 +179,14 @@ class WorkflowEngine(
     _tool_call_cycle_streak: bool
     _repeat_streak: bool
 
+    #: Seconds ``scaffold_new_project`` waits for the client to confirm the new
+    #: directory is really open in its workspace (see :meth:`_attach_folder`).
+    #: Sized for the slow case this exists for — a VS Code extension-host
+    #: restart plus tab reconcile plus WebSocket reconnect — not for the common
+    #: one, which answers in milliseconds. A window that never comes back costs
+    #: the turn this much and no more.
+    WORKSPACE_ATTACH_TIMEOUT_S: float = 60.0
+
     def __init__(
         self,
         sink: MessageSink,
@@ -300,8 +309,13 @@ class WorkflowEngine(
             run_web_search_agent=self._run_web_search_agent,
             rollback=self._run_rollback,
             disable_autonomous=self._disable_autonomous,
-            create_project=self._create_project,
-            init_project=self._init_project,
+            # Bound with wait_for_attach=True: everything reached through
+            # _EngineServices is the `scaffold_new_project` tool, which must not
+            # return while VS Code is reloading the window around the new folder
+            # (see _attach_folder). `handle_project_create` calls
+            # `_create_project` directly and so keeps the fire-and-forget push.
+            create_project=functools.partial(self._create_project, wait_for_attach=True),
+            init_project=functools.partial(self._init_project, wait_for_attach=True),
             bootstrap_project=self._bootstrap_project,
             notify_tool_call_in_progress=self._emitters.notify_tool_call_in_progress,
             emit_plan_state=self._emitters.emit_plan_state,
@@ -1307,7 +1321,12 @@ class WorkflowEngine(
         return await self._create_project(name, path, force)
 
     async def _create_project(
-        self, name: str, path: str | None = None, force: bool = False
+        self,
+        name: str,
+        path: str | None = None,
+        force: bool = False,
+        *,
+        wait_for_attach: bool = False,
     ) -> dict[str, object]:
         """Scaffold a new project directory and add it to the workspace.
 
@@ -1327,15 +1346,14 @@ class WorkflowEngine(
         and immediately — not gated on its first real mutating-tool commit,
         unlike every other root — so a disconnected session's own
         ``get_root_paths`` fallback (:meth:`_bound_root_paths`) sees it too.
-        ``EVT_WORKSPACE_ADD_FOLDER`` is pushed so the VS Code extension adds
-        the directory to the open workspace (its resulting workspace-folders
-        change re-pushes ``workspace.folders``, reconciling the map) — but
-        only when this session was already connected (:meth:`_is_workspace_connected`,
-        snapshotted before any of this method's mutations) before this call:
-        pushing into a window that doesn't match this session's workspace
-        would silently corrupt an unrelated window's folders, so a
-        disconnected caller (e.g. a background agent) still gets every
-        on-disk side effect, just without that push (doc/SESSIONS.md).
+        The directory is then handed to the VS Code window by
+        :meth:`_attach_folder` — but only when this session was already
+        connected (:meth:`_is_workspace_connected`, snapshotted before any of
+        this method's mutations) before this call: pushing into a window that
+        doesn't match this session's workspace would silently corrupt an
+        unrelated window's folders, so a disconnected caller (e.g. a background
+        agent) still gets every on-disk side effect, just without that push
+        (doc/SESSIONS.md).
 
         Args:
             name: Human-readable project name. Used as the workspace-folder
@@ -1346,9 +1364,16 @@ class WorkflowEngine(
             force: When *path* is given and it already has a ``kodo.md``,
                 overwrite it instead of raising. Ignored when *path* is
                 omitted (a freshly reserved directory never has one).
+            wait_for_attach: Block until the client confirms the folder is
+                really open in its workspace, instead of pushing the
+                fire-and-forget event. True for every ``scaffold_new_project``
+                route (bound in ``_EngineServices``); False for
+                :meth:`handle_project_create` — see :meth:`_attach_folder`.
 
         Returns:
-            ``{"path": <absolute project dir>, "name": <workspace label>}``.
+            ``{"path": <absolute project dir>, "name": <workspace label>,
+            "workspace_attached": <bool>}``, plus a ``"warning"`` string
+            explaining the situation when ``workspace_attached`` is False.
 
         Raises:
             ValueError: Neither *name* nor *path* was given.
@@ -1389,19 +1414,106 @@ class WorkflowEngine(
         await self._checkpoints.mirrors.prepare(project_dir)
         self._transient.lock_workspace_path(str(project_dir.resolve()))
 
-        if connected:
-            await self._sink.send(
-                Envelope.make_event(
-                    EVT_WORKSPACE_ADD_FOLDER, {"path": str(project_dir), "name": label}
-                )
-            )
+        attached, warning = await self._attach_folder(
+            project_dir, label, connected=connected, wait=wait_for_attach
+        )
         _log.info(
-            "scaffold_new_project: created %s (label=%r, connected=%s)",
+            "scaffold_new_project: created %s (label=%r, connected=%s, attached=%s)",
             project_dir,
             label,
             connected,
+            attached,
         )
-        return {"path": str(project_dir), "name": label}
+        result: dict[str, object] = {
+            "path": str(project_dir),
+            "name": label,
+            "workspace_attached": attached,
+        }
+        if warning:
+            result["warning"] = warning
+        return result
+
+    async def _attach_folder(
+        self, project_dir: Path, label: str, *, connected: bool, wait: bool
+    ) -> tuple[bool, str | None]:
+        """Get a freshly scaffolded directory into the client's workspace.
+
+        The single place both :meth:`_create_project` and :meth:`_init_project`
+        hand the new directory to the VS Code window, and the one that decides
+        *whether the caller waits for it to land there*.
+
+        Three outcomes, in the order they are checked:
+
+        * **Nothing to push.** Either this session has no live matching window
+          (*connected* is False — a background/disconnected agent, see
+          :meth:`_is_workspace_connected`) or the folder is already open. The
+          directory is still a registered, locked session root, so the agent
+          can read and write it either way; there is simply no window action to
+          wait on. Reported as attached.
+        * **Fire and forget** (*wait* is False). Pushes
+          ``EVT_WORKSPACE_ADD_FOLDER`` and returns immediately — the
+          ``project.create`` message's behavior, unchanged: a human clicked
+          "Create Project" and is watching the window do its thing.
+        * **Confirmed** (*wait* is True — the ``scaffold_new_project`` tool).
+          Fires ``workspace.confirm_folder`` (WS_PROTOCOL.md §6.11) and blocks
+          until the client answers that the folder is genuinely in
+          ``vscode.workspace.workspaceFolders``. This is the whole point of the
+          gate: ``updateWorkspaceFolders`` *reloads the window* when the new
+          folder is its first, or turns a single-folder window multi-root, and
+          an agent that keeps scaffolding through that gap is writing into a
+          workspace no one is showing it and racing the extension host's
+          restart. The wait costs nothing in the common case (an already
+          multi-root window answers at once) and spans the reload in the case
+          that needs it, because the request is replayed to the reconnected
+          window (:meth:`~kodo.transport.SessionChannel.replay_pending_requests`).
+
+        A failed or timed-out confirmation is deliberately *not* an error: the
+        project exists on disk and is bound to this session regardless. The
+        caller surfaces it as ``workspace_attached=False`` plus a warning so
+        the agent knows the editor did not pick the directory up, rather than
+        concluding nothing was created and scaffolding a second one.
+
+        Args:
+            project_dir: The scaffolded directory.
+            label: Workspace-folder label to register it under.
+            connected: :meth:`_is_workspace_connected`, snapshotted by the
+                caller *before* it mutated the live folder map.
+            wait: Block on a client confirmation instead of fire-and-forget.
+
+        Returns:
+            ``(attached, warning)`` — *warning* is a user/agent-facing sentence
+            when *attached* is False, else ``None``.
+        """
+        if not connected:
+            return True, None
+        payload: dict[str, object] = {"path": str(project_dir), "name": label}
+        if not wait:
+            await self._sink.send(Envelope.make_event(EVT_WORKSPACE_ADD_FOLDER, payload))
+            return True, None
+        response = await self._gate.fire_confirm_workspace_folder(
+            str(project_dir), label, self.WORKSPACE_ATTACH_TIMEOUT_S
+        )
+        if response.attached:
+            _log.info(
+                "Workspace folder attached: %s (label=%r, window_reloaded=%s)",
+                project_dir,
+                label,
+                response.reloaded,
+            )
+            return True, None
+        _log.warning(
+            "Workspace folder NOT attached: %s (label=%r, error=%r)",
+            project_dir,
+            label,
+            response.error,
+        )
+        return False, (
+            f"The project was set up on disk at {project_dir} and is bound to this "
+            "session — you can read and write files in it normally — but the editor "
+            f"window did not add it to the open workspace ({response.error}). The "
+            "user may not see it in their file explorer until they add the folder "
+            "themselves. Do NOT scaffold it again."
+        )
 
     @staticmethod
     def _reserve_project_dir(parent: Path, slug: str) -> Path:
@@ -1410,7 +1522,9 @@ class WorkflowEngine(
         project_dir.mkdir(parents=True)
         return project_dir
 
-    async def _init_project(self, path: str) -> dict[str, object]:
+    async def _init_project(
+        self, path: str, *, wait_for_attach: bool = False
+    ) -> dict[str, object]:
         """Augment an existing directory with Kodo's project layout and git mirror.
 
         Backs the ``scaffold_new_project`` tool's "existing directory" branch
@@ -1432,21 +1546,25 @@ class WorkflowEngine(
         registration / ``RootMirrorManager.prepare`` calls still run so an
         already-scaffolded directory that isn't yet part of the open
         workspace still gets added to it. Unlike :meth:`_create_project`,
-        the workspace-folder registration and ``EVT_WORKSPACE_ADD_FOLDER``
-        push are skipped when *path* is already one of the session's
-        registered folders — the directory may already be open — and, per
+        the workspace-folder registration and the :meth:`_attach_folder`
+        hand-off are skipped when *path* is already one of the session's
+        registered folders — the directory may already be open, so there is
+        nothing to add and nothing to wait for — and, per
         :meth:`_create_project`'s connected/disconnected guard, also skipped
         when this session isn't currently connected to a live matching
         workspace.
 
         Args:
             path: Absolute path of the existing directory to augment.
+            wait_for_attach: See :meth:`_create_project`. True for every
+                ``scaffold_new_project`` route.
 
         Returns:
             ``{"path": <absolute project dir>, "name": <workspace label>,
             "scaffolded": <bool, whether specs/src/test were created>,
             "already_scaffolded": <bool, whether path already had .kodo/ and
-            nothing was done>}``.
+            nothing was done>, "workspace_attached": <bool>}``, plus a
+            ``"warning"`` string when ``workspace_attached`` is False.
 
         Raises:
             ProjectLayoutError: *path* does not exist or is not a directory.
@@ -1469,28 +1587,33 @@ class WorkflowEngine(
         await self._checkpoints.mirrors.prepare(project_dir)
         self._transient.lock_workspace_path(str(resolved_dir))
 
-        if not already_present and connected:
-            await self._sink.send(
-                Envelope.make_event(
-                    EVT_WORKSPACE_ADD_FOLDER, {"path": str(project_dir), "name": label}
-                )
-            )
+        attached, warning = await self._attach_folder(
+            project_dir,
+            label,
+            connected=connected and not already_present,
+            wait=wait_for_attach,
+        )
         _log.info(
             "scaffold_new_project: augmented %s (scaffolded=%s, already_scaffolded=%s, "
-            "already_present=%s, connected=%s, label=%r)",
+            "already_present=%s, connected=%s, attached=%s, label=%r)",
             project_dir,
             scaffolded,
             already_scaffolded,
             already_present,
             connected,
+            attached,
             label,
         )
-        return {
+        result: dict[str, object] = {
             "path": str(project_dir),
             "name": label,
             "scaffolded": scaffolded,
             "already_scaffolded": already_scaffolded,
+            "workspace_attached": attached,
         }
+        if warning:
+            result["warning"] = warning
+        return result
 
     async def _bootstrap_project(self, name: str = "") -> dict[str, object]:
         """Create a project when no workspace exists yet, mode-appropriately.
@@ -1530,7 +1653,7 @@ class WorkflowEngine(
         await asyncio.to_thread(parent.mkdir, parents=True, exist_ok=True)
         self._session_workspace.set_physical_root(parent)
         _log.info("Bootstrapping autonomous project %r under %s", resolved, parent)
-        return await self._create_project(resolved)
+        return await self._create_project(resolved, wait_for_attach=True)
 
     async def _bootstrap_project_interactive(self, name: str) -> dict[str, object]:
         """Ask the user for a workspace-home folder, then create the project
@@ -1549,4 +1672,4 @@ class WorkflowEngine(
         if response.error:
             return {"error": response.error}
         self._session_workspace.set_physical_root(Path(response.path))
-        return await self._create_project(name.strip() or "project")
+        return await self._create_project(name.strip() or "project", wait_for_attach=True)

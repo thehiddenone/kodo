@@ -157,8 +157,12 @@ and by `session.list`'s `compatible` field (from disk alone, no live engine
 needed — WS_PROTOCOL.md §7.1b). This connection-state concept was already
 **mode-agnostic** before the root-resolution fallback itself was: a Guided
 session got `workspace_connected` too, and `scaffold_new_project`
-already skipped its `workspace.add_folder` push (but still scaffolded and
-locked immediately) whenever disconnected, regardless of mode. As of
+already skipped handing the new folder to the window (but still scaffolded and
+locked immediately) whenever disconnected, regardless of mode. That hand-off is
+now the waited-on `workspace.confirm_folder` round-trip (WS_PROTOCOL.md §6.11),
+so the same guard additionally keeps a disconnected agent from blocking on a
+confirmation no window would ever send — it reports `workspace_attached: true`
+and moves on, because a session with no live window has nothing to attach to. As of
 2026-07-24 the root-resolution fallback is mode-agnostic too (WS_PROTOCOL.md
 §7.1c) — Guided mode no longer has its own singular `current_project` binding
 to be exempt via; it shares this exact fallback. New-project locking

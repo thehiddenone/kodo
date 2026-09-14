@@ -1224,6 +1224,7 @@ async def test_scaffold_new_project_bootstraps_when_no_workspace_and_no_path(
         "name": "Bootstrapped",
         "scaffolded": True,
         "already_scaffolded": False,
+        "workspace_attached": True,
     }
 
 
@@ -1260,6 +1261,7 @@ async def test_scaffold_new_project_bootstraps_even_with_explicit_name_when_no_w
         "name": "Bootstrapped",
         "scaffolded": True,
         "already_scaffolded": False,
+        "workspace_attached": True,
     }
 
 
@@ -1306,6 +1308,7 @@ async def test_scaffold_new_project_with_path_calls_init_project_even_without_wo
         "name": "Existing",
         "scaffolded": False,
         "already_scaffolded": True,
+        "workspace_attached": True,
     }
 
 
@@ -1358,6 +1361,7 @@ async def test_scaffold_new_project_bypasses_security_gate_without_workspace_and
         "name": "Bootstrapped",
         "scaffolded": True,
         "already_scaffolded": False,
+        "workspace_attached": True,
     }
 
 
