@@ -1522,9 +1522,7 @@ class WorkflowEngine(
         project_dir.mkdir(parents=True)
         return project_dir
 
-    async def _init_project(
-        self, path: str, *, wait_for_attach: bool = False
-    ) -> dict[str, object]:
+    async def _init_project(self, path: str, *, wait_for_attach: bool = False) -> dict[str, object]:
         """Augment an existing directory with Kodo's project layout and git mirror.
 
         Backs the ``scaffold_new_project`` tool's "existing directory" branch
