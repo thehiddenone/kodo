@@ -497,15 +497,17 @@ conditional-forwarding (built for `LlamaPlugin`) needed no changes at all. Reaso
 `delta.reasoning_content` string Kimi/DeepSeek/Alibaba/Gemini use — a flat
 `delta.reasoning` string is also checked as a defensive fallback.
 
-Client-side this surfaces as the ordinary Thinking toggle in kodo-vsix
-(`ModeControls.tsx`, the composer's left-hand toggle column), cycling
-Low → Medium → High → Max, enabled whenever
-OpenRouter is the active cloud vendor — **not** gated on the selected model's
-`supports_reasoning` catalog flag. The tier is a session-level setting that is
-deliberately independent of which model an effort tier resolves to (and under
-Auto mode the routed model isn't known until the request is made), so the
+Client-side this surfaces as the Thinking group of kodo-vsix's session menu
+(`ModeControls.tsx` — the popup opened by the composer's left-hand **Session**
+button), offering Low / Medium / High / Max as a single-choice list, enabled
+whenever OpenRouter is the active cloud vendor — **not** gated on the selected
+model's `supports_reasoning` catalog flag. The tier is a session-level setting
+that is deliberately independent of which model an effort tier resolves to (and
+under Auto mode the routed model isn't known until the request is made), so the
 control is vendor-scoped; models that don't support reasoning ignore the
-parameter, which the tier tooltips say outright.
+parameter, which the group's note says outright (one line under the Thinking
+heading, rather than repeated on every tier as it was when each tier was a
+tooltip).
 
 **Cost is read off the response, not computed from a table.** A
 hand-maintained per-token pricing table (every other vendor's `_usage.py`)
