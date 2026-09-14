@@ -59,6 +59,7 @@ from ._store import (
     read_plan,
     step_plan,
 )
+from ._views import plan_for_model, plan_for_widget
 
 __all__ = [
     "ENTRY_PLAN_ABANDONED",
@@ -85,6 +86,8 @@ __all__ = [
     "create_plan",
     "derive_state",
     "normalize_tasks",
+    "plan_for_model",
+    "plan_for_widget",
     "plan_log_path",
     "read_plan",
     "step_plan",

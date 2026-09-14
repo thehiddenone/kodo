@@ -25,11 +25,15 @@ PLAN_STEP_FORWARD: ToolSpec = ToolSpec(
     user_description="Move the plan to the next task",
     description=(
         "Move this session's work plan one step forward, and return the plan's new state "
-        "in the same shape as `get_plan`.\n\n"
+        "in the same shape as `get_plan` — including `current_task`: the **whole** task "
+        "the step just started, with the planner's own `instructions`, `files`, "
+        "`acceptance` and chosen `subagent`. Work from that, not from your memory of the "
+        "plan.\n\n"
         "One step completes whatever task was in progress and starts the next. The very "
         "first step starts task 1 without completing anything — a plan begins with every "
         "task `not_started`, so call this once when you begin the first task. The last "
-        "step completes the final task and leaves the plan `complete`.\n\n"
+        "step completes the final task and leaves the plan `complete`, with no "
+        "`current_task` — there is no next task to hand you.\n\n"
         "A step is irreversible and cannot be aimed: you cannot skip a task, reorder the "
         "plan, go back, or mark a task failed. Take a step only when the current task is "
         "genuinely finished — or, for the first call, when you are genuinely starting. "
@@ -49,7 +53,8 @@ PLAN_STEP_FORWARD: ToolSpec = ToolSpec(
         "something is blocked.\n\n"
         "When to use: a step exactly twice per task boundary and nowhere else — once when "
         "you begin the first task, and once each time a task is genuinely complete (its "
-        "acceptance criteria met, its check passing). Not to reorder, not to skip a task "
+        "`acceptance` met, its check passing — the criteria the previous step handed you). "
+        "Not to reorder, not to skip a task "
         "you have decided against, and not to record that something went wrong — a plan "
         "has no failure state, so a task you cannot finish is something to raise with the "
         "user, not to step over. Abandon only to close a plan the work has moved past, "
@@ -94,6 +99,11 @@ PLAN_STEP_FORWARD: ToolSpec = ToolSpec(
                     "context": {"type": "string"},
                     "tasks": {
                         "type": "array",
+                        "description": (
+                            "Every task, in execution order — titles and statuses only, so "
+                            "you can see what is left. The task now in progress is also "
+                            "returned in full as `current_task`."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
@@ -108,10 +118,51 @@ PLAN_STEP_FORWARD: ToolSpec = ToolSpec(
                         },
                     },
                     "current_task": {
-                        "type": ["integer", "null"],
+                        "type": ["object", "null"],
                         "description": (
-                            "Id of the task now in progress, or null once the plan is complete."
+                            "The task this step just started, in full — the planner's "
+                            "instruction for the work you are now on. Null once the plan is "
+                            "complete, since there is no next task. An abandon leaves it "
+                            "naming the task the work stopped on: abandoning closes a plan "
+                            "without rewriting what was underway."
                         ),
+                        "properties": {
+                            "id": {
+                                "type": "integer",
+                                "description": "1-based position, as in `tasks`.",
+                            },
+                            "title": {"type": "string"},
+                            "subagent": {
+                                "type": "string",
+                                "description": ("The sub-agent the planner chose, or empty."),
+                            },
+                            "instructions": {
+                                "type": "string",
+                                "description": (
+                                    "What this step must achieve and how to build the "
+                                    "sub-agent's input — the planner's words, not a summary."
+                                ),
+                            },
+                            "files": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Paths this step is expected to touch. Advisory, may be empty."
+                                ),
+                            },
+                            "acceptance": {
+                                "type": "string",
+                                "description": ("What must be true before you take the next step."),
+                            },
+                        },
+                        "required": [
+                            "id",
+                            "title",
+                            "subagent",
+                            "instructions",
+                            "files",
+                            "acceptance",
+                        ],
                     },
                     "complete": {
                         "type": "boolean",

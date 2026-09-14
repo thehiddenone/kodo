@@ -27,6 +27,8 @@ from kodo.plan import (
     create_plan,
     derive_state,
     normalize_tasks,
+    plan_for_model,
+    plan_for_widget,
     plan_log_path,
     read_plan,
     step_plan,
@@ -75,15 +77,79 @@ def test_ids_are_positional_and_assigned_by_the_store(tmp_path: Path) -> None:
     assert [t["id"] for t in plan["tasks"]] == [1, 2]
 
 
-def test_only_the_title_survives_into_the_ledger(tmp_path: Path) -> None:
-    """The plan is a progress ledger, not a second copy of the planner's output:
-    the caller already holds the task bodies from the planner's own result."""
+def test_the_stored_task_keeps_the_planners_body(tmp_path: Path) -> None:
+    """The plan stores each task in full, so the executing agent can be handed the
+    current one's instructions on every step — including after a compaction, when
+    the planner's own result may no longer be in its history."""
     plan = _make(
         tmp_path,
-        [{"title": "a", "subagent": "developer", "instructions": "long", "acceptance": "x"}],
+        [
+            {
+                "title": "a",
+                "subagent": "developer",
+                "instructions": "long",
+                "acceptance": "x",
+                "files": ["src/a.py"],
+            }
+        ],
     )
     assert plan is not None
-    assert set(plan["tasks"][0]) == {"id", "title", "status"}
+    task = plan["tasks"][0]
+    assert set(task) == {"id", "title", "status", "subagent", "instructions", "files", "acceptance"}
+    assert task["instructions"] == "long"
+    assert task["files"] == ["src/a.py"]
+
+
+def test_fields_the_planner_invents_are_dropped(tmp_path: Path) -> None:
+    """The stored task shape is the engine's, not the agent's — an extra key would
+    otherwise ride into the log and out to every later reader."""
+    plan = _make(tmp_path, [{"title": "a", "priority": "high", "owner": "someone"}])
+    assert plan is not None
+    assert "priority" not in plan["tasks"][0]
+    assert "owner" not in plan["tasks"][0]
+
+
+def test_a_task_missing_its_body_is_still_a_task(tmp_path: Path) -> None:
+    """Only `title` decides whether a row exists: a planner that omits `acceptance`
+    wrote a vaguer task, not an unusable one. This is also how a log written before
+    bodies were stored replays — as a valid plan with empty ones."""
+    plan = _make(tmp_path, [{"title": "a"}])
+    assert plan is not None
+    task = plan["tasks"][0]
+    assert task["instructions"] == ""
+    assert task["acceptance"] == ""
+    assert task["subagent"] == ""
+    assert task["files"] == []
+
+
+def test_a_runaway_body_is_capped_but_the_task_survives(tmp_path: Path) -> None:
+    """The caps bound what a runaway planner can write into a log that is replayed
+    on every read and re-sent to the model on every step. They are generous enough
+    that a real instruction is never truncated."""
+    plan = _make(
+        tmp_path,
+        [
+            {
+                "title": "a",
+                "instructions": "x" * 30000,
+                "files": ["p"] * 500,
+                "acceptance": "y" * 9000,
+            }
+        ],
+    )
+    assert plan is not None
+    task = plan["tasks"][0]
+    assert len(task["instructions"]) == 20000
+    assert len(task["acceptance"]) == 4000
+    assert len(task["files"]) == 100
+
+
+def test_files_that_are_not_a_list_degrade_to_empty(tmp_path: Path) -> None:
+    """`files` is advisory, so prose in that field gives a worse task, not a broken
+    plan."""
+    plan = _make(tmp_path, [{"title": "a", "files": "src/a.py and src/b.py"}])
+    assert plan is not None
+    assert plan["tasks"][0]["files"] == []
 
 
 def test_empty_and_unusable_task_lists_create_no_plan(tmp_path: Path) -> None:
@@ -334,3 +400,125 @@ def test_closed_is_the_supersede_precondition() -> None:
     assert closed(live) is False
     assert closed(derive_state(created_by="p", context="c", tasks=tasks, steps=2)) is True
     assert closed({**live, "abandoned": True}) is True  # type: ignore[typeddict-item]
+
+
+# ---------------------------------------------------------------------------
+# The two projections (doc/PLANNING.md §6)
+#
+# One stored state, two audiences. The model needs the body of the task it is on;
+# the user's card needs the shape of the plan and nothing that would bury it.
+# Neither audience is ever handed a list of full task bodies.
+# ---------------------------------------------------------------------------
+
+_WITH_BODIES = [
+    {
+        "title": "Toolchain setup",
+        "subagent": "toolchain_builder",
+        "instructions": "bootstrap the build",
+        "files": ["requirements.txt"],
+        "acceptance": "the build runs",
+    },
+    {
+        "title": "Extract parser",
+        "subagent": "developer",
+        "instructions": "move it into src/parse.py",
+        "files": ["src/parse.py"],
+        "acceptance": "tests pass",
+    },
+]
+
+
+def test_the_model_is_given_the_current_task_in_full(tmp_path: Path) -> None:
+    """The point of storing bodies: the agent is handed its brief at the moment the
+    step starts, rather than having to find it back in the planner's result."""
+    _make(tmp_path, _WITH_BODIES)
+    step_plan(tmp_path)
+    plan = read_plan(tmp_path)
+    assert plan is not None
+    view = plan_for_model(plan)
+    current = view["current_task"]
+    assert isinstance(current, dict)
+    assert current["id"] == 1
+    assert current["instructions"] == "bootstrap the build"
+    assert current["acceptance"] == "the build runs"
+    assert current["subagent"] == "toolchain_builder"
+    assert current["files"] == ["requirements.txt"]
+
+
+def test_the_model_gets_only_a_ledger_for_every_other_task(tmp_path: Path) -> None:
+    """`tasks` says what is left, not what each task says — one body per call is the
+    whole point, and n bodies per call is what the slim ledger was protecting."""
+    _make(tmp_path, _WITH_BODIES)
+    step_plan(tmp_path)
+    plan = read_plan(tmp_path)
+    assert plan is not None
+    rows = plan_for_model(plan)["tasks"]
+    assert isinstance(rows, list)
+    assert [set(row) for row in rows] == [{"id", "title", "status"}] * 2
+
+
+def test_the_widget_never_sees_a_task_body(tmp_path: Path) -> None:
+    """Bodies are dropped server-side, so they never reach the WS wire or the
+    session's marker log — not merely ignored by the client."""
+    _make(tmp_path, _WITH_BODIES)
+    step_plan(tmp_path)
+    plan = read_plan(tmp_path)
+    assert plan is not None
+    view = plan_for_widget(plan)
+    assert view["current_task"] == 1
+    rows = view["tasks"]
+    assert isinstance(rows, list)
+    assert [set(row) for row in rows] == [{"id", "title", "status"}] * 2
+    assert "instructions" not in json.dumps(view)
+
+
+def test_both_projections_agree_about_everything_but_the_current_task(tmp_path: Path) -> None:
+    """The split is deliberate and total: these two views may differ in one key and
+    no other, or the user and the model are reading different plans."""
+    _make(tmp_path, _WITH_BODIES)
+    step_plan(tmp_path)
+    plan = read_plan(tmp_path)
+    assert plan is not None
+    model, widget = plan_for_model(plan), plan_for_widget(plan)
+    assert set(model) == set(widget)
+    differing = {k for k in model if model[k] != widget[k]}
+    assert differing == {"current_task"}
+
+
+def test_no_current_task_is_null_in_both_views(tmp_path: Path) -> None:
+    """`current_task` is empty in two situations — before the first step and once the
+    plan is closed — and `complete` is what tells them apart, in either view."""
+    _make(tmp_path, _WITH_BODIES)
+    fresh = read_plan(tmp_path)
+    assert fresh is not None
+    assert plan_for_model(fresh)["current_task"] is None
+    assert plan_for_widget(fresh)["current_task"] is None
+    assert plan_for_model(fresh)["complete"] is False
+    for _ in range(3):
+        step_plan(tmp_path)
+    done = read_plan(tmp_path)
+    assert done is not None
+    assert plan_for_model(done)["current_task"] is None
+    assert plan_for_model(done)["complete"] is True
+
+
+def test_an_abandoned_plan_still_names_the_task_it_stopped_on(tmp_path: Path) -> None:
+    """Abandoning closes a plan without rewriting a single status — so it does not
+    rewrite the current task either. The task that was underway is still underway in
+    the record, and both views keep saying so. Only `abandoned` says the plan stopped."""
+    _make(tmp_path, _WITH_BODIES)
+    step_plan(tmp_path)
+    abandon_plan(tmp_path, "the user redirected me")
+    plan = read_plan(tmp_path)
+    assert plan is not None
+    view = plan_for_model(plan)
+    assert view["abandoned"] is True
+    assert view["abandon_reason"] == "the user redirected me"
+    assert view["complete"] is False
+    rows = view["tasks"]
+    assert isinstance(rows, list)
+    assert rows[0]["status"] == STATUS_IN_PROGRESS
+    current = view["current_task"]
+    assert isinstance(current, dict)
+    assert current["id"] == 1
+    assert plan_for_widget(plan)["current_task"] == 1

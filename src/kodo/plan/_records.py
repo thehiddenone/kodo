@@ -75,9 +75,11 @@ ENTRY_PLAN_STEP = "plan_step"
 ENTRY_PLAN_ABANDONED = "plan_abandoned"
 
 # The property every task object in a planner's ``tasks`` schema must declare.
-# The engine reads only this one off each task (see :class:`PlanTask`), so it is
-# also the whole of what :class:`~kodo.subagents.AgentRegistry` type-checks a
-# planner's ``tasks`` items against at load time.
+# The one field a task cannot do without: it is the task's identity in the
+# widget, and a row the user cannot read is not a task. The engine also keeps a
+# task's body (see :class:`PlanTask`), but only ``title`` is *required* — which
+# is why this stays the whole of what :class:`~kodo.subagents.AgentRegistry`
+# type-checks a planner's ``tasks`` items against at load time.
 PLAN_TASK_TITLE_FIELD = "title"
 
 #: The two output fields a ``planner: true`` sub-agent's result must carry — the
@@ -108,6 +110,17 @@ PLAN_REASON_ABANDONED = "abandoned"
 #: tell the reader nothing the first clause did not.
 _MAX_TITLE_CHARS = 200
 
+#: Caps on a task's stored body. Deliberately generous — a real ``instructions``
+#: field runs to several thousand characters and truncating one would corrupt the
+#: task the executing agent is about to carry out. These exist only to bound what
+#: a runaway planner can write into a log that is replayed on every read and
+#: re-sent to the model on every step.
+_MAX_INSTRUCTIONS_CHARS = 20000
+_MAX_ACCEPTANCE_CHARS = 4000
+_MAX_SUBAGENT_CHARS = 100
+_MAX_FILES = 100
+_MAX_FILE_PATH_CHARS = 500
+
 
 class PlanConflictError(Exception):
     """A new plan arrived while the live one was still open.
@@ -129,22 +142,34 @@ class PlanConflictError(Exception):
 
 
 class PlanTask(TypedDict):
-    """One task in a plan: an identity, a label, and a derived status.
-
-    Deliberately slim. The plan is a **progress ledger**, not a second copy of
-    the planner's output — the agent executing the plan already holds the full
-    task bodies (instructions, files, acceptance criteria) from the planner's own
-    ``return_result``, and re-sending them on every ``get_plan`` call would cost
-    tokens on every step to tell the caller what it already knows.
+    """One task in a plan: an identity, a label, a derived status, and its body.
 
     ``id`` is the task's 1-based position, which is also its only identity: a
     plan is a plain ordered list and tasks are never inserted, removed or
     reordered once it is created.
+
+    The four body fields (``subagent``, ``instructions``, ``files``,
+    ``acceptance``) are the task exactly as the planner wrote it. They are
+    **stored** but never handed out wholesale: the two projections in
+    :mod:`kodo.plan._views` decide who sees what, and neither ever ships a list
+    of full task bodies. The reader gets a titles-and-statuses ledger; the model
+    gets that same ledger plus the body of the **one** task it is on.
+
+    Storing them reverses the plan's original slim-ledger design, for one reason
+    the slim version could not answer: after a context compaction the executing
+    agent may no longer hold the planner's ``return_result``, and the plan was
+    then the only surviving record of the work — with the instructions thrown
+    away. ``get_plan``'s own description tells the model to call it after a
+    compaction, which was a promise the store could not keep.
     """
 
     id: int
     title: str
     status: str
+    subagent: str
+    instructions: str
+    files: list[str]
+    acceptance: str
 
 
 class PlanState(TypedDict):
@@ -198,13 +223,21 @@ def normalize_tasks(value: object) -> list[PlanTask]:
     a task the user cannot read is not a task, and keeping it would put an
     unnameable row in the widget and an unexplainable step in the ledger.
 
-    Every other field the planner put on the task (``instructions``, ``files``,
-    ``acceptance``, ``subagent``, …) is dropped here by design: see
-    :class:`PlanTask`.
+    The four body fields (``instructions``, ``files``, ``acceptance``,
+    ``subagent``) are kept — see :class:`PlanTask` for why — but capped, and a
+    task missing any of them is still a task: a planner that omits ``acceptance``
+    has written a vaguer task, not an unusable one, and only ``title`` decides
+    whether a row exists at all. Any *other* field a planner invents is dropped,
+    so the stored task shape stays the engine's and not the agent's.
 
     Ids are assigned **here**, from position, and never read from the input — so
     a planner cannot hand back colliding or out-of-order ids, and the ids in the
     ledger always match the order the tasks will be executed in.
+
+    This also runs on **read** (:func:`kodo.plan.read_plan` re-normalizes every
+    replayed line), which is what makes a plan written by an older build — one
+    whose log has titles and nothing else — replay as a valid plan with empty
+    bodies rather than raising.
     """
     if not isinstance(value, list):
         return []
@@ -220,9 +253,32 @@ def normalize_tasks(value: object) -> list[PlanTask]:
                 id=len(tasks) + 1,
                 title=title[:_MAX_TITLE_CHARS],
                 status=STATUS_NOT_STARTED,
+                subagent=_text(raw.get("subagent"), _MAX_SUBAGENT_CHARS),
+                instructions=_text(raw.get("instructions"), _MAX_INSTRUCTIONS_CHARS),
+                files=_paths(raw.get("files")),
+                acceptance=_text(raw.get("acceptance"), _MAX_ACCEPTANCE_CHARS),
             )
         )
     return tasks
+
+
+def _text(value: object, cap: int) -> str:
+    """One model-authored string field of a task, capped. Anything absent is ``""``."""
+    if value is None:
+        return ""
+    return str(value).strip()[:cap]
+
+
+def _paths(value: object) -> list[str]:
+    """A task's ``files`` array — a list of strings, capped in both dimensions.
+
+    A non-list yields ``[]`` rather than raising: ``files`` is advisory (the
+    paths the step is expected to touch), so a planner that writes prose there
+    has given a worse task, not an unrunnable one.
+    """
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip()[:_MAX_FILE_PATH_CHARS] for item in value[:_MAX_FILES] if item]
 
 
 def derive_state(
@@ -280,7 +336,19 @@ def derive_state(
             status = STATUS_IN_PROGRESS
         else:
             status = STATUS_NOT_STARTED
-        projected.append(PlanTask(id=task["id"], title=task["title"], status=status))
+        # Only the status is projected; the body is the planner's and is copied
+        # through untouched, so a task's instructions read the same at every step.
+        projected.append(
+            PlanTask(
+                id=task["id"],
+                title=task["title"],
+                status=status,
+                subagent=task["subagent"],
+                instructions=task["instructions"],
+                files=list(task["files"]),
+                acceptance=task["acceptance"],
+            )
+        )
     return PlanState(
         created_by=created_by,
         context=context,

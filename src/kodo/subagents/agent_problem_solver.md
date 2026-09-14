@@ -135,7 +135,7 @@ It returns **`codebase_context`** — an anchored briefing on the code the work 
 
 **`codebase_context` is your working knowledge of the project.** Carry it into *every* sub-agent call from here, not just the first. Sub-agents start cold.
 
-**Kōdo records the plan for you.** A returned `tasks` list becomes *the* plan for this session — you track it with `get_plan` and `plan_step_forward` rather than by remembering it (see *Step 6*). You still hold the task bodies from this result, which is where the instructions and acceptance criteria for each step live; the recorded plan holds the titles and the progress.
+**Kōdo records the plan for you.** A returned `tasks` list becomes *the* plan for this session — you track it with `get_plan` and `plan_step_forward` rather than by remembering it (see *Step 6*). It records each task in full, so every step hands you back that task's own `instructions`, `files` and `acceptance`: work from what the plan tool returns, not from your memory of this result, and it stays right even after a compaction.
 
 **You get one plan per session, and replacing it takes two steps.** Running the Planner again while the current plan is still open **ends your turn** — work you committed to would be left with nobody tracking it. When the work genuinely moves on (the user redirects you, or the plan rests on something that turned out to be wrong), **close the old plan first**: `plan_step_forward` with `abandon_plan: true` and a `reason`, *then* run the Planner. Never step through the remaining tasks to clear the way — that records work nobody did as done.
 
@@ -143,7 +143,7 @@ Take the answer and move on. Don't re-invoke the Planner with a reworded prompt,
 
 ### Step 6 — Execute
 
-**With a plan:** run the tasks **one by one, in order**. Build each sub-agent's input per the task's `instructions`, feed in `codebase_context` and the earlier outputs it names, and check the result against its `acceptance` before moving on. A `toolchain_builder` step gets the project root as `project_path` (required), plus the task's language and bootstrap-vs-convert hint.
+**With a plan:** run the tasks **one by one, in order**. Build each sub-agent's input per the task's `instructions` — as the plan tools hand them back, which is the copy that survives a compaction — feed in `codebase_context` and the earlier outputs it names, and check the result against its `acceptance` before moving on. A `toolchain_builder` step gets the project root as `project_path` (required), plus the task's language and bootstrap-vs-convert hint.
 
 **Without a plan** (`plan_warranted: false`): one Developer task — `instructions` from the request, `codebase_context` as `context`, `write_tests` per *Tests and the toolchain*.
 
@@ -151,8 +151,8 @@ Either way, shape Developer work as iterations (see *Work in iterations*). If a 
 
 **Track the plan with the plan tools, not from memory.** Kōdo holds the plan; you move it:
 
-- **`plan_step_forward`** — call it **once when you start the first task**, then **once each time a task is genuinely finished**. One call completes whatever was in progress and starts the next, so a four-task plan takes five calls: one to begin, one after each task. It is irreversible and cannot be aimed — there is no skipping, no reordering, no going back, and no way to mark a task failed. Stepping because a task is dragging silently recasts unfinished work as done.
-- **`get_plan`** — call it whenever you need to know where things stand: picking up the next task, after a compaction, or when the user asks what's left. The plan is not carried in your history; this tool is the only place its current state lives.
+- **`plan_step_forward`** — call it **once when you start the first task**, then **once each time a task is genuinely finished**. One call completes whatever was in progress and starts the next, so a four-task plan takes five calls: one to begin, one after each task. **Each call returns `current_task` — the whole task it just started.** That is the brief for the work you are about to do: build the sub-agent's input from its `instructions`, and close the step against its `acceptance`. It is irreversible and cannot be aimed — there is no skipping, no reordering, no going back, and no way to mark a task failed. Stepping because a task is dragging silently recasts unfinished work as done.
+- **`get_plan`** — call it whenever you need to know where things stand: picking up the next task, after a compaction, or when the user asks what's left. It answers with the task list and the current task in full. The plan is not carried in your history; this tool is the only place its current state lives, and after a compaction it is the only place the current task's instructions still live.
 - **`plan_step_forward` with `abandon_plan: true`** — closes the plan unfinished, with a `reason`, when the work has genuinely moved past it. The only legal way to make room for a new plan. Unfinished tasks stay unfinished, which is the point: the record keeps saying how far you actually got.
 
 Both calls show the user a live plan widget, so **you do not narrate plan progress** — no `<kodo_info>` plan listings, no hand-maintained checklists. Use `<kodo_info>` for what the widget cannot say: a one-line note of what a finished step actually produced, or a warning that a result has undermined a later task.

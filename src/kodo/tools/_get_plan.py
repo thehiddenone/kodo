@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from kodo.plan import PLAN_REASON_READ, PlanState, read_plan
+from kodo.plan import PLAN_REASON_READ, PlanState, plan_for_model, plan_for_widget, read_plan
 
 from ._tool import Tool
 
@@ -15,8 +15,10 @@ __all__ = ["GetPlanTool", "emit_plan_widget"]
 async def emit_plan_widget(tool: Tool, plan: PlanState, reason: str) -> None:
     """Push *plan* to the user's plan widget, ignoring a host that has no services.
 
-    Shared by both plan tools so the "show the user exactly what the model was
-    told" rule has one implementation rather than two. ``services`` is ``None``
+    Shared by both plan tools so the widget is refreshed by one implementation
+    rather than two. What the user sees is :func:`~kodo.plan.plan_for_widget`'s
+    projection — the same ledger the model is given, without the task bodies the
+    model needs and the card would only be buried by. ``services`` is ``None``
     only in tests that do not wire it (never in production), so a missing one is
     silently skipped rather than treated as a failure — the tool's own result is
     what the agent depends on, and a run must not fail because the UI side of a
@@ -25,7 +27,7 @@ async def emit_plan_widget(tool: Tool, plan: PlanState, reason: str) -> None:
     services = tool.context.services
     if services is None:
         return
-    await services.emit_plan_state(dict(plan), reason)
+    await services.emit_plan_state(plan_for_widget(plan), reason)
 
 
 class GetPlanTool(Tool):
@@ -49,4 +51,4 @@ class GetPlanTool(Tool):
         if plan is None:
             return json.dumps({"plan": None})
         await emit_plan_widget(self, plan, PLAN_REASON_READ)
-        return json.dumps({"plan": plan})
+        return json.dumps({"plan": plan_for_model(plan)})

@@ -23,7 +23,7 @@ import pytest
 
 from kodo.binutils import find_util
 from kodo.findings import apply_findings, read_findings
-from kodo.plan import create_plan
+from kodo.plan import create_plan, step_plan
 from kodo.project import kodo_user_dir
 from kodo.runtime import ApprovalResponse, SessionState
 from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, RootPath, ToolDispatcher
@@ -620,19 +620,30 @@ async def test_get_plan_compliance(tmp_path: Path) -> None:
     empty = _assert_compliant("get_plan", await _dispatch(d, "get_plan", {}))
     assert empty["plan"] is None
     assert services.plan_states == []
-    # With a plan behind it, the tool reports it and pushes the same state to the
-    # user's widget — the two halves are one payload by construction.
+    # With a plan behind it, the tool reports it and refreshes the user's widget.
+    # The two are projections of one state (kodo.plan._views), and they differ in
+    # exactly one way: the model is handed the current task in full, the widget a
+    # bare id. Neither is ever given a list of task bodies.
     create_plan(
         plan_dir,
         created_by="planner",
         context="the parser lives in src/parse.py",
-        tasks=[{"title": "Extract the parser"}, {"title": "Rewire the CLI"}],
+        tasks=[
+            {"title": "Extract the parser", "instructions": "move it", "acceptance": "tests pass"},
+            {"title": "Rewire the CLI"},
+        ],
     )
+    step_plan(plan_dir)
     read = _assert_compliant("get_plan", await _dispatch(d, "get_plan", {}))
     plan = read["plan"]
-    assert [t["status"] for t in plan["tasks"]] == ["not_started", "not_started"]  # type: ignore[index,union-attr]
-    assert plan["current_task"] is None and plan["complete"] is False  # type: ignore[index,call-overload]
-    assert services.plan_states == [(plan, "read")]  # type: ignore[comparison-overlap]
+    assert [t["status"] for t in plan["tasks"]] == ["in_progress", "not_started"]  # type: ignore[index,union-attr]
+    assert plan["current_task"]["instructions"] == "move it"  # type: ignore[index,call-overload]
+    assert set(plan["tasks"][0]) == {"id", "title", "status"}  # type: ignore[index,call-overload]
+    shown, reason = services.plan_states[0]
+    assert reason == "read"
+    assert shown["current_task"] == 1
+    assert shown["tasks"] == plan["tasks"]  # type: ignore[index,call-overload]
+    assert all("instructions" not in t for t in shown["tasks"])  # type: ignore[union-attr]
     # No plan directory bound at all (a run with no session store) → same empty
     # answer, still not an exception.
     unbound = _make_dispatcher(tmp_path, root_paths=roots)
@@ -649,10 +660,21 @@ async def test_plan_step_forward_compliance(tmp_path: Path) -> None:
     # agent can act on, never an exception (doc/PLANNING.md §4).
     no_plan = _assert_compliant("plan_step_forward", await _dispatch(d, "plan_step_forward", {}))
     assert "error" in no_plan  # type: ignore[operator]
-    create_plan(plan_dir, created_by="planner", context="ctx", tasks=[{"title": "Only task"}])
+    create_plan(
+        plan_dir,
+        created_by="planner",
+        context="ctx",
+        tasks=[{"title": "Only task", "instructions": "do the thing", "acceptance": "it is done"}],
+    )
     # One task takes two steps: the first starts it, the second completes it.
     started = _assert_compliant("plan_step_forward", await _dispatch(d, "plan_step_forward", {}))
-    assert started["plan"]["current_task"] == 1  # type: ignore[index,call-overload]
+    # The step hands back the whole task it started — the planner's own brief for
+    # the work about to happen — while `tasks` stays a titles-and-statuses ledger.
+    current = started["plan"]["current_task"]  # type: ignore[index,call-overload]
+    assert current["id"] == 1
+    assert current["instructions"] == "do the thing"
+    assert current["acceptance"] == "it is done"
+    assert set(started["plan"]["tasks"][0]) == {"id", "title", "status"}  # type: ignore[index,call-overload]
     assert started["plan"]["complete"] is False  # type: ignore[index,call-overload]
     finished = _assert_compliant("plan_step_forward", await _dispatch(d, "plan_step_forward", {}))
     assert finished["plan"]["complete"] is True  # type: ignore[index,call-overload]

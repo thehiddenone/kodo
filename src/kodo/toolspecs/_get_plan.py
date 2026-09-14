@@ -17,11 +17,14 @@ GET_PLAN: ToolSpec = ToolSpec(
     external_name="Get Plan",
     user_description="Read the current work plan",
     description=(
-        "Report this session's work plan: every task in order, each with a `status` of "
-        "`not_started`, `in_progress` or `done`, plus `current_task` (the id of the task "
-        "in progress, or null), `complete` (whether every task is done), `abandoned` "
-        "(whether it was closed unfinished) and `context` — the development context the "
-        "planner established while writing the plan.\n\n"
+        "Report this session's work plan: every task in order as a `title` and a `status` "
+        "of `not_started`, `in_progress` or `done`, plus `current_task` — the **whole** "
+        "task you are on, with the planner's own `instructions`, `files`, `acceptance` "
+        "and chosen `subagent` — and `complete` (whether every task is done), `abandoned` "
+        "(whether it was closed unfinished) and `context` (the development context the "
+        "planner established while writing the plan).\n\n"
+        "The task list is titles only; the full body comes back for the task in progress "
+        "and no other.\n\n"
         "A task can never be `failed`. The three statuses are the whole vocabulary: a "
         "plan only moves forward, and work that turns out to be misjudged is handled by "
         "closing the whole plan — finishing it, or abandoning it via plan_step_forward — "
@@ -33,8 +36,9 @@ GET_PLAN: ToolSpec = ToolSpec(
         "When to use: whenever you need to know where the work stands — before picking up "
         "the next step, after a context compaction, or when the user asks what is left. "
         "The plan is not carried in your conversation; this tool is the only place its "
-        "current state exists. Calling it also shows the user an up-to-date plan widget, "
-        "so it is the right way to keep them oriented."
+        "current state exists, and after a compaction it is the only place the current "
+        "task's instructions still exist. Calling it also shows the user an up-to-date "
+        "plan widget, so it is the right way to keep them oriented."
     ),
     input_schema={"type": "object", "properties": {}, "required": []},
     output_schema={
@@ -59,7 +63,11 @@ GET_PLAN: ToolSpec = ToolSpec(
                     },
                     "tasks": {
                         "type": "array",
-                        "description": "Every task, in execution order.",
+                        "description": (
+                            "Every task, in execution order — titles and statuses only. "
+                            "The task in progress is also returned in full as "
+                            "`current_task`."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
@@ -77,12 +85,52 @@ GET_PLAN: ToolSpec = ToolSpec(
                         },
                     },
                     "current_task": {
-                        "type": ["integer", "null"],
+                        "type": ["object", "null"],
                         "description": (
-                            "Id of the one task in progress, or null — which is the case "
-                            "both before the first step and after the last. Read `complete` "
-                            "to tell those apart."
+                            "The task you are on right now, in full — or null, which is the "
+                            "case both before the first step and once the plan is complete. "
+                            "Read `complete` to tell those apart. An abandoned plan still "
+                            "names the task it stopped on. This is the planner's own "
+                            "instruction for the step, restated here so you are working from "
+                            "the plan rather than from memory of it."
                         ),
+                        "properties": {
+                            "id": {
+                                "type": "integer",
+                                "description": "1-based position, as in `tasks`.",
+                            },
+                            "title": {"type": "string"},
+                            "subagent": {
+                                "type": "string",
+                                "description": ("The sub-agent the planner chose, or empty."),
+                            },
+                            "instructions": {
+                                "type": "string",
+                                "description": (
+                                    "What this step must achieve and how to build the "
+                                    "sub-agent's input — the planner's words, not a summary."
+                                ),
+                            },
+                            "files": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Paths this step is expected to touch. Advisory, may be empty."
+                                ),
+                            },
+                            "acceptance": {
+                                "type": "string",
+                                "description": ("What must be true before you take the next step."),
+                            },
+                        },
+                        "required": [
+                            "id",
+                            "title",
+                            "subagent",
+                            "instructions",
+                            "files",
+                            "acceptance",
+                        ],
                     },
                     "complete": {
                         "type": "boolean",

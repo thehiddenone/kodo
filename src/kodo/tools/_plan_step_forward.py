@@ -9,7 +9,13 @@ from __future__ import annotations
 import asyncio
 import json
 
-from kodo.plan import PLAN_REASON_ABANDONED, PLAN_REASON_STEP, abandon_plan, step_plan
+from kodo.plan import (
+    PLAN_REASON_ABANDONED,
+    PLAN_REASON_STEP,
+    abandon_plan,
+    plan_for_model,
+    step_plan,
+)
 
 from ._get_plan import emit_plan_widget
 from ._tool import Tool
@@ -61,4 +67,4 @@ class PlanStepForwardTool(Tool):
         await emit_plan_widget(
             self, plan, PLAN_REASON_ABANDONED if abandoning else PLAN_REASON_STEP
         )
-        return json.dumps({"plan": plan})
+        return json.dumps({"plan": plan_for_model(plan)})

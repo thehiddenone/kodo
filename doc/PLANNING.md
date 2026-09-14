@@ -49,11 +49,13 @@ Two properties are worth stating outright, because both are easy to get wrong:
 sub-agent; the engine is what turns it into a plan. There is no "create plan"
 tool, and `plan_step_forward` cannot change a task's title or insert one.
 
-**The user and the model are shown the same payload, by different routes.** The
-model's copy is the tool's JSON result. The user's copy is the `plan.state` event,
-rendered as a widget. They are the same `PlanState`, emitted twice — so they
-cannot disagree. This is *unlike* `review.findings`, where the information itself
-is user-only; here only the rendering is.
+**The user and the model are shown two projections of one state.** The model's
+copy is the tool's JSON result; the user's is the `plan.state` event, rendered as
+a widget. Both are built from the same `PlanState` by
+`kodo/plan/_views.py`, and they differ in exactly one key: the model is handed
+the current task in full, the widget a bare id (§6). Neither is given a list of
+task bodies. This is *unlike* `review.findings`, where the information itself is
+user-only; here both sides see the same plan, at the detail each needs.
 
 ---
 
@@ -146,12 +148,25 @@ from the contract instead of failing it.
 
 ### What the engine reads off each task
 
-Only `title`. The plan is a **progress ledger**, not a second copy of the
-planner's output: the agent executing the plan already holds the full task bodies
-(`instructions`, `files`, `acceptance`, whichever sub-agent to run) from the
-planner's own `return_result`, and re-sending them on every `get_plan` would cost
-tokens on every step to say what the caller already knows. Everything except
-`title` is dropped by `normalize_tasks`.
+`title`, plus the four body fields the shipped planner writes: `subagent`,
+`instructions`, `files` and `acceptance`. Any *other* field a planner invents is
+dropped by `normalize_tasks`, so the stored task shape stays the engine's rather
+than one agent's.
+
+Only `title` is **required**. A task missing `acceptance` is a vaguer task, not
+an unusable one; a title-less element is not a task at all and is skipped. That
+asymmetry is also what makes a plan written before bodies were stored replay as a
+valid plan with empty ones — `read_plan` re-normalizes every line it replays.
+
+The bodies are **stored but never handed out wholesale** — see §6 for the two
+projections that decide who sees what. This reverses the original slim-ledger
+design, which kept titles only on the grounds that the executing agent already
+held the bodies in the planner's `return_result`. It does, until a context
+compaction: after one, the plan was the only surviving record of the work, with
+the instructions thrown away — while `get_plan`'s own description told the model
+to call it after a compaction. Storing the bodies is what makes that promise
+keepable. The cost it was avoiding is avoided a different way now: no caller is
+ever sent *n* bodies, only the one it is working on.
 
 Task **ids are assigned by the store**, from position, and never read from the
 planner's output — so a planner cannot hand back colliding or out-of-order ids,
@@ -348,11 +363,37 @@ Both carry `output_visibility={}` — hidden — on purpose: the user reads the 
 as the widget, not as the tool card's JSON, and showing both would print the same
 plan twice, once in a shape nobody wants to read.
 
+### The two projections
+
+`PlanState` is the stored truth: every task with the full body the planner wrote.
+Neither audience receives that wholesale. `kodo/plan/_views.py` holds both
+renderings, in one file, so the pair can only differ in ways that module states:
+
+| | `plan_for_model` (the tool result) | `plan_for_widget` (the `plan.state` event) |
+| --- | --- | --- |
+| `tasks` | `{id, title, status}` per task | identical |
+| `current_task` | the **whole** task: `id`, `title`, `subagent`, `instructions`, `files`, `acceptance` | the task's id |
+| everything else | `created_by`, `context`, `complete`, `abandoned`, `abandon_reason` | identical |
+
+The ledger tells the executing agent what is left and lets it judge continuing
+against abandoning; the body tells it what it is doing *now*, restated at the
+moment the step starts rather than left many turns back in the planner's
+`return_result` — or gone, after a compaction. One body per call, never *n*.
+
+The widget gets none of the bodies: they are the agent's working material and
+would bury the one thing the card exists to show. They are dropped **server-side**,
+so a task's instructions never reach the WS wire or the session's marker log.
+
+`current_task` is empty in two situations — before the first step, and once the
+plan is `complete` — and only `complete` distinguishes them. An **abandoned** plan
+still names the task it stopped on, in both views: abandoning closes a plan
+without rewriting a status, so it does not rewrite what was underway either.
+
 ### The widget
 
-`plan.state` (persisted as a `plan_state` marker) carries the whole `PlanState`
-plus a `reason` of `created` / `read` / `step`. It fires three times over a
-plan's life: on creation, and on each tool call.
+`plan.state` (persisted as a `plan_state` marker) carries `plan_for_widget`'s
+projection plus a `reason` of `created` / `read` / `step`. It fires three times
+over a plan's life: on creation, and on each tool call.
 
 Each one is a **plain append** to the feed, like a findings table — so the feed
 carries a running record of the plan as it advanced rather than only its latest
@@ -371,6 +412,16 @@ Client side: `webview/PlanView.tsx` renders it, `reducer.ts`'s `readPlanState`
 converts both the live action and the replayed history entry (one reader, so they
 cannot drift), and `session/agent-event-translation.ts` reshapes the wire's
 snake_case. The client **never** computes a status — they arrive derived.
+
+The live path needs **one more link than the replay path**, and it is easy to
+miss: the extension host's translated message is only dispatched if
+`webview/App.tsx`'s `onMessage` switch has a `case` for its type. That switch has
+no `default:`, so a missing case drops the message in silence — the reducer, its
+unit tests and a reloaded session all keep working, and only the *live* widget
+disappears. This is precisely what shipped in the first version of this feature
+(a plan advanced with nothing to show for it until the window was reloaded).
+`kodo-vsix/src/test/webview-messages.test.ts` now fails the build when any type
+the host posts has no case.
 
 ---
 
@@ -451,6 +502,7 @@ Not a schema problem. See §4: abandon the plan with a reason, then re-plan.
 | --- | --- |
 | records, statuses, `derive_state`, `closed`, `PlanConflictError` | `kodo/plan/_records.py` |
 | log append/replay, `create_plan`, `step_plan`, `abandon_plan` | `kodo/plan/_store.py` |
+| the model / widget projections | `kodo/plan/_views.py` |
 | the `planner:` frontmatter flag | `kodo/subagents/_loader.py` |
 | load-time contract check | `kodo/subagents/_registry.py` (`__validate_planner`) |
 | the engine hook | `kodo/runtime/_engine/_subagents.py` (`_is_planner`, `_initialize_plan`, `_plan_dir`, `_reported_task_count`, `_plan_issue`) |
@@ -462,10 +514,12 @@ Not a schema problem. See §4: abandon the plan with a reason, then re-plan.
 | tool handlers | `kodo/tools/_get_plan.py`, `_plan_step_forward.py` |
 | widget | `kodo-vsix/src/webview/PlanView.tsx` |
 
-Tests: `test/test_plan.py` (the store, the status rule, the abandon lifecycle),
+Tests: `test/test_plan.py` (the store, the status rule, the abandon lifecycle, the two
+projections),
 `test/test_agents.py` (the flag and the load-time contract — names, types, and
 the CI-only `required` scan over every shipped agent's frontmatter),
 `test/test_engine_subagents.py` (the hook, the conflict, the `plan_issue`
 reporting), `test/test_tools_compliance.py` (every tool envelope, step and
 abandon), `kodo-vsix/src/test/reducer.test.ts` (live vs. replayed widget,
-abandoned and flagged).
+abandoned and flagged), `kodo-vsix/src/test/webview-messages.test.ts`
+(every host-posted message type reaches the reducer).

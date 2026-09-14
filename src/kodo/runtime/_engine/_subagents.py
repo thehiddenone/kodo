@@ -30,6 +30,7 @@ from kodo.plan import (
     PLAN_REASON_CREATED,
     PLAN_TASKS_FIELD,
     create_plan,
+    plan_for_widget,
 )
 from kodo.subagents import (
     PHASE_INITIAL,
@@ -479,7 +480,9 @@ class SubagentMixin:
         _log.info("plan created by %s with %d task(s)", name, usable)
         # The issue rides along on the creation event so the user sees the
         # shortfall on the very widget that is missing the tasks.
-        await self._emitters.emit_plan_state(dict(plan), PLAN_REASON_CREATED, issue=issue)
+        await self._emitters.emit_plan_state(
+            plan_for_widget(plan), PLAN_REASON_CREATED, issue=issue
+        )
 
     def _plan_dir(self: EngineHost) -> Path | None:
         """This session's ``plan/`` directory, or ``None`` before one is attached.
