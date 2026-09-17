@@ -228,6 +228,13 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
     # — exposed in the Kōdo Settings webview panel's "General" section via
     # the housekeeper_llm.get/.set WS commands (doc/WS_PROTOCOL.md §7.6f).
     "housekeeper_llm": DEFAULT_HOUSEKEEPER_LLM_ID,
+    # Which top-level agent a brand-new session starts on, overriding the one
+    # the shipped configs declare (doc/SETTINGS.md §2.8). Empty means "no
+    # preference — use the shipped default". Exposed in the Kōdo Settings
+    # webview panel's "General" section via the default_agent.get/.set WS
+    # commands, and resolved by AgentRegistry.default_top_agent(), which
+    # ignores a value naming an unknown or non-selectable agent.
+    "default_agent": "",
 }
 
 _log = logging.getLogger(__name__)

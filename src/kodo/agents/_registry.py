@@ -135,6 +135,7 @@ in an agent with no spec, or a ``use_skill``/``{SKILLS}`` half-declaration.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -586,20 +587,32 @@ class AgentRegistry:
 
     __slots__ = (
         "__agents",
-        "__default_top_agent",
+        "__declared_default",
+        "__preferred_default",
         "__shared",
         "__skills",
         "__top_agent_by_value",
         "__top_agents",
     )
 
-    def __init__(self, agents_dir: Path, skills_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        agents_dir: Path,
+        skills_dir: Path | None = None,
+        preferred_default: Callable[[], str] | None = None,
+    ) -> None:
         # The skills root is injectable purely so tests (and the validator's
         # isolated home) can point at a temp directory; every production caller
         # leaves it None and gets ``~/.kodo/skills``. The store itself holds no
         # cache — it re-scans on each read — so binding it once here still sees
         # skills installed after the server started.
         self.__skills = SkillStore(skills_dir if skills_dir is not None else kodo_skills_dir())
+        # The user's preferred starting agent, read *live* on every
+        # ``default_top_agent()`` so a settings change applies without a
+        # restart — the same treatment ``housekeeper_llm`` and the skills store
+        # get. Injected as a callable rather than a value because this package
+        # knows nothing about settings files and should not learn.
+        self.__preferred_default = preferred_default
         # Shared blocks (``shared_<name>.md``), keyed by ``<name>``. Never
         # globbed as agents (those globs are ``subagent_*.md`` / ``agent_*.md``),
         # so a shared file can never register as a spawnable agent.
@@ -749,7 +762,7 @@ class AgentRegistry:
             problems.add(_TOP_AGENT_SET_KEY, str(exc))
             self.__top_agents: tuple[TopAgent, ...] = ()
             self.__top_agent_by_value = {}
-            self.__default_top_agent = ""
+            self.__declared_default = ""
             return
 
         loaded = {name for name, agent in self.__agents.items() if agent.is_top_level}
@@ -808,7 +821,7 @@ class AgentRegistry:
 
         self.__top_agents = tuple(sorted(agents, key=lambda a: (a.rank, a.name)))
         self.__top_agent_by_value = by_value
-        self.__default_top_agent = defaults[0] if defaults else ""
+        self.__declared_default = defaults[0] if defaults else ""
 
     def top_agents(self) -> tuple[TopAgent, ...]:
         """Every top-level agent, in picker order (``rank``, then name).
@@ -836,21 +849,36 @@ class AgentRegistry:
         Returns:
             str: The resolved agent name — always one that exists.
         """
-        return self.__top_agent_by_value.get(value, self.__default_top_agent)
+        return self.__top_agent_by_value.get(value, self.default_top_agent())
 
     def default_top_agent(self) -> str:
-        """Name of the top-level agent an unrecognized selection falls back to.
+        """The agent to use when nobody has validly said which.
 
-        This is also the agent a brand-new session starts on: the value
-        ``hello.ack`` publishes as ``default_agent``, which the client adopts
-        rather than hardcoding one of its own. The two are deliberately the same
-        answer — "which agent, when nobody has said" has no reason to differ
-        between a fresh session and a stale selection.
+        One answer for three questions that have no reason to differ: which
+        agent a brand-new session starts on, what ``hello.ack`` publishes as
+        ``default_agent`` for the client to adopt, and where an unrecognized
+        selection lands.
+
+        Resolved highest-priority first:
+
+        1. The **user's** preference, if the injected ``preferred_default``
+           names a registered *selectable* agent (an alias is accepted; a
+           non-selectable one is not — a session must not start on an agent
+           with no interactive prompt).
+        2. The **shipped** default — the one config declaring ``default: true``.
+
+        A preference naming an agent that is unknown, non-selectable or since
+        deleted falls through to (2) rather than erroring: a stale settings file
+        must not stop a session from starting.
 
         Empty only for a registry that loaded no top-level agents at all, which
         in practice means a test fixture of sub-agents.
         """
-        return self.__default_top_agent
+        preferred = self.__preferred_default() if self.__preferred_default is not None else ""
+        name = self.__top_agent_by_value.get(preferred, "") if preferred else ""
+        if name and any(top.name == name and top.selectable for top in self.__top_agents):
+            return name
+        return self.__declared_default
 
     def __validate_artifact_roles(self, problems: _Problems) -> None:
         """Check every spec's ``produces``/``consumes`` once the set is known.

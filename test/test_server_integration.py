@@ -346,6 +346,74 @@ async def test_agent_set_resolves_a_legacy_workflow_value(
     assert resolved == "guide"
 
 
+async def test_default_agent_get_reports_selection_and_effect(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """With no preference set, `selected` is empty and `effective` is the shipped one."""
+    await _hello(ws)
+    req = _make_request("default_agent.get")
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+
+    registry = AgentRegistry(_AGENTS_DIR)
+    assert resp.payload["selected"] == ""
+    assert resp.payload["effective"] == registry.default_top_agent()
+    assert [a["name"] for a in resp.payload["agents"]] == [
+        a.name for a in registry.top_agents() if a.selectable
+    ]
+
+
+async def test_default_agent_set_changes_what_a_new_session_starts_on(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """The user's pick beats the shipped default, and reaches hello.ack."""
+    await _hello(ws)
+    req = _make_request("default_agent.set", name="guide")
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+    assert resp.payload["ok"] is True
+    assert resp.payload["selected"] == "guide"
+    assert resp.payload["effective"] == "guide"
+
+    # Read back over a fresh connection: the preference is persisted, and the
+    # catalog a new session is handed now names it as the starting agent.
+    req = _make_request("default_agent.get")
+    await ws.send_str(req.to_json())
+    assert (await _recv_response(ws, req.id)).payload["effective"] == "guide"
+
+
+async def test_default_agent_set_rejects_a_non_selectable_agent(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """A session must not be able to start on an agent with no interactive prompt."""
+    await _hello(ws)
+    req = _make_request("default_agent.set", name="judge")
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+    assert resp.payload["ok"] is False
+    assert "judge" in resp.payload["error"]
+
+    req = _make_request("default_agent.get")
+    await ws.send_str(req.to_json())
+    assert (await _recv_response(ws, req.id)).payload["selected"] == ""
+
+
+async def test_default_agent_set_empty_clears_the_preference(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    await _hello(ws)
+    for name in ("guide", ""):
+        req = _make_request("default_agent.set", name=name)
+        await ws.send_str(req.to_json())
+        assert (await _recv_response(ws, req.id)).payload["ok"] is True
+
+    req = _make_request("default_agent.get")
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+    assert resp.payload["selected"] == ""
+    assert resp.payload["effective"] == AgentRegistry(_AGENTS_DIR).default_top_agent()
+
+
 async def test_hello_emits_state_event(ws: aiohttp.ClientWebSocketResponse) -> None:
     await _hello(ws)
     received: list[Envelope] = []

@@ -1,8 +1,9 @@
 # Plan — Top-Level Agents as Prompt + Config
 
-> Status: **phases 1-4 implemented** (2026-09-16 / 2026-09-17). §4.1a, §4.3a,
-> §5.4 and §6a record what actually landed and the deviations. Phase 5
-> (`default_agent` in settings + a Settings row) is still planned.
+> Status: **complete** — phases 1-5 implemented (2026-09-16 / 2026-09-17).
+> §4.1a, §4.3a, §5.4, §6a and §7a record what actually landed and the
+> deviations. What remains is not part of this plan: the user-installed
+> `~/.kodo/agents/` tier, in [TOP_AGENT_PROPOSAL.md](TOP_AGENT_PROPOSAL.md) §4.
 > Written 2026-09-16.
 > Rationale, design space and rejected alternatives: [TOP_AGENT_PROPOSAL.md](TOP_AGENT_PROPOSAL.md).
 > Supersedes [ADDING_A_SUBAGENT.md](ADDING_A_SUBAGENT.md) §4.3-4.4 **once landed** —
@@ -653,6 +654,58 @@ extra round trip.
 
 ---
 
+### 7a. Phase 5 — what actually landed
+
+Implemented 2026-09-17. `3980 passed` (4 new server tests); both repos lint,
+typecheck and build clean.
+
+A `default_agent` key in `~/.kodo/etc/settings.json` decides which agent a new
+session starts on, with a "Default agent" subsection in the Settings panel's
+General section to set it. Precedence resolves inside
+`AgentRegistry.default_top_agent()`, so every caller agrees.
+
+Three things are worth recording:
+
+**1. The preference is injected, not read.** `AgentRegistry` takes a
+`preferred_default: Callable[[], str] | None` and calls it on every resolution.
+A callable rather than a value because the setting is read **live** — a change
+applies to the next session with no server restart, the same treatment
+`housekeeper_llm` and the skills store already get. Injected rather than read
+directly because `kodo.agents` knows nothing about settings files and should
+not learn: the server passes
+`lambda: config.reload_settings().get("default_agent", "")`.
+
+That choice is what keeps the three questions answering the same thing.
+Resolving the preference at the call sites instead would have meant patching
+`hello.ack` and the new-session seed while leaving `resolve_top_agent`'s
+fallback on the shipped default — reintroducing exactly the split §5.4 had just
+merged.
+
+**2. Precedence rung 3 was dropped.** §7 listed "lowest `rank`, then name" as a
+last resort behind the config default. It is unreachable: the registry requires
+**exactly one** agent to declare `default: true`, so "no default declared" is a
+startup error, not a state to recover from. Implementing a tiebreak for a case
+that cannot occur would be dead code claiming to be a safety net. It becomes
+real only if that check is ever relaxed — which the user-installed tier may
+want, and which is the right time to add it.
+
+**3. A non-selectable agent is refused, not just hidden.** `default_agent.set`
+rejects `judge` with `{ok: false}` and persists nothing, and
+`default_top_agent()` ignores such a value if one reaches settings.json by
+hand. Hiding it from the picker is not enough — the setting is a file a user can
+edit, and a session that began on an agent with no interactive prompt would look
+broken rather than misconfigured.
+
+Smaller notes:
+
+- The `.set.ack` carries the full `.get` shape, so the panel refreshes from the
+  response with no follow-up round trip (unlike the `housekeeper_llm` pair it is
+  modelled on, whose ack carries only `{ok, selected}`).
+- An alias is accepted as a preference: `default_agent: "guided"` resolves to
+  `guide`, consistent with every other read path.
+- The panel's first row is "Use Kōdo's default (Problem Solver)" — naming what
+  it resolves to, so clearing the preference is not a blind choice.
+
 ## 8. Migration and compatibility
 
 | Surface | Handling |
@@ -732,7 +785,7 @@ Phase 2  kodo        config as data + §4.3 refactor DONE 2026-09-16 (§4.3a)
 Phase 3  kodo        protocol rename + catalog      ┐ DONE — one change,
          kodo        guided_state field rename §5.3 │ both repos
 Phase 4  kodo-vsix   picker from catalog            ┘ (§5.4, §6a)
-Phase 5  both        default_agent + Settings row
+Phase 5  both        default_agent + Settings row   DONE 2026-09-17 (§7a)
 ```
 
 Phases 1 and 2 are independently shippable and independently valuable — they

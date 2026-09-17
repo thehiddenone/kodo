@@ -307,6 +307,36 @@ housekeeper LLM" webview action.
 
 ---
 
+### 2.8 `default_agent`
+
+Which top-level agent a brand-new session starts on, overriding the one the
+shipped configs declare. An agent **name** (`"guide"`, `"problem_solver"`, …) or
+`""` for "no preference — use Kōdo's default".
+
+```json
+{ "default_agent": "guide" }
+```
+
+Resolved by `AgentRegistry.default_top_agent()`, highest priority first:
+
+1. this key, if it names a registered **selectable** agent (a legacy alias such
+   as `"guided"` is accepted too);
+2. the agent whose config declares `"default": true`.
+
+A value that is unknown, non-selectable, or names an agent that has since been
+removed falls through to (2) rather than erroring — a stale settings file must
+never stop a session from starting. `judge` is rejected for the same reason it
+is absent from the picker: it has no interactive prompt, so a session must not
+begin there.
+
+Read **fresh** each time the default is resolved, so a change applies to the
+next session with no server restart. Exposed in the Kōdo Settings panel's
+"General" section via the `default_agent.get`/`.set` WS commands
+([WS_PROTOCOL.md](WS_PROTOCOL.md) §7.6k).
+
+This only decides where a session *begins*; the agent can still be switched per
+session from Session Parameters.
+
 ## 3. Default user settings
 
 `~/.kodo/etc/settings.json` is written automatically on first server startup if it does not exist:
@@ -315,6 +345,7 @@ housekeeper LLM" webview action.
 {
   "log_level": "INFO",
   "mode": "local",
+  "default_agent": "",
   "cloud_concurrency": 2,
   "active_cloud_vendor": "anthropic",
   "models": {

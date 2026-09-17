@@ -2146,6 +2146,34 @@ handful of seconds/minutes the swap takes, same as any other titler
 start/restart, and callers already tolerate `generate_title`/
 `generate_greeting` returning `None`.
 
+### 7.6k `default_agent.get` / `default_agent.set` — which agent a new session starts on
+
+Control connection only. Backs the Kōdo Settings panel's "General" section's "Default agent" subsection ([SETTINGS.md](SETTINGS.md) §2.8).
+
+`default_agent.get` takes no payload and replies:
+
+```json
+{ "type": "default_agent.get.ack",
+  "selected": "",
+  "effective": "problem_solver",
+  "agents": [ { "name": "problem_solver", "label": "Problem Solver",
+                "description": "…", "rank": 10 } ],
+  "default_agent": "problem_solver" }
+```
+
+`selected` is the user's own preference and is empty when they have expressed none. `effective` is the agent a new session will actually start on — the shipped default whenever `selected` is empty or names an agent that is unknown or not selectable. The panel needs both so its "Use Kōdo's default" row can name the agent it resolves to. `agents` is the same catalog `hello.ack` carries (§4.1), selectable entries only.
+
+`default_agent.set` takes `{ "name": "guide" }`, or `{ "name": "" }` to clear the preference:
+
+```json
+{ "type": "default_agent.set.ack", "ok": true,
+  "selected": "guide", "effective": "guide", "agents": [ … ] }
+```
+
+The ack carries the whole `.get` shape, so the panel refreshes from the response with no follow-up round trip. A `name` that is neither empty nor a **selectable** agent replies `{ "ok": false, "error": "…" }` and persists nothing — a session must not be able to start on an agent with no interactive prompt, which is what rules out `judge`.
+
+Persisted as `default_agent` in `~/.kodo/etc/settings.json` and read fresh each time the default is resolved, so live sessions see the change on their next new session without a reload.
+
 ### 7.6g `server.shutdown` — stop the singleton server (and its llama-servers)
 
 Control connection only. Shuts the whole singleton server process down now,

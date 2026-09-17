@@ -123,6 +123,8 @@ from kodo.transport import (
     MSG_COMMAND_CONTROL_SET,
     MSG_COMPACT_NOW,
     MSG_CONFIG_RELOAD,
+    MSG_DEFAULT_AGENT_GET,
+    MSG_DEFAULT_AGENT_SET,
     MSG_EDIT_CONTROL_SET,
     MSG_HELLO,
     MSG_HOUSEKEEPER_LLM_GET,
@@ -928,6 +930,84 @@ async def _handle_housekeeper_llm_set(req: Request) -> None:
     # different model) before starting the newly selected one.
     asyncio.create_task(start_titling(kodo_user_dir(), option_id))
     await req.reply({"type": "housekeeper_llm.set.ack", "ok": True, "selected": option_id})
+
+
+def _persist_default_agent(name: str) -> None:
+    """Write the ``default_agent`` key into settings.json.
+
+    Patches the raw user file (not the merged defaults view), so unrelated keys
+    the user never set stay absent — same read-modify-write shape as
+    ``_persist_housekeeper_llm``.
+    """
+    path = WorkspaceLayout().settings_json
+    data: dict[str, object] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except (json.JSONDecodeError, OSError) as exc:
+            _log.warning("Rewriting unreadable settings file %s: %s", path, exc)
+    data["default_agent"] = name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _default_agent_payload(
+    registry: AgentRegistry, settings: dict[str, object]
+) -> dict[str, object]:
+    """The catalog plus both halves of "which agent does a new session start on".
+
+    ``selected`` is what the user set (empty for "no preference");
+    ``effective`` is what will actually be used, which differs whenever the
+    preference is empty, unknown, or names a non-selectable agent. The panel
+    needs both to label its "use the default" choice with the right agent.
+    """
+    raw = settings.get("default_agent")
+    return {
+        "selected": raw if isinstance(raw, str) else "",
+        "effective": registry.default_top_agent(),
+        **_top_agents_payload(registry),
+    }
+
+
+def _make_default_agent_get_handler(config: Config, registry: AgentRegistry) -> HandlerFn:
+    async def _handle_default_agent_get(req: Request) -> None:
+        await req.reply(
+            {
+                "type": "default_agent.get.ack",
+                **_default_agent_payload(registry, config.reload_settings()),
+            }
+        )
+
+    return _handle_default_agent_get
+
+
+def _make_default_agent_set_handler(config: Config, registry: AgentRegistry) -> HandlerFn:
+    async def _handle_default_agent_set(req: Request) -> None:
+        name = str(req.env.payload.get("name", "")).strip()
+        # "" clears the preference; anything else must name an agent a session
+        # could actually start on, which rules out the non-selectable ones.
+        selectable = {a.name for a in registry.top_agents() if a.selectable}
+        if name and name not in selectable:
+            await req.reply(
+                {
+                    "type": "default_agent.set.ack",
+                    "ok": False,
+                    "error": f"Unknown or non-selectable agent: {name!r}",
+                }
+            )
+            return
+        _persist_default_agent(name)
+        await req.reply(
+            {
+                "type": "default_agent.set.ack",
+                "ok": True,
+                **_default_agent_payload(registry, config.reload_settings()),
+            }
+        )
+
+    return _handle_default_agent_set
 
 
 # ------------------------------------------------------------------
@@ -2678,7 +2758,13 @@ def create_app(config: Config) -> web.Application:
     SkillStore(kodo_skills_dir()).ensure_root()
     _setup_log_file(layout, config.log_level)
 
-    registry = AgentRegistry(_AGENTS_DIR)
+    # The registry resolves the default agent, and the user's preference is a
+    # settings key — injected as a live read so a change applies to the next
+    # session without a server restart.
+    registry = AgentRegistry(
+        _AGENTS_DIR,
+        preferred_default=lambda: str(config.reload_settings().get("default_agent", "")),
+    )
     gateway = LLMGateway(
         cloud_concurrency=lambda: _cloud_concurrency(config),
     )
@@ -2712,6 +2798,12 @@ def create_app(config: Config) -> web.Application:
         MSG_HOUSEKEEPER_LLM_GET, _make_housekeeper_llm_get_handler(config)
     )
     conn_registry.register_handler(MSG_HOUSEKEEPER_LLM_SET, _handle_housekeeper_llm_set)
+    conn_registry.register_handler(
+        MSG_DEFAULT_AGENT_GET, _make_default_agent_get_handler(config, registry)
+    )
+    conn_registry.register_handler(
+        MSG_DEFAULT_AGENT_SET, _make_default_agent_set_handler(config, registry)
+    )
     conn_registry.register_handler(MSG_SKILLS_LIST, _handle_skills_list)
     conn_registry.register_handler(MSG_SKILLS_DELETE, _handle_skills_delete)
     conn_registry.register_handler(MSG_SKILLS_INSTALL_SCAN, _handle_skills_install_scan)

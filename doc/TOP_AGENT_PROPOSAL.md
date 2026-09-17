@@ -1,9 +1,9 @@
 # Proposal — User-Installed Top-Level Agents
 
 > Status: **the rationale record.** Written 2026-09-16. Phases 1-3 of the roadmap
-> below are **implemented** (including the client picker, PLAN phase 4); phase 4
+> below are **implemented** — the whole of TOP_AGENT_PLAN.md is done. Phase 4
 > here — the user-installed `~/.kodo/agents/` tier this document is actually
-> about — is not started. The implementation plan and its running record live in
+> about — is not started, and is all that remains. The implementation plan and its running record live in
 > [TOP_AGENT_PLAN.md](TOP_AGENT_PLAN.md); this document stays as *why* those
 > options and not the others.
 > Question asked: *"what should be done to allow creation of new top level agents

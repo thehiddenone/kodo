@@ -364,6 +364,29 @@ MSG_HOUSEKEEPER_LLM_SET = "housekeeper_llm.set"
 # included with a non-empty ``error`` and an empty ``description`` — the panel
 # shows them so a broken skill can be seen and deleted rather than silently
 # vanishing; an agent never sees them.
+# Client → Server. Control connection only. Read the top-level agent catalog
+# and the currently preferred starting agent (doc/SETTINGS.md §2.8) — backs the
+# Kōdo Settings panel's "General" section's "Default agent" subsection. No
+# payload. Replies ``default_agent.get.ack`` ``{selected: "problem_solver",
+# effective: "problem_solver", agents: [{name, label, description, rank}, ...]}``.
+#
+# ``selected`` is the user's own setting, empty when they have expressed no
+# preference; ``effective`` is what a new session will actually start on, which
+# is the shipped default whenever ``selected`` is empty or names an agent that
+# is unknown or not selectable. The panel needs both to render "Use the default
+# (Problem Solver)" alongside the explicit choices.
+MSG_DEFAULT_AGENT_GET = "default_agent.get"
+
+# Client → Server. Control connection only. Set the preferred starting agent.
+# Payload: ``{name: "guide"}`` — a name from the catalog above, or ``""`` to
+# clear the preference and fall back to the shipped default. Persists
+# ``default_agent`` into settings.json. Replies ``default_agent.set.ack``
+# ``{ok: true, selected, effective}`` once persisted, or ``{ok: false, error}``
+# if ``name`` is neither empty nor a selectable agent (nothing is persisted in
+# that case). Live sessions pick the change up without a reload: the setting is
+# read fresh every time the default is resolved.
+MSG_DEFAULT_AGENT_SET = "default_agent.set"
+
 MSG_SKILLS_LIST = "skills.list"
 
 # Client → Server. Control connection only. Delete one installed skill's whole
