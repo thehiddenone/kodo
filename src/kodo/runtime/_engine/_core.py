@@ -397,9 +397,7 @@ class WorkflowEngine(
             # nothing from ``kodo`` and so cannot consult the registry, which
             # is exactly why the accepted set is no longer validated in two
             # places. A stale or legacy value resolves to a real agent.
-            self._session.top_agent = self._registry.stored_top_agent_value(
-                self._transient.workflow_mode
-            )
+            self._session.top_agent = self._registry.resolve_top_agent(self._transient.top_agent)
             self._session.edit_control = self._transient.edit_control
             self._session.command_control = self._transient.command_control
             self._session.security_rules = self._transient.security_rules
@@ -433,7 +431,13 @@ class WorkflowEngine(
                         self._resume_pending_prompt(pending), name="kodo-resume-prompt"
                     )
         else:
-            # Brand-new session: seed thinking_level from the caller's
+            # Brand-new session: start on the registry's declared default, so
+            # ``hello.ack``'s state already names a real agent rather than the
+            # empty placeholder ``SessionState`` carries. The client publishes
+            # the same value as ``default_agent`` and does not pick one itself.
+            self._session.top_agent = self._registry.default_top_agent()
+            self._transient.update(top_agent=self._session.top_agent)
+            # Seed thinking_level from the caller's
             # explicit *thinking_level* if given and valid, else the active
             # model's family default — same reconciliation as the resumed
             # path, just against ``thinking_level`` instead of a persisted
@@ -576,7 +580,7 @@ class WorkflowEngine(
         (accepting input) while actually never processing another queued
         prompt.
 
-        ``self._session.agent`` is not a reliable ``entry_agent`` here: while
+        ``self._session.agent`` is not a reliable ``top_agent`` here: while
         a subsession is active it holds the *sub-agent's* own name (set by
         ``_drive_subsession`` and never restored), not the top-level entry
         agent that actually owns the dangling ``run_subagent`` tool_use in
@@ -584,7 +588,7 @@ class WorkflowEngine(
         turn record and could point a future cold-restart resume
         (:meth:`~._resume.ResumeMixin._resume_main_turn`) at the wrong agent.
         ``_last_top_agent()`` recovers the correct one from the already-
-        persisted ``entry_agent`` tag in that case.
+        persisted ``top_agent`` tag in that case.
         """
         was_running = self._session.phase == "running"
         in_subsession = self._transient.active_subsession is not None
@@ -606,7 +610,7 @@ class WorkflowEngine(
         self._session.agent = None
         await self._emitters.emit_state()
         self._worker = asyncio.create_task(self._run_worker(), name="kodo-worker")
-        _log.info("Runtime worker stopped by user (entry_agent=%s); session ready", top_agent)
+        _log.info("Runtime worker stopped by user (top_agent=%s); session ready", top_agent)
 
     # ------------------------------------------------------------------
     # Client-facing handlers
@@ -642,21 +646,23 @@ class WorkflowEngine(
         self._transient.update(autonomous=autonomous)
         await self._emitters.emit_state()
 
-    async def handle_workflow_set(self, mode: str) -> None:
+    async def handle_agent_set(self, name: str) -> None:
         """Select the top-level agent that drives user prompts.
 
         The accepted set is whatever the registry has loaded, not a tuple
         maintained here, so registering a top-level agent is all it takes to
-        make it selectable.
+        make it selectable. The *resolved* name is what gets stored and echoed
+        in the next state event, so a client that sent a legacy alias sees the
+        agent it actually got rather than the value it typed.
 
         Args:
-            mode: A top-level agent name (``"guide"``, ``"problem_solver"``,
+            name: A top-level agent name (``"guide"``, ``"problem_solver"``,
                 ``"judge"``) or a legacy workflow-mode alias (``"guided"``,
-                ``"problem_solving"``). Unknown values fall back to the
-                registry's declared default.
+                ``"problem_solving"``) from a session persisted before the
+                rename. Unknown values fall back to the registry's default.
         """
-        self._session.top_agent = self._registry.stored_top_agent_value(mode)
-        self._transient.update(workflow_mode=self._session.top_agent)
+        self._session.top_agent = self._registry.resolve_top_agent(name)
+        self._transient.update(top_agent=self._session.top_agent)
         await self._emitters.emit_state()
 
     async def handle_edit_control_set(self, value: str) -> None:

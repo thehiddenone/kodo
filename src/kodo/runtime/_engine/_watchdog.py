@@ -653,7 +653,7 @@ class WatchdogMixin:
             self._transient.append_message(
                 role,
                 nudge.llm_text,
-                entry_agent=agent_name,
+                top_agent=agent_name,
                 kind="nudge",
                 detail=detail,
             )

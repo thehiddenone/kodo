@@ -22,7 +22,7 @@ crash or restart.
 >   both workflow modes since the 2026-07-24 multi-project rework. There is no
 >   separate Guided-mode project binding any more (the old `current_project`
 >   field, immutable and singular, is gone): a Guided session may be bound to
->   zero, one, or several projects, exactly like Problem Solver. `workflow_mode`
+>   zero, one, or several projects, exactly like Problem Solver. `top_agent`
 >   (`session.list`'s display field) says which pipeline is driving, not which
 >   or how many directories are bound.
 > - **Crash-resume** of a mid-subagent turn is unchanged, and now runs when the
@@ -35,7 +35,7 @@ crash or restart.
 Kōdo's persisted state has exactly two levels:
 
 1. **The main session** — the top-level conversation between the user and
-   whichever *entry agent* is currently driving (the **Guide** in Guided
+   whichever *top-level agent* is currently driving (the **Guide** in Guided
    Project Workflow, or the **Problem Solver** in Problem-Solving mode). A
    session is owned by exactly one window at a time (above), but — since the
    2026-07-24 multi-project rework — is not tied to a single project
@@ -62,7 +62,7 @@ seamlessly across the change.
 > guide identity. Today only the Guide opts in (the Problem Solver
 > ships without a spawning tool, so in Problem-Solving mode there are no
 > subsessions), but the path is fully agent-agnostic and crash-resume recovers
-> *whichever* entry agent was holding the floor (see `_last_entry_agent`).
+> *whichever* top-level agent was holding the floor (see `_last_entry_agent`).
 
 ## On-disk layout
 
@@ -182,7 +182,7 @@ order):
 
 - **Message lines** — `{"role": "user"|"assistant", "content": ..., "entry_agent": "guide"|"problem_solver"}`.
   These are the top-level LLM context. `entry_agent` is a display/audit tag only;
-  because the two entry agents share context, every message replays into the one
+  because the two top-level agents share context, every message replays into the one
   `_main_messages` list regardless of tag.
   A user message that carried file attachments also gets `"attachments":
   [{"id", "name", "stored"}]` — opaque links to the copies under `attachments/`
@@ -370,14 +370,14 @@ the now-closed block, not swallowed into it.
 
 `stop()` also cannot use `session.agent` for the interrupted-turn record's
 `entry_agent` tag while a subsession is active, for the same reason —
-it recovers the true top-level entry agent (who actually owns the dangling
+it recovers the true top-level top-level agent (who actually owns the dangling
 `run_subagent` tool_use in `_main_messages`) via `_last_entry_agent()`
 instead.
 
 ### Typed sub-agent interface (input/output schemas)
 
 Agent↔sub-agent interaction is typed, mirroring tools. Every sub-agent except
-the entry agents (`guide`, `problem_solver`) has a `SubAgentSpec`
+the top-level agents (`guide`, `problem_solver`) has a `SubAgentSpec`
 (`kodo.agents.subagents.specs`, one JSON file per agent) declaring an `input_schema` and an
 `output_schema`. Neither schema is ever restated as prose in a system prompt.
 The registry auto-grants such agents the terminal `return_result` tool and a
@@ -508,7 +508,7 @@ the source of truth and validates every change:
   model family.
 
 `WorkflowEngine._current_base_llm()` is the shared resolver behind all of
-this: it resolves the entry agent's model key the same way `_resolve_plugin`
+this: it resolves the top-level agent's model key the same way `_resolve_plugin`
 does, then looks up its `base_llm` in the local registry — `""` for a cloud
 model or a local entry with none.
 
@@ -614,10 +614,10 @@ startup. Then:
        agent sees the interruption and may retry, re-triggering the same
        judgement.
   3. Append the resulting `tool_result`s to `_main_messages`, persist them, and
-     continue the **interrupted entry agent's** turn live (the next LLM call).
-     The entry agent is recovered from the `entry_agent` tag on the dangling
+     continue the **interrupted top-level agent's** turn live (the next LLM call).
+     The top-level agent is recovered from the `entry_agent` tag on the dangling
      assistant message (`_last_entry_agent`), not assumed to be the Guide
-     — any entry agent can be the one resumed.
+     — any top-level agent can be the one resumed.
 
   This is why the user sees Kōdo "recover into that mode, load both the main
   session and the active subsession, and resume the sub-agent's subsession"
@@ -713,7 +713,7 @@ reconstructed from the `kind="subagent_task"` seed message).
 | Concern | Location |
 | --- | --- |
 | Main log + subsession files + active pointer | `kodo/state/_transient.py` (`TransientStore`) |
-| Shared entry-agent loop + persistence | `kodo/runtime/_engine/` (`_run_entry_agent`, `_run_agent_turn`) |
+| Shared top-level agent loop + persistence | `kodo/runtime/_engine/` (`_run_entry_agent`, `_run_agent_turn`) |
 | Subsession lifecycle + replay | `runtime/_engine/` (`_run_subagent`, `_spawn_subagent`, `_drive_subsession`, `_open_subsession`, `_close_subsession`, `_replay_next_subsession`) |
 | Spawn permission gate (per-caller `subagents:` allow-list) | `runtime/_engine/` (`_assert_can_spawn`), `subagents/_registry.py` (`allowed_subagents`), `subagents/_loader.py` (`SubAgent.subagents`) |
 | Crash resume | `runtime/_engine/` (`start`, `_has_dangling_tool_use`, `_resume_main_turn`, `_last_entry_agent`, `_build_replay_ledger`) |

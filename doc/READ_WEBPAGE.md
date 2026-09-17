@@ -9,7 +9,7 @@ Companion to [WEB_SEARCH.md](WEB_SEARCH.md) (the sibling `query_search_engine`/
 serve a different purpose — querying a search engine vs. reading a known
 page) and [TOOLS.md](TOOLS.md) (tool subsystem mechanics). The tool is
 currently granted only to the shared `investigator` sub-agent (spawnable by
-both entry agents, `problem_solver` and `guide`) and the `web_search` agent.
+both top-level agents, `problem_solver` and `guide`) and the `web_search` agent.
 
 ---
 

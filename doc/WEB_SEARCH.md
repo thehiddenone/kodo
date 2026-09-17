@@ -10,7 +10,7 @@ Companion to [TOOLS.md](TOOLS.md) (tool subsystem mechanics),
 (the sibling single-page fetch tool — same `kodo.websearch` package and fetch
 backends, but an independent, un-agent-driven path). `web_search` is
 currently granted only to the shared `investigator` sub-agent (spawnable by
-both entry agents, `problem_solver` and `guide`).
+both top-level agents, `problem_solver` and `guide`).
 
 ---
 

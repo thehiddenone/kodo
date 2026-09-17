@@ -35,7 +35,7 @@ def _revise(root: Path, sha: str = "sha") -> Path:
         author="architect",
         tool="edit_file",
         summary="write",
-        workflow="guided",
+        top_agent="guide",
     )
     return doc
 

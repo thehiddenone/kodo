@@ -1,9 +1,10 @@
 {
   "name": "guide",
-  "notes": "The full Kodo pipeline. `label` is deliberately NOT the agent's display_name: the feed calls this agent 'Kodo' (its frontmatter display_name), while the picker has always called the choice 'Guide' — naming the option after the product would read as 'pick Kodo' in a list of Kodo's own agents. `aliases` carries the legacy workflow-mode value so sessions persisted before the rename still resume onto this agent.",
+  "notes": "The full Kodo pipeline. `label` is deliberately NOT the agent's display_name: the feed calls this agent 'Kodo' (its frontmatter display_name), while the picker has always called the choice 'Guide' \u2014 naming the option after the product would read as 'pick Kodo' in a list of Kodo's own agents. `aliases` carries the legacy workflow-mode value so sessions persisted before the rename still resume onto this agent.",
   "label": "Guide",
   "description": "One coordinating agent drives specialists through design, tests and implementation.",
   "rank": 20,
-  "default": true,
-  "aliases": ["guided"]
+  "aliases": [
+    "guided"
+  ]
 }

@@ -136,15 +136,12 @@ class SessionState:
     component: str | None = None
     autonomous: bool = False
     effective_autonomous: bool = False
-    # Defaults spelled the *legacy* way on purpose. These two are emitted
-    # verbatim as ``workflow_mode``/``effective_workflow_mode``, and phase 1 of
-    # doc/TOP_AGENT_PLAN.md must not change a single byte the client sees —
-    # kodo-vsix reads anything that is not ``"problem_solving"`` as Guided, and
-    # the session picker's label compares against ``"guided"`` exactly. They
-    # resolve to the ``guide`` agent either way (``resolve_top_agent``); phase 3
-    # renames the wire keys and flips these to plain agent names.
-    top_agent: str = "guided"
-    effective_top_agent: str = "guided"
+    # Empty until something says otherwise. There is no sensible literal to
+    # put here — which agent is the default is the registry's answer, and this
+    # dataclass has no registry — so ``WorkflowEngine.start`` fills it for a
+    # brand-new session and the resume path fills it from the store.
+    top_agent: str = ""
+    effective_top_agent: str = ""
     edit_control: str = "smart"
     command_control: str = "smart"
     thinking_level: str = ""
@@ -173,12 +170,8 @@ class SessionState:
             else None,
             "autonomous": self.autonomous,
             "effective_autonomous": self.effective_autonomous,
-            # Wire keys still say ``workflow_mode``: phase 1 of
-            # doc/TOP_AGENT_PLAN.md renames the Python field only, and the
-            # protocol rename to ``top_agent``/``effective_top_agent`` lands
-            # with the client change in phase 3.
-            "workflow_mode": self.top_agent,
-            "effective_workflow_mode": self.effective_top_agent,
+            "top_agent": self.top_agent,
+            "effective_top_agent": self.effective_top_agent,
             "edit_control": self.edit_control,
             "command_control": self.command_control,
             "thinking_level": self.thinking_level,

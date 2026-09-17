@@ -1,7 +1,8 @@
 # Plan — Top-Level Agents as Prompt + Config
 
-> Status: **phases 1-2 implemented 2026-09-16** (§4.1a and §4.3a record what
-> actually landed and the deviations); phases 3-5 still planned.
+> Status: **phases 1-4 implemented** (2026-09-16 / 2026-09-17). §4.1a, §4.3a,
+> §5.4 and §6a record what actually landed and the deviations. Phase 5
+> (`default_agent` in settings + a Settings row) is still planned.
 > Written 2026-09-16.
 > Rationale, design space and rejected alternatives: [TOP_AGENT_PROPOSAL.md](TOP_AGENT_PROPOSAL.md).
 > Supersedes [ADDING_A_SUBAGENT.md](ADDING_A_SUBAGENT.md) §4.3-4.4 **once landed** —
@@ -32,7 +33,7 @@ while the agent set is closed and exhaustively testable.
 
 ## 1. Vocabulary — read this first
 
-The old word for this concept was **"entry agent"**. It is retired. The rule,
+The old word for this concept was **"top-level agent"**. It is retired. The rule,
 decided 2026-09-16:
 
 > **Use `agent`. Where `agent` is already taken by something else, use
@@ -493,6 +494,69 @@ workflow modes" prose.
 
 ---
 
+### 5.4 Phase 3 — what actually landed
+
+Implemented 2026-09-16. `3972 passed`, lint and mypy clean.
+
+> ~~**The working tree is mid-flight.**~~ **Resolved** — phase 4 (§6a) landed
+> alongside this, so the two halves of §11.1 are both in the same change.
+
+Everything in §5.1-5.3 landed as written. Three things are worth recording:
+
+**1. `default: true` had to move from `guide` to `problem_solver`.** Not a
+preference — a forced consequence. Phase 4 has the client adopt `hello.ack`'s
+`default_agent` for a brand-new session instead of hardcoding one, and kodo-vsix
+has always started new sessions on Problem Solver. Leaving the flag on `guide`
+would have silently changed the agent every new session begins with.
+
+That also merges two things that had drifted apart: the agent a **fresh session
+starts on** (client-side, Problem Solver) and the agent an **unrecognized
+selection falls back to** (server-side, Guide). They are now one answer, which is
+the honest reading of "which agent, when nobody has said". The visible change is
+nil; the invisible one is that a stale or garbage selection now lands on Problem
+Solver.
+
+**2. `SessionState` no longer names a default at all.** Phase 1 had it spelled
+`"guided"` to keep the wire byte-identical. It is now `""`, and
+`WorkflowEngine.start` seeds a brand-new session from
+`registry.default_top_agent()`. The dataclass has no registry, so any literal
+there would be a second answer to a question the registry already answers.
+
+**3. Legacy *reads* survive; legacy *writes* do not.** §4.1a said phase 3 would
+delete "`stored_top_agent_value`, the `aliases` it reads, and the legacy
+defaults" together. That was too broad, and §5.1 had it right: `aliases` and
+`resolve_top_agent` are the **migration path** for data already on disk and must
+stay. What actually went is `stored_top_agent_value` — the shim that wrote the
+legacy spelling back out. Three read-side fallbacks are deliberate and permanent
+until the data ages out:
+
+| Surface | Current | Also reads |
+|---|---|---|
+| `transient.json` | `top_agent` | `workflow_mode` |
+| `session.jsonl` line tag | `top_agent` | `entry_agent` |
+| any stored selection | an agent name | `guided` / `problem_solving` via `aliases` |
+
+Smaller notes:
+
+- **Risk §11.1's mitigation was already satisfied**: the server answers an
+  unrecognized message with `{"code": "unknown_message"}` rather than dropping it,
+  so a stale client fails loudly. Confirmed by a validator test that hit exactly
+  that when `workflow.set` went away.
+- `session.list` rows now carry `agent` **and** `agent_label`, resolved
+  server-side. That is what retires the client-side ternary which made a
+  validator-created `"judge"` session display as "Guided".
+- `SessionManager` gained a read-only `registry` property so `hello.ack` can
+  build the catalog; the registry is built once at startup and nothing may swap
+  it under a live session.
+- The `guided_state` jsonl field is `top_agent`, **not** `agent`, because that
+  record already carries `author` — which is itself an agent name (often a
+  sub-agent). `author` is who wrote the file; `top_agent` is whose run it
+  happened under.
+- One test's whole point was the legacy `entry_agent` tag, and a blanket rename
+  quietly rewrote its fixture data to the new key — removing what it tested while
+  leaving it green. It is now three tests: the old key, the old key *and* the old
+  vocabulary, and the new key winning when both are present.
+
 ## 6. Phase 4 — the kodo-vsix agent picker
 
 Eight files. The two menu primitives (`MenuGroup`, `MenuOption`) are **already
@@ -514,6 +578,56 @@ Group heading stays **"Agent"** — already the right word and already what the 
 says.
 
 ---
+
+### 6a. Phase 4 — what actually landed
+
+Implemented 2026-09-17. `3976 passed` on the `kodo` side (4 new server tests);
+`tsc --noEmit`, `eslint` and the production esbuild bundle all clean on
+`kodo-vsix`. **Phases 3 and 4 are one change** (§11.1) — the tree is coherent
+again.
+
+Everything in §6 landed as written. Four things are worth recording:
+
+**1. `coerceTopAgent` does *not* validate against the served catalog.** §6 said
+it should. That is wrong, and the reason is `judge`: the catalog carries only
+**selectable** agents, so a validator session legitimately runs an agent the
+catalog omits — checking against it would reject the very value the server just
+confirmed. Every value reaching this function comes from the server, already
+resolved, so the honest job is "turn missing-or-not-a-string into the caller's
+fallback" and nothing more. My first draft had two branches that both returned
+the same thing, which is what made the redundancy obvious.
+
+**2. The picker label falls back to the bare agent name.** `_agentLabel` looks
+the name up in the catalog and uses the name itself when it is absent — the same
+`judge` case. Showing `judge` beats showing nothing, and beats showing another
+agent's label.
+
+**3. `SessionListEntry` exists twice**, once in `settings-panel/types.ts` (host)
+and once in `settings-webview/types.ts` (the panel's bundle). Both needed the
+`agent`/`agent_label` pair. Worth knowing before the next wire-shape change:
+`tsc` catches the mismatch, but only from the second one.
+
+**4. The webview re-declares `AgentRow` rather than importing it.** The webview
+is a separate bundle sharing no module graph with the extension host; the
+`mode_state` message is the only contract between them, exactly as the existing
+`EditControl`/`CommandControl` types already work.
+
+The client now hardcodes **no** agent name anywhere:
+
+| Was | Now |
+|---|---|
+| two literal `<MenuOption>` rows + `isPS` | `agents.map(…)` over the served catalog |
+| `_MODE_DESC.guided` / `.problem_solving` | each row's served `description` |
+| `applyNewSessionDefaults()` sending `problem_solving` | sending `hello.ack`'s `default_agent` |
+| `coerceWorkflowMode` collapsing everything to `'guided'` | `coerceTopAgent(value, fallback)` |
+| `kindLabel = mode === 'guided' ? … : …` (twice) | the row's server-resolved `agent_label` |
+
+**Server-side tests added** for the contract phase 4 depends on, which had none:
+`hello.ack` carries every selectable agent with all four fields and the right
+order; non-selectable agents are absent from it; `agent.set` still accepts one
+anyway; and a legacy `"guided"` resolves to `guide` in the state echo. That last
+one needed care — the engine emits `state` *before* the ack, so reading the
+response first discards the event under test.
 
 ## 7. The default, and the user override
 
@@ -568,7 +682,7 @@ extra round trip.
 
 | Doc | Change |
 |---|---|
-| `ADDING_A_SUBAGENT.md` §4 | Rewrite: §4.3's six engine edits and §4.4's VSIX grep list become "add two files". §4.1's "it is not data-driven" is the claim this plan deletes. Retire "entry agent" for §1's vocabulary. **On landing, not before.** |
+| `ADDING_A_SUBAGENT.md` §4 | Rewrite: §4.3's six engine edits and §4.4's VSIX grep list become "add two files". §4.1's "it is not data-driven" is the claim this plan deletes. Retire "top-level agent" for §1's vocabulary. **On landing, not before.** |
 | `WS_PROTOCOL.md` | §7.6 `workflow.set` → `agent.set`; §5.1 `hello.ack` gains `agents` + `default_agent`; §5.2 `state` field rename; `session.list` row gains `agent_label`; new §7.6 pair for `default_agent.get`/`.set`. |
 | `STATE_AND_LIFECYCLE.md` | §1.1 (line 97) is the schema of record for `new_revision` — rename the field there **in the same commit as §5.3**; plus the "both workflow modes" prose at :49, :65, :165, :344, :368. |
 | `SETTINGS.md` | New §2.8 `default_agent`; add it to the §3 default file. |
@@ -576,7 +690,7 @@ extra round trip.
 | `TOOLS.md` | Remove any mention of mode-gated tools (§4.1 deletes the concept). |
 | `VALIDATOR.md` | `--workflow` → `--agent`. |
 | `GUIDED_DEV_MODE.md` | Check for "Guided mode" used to mean an engine behavior rather than an agent — after §4.1 the engine has no such concept. |
-| `TOP_AGENT_PROPOSAL.md` | Keep as the rationale record; its "entry agent" vocabulary is superseded by §1 here. |
+| `TOP_AGENT_PROPOSAL.md` | Keep as the rationale record; its "top-level agent" vocabulary is superseded by §1 here. |
 
 **Already fixed, independently of this plan:** `WS_PROTOCOL.md` §4.1 claimed the
 client re-syncs `mode.set` / `workflow.set` from `.kodo/settings.json` after
@@ -615,9 +729,9 @@ hardcodes the value. Corrected in this pass.
 Phase 1  kodo        engine agent-agnostic          DONE 2026-09-16 (§4.1a)
 Phase 2  kodo        config as data + §4.3 refactor DONE 2026-09-16 (§4.3a)
    ── land and verify against the existing VSIX ──
-Phase 3  kodo        protocol rename + catalog      ┐ one commit,
+Phase 3  kodo        protocol rename + catalog      ┐ DONE — one change,
          kodo        guided_state field rename §5.3 │ both repos
-Phase 4  kodo-vsix   picker from catalog            ┘
+Phase 4  kodo-vsix   picker from catalog            ┘ (§5.4, §6a)
 Phase 5  both        default_agent + Settings row
 ```
 

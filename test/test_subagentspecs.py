@@ -59,7 +59,7 @@ def _agent_names() -> set[str]:
     return {p.stem[len("subagent_") :] for p in _SUBAGENTS_DIR.glob("subagent_*.md")}
 
 
-def test_every_non_entry_agent_has_a_spec() -> None:
+def test_every_sub_agent_has_a_spec() -> None:
     missing = _agent_names() - _ENTRY_AGENTS - set(_SPECS_BY_NAME)
     assert not missing, f"sub-agents without a SubAgentSpec: {sorted(missing)}"
 
@@ -69,7 +69,7 @@ def test_every_spec_has_a_subagent_file() -> None:
     assert not orphans, f"SubAgentSpecs with no subagent_<name>.md: {sorted(orphans)}"
 
 
-def test_entry_agents_have_no_spec() -> None:
+def test_top_agents_have_no_spec() -> None:
     assert not (_ENTRY_AGENTS & set(_SPECS_BY_NAME))
 
 
@@ -327,7 +327,7 @@ def test_registry_auto_grants_return_result_and_input_parameters_note() -> None:
         assert "input_schema" not in agent.system_prompt, name
 
 
-def test_registry_leaves_entry_agents_without_return_result() -> None:
+def test_registry_leaves_top_agents_without_return_result() -> None:
     registry = AgentRegistry(_AGENTS_DIR)
     for name in _ENTRY_AGENTS:
         agent = registry.get(name)

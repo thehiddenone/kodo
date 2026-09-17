@@ -36,9 +36,14 @@ def _now() -> str:
 
 
 def new_revision_entry(
-    *, commit_hash: str, author: str, tool: str, summary: str, workflow: str
+    *, commit_hash: str, author: str, tool: str, summary: str, top_agent: str
 ) -> dict[str, object]:
-    """An author's revision, recorded right after its mirror commit."""
+    """An author's revision, recorded right after its mirror commit.
+
+    Two agent names, deliberately: ``author`` is who wrote the file — often a
+    sub-agent mid-pipeline — while ``top_agent`` is the top-level agent whose
+    run it happened under. Neither substitutes for the other.
+    """
     return {
         "type": "new_revision",
         "timestamp": _now(),
@@ -46,7 +51,7 @@ def new_revision_entry(
         "author": author,
         "tool": tool,
         "summary": summary,
-        "workflow": workflow,
+        "top_agent": top_agent,
     }
 
 

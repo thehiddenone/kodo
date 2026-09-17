@@ -221,10 +221,10 @@ async def test_start_resumed_session_restores_prefs_and_messages(tmp_path: Path)
     kodo_dir = tmp_path / "home"
     seed_transient = TransientStore(kodo_dir)
     seed_transient.attach_session("session-2", resumed=False)
-    seed_transient.append_message("user", "hello from before", entry_agent="guide")
+    seed_transient.append_message("user", "hello from before", top_agent="guide")
     seed_transient.update(
         autonomous=True,
-        workflow_mode="problem_solving",
+        top_agent="problem_solving",
         edit_control="allow_all",
         command_control="permissive",
     )
@@ -235,7 +235,9 @@ async def test_start_resumed_session_restores_prefs_and_messages(tmp_path: Path)
 
         assert len(engine._main_messages) == 1
         assert engine._session.autonomous is True
-        assert engine._session.top_agent == "problem_solving"
+        # Seeded as a legacy workflow-mode value; resume resolves it to the
+        # agent it names, which is the whole point of keeping the aliases.
+        assert engine._session.top_agent == "problem_solver"
         assert engine._session.edit_control == "allow_all"
         assert engine._session.command_control == "permissive"
         assert engine._compactor.context_tokens > 0
@@ -272,7 +274,7 @@ async def test_start_resumed_with_dangling_tool_use_sets_resume_pending(tmp_path
     seed_transient.append_message(
         "assistant",
         [{"type": "tool_use", "id": "tu_1", "name": "run_command", "input": {}}],
-        entry_agent="guide",
+        top_agent="guide",
     )
 
     engine, _transient, _s, _g = _make_engine(tmp_path)
@@ -572,7 +574,7 @@ async def test_stop_while_running_persists_interrupted_turn(tmp_path: Path) -> N
         await _cancel_worker(engine)
 
 
-async def test_stop_while_in_subsession_closes_it_and_tags_correct_entry_agent(
+async def test_stop_while_in_subsession_closes_it_and_tags_correct_top_agent(
     tmp_path: Path,
 ) -> None:
     """Stop mid-subsession must not leave it open forever (the bug: neither
@@ -587,7 +589,7 @@ async def test_stop_while_in_subsession_closes_it_and_tags_correct_entry_agent(
     try:
         await engine.start("s1", resumed=False)
         # Simulate: the guide's turn flushed a dangling run_subagent tool_use
-        # to disk (tagged entry_agent="guide") before dispatch, then
+        # to disk (tagged top_agent="guide") before dispatch, then
         # _open_subsession/_drive_subsession took over -- overwriting
         # session.agent to the sub-agent's own name, exactly as the real
         # _drive_subsession does, and leaving active_subsession set (the
@@ -598,7 +600,7 @@ async def test_stop_while_in_subsession_closes_it_and_tags_correct_entry_agent(
             content=[{"type": "tool_use", "id": "tu_1", "name": "run_subagent", "input": {}}],
         )
         engine._main_messages = [Message(role="user", content="go"), dangling]
-        transient.append_message("assistant", dangling.content, entry_agent="guide")
+        transient.append_message("assistant", dangling.content, top_agent="guide")
         transient.update(
             active_subsession={
                 "subsession_id": "sub1",
@@ -622,7 +624,7 @@ async def test_stop_while_in_subsession_closes_it_and_tags_correct_entry_agent(
         # Tagged with the true top-level entry agent recovered via
         # _last_top_agent(), not "investigator" (session.agent's stale
         # value while a subsession is active).
-        assert stopped_notices[-1]["entry_agent"] == "guide"
+        assert stopped_notices[-1]["top_agent"] == "guide"
 
         ended = [env for env in sink.sent if env.payload.get("type") == "subsession.ended"]
         assert ended
@@ -662,27 +664,29 @@ async def test_handle_mode_set_updates_session_and_persists(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        # Legacy workflow-mode values keep working, and keep their spelling: the
-        # wire vocabulary does not change until the protocol rename lands.
-        ("problem_solving", "problem_solving"),
+        # Agent names round-trip.
+        ("problem_solver", "problem_solver"),
+        ("guide", "guide"),
         ("judge", "judge"),
-        ("guided", "guided"),
-        ("bogus", "guided"),
-        # Agent names are accepted too, and normalize to the same stored value.
-        ("problem_solver", "problem_solving"),
-        ("guide", "guided"),
+        # Legacy workflow-mode values still select the right agent, and are
+        # stored *resolved* — a client that sent an alias sees what it got.
+        ("problem_solving", "problem_solver"),
+        ("guided", "guide"),
+        # Anything unrecognized lands on the registry's declared default.
+        ("bogus", "problem_solver"),
+        ("", "problem_solver"),
     ],
 )
-async def test_handle_workflow_set_normalizes_unknown_modes(
+async def test_handle_agent_set_resolves_and_stores_the_agent_name(
     tmp_path: Path, mode: str, expected: str
 ) -> None:
     engine, transient, _s, _g = _make_engine(tmp_path)
     transient.attach_session("s1", resumed=False)
 
-    await engine.handle_workflow_set(mode)
+    await engine.handle_agent_set(mode)
 
     assert engine._session.top_agent == expected
-    assert transient.workflow_mode == expected
+    assert transient.top_agent == expected
 
 
 @pytest.mark.parametrize(
@@ -1522,7 +1526,7 @@ def _seed_tracked_doc(project_root: Path, rel_path: str) -> Path:
         author="architect",
         tool="filesystem",
         summary="create",
-        workflow="guided",
+        top_agent="guide",
     )
     return doc
 

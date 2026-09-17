@@ -179,7 +179,7 @@ simulated roots.
    when the port accepts) → `ValidatorClient.connect()` + `hello` (mints or
    resumes a session) → push `workspace.folders` if roots exist.
 2. `apply_modes(Modes)` — the four toggles: `mode.set` (autonomous),
-   `workflow.set` (guided / problem_solving), `edit_control.set`,
+   `agent.set` (an agent name), `edit_control.set`,
    `command_control.set`. They apply to the *next* prompt (frozen-toggle
    semantics, WS_PROTOCOL.md §5.1).
 3. `submit_prompt(text)` — `prompt.submit`, then block until the turn ends;
@@ -557,8 +557,8 @@ not masquerade as a low-scoring run), `run_scenario` calls
    follow-up turn asking for the verdict again (default 3 attempts), then
    `EvaluationError`.
 
-**The `judge` workflow** (`workflow.set` mode `"judge"`, `kodo.agents.agent_judge.md`)
-is a **dedicated, validator-only entry agent** — almost entirely read-only
+**The `judge` agent** (`agent.set` name `"judge"`, `kodo.agents.agent_judge.md`)
+is a **dedicated, validator-only top-level agent** — almost entirely read-only
 (`read_file`, `find_files`, `find_text_in_files`, `submit_evaluation`), no
 editing, no general command execution, no sub-agents, no `ask_user`. It also
 carries one narrow, scoped exception: `toolchain_build`, the same tool
@@ -572,7 +572,7 @@ don't invoke it against a project whose rubric never asked for a toolchain
 check. Earlier the judge turn ran as a `problem_solving` session, i.e.
 through the full `problem_solver` agent (read/write/execute/sub-agent-spawning
 tools, none of which judging needs) — a single-responsibility violation kept
-only for lack of a narrower entry point. `judge` is a third `workflow_mode`
+only for lack of a narrower entry point. `judge` is a third top-level agent
 value alongside `guided` and `problem_solving` (WS_PROTOCOL.md §5.1/§7.4); it
 is wired **only** in the engine and the validator harness — kodo-vsix's
 workflow picker still offers just `guided`/`problem_solving` and never sends

@@ -32,13 +32,13 @@ from types import TracebackType
 from typing import Literal, cast
 
 from kodo.transport import (
+    MSG_AGENT_SET,
     MSG_COMMAND_CONTROL_SET,
     MSG_EDIT_CONTROL_SET,
     MSG_LOCAL_LLM_SET_KNOBS,
     MSG_MODE_SET,
     MSG_PROMPT_SUBMIT,
     MSG_STOP,
-    MSG_WORKFLOW_SET,
     MSG_WORKSPACE_FOLDERS,
 )
 
@@ -73,13 +73,14 @@ class Modes:
 
     Attributes:
         autonomous: Autonomous (True) vs Interactive (False).
-        workflow: ``guided`` (Guide pipeline) or ``problem_solving``.
+        agent: Which top-level agent drives the run — an agent name, or a
+            legacy workflow-mode value the registry still resolves.
         edit_control: Edit Control posture.
         command_control: Command Control (security) posture.
     """
 
     autonomous: bool = False
-    workflow: Literal["guided", "problem_solving"] = "problem_solving"
+    agent: str = "problem_solver"
     edit_control: Literal["review_all", "allow_all", "smart"] = "smart"
     command_control: Literal["defensive", "permissive", "smart"] = "smart"
 
@@ -427,7 +428,7 @@ class ValidationHarness:
         """
         client = self.client
         await client.request(MSG_MODE_SET, autonomous=modes.autonomous)
-        await client.request(MSG_WORKFLOW_SET, mode=modes.workflow)
+        await client.request(MSG_AGENT_SET, name=modes.agent)
         await client.request(MSG_EDIT_CONTROL_SET, edit_control=modes.edit_control)
         await client.request(MSG_COMMAND_CONTROL_SET, command_control=modes.command_control)
         self.__transcript.record("note", "lifecycle", {"event": "modes", **vars(modes)})

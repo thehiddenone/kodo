@@ -14,8 +14,9 @@ def test_to_dict_defaults_carry_selected_and_effective_pairs() -> None:
     payload = SessionState().to_dict()
     assert payload["autonomous"] is False
     assert payload["effective_autonomous"] is False
-    assert payload["workflow_mode"] == "guided"
-    assert payload["effective_workflow_mode"] == "guided"
+    # No literal default: SessionState has no registry, so the engine seeds it.
+    assert payload["top_agent"] == ""
+    assert payload["effective_top_agent"] == ""
     assert payload["edit_control"] == "smart"
     assert payload["command_control"] == "smart"
     assert payload["thinking_level"] == ""
@@ -32,7 +33,7 @@ def test_to_dict_reports_diverged_selected_vs_effective() -> None:
     # edit/command postures are reported verbatim.
     state = SessionState()
     state.autonomous = True
-    state.top_agent = "problem_solving"
+    state.top_agent = "problem_solver"
     state.edit_control = "allow_all"
     state.command_control = "permissive"
     state.thinking_level = "unlimited"
@@ -41,8 +42,8 @@ def test_to_dict_reports_diverged_selected_vs_effective() -> None:
     payload = state.to_dict()
     assert payload["autonomous"] is True
     assert payload["effective_autonomous"] is False
-    assert payload["workflow_mode"] == "problem_solving"
-    assert payload["effective_workflow_mode"] == "guided"
+    assert payload["top_agent"] == "problem_solver"
+    assert payload["effective_top_agent"] == ""
     assert payload["edit_control"] == "allow_all"
     assert payload["command_control"] == "permissive"
     assert payload["thinking_level"] == "unlimited"

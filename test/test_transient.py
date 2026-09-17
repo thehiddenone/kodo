@@ -118,7 +118,7 @@ def test_append_message_persists_attachment_links_not_content(store: TransientSt
     store.append_message(
         "user",
         "clean prompt",
-        entry_agent="guide",
+        top_agent="guide",
         attachments=[{"id": attachment_id, "name": "f.py", "stored": rel}],
     )
     lines = store.read_session_lines()
@@ -234,15 +234,16 @@ def test_autonomous_update_is_persisted(store: TransientStore) -> None:
     assert data["autonomous"] is True
 
 
-def test_workflow_mode_defaults_to_guided(store: TransientStore) -> None:
-    assert store.workflow_mode == "guided"
+def test_top_agent_defaults_to_empty(store: TransientStore) -> None:
+    """The store names no default — which agent that is, only the registry knows."""
+    assert store.top_agent == ""
 
 
 def test_workflow_mode_update_is_persisted(store: TransientStore) -> None:
-    store.update(workflow_mode="problem_solving")
+    store.update(top_agent="problem_solving")
     data = json.loads((store.session_dir / "transient.json").read_text(encoding="utf-8"))
-    assert data["workflow_mode"] == "problem_solving"
-    assert store.workflow_mode == "problem_solving"
+    assert data["top_agent"] == "problem_solving"
+    assert store.top_agent == "problem_solving"
 
 
 def test_workflow_mode_stores_an_unknown_value_verbatim(kodo_dir: Path) -> None:
@@ -256,22 +257,22 @@ def test_workflow_mode_stores_an_unknown_value_verbatim(kodo_dir: Path) -> None:
     session_id = "1748792411"
     first = TransientStore(kodo_dir)
     first.attach_session(session_id, resumed=False)
-    first.update(workflow_mode="some_new_agent")
+    first.update(top_agent="some_new_agent")
 
     second = TransientStore(kodo_dir)
     second.attach_session(session_id, resumed=True)
-    assert second.workflow_mode == "some_new_agent"
+    assert second.top_agent == "some_new_agent"
 
 
 def test_resumed_session_restores_workflow_mode(kodo_dir: Path) -> None:
     session_id = "1748792410"
     first = TransientStore(kodo_dir)
     first.attach_session(session_id, resumed=False)
-    first.update(workflow_mode="problem_solving")
+    first.update(top_agent="problem_solving")
 
     second = TransientStore(kodo_dir)
     second.attach_session(session_id, resumed=True)
-    assert second.workflow_mode == "problem_solving"
+    assert second.top_agent == "problem_solving"
 
 
 def test_edit_control_defaults_to_smart(store: TransientStore) -> None:

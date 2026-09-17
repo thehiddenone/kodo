@@ -29,7 +29,7 @@ SCENARIO = Scenario(
     # toolchain_builder for Swift.
     modes=Modes(
         autonomous=False,
-        workflow="problem_solving",
+        agent="problem_solver",
         edit_control="allow_all",
         command_control="permissive",
     ),

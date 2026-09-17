@@ -171,7 +171,7 @@ class TurnLoopMixin:
             self._transient.append_message(
                 "user",
                 text,
-                entry_agent=agent_name,
+                top_agent=agent_name,
                 attachments=[
                     {"id": s["id"], "name": s["name"], "stored": s["stored"]} for s in stored
                 ],
@@ -316,7 +316,7 @@ class TurnLoopMixin:
 
         def _persist(batch: list[Message]) -> None:
             for msg in batch:
-                self._transient.append_message(msg.role, msg.content, entry_agent=top_agent)
+                self._transient.append_message(msg.role, msg.content, top_agent=top_agent)
 
         return _persist
 

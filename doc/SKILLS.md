@@ -321,7 +321,7 @@ at construction, not at runtime. `test_agents.py` re-runs the same parity check
 over every shipped agent file, reading the tool name off the live `ToolSpec`
 rather than hardcoding it, so a rename moves the test with it.
 
-**Shipped with the grant:** `problem_solver` — the entry agent positioned to
+**Shipped with the grant:** `problem_solver` — the top-level agent positioned to
 decide that a task matches a skill before it hands work to a sub-agent — plus
 every sub-agent that itself writes code or documents: `architect`,
 `developer`, `e2e_test_coder`, `e2e_test_designer`, `functional_designer`,

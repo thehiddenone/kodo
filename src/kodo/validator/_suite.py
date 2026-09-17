@@ -230,7 +230,7 @@ async def _run_summary_round(
     VALIDATOR.md §9.1). The input is every entry's already-generated report
     text, which is compact and needs no tool-based exploration, unlike the
     RVP judge's read of the generated code itself — so a real agentic session
-    (workspace, tools, the ``judge`` workflow) would be unnecessary machinery
+    (workspace, tools, the ``judge`` agent) would be unnecessary machinery
     here.
 
     Args:

@@ -35,7 +35,7 @@ SCENARIO = Scenario(
     roots=[RootSpec(name="tictactoe")],
     modes=Modes(
         autonomous=False,
-        workflow="problem_solving",
+        agent="problem_solver",
         edit_control="allow_all",
         command_control="permissive",
     ),

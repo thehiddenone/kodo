@@ -165,7 +165,7 @@ async def test_guided_dev_status_merges_the_document_log_with_the_findings_backl
         author="architect",
         tool="filesystem",
         summary="create",
-        workflow="guided",
+        top_agent="guide",
     )
 
     findings_dir = tmp_path / "sess" / "findings"
@@ -237,7 +237,7 @@ async def test_guided_dev_status_reads_pending_review_with_no_session_backlog(
         author="architect",
         tool="filesystem",
         summary="create",
-        workflow="guided",
+        top_agent="guide",
     )
     dispatcher = _make_dispatcher(project_root=tmp_path, findings_dir=tmp_path / "empty")
     result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))

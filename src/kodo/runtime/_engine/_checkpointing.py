@@ -1,4 +1,4 @@
-"""Checkpointing coordinator (shadow-git mirror, both workflow modes).
+"""Checkpointing coordinator (shadow-git mirror, every top-level agent).
 
 :class:`CheckpointCoordinator` owns the per-root :class:`RootMirrorManager`
 and everything around it: the per-tool-call prepare/commit cycle, the
@@ -53,7 +53,7 @@ from .._session import SessionState
 _log = logging.getLogger(__name__)
 
 # File-mutating tools that earn a shadow-mirror checkpoint after each call, in
-# both workflow modes.
+# every top-level agent.
 _MUTATING_TOOLS = frozenset(
     {"filesystem", "edit_file", "create_file", "create_directory", "run_command"}
 )
@@ -89,7 +89,7 @@ class CheckpointCoordinator:
     def __init__(self, host: CheckpointHost, *, sink: MessageSink) -> None:
         self._host = host
         self._sink = sink
-        # Per-root shadow-git checkpoint mirrors. Drives both workflow modes: a
+        # Per-root shadow-git checkpoint mirrors. Drives every top-level agent: a
         # Guided-mode filesystem/edit_file/create_file/create_directory/run_command
         # call earns a checkpoint exactly like a Problem-Solver one (see _enabled).
         self._mirrors = RootMirrorManager()
@@ -277,16 +277,16 @@ class CheckpointCoordinator:
     ) -> None:
         """Append a ``new_revision`` jsonl entry for a tracked document's commit.
 
-        Fires in *both* workflow modes whenever the touched path falls under
+        Fires under *every* top-level agent whenever the touched path falls under
         a bound root's ``specs``/``src``/``test`` (see ``kodo.guided_state``)
         — ``checkpoint.root`` names exactly that root, already resolved by
         :class:`~kodo.runtime._checkpoints.RootMirrorManager` when it
         committed this same call, so no separate root lookup is needed here.
-        A Problem-Solver edit to a tracked document is recorded too, tagged
-        ``workflow: "problem_solving"``, so the Guide can reconcile state
-        once Guided mode resumes; no other jsonl entry type is ever written
-        outside Guided mode, since a critic's verdict (the only producer
-        of the other three) is never granted to Problem Solver.
+        A Problem Solver edit to a tracked document is recorded too, tagged
+        ``top_agent: "problem_solver"``, so the Guide can reconcile state
+        when it next runs; no other jsonl entry type is ever written outside
+        the Guide's pipeline, since a critic's verdict (the only producer of
+        the other three) is never granted to Problem Solver.
         """
         project_root = Path(checkpoint.root)
         paths = self.mutation_paths(tool_name, tool_input)
@@ -300,7 +300,7 @@ class CheckpointCoordinator:
             author=agent_name,
             tool=tool_name,
             summary=self.label(tool_name, tool_input),
-            workflow=self._host._session.effective_top_agent,
+            top_agent=self._host._session.effective_top_agent,
         )
 
     async def undo(self, root: str, sha: str, resolution: str | None = None) -> CheckpointState:

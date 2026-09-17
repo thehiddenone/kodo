@@ -129,7 +129,7 @@ class ResumeMixin:
             results_msg = Message(role="user", content=tool_results)
             self._main_messages = self._main_messages + [results_msg]
             self._transient.append_message(
-                results_msg.role, results_msg.content, entry_agent=top_agent
+                results_msg.role, results_msg.content, top_agent=top_agent
             )
 
         notice = Message(role="assistant", content=_STOPPED_TURN_NOTICE)
@@ -139,24 +139,24 @@ class ResumeMixin:
         # projector replay it as the same red "interrupted" callout the live
         # client shows, instead of a fake user-typed chat bubble.
         self._transient.append_message(
-            notice.role, notice.content, entry_agent=top_agent, kind="stopped_notice"
+            notice.role, notice.content, top_agent=top_agent, kind="stopped_notice"
         )
 
     def _last_top_agent(self: EngineHost) -> str:
         """Top-level agent that produced the last persisted main message.
 
-        Read from the ``entry_agent`` tag on the most recent message line in
+        Read from the ``top_agent`` tag on the most recent message line in
         ``session.jsonl`` — *any* top-level agent may have been holding the
         floor when the run was interrupted, so resume must not assume one.
         Falls back to the registry's declared default only for legacy or
         untagged sessions.
 
-        The persisted key is still ``entry_agent``: phase 1 of
-        doc/TOP_AGENT_PLAN.md renames identifiers, not the on-disk format.
+        ``entry_agent`` is the pre-rename key, accepted as a fallback so a
+        session written by an older build still resumes onto the right agent.
         """
         for line in reversed(self._transient.read_session_lines()):
             if "role" in line:
-                ea = line.get("entry_agent")
+                ea = line.get("top_agent", line.get("entry_agent"))
                 if isinstance(ea, str) and ea:
                     return self._registry.resolve_top_agent(ea)
                 break
@@ -198,7 +198,7 @@ class ResumeMixin:
           Instead the model gets a synthesized ``interrupted`` result so the
           transcript stays well-formed and it can decide whether to retry.
 
-        The top-level agent is recovered from the persisted ``entry_agent`` tag, not
+        The top-level agent is recovered from the persisted ``top_agent`` tag, not
         assumed to be the Guide: any top-level agent can be holding the floor at
         crash time.
         """
@@ -277,7 +277,7 @@ class ResumeMixin:
         self._replay_subsessions = None
         results_msg = Message(role="user", content=tool_results)
         self._main_messages = self._main_messages + [results_msg]
-        self._transient.append_message(results_msg.role, results_msg.content, entry_agent=top_agent)
+        self._transient.append_message(results_msg.role, results_msg.content, top_agent=top_agent)
 
         stream_id = uuid.uuid4().hex
         self._main_messages, _ = await self._run_agent_turn(

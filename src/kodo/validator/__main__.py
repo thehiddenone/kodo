@@ -9,7 +9,7 @@ Two ways to describe what to run:
   the file itself, see :mod:`kodo.validator._scenario`), so every scenario
   this run resolves is executed against the same ``--llm-under-test``/
   ``--validation-llm``/``--knob``.
-* **Inline flags** — ``--prompt``/``--root``/``--workflow``/… for a quick
+* **Inline flags** — ``--prompt``/``--root``/``--agent``/… for a quick
   ad-hoc run without writing a file.
 
 ``--llm-under-test`` and ``--validation-llm`` are always mandatory (there is
@@ -248,10 +248,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "(repeatable; several roots = multi-root workspace).",
     )
     parser.add_argument(
-        "--workflow",
-        default="problem_solving",
-        choices=["guided", "problem_solving"],
-        help="Workflow mode (default: problem_solving).",
+        "--agent",
+        default="problem_solver",
+        # Deliberately unconstrained: which top-level agents exist is the
+        # registry's answer, and pinning a `choices` list here would need
+        # editing every time one is added. An unknown name resolves to the
+        # registry's default rather than failing the run.
+        help="Top-level agent to run (default: problem_solver).",
     )
     parser.add_argument(
         "--autonomous", action="store_true", help="Run in Autonomous mode (default: Interactive)."
@@ -317,7 +320,7 @@ def _resolve_scenarios(args: argparse.Namespace) -> list[Scenario]:
     roots = [_parse_root(spec) for spec in cast(list[str], args.root)]
     modes = Modes(
         autonomous=bool(args.autonomous),
-        workflow=args.workflow,
+        agent=args.agent,
         edit_control=args.edit_control,
         command_control=args.command_control,
     )

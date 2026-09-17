@@ -319,9 +319,7 @@ async def test_client_pushes_workspace_and_modes(client: ValidatorClient, tmp_pa
     assert ack["type"] == "workspace.folders.ack"
 
     assert (await client.request("mode.set", autonomous=True))["type"] == "mode.accepted"
-    assert (await client.request("workflow.set", mode="problem_solving"))[
-        "type"
-    ] == "workflow.accepted"
+    assert (await client.request("agent.set", name="problem_solving"))["type"] == "agent.accepted"
     assert (await client.request("edit_control.set", edit_control="allow_all"))[
         "type"
     ] == "edit_control.accepted"

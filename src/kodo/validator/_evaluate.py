@@ -33,12 +33,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kodo.transport import (
+    MSG_AGENT_SET,
     MSG_COMMAND_CONTROL_SET,
     MSG_EDIT_CONTROL_SET,
     MSG_LLM_SELECT,
     MSG_MODE_SET,
     MSG_PROMPT_SUBMIT,
-    MSG_WORKFLOW_SET,
     MSG_WORKSPACE_FOLDERS,
 )
 
@@ -151,7 +151,7 @@ async def run_evaluation(
         await judge.connect()
         await judge.hello(thinking_level=thinking_level)
         await judge.request(MSG_WORKSPACE_FOLDERS, dict(workspace_payload))
-        # The validator-only "judge" workflow (agent_judge.md): a read-only
+        # The validator-only "judge" agent (agent_judge.md): a read-only
         # top-level agent scoped to read_file/find_files/find_text_in_files/
         # submit_evaluation, so it can't edit or run anything in the workspace
         # being scored — a narrower tool surface than the problem_solver run
@@ -159,7 +159,7 @@ async def run_evaluation(
         # gates would just add noise (and SMART security judgements would burn
         # extra VLLM calls) to a run that only ever reads.
         await judge.request(MSG_MODE_SET, autonomous=True)
-        await judge.request(MSG_WORKFLOW_SET, mode="judge")
+        await judge.request(MSG_AGENT_SET, name="judge")
         await judge.request(MSG_EDIT_CONTROL_SET, edit_control="allow_all")
         await judge.request(MSG_COMMAND_CONTROL_SET, command_control="permissive")
 

@@ -211,7 +211,7 @@ def _seed_revision(project_root: Path, rel_path: str, *, sha: str = "deadbeef") 
         author="architect",
         tool="filesystem",
         summary="create",
-        workflow="guided",
+        top_agent="guide",
     )
     return doc
 
@@ -1002,7 +1002,7 @@ async def test_record_findings_ignores_an_unknown_work_product(tmp_path: Path) -
 # ---------------------------------------------------------------------------
 
 
-def test_checkpoint_enabled_regardless_of_workflow_mode() -> None:
+def test_checkpoint_enabled_regardless_of_top_agent() -> None:
     """Guided mode now drives the same shadow-git mirror Problem Solver does.
 
     There is no longer a separate Guided checkpoint system to collide with,
@@ -1051,13 +1051,13 @@ async def test_guided_filesystem_write_earns_both_a_commit_and_a_new_revision(
         author="architect",
         tool="filesystem",
         summary="create",
-        workflow="guided",
+        top_agent="guide",
     )
 
     history = read_history(doc, tmp_path)
     assert len(history) == 1
     assert history[0]["commit_hash"] == checkpoint.sha
-    assert history[0]["workflow"] == "guided"
+    assert history[0]["top_agent"] == "guide"
 
     # The jsonl evolution log itself lives under .kodo/, which the mirror
     # already excludes — it must never show up in the mirror's own commit.

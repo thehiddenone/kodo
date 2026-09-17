@@ -23,8 +23,8 @@ share; everything else is internal.
 >   `session_id`. If the requested session is already held by another live
 >   window, `hello.ack` carries `error:"session_in_use"` and the client opens a
 >   fresh session. (`workspace_root` was removed from `hello.ack`.)
-> - New client→server: **`session.list`** (→ `{sessions:[{id,name,workflow_mode,
->   taken, workspace}]}` for the picker — `workflow_mode` (added 2026-07-24,
+> - New client→server: **`session.list`** (→ `{sessions:[{id,name,agent,agent_label,
+>   taken, workspace}]}` for the picker — the agent pair (added 2026-07-24,
 >   replacing the removed `project_root`) is the session's last persisted mode,
 >   display-only ("Guided"/"Problem solving" label); `workspace` is the session's
 >   remembered VS Code workspace shape, `{physical_root, folders,
@@ -146,6 +146,13 @@ The server replies with the current world plus local-model status:
     "type": "hello.ack",
     "server_version": "0.1.0",
     "state": { ...state snapshot per §5.1... },
+    "agents": [
+      { "name": "problem_solver", "label": "Problem Solver",
+        "description": "One generalist agent tackles your request end to end.", "rank": 10 },
+      { "name": "guide", "label": "Guide",
+        "description": "One coordinating agent drives specialists through design, tests and implementation.", "rank": 20 }
+    ],
+    "default_agent": "problem_solver",
     "cloud_registry": {
       "anthropic": { "display_name": "Anthropic", "models": [
         { "model_id": "claude-fable-5", "name": "Claude Fable 5",
@@ -302,7 +309,7 @@ Immediately after the ack the server **also pushes** a `state` event (§5.1) and
 
 For a brand-new session only, `hello` also kicks off a background task that writes and pushes the session's opening greeting — see `session.greeting` (§5.9i). Fire-and-forget: it is not part of the ack and never delays it.
 
-After `hello.ack` the client pushes the session's starting toggles to the server: a brand-new session sends `workflow.set` (§7.6) with its default workflow plus `edit_control.set`/`command_control.set`, while a resumed one adopts the persisted values carried in the ack's own `state` and re-sends only the Edit/Command pair (kodo-vsix `session/mode-toggle-controller.ts`, `applyNewSessionDefaults` / `applyResumedState`). There is no project-level `.kodo/settings.json` in this path — the workflow is per-session state in the session's own `transient.json`, not a project preference.
+After `hello.ack` the client pushes the session's starting toggles to the server: a brand-new session sends `agent.set` (§7.4) with `hello.ack`'s `default_agent` plus `edit_control.set`/`command_control.set`, while a resumed one adopts the persisted values carried in the ack's own `state` and re-sends only the Edit/Command pair (kodo-vsix `session/mode-toggle-controller.ts`, `applyNewSessionDefaults` / `applyResumedState`). There is no project-level `.kodo/settings.json` in this path — the workflow is per-session state in the session's own `transient.json`, not a project preference.
 
 ### 4.2 Shutdown
 
@@ -326,8 +333,8 @@ Pushed on connect (also embedded in `hello.ack`), and whenever a field below cha
   "current_agent": { "name": "functional_designer", "component": "TRADE" } | null,
   "autonomous": false,
   "effective_autonomous": false,
-  "workflow_mode": "guided" | "problem_solving" | "judge",
-  "effective_workflow_mode": "guided" | "problem_solving" | "judge",
+  "top_agent": "<agent name>",
+  "effective_top_agent": "<agent name>",
   "edit_control": "review_all" | "allow_all" | "smart",
   "command_control": "defensive" | "permissive" | "smart",
   "thinking_level": "unlimited" | "medium" | "" | "...",
@@ -359,10 +366,10 @@ know whether to show it.
 
 The header toggles split into **two frozen** and **three never-frozen**:
 
-**Frozen toggles** (`autonomous`, `workflow_mode`) are reported as a **pair**: the user-facing *selected* value and its per-turn frozen *effective* twin (`effective_*`). The selected value flips the instant the user clicks; the effective value is the one the **in-flight prompt** actually runs under — the engine freezes both from their selected values when it dequeues a prompt (`_freeze_effective_modes`), so a toggle flipped mid-run takes effect only on the *next* prompt. The client renders each as "in effect" (selected == effective, or idle) or "queued for the next prompt" (a turn is running and they differ).
+**Frozen toggles** (`autonomous`, `top_agent`) are reported as a **pair**: the user-facing *selected* value and its per-turn frozen *effective* twin (`effective_*`). The selected value flips the instant the user clicks; the effective value is the one the **in-flight prompt** actually runs under — the engine freezes both from their selected values when it dequeues a prompt (`_freeze_effective_modes`), so a toggle flipped mid-run takes effect only on the *next* prompt. The client renders each as "in effect" (selected == effective, or idle) or "queued for the next prompt" (a turn is running and they differ).
 
 - `autonomous` — Autonomous/Interactive mode. Toggled via `mode.set` (§7.5).
-- `workflow_mode` — `guided` (the Guide + full Kodo pipeline), `problem_solving` (the standalone Problem Solver agent), or `judge` (the standalone Judge agent — a read-only run that scores a finished session for `kodo.validator`; **validator-only**, kodo-vsix never sends it). Toggled via `workflow.set` (§7.6).
+- `top_agent` — the name of the top-level agent driving prompts, always one the server has registered. Not a fixed set: it is whatever `hello.ack`'s `agents` catalog lists, plus any non-selectable agent (`judge`) reachable only by sending it explicitly. Toggled via `agent.set` (§7.4).
 
 **Never-frozen toggles** (`edit_control`, `command_control`, `thinking_level`) carry a **single** value and **no `effective_*` twin** — a flip applies to the next LLM call, not the next prompt.
 
@@ -632,7 +639,7 @@ Pushed after each LLM call, plus once (with `last_call_tokens: null`) right afte
   "agent": "guide" }
 ```
 
-`duration_seconds` is the server-measured wall time of that LLM call. The panel formats `last_call_tokens` into its status line. `usd_cost` is this one call's own cost (as opposed to the running `cumulative_usd`); `stop_reason` and `agent` (the agent — main entry agent or sub-agent — that made the call) are audit-only, not rendered. All three are also persisted on the `usage` marker this event's twin (`EngineEmitters.emit_usage`) writes to whichever log is currently active — this is the single per-call audit record; there is no separate per-agent log.
+`duration_seconds` is the server-measured wall time of that LLM call. The panel formats `last_call_tokens` into its status line. `usd_cost` is this one call's own cost (as opposed to the running `cumulative_usd`); `stop_reason` and `agent` (the agent — main top-level agent or sub-agent — that made the call) are audit-only, not rendered. All three are also persisted on the `usage` marker this event's twin (`EngineEmitters.emit_usage`) writes to whichever log is currently active — this is the single per-call audit record; there is no separate per-agent log.
 
 The three `cumulative_*_tokens` fields are the session's running token totals — **combined across the main session and every subsession** (folded in through `EngineEmitters.add_tokens_from_usage` regardless of which is active), and, unlike `cumulative_usd`, **persisted** (`kodo.state.TransientStore.add_tokens` → `transient.json`'s `cumulative_input_tokens`/`cumulative_input_tokens_uncached`/`cumulative_output_tokens`) so they keep counting from where they left off across a resume instead of resetting to zero with a fresh engine process:
 
@@ -644,7 +651,7 @@ Folded into the running totals from four call sites: the main/subsession turn lo
 
 ### 5.7a `context.stats` / `context.compacting` / `context.compacted` — context gauge & compaction
 
-The engine measures the entry agent's main context after every turn and pushes `context.stats` (also on every `state` change, so the gauge and the header **Compact now** button stay in sync with the phase):
+The engine measures the top-level agent's main context after every turn and pushes `context.stats` (also on every `state` change, so the gauge and the header **Compact now** button stay in sync with the phase):
 
 ```json
 { "type": "context.stats",
@@ -653,9 +660,9 @@ The engine measures the entry agent's main context after every turn and pushes `
   "subsession": { "current_tokens": 38912, "limit_tokens": 131072, "percent": 29.7 } }
 ```
 
-`current_tokens` = the last turn's `input + cache_read + cache_write + output` (≈ the next call's context), or a char-based estimate right after a compaction. `limit_tokens` is the **current model's** context window (per-model `context_window` in the LLM registry — *not* a global setting), so it changes when the model changes. `can_compact` is `true` only while the entry agent is idle (`phase == "awaiting_user"`), no compaction is running, there is context, and the `compactor` agent is registered — the client gates its **Compact now** button on it.
+`current_tokens` = the last turn's `input + cache_read + cache_write + output` (≈ the next call's context), or a char-based estimate right after a compaction. `limit_tokens` is the **current model's** context window (per-model `context_window` in the LLM registry — *not* a global setting), so it changes when the model changes. `can_compact` is `true` only while the top-level agent is idle (`phase == "awaiting_user"`), no compaction is running, there is context, and the `compactor` agent is registered — the client gates its **Compact now** button on it.
 
-`subsession` mirrors the same three fields (never `can_compact` — compaction only ever applies to the main context) for whichever sub-agent subsession is currently running, measured against *that subsession's own model's* context window (a sub-agent can run on a different model than the main entry agent). It is `null` whenever no subsession is active. The client shows a second "subsession context: …" readout next to the main gauge exactly while this is non-null, and hides it the instant the subsession ends (`subsession.ended`, §5.x) — see `ContextCompactor.note_subsession_context`/`clear_subsession_context` in `_compaction.py`.
+`subsession` mirrors the same three fields (never `can_compact` — compaction only ever applies to the main context) for whichever sub-agent subsession is currently running, measured against *that subsession's own model's* context window (a sub-agent can run on a different model than the main top-level agent). It is `null` whenever no subsession is active. The client shows a second "subsession context: …" readout next to the main gauge exactly while this is non-null, and hides it the instant the subsession ends (`subsession.ended`, §5.x) — see `ContextCompactor.note_subsession_context`/`clear_subsession_context` in `_compaction.py`.
 
 When context reaches 90% of `limit_tokens` the engine compacts automatically (the user can also force it via `compact.now`, §7.2a; and switching to a smaller-window model auto-compacts with the outgoing model — STATE_AND_LIFECYCLE.md §4.5). A run is bracketed by `context.compacting` (drives a "Compacting context, please hold on" indicator):
 
@@ -752,9 +759,9 @@ Fired right after any watchdog detector injects a course-correction into an agen
 
 Unifies what used to be two separate events (`agent.unstuck_nudge`, `agent.cyclic_thinking_notice`) carrying the identical shape under different names and — worse — rendered inconsistently on the client (2026-08-03). Old sessions persisted under either legacy `kind` still replay correctly: `HistoryProjector` (`_history.py`) reshapes both into this same `{type: "nudge", ...}` entry.
 
-### 5.9f `agent.stuck_critical` — the stuck-agent watchdog gave up on an entry-agent turn
+### 5.9f `agent.stuck_critical` — the stuck-agent watchdog gave up on a top-level agent turn
 
-Fired when an entry-agent turn stalls a *second* consecutive time since its last real response (doc/STUCK_DETECTION.md §2.4a) — the one nudge already sent (§5.9e) did not get the model unstuck, so nudging (or asking via `prompt.stuck_alert`) a second time is skipped and the turn ends instead.
+Fired when a top-level agent turn stalls a *second* consecutive time since its last real response (doc/STUCK_DETECTION.md §2.4a) — the one nudge already sent (§5.9e) did not get the model unstuck, so nudging (or asking via `prompt.stuck_alert`) a second time is skipped and the turn ends instead.
 
 ```json
 { "type": "agent.stuck_critical", "message": "Kōdo already nudged the Problem Solver once, but it stalled again right after (its last turn ended with no tool call and no visible response). Ending the turn instead of trying again — you may need to rephrase the prompt or step in." }
@@ -762,11 +769,11 @@ Fired when an entry-agent turn stalls a *second* consecutive time since its last
 
 `message` is a single ready-to-render sentence. Unlike the nudge, there is no LLM-facing turn behind this event — it is entirely client-only, mirroring `error` (§5.10) rather than `agent.nudge`. Also persisted as a bare `agent_stuck_critical` marker (`{type: "agent_stuck_critical", message, ts}`, not a `kind`-tagged message) so it replays via `session.history` (§5.11).
 
-Also fired — same event, same marker, same rendering — when the entry agent repeats an identical tool call with an identical result for a second time after already being nudged about it (doc/STUCK_DETECTION.md §2.11). That detector deliberately reuses this event rather than adding a sixth critical type: it is the generic "this agent is stuck and I gave up" case, and unlike the three mid-stream criticals it has no live buffer for the client to flush.
+Also fired — same event, same marker, same rendering — when the top-level agent repeats an identical tool call with an identical result for a second time after already being nudged about it (doc/STUCK_DETECTION.md §2.11). That detector deliberately reuses this event rather than adding a sixth critical type: it is the generic "this agent is stuck and I gave up" case, and unlike the three mid-stream criticals it has no live buffer for the client to flush.
 
 ### 5.9g `agent.cyclic_thinking_critical` — a second cyclic-thinking loop ended the turn
 
-Fired when the entry-agent's thinking hits a *second* detected repetition loop since its last real response (doc/STUCK_DETECTION.md §2.7) — the notice already sent (§5.9e, `source: "cyclic_thinking"`) did not stop it from looping again, so the turn ends instead of retrying a second time. Entry-agent scope only — a sub-agent hitting its retry cap ends silently, with no critical event at all.
+Fired when the top-level agent's thinking hits a *second* detected repetition loop since its last real response (doc/STUCK_DETECTION.md §2.7) — the notice already sent (§5.9e, `source: "cyclic_thinking"`) did not stop it from looping again, so the turn ends instead of retrying a second time. Entry-agent scope only — a sub-agent hitting its retry cap ends silently, with no critical event at all.
 
 ```json
 { "type": "agent.cyclic_thinking_critical", "message": "Kōdo detected the Problem Solver's reasoning fall into a repetitive, hallucinated thinking loop a second time and stopped it again. Ending the turn instead of trying again — you may need to rephrase the prompt or step in." }
@@ -776,7 +783,7 @@ Fired when the entry-agent's thinking hits a *second* detected repetition loop s
 
 ### 5.9h `agent.think_in_tool_call_critical` / `agent.tool_call_cyclic_critical` — a second mid-stream tool-call-argument hit ended the turn
 
-Same shape as §5.9g, one event per mid-stream tool-call-argument detector (doc/STUCK_DETECTION.md §2.9/§2.10): fired when the entry-agent hits a *second* stray `<think>` tag (`agent.think_in_tool_call_critical`) or repetition loop (`agent.tool_call_cyclic_critical`) inside tool-call arguments since its last real response — the notice already sent (§5.9e, `source: "think_in_tool_call"` / `"tool_call_cyclic"`) did not stop it from happening again.
+Same shape as §5.9g, one event per mid-stream tool-call-argument detector (doc/STUCK_DETECTION.md §2.9/§2.10): fired when the top-level agent hits a *second* stray `<think>` tag (`agent.think_in_tool_call_critical`) or repetition loop (`agent.tool_call_cyclic_critical`) inside tool-call arguments since its last real response — the notice already sent (§5.9e, `source: "think_in_tool_call"` / `"tool_call_cyclic"`) did not stop it from happening again.
 
 ```json
 { "type": "agent.think_in_tool_call_critical", "message": "Kōdo already told the Problem Solver once not to think inside a tool call, but it did it again in a `run_subagent` call. Ending the turn instead of trying again — you may need to rephrase the prompt or step in." }
@@ -1221,7 +1228,7 @@ Fired by the stuck-agent watchdog (doc/STUCK_DETECTION.md) when a turn ended wit
 { "type": "prompt.stuck_alert", "agent_name": "problem_solver", "display_name": "Problem Solver", "reasons": ["its last turn ended with no tool call and no visible response"] }
 ```
 
-`agent_name` is the internal agent name (entry agent or sub-agent); `display_name` its human-readable name for the panel text; `reasons` is one user-facing sentence per matched red flag (`kodo.runtime._engine._watchdog.RedFlag.hint` — the detector set is extensible, see doc/STUCK_DETECTION.md, so this list may grow independently of the wire shape).
+`agent_name` is the internal agent name (top-level agent or sub-agent); `display_name` its human-readable name for the panel text; `reasons` is one user-facing sentence per matched red flag (`kodo.runtime._engine._watchdog.RedFlag.hint` — the detector set is extensible, see doc/STUCK_DETECTION.md, so this list may grow independently of the wire shape).
 
 Response payload:
 
@@ -1354,7 +1361,7 @@ The client initiates these. Each is a `kind=request`; the server replies `kind=r
 
 ### 7.1 `prompt.submit` — user-initiated input
 
-The "user has something to say to Kodo" channel. The engine interprets it in light of current state and the active `workflow_mode` (it enqueues the prompt for the worker, which routes it to the Guide or the Problem Solver).
+The "user has something to say to Kodo" channel. The engine interprets it in light of current state and the selected `top_agent` (it enqueues the prompt for the worker, which routes it to that agent).
 
 ```json
 { "type": "prompt.submit", "text": "Build an algorithmic trading bot that ..." }
@@ -1453,12 +1460,12 @@ See the `project_kodo_workspace_session_linkage` memory for the full design-deci
 
 **Added 2026-07-24.** Guided mode used to bind exactly one project per session via a dedicated `project.set` (client→server) / `project.bound` (server→event) exchange: `WorkflowEngine._current_project`/`_layout` (immutable once set — a second, different `project.set` was rejected with `EVT_ERROR`), validated against `ProjectLayout.validate()` (`.kodo/kodo.md` with a `# Kodo Project` heading), resolved through a dedicated `ProjectPathResolver` that confined every relative path to that one root. **All of this is gone.** Guided mode now shares Problem Solver's mechanism outright, top to bottom:
 
-- **No binding step at all.** `MSG_PROJECT_SET`/`EVT_PROJECT_BOUND` no longer exist on the wire. A Guided session's bound roots are exactly its `workspace.folders` (§7.1, §7.1b) — the live VS Code workspace folders, or the locked/bound-directories fallback (§7.1b's "disconnected/isolated operation" extension) when disconnected — precisely the mechanism §7.1b already documents for Problem Solver. `_root_paths()`/`_has_workspace()`/`_make_resolver()` (`kodo/runtime/_engine/_core.py`) no longer branch on `workflow_mode` at all.
+- **No binding step at all.** `MSG_PROJECT_SET`/`EVT_PROJECT_BOUND` no longer exist on the wire. A Guided session's bound roots are exactly its `workspace.folders` (§7.1, §7.1b) — the live VS Code workspace folders, or the locked/bound-directories fallback (§7.1b's "disconnected/isolated operation" extension) when disconnected — precisely the mechanism §7.1b already documents for Problem Solver. `_root_paths()`/`_has_workspace()`/`_make_resolver()` (`kodo/runtime/_engine/_core.py`) no longer branch on the selected top-level agent at all.
 - **No project validation gate.** A bound root no longer needs a pre-existing `.kodo/kodo.md`; like Problem Solver, `.kodo/kodo.md` is scaffolded lazily on first checkpoint commit (`RootMirrorManager.prepare`), or fully laid out (`specs/`/`src/`/`test/` + `kodo.md`) by `scaffold_new_project` — already granted to the Guide, and now actually reachable: previously calling it from Guided mid-session created an orphaned workspace folder Guided's single-root resolver couldn't see.
 - **A session may have N bound projects.** `get_root_paths` returns one entry per bound project (`{name, path}`, same shape Problem Solver has always returned). The Guide picks which project a given piece of work belongs to and folder-prefixes every path it hands to a pipeline sub-agent accordingly (below) — *how* it should split or sequence work across several projects is a prompt-level policy question left for future work, not something this wire/mechanism change decides.
 - **Pipeline document paths are now logical, folder-prefixed paths** — identical convention to every other `LogicalPathResolver`-resolved path in the system (`find_files`'s `root`, `run_command`'s `working_dir`, ...): `"billing-service/specs/requirements/auth.md"`, not the old bare `"specs/requirements/auth.md"`. This applies to every pipeline sub-agent's `input_paths`/`paths`/`for_revision_paths` (`kodo.agents.subagents.specs._shapes`), which are exactly the fields a `run_subagent_<name>` tool declares. `kodo.guided_state`'s evolution-log functions (`shadow_path`/`is_tracked`/...) are unaffected — they only ever see an already-resolved absolute path plus the specific bound root it belongs to (looked up via the new `kodo.tools.root_for(roots, resolved_path)` helper, a longest-matching-root lookup — see the callers in `guided_dev_status`, `record_guided_revision`, the engine's critic-verdict recording, and document finalization).
 - **`rollback` (the LLM-facing tool, Guided-only) gained a required `root` input** — a `get_root_paths` name — since a target commit SHA alone no longer identifies which of N bound projects to roll back. The checkpoint-UI-driven `checkpoint.rollback` WS message (§8) is unaffected — it already took an explicit `root`.
-- **kodo-vsix**: the single-select "Choose the project for this Guided Development session" QuickPick and its "will be locked... cannot be changed" confirmation modal are gone entirely. Guided sessions behave exactly like Problem Solver in the client too — no picker, no lock, no per-session project indicator; the session-picker's "Guided"/"Problem solving" label now reads `session.list`'s `workflow_mode` field (a session's last persisted mode, informational only) instead of the removed `project_root` field.
+- **kodo-vsix**: the single-select "Choose the project for this Guided Development session" QuickPick and its "will be locked... cannot be changed" confirmation modal are gone entirely. Guided sessions behave exactly like Problem Solver in the client too — no picker, no lock, no per-session project indicator; the session-picker's label now reads `session.list`'s `agent_label` field (resolved server-side from the session's last persisted selection, informational only) instead of the removed `project_root` field.
 
 See the `project_kodo_problem_solver` memory for the full before/after and the file-by-file blast radius.
 
@@ -1478,7 +1485,7 @@ Response:
 
 ### 7.2a `compact.now` — manually compact the context
 
-Asks the engine to compact this session's main context now (the same work as the automatic 90% trigger; see §5.7a and STATE_AND_LIFECYCLE.md §4.5). The request is queued on the worker and honoured only when the entry agent is idle and there is context to compact — otherwise it is silently ignored. The client only enables its **Compact now** button when the latest `context.stats` had `can_compact: true`.
+Asks the engine to compact this session's main context now (the same work as the automatic 90% trigger; see §5.7a and STATE_AND_LIFECYCLE.md §4.5). The request is queued on the worker and honoured only when the top-level agent is idle and there is context to compact — otherwise it is silently ignored. The client only enables its **Compact now** button when the latest `context.stats` had `can_compact: true`.
 
 ```json
 { "type": "compact.now" }
@@ -1506,27 +1513,33 @@ Response:
 
 A `state` event with the updated `autonomous` field follows.
 
-### 7.4 `workflow.set` — choose the top-level workflow
+### 7.4 `agent.set` — choose the top-level agent
 
-Selects which workflow drives the next prompt: `guided` (Guide pipeline), `problem_solving` (standalone Problem Solver), or `judge` (standalone Judge — a read-only entry agent, `read_file`/`find_files`/`find_text_in_files`/`submit_evaluation` only, that scores a finished run). Unknown values fall back to `guided`. Like `mode.set`, it applies to the next prompt.
-
-`judge` is **validator-only**: `kodo.validator._evaluate` sends it when it opens the second, judge session over a finished run; kodo-vsix's workflow picker only ever offers `guided`/`problem_solving` and never sends `judge`. It exists so judging a validation run doesn't run through the Problem Solver's full read/write/execute/sub-agent tool set — Problem Solver's purpose is solving user problems, not judging validator runs, so it carries none of the scoring machinery.
+Selects which top-level agent drives the next prompt. Like `mode.set`, it applies to the next prompt, not the one in flight.
 
 ```json
-{ "type": "workflow.set", "mode": "problem_solving" }
+{ "type": "agent.set", "name": "problem_solver" }
 ```
+
+`name` is an entry from `hello.ack`'s `agents` catalog (§4.1), **or** a legacy workflow-mode value (`guided` / `problem_solving`) left in a session persisted before the rename — both resolve to the same agent. Anything unrecognized falls back to `hello.ack`'s `default_agent`, so a stale stored selection keeps working rather than failing the prompt.
+
+The accepted set is whatever top-level agents the server has registered; there is no fixed list of modes any more. A non-selectable agent is absent from the catalog but still accepted here — which is how `judge` is reached.
 
 Response:
 
 ```json
-{ "type": "workflow.accepted" }
+{ "type": "agent.accepted" }
 ```
 
-A `state` event with the updated `workflow_mode` follows.
+A `state` event follows, whose `top_agent` carries the **resolved** name — so a client that sent an alias sees the agent it actually got, not the value it typed.
+
+`judge` is **validator-only**: `kodo.validator._evaluate` sends it when it opens the second, judge session over a finished run; it is marked non-selectable so it never appears in a user-facing picker. It exists so judging a validation run doesn't go through the Problem Solver's full read/write/execute/sub-agent tool set — Problem Solver's purpose is solving user problems, not judging validator runs, so it carries none of the scoring machinery.
+
+> Replaced `workflow.set {mode}` (removed, not deprecated — nothing accepts it). The old names live on only as read-time fallbacks for data already on disk: the `workflow_mode` key in a session's `transient.json` and the `entry_agent` tag on a `session.jsonl` line.
 
 ### 7.4a `edit_control.set` — set the Edit Control posture
 
-Sets the Edit Control posture: `review_all` (pause for sign-off on every edit) / `allow_all` (apply without pausing) / `smart` (decide per edit; the default). Unknown values fall back to `smart`. Unlike `mode.set`/`workflow.set` this is **never frozen**: the client owns the value (forcing `allow_all` while Autonomous mode is in effect, restoring the user's pick otherwise) and the server mirrors whatever it last sent, so the stored value is always exactly what the UI shows. **Enforced** for `create_file`/`edit_file` only — the tool dispatcher reads the value live per call; a review-worthy call fires `prompt.edit_review` (§6.9). Independent of and always evaluated after `command_control`'s security gate (§7.4b) — not part of the security layer.
+Sets the Edit Control posture: `review_all` (pause for sign-off on every edit) / `allow_all` (apply without pausing) / `smart` (decide per edit; the default). Unknown values fall back to `smart`. Unlike `mode.set`/`agent.set` this is **never frozen**: the client owns the value (forcing `allow_all` while Autonomous mode is in effect, restoring the user's pick otherwise) and the server mirrors whatever it last sent, so the stored value is always exactly what the UI shows. **Enforced** for `create_file`/`edit_file` only — the tool dispatcher reads the value live per call; a review-worthy call fires `prompt.edit_review` (§6.9). Independent of and always evaluated after `command_control`'s security gate (§7.4b) — not part of the security layer.
 
 ```json
 { "type": "edit_control.set", "edit_control": "review_all" }

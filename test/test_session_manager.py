@@ -194,7 +194,7 @@ async def test_replay_backlog_also_replays_pending_requests(manager_factory) -> 
 
 
 @pytest.mark.asyncio
-async def test_list_reports_problem_solving_session(manager_factory) -> None:  # type: ignore[no-untyped-def]
+async def test_list_reports_the_sessions_top_agent(manager_factory) -> None:  # type: ignore[no-untyped-def]
     mgr: SessionManager = manager_factory()
     session: Session = await mgr.create("windowA")
     await mgr.bind_connection(session, _conn())
@@ -202,7 +202,10 @@ async def test_list_reports_problem_solving_session(manager_factory) -> None:  #
     listing = mgr.list_sessions()
     entry = next(s for s in listing if s["id"] == session.id)
     assert entry["taken"] is True
-    assert entry["workflow_mode"] == "guided"  # a fresh session's default mode
+    # The picker row carries the resolved name *and* its label, so the client
+    # renders it without a mapping of its own.
+    assert entry["agent"] == "problem_solver"
+    assert entry["agent_label"] == "Problem Solver"
     assert entry["workspace"] is None  # no workspace.folders ever pushed
     # A freshly created session reports timestamps, seeded equal at creation.
     assert entry["created_at"]

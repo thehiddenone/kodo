@@ -46,7 +46,7 @@ def append_new_revision(
     author: str,
     tool: str,
     summary: str,
-    workflow: str,
+    top_agent: str,
 ) -> None:
     """Record an author's revision. No-op when *real_path* is untracked."""
     path = shadow_path(real_path, project_root)
@@ -55,7 +55,11 @@ def append_new_revision(
     _append(
         path,
         new_revision_entry(
-            commit_hash=commit_hash, author=author, tool=tool, summary=summary, workflow=workflow
+            commit_hash=commit_hash,
+            author=author,
+            tool=tool,
+            summary=summary,
+            top_agent=top_agent,
         ),
     )
 

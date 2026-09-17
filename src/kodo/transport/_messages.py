@@ -59,7 +59,7 @@ MSG_HELLO = "hello"
 # persists the clean prompt, enqueues it on the session's worker, and replies
 # prompt.accepted immediately; the worker later dequeues it, freezes the two
 # frozen mode toggles for this turn, runs the session titler on the session's
-# first prompt, and routes it to the Guide or Problem Solver per workflow_mode.
+# first prompt, and routes it to whichever top-level agent ``top_agent`` names.
 # An empty prompt is rejected with an EVT_ERROR (code "empty_prompt"). Client
 # renders the text as an optimistic user_message bubble immediately and clears
 # the input box and any staged attachment chips.
@@ -161,22 +161,28 @@ MSG_CHECKPOINT_UNDO = "checkpoint.undo"
 MSG_CHECKPOINT_REDO = "checkpoint.redo"
 
 # Client → Server. Toggles Autonomous/Interactive mode (``{autonomous: bool}``).
-# One of the two *frozen* toggles (paired with ``workflow.set``): applies to
+# One of the two *frozen* toggles (paired with ``agent.set``): applies to
 # the *next* prompt only — an in-flight turn keeps the ``effective_autonomous``
 # it was frozen with at dequeue. Server updates session state, replies
 # ``mode.accepted``, and follows with an updated EVT_STATE.
 MSG_MODE_SET = "mode.set"
 
-# Client → Server. Selects the top-level workflow for the next prompt:
-# ``"guided"`` (Guide + full pipeline) or ``"problem_solving"`` (standalone
-# Problem Solver); unknown values fall back to ``"guided"``. The other frozen
-# toggle — same next-prompt-only semantics as ``mode.set``. Server replies
-# ``workflow.accepted`` and follows with an updated EVT_STATE.
-MSG_WORKFLOW_SET = "workflow.set"
+# Client → Server. Selects the top-level agent for the next prompt. Payload:
+# ``{name: "guide"}`` — a name from ``hello.ack``'s ``agents`` catalog, or a
+# legacy workflow-mode value (``"guided"``/``"problem_solving"``) left in a
+# session persisted before the rename; anything unrecognized falls back to
+# ``hello.ack``'s ``default_agent``. The other frozen toggle — same
+# next-prompt-only semantics as ``mode.set``. Server replies ``agent.accepted``
+# and follows with an updated EVT_STATE, whose ``top_agent`` echoes the resolved
+# name (so a client that sent an alias sees what it actually got).
+#
+# Replaced ``workflow.set {mode}``, which named a fixed set of three modes; the
+# accepted values are now whatever top-level agents the registry has loaded.
+MSG_AGENT_SET = "agent.set"
 
 # Client → Server. Set the Edit Control posture.
 # Payload: ``{edit_control: "review_all"|"allow_all"|"smart"}``. Unlike
-# mode.set/workflow.set this is NEVER frozen: the client owns the value (forcing
+# mode.set/agent.set this is NEVER frozen: the client owns the value (forcing
 # "allow_all" while Autonomous is in effect) and the server mirrors whatever it
 # last sent, so the stored value is always exactly what the UI shows. (State
 # tracking only — no edit gate is enforced yet; not part of the security layer.)
@@ -849,7 +855,7 @@ SREQ_WORKSPACE_CONFIRM_FOLDER = "workspace.confirm_folder"
 # ---------------------------------------------------------------------------
 
 # Server → Client event. The complete session snapshot — phase, the two frozen
-# toggles (autonomous/workflow_mode) with their effective twins, the three
+# toggles (autonomous/top_agent) with their effective twins, the three
 # never-frozen toggles (edit_control/command_control/thinking_level), and
 # current_agent — never a delta. Pushed on every phase transition, mode-toggle
 # change, and turn freeze/unfreeze, and embedded again as ``state`` inside

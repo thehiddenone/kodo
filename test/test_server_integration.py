@@ -23,11 +23,14 @@ import aiohttp
 import pytest
 from aiohttp.test_utils import TestServer
 
+from kodo.agents import AgentRegistry
 from kodo.common import Envelope
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._engine import _titling as _titling_module
 from kodo.server import Config, create_app
 from kodo.server import _app as _app_module
+
+_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "agents"
 
 _RECV_TIMEOUT = 5.0
 
@@ -256,6 +259,93 @@ async def test_hello_ack_embeds_state_snapshot(ws: aiohttp.ClientWebSocketRespon
     assert isinstance(state, dict) and "phase" in state
 
 
+async def test_hello_ack_carries_the_top_agent_catalog(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """The picker is rendered from this, so the client hardcodes no agent names.
+
+    Every registered *selectable* agent must be here, with everything a row
+    needs — adding one server-side is meant to need no client change at all.
+    """
+    resp = await _hello(ws)
+    registry = AgentRegistry(_AGENTS_DIR)
+    expected = [a for a in registry.top_agents() if a.selectable]
+
+    agents = resp.payload["agents"]
+    assert isinstance(agents, list)
+    assert [a["name"] for a in agents] == [a.name for a in expected]
+    for row, agent in zip(agents, expected, strict=True):
+        assert row == {
+            "name": agent.name,
+            "label": agent.label,
+            "description": agent.description,
+            "rank": agent.rank,
+        }
+    # A brand-new session's starting agent, which the client adopts rather than
+    # choosing one of its own.
+    assert resp.payload["default_agent"] == registry.default_top_agent()
+    assert resp.payload["state"]["top_agent"] == registry.default_top_agent()
+
+
+async def test_hello_ack_omits_non_selectable_agents(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """``judge`` is registered and reachable, but never offered to a user.
+
+    It is absent from the catalog and still accepted by ``agent.set`` — the
+    whole point of the ``selectable`` flag.
+    """
+    resp = await _hello(ws)
+    hidden = {a.name for a in AgentRegistry(_AGENTS_DIR).top_agents() if not a.selectable}
+    assert hidden, "expected at least one non-selectable agent to make this meaningful"
+    assert hidden.isdisjoint({a["name"] for a in resp.payload["agents"]})
+
+
+async def test_agent_set_accepts_a_non_selectable_agent(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    sid = str((await _hello(ws)).payload["session_id"])
+    req = _make_request("agent.set", session_id=sid, name="judge")
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+    assert resp.payload["type"] == "agent.accepted"
+
+
+async def test_agent_set_resolves_a_legacy_workflow_value(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """A session still speaking the old vocabulary keeps working.
+
+    Uses ``"guided"`` rather than ``"problem_solving"`` on purpose: the latter
+    resolves to the agent a new session already starts on, so it could pass
+    without resolving anything.
+    """
+    sid = str((await _hello(ws)).payload["session_id"])
+    req = _make_request("agent.set", session_id=sid, name="guided")
+    await ws.send_str(req.to_json())
+
+    # One loop for both frames: the engine emits `state` *before* replying, so
+    # reading the response first would discard the very event under test.
+    accepted = False
+    resolved = ""
+    deadline = asyncio.get_event_loop().time() + 5.0
+    while asyncio.get_event_loop().time() < deadline and not (accepted and resolved):
+        try:
+            env = await _recv(ws, timeout=2.0)
+        except TimeoutError:
+            break
+        if env.kind == "response" and env.correlation_id == req.id:
+            assert env.payload["type"] == "agent.accepted"
+            accepted = True
+        elif env.kind == "event" and env.payload.get("type") == "state":
+            resolved = str(env.payload["top_agent"])
+
+    assert accepted, "agent.set was never acknowledged"
+    # The state event carries the *resolved* name, so a client that sent an
+    # alias sees the agent it actually got rather than the value it typed.
+    assert resolved == "guide"
+
+
 async def test_hello_emits_state_event(ws: aiohttp.ClientWebSocketResponse) -> None:
     await _hello(ws)
     received: list[Envelope] = []
@@ -319,7 +409,10 @@ async def test_session_list_includes_open_session(ws: aiohttp.ClientWebSocketRes
     assert isinstance(sessions, list)
     entry = next(s for s in sessions if s["id"] == sid)
     assert entry["taken"] is True
-    assert entry["workflow_mode"] == "guided"  # a fresh session's default mode
+    # The picker row carries the resolved name *and* its label, so the client
+    # renders it without a mapping of its own.
+    assert entry["agent"] == "problem_solver"
+    assert entry["agent_label"] == "Problem Solver"
 
 
 # ---------------------------------------------------------------------------

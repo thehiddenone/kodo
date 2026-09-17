@@ -18,12 +18,12 @@ first pass than for a correction round (§5b).
 The alternative mode, **Problem Solver**, is the free-form one — an
 investigator/planner/developer trio driven by whatever the user asks. Both modes
 share the engine, the tools, the security layer and the checkpoint mirror; what
-differs is the entry agent and, with it, the shape of the work.
+differs is the top-level agent and, with it, the shape of the work.
 
 Two ideas do most of the load-bearing here, and both are worth stating before
 the mechanics:
 
-- **The Guide owns the process; sub-agents own the files.** The entry agent
+- **The Guide owns the process; sub-agents own the files.** The top-level agent
   never writes a narrative, a requirement, a design, a test or a line of code.
   It decides what runs next, on what, and when the user must be involved.
 - **No model ever authors a file path.** A caller says *what* to do; the engine
@@ -33,12 +33,12 @@ the mechanics:
 
 ## 2. Entering the mode
 
-`workflow.set` (WS_PROTOCOL.md) sets `session.workflow_mode` to `"guided"` (the
+`agent.set` (WS_PROTOCOL.md) sets `session.top_agent` to `"guided"` (the
 default) or `"problem_solving"`. Like Autonomous mode, it is a **frozen toggle**:
-`effective_workflow_mode` is snapshotted when a prompt starts, so flipping the
+`effective_top_agent` is snapshotted when a prompt starts, so flipping the
 switch mid-turn never changes the mode a running turn is already executing under.
 
-The mode picks the entry agent — `agent_guide.md` for Guided, and it is that
+The mode picks the top-level agent — `agent_guide.md` for Guided, and it is that
 prompt, not the engine, that encodes the pipeline order.
 
 A third mode, `"judge"`, exists for the validator (`agent_judge.md`) and is

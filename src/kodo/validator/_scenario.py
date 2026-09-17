@@ -66,7 +66,7 @@ class Scenario:
         name: Scenario identifier (used for the run directory name).
         prompts: Prompt sequence, submitted one turn at a time.
         roots: Simulated workspace folders (one = single-root VS Code window,
-            several = multi-root; for a ``guided`` workflow scenario these are
+            several = multi-root; for a ``guide`` scenario these are
             the bound project roots too — Guided mode has no separate binding
             step, exactly like ``problem_solving``).
         modes: Session toggles pinned before the first prompt.

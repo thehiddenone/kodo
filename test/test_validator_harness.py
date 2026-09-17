@@ -22,7 +22,7 @@ from kodo.validator._harness import Modes, TurnResult, ValidationHarness
 def test_modes_defaults() -> None:
     m = Modes()
     assert m.autonomous is False
-    assert m.workflow == "problem_solving"
+    assert m.agent == "problem_solver"
     assert m.edit_control == "smart"
     assert m.command_control == "smart"
 
@@ -30,12 +30,12 @@ def test_modes_defaults() -> None:
 def test_modes_custom_values() -> None:
     m = Modes(
         autonomous=True,
-        workflow="guided",
+        agent="guide",
         edit_control="review_all",
         command_control="defensive",
     )
     assert m.autonomous is True
-    assert m.workflow == "guided"
+    assert m.agent == "guide"
     assert m.edit_control == "review_all"
     assert m.command_control == "defensive"
 

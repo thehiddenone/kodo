@@ -681,19 +681,23 @@ async def test_open_subsession_records_marker_active_pointer_and_event() -> None
 
     assert engine._transient.markers[-1]["type"] == "subsession_start"
     assert engine._transient.markers[-1]["subsession_id"] == "sub1"
+    # An agent holds the floor, so it is the parent — see the next test for
+    # what happens when none does.
     assert engine._transient.markers[-1]["parent_display_name"] == "guide"
     assert engine._transient.updates[-1]["active_subsession"]["subsession_id"] == "sub1"
     assert engine._sink.sent[-1].payload["type"] == "subsession.started"
     assert engine._sink.sent[-1].payload["task"] == "look into it"
 
 
-async def test_open_subsession_defaults_parent_to_guide_when_no_active_agent() -> None:
+async def test_open_subsession_defaults_parent_to_the_top_agent() -> None:
     engine = _make_engine()
     engine._session.agent = None
 
     await engine._open_subsession("investigator", "sub1")
 
-    assert engine._transient.markers[-1]["parent_display_name"] == "guide"
+    # Nobody holds the floor, so the parent shown is the session's top-level
+    # agent — a registry lookup, not a hardcoded name.
+    assert engine._transient.markers[-1]["parent_display_name"] == "problem_solver"
 
 
 async def test_close_subsession_marks_failed_when_schema_noncompliant() -> None:
@@ -793,7 +797,7 @@ async def test_abort_active_subsession_falls_back_to_display_name_lookup() -> No
 
     marker = engine._transient.markers[-1]
     assert marker["display_name"] == "The Architect"
-    assert marker["parent_display_name"] == "guide"
+    assert marker["parent_display_name"] == "problem_solver"
 
 
 # ---------------------------------------------------------------------------

@@ -36,11 +36,11 @@ class _FakeTransient:
         self,
         role: str,
         content: object,
-        entry_agent: str | None = None,
+        top_agent: str | None = None,
         attachments: object = None,
         kind: str | None = None,
     ) -> None:
-        self.appended.append((role, content, entry_agent, kind))
+        self.appended.append((role, content, top_agent, kind))
 
     def update(self, **kwargs: object) -> None:
         self.update_calls.append(kwargs)

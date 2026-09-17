@@ -147,9 +147,9 @@ class _FakeTransient:
         self.appended_sub: list[_AppendedSubEntry] = []
 
     def append_message(
-        self, role, content, entry_agent=None, attachments=None, kind=None, detail=None
+        self, role, content, top_agent=None, attachments=None, kind=None, detail=None
     ) -> None:
-        self.appended.append((role, content, entry_agent, kind, detail))
+        self.appended.append((role, content, top_agent, kind, detail))
 
     def append_subsession_message(
         self, subsession_id, role, content, kind=None, detail=None
@@ -455,8 +455,8 @@ async def test_on_stall_autonomous_nudges_immediately_and_persists() -> None:
     # Persisted as a main-session message, tagged so the feed renders it
     # specially instead of as a fake user-typed bubble.
     assert len(engine._transient.appended) == 1
-    role, content, entry_agent, kind, detail = engine._transient.appended[0]
-    assert (role, entry_agent, kind) == ("user", "problem_solver", "nudge")
+    role, content, top_agent, kind, detail = engine._transient.appended[0]
+    assert (role, top_agent, kind) == ("user", "problem_solver", "nudge")
     assert detail is not None
     assert detail["mode"] == "auto"
     assert detail["source"] == "stall"
@@ -979,8 +979,8 @@ async def test_cyclic_thinking_handler_entry_turn_strike_one_notices_and_sets_st
     assert decision.message.content.startswith("Your reasoning")
     assert engine._cycle_streak is True
     assert len(engine._transient.appended) == 1
-    role, content, entry_agent, kind, detail = engine._transient.appended[0]
-    assert (role, content, entry_agent, kind) == (
+    role, content, top_agent, kind, detail = engine._transient.appended[0]
+    assert (role, content, top_agent, kind) == (
         "user",
         decision.message.content,
         "problem_solver",
@@ -1128,8 +1128,8 @@ async def test_think_in_tool_call_handler_entry_turn_strike_one_nudges_and_names
     assert "run_subagent" in decision.message.content
     assert "not allowed to think inside a tool call" in decision.message.content
     assert engine._think_tag_streak is True
-    role, content, entry_agent, kind, detail = engine._transient.appended[0]
-    assert (role, entry_agent, kind) == ("user", "problem_solver", "nudge")
+    role, content, top_agent, kind, detail = engine._transient.appended[0]
+    assert (role, top_agent, kind) == ("user", "problem_solver", "nudge")
     assert detail["source"] == "think_in_tool_call"
     assert "run_subagent" in detail["ui_text"]
 
@@ -1260,8 +1260,8 @@ async def test_tool_call_cyclic_handler_entry_turn_strike_one_notices_and_sets_s
     assert "repetitive loop" in decision.message.content.lower()
     assert decision.message.content.startswith("Your tool call's arguments")
     assert engine._tool_call_cycle_streak is True
-    role, content, entry_agent, kind, detail = engine._transient.appended[0]
-    assert (role, content, entry_agent, kind) == (
+    role, content, top_agent, kind, detail = engine._transient.appended[0]
+    assert (role, content, top_agent, kind) == (
         "user",
         decision.message.content,
         "problem_solver",
@@ -1939,7 +1939,7 @@ async def test_repeated_tool_call_subagent_loop_is_caught_and_bounded() -> None:
     assert "read_file" in sub_nudges[0][2]
 
 
-async def test_repeated_tool_call_entry_agent_loop_nudges_then_goes_critical() -> None:
+async def test_repeated_tool_call_top_agent_loop_nudges_then_goes_critical() -> None:
     """Same loop shape on the shared entry-agent turn: one nudge, then the
     client-only 'gave up' critical on the very next repeat (the two-strike
     escalation every entry-agent detector uses)."""

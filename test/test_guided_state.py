@@ -73,7 +73,7 @@ def test_append_new_revision_is_a_noop_outside_tracked_roots(tmp_path: Path) -> 
         author="a",
         tool="filesystem",
         summary="s",
-        workflow="guided",
+        top_agent="guide",
     )
     assert read_history(doc, tmp_path) == []
     assert read_document_state(doc, tmp_path) is None
@@ -84,7 +84,7 @@ def test_read_document_state_is_none_for_untouched_tracked_file(tmp_path: Path) 
     assert read_document_state(doc, tmp_path) is None
 
 
-def test_new_revision_entry_carries_commit_and_workflow(tmp_path: Path) -> None:
+def test_new_revision_entry_carries_commit_and_top_agent(tmp_path: Path) -> None:
     doc = tmp_path / "specs" / "a.md"
     append_new_revision(
         doc,
@@ -93,7 +93,7 @@ def test_new_revision_entry_carries_commit_and_workflow(tmp_path: Path) -> None:
         author="architect",
         tool="filesystem",
         summary="create_file",
-        workflow="guided",
+        top_agent="guide",
     )
     history = read_history(doc, tmp_path)
     assert len(history) == 1
@@ -102,7 +102,7 @@ def test_new_revision_entry_carries_commit_and_workflow(tmp_path: Path) -> None:
     assert entry["commit_hash"] == "sha1"
     assert entry["author"] == "architect"
     assert entry["tool"] == "filesystem"
-    assert entry["workflow"] == "guided"
+    assert entry["top_agent"] == "guide"
     assert entry["timestamp"]
 
     state = read_document_state(doc, tmp_path)
@@ -111,7 +111,7 @@ def test_new_revision_entry_carries_commit_and_workflow(tmp_path: Path) -> None:
     assert _status(doc, tmp_path) == "pending_review"
 
 
-def test_new_revision_tags_problem_solving_writes_distinctly(tmp_path: Path) -> None:
+def test_new_revision_tags_problem_solver_writes_distinctly(tmp_path: Path) -> None:
     """A Problem-Solver edit of a tracked file is still recorded, tagged apart.
 
     The point: the Guide can reconcile state after a Problem-Solver session
@@ -126,10 +126,10 @@ def test_new_revision_tags_problem_solving_writes_distinctly(tmp_path: Path) -> 
         author="problem_solver",
         tool="edit_file",
         summary="edit",
-        workflow="problem_solving",
+        top_agent="problem_solver",
     )
     history = read_history(doc, tmp_path)
-    assert history[0]["workflow"] == "problem_solving"
+    assert history[0]["top_agent"] == "problem_solver"
     # Still just a new_revision — no review_result/accepted appear outside
     # Guided mode, because nothing in that flow ever fires there.
     assert [e["type"] for e in history] == ["new_revision"]
@@ -156,7 +156,7 @@ def test_status_derivation_full_lifecycle(tmp_path: Path) -> None:
         author="architect",
         tool="filesystem",
         summary="create",
-        workflow="guided",
+        top_agent="guide",
     )
     # Written, never looked at.
     assert _status(doc, tmp_path) == "pending_review"
@@ -173,7 +173,7 @@ def test_status_derivation_full_lifecycle(tmp_path: Path) -> None:
         author="architect",
         tool="edit_file",
         summary="revise",
-        workflow="guided",
+        top_agent="guide",
     )
     assert _status(doc, tmp_path, outstanding=2) == "needs_revision"
 
@@ -193,7 +193,7 @@ def test_status_derivation_full_lifecycle(tmp_path: Path) -> None:
         author="architect",
         tool="edit_file",
         summary="revise again",
-        workflow="guided",
+        top_agent="guide",
     )
     append_review_result(doc, tmp_path, decision="approve", comment="")
     assert _status(doc, tmp_path, reviewed=True) == "pending_acceptance"
@@ -217,7 +217,7 @@ def test_reviewed_clean_and_never_reviewed_are_distinguished(tmp_path: Path) -> 
         author="architect",
         tool="filesystem",
         summary="create",
-        workflow="guided",
+        top_agent="guide",
     )
     assert _status(doc, tmp_path, reviewed=False, outstanding=0) == "pending_review"
     assert _status(doc, tmp_path, reviewed=True, outstanding=0) == "pending_acceptance"
@@ -245,7 +245,7 @@ def test_last_revision_timestamp_finds_the_most_recent_revision(tmp_path: Path) 
             author="architect",
             tool="edit_file",
             summary="x",
-            workflow="guided",
+            top_agent="guide",
         )
     append_review_result(doc, tmp_path, decision="reject", comment="")
     history = read_history(doc, tmp_path)
@@ -264,7 +264,7 @@ def test_append_accepted_reuses_most_recent_new_revision_commit(
         author="architect",
         tool="filesystem",
         summary="create",
-        workflow="guided",
+        top_agent="guide",
     )
     append_review_result(doc, tmp_path, decision="approve", comment="")
     # No further new_revision before accepted — must still find "first-sha".
@@ -302,7 +302,7 @@ def test_scan_tracked_files_reports_every_tracked_document(tmp_path: Path) -> No
         author="architect",
         tool="filesystem",
         summary="create",
-        workflow="guided",
+        top_agent="guide",
     )
     append_new_revision(
         doc_b,
@@ -311,7 +311,7 @@ def test_scan_tracked_files_reports_every_tracked_document(tmp_path: Path) -> No
         author="coder",
         tool="filesystem",
         summary="create",
-        workflow="guided",
+        top_agent="guide",
     )
     append_accepted(doc_a, tmp_path)
 

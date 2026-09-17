@@ -691,9 +691,10 @@ def test_clear_llm_request_logs_removes_files_and_dirs(tmp_path: Path) -> None:
         ("problem_solving", "problem_solver"),
         ("guided", "guide"),
         # Anything unrecognized resolves to the registry's declared default
-        # rather than failing: this runs on every prompt and every resume.
-        ("anything_else", "guide"),
-        ("", "guide"),
+        # (problem_solver) rather than failing: this runs on every prompt
+        # and every resume.
+        ("anything_else", "problem_solver"),
+        ("", "problem_solver"),
     ],
 )
 def test_top_agent_name(selection: str, expected: str) -> None:

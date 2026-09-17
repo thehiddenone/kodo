@@ -400,7 +400,7 @@ Your wrapper should add nothing but the name.
 ### 4.4 The front-end wiring (`kodo-vsix`)
 
 Only if the mode is **user-selectable**. `judge` is the worked counter-example:
-it is reachable solely by sending `workflow.set` with `mode: "judge"` over the
+it is reachable solely by sending `agent.set` with `name: "judge"` over the
 wire (which `kodo.validator` does), and kodo-vsix's picker never offers it — so
 it needed **zero** VSIX changes.
 

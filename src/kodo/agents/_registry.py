@@ -841,41 +841,16 @@ class AgentRegistry:
     def default_top_agent(self) -> str:
         """Name of the top-level agent an unrecognized selection falls back to.
 
+        This is also the agent a brand-new session starts on: the value
+        ``hello.ack`` publishes as ``default_agent``, which the client adopts
+        rather than hardcoding one of its own. The two are deliberately the same
+        answer — "which agent, when nobody has said" has no reason to differ
+        between a fresh session and a stale selection.
+
         Empty only for a registry that loaded no top-level agents at all, which
         in practice means a test fixture of sub-agents.
         """
         return self.__default_top_agent
-
-    def stored_top_agent_value(self, value: str) -> str:
-        """Normalize a selection to the form that is stored and sent on the wire.
-
-        Phase 1 of doc/TOP_AGENT_PLAN.md changes *how* the selection is resolved,
-        not *what* travels: the wire and on-disk vocabulary stays the legacy
-        workflow-mode one (``"guided"``, ``"problem_solving"``) until the
-        protocol rename lands in phase 3 alongside the client change. So this
-        answers with the resolved agent's first alias while it has one, and its
-        name otherwise — which for the three shipped agents is byte-identical to
-        the hardcoded normalization it replaces.
-
-        Storing the canonical name instead would look harmless and break the
-        picker: kodo-vsix reads anything that is not ``"problem_solving"`` as
-        ``"guided"``, so a stored ``"problem_solver"`` would show *Guide*
-        selected while the server ran Problem Solver.
-
-        **Delete this method in phase 3**, along with the ``aliases`` it reads;
-        agent names are the wire vocabulary from then on.
-
-        Args:
-            value: An agent name, a legacy alias, or anything else.
-
-        Returns:
-            str: The value to store — always one a current client understands.
-        """
-        resolved = self.resolve_top_agent(value)
-        for top in self.__top_agents:
-            if top.name == resolved:
-                return top.aliases[0] if top.aliases else top.name
-        return resolved
 
     def __validate_artifact_roles(self, problems: _Problems) -> None:
         """Check every spec's ``produces``/``consumes`` once the set is known.

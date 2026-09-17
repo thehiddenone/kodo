@@ -1,18 +1,20 @@
 # Proposal — User-Installed Top-Level Agents
 
-> Status: **proposal, not implemented**. Written 2026-09-16.
+> Status: **the rationale record.** Written 2026-09-16. Phases 1-3 of the roadmap
+> below are **implemented** (including the client picker, PLAN phase 4); phase 4
+> here — the user-installed `~/.kodo/agents/` tier this document is actually
+> about — is not started. The implementation plan and its running record live in
+> [TOP_AGENT_PLAN.md](TOP_AGENT_PLAN.md); this document stays as *why* those
+> options and not the others.
 > Question asked: *"what should be done to allow creation of new top level agents
 > without having to write code? Idea: an interface between prompts and the engine
 > mediated by frontmatter and JSON definitions."*
 > **Decision recorded 2026-09-16:** the target outcome is *"a user drops a file
 > in `~/.kodo/` and a new top-level agent appears"*. Everything below is a
-> roadmap to that, not a menu of alternatives.
-> **Phases 1-3 are now planned in detail in [TOP_AGENT_PLAN.md](TOP_AGENT_PLAN.md)**
-> (decisions recorded 2026-09-16: single packaged root but do the validation
-> refactor now; rename `workflow.set` to `agent.set`; server-declared default with
-> a user override; keep a `selectable` flag; rename the `guided_state` `workflow`
-> field too). This document stays the rationale record — why those options and not
-> the others.
+> roadmap to that, not a menu of alternatives. Decisions taken along the way:
+> single packaged root but do the validation refactor early; rename `workflow.set`
+> to `agent.set`; server-declared default with a user override; keep a
+> `selectable` flag; rename the `guided_state` `workflow` field too.
 > **Vocabulary note:** this document says *"entry agent"* throughout. That term is
 > retired — see [TOP_AGENT_PLAN.md](TOP_AGENT_PLAN.md) §1, which uses `agent`, and
 > `top_agent` only where `agent` is already taken. Read "entry agent" as "top-level
@@ -159,6 +161,9 @@ sub-agents included. A user agent that spawns `coder` / `architect` / any critic
 gets `get_findings` answering `{"error": …}` — and the entire author/critic
 review loop is built on that backlog ([FINDINGS.md](FINDINGS.md) §3).
 
+> **Fixed** in phase 1 (2026-09-16): both gates are gone, and with them
+> `ToolContext.mode` — `kodo.tools` now has no notion of workflow mode at all.
+
 **Fix: delete both checks.** `guided_dev_status` is granted to exactly one agent
 (`agent_guide.md`), so its mode check is pure redundancy behind the tool grant.
 `get_findings` is granted to the guide plus 17 pipeline sub-agents, which no
@@ -171,6 +176,12 @@ maps anything that isn't `'problem_solving'` to `'guided'`. A session persisted
 as `"judge"` — which the validator creates today — already displays as
 **"Guided"** in the session picker. Under D every user mode would do the same.
 
+> **Fixed** (2026-09-17). `session.list` rows carry an `agent_label` resolved
+> server-side, and both client-side ternaries that ignored it are gone — the
+> session picker and the Settings panel's session list now render what the
+> server says. `coerceWorkflowMode` is replaced by `coerceTopAgent`, which no
+> longer collapses an unknown value onto Guide.
+
 ---
 
 ## 3. Roadmap
@@ -181,10 +192,10 @@ useful if you stop early.
 
 | Phase | Deliverable | Independently useful? |
 |---|---|---|
-| **1** | Engine generic: registry-owned mode table, one dispatch branch, three wrappers deleted, mode coercion out of `kodo.state`, both §2.3 bugs fixed | **Yes** — net code deletion, two bug fixes, no new surface |
-| **2** | `AgentRegistry` gains a second, **fail-soft** root + a `reload()`; `modes/*.json` catalog; `agents.list` / `agents.delete` / `agents.reload` | Partly — enables in-repo agent authoring without a rebuild |
-| **3** | Server serves the mode catalog; VSIX picker renders `modes.map(…)` | **No** — but **mandatory for D**: a user agent nobody can select is useless |
-| **4** | `ensure_root()`, install surface (`agents.install_local` / from repo), trust prompt, `kodo agents scaffold` | Completes D |
+| **1** ✅ | Engine generic: registry-owned agent table, one dispatch branch, three wrappers deleted, mode coercion out of `kodo.state`, both §2.3 bugs fixed | **Done** — see PLAN §4.1a |
+| **2** ◐ | Per-agent JSON configs + the **attributable-validation** refactor (PLAN §4.3a) | **Partly done** — still to come for D: a second **fail-soft** root, `reload()`, `agents.list` / `agents.delete` / `agents.reload` |
+| **3** ✅ | Server serves the agent catalog on `hello.ack`; VSIX picker renders `agents.map(…)` | **Done** (PLAN §5.4, §6a) — the client hardcodes no agent name anywhere, which is what **D** needs: a user agent nobody can select is useless |
+| **4** | `ensure_root()`, install surface (`agents.install_local` / from repo), trust prompt, `kodo agents scaffold` | Completes D — **not started** |
 
 Phase 3 was optional in the previous framing. **With D as the destination it is
 not.** That is the single biggest consequence of the decision.

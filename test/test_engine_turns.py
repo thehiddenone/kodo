@@ -109,9 +109,9 @@ class _FakeTransient:
         self._store_result: tuple[str, str] | None = ("attach-1", "attachments/a1.txt")
 
     def append_message(
-        self, role, content, entry_agent=None, attachments=None, kind=None, detail=None
+        self, role, content, top_agent=None, attachments=None, kind=None, detail=None
     ) -> None:
-        self.appended.append((role, content, entry_agent, attachments))
+        self.appended.append((role, content, top_agent, attachments))
 
     def store_attachment(self, display_name: str, content: str) -> tuple[str, str] | None:
         return self._store_result
@@ -1253,7 +1253,7 @@ def test_make_dispatcher_resolves_project_root_from_current_project() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _entry_agent_engine(*, gateway: _FakeGateway | None = None) -> WorkflowEngine:
+def _top_agent_engine(*, gateway: _FakeGateway | None = None) -> WorkflowEngine:
     engine = _base_engine(gateway=gateway)
     engine._registry = SimpleNamespace(
         get=lambda name, autonomous=False: SimpleNamespace(
@@ -1296,7 +1296,7 @@ def _entry_agent_engine(*, gateway: _FakeGateway | None = None) -> WorkflowEngin
 
 
 async def test_run_top_agent_persists_prompt_and_runs_turn() -> None:
-    engine = _entry_agent_engine()
+    engine = _top_agent_engine()
 
     await engine._run_top_agent("guide", "hello there")
 
@@ -1310,7 +1310,7 @@ async def test_run_top_agent_persists_prompt_and_runs_turn() -> None:
 
 
 async def test_run_top_agent_phase_done_is_not_overridden() -> None:
-    engine = _entry_agent_engine()
+    engine = _top_agent_engine()
 
     async def _run_agent_turn(**kwargs):
         engine._session.phase = "done"
@@ -1326,7 +1326,7 @@ async def test_run_top_agent_phase_done_is_not_overridden() -> None:
 async def test_run_top_agent_with_attachments_sends_user_attachments_event(
     tmp_path: Path,
 ) -> None:
-    engine = _entry_agent_engine()
+    engine = _top_agent_engine()
     src = tmp_path / "note.txt"
     src.write_text("content")
 
@@ -1338,7 +1338,7 @@ async def test_run_top_agent_with_attachments_sends_user_attachments_event(
 
 
 async def test_run_top_agent_attachment_errors_are_emitted() -> None:
-    engine = _entry_agent_engine()
+    engine = _top_agent_engine()
 
     await engine._run_top_agent("guide", "check this", ["/nonexistent/path.txt"])
 
@@ -1346,7 +1346,7 @@ async def test_run_top_agent_attachment_errors_are_emitted() -> None:
 
 
 async def test_run_top_agent_blank_text_and_no_attachments_skips_message() -> None:
-    engine = _entry_agent_engine()
+    engine = _top_agent_engine()
 
     await engine._run_top_agent("guide", "")
 

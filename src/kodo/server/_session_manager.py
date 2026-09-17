@@ -66,6 +66,16 @@ class SessionManager:
         self.__conn_session: dict[str, str] = {}  # connection id -> session_id
         self.__grace_tasks: dict[str, asyncio.Task[None]] = {}
 
+    @property
+    def registry(self) -> AgentRegistry:
+        """The shared agent registry, for callers that need to read the catalog.
+
+        Read-only: the registry is built once at startup and handed in, and
+        nothing may swap the set of agents out from under a live session.
+        ``hello.ack`` reads the top-level agent catalog through this.
+        """
+        return self.__registry
+
     # ------------------------------------------------------------------
     # Lookup
     # ------------------------------------------------------------------
@@ -303,14 +313,14 @@ class SessionManager:
                 physical-path folder map, paired with *physical_root* above.
 
         Returns:
-            list[dict]: ``{id, name, created_at, last_modified, workflow_mode,
-            taken, workspace}`` per session; ``taken`` is ``True`` while a
-            live window holds it. ``workflow_mode`` is the session's last
-            persisted mode (``"guided"``/``"problem_solving"``/``"judge"``) —
-            display-only (e.g. kodo-vsix's session-picker "Guided"/"Problem
-            solving" label); it no longer implies anything about which
-            directories a session is bound to, since both modes now share
-            the same N-root binding mechanism (``workspace`` below).
+            list[dict]: ``{id, name, created_at, last_modified, agent,
+            agent_label, taken, workspace}`` per session; ``taken`` is ``True``
+            while a live window holds it. ``agent`` is the session's last
+            persisted top-level agent and ``agent_label`` is what to call it in
+            the picker — both resolved through the registry, both ``None`` for a
+            session that never recorded one. Display-only; they imply nothing
+            about which directories a session is bound to, since every agent
+            shares the same N-root binding mechanism (``workspace`` below).
             ``workspace`` is ``{physical_root, folders, code_workspace_file,
             locked, compatible}`` (the session's remembered VS Code workspace
             shape, plus whether *physical_root*/*folders* above can host its
@@ -332,12 +342,32 @@ class SessionManager:
                     "name": name,
                     "created_at": created_at,
                     "last_modified": last_modified,
-                    "workflow_mode": _read_workflow_mode(path),
+                    **self.__agent_row(_read_top_agent(path)),
                     "taken": path.name in self.__live_conn,
                     "workspace": _read_workspace(path, physical_root, folders or {}),
                 }
             )
         return out
+
+    def __agent_row(self, stored: str | None) -> dict[str, object]:
+        """The ``agent``/``agent_label`` pair for one session-picker row.
+
+        Resolved through the registry rather than handed over raw: the stored
+        value may be a legacy workflow-mode string, and the *label* is a
+        presentation fact only the registry knows. Sending both spares the
+        client a mapping it would otherwise have to hardcode — which is exactly
+        how a validator-created ``"judge"`` session came to display as
+        "Guided".
+
+        An unknown or missing selection reports ``None`` for both rather than
+        inventing a default: the row is describing what a session *is*, and
+        "not recorded" is the honest answer.
+        """
+        if not stored:
+            return {"agent": None, "agent_label": None}
+        name = self.__registry.resolve_top_agent(stored)
+        label = next((a.label for a in self.__registry.top_agents() if a.name == name), name)
+        return {"agent": name, "agent_label": label}
 
     async def shutdown(self) -> None:
         """Stop every running engine (server teardown)."""
@@ -435,12 +465,15 @@ def _read_meta(session_dir: Path) -> tuple[str, str, str]:
     return name, created_at, last_modified
 
 
-def _read_workflow_mode(session_dir: Path) -> str | None:
-    """A session's last persisted ``workflow_mode``, read straight off disk.
+def _read_top_agent(session_dir: Path) -> str | None:
+    """A session's last persisted ``top_agent``, read straight off disk.
 
     Mirrors the old ``_read_project_root``'s read-only, defensive style —
-    display-only for the picker's "Guided"/"Problem solving" label, not a
-    binding/gating signal (that's ``workspace`` — see :func:`_read_workspace`).
+    display-only for the picker's row label, not a binding/gating signal
+    (that's ``workspace`` — see :func:`_read_workspace`).
+
+    ``workflow_mode`` is the pre-rename key, read as a fallback so a session
+    written by an older build still shows the right label.
     """
     transient = session_dir / "transient.json"
     if not transient.exists():
@@ -449,8 +482,8 @@ def _read_workflow_mode(session_dir: Path) -> str | None:
         data = json.loads(transient.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
-    mode = data.get("workflow_mode")
-    return str(mode) if isinstance(mode, str) and mode else None
+    value = data.get("top_agent", data.get("workflow_mode"))
+    return str(value) if isinstance(value, str) and value else None
 
 
 def _read_workspace(
@@ -460,7 +493,7 @@ def _read_workspace(
 ) -> dict[str, object] | None:
     """Read a session's remembered VS Code workspace shape for `session.list`.
 
-    Mirrors :func:`_read_workflow_mode`'s read-only, defensive style. Returns
+    Mirrors :func:`_read_top_agent`'s read-only, defensive style. Returns
     ``None`` until at least one folder has earned a checkpoint commit
     (``TransientStore.workspace_locked_paths`` non-empty) — a session that
     merely had ``workspace.folders`` pushed to it (every session open in a

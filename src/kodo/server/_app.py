@@ -113,6 +113,7 @@ from kodo.transport import (
     EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_LOCAL_LLM_REGISTRY_STATE,
     EVT_LOCAL_LLM_UPDATES_AVAILABLE,
+    MSG_AGENT_SET,
     MSG_BEDROCK_MODELS_REFRESH,
     MSG_CHECKPOINT_LIST,
     MSG_CHECKPOINT_REDO,
@@ -174,7 +175,6 @@ from kodo.transport import (
     MSG_STUCK_DETECTION_GET,
     MSG_STUCK_DETECTION_SET,
     MSG_THINKING_LEVEL_SET,
-    MSG_WORKFLOW_SET,
     MSG_WORKSPACE_FOLDERS,
     SREQ_HF_TOKEN_REQUEST,
     Connection,
@@ -332,6 +332,7 @@ async def _handle_session_hello(
             "server_version": _SERVER_VERSION,
             "session_id": session.id,
             "state": session.engine.session.to_dict(),
+            **_top_agents_payload(req.manager.registry),
             **_llama_payload(config.reload_settings()),
         }
     )
@@ -1140,12 +1141,40 @@ async def _handle_mode(req: Request) -> None:
     await req.reply({"type": "mode.accepted"})
 
 
-async def _handle_workflow(req: Request) -> None:
+def _top_agents_payload(registry: AgentRegistry) -> dict[str, object]:
+    """The top-level agent catalog ``hello.ack`` carries.
+
+    ``agents`` lists only the **selectable** ones, in picker order, so a client
+    renders one row per entry with no name hardcoded on its side — the same
+    contract ``housekeeper_llm.get.ack``'s ``options`` array has, and the reason
+    adding a top-level agent needs no client change. A non-selectable agent
+    (``judge``) is absent here but still accepted by ``agent.set``.
+
+    ``default_agent`` is what a brand-new session starts on. The client adopts
+    it rather than choosing one itself, which is what stops the picker's default
+    and the server's fallback from drifting apart.
+    """
+    return {
+        "agents": [
+            {
+                "name": agent.name,
+                "label": agent.label,
+                "description": agent.description,
+                "rank": agent.rank,
+            }
+            for agent in registry.top_agents()
+            if agent.selectable
+        ],
+        "default_agent": registry.default_top_agent(),
+    }
+
+
+async def _handle_agent_set(req: Request) -> None:
     session = await _require_session(req)
     if session is None:
         return
-    await session.engine.handle_workflow_set(str(req.env.payload.get("mode", "guided")))
-    await req.reply({"type": "workflow.accepted"})
+    await session.engine.handle_agent_set(str(req.env.payload.get("name", "")))
+    await req.reply({"type": "agent.accepted"})
 
 
 async def _handle_edit_control(req: Request) -> None:
@@ -2690,7 +2719,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_SKILLS_INSTALL_LOCAL, _handle_skills_install_local)
     conn_registry.register_handler(MSG_PROMPT_SUBMIT, _handle_prompt)
     conn_registry.register_handler(MSG_MODE_SET, _handle_mode)
-    conn_registry.register_handler(MSG_WORKFLOW_SET, _handle_workflow)
+    conn_registry.register_handler(MSG_AGENT_SET, _handle_agent_set)
     conn_registry.register_handler(MSG_EDIT_CONTROL_SET, _handle_edit_control)
     conn_registry.register_handler(MSG_COMMAND_CONTROL_SET, _handle_command_control)
     conn_registry.register_handler(MSG_THINKING_LEVEL_SET, _handle_thinking_level)

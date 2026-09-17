@@ -220,7 +220,7 @@ class TransientStore:
     __stage: str
     __last_prompt: str
     __autonomous: bool
-    __workflow_mode: str
+    __top_agent: str
     __edit_control: str
     __command_control: str
     __thinking_level: str
@@ -254,7 +254,7 @@ class TransientStore:
         self.__stage = "IDLE"
         self.__last_prompt = ""
         self.__autonomous = False
-        self.__workflow_mode = "guided"
+        self.__top_agent = ""
         self.__edit_control = "smart"
         self.__command_control = "smart"
         self.__thinking_level = ""
@@ -556,14 +556,16 @@ class TransientStore:
         return self.__autonomous
 
     @property
-    def workflow_mode(self) -> str:
+    def top_agent(self) -> str:
         """Persisted top-level agent selection, exactly as last written.
 
-        ``"judge"`` is validator-only (kodo.validator._evaluate) and never sent
-        by kodo-vsix. Per-session so a window hosting several sessions can keep
-        each in its own mode across reloads/resume.
+        A *name* (``"guide"``, ``"problem_solver"``, ``"judge"``), or a legacy
+        workflow-mode value in a session written before the rename — this store
+        does not judge which, since it cannot see the registry that knows. The
+        engine resolves it on restore. Per-session, so a window hosting several
+        sessions keeps each on its own agent across reloads and resume.
         """
-        return self.__workflow_mode
+        return self.__top_agent
 
     @property
     def edit_control(self) -> str:
@@ -897,7 +899,7 @@ class TransientStore:
         stage: str | None = None,
         prompt: str | None = None,
         autonomous: bool | None = None,
-        workflow_mode: str | None = None,
+        top_agent: str | None = None,
         edit_control: str | None = None,
         command_control: str | None = None,
         thinking_level: str | None = None,
@@ -915,7 +917,7 @@ class TransientStore:
             stage (str | None): New stage name if changed.
             prompt (str | None): Developer prompt to persist for resume.
             autonomous (bool | None): New autonomous flag if changed.
-            workflow_mode (str | None): New workflow mode if changed.
+            top_agent (str | None): New top-level agent selection if changed.
             edit_control (str | None): New Edit Control posture if changed.
             command_control (str | None): New Command Control posture if changed.
             thinking_level (str | None): New thinking-tier slug if changed
@@ -955,8 +957,8 @@ class TransientStore:
             self.__last_prompt = prompt
         if autonomous is not None:
             self.__autonomous = autonomous
-        if workflow_mode is not None:
-            self.__workflow_mode = workflow_mode
+        if top_agent is not None:
+            self.__top_agent = top_agent
         if edit_control is not None:
             self.__edit_control = edit_control
         if command_control is not None:
@@ -1004,7 +1006,7 @@ class TransientStore:
         self,
         role: str,
         content: str | list[dict[str, object]],
-        entry_agent: str | None = None,
+        top_agent: str | None = None,
         attachments: list[dict[str, str]] | None = None,
         kind: str | None = None,
         detail: dict[str, object] | None = None,
@@ -1012,7 +1014,7 @@ class TransientStore:
         """Append one top-level LLM message to the main ``session.jsonl``.
 
         The main log is agent-agnostic: both the Guide and the Problem
-        Solver append to it. ``entry_agent`` tags which top-level agent produced
+        Solver append to it. ``top_agent`` tags which top-level agent produced
         the message (display/audit only — context is shared across them).
 
         ``attachments`` records prompt file-attachments as opaque links —
@@ -1024,7 +1026,7 @@ class TransientStore:
         Args:
             role (str): ``'user'`` or ``'assistant'``.
             content (str | list): Message content (plain text or content blocks).
-            entry_agent (str | None): Name of the top-level agent that produced
+            top_agent (str | None): Name of the top-level agent that produced
                 this message, if known.
             attachments (list[dict[str, str]] | None): Attachment links to bind
                 to this message, or ``None``/empty for a plain message.
@@ -1048,8 +1050,8 @@ class TransientStore:
         if self.__paths is None:
             return
         record: dict[str, object] = {"role": role, "content": content}
-        if entry_agent is not None:
-            record["entry_agent"] = entry_agent
+        if top_agent is not None:
+            record["top_agent"] = top_agent
         if attachments:
             record["attachments"] = attachments
         if kind is not None:
@@ -1242,10 +1244,12 @@ class TransientStore:
             # resolves it on restore (``WorkflowEngine.start``). Validating here
             # too is what used to let a new selection work until the session was
             # resumed and then silently revert.
-            raw_workflow_mode = data.get("workflow_mode")
-            self.__workflow_mode = (
-                raw_workflow_mode if isinstance(raw_workflow_mode, str) else "guided"
-            )
+            #
+            # ``workflow_mode`` is the pre-rename key, read as a fallback so a
+            # session written by an older build resumes onto the right agent.
+            # Nothing rewrites it — the next ``update`` writes ``top_agent``.
+            raw_top_agent = data.get("top_agent", data.get("workflow_mode"))
+            self.__top_agent = raw_top_agent if isinstance(raw_top_agent, str) else ""
             edit = data.get("edit_control")
             self.__edit_control = edit if edit in ("review_all", "allow_all", "smart") else "smart"
             command = data.get("command_control")
@@ -1366,7 +1370,7 @@ class TransientStore:
             "stage": self.__stage,
             "last_prompt": self.__last_prompt,
             "autonomous": self.__autonomous,
-            "workflow_mode": self.__workflow_mode,
+            "top_agent": self.__top_agent,
             "edit_control": self.__edit_control,
             "command_control": self.__command_control,
             "thinking_level": self.__thinking_level,

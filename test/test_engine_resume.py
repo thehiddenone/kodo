@@ -92,11 +92,11 @@ class _FakeTransientLines:
         self,
         role: str,
         content: object,
-        entry_agent: str | None = None,
+        top_agent: str | None = None,
         attachments: object = None,
         kind: str | None = None,
     ) -> None:
-        self.appended.append((role, content, entry_agent, kind))
+        self.appended.append((role, content, top_agent, kind))
 
     def update(self, **kwargs: object) -> None:
         self.update_calls.append(kwargs)
@@ -115,16 +115,16 @@ def _engine_with_lines(lines: list[dict[str, object]]) -> WorkflowEngine:
     return engine
 
 
-def test_last_top_agent_defaults_to_guide_when_no_lines() -> None:
+def test_last_top_agent_defaults_to_the_registry_default_when_no_lines() -> None:
     engine = _engine_with_lines([])
-    assert engine._last_top_agent() == "guide"
+    assert engine._last_top_agent() == "problem_solver"
 
 
 def test_last_top_agent_reads_tag_from_most_recent_role_line() -> None:
     engine = _engine_with_lines(
         [
-            {"role": "user", "content": "hi", "entry_agent": "guide"},
-            {"role": "assistant", "content": "ok", "entry_agent": "problem_solver"},
+            {"role": "user", "content": "hi", "top_agent": "guide"},
+            {"role": "assistant", "content": "ok", "top_agent": "problem_solver"},
         ]
     )
     assert engine._last_top_agent() == "problem_solver"
@@ -132,26 +132,37 @@ def test_last_top_agent_reads_tag_from_most_recent_role_line() -> None:
 
 def test_last_top_agent_falls_back_when_tag_missing() -> None:
     engine = _engine_with_lines([{"role": "assistant", "content": "ok"}])
+    assert engine._last_top_agent() == "problem_solver"
+
+
+def test_last_top_agent_reads_the_pre_rename_tag() -> None:
+    """A session written before the rename tagged its lines ``entry_agent``."""
+    engine = _engine_with_lines([{"role": "assistant", "content": "ok", "entry_agent": "guide"}])
     assert engine._last_top_agent() == "guide"
 
 
-def test_last_top_agent_resolves_a_legacy_tag() -> None:
-    """A session persisted before the rename carries a workflow-mode value."""
+def test_last_top_agent_resolves_a_legacy_value_in_the_pre_rename_tag() -> None:
+    """Older still: the old key *and* the old workflow-mode vocabulary."""
     engine = _engine_with_lines([{"role": "assistant", "content": "ok", "entry_agent": "guided"}])
     assert engine._last_top_agent() == "guide"
 
 
-def test_last_top_agent_falls_back_when_tag_names_an_unknown_agent() -> None:
+def test_last_top_agent_prefers_the_current_tag_over_the_legacy_one() -> None:
     engine = _engine_with_lines(
-        [{"role": "assistant", "content": "ok", "entry_agent": "long_gone"}]
+        [{"role": "assistant", "content": "ok", "top_agent": "judge", "entry_agent": "guided"}]
     )
-    assert engine._last_top_agent() == "guide"
+    assert engine._last_top_agent() == "judge"
+
+
+def test_last_top_agent_falls_back_when_tag_names_an_unknown_agent() -> None:
+    engine = _engine_with_lines([{"role": "assistant", "content": "ok", "top_agent": "long_gone"}])
+    assert engine._last_top_agent() == "problem_solver"
 
 
 def test_last_top_agent_skips_marker_only_lines() -> None:
     engine = _engine_with_lines(
         [
-            {"role": "assistant", "content": "ok", "entry_agent": "problem_solver"},
+            {"role": "assistant", "content": "ok", "top_agent": "problem_solver"},
             {"type": "subsession_start", "subsession_id": "s1"},
         ]
     )
@@ -405,7 +416,7 @@ async def test_resume_main_turn_redispatches_ask_user_and_finishes(tmp_path: Pat
     tool_uses = [{"type": "tool_use", "id": "tu_1", "name": "ask_user", "input": {"q": "?"}}]
     engine, compactor, sink, dispatch_calls = _resumable_engine(
         tool_uses=tool_uses,
-        session_lines=[{"role": "assistant", "content": "ok", "entry_agent": "guide"}],
+        session_lines=[{"role": "assistant", "content": "ok", "top_agent": "guide"}],
         tmp_path=tmp_path,
     )
 
@@ -487,7 +498,7 @@ async def test_resume_main_turn_redispatches_call_matching_pending_security_aler
 
     await engine._resume_main_turn()
 
-    assert dispatch_calls == [([("tu_1", "run_command", {"command": "x"})], "guide")]
+    assert dispatch_calls == [([("tu_1", "run_command", {"command": "x"})], "problem_solver")]
 
 
 @pytest.mark.asyncio
@@ -555,7 +566,7 @@ async def test_resume_main_turn_only_alert_matched_call_redispatched_among_sever
 
     await engine._resume_main_turn()
 
-    assert dispatch_calls == [([("tu_1", "run_command", {})], "guide")]
+    assert dispatch_calls == [([("tu_1", "run_command", {})], "problem_solver")]
 
 
 # ---------------------------------------------------------------------------
@@ -581,7 +592,7 @@ async def test_resume_main_turn_redispatches_call_matching_pending_edit_review(
 
     await engine._resume_main_turn()
 
-    assert dispatch_calls == [([("tu_1", "edit_file", {"path": "a.py"})], "guide")]
+    assert dispatch_calls == [([("tu_1", "edit_file", {"path": "a.py"})], "problem_solver")]
 
 
 @pytest.mark.asyncio
@@ -646,8 +657,8 @@ async def test_resume_main_turn_pending_security_alert_and_pending_edit_review_i
     # Each redispatch-eligible call is dispatched individually (the real loop
     # calls _dispatch_tool_calls once per tool_use, never batched).
     assert dispatch_calls == [
-        ([("tu_1", "run_command", {})], "guide"),
-        ([("tu_2", "edit_file", {})], "guide"),
+        ([("tu_1", "run_command", {})], "problem_solver"),
+        ([("tu_2", "edit_file", {})], "problem_solver"),
     ]
     assert engine._transient.pending_security_alert is None
     assert engine._transient.pending_edit_review is None
