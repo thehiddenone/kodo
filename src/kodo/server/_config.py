@@ -208,7 +208,7 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
         # a small/quantized-model failure mode cloud models rarely exhibit).
         "active": "local_only",
         # "top_level" | "top_level_and_subagents" — whether only the main
-        # entry agent (Guide/Problem Solver) is watched, or sub-agents
+        # top-level agent (Guide/Problem Solver) is watched, or sub-agents
         # (run_subagent_<name>) too. Defaults to covering sub-agents: a
         # sub-agent's own tool calls (e.g. return_result) stream through the
         # exact same mid-stream cyclic-argument detector (§2.10) as the entry

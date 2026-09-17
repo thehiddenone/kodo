@@ -263,10 +263,9 @@ class ToolDispatcher:
             iteration, rollback, mode disable, project creation).
         agent_name: Name of the running agent.
         session_id: Session ID for this run.
-        mode: The run's workflow mode (``"guided"``/``"problem_solving"``).
         output_schema: The running sub-agent's ``output_schema`` (from its
             ``SubAgentSpec``), so ``return_result`` can validate its result.
-            ``None`` for entry agents that never call ``return_result``.
+            ``None`` for top-level agents that never call ``return_result``.
         plan_dir: This session's ``plan/`` directory, so the plan tools can
             read and advance the one plan this session holds
             (:attr:`ToolContext.plan_dir`).
@@ -287,7 +286,6 @@ class ToolDispatcher:
         agent_name: str,
         session_id: str,
         security: SecurityLike | None = None,
-        mode: str = "problem_solving",
         util_paths: dict[str, Path] | None = None,
         output_schema: dict[str, object] | None = None,
         findings_dir: Path | None = None,
@@ -303,7 +301,6 @@ class ToolDispatcher:
             services=services,
             agent_name=agent_name,
             session_id=session_id,
-            mode=mode,
             util_paths=dict(util_paths or {}),
             output_schema=output_schema,
             findings_dir=findings_dir,

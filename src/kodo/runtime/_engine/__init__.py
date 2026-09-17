@@ -7,7 +7,7 @@ Mixins (share the engine instance's state via :class:`~._proto.EngineHost`):
 
 - :mod:`._llm` — plugin/model resolution, silent LLM turns, security judge
 - :mod:`._worker` — the single queue-driven worker coroutine
-- :mod:`._turns` — entry-agent runs + the generic LLM turn/tool loop
+- :mod:`._turns` — top-level agent runs + the generic LLM turn/tool loop
 - :mod:`._subagents` — gated spawns, subsessions, Author/Critic rounds
 - :mod:`._resume` — Stop folding + cold-restart resume of dangling turns
 

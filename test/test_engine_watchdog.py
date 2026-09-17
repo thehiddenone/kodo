@@ -44,6 +44,9 @@ from kodo.runtime._engine._watchdog import (
 from kodo.runtime._gates import StuckAlertResponse
 from kodo.runtime._repeated_tool_calls import RepeatedToolCallDetector
 from kodo.runtime._session import SessionState
+from kodo.subagents import AgentRegistry
+
+_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents")
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -185,6 +188,19 @@ class _FakeRegistry:
     def run_subagent_specs(self, caller: str) -> list[object]:
         return []
 
+    # The top-level agent table (doc/TOP_AGENT_PLAN.md §4.1). Delegated to the
+    # real registry rather than stubbed: these are resolution *rules* (aliases,
+    # the default, the stored spelling), and a fake that invents answers would
+    # let a test pass against behaviour the engine does not have.
+    def resolve_top_agent(self, value: str) -> str:
+        return _REAL_REGISTRY.resolve_top_agent(value)
+
+    def stored_top_agent_value(self, value: str) -> str:
+        return _REAL_REGISTRY.stored_top_agent_value(value)
+
+    def default_top_agent(self) -> str:
+        return _REAL_REGISTRY.default_top_agent()
+
     def return_result_specs(self, name: str) -> list[object]:
         return []
 
@@ -212,7 +228,7 @@ def _watchdog_engine(
     engine._emitters = _FakeEmitters()
     engine._gate = _FakeGate(gate_answers)
     engine._queue = asyncio.Queue()
-    engine._entry_turn_seq = 0
+    engine._top_agent_turn_seq = 0
     engine._stuck_watchdog_task = None
     engine._stuck_streak = False
     engine._cycle_streak = False
@@ -244,7 +260,6 @@ async def _noop_async(*args: object, **kwargs: object) -> None:
 
 _LOCAL_ROUTING = LLMRouting(residence="local")
 _CLOUD_ROUTING = LLMRouting(residence="cloud")
-
 
 # ---------------------------------------------------------------------------
 # detect_red_flags — pure detector functions
@@ -350,31 +365,31 @@ def test_stuck_settings_invalid_values_fall_back_to_defaults() -> None:
 
 def test_stuck_settings_applies_off_never_applies() -> None:
     cfg = _stuck_settings({"stuck_detection": {"active": "off"}})
-    assert cfg.applies(residence="local", is_entry_turn=True) is False
-    assert cfg.applies(residence="cloud", is_entry_turn=True) is False
+    assert cfg.applies(residence="local", is_top_agent_turn=True) is False
+    assert cfg.applies(residence="cloud", is_top_agent_turn=True) is False
 
 
 def test_stuck_settings_applies_local_only_gates_by_residence() -> None:
     cfg = _stuck_settings({"stuck_detection": {"active": "local_only"}})
-    assert cfg.applies(residence="local", is_entry_turn=True) is True
-    assert cfg.applies(residence="cloud", is_entry_turn=True) is False
+    assert cfg.applies(residence="local", is_top_agent_turn=True) is True
+    assert cfg.applies(residence="cloud", is_top_agent_turn=True) is False
 
 
 def test_stuck_settings_applies_local_and_cloud_covers_both() -> None:
     cfg = _stuck_settings({"stuck_detection": {"active": "local_and_cloud"}})
-    assert cfg.applies(residence="local", is_entry_turn=True) is True
-    assert cfg.applies(residence="cloud", is_entry_turn=True) is True
+    assert cfg.applies(residence="local", is_top_agent_turn=True) is True
+    assert cfg.applies(residence="cloud", is_top_agent_turn=True) is True
 
 
 def test_stuck_settings_scope_gates_subagent_turns() -> None:
     cfg = _stuck_settings({"stuck_detection": {"active": "local_only", "scope": "top_level"}})
-    assert cfg.applies(residence="local", is_entry_turn=True) is True
-    assert cfg.applies(residence="local", is_entry_turn=False) is False
+    assert cfg.applies(residence="local", is_top_agent_turn=True) is True
+    assert cfg.applies(residence="local", is_top_agent_turn=False) is False
 
     cfg2 = _stuck_settings(
         {"stuck_detection": {"active": "local_only", "scope": "top_level_and_subagents"}}
     )
-    assert cfg2.applies(residence="local", is_entry_turn=False) is True
+    assert cfg2.applies(residence="local", is_top_agent_turn=False) is True
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +402,7 @@ async def test_on_stall_no_flags_is_a_pure_noop() -> None:
     engine = _watchdog_engine()
     del engine._registry  # proves display_name is never resolved on this path
     handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     decision = await handler(
@@ -405,7 +420,7 @@ async def test_on_stall_settings_off_suppresses_a_real_stall() -> None:
         settings={"stuck_detection": {"active": "off"}},
     )
     handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     decision = await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -417,7 +432,7 @@ async def test_on_stall_settings_off_suppresses_a_real_stall() -> None:
 async def test_on_stall_local_only_ignores_cloud_residence() -> None:
     engine = _watchdog_engine(autonomous=True)  # default active="local_only"
     handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_CLOUD_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_CLOUD_ROUTING, is_top_agent_turn=True
     )
 
     decision = await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -428,7 +443,7 @@ async def test_on_stall_local_only_ignores_cloud_residence() -> None:
 async def test_on_stall_autonomous_nudges_immediately_and_persists() -> None:
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     decision = await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -466,7 +481,7 @@ async def test_on_stall_interactive_auto_unstuck_also_nudges_immediately() -> No
         },
     )
     handler = engine._make_stall_handler(
-        agent_name="guide", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     decision = await handler(TurnSignal(text="", thinking_text="", stop_reason="max_tokens"))
@@ -483,7 +498,7 @@ async def test_on_stall_interactive_entry_turn_schedules_deferred_alarm() -> Non
     gate early — cancelled immediately after, so this stays fast."""
     engine = _watchdog_engine(autonomous=False, gate_answers=["unstick"])
     handler = engine._make_stall_handler(
-        agent_name="guide", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     decision = await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -507,7 +522,7 @@ async def test_on_stall_interactive_entry_turn_alarm_fires_and_unsticks(monkeypa
     monkeypatch.setattr(_watchdog, "_ENTRY_TURN_ALARM_DELAY_S", 0.01)
     engine = _watchdog_engine(autonomous=False, gate_answers=["unstick"])
     handler = engine._make_stall_handler(
-        agent_name="guide", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     decision = await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -532,7 +547,7 @@ async def test_on_stall_interactive_entry_turn_alarm_dismissed_queues_nothing(mo
     monkeypatch.setattr(_watchdog, "_ENTRY_TURN_ALARM_DELAY_S", 0.01)
     engine = _watchdog_engine(autonomous=False, gate_answers=["dismiss"])
     handler = engine._make_stall_handler(
-        agent_name="guide", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -546,23 +561,23 @@ async def test_on_stall_entry_turn_alarm_honors_a_new_turn_during_the_grace_peri
     monkeypatch,
 ) -> None:
     """Q: if a new turn starts while the 1s grace period is running, does the
-    watchdog honor that and skip the stale alarm? Yes — _entry_turn_seq is
-    bumped once per new entry-agent turn (_run_entry_agent/_resume_main_turn),
+    watchdog honor that and skip the stale alarm? Yes — _top_agent_turn_seq is
+    bumped once per new entry-agent turn (_run_top_agent/_resume_main_turn),
     and the watcher re-checks it (and session.phase) right after waking, both
     before firing the gate and again after it resolves."""
     monkeypatch.setattr(_watchdog, "_ENTRY_TURN_ALARM_DELAY_S", 0.01)
     engine = _watchdog_engine(autonomous=False, gate_answers=["unstick"])
     handler = engine._make_stall_handler(
-        agent_name="guide", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
     assert engine._stuck_watchdog_task is not None
 
     # Simulate a brand-new prompt starting (and, for good measure, finishing)
-    # before the watcher's 1s nap is over — exactly what _run_entry_agent does
+    # before the watcher's 1s nap is over — exactly what _run_top_agent does
     # at the top of every call.
-    engine._entry_turn_seq += 1
+    engine._top_agent_turn_seq += 1
 
     await engine._stuck_watchdog_task
 
@@ -579,7 +594,7 @@ async def test_on_stall_entry_turn_alarm_honors_phase_no_longer_idle(monkeypatch
     monkeypatch.setattr(_watchdog, "_ENTRY_TURN_ALARM_DELAY_S", 0.01)
     engine = _watchdog_engine(autonomous=False, gate_answers=["unstick"])
     handler = engine._make_stall_handler(
-        agent_name="guide", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -606,7 +621,7 @@ async def test_on_stall_subagent_scope_asks_inline_no_delay() -> None:
     handler = engine._make_stall_handler(
         agent_name="investigator",
         routing=_LOCAL_ROUTING,
-        is_entry_turn=False,
+        is_top_agent_turn=False,
         subsession_id="sub-1",
     )
 
@@ -631,7 +646,7 @@ async def test_on_stall_subagent_scope_dismiss_does_not_retry() -> None:
     handler = engine._make_stall_handler(
         agent_name="investigator",
         routing=_LOCAL_ROUTING,
-        is_entry_turn=False,
+        is_top_agent_turn=False,
         subsession_id="sub-1",
     )
 
@@ -650,7 +665,7 @@ async def test_on_stall_subagent_scope_included_by_default() -> None:
     handler = engine._make_stall_handler(
         agent_name="investigator",
         routing=_LOCAL_ROUTING,
-        is_entry_turn=False,
+        is_top_agent_turn=False,
         subsession_id="sub-1",
     )
 
@@ -671,7 +686,7 @@ async def test_on_stall_subagent_scope_excluded_when_scope_set_to_top_level() ->
     handler = engine._make_stall_handler(
         agent_name="investigator",
         routing=_LOCAL_ROUTING,
-        is_entry_turn=False,
+        is_top_agent_turn=False,
         subsession_id="sub-1",
     )
 
@@ -688,7 +703,7 @@ async def test_on_stall_entry_turn_streak_escalates_to_critical_after_one_nudge(
     genuine response clears the streak."""
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     signal = TurnSignal(text="", thinking_text="", stop_reason="end_turn")
 
@@ -705,7 +720,7 @@ async def test_on_stall_entry_turn_streak_clears_on_a_genuine_response() -> None
     non-stalled round in between clears the streak."""
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     stalled = TurnSignal(text="", thinking_text="", stop_reason="end_turn")
     healthy = TurnSignal(
@@ -732,9 +747,9 @@ async def test_on_stall_entry_turn_streak_clears_on_a_successful_tool_call_round
     stall went critical because nothing had cleared _stuck_streak)."""
     engine = _watchdog_engine(autonomous=True)
     stall_handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
-    progress_handler = engine._make_progress_handler(is_entry_turn=True)
+    progress_handler = engine._make_progress_handler(is_top_agent_turn=True)
     assert progress_handler is not None
     stalled = TurnSignal(text="", thinking_text="", stop_reason="end_turn")
 
@@ -752,7 +767,7 @@ async def test_make_progress_handler_is_a_noop_for_subagent_scope() -> None:
     sub-agent turn has no cross-turn streak to clear, so the hook is simply
     absent rather than a callable that does nothing."""
     engine = _watchdog_engine()
-    assert engine._make_progress_handler(is_entry_turn=False) is None
+    assert engine._make_progress_handler(is_top_agent_turn=False) is None
 
 
 async def test_on_stall_subagent_stall_count_cap_gives_up_after_max_consecutive_nudges() -> None:
@@ -765,7 +780,7 @@ async def test_on_stall_subagent_stall_count_cap_gives_up_after_max_consecutive_
     handler = engine._make_stall_handler(
         agent_name="investigator",
         routing=_LOCAL_ROUTING,
-        is_entry_turn=False,
+        is_top_agent_turn=False,
         subsession_id="sub-1",
     )
     signal = TurnSignal(text="", thinking_text="", stop_reason="end_turn")
@@ -790,7 +805,7 @@ async def test_on_stall_missing_return_result_nudges_once_then_fails() -> None:
     handler = engine._make_stall_handler(
         agent_name="toolchain_builder",
         routing=_LOCAL_ROUTING,
-        is_entry_turn=False,
+        is_top_agent_turn=False,
         subsession_id="sub-1",
         dispatcher=dispatcher,
     )
@@ -823,7 +838,7 @@ async def test_on_stall_missing_return_result_is_independent_of_stuck_detection_
     handler = engine._make_stall_handler(
         agent_name="toolchain_builder",
         routing=_LOCAL_ROUTING,
-        is_entry_turn=False,
+        is_top_agent_turn=False,
         subsession_id="sub-1",
         dispatcher=dispatcher,
     )
@@ -843,7 +858,7 @@ async def test_on_stall_skips_missing_return_result_nudge_once_return_result_is_
     handler = engine._make_stall_handler(
         agent_name="toolchain_builder",
         routing=_LOCAL_ROUTING,
-        is_entry_turn=False,
+        is_top_agent_turn=False,
         subsession_id="sub-1",
         dispatcher=dispatcher,
     )
@@ -869,7 +884,7 @@ async def test_on_stall_missing_return_result_also_gates_the_stall_count_cap() -
     handler = engine._make_stall_handler(
         agent_name="investigator",
         routing=_LOCAL_ROUTING,
-        is_entry_turn=False,
+        is_top_agent_turn=False,
         subsession_id="sub-1",
         dispatcher=dispatcher,
     )
@@ -894,7 +909,7 @@ async def test_on_stall_missing_return_result_also_gates_the_stall_count_cap() -
 def test_make_cyclic_thinking_handler_returns_none_when_settings_off() -> None:
     engine = _watchdog_engine(settings={"stuck_detection": {"active": "off"}})
     handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert handler is None
 
@@ -902,7 +917,7 @@ def test_make_cyclic_thinking_handler_returns_none_when_settings_off() -> None:
 def test_make_cyclic_thinking_handler_returns_none_for_cloud_when_local_only() -> None:
     engine = _watchdog_engine()  # default active="local_only"
     handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_CLOUD_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_CLOUD_ROUTING, is_top_agent_turn=True
     )
     assert handler is None
 
@@ -914,7 +929,7 @@ def test_make_cyclic_thinking_handler_returns_callable_for_subagent_by_default()
     handler = engine._make_cyclic_thinking_handler(
         agent_name="investigator",
         routing=_LOCAL_ROUTING,
-        is_entry_turn=False,
+        is_top_agent_turn=False,
         subsession_id="sub-1",
     )
     assert handler is not None
@@ -928,7 +943,7 @@ def test_make_cyclic_thinking_handler_returns_none_for_subagent_when_scope_is_to
     handler = engine._make_cyclic_thinking_handler(
         agent_name="investigator",
         routing=_LOCAL_ROUTING,
-        is_entry_turn=False,
+        is_top_agent_turn=False,
         subsession_id="sub-1",
     )
     assert handler is None
@@ -937,7 +952,7 @@ def test_make_cyclic_thinking_handler_returns_none_for_subagent_when_scope_is_to
 def test_make_cyclic_thinking_handler_returns_callable_when_enabled() -> None:
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert handler is not None
 
@@ -945,7 +960,7 @@ def test_make_cyclic_thinking_handler_returns_callable_when_enabled() -> None:
 async def test_cyclic_thinking_handler_entry_turn_strike_one_notices_and_sets_streak() -> None:
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert handler is not None
 
@@ -982,7 +997,7 @@ async def test_cyclic_thinking_handler_entry_turn_strike_one_notices_and_sets_st
 async def test_cyclic_thinking_handler_entry_turn_strike_two_goes_critical() -> None:
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert handler is not None
 
@@ -1002,10 +1017,10 @@ async def test_cyclic_streak_is_dedicated_from_ordinary_stuck_streak() -> None:
     either escalation's two-strike cap -- each gets its own streak."""
     engine = _watchdog_engine(autonomous=True)
     stall_handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     cyclic_handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert cyclic_handler is not None
 
@@ -1025,10 +1040,10 @@ async def test_cyclic_streak_is_dedicated_from_ordinary_stuck_streak() -> None:
 async def test_cyclic_streak_clears_on_a_genuine_response() -> None:
     engine = _watchdog_engine(autonomous=True)
     cyclic_handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     stall_handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert cyclic_handler is not None
 
@@ -1046,9 +1061,9 @@ async def test_cyclic_streak_clears_on_a_genuine_response() -> None:
 async def test_cyclic_streak_clears_on_a_successful_tool_call_round() -> None:
     engine = _watchdog_engine(autonomous=True)
     cyclic_handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
-    progress_handler = engine._make_progress_handler(is_entry_turn=True)
+    progress_handler = engine._make_progress_handler(is_top_agent_turn=True)
     assert cyclic_handler is not None
     assert progress_handler is not None
 
@@ -1070,7 +1085,7 @@ async def test_cyclic_thinking_handler_subagent_scope_capped_then_silent() -> No
     handler = engine._make_cyclic_thinking_handler(
         agent_name="investigator",
         routing=_LOCAL_ROUTING,
-        is_entry_turn=False,
+        is_top_agent_turn=False,
         subsession_id="sub-1",
     )
     assert handler is not None
@@ -1094,7 +1109,7 @@ def test_make_think_in_tool_call_handler_always_returns_a_callable() -> None:
     protocol violation, not a stall heuristic."""
     engine = _watchdog_engine(settings={"stuck_detection": {"active": "off"}})
     handler = engine._make_think_in_tool_call_handler(
-        agent_name="problem_solver", is_entry_turn=True
+        agent_name="problem_solver", is_top_agent_turn=True
     )
     assert handler is not None
 
@@ -1102,7 +1117,7 @@ def test_make_think_in_tool_call_handler_always_returns_a_callable() -> None:
 async def test_think_in_tool_call_handler_entry_turn_strike_one_nudges_and_names_the_tool() -> None:
     engine = _watchdog_engine()
     handler = engine._make_think_in_tool_call_handler(
-        agent_name="problem_solver", is_entry_turn=True
+        agent_name="problem_solver", is_top_agent_turn=True
     )
 
     decision = await handler("run_subagent")
@@ -1122,7 +1137,7 @@ async def test_think_in_tool_call_handler_entry_turn_strike_one_nudges_and_names
 async def test_think_in_tool_call_handler_entry_turn_strike_two_goes_critical() -> None:
     engine = _watchdog_engine()
     handler = engine._make_think_in_tool_call_handler(
-        agent_name="problem_solver", is_entry_turn=True
+        agent_name="problem_solver", is_top_agent_turn=True
     )
 
     first = await handler("run_subagent")
@@ -1140,10 +1155,10 @@ async def test_think_in_tool_call_streak_is_dedicated_from_the_others() -> None:
     to trip an unrelated escalation."""
     engine = _watchdog_engine(autonomous=True)
     stall_handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     think_tag_handler = engine._make_think_in_tool_call_handler(
-        agent_name="problem_solver", is_entry_turn=True
+        agent_name="problem_solver", is_top_agent_turn=True
     )
 
     stall_decision = await stall_handler(
@@ -1162,10 +1177,10 @@ async def test_think_in_tool_call_streak_is_dedicated_from_the_others() -> None:
 async def test_think_in_tool_call_streak_clears_on_a_genuine_response() -> None:
     engine = _watchdog_engine(autonomous=True)
     think_tag_handler = engine._make_think_in_tool_call_handler(
-        agent_name="problem_solver", is_entry_turn=True
+        agent_name="problem_solver", is_top_agent_turn=True
     )
     stall_handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     await think_tag_handler("run_subagent")
@@ -1182,7 +1197,7 @@ async def test_think_in_tool_call_streak_clears_on_a_genuine_response() -> None:
 async def test_think_in_tool_call_handler_subagent_scope_capped_then_silent() -> None:
     engine = _watchdog_engine()
     handler = engine._make_think_in_tool_call_handler(
-        agent_name="investigator", is_entry_turn=False, subsession_id="sub-1"
+        agent_name="investigator", is_top_agent_turn=False, subsession_id="sub-1"
     )
 
     decisions = [await handler("run_command") for _ in range(_MAX_CONSECUTIVE_NUDGES + 1)]
@@ -1201,7 +1216,7 @@ async def test_think_in_tool_call_handler_subagent_scope_capped_then_silent() ->
 def test_make_tool_call_cyclic_handler_returns_none_when_settings_off() -> None:
     engine = _watchdog_engine(settings={"stuck_detection": {"active": "off"}})
     handler = engine._make_tool_call_cyclic_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert handler is None
 
@@ -1209,7 +1224,7 @@ def test_make_tool_call_cyclic_handler_returns_none_when_settings_off() -> None:
 def test_make_tool_call_cyclic_handler_returns_none_for_cloud_when_local_only() -> None:
     engine = _watchdog_engine()  # default active="local_only"
     handler = engine._make_tool_call_cyclic_handler(
-        agent_name="problem_solver", routing=_CLOUD_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_CLOUD_ROUTING, is_top_agent_turn=True
     )
     assert handler is None
 
@@ -1223,7 +1238,7 @@ def test_make_tool_call_cyclic_handler_returns_callable_for_subagent_by_default(
     handler = engine._make_tool_call_cyclic_handler(
         agent_name="investigator",
         routing=_LOCAL_ROUTING,
-        is_entry_turn=False,
+        is_top_agent_turn=False,
         subsession_id="sub-1",
     )
     assert handler is not None
@@ -1232,7 +1247,7 @@ def test_make_tool_call_cyclic_handler_returns_callable_for_subagent_by_default(
 async def test_tool_call_cyclic_handler_entry_turn_strike_one_notices_and_sets_streak() -> None:
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_tool_call_cyclic_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert handler is not None
 
@@ -1262,7 +1277,7 @@ async def test_tool_call_cyclic_handler_entry_turn_strike_one_notices_and_sets_s
 async def test_tool_call_cyclic_handler_entry_turn_strike_two_goes_critical() -> None:
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_tool_call_cyclic_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert handler is not None
 
@@ -1284,7 +1299,7 @@ async def test_tool_call_cyclic_handler_subagent_scope_capped_then_silent() -> N
     handler = engine._make_tool_call_cyclic_handler(
         agent_name="investigator",
         routing=_LOCAL_ROUTING,
-        is_entry_turn=False,
+        is_top_agent_turn=False,
         subsession_id="sub-1",
     )
     assert handler is not None
@@ -1313,9 +1328,9 @@ def _agent_turn_kwargs(engine: WorkflowEngine, **overrides: object) -> dict[str,
         stream_id="stream-1",
         agent_name="problem_solver",
         on_stall=engine._make_stall_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         ),
-        on_tool_calls=engine._make_progress_handler(is_entry_turn=True),
+        on_tool_calls=engine._make_progress_handler(is_top_agent_turn=True),
     )
     base.update(overrides)
     return base
@@ -1519,7 +1534,7 @@ async def test_run_agent_turn_end_to_end_cyclic_thinking_aborts_and_recovers() -
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_cyclic_thinking=engine._make_cyclic_thinking_handler(
-                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
             ),
         )
     )
@@ -1552,7 +1567,7 @@ async def test_run_agent_turn_end_to_end_second_cyclic_hit_ends_turn_critical() 
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_cyclic_thinking=engine._make_cyclic_thinking_handler(
-                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
             ),
         )
     )
@@ -1589,7 +1604,7 @@ async def test_run_agent_turn_ordinary_stall_unaffected_by_cyclic_thinking_wirin
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_cyclic_thinking=engine._make_cyclic_thinking_handler(
-                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
             ),
         )
     )
@@ -1644,7 +1659,7 @@ async def test_run_agent_turn_end_to_end_think_in_tool_call_aborts_and_recovers(
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_think_in_tool_call=engine._make_think_in_tool_call_handler(
-                agent_name="problem_solver", is_entry_turn=True
+                agent_name="problem_solver", is_top_agent_turn=True
             ),
         )
     )
@@ -1678,7 +1693,7 @@ async def test_run_agent_turn_end_to_end_second_think_in_tool_call_hit_ends_turn
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_think_in_tool_call=engine._make_think_in_tool_call_handler(
-                agent_name="problem_solver", is_entry_turn=True
+                agent_name="problem_solver", is_top_agent_turn=True
             ),
         )
     )
@@ -1718,7 +1733,7 @@ async def test_run_agent_turn_end_to_end_think_in_tool_call_fires_with_stuck_det
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_think_in_tool_call=engine._make_think_in_tool_call_handler(
-                agent_name="problem_solver", is_entry_turn=True
+                agent_name="problem_solver", is_top_agent_turn=True
             ),
         )
     )
@@ -1764,7 +1779,7 @@ async def test_run_agent_turn_end_to_end_tool_call_cyclic_aborts_and_recovers() 
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_tool_call_cyclic=engine._make_tool_call_cyclic_handler(
-                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
             ),
         )
     )
@@ -1800,10 +1815,10 @@ async def test_run_agent_turn_end_to_end_think_tag_takes_priority_over_repetitio
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_think_in_tool_call=engine._make_think_in_tool_call_handler(
-                agent_name="problem_solver", is_entry_turn=True
+                agent_name="problem_solver", is_top_agent_turn=True
             ),
             on_tool_call_cyclic=engine._make_tool_call_cyclic_handler(
-                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
             ),
         )
     )
@@ -1893,14 +1908,14 @@ async def test_repeated_tool_call_subagent_loop_is_caught_and_bounded() -> None:
         on_stall=engine._make_stall_handler(
             agent_name="requirements_critic",
             routing=_LOCAL_ROUTING,
-            is_entry_turn=False,
+            is_top_agent_turn=False,
             subsession_id="sub-1",
             dispatcher=_FakeDispatcher(),
         ),
         on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
             agent_name="requirements_critic",
             routing=_LOCAL_ROUTING,
-            is_entry_turn=False,
+            is_top_agent_turn=False,
             subsession_id="sub-1",
         ),
     )
@@ -1945,11 +1960,11 @@ async def test_repeated_tool_call_entry_agent_loop_nudges_then_goes_critical() -
         stream_id="stream-1",
         agent_name="problem_solver",
         on_stall=engine._make_stall_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         ),
-        on_tool_calls=engine._make_progress_handler(is_entry_turn=True),
+        on_tool_calls=engine._make_progress_handler(is_top_agent_turn=True),
         on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         ),
     )
 
@@ -2004,9 +2019,9 @@ async def test_repeated_tool_call_same_call_different_result_is_not_a_loop() -> 
         tool_dispatch=tool_dispatch,
         stream_id="stream-1",
         agent_name="problem_solver",
-        on_tool_calls=engine._make_progress_handler(is_entry_turn=True),
+        on_tool_calls=engine._make_progress_handler(is_top_agent_turn=True),
         on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         ),
     )
 
@@ -2050,7 +2065,7 @@ def test_make_repeated_tool_call_handler_returns_none_when_settings_off() -> Non
     engine = _watchdog_engine(settings={"stuck_detection": {"active": "off"}})
     assert (
         engine._make_repeated_tool_call_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         )
         is None
     )
@@ -2060,7 +2075,7 @@ def test_make_repeated_tool_call_handler_returns_none_for_cloud_when_local_only(
     engine = _watchdog_engine()
     assert (
         engine._make_repeated_tool_call_handler(
-            agent_name="problem_solver", routing=_CLOUD_ROUTING, is_entry_turn=True
+            agent_name="problem_solver", routing=_CLOUD_ROUTING, is_top_agent_turn=True
         )
         is None
     )
@@ -2074,7 +2089,7 @@ def test_make_repeated_tool_call_handler_covers_subagents_by_default() -> None:
         engine._make_repeated_tool_call_handler(
             agent_name="requirements_critic",
             routing=_LOCAL_ROUTING,
-            is_entry_turn=False,
+            is_top_agent_turn=False,
             subsession_id="sub-1",
         )
         is not None
@@ -2089,7 +2104,7 @@ def test_make_repeated_tool_call_handler_excluded_when_scope_is_top_level() -> N
         engine._make_repeated_tool_call_handler(
             agent_name="requirements_critic",
             routing=_LOCAL_ROUTING,
-            is_entry_turn=False,
+            is_top_agent_turn=False,
             subsession_id="sub-1",
         )
         is None
@@ -2122,7 +2137,7 @@ async def test_repeated_tool_call_round_does_not_count_as_progress() -> None:
         agent_name="problem_solver",
         on_tool_calls=lambda: progress_rounds.append(len(gateway.calls)),
         on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         ),
     )
 
@@ -2166,7 +2181,7 @@ async def test_progress_handler_still_fires_every_round_without_the_detector() -
         agent_name="problem_solver",
         on_tool_calls=lambda: progress_calls.append(1),
         on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         ),
     )
 
@@ -2202,9 +2217,9 @@ async def test_repeated_tool_call_signature_uses_the_normalized_llm_visible_resu
         tool_dispatch=tool_dispatch,
         stream_id="stream-1",
         agent_name="problem_solver",
-        on_tool_calls=engine._make_progress_handler(is_entry_turn=True),
+        on_tool_calls=engine._make_progress_handler(is_top_agent_turn=True),
         on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_entry_turn=True
+            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         ),
     )
 

@@ -11,7 +11,7 @@ Each agent file is a Markdown document with YAML frontmatter:
 
 The filename stem must be ``subagent_<name>`` for sub-agents (everything spawned
 through a ``run_subagent_<name>`` tool, plus the critics the engine spawns on
-their behalf) or ``agent_<name>`` for the user-facing entry agents (``guide``,
+their behalf) or ``agent_<name>`` for the user-facing top-level agents (``guide``,
 ``problem_solver``) that drive a session directly rather than being spawned by
 one.
 """
@@ -70,7 +70,7 @@ class SubAgent:
             the **description of this agent's ``run_subagent_<name>`` tool**, so
             it is written third-person for whoever is deciding whether to
             delegate, and the registry requires it on every invocable sub-agent.
-            Empty only for an entry agent or a critic (neither is invocable).
+            Empty only for a top-level agent or a critic (neither is invocable).
         role: The agent's structural role, from frontmatter ``role:``. Only
             ``"critic"`` is recognized today; everything else (the default ``""``)
             is an ordinary sub-agent. A critic is **not** invocable by a caller —
@@ -112,6 +112,14 @@ class SubAgent:
             Which artifacts are worth a human's attention is a property of the
             artifact, not of whether someone happened to pair a critic with its
             author — which is what decided it before this flag existed.
+        is_top_level: ``True`` when this agent was loaded from an
+            ``agent_<name>.md`` file rather than a ``subagent_<name>.md`` one —
+            i.e. it is a **top-level agent**, the kind a user selects and talks
+            to directly, rather than one another agent delegates to. Derived
+            from the filename prefix that actually matched, never declared: the
+            prefix is already the distinction the registry globs on, and a
+            frontmatter flag beside it would be a second source of truth free to
+            disagree with the file it sits in.
         planner: ``True`` when this agent's result **is a plan** (frontmatter
             ``planner: true``). The engine parses such a result and initializes
             the session's plan from it — the ordered ``tasks`` and the
@@ -148,6 +156,7 @@ class SubAgent:
     standalone: bool = False
     user_review: bool = False
     planner: bool = False
+    is_top_level: bool = False
 
     @property
     def is_critic(self) -> bool:
@@ -192,12 +201,13 @@ def load_agent(path: Path) -> SubAgent:
         subagent_order = ()
     subagents: frozenset[str] = frozenset(subagent_order)
 
-    expected_stems = (f"subagent_{name}", f"agent_{name}")
-    if path.stem not in expected_stems:
+    subagent_stem, top_level_stem = f"subagent_{name}", f"agent_{name}"
+    if path.stem not in (subagent_stem, top_level_stem):
         raise AgentLoadError(
             f"{path}: filename stem {path.stem!r} does not match expected "
-            f"{expected_stems[0]!r} or {expected_stems[1]!r}"
+            f"{subagent_stem!r} or {top_level_stem!r}"
         )
+    is_top_level = path.stem == top_level_stem
 
     if not body:
         raise AgentLoadError(f"{path}: system-prompt body is empty")
@@ -255,6 +265,7 @@ def load_agent(path: Path) -> SubAgent:
         standalone=standalone,
         user_review=user_review,
         planner=planner,
+        is_top_level=is_top_level,
     )
 
 

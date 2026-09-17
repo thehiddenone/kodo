@@ -7,7 +7,7 @@ history stays engine-owned — the compactor reaches back through the narrow
 :class:`CompactorHost` protocol to read and reset it, and to run the silent
 summarisation call on the engine's LLM plumbing.
 
-The live main context is measured in tokens after every entry-agent turn;
+The live main context is measured in tokens after every top-level agent turn;
 once it reaches ``_COMPACTION_THRESHOLD`` of the current model's context
 window (the per-model ``context_window`` in the LLM registry, resolved via
 :meth:`ContextCompactor.context_limit`) the engine runs the ``compactor``
@@ -176,7 +176,7 @@ class CompactorHost(Protocol):
 
     def _resolve_model_key(self, capability: str) -> str: ...
 
-    def _entry_capability(self) -> str: ...
+    def _top_agent_capability(self) -> str: ...
 
     async def _resolve_plugin(
         self, capability: str, force_model_key: str | None = None
@@ -211,13 +211,13 @@ class ContextCompactor:
         self._sink = sink
         self._session = session
         self._emitters = emitters
-        # Measured token size of the live main context (last entry-agent turn's
+        # Measured token size of the live main context (last top-level agent turn's
         # input + cache + output, or an estimate immediately after a compaction).
         self._context_tokens = 0
         # True while a compaction run is in flight (disables the manual trigger
         # and drives the "Compacting context…" indicator).
         self._compacting = False
-        # Registry key of the model the entry agent last ran on (the model that
+        # Registry key of the model the top-level agent last ran on (the model that
         # owns the live main context). Used to detect a model switch and, when
         # the new model has a smaller context window, compact with this (old)
         # model first.
@@ -250,7 +250,7 @@ class ContextCompactor:
 
         Called after every subsession turn (mirrors ``context_tokens``'s setter
         for the main context) with the subsession's own model — a sub-agent can
-        run on a different model than the main entry agent, so its context
+        run on a different model than the main top-level agent, so its context
         window (and thus its gauge's ``limit_tokens``) can differ.
         """
         self._subsession_context_tokens = tokens
@@ -270,21 +270,21 @@ class ContextCompactor:
     def context_limit(self) -> int:
         """Token budget for the main context = current model's context window.
 
-        Resolved from the entry-agent model selected in settings (see
+        Resolved from the top-level agent model selected in settings (see
         the engine's ``_resolve_model_key``) via the per-model
         ``context_window`` in the LLM registry. This is *not* session-specific:
         switching the model mid-session changes the limit, and the gauge/auto-
         compaction threshold follow it on the next stats emission (or
         immediately, via ``handle_config_changed``).
         """
-        model_key = self._host._resolve_model_key(self._host._entry_capability())
+        model_key = self._host._resolve_model_key(self._host._top_agent_capability())
         return get_context_window(model_key, kodo_user_dir())
 
     def can_compact(self) -> bool:
         """True when a manual compaction would be honoured right now.
 
         Mirrors the worker-side guard so the client can enable/disable its
-        "Compact now" button from the pushed stats: the entry agent must be idle
+        "Compact now" button from the pushed stats: the top-level agent must be idle
         (the last turn ended and no new one started), a compaction must not be in
         flight, there must be measured context, and the ``compactor`` agent must
         be registered.
@@ -333,7 +333,7 @@ class ContextCompactor:
     async def maybe_auto_compact(self) -> None:
         """Auto-compact when the just-measured context crosses the threshold.
 
-        Called at the end of every main entry-agent turn (after the LLM has
+        Called at the end of every main top-level agent turn (after the LLM has
         responded). One pass is enough — compaction collapses the context far
         below the threshold — so this never loops.
         """
@@ -359,12 +359,12 @@ class ContextCompactor:
     async def handle_config_changed(self) -> None:
         """Worker-side handler for a settings change (e.g. a model switch).
 
-        Detects whether the entry-agent model changed. If it shrank below the live
+        Detects whether the top-level agent model changed. If it shrank below the live
         context size, compact with the *outgoing* model first (so the switch only
         takes effect on a context that fits the new window); then record the new
         model and re-emit the context gauge (the limit may have moved either way).
         """
-        new_key = self._host._resolve_model_key(self._host._entry_capability())
+        new_key = self._host._resolve_model_key(self._host._top_agent_capability())
         old_key = self._active_model_key
         if old_key is not None and new_key != old_key:
             new_limit = get_context_window(new_key, kodo_user_dir())

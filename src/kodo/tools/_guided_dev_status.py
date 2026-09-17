@@ -1,4 +1,10 @@
-"""``guided_dev_status`` tool — scans tracked documents' status (Guided mode only)."""
+"""``guided_dev_status`` tool — scans tracked documents' status.
+
+Reachable by whichever agents are granted it (today: the Guide alone). There
+is no workflow-mode check — the grant in an agent's frontmatter *is* the
+gate, and a second one keyed on the session's selected top-level agent would
+refuse the tool to any new agent that legitimately held it.
+"""
 
 from __future__ import annotations
 
@@ -25,8 +31,6 @@ class GuidedDevStatusTool(Tool):
 
     async def handle(self, tool_input: dict[str, object]) -> str:
         ctx = self.context
-        if ctx.mode != "guided":
-            return json.dumps({"error": "guided_dev_status is only available in Guided mode."})
         roots = ctx.root_paths
         if not roots:
             return json.dumps({"error": "No project is bound."})

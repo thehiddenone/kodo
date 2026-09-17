@@ -151,7 +151,6 @@ def _make_dispatcher(
     *,
     agent_name: str = "test_agent",
     autonomous: bool = False,
-    mode: str = "guided",
     has_workspace: bool = True,
     root_paths: tuple[RootPath, ...] = (),
     util_paths: dict[str, Path] | None = None,
@@ -175,7 +174,6 @@ def _make_dispatcher(
         ),
         agent_name=agent_name,
         session_id="sess-test",
-        mode=mode,
         util_paths=util_paths,
         output_schema=output_schema,
         findings_dir=findings_dir,
@@ -539,14 +537,11 @@ async def test_find_text_in_files_compliance(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_guided_dev_status_compliance(tmp_path: Path) -> None:
     roots = (RootPath(name="proj", path=str(tmp_path)),)
-    d = _make_dispatcher(tmp_path, mode="guided", root_paths=roots)
+    d = _make_dispatcher(tmp_path, root_paths=roots)
     _assert_compliant("guided_dev_status", await _dispatch(d, "guided_dev_status", {}))
     (tmp_path / "specs").mkdir()
     await _write_file(d, "specs/a.md", "x")
     _assert_compliant("guided_dev_status", await _dispatch(d, "guided_dev_status", {}))
-    # Wrong mode → compliant error envelope, not an exception.
-    ps = _make_dispatcher(tmp_path, mode="problem_solving", root_paths=roots)
-    _assert_compliant("guided_dev_status", await _dispatch(ps, "guided_dev_status", {}))
 
 
 @pytest.mark.asyncio
@@ -555,7 +550,7 @@ async def test_get_findings_compliance(tmp_path: Path) -> None:
     findings_dir = tmp_path / "findings"
     # No scope bound (outside a review round, or a first pass) → an empty list,
     # which is a normal answer rather than an error (doc/FINDINGS.md §3).
-    d = _make_dispatcher(tmp_path, mode="guided", root_paths=roots)
+    d = _make_dispatcher(tmp_path, root_paths=roots)
     empty = _assert_compliant("get_findings", await _dispatch(d, "get_findings", {}))
     assert empty["findings"] == []
     # Scoped, with a real backlog behind it, in both list modes. The key is a
@@ -590,7 +585,6 @@ async def test_get_findings_compliance(tmp_path: Path) -> None:
     )
     scoped = _make_dispatcher(
         tmp_path,
-        mode="guided",
         root_paths=roots,
         findings_dir=findings_dir,
         findings_key=work_product,
@@ -604,9 +598,6 @@ async def test_get_findings_compliance(tmp_path: Path) -> None:
         first_id,
         second_id,
     ]
-    # Wrong mode → compliant error envelope, not an exception.
-    ps = _make_dispatcher(tmp_path, mode="problem_solving", root_paths=roots)
-    _assert_compliant("get_findings", await _dispatch(ps, "get_findings", {}))
 
 
 @pytest.mark.asyncio
@@ -800,7 +791,6 @@ async def test_toolchain_deps_missing_dependencies_md_returns_remediation(tmp_pa
         services=_NoDepsMdServices(),
         agent_name="coder",
         session_id="sess-test",
-        mode="guided",
     )
     parsed = _assert_compliant(
         "toolchain_deps",
@@ -1022,7 +1012,6 @@ async def test_web_search_compliance(tmp_path: Path) -> None:
         services=_WebSearchAgentFailsServices(),
         agent_name="investigator",
         session_id="sess-test",
-        mode="guided",
     )
     failed = _assert_compliant(
         "web_search", await _dispatch(failing, "web_search", {"query": "anything"})

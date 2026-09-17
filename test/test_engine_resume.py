@@ -2,7 +2,7 @@
 by ``test_engine_stop.py`` (which drives ``_persist_interrupted_turn``,
 ``_partial_assistant_message`` and ``_interrupted_tool_result``'s wording).
 
-Here: ``_has_dangling_tool_use``, ``_last_entry_agent``,
+Here: ``_has_dangling_tool_use``, ``_last_top_agent``,
 ``_build_replay_ledger``, and the cold-restart ``_resume_main_turn`` driver
 itself, using the same ``object.__new__(WorkflowEngine)`` + minimal-stub
 pattern as the rest of the engine test suite.
@@ -17,6 +17,10 @@ import pytest
 from kodo.llms import Message
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._session import SessionState
+from kodo.subagents import AgentRegistry
+
+_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents"
+_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents")
 
 # ---------------------------------------------------------------------------
 # _has_dangling_tool_use
@@ -64,7 +68,7 @@ def test_has_dangling_tool_use_true_when_tool_use_present() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _last_entry_agent
+# _last_top_agent
 # ---------------------------------------------------------------------------
 
 
@@ -105,37 +109,53 @@ class _FakeTransientLines:
 def _engine_with_lines(lines: list[dict[str, object]]) -> WorkflowEngine:
     engine = object.__new__(WorkflowEngine)
     engine._transient = _FakeTransientLines(lines)
+    # A real registry: the persisted tag is resolved through it, so a legacy
+    # value and an unknown one are part of what these tests pin down.
+    engine._registry = AgentRegistry(_AGENTS_DIR)
     return engine
 
 
-def test_last_entry_agent_defaults_to_guide_when_no_lines() -> None:
+def test_last_top_agent_defaults_to_guide_when_no_lines() -> None:
     engine = _engine_with_lines([])
-    assert engine._last_entry_agent() == "guide"
+    assert engine._last_top_agent() == "guide"
 
 
-def test_last_entry_agent_reads_tag_from_most_recent_role_line() -> None:
+def test_last_top_agent_reads_tag_from_most_recent_role_line() -> None:
     engine = _engine_with_lines(
         [
             {"role": "user", "content": "hi", "entry_agent": "guide"},
             {"role": "assistant", "content": "ok", "entry_agent": "problem_solver"},
         ]
     )
-    assert engine._last_entry_agent() == "problem_solver"
+    assert engine._last_top_agent() == "problem_solver"
 
 
-def test_last_entry_agent_falls_back_when_tag_missing() -> None:
+def test_last_top_agent_falls_back_when_tag_missing() -> None:
     engine = _engine_with_lines([{"role": "assistant", "content": "ok"}])
-    assert engine._last_entry_agent() == "guide"
+    assert engine._last_top_agent() == "guide"
 
 
-def test_last_entry_agent_skips_marker_only_lines() -> None:
+def test_last_top_agent_resolves_a_legacy_tag() -> None:
+    """A session persisted before the rename carries a workflow-mode value."""
+    engine = _engine_with_lines([{"role": "assistant", "content": "ok", "entry_agent": "guided"}])
+    assert engine._last_top_agent() == "guide"
+
+
+def test_last_top_agent_falls_back_when_tag_names_an_unknown_agent() -> None:
+    engine = _engine_with_lines(
+        [{"role": "assistant", "content": "ok", "entry_agent": "long_gone"}]
+    )
+    assert engine._last_top_agent() == "guide"
+
+
+def test_last_top_agent_skips_marker_only_lines() -> None:
     engine = _engine_with_lines(
         [
             {"role": "assistant", "content": "ok", "entry_agent": "problem_solver"},
             {"type": "subsession_start", "subsession_id": "s1"},
         ]
     )
-    assert engine._last_entry_agent() == "problem_solver"
+    assert engine._last_top_agent() == "problem_solver"
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +291,19 @@ class _FakeRegistry:
     def run_subagent_specs(self, caller: str) -> list[object]:
         return []
 
+    # The top-level agent table (doc/TOP_AGENT_PLAN.md §4.1). Delegated to the
+    # real registry rather than stubbed: these are resolution *rules* (aliases,
+    # the default, the stored spelling), and a fake that invents answers would
+    # let a test pass against behaviour the engine does not have.
+    def resolve_top_agent(self, value: str) -> str:
+        return _REAL_REGISTRY.resolve_top_agent(value)
+
+    def stored_top_agent_value(self, value: str) -> str:
+        return _REAL_REGISTRY.stored_top_agent_value(value)
+
+    def default_top_agent(self) -> str:
+        return _REAL_REGISTRY.default_top_agent()
+
     def return_result_specs(self, name: str) -> list[object]:
         return []
 
@@ -300,7 +333,7 @@ def _resumable_engine(
     engine._emitters = _FakeEmitters()
     engine._sink = _FakeSink()
     engine._orch_session_id = "orch-1"
-    engine._entry_turn_seq = 0
+    engine._top_agent_turn_seq = 0
     engine._cycle_streak = False
     # _make_cyclic_thinking_handler (doc/STUCK_DETECTION.md §2.7) reads
     # settings/routing.residence eagerly at construction time (unlike

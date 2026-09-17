@@ -45,7 +45,7 @@ from ._checkpointing import CheckpointCoordinator
 from ._compaction import ContextCompactor
 from ._events import EngineEmitters
 from ._services import _EngineServices
-from ._shared import _GUIDE_AGENT_NAME, Nudge, RedFlag, StallDecision, TurnSignal
+from ._shared import _FALLBACK_AGENT_NAME, Nudge, RedFlag, StallDecision, TurnSignal
 from ._titling import SessionTitler
 
 
@@ -78,7 +78,7 @@ class EngineHost(Protocol):
     _replay_subsessions: list[dict[str, object]] | None
     _resume_subsession_pending: bool
     _last_thinking_base_llm: str | None
-    _entry_turn_seq: int
+    _top_agent_turn_seq: int
     _stuck_watchdog_task: asyncio.Task[None] | None
     _stuck_streak: bool
     _cycle_streak: bool
@@ -150,9 +150,9 @@ class EngineHost(Protocol):
         on_round_text: Callable[[str], Awaitable[None]] | None = None,
     ) -> dict[str, object] | None: ...
 
-    def _entry_agent_name(self) -> str: ...
+    def _top_agent_name(self) -> str: ...
 
-    def _entry_capability(self) -> str: ...
+    def _top_agent_capability(self) -> str: ...
 
     # -- worker (defined in _worker) --------------------------------------------
     async def _handle_input_no_agent(self, name: str, text: str) -> None: ...
@@ -164,25 +164,7 @@ class EngineHost(Protocol):
     ) -> None: ...
 
     # -- turn loop (defined in _turns) -------------------------------------------
-    async def _run_guide_with_input(
-        self,
-        text: str,
-        attachments: list[str] | None = None,
-        nudge_detail: dict[str, object] | None = None,
-    ) -> None: ...
-
-    async def _run_problem_solver_with_input(
-        self,
-        text: str,
-        attachments: list[str] | None = None,
-        nudge_detail: dict[str, object] | None = None,
-    ) -> None: ...
-
-    async def _run_judge_with_input(
-        self, text: str, attachments: list[str] | None = None
-    ) -> None: ...
-
-    async def _run_entry_agent(
+    async def _run_top_agent(
         self,
         agent_name: str,
         text: str,
@@ -194,7 +176,7 @@ class EngineHost(Protocol):
         self, paths: list[str]
     ) -> tuple[list[dict[str, str]], list[str]]: ...
 
-    def _persist_main_messages(self, entry_agent: str) -> Callable[[list[Message]], None]: ...
+    def _persist_main_messages(self, top_agent: str) -> Callable[[list[Message]], None]: ...
 
     async def _run_agent_turn(
         self,
@@ -206,7 +188,7 @@ class EngineHost(Protocol):
         tools: list[ToolSpec],
         tool_dispatch: Callable[[str, dict[str, object], str, bool], Awaitable[str]],
         stream_id: str,
-        agent_name: str = _GUIDE_AGENT_NAME,
+        agent_name: str = _FALLBACK_AGENT_NAME,
         stop_after_tools: Callable[[], bool] | None = None,
         persist: Callable[[list[Message]], None] | None = None,
         flush_before_dispatch: bool = False,
@@ -264,7 +246,7 @@ class EngineHost(Protocol):
         tool_input: dict[str, object],
         result_text: str,
         checkpoint: CheckpointRef | None = None,
-        agent_name: str = _GUIDE_AGENT_NAME,
+        agent_name: str = _FALLBACK_AGENT_NAME,
     ) -> str: ...
 
     def _make_dispatcher(
@@ -423,9 +405,9 @@ class EngineHost(Protocol):
     # -- crash resume (defined in _resume) ------------------------------------------
     def _has_dangling_tool_use(self) -> bool: ...
 
-    def _persist_interrupted_turn(self, entry_agent: str) -> None: ...
+    def _persist_interrupted_turn(self, top_agent: str) -> None: ...
 
-    def _last_entry_agent(self) -> str: ...
+    def _last_top_agent(self) -> str: ...
 
     async def _resume_main_turn(self) -> None: ...
 
@@ -442,12 +424,12 @@ class EngineHost(Protocol):
         *,
         agent_name: str,
         routing: LLMRouting,
-        is_entry_turn: bool,
+        is_top_agent_turn: bool,
         subsession_id: str | None = None,
         dispatcher: ToolDispatcher | None = None,
     ) -> Callable[[TurnSignal], Awaitable[StallDecision]]: ...
 
-    def _make_progress_handler(self, *, is_entry_turn: bool) -> Callable[[], None] | None: ...
+    def _make_progress_handler(self, *, is_top_agent_turn: bool) -> Callable[[], None] | None: ...
 
     async def _persist_nudge(
         self,
@@ -462,7 +444,7 @@ class EngineHost(Protocol):
         self, *, agent_name: str, flags: list[RedFlag], display_name: str
     ) -> None: ...
 
-    def _schedule_entry_turn_alarm(
+    def _schedule_top_agent_turn_alarm(
         self, agent_name: str, display_name: str, flags: list[RedFlag]
     ) -> None: ...
 
@@ -472,7 +454,7 @@ class EngineHost(Protocol):
         *,
         agent_name: str,
         routing: LLMRouting,
-        is_entry_turn: bool,
+        is_top_agent_turn: bool,
         subsession_id: str | None = None,
     ) -> Callable[[str], Awaitable[StallDecision]] | None: ...
 
@@ -485,7 +467,7 @@ class EngineHost(Protocol):
         self,
         *,
         agent_name: str,
-        is_entry_turn: bool,
+        is_top_agent_turn: bool,
         subsession_id: str | None = None,
     ) -> Callable[[str], Awaitable[StallDecision]]: ...
 
@@ -499,7 +481,7 @@ class EngineHost(Protocol):
         *,
         agent_name: str,
         routing: LLMRouting,
-        is_entry_turn: bool,
+        is_top_agent_turn: bool,
         subsession_id: str | None = None,
     ) -> Callable[[str], Awaitable[StallDecision]] | None: ...
 
@@ -508,7 +490,7 @@ class EngineHost(Protocol):
         *,
         agent_name: str,
         routing: LLMRouting,
-        is_entry_turn: bool,
+        is_top_agent_turn: bool,
         subsession_id: str | None = None,
     ) -> Callable[[str], Awaitable[StallDecision]] | None: ...
 

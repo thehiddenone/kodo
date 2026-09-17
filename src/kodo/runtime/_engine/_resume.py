@@ -26,7 +26,6 @@ from kodo.toolspecs import ALL_TOOLS, RUN_SUBAGENT
 
 from .._agenttools import agent_tool_specs
 from ._proto import EngineHost
-from ._shared import _GUIDE_AGENT_NAME
 
 _log = logging.getLogger(__name__)
 
@@ -82,7 +81,7 @@ class ResumeMixin:
             return False
         return any(isinstance(b, dict) and b.get("type") == "tool_use" for b in last.content)
 
-    def _persist_interrupted_turn(self: EngineHost, entry_agent: str) -> None:
+    def _persist_interrupted_turn(self: EngineHost, top_agent: str) -> None:
         """Fold a user-initiated Stop into ``session.jsonl`` instead of losing it.
 
         Called from :meth:`~._core.WorkflowEngine.stop` right after the worker
@@ -130,7 +129,7 @@ class ResumeMixin:
             results_msg = Message(role="user", content=tool_results)
             self._main_messages = self._main_messages + [results_msg]
             self._transient.append_message(
-                results_msg.role, results_msg.content, entry_agent=entry_agent
+                results_msg.role, results_msg.content, entry_agent=top_agent
             )
 
         notice = Message(role="assistant", content=_STOPPED_TURN_NOTICE)
@@ -140,22 +139,28 @@ class ResumeMixin:
         # projector replay it as the same red "interrupted" callout the live
         # client shows, instead of a fake user-typed chat bubble.
         self._transient.append_message(
-            notice.role, notice.content, entry_agent=entry_agent, kind="stopped_notice"
+            notice.role, notice.content, entry_agent=top_agent, kind="stopped_notice"
         )
 
-    def _last_entry_agent(self: EngineHost) -> str:
-        """Entry agent that produced the last persisted main message.
+    def _last_top_agent(self: EngineHost) -> str:
+        """Top-level agent that produced the last persisted main message.
 
         Read from the ``entry_agent`` tag on the most recent message line in
-        ``session.jsonl`` — *any* entry agent may have been holding the floor
-        when the run was interrupted, so resume must not assume the Guide.
-        Falls back to the Guide only for legacy/untagged sessions.
+        ``session.jsonl`` — *any* top-level agent may have been holding the
+        floor when the run was interrupted, so resume must not assume one.
+        Falls back to the registry's declared default only for legacy or
+        untagged sessions.
+
+        The persisted key is still ``entry_agent``: phase 1 of
+        doc/TOP_AGENT_PLAN.md renames identifiers, not the on-disk format.
         """
         for line in reversed(self._transient.read_session_lines()):
             if "role" in line:
                 ea = line.get("entry_agent")
-                return ea if isinstance(ea, str) and ea else _GUIDE_AGENT_NAME
-        return _GUIDE_AGENT_NAME
+                if isinstance(ea, str) and ea:
+                    return self._registry.resolve_top_agent(ea)
+                break
+        return self._registry.default_top_agent()
 
     async def _resume_main_turn(self: EngineHost) -> None:
         """Resume a main turn interrupted mid tool-dispatch after a restart.
@@ -193,8 +198,8 @@ class ResumeMixin:
           Instead the model gets a synthesized ``interrupted`` result so the
           transcript stays well-formed and it can decide whether to retry.
 
-        The entry agent is recovered from the persisted ``entry_agent`` tag, not
-        assumed to be the Guide: any entry agent can be holding the floor at
+        The top-level agent is recovered from the persisted ``entry_agent`` tag, not
+        assumed to be the Guide: any top-level agent can be holding the floor at
         crash time.
         """
         last = self._main_messages[-1]
@@ -204,9 +209,9 @@ class ResumeMixin:
         if not tool_uses:
             return
 
-        # New entry-agent turn — see the matching note in _run_entry_agent
+        # New top-level agent turn — see the matching note in _run_top_agent
         # (doc/STUCK_DETECTION.md).
-        self._entry_turn_seq += 1
+        self._top_agent_turn_seq += 1
 
         # Claim both markers now, unconditionally: whether or not their id
         # turns up among tool_uses below (it always should), this resume pass
@@ -219,28 +224,28 @@ class ResumeMixin:
         if edit_review_tool_call_id is not None:
             self._transient.update(pending_edit_review=None)
 
-        entry_agent = self._last_entry_agent()
+        top_agent = self._last_top_agent()
         ledger = self._build_replay_ledger()
         self._replay_subsessions = ledger
         _log.info(
             "Resuming interrupted main turn for %r: %d pending tool call(s), "
             "%d subsession(s) to replay",
-            entry_agent,
+            top_agent,
             len(tool_uses),
             len(ledger),
         )
 
-        agent = self._registry.get(entry_agent, self._session.effective_autonomous)
+        agent = self._registry.get(top_agent, self._session.effective_autonomous)
         plugin, model_id, routing = await self._resolve_plugin(agent.capability)
         self._compactor.note_active_model(self._resolve_model_key(agent.capability))
-        dispatcher = self._make_dispatcher(entry_agent, self._orch_session_id)
+        dispatcher = self._make_dispatcher(top_agent, self._orch_session_id)
         tool_desc = {t.name: t.user_description for t in ALL_TOOLS}
         tool_logger = ToolCallLogger(self._llm_logs_dir())
 
         self._session.phase = "running"
-        self._session.agent = entry_agent
+        self._session.agent = top_agent
         await self._emitters.emit_state()
-        await self._emitters.emit_agent_started(entry_agent)
+        await self._emitters.emit_agent_started(top_agent)
 
         # Preserve the model's original tool_use order: spawning calls and
         # ask_user are re-dispatched for real, all others get an interrupted
@@ -264,7 +269,7 @@ class ResumeMixin:
                     dispatcher.dispatch,
                     tool_desc,
                     tool_logger,
-                    entry_agent,
+                    top_agent,
                 )
                 tool_results.extend(spawned)
             else:
@@ -272,9 +277,7 @@ class ResumeMixin:
         self._replay_subsessions = None
         results_msg = Message(role="user", content=tool_results)
         self._main_messages = self._main_messages + [results_msg]
-        self._transient.append_message(
-            results_msg.role, results_msg.content, entry_agent=entry_agent
-        )
+        self._transient.append_message(results_msg.role, results_msg.content, entry_agent=top_agent)
 
         stream_id = uuid.uuid4().hex
         self._main_messages, _ = await self._run_agent_turn(
@@ -286,33 +289,33 @@ class ResumeMixin:
             tools=agent_tool_specs(self._registry, agent),
             tool_dispatch=dispatcher.dispatch,
             stream_id=stream_id,
-            agent_name=entry_agent,
+            agent_name=top_agent,
             stop_after_tools=lambda: dispatcher.stop_requested,
-            persist=self._persist_main_messages(entry_agent),
+            persist=self._persist_main_messages(top_agent),
             flush_before_dispatch=True,
             track_context=True,
             on_stall=self._make_stall_handler(
-                agent_name=entry_agent, routing=routing, is_entry_turn=True
+                agent_name=top_agent, routing=routing, is_top_agent_turn=True
             ),
-            on_tool_calls=self._make_progress_handler(is_entry_turn=True),
+            on_tool_calls=self._make_progress_handler(is_top_agent_turn=True),
             on_cyclic_thinking=self._make_cyclic_thinking_handler(
-                agent_name=entry_agent, routing=routing, is_entry_turn=True
+                agent_name=top_agent, routing=routing, is_top_agent_turn=True
             ),
             on_think_in_tool_call=self._make_think_in_tool_call_handler(
-                agent_name=entry_agent, is_entry_turn=True
+                agent_name=top_agent, is_top_agent_turn=True
             ),
             on_tool_call_cyclic=self._make_tool_call_cyclic_handler(
-                agent_name=entry_agent, routing=routing, is_entry_turn=True
+                agent_name=top_agent, routing=routing, is_top_agent_turn=True
             ),
             on_repeated_tool_calls=self._make_repeated_tool_call_handler(
-                agent_name=entry_agent, routing=routing, is_entry_turn=True
+                agent_name=top_agent, routing=routing, is_top_agent_turn=True
             ),
         )
         # Safety net for a final round with zero deltas — see the matching
         # comment in ``_turns.py``'s entry-turn caller.
         self._session.awaiting_first_chunk = False
         await self._sink.send(Envelope.make_stream_end(stream_id))
-        await self._emitters.emit_agent_finished(entry_agent)
+        await self._emitters.emit_agent_finished(top_agent)
         if self._session.phase != "done":
             self._session.phase = "awaiting_user"
         self._session.agent = None

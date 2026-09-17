@@ -3,7 +3,7 @@ and the generic LLM turn/tool loop.
 
 ``_partial_assistant_message``/``_thinking_block``/``_interrupted_tool_result``
 already have focused coverage in ``test_engine_stop.py``; this file covers
-the rest: the three entry-agent delegators, ``_run_entry_agent``,
+the rest: the three entry-agent delegators, ``_run_top_agent``,
 ``_store_attachments``, the core ``_run_agent_turn`` loop (streaming, tool
 dispatch, cancellation, context tracking), ``_dispatch_tool_calls``,
 ``_finalize_tool_result``, and ``_make_dispatcher``.
@@ -206,7 +206,7 @@ def _base_engine(*, gateway: _FakeGateway | None = None) -> WorkflowEngine:
     engine._compactor = _FakeCompactor()
     engine._session = SessionState()
     engine._orch_session_id = "sess-1"
-    engine._entry_turn_seq = 0
+    engine._top_agent_turn_seq = 0
 
     def _llm_logs_dir() -> Path:
         return Path("/tmp/llm_logs")
@@ -224,11 +224,11 @@ async def test_run_guide_with_input_delegates() -> None:
     engine = object.__new__(WorkflowEngine)
     calls: list[tuple[str, str, list[str] | None]] = []
 
-    async def _run_entry_agent(agent_name, text, attachments=None, nudge_detail=None):
+    async def _run_top_agent(agent_name, text, attachments=None, nudge_detail=None):
         calls.append((agent_name, text, attachments))
 
-    engine._run_entry_agent = _run_entry_agent
-    await engine._run_guide_with_input("hello", ["a.png"])
+    engine._run_top_agent = _run_top_agent
+    await engine._run_top_agent("guide", "hello", ["a.png"])
     assert calls == [("guide", "hello", ["a.png"])]
 
 
@@ -236,11 +236,11 @@ async def test_run_problem_solver_with_input_delegates() -> None:
     engine = object.__new__(WorkflowEngine)
     calls = []
 
-    async def _run_entry_agent(agent_name, text, attachments=None, nudge_detail=None):
+    async def _run_top_agent(agent_name, text, attachments=None, nudge_detail=None):
         calls.append((agent_name, text, attachments))
 
-    engine._run_entry_agent = _run_entry_agent
-    await engine._run_problem_solver_with_input("fix it")
+    engine._run_top_agent = _run_top_agent
+    await engine._run_top_agent("problem_solver", "fix it")
     assert calls == [("problem_solver", "fix it", None)]
 
 
@@ -248,11 +248,11 @@ async def test_run_judge_with_input_delegates() -> None:
     engine = object.__new__(WorkflowEngine)
     calls = []
 
-    async def _run_entry_agent(agent_name, text, attachments=None, nudge_detail=None):
+    async def _run_top_agent(agent_name, text, attachments=None, nudge_detail=None):
         calls.append((agent_name, text, attachments))
 
-    engine._run_entry_agent = _run_entry_agent
-    await engine._run_judge_with_input("score it")
+    engine._run_top_agent = _run_top_agent
+    await engine._run_top_agent("judge", "score it")
     assert calls == [("judge", "score it", None)]
 
 
@@ -1238,7 +1238,7 @@ def test_make_dispatcher_resolves_project_root_from_current_project() -> None:
     engine._gate = SimpleNamespace()
     engine._security = None
     engine._session = SessionState(session_id="s1")
-    engine._session.effective_workflow_mode = "guided"
+    engine._session.effective_top_agent = "guide"
     engine._services = SimpleNamespace()
     engine._current_project = {"root": "/proj", "name": "x"}
     engine._root_paths = lambda: ()
@@ -1249,7 +1249,7 @@ def test_make_dispatcher_resolves_project_root_from_current_project() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _run_entry_agent
+# _run_top_agent
 # ---------------------------------------------------------------------------
 
 
@@ -1295,10 +1295,10 @@ def _entry_agent_engine(*, gateway: _FakeGateway | None = None) -> WorkflowEngin
     return engine
 
 
-async def test_run_entry_agent_persists_prompt_and_runs_turn() -> None:
+async def test_run_top_agent_persists_prompt_and_runs_turn() -> None:
     engine = _entry_agent_engine()
 
-    await engine._run_entry_agent("guide", "hello there")
+    await engine._run_top_agent("guide", "hello there")
 
     assert engine._transient.appended[0][0] == "user"
     assert engine._session.phase == "awaiting_user"
@@ -1309,7 +1309,7 @@ async def test_run_entry_agent_persists_prompt_and_runs_turn() -> None:
     assert engine._compactor.noted == ["key-medium"]
 
 
-async def test_run_entry_agent_phase_done_is_not_overridden() -> None:
+async def test_run_top_agent_phase_done_is_not_overridden() -> None:
     engine = _entry_agent_engine()
 
     async def _run_agent_turn(**kwargs):
@@ -1318,36 +1318,36 @@ async def test_run_entry_agent_phase_done_is_not_overridden() -> None:
 
     engine._run_agent_turn = _run_agent_turn
 
-    await engine._run_entry_agent("guide", "wrap up")
+    await engine._run_top_agent("guide", "wrap up")
 
     assert engine._session.phase == "done"
 
 
-async def test_run_entry_agent_with_attachments_sends_user_attachments_event(
+async def test_run_top_agent_with_attachments_sends_user_attachments_event(
     tmp_path: Path,
 ) -> None:
     engine = _entry_agent_engine()
     src = tmp_path / "note.txt"
     src.write_text("content")
 
-    await engine._run_entry_agent("guide", "check this", [str(src)])
+    await engine._run_top_agent("guide", "check this", [str(src)])
 
     attach_events = [e for e in engine._sink.sent if e.payload.get("type") == "user.attachments"]
     assert len(attach_events) == 1
     assert attach_events[0].payload["attachments"][0]["name"] == "note.txt"
 
 
-async def test_run_entry_agent_attachment_errors_are_emitted() -> None:
+async def test_run_top_agent_attachment_errors_are_emitted() -> None:
     engine = _entry_agent_engine()
 
-    await engine._run_entry_agent("guide", "check this", ["/nonexistent/path.txt"])
+    await engine._run_top_agent("guide", "check this", ["/nonexistent/path.txt"])
 
     assert len(engine._emitters.errors) == 1
 
 
-async def test_run_entry_agent_blank_text_and_no_attachments_skips_message() -> None:
+async def test_run_top_agent_blank_text_and_no_attachments_skips_message() -> None:
     engine = _entry_agent_engine()
 
-    await engine._run_entry_agent("guide", "")
+    await engine._run_top_agent("guide", "")
 
     assert engine._transient.appended == []

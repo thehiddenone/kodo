@@ -32,7 +32,7 @@ class ReturnResultTool(Tool):
         raw = tool_input.get("result")
         schema = self.context.output_schema
         if schema is None:
-            # No spec for this agent (entry agents). Record the raw payload and
+            # No spec for this agent (top-level agents). Record the raw payload and
             # stop; this path should not occur for schema-bearing sub-agents.
             _log.warning(
                 "return_result called by %s, which has no output schema",

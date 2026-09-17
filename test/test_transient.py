@@ -245,6 +245,24 @@ def test_workflow_mode_update_is_persisted(store: TransientStore) -> None:
     assert store.workflow_mode == "problem_solving"
 
 
+def test_workflow_mode_stores_an_unknown_value_verbatim(kodo_dir: Path) -> None:
+    """The store does not judge which selections are real — the registry does.
+
+    ``kodo.state`` imports nothing from ``kodo``, so it cannot ask which agents
+    exist; the engine resolves the value on restore. Normalizing here too is
+    what used to make a new selection work until the session was resumed and
+    then silently revert to Guided.
+    """
+    session_id = "1748792411"
+    first = TransientStore(kodo_dir)
+    first.attach_session(session_id, resumed=False)
+    first.update(workflow_mode="some_new_agent")
+
+    second = TransientStore(kodo_dir)
+    second.attach_session(session_id, resumed=True)
+    assert second.workflow_mode == "some_new_agent"
+
+
 def test_resumed_session_restores_workflow_mode(kodo_dir: Path) -> None:
     session_id = "1748792410"
     first = TransientStore(kodo_dir)

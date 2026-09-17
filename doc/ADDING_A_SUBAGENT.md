@@ -333,6 +333,14 @@ the engine, so adding a fourth means editing Python. Be sure you actually want
 one: most "new top-level capability" ideas are better served by a sub-agent an
 existing entry agent can call.
 
+> **Planned change.** [TOP_AGENT_PLAN.md](TOP_AGENT_PLAN.md) makes top-level
+> agents data-driven too — a prompt plus a `top_agents/<name>.json` config, with
+> no engine or kodo-vsix edit. When that lands, §4.3's six engine edits and
+> §4.4's VSIX grep list collapse to "add two files", the "not data-driven"
+> sentence above is deleted, and the term **"entry agent"** is retired in favour
+> of `agent` (with `top_agent` only where `agent` is already taken — that plan's
+> §1). Until then everything in this section is accurate for the tree as it stands.
+
 ### 4.1 What an entry agent has — and has not
 
 | | |

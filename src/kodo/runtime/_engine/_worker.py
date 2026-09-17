@@ -16,13 +16,12 @@ from kodo.plan import PlanConflictError
 from kodo.transport import EVT_API_KEY_REVOKE
 
 from ._proto import EngineHost
-from ._shared import _GUIDE_AGENT_NAME, _JUDGE_AGENT_NAME, _PROBLEM_SOLVER_AGENT_NAME
 
 _log = logging.getLogger(__name__)
 
 
 class WorkerMixin:
-    """The queue-driven worker loop hosting every entry-agent run."""
+    """The queue-driven worker loop hosting every top-level agent run."""
 
     # Declared so the `= None` write below doesn't let mypy infer a bare-None
     # class attribute that conflicts with the EngineHost/_core declaration.
@@ -75,7 +74,7 @@ class WorkerMixin:
                 [str(p) for p in raw_attachments] if isinstance(raw_attachments, list) else []
             )
             # Set only for the deferred half of a stuck-agent nudge
-            # (doc/STUCK_DETECTION.md, WatchdogMixin._schedule_entry_turn_alarm)
+            # (doc/STUCK_DETECTION.md, WatchdogMixin._schedule_top_agent_turn_alarm)
             # — *text* is then the fixed continuation instruction, not
             # something the user typed.
             raw_nudge_detail = task.get("nudge_detail")
@@ -96,27 +95,17 @@ class WorkerMixin:
                     self._current_prompt_text = text
                     self._titler.maybe_generate_session_title(text)
 
-                # The entry agent is chosen per prompt from the current
-                # workflow mode: Problem Solver for "problem_solving", the
-                # Guide (full Kodo pipeline) for "guided", and the validator-
-                # only Judge for "judge" (never selected by kodo-vsix, which
-                # only ever sends "guided"/"problem_solving").
-                if self._session.workflow_mode == "problem_solving":
-                    if self._agent_available(_PROBLEM_SOLVER_AGENT_NAME):
-                        await self._run_problem_solver_with_input(
-                            text, attachments, nudge_detail=nudge_detail
-                        )
-                    else:
-                        await self._handle_input_no_agent(_PROBLEM_SOLVER_AGENT_NAME, text)
-                elif self._session.workflow_mode == "judge":
-                    if self._agent_available(_JUDGE_AGENT_NAME):
-                        await self._run_judge_with_input(text, attachments)
-                    else:
-                        await self._handle_input_no_agent(_JUDGE_AGENT_NAME, text)
-                elif self._agent_available(_GUIDE_AGENT_NAME):
-                    await self._run_guide_with_input(text, attachments, nudge_detail=nudge_detail)
+                # The top-level agent is chosen per prompt by resolving the
+                # session's selection against the registry — one lookup, no
+                # per-agent branch, so a new top-level agent reaches this loop
+                # as data (doc/TOP_AGENT_PLAN.md §4.1).
+                top_agent = self._top_agent_name()
+                if self._agent_available(top_agent):
+                    await self._run_top_agent(
+                        top_agent, text, attachments, nudge_detail=nudge_detail
+                    )
                 else:
-                    await self._handle_input_no_agent(_GUIDE_AGENT_NAME, text)
+                    await self._handle_input_no_agent(top_agent, text)
 
                 if self._session.phase == "done":
                     _log.info("Project finalized — worker exiting")
@@ -223,7 +212,7 @@ class WorkerMixin:
         The calling agent asked for a sub-agent and — on this path — never got
         an answer, so it is queued a continuation that says exactly that and
         cites the exception. Queued rather than persisted directly:
-        ``_run_entry_agent``'s ``nudge_detail`` branch is the established way a
+        ``_run_top_agent``'s ``nudge_detail`` branch is the established way a
         turn the user never typed enters the history (doc/STUCK_DETECTION.md
         §2.5), and going through the queue keeps this from racing the turn that
         just died.
@@ -233,7 +222,7 @@ class WorkerMixin:
         ``_subsession_crash_recovered`` is still set and the session simply
         goes idle with the error notice — a human decides what to do next
         rather than the engine spinning on a broken environment. The flag is
-        cleared by :meth:`~._turns.TurnLoopMixin._run_entry_agent` on any turn
+        cleared by :meth:`~._turns.TurnLoopMixin._run_top_agent` on any turn
         that completes.
         """
         if self._subsession_crash_recovered:
@@ -260,14 +249,27 @@ class WorkerMixin:
         self._queue.put_nowait({"text": text, "attachments": [], "nudge_detail": detail})
 
     async def _handle_input_no_agent(self: EngineHost, name: str, text: str) -> None:
+        """Answer a prompt whose selected top-level agent is not registered.
+
+        Reachable now that the selection is data rather than a branch: a session
+        can carry a value naming an agent this build does not have. The prompt
+        cannot run, so the user is *told* — silently dropping back to ``intake``
+        (as this did while the case was unreachable) leaves them staring at a
+        composer that swallowed their message with no explanation.
+        """
         self._session.phase = "running"
         await self._emitters.emit_state()
         _log.warning(
-            "Prompt received (len=%d) — entry agent %r not found; "
-            "add subagent_%s.md to register one",
+            "Prompt received (len=%d) — top-level agent %r not found; "
+            "add agent_%s.md to register one",
             len(text),
             name,
             name,
+        )
+        await self._emitters.emit_error(
+            f"No top-level agent named {name!r} is registered, so this prompt "
+            f"could not be started. Pick another agent for this session.",
+            recoverable=True,
         )
         self._session.phase = "intake"
         await self._emitters.emit_state()

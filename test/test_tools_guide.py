@@ -110,7 +110,6 @@ class _StubServices:
 
 def _make_dispatcher(
     *,
-    mode: str = "guided",
     project_root: Path | None = None,
     has_workspace: bool = True,
     autonomous: bool = False,
@@ -133,7 +132,6 @@ def _make_dispatcher(
         ),
         agent_name="guide",
         session_id="sess-test",
-        mode=mode,
         findings_dir=findings_dir,
     )
 
@@ -247,10 +245,15 @@ async def test_guided_dev_status_reads_pending_review_with_no_session_backlog(
 
 
 @pytest.mark.asyncio
-async def test_guided_dev_status_errors_outside_guided_mode(tmp_path: Path) -> None:
-    dispatcher = _make_dispatcher(mode="problem_solving", project_root=tmp_path)
+async def test_guided_dev_status_is_not_gated_on_a_workflow_mode(tmp_path: Path) -> None:
+    """The tool grant is the gate; there is no second check on the selection.
+
+    A mode check here would refuse the tool to any new top-level agent that
+    legitimately held it, and the grant already decides who can call it.
+    """
+    dispatcher = _make_dispatcher(project_root=tmp_path)
     result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
-    assert "error" in result
+    assert "error" not in result
 
 
 # ---------------------------------------------------------------------------

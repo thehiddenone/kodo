@@ -12,12 +12,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from functools import partial
+from pathlib import Path
 
 import pytest
 
 from kodo.llms.anthropic import UnrecoverableError
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._session import SessionState
+from kodo.subagents import AgentRegistry
+
+_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents"
+# Derived from the live registry, not hardcoded: the worker no longer branches
+# per agent, so what these tests must prove is that *every* registered
+# top-level agent reaches the one generic call — including any added later.
+_TOP_AGENT_NAMES = tuple(a.name for a in AgentRegistry(_AGENTS_DIR).top_agents())
 
 
 class _FakeEmitters:
@@ -75,13 +84,16 @@ class _FakeTransient:
         self.active_subsession = active_subsession
 
 
-def _make_engine(*, workflow_mode: str = "guided") -> WorkflowEngine:
+def _make_engine(*, top_agent: str = "guide") -> WorkflowEngine:
     engine = object.__new__(WorkflowEngine)
     engine._resume_subsession_pending = False
     engine._replay_subsessions = None
     engine._queue = asyncio.Queue()
     engine._session = SessionState(session_id="s1")
-    engine._session.workflow_mode = workflow_mode
+    engine._session.top_agent = top_agent
+    # The worker asks for the *resolved* name rather than reading the raw
+    # selection, so stub that one accessor instead of wiring a real registry.
+    engine._top_agent_name = lambda: top_agent
     engine._emitters = _FakeEmitters()
     engine._compactor = _FakeCompactor()
     engine._titler = _FakeTitler()
@@ -99,25 +111,21 @@ def _make_engine(*, workflow_mode: str = "guided") -> WorkflowEngine:
     engine._freeze_effective_modes = lambda: None
     engine._agent_available = lambda name: True
     engine.calls: list[tuple[str, str, list[str] | None]] = []
-    # Every `nudge_detail` an entry-agent turn was invoked with, in order — the
+    # Every `nudge_detail` a top-level agent turn was invoked with, in order — the
     # client-only rendering half of a turn the user never typed.
     engine.nudge_details: list[dict[str, object]] = []
 
-    def _recorder(label: str):
-        async def _fn(
-            text: str,
-            attachments: list[str] | None = None,
-            nudge_detail: dict[str, object] | None = None,
-        ) -> None:
-            engine.calls.append((label, text, attachments))
-            if nudge_detail is not None:
-                engine.nudge_details.append(nudge_detail)
+    async def _run_top_agent(
+        agent_name: str,
+        text: str,
+        attachments: list[str] | None = None,
+        nudge_detail: dict[str, object] | None = None,
+    ) -> None:
+        engine.calls.append((agent_name, text, attachments))
+        if nudge_detail is not None:
+            engine.nudge_details.append(nudge_detail)
 
-        return _fn
-
-    engine._run_guide_with_input = _recorder("guide")
-    engine._run_problem_solver_with_input = _recorder("problem_solver")
-    engine._run_judge_with_input = _recorder("judge")
+    engine._run_top_agent = _run_top_agent
 
     async def _handle_input_no_agent(name: str, text: str) -> None:
         engine.calls.append(("no_agent", name, None))
@@ -231,77 +239,63 @@ async def test_config_changed_task_error_is_recovered_without_emit_error() -> No
 
 
 # ---------------------------------------------------------------------------
-# Prompt dispatch by workflow mode
+# Prompt dispatch — one generic path for every top-level agent
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("agent_name", _TOP_AGENT_NAMES)
 @pytest.mark.asyncio
-async def test_guided_prompt_runs_guide_when_available() -> None:
-    engine = _make_engine(workflow_mode="guided")
+async def test_prompt_runs_the_selected_top_agent(agent_name: str) -> None:
+    engine = _make_engine(top_agent=agent_name)
     engine._queue.put_nowait({"text": "do the thing", "attachments": ["a.png"]})
 
     await _drive(engine)
 
-    assert engine.calls == [("guide", "do the thing", ["a.png"])]
+    assert engine.calls == [(agent_name, "do the thing", ["a.png"])], agent_name
     assert engine._titler.titled == ["do the thing"]
 
 
+@pytest.mark.parametrize("agent_name", _TOP_AGENT_NAMES)
 @pytest.mark.asyncio
-async def test_guided_prompt_falls_back_when_guide_unavailable() -> None:
-    engine = _make_engine(workflow_mode="guided")
+async def test_prompt_falls_back_when_selected_top_agent_unavailable(agent_name: str) -> None:
+    engine = _make_engine(top_agent=agent_name)
     engine._agent_available = lambda name: False
     engine._queue.put_nowait({"text": "hi"})
 
     await _drive(engine)
 
-    assert engine.calls == [("no_agent", "guide", None)]
+    assert engine.calls == [("no_agent", agent_name, None)], agent_name
 
 
 @pytest.mark.asyncio
-async def test_problem_solving_prompt_runs_problem_solver_when_available() -> None:
-    engine = _make_engine(workflow_mode="problem_solving")
-    engine._queue.put_nowait({"text": "fix it"})
+async def test_unregistered_top_agent_tells_the_user() -> None:
+    """A selection naming no registered agent must not fail silently.
 
-    await _drive(engine)
-
-    assert engine.calls == [("problem_solver", "fix it", [])]
-
-
-@pytest.mark.asyncio
-async def test_problem_solving_prompt_falls_back_when_unavailable() -> None:
-    engine = _make_engine(workflow_mode="problem_solving")
+    Reachable now that the selection is data rather than a branch: the prompt
+    cannot run, and dropping back to ``intake`` without a word would look like
+    the composer swallowed the message.
+    """
+    engine = _make_engine(top_agent="no_such_agent")
     engine._agent_available = lambda name: False
-    engine._queue.put_nowait({"text": "fix it"})
+    # The real handler, not the harness stub — the notice is what is under test.
+    engine._handle_input_no_agent = partial(
+        WorkflowEngine._handle_input_no_agent.__wrapped__
+        if hasattr(WorkflowEngine._handle_input_no_agent, "__wrapped__")
+        else WorkflowEngine._handle_input_no_agent,
+        engine,
+    )
+    engine._queue.put_nowait({"text": "hi"})
 
     await _drive(engine)
 
-    assert engine.calls == [("no_agent", "problem_solver", None)]
-
-
-@pytest.mark.asyncio
-async def test_judge_prompt_runs_judge_when_available() -> None:
-    engine = _make_engine(workflow_mode="judge")
-    engine._queue.put_nowait({"text": "score it"})
-
-    await _drive(engine)
-
-    assert engine.calls == [("judge", "score it", [])]
-
-
-@pytest.mark.asyncio
-async def test_judge_prompt_falls_back_when_unavailable() -> None:
-    engine = _make_engine(workflow_mode="judge")
-    engine._agent_available = lambda name: False
-    engine._queue.put_nowait({"text": "score it"})
-
-    await _drive(engine)
-
-    assert engine.calls == [("no_agent", "judge", None)]
+    assert [m for m, _ in engine._emitters.errors if "no_such_agent" in m]
+    assert all(recoverable for _, recoverable in engine._emitters.errors)
+    assert engine._session.phase == "intake"
 
 
 @pytest.mark.asyncio
 async def test_non_list_attachments_are_coerced_to_empty_list() -> None:
-    engine = _make_engine(workflow_mode="guided")
+    engine = _make_engine()
     engine._queue.put_nowait({"text": "hi", "attachments": "not-a-list"})
 
     await _drive(engine)
@@ -316,17 +310,18 @@ async def test_non_list_attachments_are_coerced_to_empty_list() -> None:
 
 @pytest.mark.asyncio
 async def test_phase_done_breaks_worker_loop() -> None:
-    engine = _make_engine(workflow_mode="guided")
+    engine = _make_engine()
 
     async def _finish(
+        agent_name: str,
         text: str,
         attachments: list[str] | None = None,
         nudge_detail: dict[str, object] | None = None,
     ) -> None:
-        engine.calls.append(("guide", text, attachments))
+        engine.calls.append((agent_name, text, attachments))
         engine._session.phase = "done"
 
-    engine._run_guide_with_input = _finish
+    engine._run_top_agent = _finish
     engine._queue.put_nowait({"text": "wrap up"})
 
     task = asyncio.create_task(engine._run_worker())
@@ -342,17 +337,18 @@ async def test_phase_done_breaks_worker_loop() -> None:
 
 @pytest.mark.asyncio
 async def test_unrecoverable_401_error_revokes_key_and_stops_session() -> None:
-    engine = _make_engine(workflow_mode="guided")
+    engine = _make_engine()
     engine._current_vendor = "anthropic"
 
     async def _fail(
+        agent_name: str,
         text: str,
         attachments: list[str] | None = None,
         nudge_detail: dict[str, object] | None = None,
     ) -> None:
         raise UnrecoverableError("bad key", 401)
 
-    engine._run_guide_with_input = _fail
+    engine._run_top_agent = _fail
     engine._queue.put_nowait({"text": "hi"})
 
     await _drive(engine)
@@ -366,17 +362,18 @@ async def test_unrecoverable_401_error_revokes_key_and_stops_session() -> None:
 
 @pytest.mark.asyncio
 async def test_unrecoverable_non_401_error_does_not_revoke_key() -> None:
-    engine = _make_engine(workflow_mode="guided")
+    engine = _make_engine()
     engine._current_vendor = "anthropic"
 
     async def _fail(
+        agent_name: str,
         text: str,
         attachments: list[str] | None = None,
         nudge_detail: dict[str, object] | None = None,
     ) -> None:
         raise UnrecoverableError("quota exceeded", 429)
 
-    engine._run_guide_with_input = _fail
+    engine._run_top_agent = _fail
     engine._queue.put_nowait({"text": "hi"})
 
     await _drive(engine)
@@ -388,16 +385,17 @@ async def test_unrecoverable_non_401_error_does_not_revoke_key() -> None:
 
 @pytest.mark.asyncio
 async def test_generic_exception_resets_phase_to_awaiting_user() -> None:
-    engine = _make_engine(workflow_mode="guided")
+    engine = _make_engine()
 
     async def _fail(
+        agent_name: str,
         text: str,
         attachments: list[str] | None = None,
         nudge_detail: dict[str, object] | None = None,
     ) -> None:
         raise ValueError("kaboom")
 
-    engine._run_guide_with_input = _fail
+    engine._run_top_agent = _fail
     engine._queue.put_nowait({"text": "hi"})
 
     await _drive(engine)
@@ -420,7 +418,7 @@ def _crashing_engine(
     proves the recovery terminates. ``crash_every_turn`` models an
     environmental failure that keeps reproducing.
     """
-    engine = _make_engine(workflow_mode="guided")
+    engine = _make_engine()
     engine._transient = _FakeTransient(active)
 
     async def _abort_active_subsession() -> None:
@@ -430,6 +428,7 @@ def _crashing_engine(
     engine._abort_active_subsession = _abort_active_subsession
 
     async def _fail(
+        agent_name: str,
         text: str,
         attachments: list[str] | None = None,
         nudge_detail: dict[str, object] | None = None,
@@ -440,7 +439,7 @@ def _crashing_engine(
         if crash_every_turn or len(engine.calls) == 1:
             raise ValueError("kaboom")
 
-    engine._run_guide_with_input = _fail
+    engine._run_top_agent = _fail
     return engine
 
 
@@ -572,16 +571,17 @@ async def test_config_changed_cancelled_error_propagates_uncaught() -> None:
 
 @pytest.mark.asyncio
 async def test_prompt_cancelled_error_propagates_uncaught() -> None:
-    engine = _make_engine(workflow_mode="guided")
+    engine = _make_engine()
 
     async def _cancel(
+        agent_name: str,
         text: str,
         attachments: list[str] | None = None,
         nudge_detail: dict[str, object] | None = None,
     ) -> None:
         raise asyncio.CancelledError()
 
-    engine._run_guide_with_input = _cancel
+    engine._run_top_agent = _cancel
     engine._queue.put_nowait({"text": "hi"})
 
     with pytest.raises(asyncio.CancelledError):
@@ -606,9 +606,10 @@ async def test_handle_input_no_agent_cycles_phase_and_logs() -> None:
 
 @pytest.mark.asyncio
 async def test_generic_exception_after_phase_already_done_leaves_it_done() -> None:
-    engine = _make_engine(workflow_mode="guided")
+    engine = _make_engine()
 
     async def _fail(
+        agent_name: str,
         text: str,
         attachments: list[str] | None = None,
         nudge_detail: dict[str, object] | None = None,
@@ -616,7 +617,7 @@ async def test_generic_exception_after_phase_already_done_leaves_it_done() -> No
         engine._session.phase = "done"
         raise ValueError("kaboom after done")
 
-    engine._run_guide_with_input = _fail
+    engine._run_top_agent = _fail
     engine._queue.put_nowait({"text": "hi"})
 
     await _drive(engine)

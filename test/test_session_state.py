@@ -1,7 +1,7 @@
 """Tests for :class:`kodo.runtime.SessionState` wire serialisation.
 
 ``to_dict`` is the payload of the ``state`` event (WS_PROTOCOL §5.1). The two
-frozen toggles (``autonomous``/``workflow_mode``) carry both the user-facing
+frozen toggles (``autonomous``/``top_agent``) carry both the user-facing
 *selected* value and its per-turn frozen *effective* twin so the client can tell
 "in effect" from "queued for the next prompt". ``edit_control``/
 ``command_control`` are never frozen — only a single mirrored value is emitted.
@@ -32,7 +32,7 @@ def test_to_dict_reports_diverged_selected_vs_effective() -> None:
     # edit/command postures are reported verbatim.
     state = SessionState()
     state.autonomous = True
-    state.workflow_mode = "problem_solving"
+    state.top_agent = "problem_solving"
     state.edit_control = "allow_all"
     state.command_control = "permissive"
     state.thinking_level = "unlimited"

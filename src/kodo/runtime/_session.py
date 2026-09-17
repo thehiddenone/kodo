@@ -33,14 +33,20 @@ class SessionState:
             prompt, so every agent and tool in that prompt sees one consistent
             value even if the user toggles mid-run. Tools read this, never
             ``autonomous``.
-        workflow_mode: Which top-level workflow drives prompts — ``"guided"``
-            (Guide + full Kodo pipeline), ``"problem_solving"`` (the standalone
-            Problem Solver agent), or the validator-only ``"judge"`` (the
-            standalone Judge agent that scores a finished run for
-            ``kodo.validator``; never sent by kodo-vsix).
-        effective_workflow_mode: The workflow the *current* prompt runs under,
-            frozen alongside ``effective_autonomous`` at dequeue. Lets the client
-            tell "in effect" from "queued for the next prompt" while a turn runs.
+        top_agent: Which top-level agent drives prompts, as the user selected
+            it. Holds an agent *name* (``"guide"``, ``"problem_solver"``,
+            ``"judge"``), or a legacy workflow-mode alias (``"guided"``,
+            ``"problem_solving"``) on a session persisted before the rename —
+            resolved through ``AgentRegistry.resolve_top_agent`` on every read,
+            so both spellings work and an unrecognized one falls back to the
+            registry's declared default rather than failing.
+
+            Distinct from :attr:`agent`, which is whichever agent holds the
+            floor *right now* and is frequently a sub-agent mid-pipeline; this
+            is the top-level one the session is configured to run.
+        effective_top_agent: The top-level agent the *current* prompt runs
+            under. Frozen at prompt dequeue like ``effective_autonomous``, so a
+            switch mid-prompt applies from the next one.
         edit_control: How Kodo handles file edits —
             ``"review_all"`` (pause for sign-off on every edit) |
             ``"allow_all"`` (apply without pausing) | ``"smart"`` (decide per
@@ -130,8 +136,15 @@ class SessionState:
     component: str | None = None
     autonomous: bool = False
     effective_autonomous: bool = False
-    workflow_mode: str = "guided"
-    effective_workflow_mode: str = "guided"
+    # Defaults spelled the *legacy* way on purpose. These two are emitted
+    # verbatim as ``workflow_mode``/``effective_workflow_mode``, and phase 1 of
+    # doc/TOP_AGENT_PLAN.md must not change a single byte the client sees —
+    # kodo-vsix reads anything that is not ``"problem_solving"`` as Guided, and
+    # the session picker's label compares against ``"guided"`` exactly. They
+    # resolve to the ``guide`` agent either way (``resolve_top_agent``); phase 3
+    # renames the wire keys and flips these to plain agent names.
+    top_agent: str = "guided"
+    effective_top_agent: str = "guided"
     edit_control: str = "smart"
     command_control: str = "smart"
     thinking_level: str = ""
@@ -144,7 +157,7 @@ class SessionState:
     def to_dict(self) -> dict[str, object]:
         """Serialise to a plain dict for wire-protocol events.
 
-        The two frozen toggles (``autonomous``/``workflow_mode``) emit both the
+        The two frozen toggles (``autonomous``/``top_agent``) emit both the
         user-facing *selected* value and the per-prompt frozen *effective* value
         so the client can render each as "in effect" or "queued for the next
         prompt". ``edit_control``/``command_control``/``thinking_level`` are
@@ -160,8 +173,12 @@ class SessionState:
             else None,
             "autonomous": self.autonomous,
             "effective_autonomous": self.effective_autonomous,
-            "workflow_mode": self.workflow_mode,
-            "effective_workflow_mode": self.effective_workflow_mode,
+            # Wire keys still say ``workflow_mode``: phase 1 of
+            # doc/TOP_AGENT_PLAN.md renames the Python field only, and the
+            # protocol rename to ``top_agent``/``effective_top_agent`` lands
+            # with the client change in phase 3.
+            "workflow_mode": self.top_agent,
+            "effective_workflow_mode": self.effective_top_agent,
             "edit_control": self.edit_control,
             "command_control": self.command_control,
             "thinking_level": self.thinking_level,

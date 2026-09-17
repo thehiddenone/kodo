@@ -302,7 +302,7 @@ Immediately after the ack the server **also pushes** a `state` event (§5.1) and
 
 For a brand-new session only, `hello` also kicks off a background task that writes and pushes the session's opening greeting — see `session.greeting` (§5.9i). Fire-and-forget: it is not part of the ack and never delays it.
 
-After `hello.ack` the client re-syncs the project's persisted session preferences to the server by sending `mode.set` (§7.5) and `workflow.set` (§7.6) with the values it read from `.kodo/settings.json`.
+After `hello.ack` the client pushes the session's starting toggles to the server: a brand-new session sends `workflow.set` (§7.6) with its default workflow plus `edit_control.set`/`command_control.set`, while a resumed one adopts the persisted values carried in the ack's own `state` and re-sends only the Edit/Command pair (kodo-vsix `session/mode-toggle-controller.ts`, `applyNewSessionDefaults` / `applyResumedState`). There is no project-level `.kodo/settings.json` in this path — the workflow is per-session state in the session's own `transient.json`, not a project preference.
 
 ### 4.2 Shutdown
 

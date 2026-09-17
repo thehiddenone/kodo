@@ -509,7 +509,7 @@ class GateOrchestrator:
 
         Fired by :meth:`~kodo.runtime._engine._watchdog.WatchdogMixin
         ._make_stall_handler`'s closure (doc/STUCK_DETECTION.md) — either
-        ~5s after an entry-agent turn has already ended normally (a fully
+        ~5s after a top-level agent turn has already ended normally (a fully
         decoupled follow-up: the session already looks idle), or inline for
         a sub-agent turn (blocking it exactly like :meth:`fire_permission`,
         since its parent is already blocked on it either way).
@@ -521,7 +521,7 @@ class GateOrchestrator:
         with no rule checkboxes (there is nothing to "always allow" here).
 
         Args:
-            agent_name: Internal name of the stalled agent (entry agent or
+            agent_name: Internal name of the stalled agent (top-level agent or
                 sub-agent).
             display_name: Its human-readable display name, for the panel text.
             reasons: One-sentence, user-facing description per matched red

@@ -1,0 +1,8 @@
+{
+  "name": "problem_solver",
+  "notes": "The standalone generalist, outside the pipeline. Ranked first because kodo-vsix starts a brand-new session on it, so the picker reads top-down in the order a user meets them. It is not the `default`, though: the default is the fallback for an unrecognized selection, which has always resolved to the Guide.",
+  "label": "Problem Solver",
+  "description": "One generalist agent tackles your request end to end.",
+  "rank": 10,
+  "aliases": ["problem_solving"]
+}

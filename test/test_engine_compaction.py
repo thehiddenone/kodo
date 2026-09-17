@@ -9,6 +9,7 @@ here with a small fake host rather than a real ``WorkflowEngine``.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +24,9 @@ from kodo.runtime._engine._compaction import (
 )
 from kodo.runtime._engine._events import EngineEmitters
 from kodo.runtime._session import SessionState
+from kodo.subagents import AgentRegistry
+
+_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents")
 
 # ---------------------------------------------------------------------------
 # Module-level pure helpers
@@ -192,7 +196,7 @@ class _FakeHost:
     def _resolve_model_key(self, capability: str) -> str:
         return f"model-for-{capability}"
 
-    def _entry_capability(self) -> str:
+    def _top_agent_capability(self) -> str:
         return "medium"
 
     async def _resolve_plugin(self, capability: str, force_model_key: str | None = None):
@@ -211,6 +215,19 @@ class _FakeRegistry:
 
     def run_subagent_specs(self, caller: str) -> list[object]:
         return []
+
+    # The top-level agent table (doc/TOP_AGENT_PLAN.md §4.1). Delegated to the
+    # real registry rather than stubbed: these are resolution *rules* (aliases,
+    # the default, the stored spelling), and a fake that invents answers would
+    # let a test pass against behaviour the engine does not have.
+    def resolve_top_agent(self, value: str) -> str:
+        return _REAL_REGISTRY.resolve_top_agent(value)
+
+    def stored_top_agent_value(self, value: str) -> str:
+        return _REAL_REGISTRY.stored_top_agent_value(value)
+
+    def default_top_agent(self) -> str:
+        return _REAL_REGISTRY.default_top_agent()
 
     def return_result_specs(self, name: str) -> list[object]:
         return []

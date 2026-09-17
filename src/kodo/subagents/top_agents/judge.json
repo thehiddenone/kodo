@@ -1,0 +1,8 @@
+{
+  "name": "judge",
+  "notes": "Validator-only: kodo.validator._evaluate selects it over the wire to score a finished run. `selectable: false` keeps it out of the served catalog — its prompt is written to grade a transcript, not to hold a conversation — while leaving it fully registered and runnable. It has no aliases because its wire value was always its own name.",
+  "label": "Judge",
+  "description": "Scores a finished run against the scenario's rubric, for kodo.validator.",
+  "rank": 30,
+  "selectable": false
+}

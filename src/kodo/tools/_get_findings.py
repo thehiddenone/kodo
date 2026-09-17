@@ -27,8 +27,6 @@ class GetFindingsTool(Tool):
 
     async def handle(self, tool_input: dict[str, object]) -> str:
         ctx = self.context
-        if ctx.mode != "guided":
-            return json.dumps({"error": "get_findings is only available in Guided mode."})
         if ctx.findings_dir is None or not ctx.findings_key:
             return json.dumps({"findings": []})
         findings = read_findings(ctx.findings_dir, ctx.findings_key)

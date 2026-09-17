@@ -51,7 +51,7 @@ sending them everywhere was counterproductive rather than merely wasteful:
 ``editing`` names ``edit_file``/``create_file`` and reaches only agents granted
 such a tool (roughly half of them never write a file, and telling a critic how
 to keep a diff minimal contradicts the "use only your granted tools" rule in
-``security``); ``callouts`` reaches only the two entry agents, since a
+``security``); ``callouts`` reaches only the two top-level agents, since a
 sub-agent's text is buried in a collapsed subsession block whose open/close
 callouts the *client* draws.
 
@@ -165,7 +165,9 @@ from ._artifacts import (
 )
 from ._loader import AgentLoadError, SubAgent, load_agent
 from ._subagentspec import SubAgentSpec
+from ._topagent import TopAgent
 from .specs import ALL_SUBAGENTS
+from .top_agents import TopAgentLoadError, load_top_agents
 
 # ``shared_<name>.md`` in this package ⇄ ``{SHARED:<name>}`` in an agent body.
 # The lowercase-only name pattern is deliberate: it matches the filenames, so a
@@ -370,6 +372,68 @@ _USE_SKILL_TOOL = USE_SKILL.name
 # it into one variant per sub-agent the agent may invoke.
 _RUN_SUBAGENT_TOOL = RUN_SUBAGENT.name
 
+#: Directory, relative to ``agents_dir``, holding the top-level agent configs.
+TOP_AGENTS_SUBDIR = "top_agents"
+
+
+class _Problems:
+    """Validation failures collected per agent, so all of them are reported.
+
+    The registry used to raise on the first problem it found, which made a
+    broken agent set a sequence of one-line fixes: correct the tool typo, run
+    again, learn about the missing shared block, run again. Every check now
+    *records* instead, and construction raises once at the end with the whole
+    picture grouped by agent.
+
+    Attribution is the point, not just the batching. A check that knows which
+    agent is at fault can say so — and a later tier of agents the registry must
+    not fail hard on (doc/TOP_AGENT_PROPOSAL.md §4.3's user-installed agents)
+    needs exactly that to demote one entry instead of refusing the whole set.
+    That tier does not exist yet; this is the shape it will need.
+    """
+
+    __entries: dict[str, list[str]]
+    __paths: dict[str, Path]
+
+    def __init__(self) -> None:
+        self.__entries = {}
+        self.__paths = {}
+
+    def add(self, name: str, message: str, path: Path | None = None) -> None:
+        """Record one failure against *name*.
+
+        Args:
+            name: The agent (or file stem) at fault.
+            message: What is wrong, with no path prefix — :meth:`report` prints
+                the path once per agent instead.
+            path: Source file, when the caller knows it.
+        """
+        self.__entries.setdefault(name, []).append(message)
+        if path is not None:
+            self.__paths[name] = path
+
+    def extend(self, name: str, messages: list[str], path: Path | None = None) -> None:
+        """Record several failures against *name*."""
+        for message in messages:
+            self.add(name, message, path)
+
+    @property
+    def any(self) -> bool:
+        """Whether anything was recorded."""
+        return bool(self.__entries)
+
+    def report(self) -> str:
+        """The aggregated message, grouped by agent in name order."""
+        count = len(self.__entries)
+        noun = "agent" if count == 1 else "agents"
+        lines = [f"{count} {noun} failed validation:"]
+        for name in sorted(self.__entries):
+            where = self.__paths.get(name)
+            lines.append(f"\n{name}" + (f" ({where})" if where is not None else ""))
+            lines.extend(f"  - {m}" for m in self.__entries[name])
+        return "\n".join(lines)
+
+
 # Every tool spec, keyed by tool name (names are unique in the catalog).
 _SPECS_BY_NAME: dict[str, ToolSpec] = {t.name: t for t in ALL_TOOLS}
 
@@ -399,7 +463,7 @@ def _output_fields(spec: SubAgentSpec) -> frozenset[str]:
 # Schema on the generated ``run_subagent_<name>`` tool, and reach the agent
 # *itself* as the real values under ``## Input Parameters`` at the bottom of its
 # first message (see ``kodo.runtime._engine._subagents._render_task_input``) —
-# no schema is ever shown in a system prompt. Entry agents (guide/problem_solver
+# no schema is ever shown in a system prompt. Top-level agents (guide/problem_solver
 # /judge) have no spec and are left untouched.
 SUBAGENT_SPECS_BY_NAME: dict[str, SubAgentSpec] = {s.name: s for s in ALL_SUBAGENTS}
 
@@ -502,7 +566,7 @@ class AgentRegistry:
 
     Args:
         agents_dir: Directory containing the ``shared_*.md`` blocks, the
-            ``subagent_*.md`` files, and the ``agent_*.md`` entry-agent files
+            ``subagent_*.md`` files, and the ``agent_*.md`` top-level agent files
             (``guide``, ``problem_solver``, ``judge``).
 
     Raises:
@@ -514,7 +578,14 @@ class AgentRegistry:
             without being schema-bearing.
     """
 
-    __slots__ = ("__agents", "__shared", "__skills")
+    __slots__ = (
+        "__agents",
+        "__default_top_agent",
+        "__shared",
+        "__skills",
+        "__top_agent_by_value",
+        "__top_agents",
+    )
 
     def __init__(self, agents_dir: Path, skills_dir: Path | None = None) -> None:
         # The skills root is injectable purely so tests (and the validator's
@@ -550,22 +621,32 @@ class AgentRegistry:
             _validate_phase_tokens(text, path)
             self.__shared[name] = text
         self.__agents: dict[str, SubAgent] = {}
-        # Sub-agents (``subagent_*.md``) and the user-facing entry agents
+        # Every failure is collected rather than raised, so construction reports
+        # the whole broken set at once instead of one problem per run.
+        problems = _Problems()
+        # Sub-agents (``subagent_*.md``) and the user-facing top-level agents
         # (``agent_*.md`` — ``guide``, ``problem_solver``, ``judge``) share one
         # registry, looked up by name regardless of which prefix they use.
         agent_paths = sorted(agents_dir.glob("subagent_*.md")) + sorted(
             agents_dir.glob("agent_*.md")
         )
         for path in agent_paths:
-            agent = load_agent(path)
+            try:
+                agent = load_agent(path)
+            except AgentLoadError as exc:
+                # A file too malformed to become a SubAgent at all. Recorded and
+                # skipped rather than raised, so the agents that *are* readable
+                # still get checked and reported in the same run.
+                problems.add(path.stem, str(exc).replace(f"{path}: ", ""), path)
+                continue
             # Validate every declared tool resolves now, at load time, so a bad
             # frontmatter reference fails fast rather than at first dispatch.
-            self.__validate_tools(agent.tools, path)
-            self.__validate_shared(agent)
-            self.__validate_skills(agent)
-            self.__validate_phases(agent)
-            self.__validate_user_review(agent)
-            self.__validate_planner(agent)
+            problems.extend(agent.name, self.__validate_tools(agent.tools, path), path)
+            problems.extend(agent.name, self.__validate_shared(agent), path)
+            problems.extend(agent.name, self.__validate_skills(agent), path)
+            problems.extend(agent.name, self.__validate_phases(agent), path)
+            problems.extend(agent.name, self.__validate_user_review(agent), path)
+            problems.extend(agent.name, self.__validate_planner(agent), path)
             self.__agents[agent.name] = agent
         # Every sub-agent some caller may spawn — the union of all
         # ``subagents:`` allow-lists. Exactly these get a generated
@@ -575,10 +656,9 @@ class AgentRegistry:
         # ``toolchain_depsmgr``) sit in no allow-list and correctly have none.
         invocable = {name for agent in self.__agents.values() for name in agent.subagent_order}
         # Second pass — every agent is loaded now, so cross-agent references can
-        # be validated. Fail-fast at construction, same as the checks above: a
-        # declared ``critic:`` must resolve to a real agent that actually
-        # declares ``role: critic`` (otherwise the engine would spawn something
-        # that never records a verdict).
+        # be validated: a declared ``critic:`` must resolve to a real agent that
+        # actually declares ``role: critic`` (otherwise the engine would spawn
+        # something that never records a verdict).
         for agent in self.__agents.values():
             # ``subagents:`` and the ``run_subagent`` grant are two halves of one
             # decision: the allow-list says *which* sub-agents, the tool grant is
@@ -586,23 +666,28 @@ class AgentRegistry:
             # inert, so reject the mismatch here rather than let an agent ship
             # with an allow-list it has no way to act on.
             if bool(agent.subagents) != (_RUN_SUBAGENT_TOOL in agent.tools):
-                raise AgentLoadError(
-                    f"{agent.source_path}: a 'subagents:' allow-list and the "
-                    f"'{_RUN_SUBAGENT_TOOL}' tool grant must be declared together "
-                    f"(has allow-list: {bool(agent.subagents)}, has tool: "
-                    f"{_RUN_SUBAGENT_TOOL in agent.tools})"
+                problems.add(
+                    agent.name,
+                    f"a 'subagents:' allow-list and the '{_RUN_SUBAGENT_TOOL}' tool grant "
+                    f"must be declared together (has allow-list: {bool(agent.subagents)}, "
+                    f"has tool: {_RUN_SUBAGENT_TOOL in agent.tools})",
+                    agent.source_path,
                 )
             if agent.critic:
                 paired = self.__agents.get(agent.critic)
                 if paired is None:
-                    raise AgentLoadError(
-                        f"{agent.source_path}: critic {agent.critic!r} has no "
-                        f"subagent_{agent.critic}.md in the registry"
+                    problems.add(
+                        agent.name,
+                        f"critic {agent.critic!r} has no subagent_{agent.critic}.md "
+                        f"in the registry",
+                        agent.source_path,
                     )
-                if not paired.is_critic:
-                    raise AgentLoadError(
-                        f"{agent.source_path}: critic {agent.critic!r} does not declare "
-                        f"'role: critic' in its own frontmatter"
+                elif not paired.is_critic:
+                    problems.add(
+                        agent.name,
+                        f"critic {agent.critic!r} does not declare 'role: critic' in its "
+                        f"own frontmatter",
+                        agent.source_path,
                     )
             # An invocable sub-agent's ``## Purpose`` is its generated tool's
             # description, so a missing one would ship a tool the caller cannot
@@ -610,20 +695,181 @@ class AgentRegistry:
             # author's loop, so they get no tool), as is any agent no caller
             # lists — the engine-driven ones describe themselves to nobody.
             if agent.name in invocable and not agent.is_critic and not agent.purpose:
-                raise AgentLoadError(
-                    f"{agent.source_path}: no '## Purpose' section — it is the "
-                    f"description of this sub-agent's run_subagent_{agent.name} tool"
+                problems.add(
+                    agent.name,
+                    f"no '## Purpose' section — it is the description of this "
+                    f"sub-agent's run_subagent_{agent.name} tool",
+                    agent.source_path,
                 )
             for sub in agent.subagent_order:
                 if sub not in self.__agents:
-                    raise AgentLoadError(
-                        f"{agent.source_path}: subagents entry {sub!r} has no "
-                        f"subagent_{sub}.md in the registry"
+                    problems.add(
+                        agent.name,
+                        f"subagents entry {sub!r} has no subagent_{sub}.md in the registry",
+                        agent.source_path,
                     )
-        self.__validate_artifact_roles()
+        self.__validate_artifact_roles(problems)
+        self.__build_top_agents(agents_dir / TOP_AGENTS_SUBDIR, problems)
+        if problems.any:
+            raise AgentLoadError(problems.report())
 
-    def __validate_artifact_roles(self) -> None:
+    def __build_top_agents(self, config_dir: Path, problems: _Problems) -> None:
+        """Load ``top_agents/<name>.json`` and index the selectable agents.
+
+        Runs last in construction, once every agent is loaded, so it can check
+        **both** directions of the pairing: a top-level agent with no config
+        could not be selected by anything, and a config naming no agent would
+        silently never apply. Both halves come from *this registry's own*
+        directory, which is what makes the symmetric check a true statement
+        rather than a guess about what happens to be packaged — a registry over
+        a directory of sub-agents has neither half and passes.
+
+        Args:
+            config_dir: ``<agents_dir>/top_agents``. Need not exist.
+            problems: Accumulator; every failure is recorded against the agent
+                (or config stem) at fault rather than raised here.
+        """
+        try:
+            configs = {cfg.name: cfg for cfg in load_top_agents(config_dir)}
+        except TopAgentLoadError as exc:
+            # One unreadable config file. Nothing downstream can be trusted to
+            # describe the set, so record it and leave the table empty.
+            problems.add(TOP_AGENTS_SUBDIR, str(exc))
+            self.__top_agents: tuple[TopAgent, ...] = ()
+            self.__top_agent_by_value = {}
+            self.__default_top_agent = ""
+            return
+
+        loaded = {name for name, agent in self.__agents.items() if agent.is_top_level}
+        for name in sorted(loaded - configs.keys()):
+            problems.add(
+                name,
+                f"no {TOP_AGENTS_SUBDIR}/{name}.json — a top-level agent declares how it "
+                f"is selected (label, description, rank) beside its prompt",
+                self.__agents[name].source_path,
+            )
+        for name in sorted(configs.keys() - loaded):
+            problems.add(
+                name,
+                f"{TOP_AGENTS_SUBDIR}/{name}.json has no agent_{name}.md in the registry",
+            )
+        # A top-level agent talks to a human in prose and is never called with
+        # arguments, so a typed I/O contract on one is a category error rather
+        # than surplus: something declared an interface nothing will ever use.
+        for name in sorted(loaded & SUBAGENT_SPECS_BY_NAME.keys()):
+            problems.add(
+                name,
+                f"is a top-level agent but also has specs/{name}.json — a top-level "
+                f"agent has no typed input/output contract; it talks to a human in prose",
+                self.__agents[name].source_path,
+            )
+
+        agents: list[TopAgent] = []
+        by_value: dict[str, str] = {}
+        for name in sorted(loaded & configs.keys()):
+            cfg = configs[name]
+            # ``label`` names the *choice* in a picker; ``display_name`` names
+            # the agent as it works. They are allowed to differ — ``guide`` is
+            # "Guide" in the picker and "Kōdo" in the feed — so the config wins
+            # where it speaks and falls back where it does not.
+            agents.append(replace(cfg, label=cfg.label or self.__agents[name].display_name))
+        for top in agents:
+            # A name and an alias share one namespace: both are values that may
+            # arrive over the wire or off disk, so a collision between them is
+            # as ambiguous as one between two names.
+            for value in (top.name, *top.aliases):
+                if value in by_value:
+                    problems.add(
+                        top.name,
+                        f"selection value {value!r} is already claimed by {by_value[value]!r}",
+                    )
+                    continue
+                by_value[value] = top.name
+        defaults = [top.name for top in agents if top.default]
+        # A registry with no top-level agents at all (a fixture of sub-agents
+        # only) is legitimate and simply has no default to declare.
+        if agents and len(defaults) != 1:
+            problems.add(
+                TOP_AGENTS_SUBDIR,
+                f'exactly one top-level agent must declare "default": true; found {defaults}',
+            )
+
+        self.__top_agents = tuple(sorted(agents, key=lambda a: (a.rank, a.name)))
+        self.__top_agent_by_value = by_value
+        self.__default_top_agent = defaults[0] if defaults else ""
+
+    def top_agents(self) -> tuple[TopAgent, ...]:
+        """Every top-level agent, in picker order (``rank``, then name).
+
+        Includes agents with ``selectable=False`` — this is the whole registered
+        set, and filtering for a particular audience is the caller's business.
+
+        Returns:
+            tuple[TopAgent, ...]: The registered top-level agents.
+        """
+        return self.__top_agents
+
+    def resolve_top_agent(self, value: str) -> str:
+        """Resolve a selection *value* to a top-level agent name.
+
+        Accepts an agent name or any of its legacy aliases, so a session
+        persisted under the old workflow-mode vocabulary resumes onto the right
+        agent. An unrecognized value resolves to :meth:`default_top_agent`
+        rather than raising: this runs on every prompt and on every resume, and
+        a session whose stored selection has gone stale must keep working.
+
+        Args:
+            value: An agent name, an alias, or anything else.
+
+        Returns:
+            str: The resolved agent name — always one that exists.
+        """
+        return self.__top_agent_by_value.get(value, self.__default_top_agent)
+
+    def default_top_agent(self) -> str:
+        """Name of the top-level agent an unrecognized selection falls back to.
+
+        Empty only for a registry that loaded no top-level agents at all, which
+        in practice means a test fixture of sub-agents.
+        """
+        return self.__default_top_agent
+
+    def stored_top_agent_value(self, value: str) -> str:
+        """Normalize a selection to the form that is stored and sent on the wire.
+
+        Phase 1 of doc/TOP_AGENT_PLAN.md changes *how* the selection is resolved,
+        not *what* travels: the wire and on-disk vocabulary stays the legacy
+        workflow-mode one (``"guided"``, ``"problem_solving"``) until the
+        protocol rename lands in phase 3 alongside the client change. So this
+        answers with the resolved agent's first alias while it has one, and its
+        name otherwise — which for the three shipped agents is byte-identical to
+        the hardcoded normalization it replaces.
+
+        Storing the canonical name instead would look harmless and break the
+        picker: kodo-vsix reads anything that is not ``"problem_solving"`` as
+        ``"guided"``, so a stored ``"problem_solver"`` would show *Guide*
+        selected while the server ran Problem Solver.
+
+        **Delete this method in phase 3**, along with the ``aliases`` it reads;
+        agent names are the wire vocabulary from then on.
+
+        Args:
+            value: An agent name, a legacy alias, or anything else.
+
+        Returns:
+            str: The value to store — always one a current client understands.
+        """
+        resolved = self.resolve_top_agent(value)
+        for top in self.__top_agents:
+            if top.name == resolved:
+                return top.aliases[0] if top.aliases else top.name
+        return resolved
+
+    def __validate_artifact_roles(self, problems: _Problems) -> None:
         """Check every spec's ``produces``/``consumes`` once the set is known.
+
+        Attributed per sub-agent (``problems``), like every other check here,
+        so a spec catalog with several bad declarations reports all of them.
 
         Fail-fast at construction, like every other cross-agent check here: a
         role that no agent produces resolves to nothing at run time, and an
@@ -640,47 +886,54 @@ class AgentRegistry:
         for spec in SUBAGENT_SPECS_BY_NAME.values():
             for role, field_name in spec.produces.items():
                 if role not in ALL_ROLES:
-                    raise AgentLoadError(
-                        f"sub-agent {spec.name!r} produces unknown artifact role {role!r}; "
-                        f"known roles: {sorted(ALL_ROLES)}"
+                    problems.add(
+                        spec.name,
+                        f"produces unknown artifact role {role!r}; "
+                        f"known roles: {sorted(ALL_ROLES)}",
                     )
                 if field_name != PRODUCES_REMAINDER and field_name not in _output_fields(spec):
-                    raise AgentLoadError(
-                        f"sub-agent {spec.name!r} maps role {role!r} to output field "
-                        f"{field_name!r}, which its output_schema does not declare"
+                    problems.add(
+                        spec.name,
+                        f"maps role {role!r} to output field {field_name!r}, "
+                        f"which its output_schema does not declare",
                     )
                 produced.add(role)
 
         for spec in SUBAGENT_SPECS_BY_NAME.values():
             for need in spec.consumes:
                 if need.role not in ALL_ROLES:
-                    raise AgentLoadError(
-                        f"sub-agent {spec.name!r} consumes unknown artifact role "
-                        f"{need.role!r}; known roles: {sorted(ALL_ROLES)}"
+                    problems.add(
+                        spec.name,
+                        f"consumes unknown artifact role {need.role!r}; "
+                        f"known roles: {sorted(ALL_ROLES)}",
                     )
                 if need.scope not in ALL_SCOPES:
-                    raise AgentLoadError(
-                        f"sub-agent {spec.name!r} consumes role {need.role!r} with unknown "
-                        f"scope {need.scope!r}; known scopes: {sorted(ALL_SCOPES)}"
+                    problems.add(
+                        spec.name,
+                        f"consumes role {need.role!r} with unknown scope "
+                        f"{need.scope!r}; known scopes: {sorted(ALL_SCOPES)}",
                     )
                 if need.scope != SCOPE_UNDER_REVIEW and need.role not in produced:
-                    raise AgentLoadError(
-                        f"sub-agent {spec.name!r} consumes artifact role {need.role!r}, "
-                        "which no sub-agent declares that it produces"
+                    problems.add(
+                        spec.name,
+                        f"consumes artifact role {need.role!r}, "
+                        "which no sub-agent declares that it produces",
                     )
 
     @staticmethod
-    def __validate_tools(agent_tools: frozenset[str], path: Path) -> None:
+    def __validate_tools(agent_tools: frozenset[str], path: Path) -> list[str]:
         """Fail fast when an agent's frontmatter names an unknown tool.
 
         Run at load time (not first render) so a typo in ``tools:`` surfaces when
         the registry is built rather than mid-session.
         """
+        problems: list[str] = []
         for name in sorted(agent_tools):
             if name not in _SPECS_BY_NAME:
-                raise AgentLoadError(f"{path}: tool {name!r} has no ToolSpec in kodo.toolspecs")
+                problems.append(f"tool {name!r} has no ToolSpec in kodo.toolspecs")
+        return problems
 
-    def __validate_shared(self, agent: SubAgent) -> None:
+    def __validate_shared(self, agent: SubAgent) -> list[str]:
         """Check *agent*'s ``{SHARED:…}`` inclusions at construction time.
 
         Nothing is auto-appended to a prompt any more — inclusion is the agent's
@@ -697,28 +950,28 @@ class AgentRegistry:
                 protocol (or either half without the grant), or a task-input note
                 in an agent that is never seeded with one.
         """
+        problems: list[str] = []
         included = {m.group(1) for m in _SHARED_TOKEN_RE.finditer(agent.system_prompt)}
 
         unknown = sorted(included - self.__shared.keys())
         if unknown:
-            raise AgentLoadError(
-                f"{agent.source_path}: unknown shared block(s) {unknown} — expected a "
+            problems.append(
+                f"unknown shared block(s) {unknown} — expected a "
                 f"{SHARED_FILE_PREFIX}<name>.md for each; known: {sorted(self.__shared)}"
             )
 
         missing = [name for name in _REQUIRED_SHARED if name not in included]
         if missing:
-            raise AgentLoadError(
-                f"{agent.source_path}: every agent prompt must include "
-                f"{', '.join(shared_token(n) for n in missing)}"
+            problems.append(
+                f"every agent prompt must include {', '.join(shared_token(n) for n in missing)}"
             )
 
         # The invariant that keeps ``ToolSpec.modifies_files`` honest: an agent
         # that can change files on disk states the discipline for doing so.
         if agent.tools & _FILE_MODIFYING_TOOLS and _EDITING_SHARED not in included:
             granted = sorted(agent.tools & _FILE_MODIFYING_TOOLS)
-            raise AgentLoadError(
-                f"{agent.source_path}: grants file-modifying tool(s) {granted}, so its "
+            problems.append(
+                f"grants file-modifying tool(s) {granted}, so its "
                 f"prompt must include {shared_token(_EDITING_SHARED)}"
             )
 
@@ -726,15 +979,15 @@ class AgentRegistry:
         # it, iff the agent can actually read the backlog.
         findings_blocks = sorted(included.intersection(_FINDINGS_SHARED))
         if _GET_FINDINGS_TOOL in agent.tools and len(findings_blocks) != 1:
-            raise AgentLoadError(
-                f"{agent.source_path}: grants {_GET_FINDINGS_TOOL}, so its prompt must "
+            problems.append(
+                f"grants {_GET_FINDINGS_TOOL}, so its prompt must "
                 f"include exactly one of "
                 f"{', '.join(shared_token(n) for n in _FINDINGS_SHARED)} — found "
                 f"{findings_blocks or 'none'}"
             )
         if findings_blocks and _GET_FINDINGS_TOOL not in agent.tools:
-            raise AgentLoadError(
-                f"{agent.source_path}: includes {shared_token(findings_blocks[0])} but does "
+            problems.append(
+                f"includes {shared_token(findings_blocks[0])} but does "
                 f"not grant {_GET_FINDINGS_TOOL}, which that block tells it to call"
             )
 
@@ -751,14 +1004,15 @@ class AgentRegistry:
         # input itself. Requiring it everywhere would force that agent to state
         # something false about its own input.
         if _TASK_INPUT_SHARED in included and agent.name not in SUBAGENT_SPECS_BY_NAME:
-            raise AgentLoadError(
-                f"{agent.source_path}: {shared_token(_TASK_INPUT_SHARED)} is only valid "
+            problems.append(
+                f"{shared_token(_TASK_INPUT_SHARED)} is only valid "
                 f"in an agent that declares a SubAgentSpec — this one has none, so it "
                 f"is never seeded from a structured task_input"
             )
+        return problems
 
     @staticmethod
-    def __validate_skills(agent: SubAgent) -> None:
+    def __validate_skills(agent: SubAgent) -> list[str]:
         """Bind the ``use_skill`` grant and the ``{SKILLS}`` catalog together.
 
         Skills reach an agent through two halves that are useless apart: the
@@ -775,27 +1029,29 @@ class AgentRegistry:
         Raises:
             AgentLoadError: the agent declares one half without the other.
         """
+        problems: list[str] = []
         has_token = SKILLS_TOKEN in agent.system_prompt
         has_tool = _USE_SKILL_TOOL in agent.tools
         if has_tool and not has_token:
-            raise AgentLoadError(
-                f"{agent.source_path}: grants {_USE_SKILL_TOOL!r}, so its prompt must "
+            problems.append(
+                f"grants {_USE_SKILL_TOOL!r}, so its prompt must "
                 f"include {SKILLS_TOKEN} where the installed-skills catalog should go"
             )
         if has_token and not has_tool:
-            raise AgentLoadError(
-                f"{agent.source_path}: includes {SKILLS_TOKEN} without granting "
+            problems.append(
+                f"includes {SKILLS_TOKEN} without granting "
                 f"{_USE_SKILL_TOOL!r} — the agent would be shown skills it cannot load"
             )
+        return problems
 
     @staticmethod
-    def __validate_phases(agent: SubAgent) -> None:
+    def __validate_phases(agent: SubAgent) -> list[str]:
         """Check *agent*'s ``{PHASE:…}`` blocks at construction time.
 
         Two rules. The tokens must be well formed
         (:func:`_validate_phase_tokens`), and they are only meaningful in an
         agent the engine spawns *with* a phase — i.e. a schema-bearing one. An
-        entry agent or an inline agent carrying a ``{PHASE:revision}`` block
+        top-level agent or an inline agent carrying a ``{PHASE:revision}`` block
         would render it never, and nothing at run time would say so; that is the
         same class of dead-prose bug the ``{SHARED:task_input}`` guard catches,
         and it gets the same treatment.
@@ -809,16 +1065,21 @@ class AgentRegistry:
             AgentLoadError: A malformed token, or a phase block in an agent with
                 no :class:`SubAgentSpec`.
         """
-        _validate_phase_tokens(agent.system_prompt, agent.source_path)
+        problems: list[str] = []
+        try:
+            _validate_phase_tokens(agent.system_prompt, agent.source_path)
+        except AgentLoadError as exc:
+            problems.append(str(exc).replace(f"{agent.source_path}: ", ""))
         if _PHASE_OPEN_RE.search(agent.system_prompt) and agent.name not in SUBAGENT_SPECS_BY_NAME:
-            raise AgentLoadError(
-                f"{agent.source_path}: phase blocks are only valid in an agent that "
-                f"declares a SubAgentSpec — this one has none, so the engine never "
-                f"spawns it in a phase and the block would render nowhere"
+            problems.append(
+                "phase blocks are only valid in an agent that "
+                "declares a SubAgentSpec — this one has none, so the engine never "
+                "spawns it in a phase and the block would render nowhere"
             )
+        return problems
 
     @staticmethod
-    def __validate_user_review(agent: SubAgent) -> None:
+    def __validate_user_review(agent: SubAgent) -> list[str]:
         """Check a ``user_review: true`` agent has something to gate.
 
         The gate signs off a **work product** — every file one review loop wrote
@@ -831,18 +1092,20 @@ class AgentRegistry:
             AgentLoadError: The agent declares ``user_review`` but produces no
                 artifact role.
         """
+        problems: list[str] = []
         if not agent.user_review:
-            return
+            return problems
         spec = SUBAGENT_SPECS_BY_NAME.get(agent.name)
         if spec is None or not spec.produces:
-            raise AgentLoadError(
-                f"{agent.source_path}: declares 'user_review: true' but produces no "
-                f"artifact role, so there would be no work product for the user to "
-                f"sign off on"
+            problems.append(
+                "declares 'user_review: true' but produces no "
+                "artifact role, so there would be no work product for the user to "
+                "sign off on"
             )
+        return problems
 
     @staticmethod
-    def __validate_planner(agent: SubAgent) -> None:
+    def __validate_planner(agent: SubAgent) -> list[str]:
         """Check a ``planner: true`` agent returns something the engine can read.
 
         The plan contract (doc/PLANNING.md §2): a planner's ``output_schema``
@@ -867,28 +1130,34 @@ class AgentRegistry:
                 either required field, or declares one with a type the engine
                 cannot read a plan out of.
         """
+        problems: list[str] = []
         if not agent.planner:
-            return
+            return problems
         spec = SUBAGENT_SPECS_BY_NAME.get(agent.name)
         if spec is None:
-            raise AgentLoadError(
-                f"{agent.source_path}: declares 'planner: true' but has no SubAgentSpec, "
-                f"so it has no output schema for the engine to read a plan out of"
+            problems.append(
+                "declares 'planner: true' but has no SubAgentSpec, "
+                "so it has no output schema for the engine to read a plan out of"
             )
+            # Nothing below can be checked without a schema to check it against.
+            return problems
         properties = spec.output_schema.get("properties")
         props: dict[str, object] = properties if isinstance(properties, dict) else {}
         missing = sorted(PLAN_OUTPUT_FIELDS - set(props))
         if missing:
-            raise AgentLoadError(
-                f"{agent.source_path}: declares 'planner: true' but its output_schema "
+            problems.append(
+                f"declares 'planner: true' but its output_schema "
                 f"does not declare {missing} — a planner's result must carry "
                 f"{sorted(PLAN_OUTPUT_FIELDS)} for the engine to initialize a plan from "
                 f"(doc/PLANNING.md)"
             )
+            # The per-field type checks below index these fields directly, so
+            # there is nothing left to say once one of them is absent.
+            return problems
 
         def _fail(detail: str) -> None:
-            raise AgentLoadError(
-                f"{agent.source_path}: declares 'planner: true' but {detail}. The engine "
+            problems.append(
+                f"declares 'planner: true' but {detail}. The engine "
                 f"reads a plan out of these fields, and a mis-typed declaration fails "
                 f"silently at run time — no plan is created (doc/PLANNING.md §2)"
             )
@@ -900,11 +1169,11 @@ class AgentRegistry:
         tasks = props[PLAN_TASKS_FIELD]
         if not isinstance(tasks, dict) or tasks.get("type") != "array":
             _fail(f"its {PLAN_TASKS_FIELD!r} is not declared as an array")
-            return  # unreachable; keeps the type narrowing below honest
+            return problems  # keeps the type narrowing below honest
         items = tasks.get("items")
         if not isinstance(items, dict) or items.get("type") != "object":
             _fail(f"its {PLAN_TASKS_FIELD!r} items are not declared as objects")
-            return
+            return problems
         item_props = items.get("properties")
         if not isinstance(item_props, dict) or PLAN_TASK_TITLE_FIELD not in item_props:
             _fail(
@@ -912,6 +1181,7 @@ class AgentRegistry:
                 f"{PLAN_TASK_TITLE_FIELD!r} property — a task with no title is not a task "
                 f"the user could read, so the engine drops it"
             )
+        return problems
 
     def __finalize(self, agent: SubAgent, autonomous: bool, phase: str = PHASE_INITIAL) -> SubAgent:
         """Render *agent* for the requested mode and round phase.
@@ -1024,7 +1294,7 @@ class AgentRegistry:
         whole loop — author→critic rounds, author→user-gate rounds, or both.
 
         Returns them in allow-list order; an empty list when *caller* declares
-        no sub-agents (the default for every agent that isn't an entry agent).
+        no sub-agents (the default for every agent that isn't a top-level agent).
 
         Raises:
             AgentLoadError: No agent file for *caller*, or an allow-list entry
@@ -1078,7 +1348,7 @@ class AgentRegistry:
 
         A one-element list (so it drops straight into
         :func:`~kodo.tools.tools_for_agent`'s replacement map), or empty for an
-        agent with no :class:`SubAgentSpec` — the entry agents, which never
+        agent with no :class:`SubAgentSpec` — the top-level agents, which never
         return a result to anyone.
         """
         spec = SUBAGENT_SPECS_BY_NAME.get(name)
@@ -1089,7 +1359,7 @@ class AgentRegistry:
     def spec_for(self, name: str) -> SubAgentSpec | None:
         """Return the :class:`SubAgentSpec` for *name*, or ``None`` if it has none.
 
-        Entry agents (guide/problem_solver) have no spec; everything else does.
+        Top-level agents (guide/problem_solver) have no spec; everything else does.
         The engine uses the spec's ``output_schema`` to validate the agent's
         ``return_result`` payload.
         """

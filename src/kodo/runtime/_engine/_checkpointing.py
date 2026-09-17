@@ -300,7 +300,7 @@ class CheckpointCoordinator:
             author=agent_name,
             tool=tool_name,
             summary=self.label(tool_name, tool_input),
-            workflow=self._host._session.effective_workflow_mode,
+            workflow=self._host._session.effective_top_agent,
         )
 
     async def undo(self, root: str, sha: str, resolution: str | None = None) -> CheckpointState:

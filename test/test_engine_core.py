@@ -27,8 +27,10 @@ from kodo.runtime._checkpoints import CheckpointState
 from kodo.runtime._engine import _core
 from kodo.runtime._gates import ApprovalResponse, ConfirmFolderResponse
 from kodo.state import TransientStore
-from kodo.subagents import AgentLoadError, SubAgent
+from kodo.subagents import AgentLoadError, AgentRegistry, SubAgent
 from kodo.workproducts import WorkProduct
+
+_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents")
 
 
 class _FakeSink:
@@ -107,6 +109,19 @@ class _FakeRegistry:
 
     def run_subagent_specs(self, caller: str) -> list[object]:
         return []
+
+    # The top-level agent table (doc/TOP_AGENT_PLAN.md §4.1). Delegated to the
+    # real registry rather than stubbed: these are resolution *rules* (aliases,
+    # the default, the stored spelling), and a fake that invents answers would
+    # let a test pass against behaviour the engine does not have.
+    def resolve_top_agent(self, value: str) -> str:
+        return _REAL_REGISTRY.resolve_top_agent(value)
+
+    def stored_top_agent_value(self, value: str) -> str:
+        return _REAL_REGISTRY.stored_top_agent_value(value)
+
+    def default_top_agent(self) -> str:
+        return _REAL_REGISTRY.default_top_agent()
 
     def return_result_specs(self, name: str) -> list[object]:
         return []
@@ -220,7 +235,7 @@ async def test_start_resumed_session_restores_prefs_and_messages(tmp_path: Path)
 
         assert len(engine._main_messages) == 1
         assert engine._session.autonomous is True
-        assert engine._session.workflow_mode == "problem_solving"
+        assert engine._session.top_agent == "problem_solving"
         assert engine._session.edit_control == "allow_all"
         assert engine._session.command_control == "permissive"
         assert engine._compactor.context_tokens > 0
@@ -605,7 +620,7 @@ async def test_stop_while_in_subsession_closes_it_and_tags_correct_entry_agent(
         ]
         assert stopped_notices
         # Tagged with the true top-level entry agent recovered via
-        # _last_entry_agent(), not "investigator" (session.agent's stale
+        # _last_top_agent(), not "investigator" (session.agent's stale
         # value while a subsession is active).
         assert stopped_notices[-1]["entry_agent"] == "guide"
 
@@ -647,10 +662,15 @@ async def test_handle_mode_set_updates_session_and_persists(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
+        # Legacy workflow-mode values keep working, and keep their spelling: the
+        # wire vocabulary does not change until the protocol rename lands.
         ("problem_solving", "problem_solving"),
         ("judge", "judge"),
         ("guided", "guided"),
         ("bogus", "guided"),
+        # Agent names are accepted too, and normalize to the same stored value.
+        ("problem_solver", "problem_solving"),
+        ("guide", "guided"),
     ],
 )
 async def test_handle_workflow_set_normalizes_unknown_modes(
@@ -661,7 +681,7 @@ async def test_handle_workflow_set_normalizes_unknown_modes(
 
     await engine.handle_workflow_set(mode)
 
-    assert engine._session.workflow_mode == expected
+    assert engine._session.top_agent == expected
     assert transient.workflow_mode == expected
 
 
@@ -1114,12 +1134,12 @@ async def test_handle_thinking_level_set_rejects_invalid_tier_for_openrouter(
 def test_freeze_effective_modes_snapshots_both_toggles(tmp_path: Path) -> None:
     engine, _t, _s, _g = _make_engine(tmp_path)
     engine._session.autonomous = True
-    engine._session.workflow_mode = "problem_solving"
+    engine._session.top_agent = "problem_solving"
 
     engine._freeze_effective_modes()
 
     assert engine._session.effective_autonomous is True
-    assert engine._session.effective_workflow_mode == "problem_solving"
+    assert engine._session.effective_top_agent == "problem_solving"
 
 
 # ---------------------------------------------------------------------------
@@ -1193,7 +1213,7 @@ def test_root_paths_guided_mode_reports_workspace_folders(tmp_path: Path) -> Non
     folder = tmp_path / "a"
     folder.mkdir()
     engine, _t, _s, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "guided"
+    engine._session.top_agent = "guided"
     engine._session_workspace.set_folders({"a": folder})
 
     paths = engine._root_paths()
@@ -1207,7 +1227,7 @@ def test_root_paths_problem_solving_reports_workspace_folders(tmp_path: Path) ->
     folder = tmp_path / "a"
     folder.mkdir()
     engine, _t, _s, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "problem_solving"
+    engine._session.top_agent = "problem_solving"
     engine._session_workspace.set_folders({"a": folder})
 
     paths = engine._root_paths()
@@ -1221,7 +1241,7 @@ def test_root_paths_empty_when_no_folders(tmp_path: Path) -> None:
     so ``RootMirrorManager`` never gets handed a root to mirror (doc: the
     checkpoint jail-escape fix — physical_root must never leak in here)."""
     engine, _t, _s, _g = _make_engine(tmp_path, physical_root=tmp_path)
-    engine._session.workflow_mode = "problem_solving"
+    engine._session.top_agent = "problem_solving"
 
     paths = engine._root_paths()
 
@@ -1232,7 +1252,7 @@ async def test_root_paths_problem_solving_falls_back_to_bound_dirs_when_no_folde
     tmp_path: Path,
 ) -> None:
     engine, transient, _s, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "problem_solving"
+    engine._session.top_agent = "problem_solving"
     folder = tmp_path / "a"
     folder.mkdir()
     await engine.handle_workspace_folders(str(tmp_path), {"a": str(folder)})
@@ -1251,7 +1271,7 @@ async def test_root_paths_problem_solving_falls_back_to_bound_dirs_when_live_fol
     tmp_path: Path,
 ) -> None:
     engine, transient, _s, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "problem_solving"
+    engine._session.top_agent = "problem_solving"
     folder = tmp_path / "a"
     other = tmp_path / "other"
     folder.mkdir()
@@ -1276,7 +1296,7 @@ async def test_root_paths_problem_solving_reports_full_live_set_when_connected_a
     open folder, not just the locked subset — regression guard for normal
     connected behaviour."""
     engine, transient, _s, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "problem_solving"
+    engine._session.top_agent = "problem_solving"
     a = tmp_path / "a"
     b = tmp_path / "b"
     a.mkdir()
@@ -1321,7 +1341,7 @@ def test_make_resolver_guided_mode_uses_logical_resolver(tmp_path: Path) -> None
     Solver's LogicalPathResolver — there is no separate project-confined
     resolver anymore."""
     engine, _t, _s, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "guided"
+    engine._session.top_agent = "guided"
 
     resolver = engine._make_resolver("sess-1")
     from kodo.tools import LogicalPathResolver
@@ -1331,7 +1351,7 @@ def test_make_resolver_guided_mode_uses_logical_resolver(tmp_path: Path) -> None
 
 def test_make_resolver_problem_solving_uses_logical_resolver(tmp_path: Path) -> None:
     engine, _t, _s, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "problem_solving"
+    engine._session.top_agent = "problem_solving"
 
     resolver = engine._make_resolver("sess-1")
     from kodo.tools import LogicalPathResolver
@@ -1349,7 +1369,7 @@ def test_make_resolver_logical_resolver_tracks_folders_added_after_construction(
     to snapshot the folder map at construction time, so a project bound later
     in the same turn was invisible to it until the *next* turn rebuilt it."""
     engine, _t, _s, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "problem_solving"
+    engine._session.top_agent = "problem_solving"
     resolver = engine._make_resolver("sess-1")
 
     project_root = tmp_path / "proj"
@@ -1366,7 +1386,7 @@ async def test_make_resolver_problem_solving_disconnected_confines_to_bound_dirs
     tmp_path: Path,
 ) -> None:
     engine, transient, _s, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "problem_solving"
+    engine._session.top_agent = "problem_solving"
     bound = tmp_path / "bound"
     bound.mkdir()
     await engine.handle_workspace_folders(str(tmp_path), {"bound": str(bound)})
@@ -1387,7 +1407,7 @@ async def test_make_resolver_problem_solving_disconnected_default_cwd_is_first_b
     tmp_path: Path,
 ) -> None:
     engine, transient, _s, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "problem_solving"
+    engine._session.top_agent = "problem_solving"
     a = tmp_path / "a"
     b = tmp_path / "b"
     a.mkdir()
@@ -1874,7 +1894,7 @@ async def test_create_project_skips_workspace_add_event_when_disconnected(
     new project still scaffolds and locks, just silently as far as the
     (absent/mismatched) live window is concerned."""
     engine, transient, sink, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "problem_solving"
+    engine._session.top_agent = "problem_solving"
     bound = tmp_path / "bound"
     bound.mkdir()
     await engine.handle_workspace_folders(str(tmp_path), {"bound": str(bound)})
@@ -1991,7 +2011,7 @@ def test_has_workspace_guided_tracks_folders(tmp_path: Path) -> None:
     """Mode-agnostic since the multi-project rework: Guided tracks the same
     live workspace-folder map Problem Solver always has."""
     engine, _t, _s, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "guided"
+    engine._session.top_agent = "guided"
     assert engine._has_workspace() is False
     engine._session_workspace.set_folders({"proj": tmp_path})
     assert engine._has_workspace() is True
@@ -1999,7 +2019,7 @@ def test_has_workspace_guided_tracks_folders(tmp_path: Path) -> None:
 
 def test_has_workspace_problem_solving_tracks_folders(tmp_path: Path) -> None:
     engine, _t, _s, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "problem_solving"
+    engine._session.top_agent = "problem_solving"
     assert engine._has_workspace() is False
     engine._session_workspace.set_folders({"proj": tmp_path})
     assert engine._has_workspace() is True
@@ -2012,7 +2032,7 @@ async def test_has_workspace_problem_solving_true_when_locked_and_disconnected(
     its bound directories stand in (unlike an unlocked session, which is
     correctly homeless with nothing pushed)."""
     engine, transient, _s, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "problem_solving"
+    engine._session.top_agent = "problem_solving"
     folder = tmp_path / "a"
     folder.mkdir()
     await engine.handle_workspace_folders(str(tmp_path), {"a": str(folder)})
@@ -2271,7 +2291,7 @@ async def test_init_project_locks_the_directory_immediately(tmp_path: Path) -> N
 
 async def test_init_project_skips_workspace_add_event_when_disconnected(tmp_path: Path) -> None:
     engine, transient, sink, _g = _make_engine(tmp_path)
-    engine._session.workflow_mode = "problem_solving"
+    engine._session.top_agent = "problem_solving"
     bound = tmp_path / "bound"
     bound.mkdir()
     await engine.handle_workspace_folders(str(tmp_path), {"bound": str(bound)})

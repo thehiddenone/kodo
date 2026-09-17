@@ -1,6 +1,6 @@
 """Entry-agent runs and the generic agent turn (single LLM call + tool loop).
 
-The two top-level entry agents share one agent-agnostic main message history
+The two top-level top-level agents share one agent-agnostic main message history
 (``_main_messages``); switching workflow mode only swaps the system prompt
 and tool set, so the conversation continues seamlessly across a mode change.
 
@@ -76,9 +76,7 @@ from .._think_tag_guard import ThinkTagDetector
 from ._checkpointing import _GUIDED_STATE_TOOLS
 from ._proto import EngineHost
 from ._shared import (
-    _GUIDE_AGENT_NAME,
-    _JUDGE_AGENT_NAME,
-    _PROBLEM_SOLVER_AGENT_NAME,
+    _FALLBACK_AGENT_NAME,
     _SPECS_BY_NAME,
     StallDecision,
     TurnSignal,
@@ -110,71 +108,29 @@ def _tool_failure_envelope(tool_name: str, exc: BaseException) -> str:
 
 
 class TurnLoopMixin:
-    """Drives entry-agent prompts and the shared LLM turn/tool loop."""
+    """Drives top-level agent prompts and the shared LLM turn/tool loop."""
 
     # ------------------------------------------------------------------
-    # Guide LLM loop
+    # Top-level agent LLM loop
     # ------------------------------------------------------------------
 
-    async def _run_guide_with_input(
-        self: EngineHost,
-        text: str,
-        attachments: list[str] | None = None,
-        nudge_detail: dict[str, object] | None = None,
-    ) -> None:
-        await self._run_entry_agent(_GUIDE_AGENT_NAME, text, attachments, nudge_detail=nudge_detail)
-
-    # ------------------------------------------------------------------
-    # Problem Solver LLM loop (standalone, outside the Kodo pipeline)
-    # ------------------------------------------------------------------
-
-    async def _run_problem_solver_with_input(
-        self: EngineHost,
-        text: str,
-        attachments: list[str] | None = None,
-        nudge_detail: dict[str, object] | None = None,
-    ) -> None:
-        """Drive the standalone Problem Solver agent for one user prompt.
-
-        Shares the agent-agnostic main history with the Guide (see
-        :meth:`_run_entry_agent`): switching to Problem Solving only swaps the
-        system prompt and tools, so the conversation continues across the mode
-        change and — unlike before — Problem Solver turns now persist to
-        ``session.jsonl``.
-        """
-        await self._run_entry_agent(
-            _PROBLEM_SOLVER_AGENT_NAME, text, attachments, nudge_detail=nudge_detail
-        )
-
-    # ------------------------------------------------------------------
-    # Judge LLM loop (validator-only, never selected by kodo-vsix)
-    # ------------------------------------------------------------------
-
-    async def _run_judge_with_input(
-        self: EngineHost, text: str, attachments: list[str] | None = None
-    ) -> None:
-        """Drive the standalone Judge agent for one evaluation turn.
-
-        Entry point for the ``"judge"`` workflow mode (agent_judge.md), used
-        only by ``kodo.validator._evaluate`` to score a finished run — never
-        reachable from kodo-vsix, whose workflow picker only ever sends
-        ``"guided"``/``"problem_solving"``. Shares ``_run_entry_agent`` with
-        Guide/Problem Solver like the other entry agents.
-        """
-        await self._run_entry_agent(_JUDGE_AGENT_NAME, text, attachments)
-
-    async def _run_entry_agent(
+    async def _run_top_agent(
         self: EngineHost,
         agent_name: str,
         text: str,
         attachments: list[str] | None = None,
         nudge_detail: dict[str, object] | None = None,
     ) -> None:
-        """Drive a top-level entry agent (Guide or Problem Solver).
+        """Drive one top-level agent for one user prompt.
 
-        Both entry agents share one agent-agnostic main message history
-        (``_main_messages``) persisted to ``session.jsonl``; the only per-mode
-        difference is the system prompt and tool set. The seed user prompt is
+        The single entry point for every top-level agent — which one is a
+        registry lookup on the session's selection (``_top_agent_name``), never a
+        branch here, so adding one needs no change to this method or its caller.
+
+        Every top-level agent shares one agent-agnostic main message history
+        (``_main_messages``) persisted to ``session.jsonl``; the only per-agent
+        difference is the system prompt and tool set, so switching agents
+        continues the same conversation. The seed user prompt is
         persisted immediately; the agent's own turns persist incrementally
         through :meth:`_run_agent_turn` (the spawning-tool prefix is flushed
         before any sub-agent dispatch so an interrupted sub-agent can resume).
@@ -188,16 +144,16 @@ class TurnLoopMixin:
 
         ``nudge_detail`` is set only when this call is the deferred half of a
         stuck-agent nudge (doc/STUCK_DETECTION.md,
-        :meth:`~._watchdog.WatchdogMixin._schedule_entry_turn_alarm`): *text*
+        :meth:`~._watchdog.WatchdogMixin._schedule_top_agent_turn_alarm`): *text*
         is then the fixed continuation instruction, not something the user
         typed, so it persists with ``kind="nudge"`` instead of as an ordinary
         prompt bubble.
         """
-        # Marks the *current* entry-agent turn so a stale background watcher
+        # Marks the *current* top-level agent turn so a stale background watcher
         # from an earlier turn (doc/STUCK_DETECTION.md) can tell it has been
         # superseded and no-op instead of alarming about a turn the user
         # already moved past.
-        self._entry_turn_seq += 1
+        self._top_agent_turn_seq += 1
 
         agent = self._registry.get(agent_name, self._session.effective_autonomous)
         plugin, model_id, routing = await self._resolve_plugin(agent.capability)
@@ -278,20 +234,20 @@ class TurnLoopMixin:
             flush_before_dispatch=True,
             track_context=True,
             on_stall=self._make_stall_handler(
-                agent_name=agent_name, routing=routing, is_entry_turn=True
+                agent_name=agent_name, routing=routing, is_top_agent_turn=True
             ),
-            on_tool_calls=self._make_progress_handler(is_entry_turn=True),
+            on_tool_calls=self._make_progress_handler(is_top_agent_turn=True),
             on_cyclic_thinking=self._make_cyclic_thinking_handler(
-                agent_name=agent_name, routing=routing, is_entry_turn=True
+                agent_name=agent_name, routing=routing, is_top_agent_turn=True
             ),
             on_think_in_tool_call=self._make_think_in_tool_call_handler(
-                agent_name=agent_name, is_entry_turn=True
+                agent_name=agent_name, is_top_agent_turn=True
             ),
             on_tool_call_cyclic=self._make_tool_call_cyclic_handler(
-                agent_name=agent_name, routing=routing, is_entry_turn=True
+                agent_name=agent_name, routing=routing, is_top_agent_turn=True
             ),
             on_repeated_tool_calls=self._make_repeated_tool_call_handler(
-                agent_name=agent_name, routing=routing, is_entry_turn=True
+                agent_name=agent_name, routing=routing, is_top_agent_turn=True
             ),
         )
         # Safety net for a final round that produced zero deltas of any kind
@@ -355,14 +311,12 @@ class TurnLoopMixin:
             stored.append({"id": attachment_id, "name": loaded.name, "stored": rel})
         return stored, errors
 
-    def _persist_main_messages(
-        self: EngineHost, entry_agent: str
-    ) -> Callable[[list[Message]], None]:
+    def _persist_main_messages(self: EngineHost, top_agent: str) -> Callable[[list[Message]], None]:
         """Return a persist hook that appends main messages to ``session.jsonl``."""
 
         def _persist(batch: list[Message]) -> None:
             for msg in batch:
-                self._transient.append_message(msg.role, msg.content, entry_agent=entry_agent)
+                self._transient.append_message(msg.role, msg.content, entry_agent=top_agent)
 
         return _persist
 
@@ -380,7 +334,7 @@ class TurnLoopMixin:
         tools: list[ToolSpec],
         tool_dispatch: Callable[[str, dict[str, object], str, bool], Awaitable[str]],
         stream_id: str,
-        agent_name: str = _GUIDE_AGENT_NAME,
+        agent_name: str = _FALLBACK_AGENT_NAME,
         stop_after_tools: Callable[[], bool] | None = None,
         persist: Callable[[list[Message]], None] | None = None,
         flush_before_dispatch: bool = False,
@@ -412,7 +366,7 @@ class TurnLoopMixin:
                 assumed already persisted and never re-emitted. The turn always
                 flushes after every tool-result batch, so a completed tool call
                 is durable at each turn boundary.
-            flush_before_dispatch: When ``True`` (the main entry-agent turn),
+            flush_before_dispatch: When ``True`` (the main top-level agent turn),
                 also flush the not-yet-persisted prefix — including the assistant
                 message carrying the ``tool_use`` — *before* dispatching any
                 tool, so the persisted transcript is never behind an in-flight
@@ -427,7 +381,7 @@ class TurnLoopMixin:
                 turn boundary (a user ``tool_result``), so they must *not*
                 flush a bare ``tool_use``. The added latency is negligible next
                 to the LLM round-trip.
-            track_context: When ``True`` (the shared main entry-agent turn), the
+            track_context: When ``True`` (the shared main top-level agent turn), the
                 measured prompt+output token total of each LLM call updates the
                 live context gauge (the compactor's ``context_tokens``) and is
                 pushed to the client. Sub-agent/titler turns leave it ``False``
@@ -455,7 +409,7 @@ class TurnLoopMixin:
                 evidence the agent is progressing, regardless of whether the
                 tool itself later succeeds or fails
                 (:meth:`~._watchdog.WatchdogMixin._make_progress_handler`
-                uses this to clear the entry-agent stuck streak).
+                uses this to clear the top-level agent stuck streak).
             on_cyclic_thinking: When provided, every streamed ``ThinkingDelta``
                 is fed to a fresh :class:`~.._cyclic_thinking.CyclicThinkingDetector`
                 for this round; the instant it flags a repetition loop, the
@@ -1036,7 +990,7 @@ class TurnLoopMixin:
         tool_input: dict[str, object],
         result_text: str,
         checkpoint: CheckpointRef | None = None,
-        agent_name: str = _GUIDE_AGENT_NAME,
+        agent_name: str = _FALLBACK_AGENT_NAME,
     ) -> str:
         """Normalize a tool result to its schema; persist and surface its detail.
 
@@ -1245,7 +1199,6 @@ class TurnLoopMixin:
             services=self._services,
             agent_name=agent_name,
             session_id=session_id,
-            mode=self._session.effective_workflow_mode,
             util_paths=self._util_paths(),
             output_schema=spec.output_schema if spec is not None else None,
             findings_dir=self._findings_dir(),

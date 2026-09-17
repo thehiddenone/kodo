@@ -171,7 +171,7 @@ class WorkflowEngine(
     _last_thinking_base_llm: str | None
     _replay_subsessions: list[dict[str, object]] | None
     _resume_subsession_pending: bool
-    _entry_turn_seq: int
+    _top_agent_turn_seq: int
     _stuck_watchdog_task: asyncio.Task[None] | None
     _stuck_streak: bool
     _cycle_streak: bool
@@ -243,14 +243,14 @@ class WorkflowEngine(
         self._replay_subsessions = None
         self._resume_subsession_pending = False
         # Stuck-agent watchdog (doc/STUCK_DETECTION.md): bumped once per
-        # entry-agent turn so a background alarm watcher can tell it has been
+        # top-level agent turn so a background alarm watcher can tell it has been
         # superseded; the watcher task itself is held here so asyncio never
         # garbage-collects it mid-sleep. _stuck_streak tracks whether the
-        # entry-agent's last nudge (since its last real response) has not yet
+        # top-level agent's last nudge (since its last real response) has not yet
         # gotten it unstuck — in-memory only, lost on restart by design (a
         # crash just costs one extra nudge before the next stall goes
         # critical, never a correctness issue).
-        self._entry_turn_seq = 0
+        self._top_agent_turn_seq = 0
         self._stuck_watchdog_task = None
         self._stuck_streak = False
         # Dedicated streak for the mid-stream cyclic-thinking detector
@@ -271,7 +271,7 @@ class WorkflowEngine(
         # One-shot guard for the worker's subsession-crash backstop
         # (``WorkerMixin._enqueue_subsession_crash_report``): set when a crash
         # report has been queued back to the calling agent, cleared by
-        # ``_run_entry_agent`` on any turn that completes, so a repeating
+        # ``_run_top_agent`` on any turn that completes, so a repeating
         # environmental failure goes idle for the human instead of looping.
         self._subsession_crash_recovered = False
         # The security layer judging every tool call (doc/SECURITY.md) —
@@ -393,7 +393,13 @@ class WorkflowEngine(
             # Restore per-session prefs so a resumed tab keeps its own mode
             # (the window no longer re-syncs a single global value on connect).
             self._session.autonomous = self._transient.autonomous
-            self._session.workflow_mode = self._transient.workflow_mode
+            # Coerced here rather than in TransientStore: the store imports
+            # nothing from ``kodo`` and so cannot consult the registry, which
+            # is exactly why the accepted set is no longer validated in two
+            # places. A stale or legacy value resolves to a real agent.
+            self._session.top_agent = self._registry.stored_top_agent_value(
+                self._transient.workflow_mode
+            )
             self._session.edit_control = self._transient.edit_control
             self._session.command_control = self._transient.command_control
             self._session.security_rules = self._transient.security_rules
@@ -577,19 +583,19 @@ class WorkflowEngine(
         ``_main_messages`` — using it directly would mistag the interrupted-
         turn record and could point a future cold-restart resume
         (:meth:`~._resume.ResumeMixin._resume_main_turn`) at the wrong agent.
-        ``_last_entry_agent()`` recovers the correct one from the already-
+        ``_last_top_agent()`` recovers the correct one from the already-
         persisted ``entry_agent`` tag in that case.
         """
         was_running = self._session.phase == "running"
         in_subsession = self._transient.active_subsession is not None
-        entry_agent = self._last_entry_agent() if in_subsession else self._session.agent
+        top_agent = self._last_top_agent() if in_subsession else self._session.agent
         if self._worker is not None:
             self._worker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._worker
             self._worker = None
-        if was_running and entry_agent is not None:
-            self._persist_interrupted_turn(entry_agent)
+        if was_running and top_agent is not None:
+            self._persist_interrupted_turn(top_agent)
         if in_subsession:
             # Sent before the "stopped" state event below so the client closes
             # the collapsible subsession block before it renders the generic
@@ -600,7 +606,7 @@ class WorkflowEngine(
         self._session.agent = None
         await self._emitters.emit_state()
         self._worker = asyncio.create_task(self._run_worker(), name="kodo-worker")
-        _log.info("Runtime worker stopped by user (entry_agent=%s); session ready", entry_agent)
+        _log.info("Runtime worker stopped by user (entry_agent=%s); session ready", top_agent)
 
     # ------------------------------------------------------------------
     # Client-facing handlers
@@ -614,7 +620,7 @@ class WorkflowEngine(
         persisted prompt is the user's *clean* text and the attachment source
         paths travel alongside it. The files themselves are read, copied into
         the session, and injected into the LLM context later, when the prompt
-        actually reaches its entry agent.
+        actually reaches its top-level agent.
 
         Args:
             text: The user's prompt text (possibly with a leading control line).
@@ -637,18 +643,20 @@ class WorkflowEngine(
         await self._emitters.emit_state()
 
     async def handle_workflow_set(self, mode: str) -> None:
-        """Select the top-level workflow that drives user prompts.
+        """Select the top-level agent that drives user prompts.
+
+        The accepted set is whatever the registry has loaded, not a tuple
+        maintained here, so registering a top-level agent is all it takes to
+        make it selectable.
 
         Args:
-            mode: ``"guided"`` (Guide + full Kodo pipeline), ``"problem_solving"``
-                (the standalone Problem Solver agent), or the validator-only
-                ``"judge"`` (the standalone Judge agent — scores a finished run
-                for ``kodo.validator``; never sent by kodo-vsix, whose workflow
-                picker only offers the first two). Unknown values fall back to
-                ``"guided"``.
+            mode: A top-level agent name (``"guide"``, ``"problem_solver"``,
+                ``"judge"``) or a legacy workflow-mode alias (``"guided"``,
+                ``"problem_solving"``). Unknown values fall back to the
+                registry's declared default.
         """
-        self._session.workflow_mode = mode if mode in ("problem_solving", "judge") else "guided"
-        self._transient.update(workflow_mode=self._session.workflow_mode)
+        self._session.top_agent = self._registry.stored_top_agent_value(mode)
+        self._transient.update(workflow_mode=self._session.top_agent)
         await self._emitters.emit_state()
 
     async def handle_edit_control_set(self, value: str) -> None:
@@ -738,19 +746,19 @@ class WorkflowEngine(
         Called once per prompt at dequeue (and on sub-session resume) so the
         guide and every sub-agent it spawns see one consistent value for the
         whole turn even if the user flips a toggle mid-run. Only ``autonomous``
-        and ``workflow_mode`` are frozen — ``edit_control``/``command_control``
+        and ``top_agent`` are frozen — ``edit_control``/``command_control``
         are deliberately never frozen (the client owns them and may change them
         any time it is not locked by Autonomous mode).
         """
         self._session.effective_autonomous = self._session.autonomous
-        self._session.effective_workflow_mode = self._session.workflow_mode
+        self._session.effective_top_agent = self._session.top_agent
 
     async def handle_compact_now(self) -> None:
         """Enqueue a manual context-compaction request.
 
         Compaction mutates ``_main_messages``, so it is funnelled through the
         same single-consumer worker queue as prompts rather than run inline on
-        the connection handler. The worker honours it only when the entry agent
+        the connection handler. The worker honours it only when the top-level agent
         is idle and there is context to compact (see
         :meth:`~._compaction.ContextCompactor.run_manual_compaction`); a
         request that arrives mid-run simply waits its turn and is re-checked.

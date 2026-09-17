@@ -20,8 +20,10 @@ from kodo.plan import PlanConflictError, abandon_plan, create_plan, read_plan, s
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._engine._watchdog import _MAX_CONSECUTIVE_NUDGES
 from kodo.runtime._session import SessionState
-from kodo.subagents import AgentLoadError
+from kodo.subagents import AgentLoadError, AgentRegistry
 from kodo.toolspecs import SCHEMA_COMPLIANCE_KEY
+
+_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents")
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -40,6 +42,19 @@ class _FakeRegistry:
 
     def allowed_subagents(self, name: str) -> frozenset[str]:
         return self._allowed.get(name, frozenset())
+
+    # The top-level agent table (doc/TOP_AGENT_PLAN.md §4.1). Delegated to the
+    # real registry rather than stubbed: these are resolution *rules* (aliases,
+    # the default, the stored spelling), and a fake that invents answers would
+    # let a test pass against behaviour the engine does not have.
+    def resolve_top_agent(self, value: str) -> str:
+        return _REAL_REGISTRY.resolve_top_agent(value)
+
+    def stored_top_agent_value(self, value: str) -> str:
+        return _REAL_REGISTRY.stored_top_agent_value(value)
+
+    def default_top_agent(self) -> str:
+        return _REAL_REGISTRY.default_top_agent()
 
     def get(self, name: str, autonomous: bool = False, phase: str = "initial"):
         if name == "unknown_agent":
@@ -829,7 +844,7 @@ async def test_drive_subsession_persist_callback_appends_subsession_messages() -
 
 async def test_drive_subsession_wires_on_cyclic_thinking_for_subagent_scope() -> None:
     """_drive_subsession must pass on_cyclic_thinking through to
-    _run_agent_turn with is_entry_turn=False and the right subsession_id
+    _run_agent_turn with is_top_agent_turn=False and the right subsession_id
     (doc/STUCK_DETECTION.md §2.7), so a repeated thinking loop inside a
     sub-agent gets the sub-agent (capped, silent) escalation path -- not the
     entry-agent nudge-then-critical one."""

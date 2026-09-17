@@ -173,7 +173,6 @@ def _make_dispatcher(
     agent_name: str = "test_agent",
     answer: str = "",
     autonomous: bool = False,
-    mode: str = "guided",
     has_workspace: bool = True,
 ) -> ToolDispatcher:
     session = SessionState()
@@ -188,7 +187,6 @@ def _make_dispatcher(
         services=_StubServices(has_workspace=has_workspace, root_paths=root_paths),
         agent_name=agent_name,
         session_id="sess-test",
-        mode=mode,
     )
 
 
@@ -639,7 +637,6 @@ async def test_fileio_rejects_path_outside_project_root(tmp_path: Path) -> None:
         services=_StubServices(root_paths=(RootPath(name="proj", path=str(tmp_path)),)),
         agent_name="test_agent",
         session_id="sess-test",
-        mode="guided",
     )
     result = json.loads(
         await dispatcher.dispatch("create_file", {"path": "../escape.txt", "content": "nope"})
@@ -835,7 +832,6 @@ async def test_run_command_rejects_working_dir_outside_project_root(tmp_path: Pa
         services=_StubServices(root_paths=(RootPath(name="proj", path=str(tmp_path)),)),
         agent_name="test_agent",
         session_id="sess-test",
-        mode="guided",
     )
     result = json.loads(
         await dispatcher.dispatch(
@@ -890,7 +886,6 @@ async def test_run_command_runs_in_scratch_dir_without_workspace(
         agent_name="test_agent",
         session_id="sess-test",
         security=SecurityLayer(),
-        mode="problem_solving",
     )
 
     result = json.loads(
@@ -941,7 +936,6 @@ async def test_run_command_without_workspace_asks_and_is_told_the_scratch_dir(
         agent_name="test_agent",
         session_id="sess-test",
         security=_RecordingSecurity(),
-        mode="problem_solving",
     )
 
     result = json.loads(
@@ -1161,7 +1155,6 @@ async def test_requires_project_gate_reads_has_workspace_live_within_one_turn(
         services=services,
         agent_name="guide",
         session_id="sess-test",
-        mode="guided",
     )
 
     rejected = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
@@ -1205,7 +1198,6 @@ def _make_scaffold_new_project_dispatcher(
         services=services,
         agent_name="test_agent",
         session_id="sess-test",
-        mode="problem_solving",
     )
 
 
@@ -1350,7 +1342,6 @@ async def test_scaffold_new_project_bypasses_security_gate_without_workspace_and
         agent_name="test_agent",
         session_id="sess-test",
         security=_AssertNeverCalledSecurity(),  # type: ignore[arg-type]
-        mode="problem_solving",
     )
 
     result = json.loads(await dispatcher.dispatch("scaffold_new_project", {}))
@@ -1402,7 +1393,6 @@ async def test_scaffold_new_project_with_path_does_not_bypass_security_gate_with
         agent_name="test_agent",
         session_id="sess-test",
         security=security,  # type: ignore[arg-type]
-        mode="problem_solving",
     )
     target = tmp_path / "existing-project"
 
@@ -1429,7 +1419,6 @@ async def test_security_gate_default_cwd_read_guarded_without_workspace() -> Non
         agent_name="test_agent",
         session_id="sess-test",
         security=SecurityLayer(),
-        mode="problem_solving",
     )
 
     result = json.loads(await dispatcher.dispatch("disable_autonomous_mode", {"reason": "loop"}))
@@ -1452,7 +1441,6 @@ async def test_security_gate_default_cwd_read_guarded_without_workspace_guided()
         agent_name="test_agent",
         session_id="sess-test",
         security=SecurityLayer(),
-        mode="guided",
     )
 
     result = json.loads(await dispatcher.dispatch("disable_autonomous_mode", {"reason": "loop"}))

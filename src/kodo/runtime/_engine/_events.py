@@ -178,7 +178,7 @@ class EngineEmitters:
             turn_end (TurnEnd): The completed call's usage/stop-reason event.
             model (str): Model identifier used for this call.
             duration_seconds (float): Wall-clock duration of this call.
-            agent_name (str): The agent that made this call (main entry agent
+            agent_name (str): The agent that made this call (main top-level agent
                 or sub-agent) — audit/display only.
         """
         payload = {
@@ -350,7 +350,7 @@ class EngineEmitters:
 
         Fired right after any watchdog detector persists a nudge
         (doc/STUCK_DETECTION.md, ``WatchdogMixin._persist_nudge`` and
-        ``_run_entry_agent``'s deferred path) — the nudge's actual
+        ``_run_top_agent``'s deferred path) — the nudge's actual
         ``llm_text`` is a real LLM-facing turn the agent's next streamed
         response follows on from (or reads back, for the mid-stream
         sources), but the client never typed it and has no local echo, so
@@ -371,7 +371,7 @@ class EngineEmitters:
     async def emit_agent_stuck_critical(self, message: str) -> None:
         """Push a client-only notice that the stuck-agent watchdog gave up, and persist it.
 
-        Fired when an entry-agent turn stalls for the *second* consecutive
+        Fired when a top-level agent turn stalls for the *second* consecutive
         time since its last real response (doc/STUCK_DETECTION.md,
         ``WatchdogMixin._persist_stuck_critical``) — the first stall already
         got one nudge, and stalling again right after means nudging is not
@@ -391,7 +391,7 @@ class EngineEmitters:
     async def emit_cyclic_thinking_critical(self, message: str) -> None:
         """Push+persist a client-only notice that a second cyclic-thinking loop ended the turn.
 
-        Fired when the entry-agent's thinking hits a *second* detected
+        Fired when the top-level agent's thinking hits a *second* detected
         repetition loop since its last real response
         (doc/STUCK_DETECTION.md §2.7,
         ``WatchdogMixin._persist_cyclic_thinking_critical``) — mirrors
@@ -413,7 +413,7 @@ class EngineEmitters:
     async def emit_think_in_tool_call_critical(self, message: str) -> None:
         """Push+persist a client-only notice that a second think-in-tool-call hit ended the turn.
 
-        Fired when the entry-agent hits a *second* ``<think>``-in-tool-call
+        Fired when the top-level agent hits a *second* ``<think>``-in-tool-call
         detection since its last real response (doc/STUCK_DETECTION.md §2.9,
         ``WatchdogMixin._persist_think_in_tool_call_critical``) — same shape
         as :meth:`emit_agent_stuck_critical`/:meth:`emit_cyclic_thinking_critical`,
@@ -432,7 +432,7 @@ class EngineEmitters:
     async def emit_tool_call_cyclic_critical(self, message: str) -> None:
         """Push+persist a client-only notice that a second tool-call-repetition hit ended the turn.
 
-        Fired when the entry-agent hits a *second* tool-call-argument
+        Fired when the top-level agent hits a *second* tool-call-argument
         repetition loop since its last real response (doc/STUCK_DETECTION.md
         §2.10, ``WatchdogMixin._persist_tool_call_cyclic_critical``) — same
         shape as the other critical emitters above, its own distinct

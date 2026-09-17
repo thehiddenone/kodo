@@ -1013,8 +1013,8 @@ def test_checkpoint_enabled_regardless_of_workflow_mode() -> None:
     coordinator = object.__new__(CheckpointCoordinator)
     for mode in ("guided", "problem_solving"):
         session = SessionState()
-        session.workflow_mode = mode
-        session.effective_workflow_mode = mode
+        session.top_agent = mode
+        session.effective_top_agent = mode
         assert coordinator._enabled() is True
 
 
@@ -1962,7 +1962,6 @@ async def test_the_users_objection_is_readable_through_get_findings(tmp_path: Pa
         # through the real tool, with the scope the engine bound for this round.
         tool = GetFindingsTool(
             SimpleNamespace(
-                mode="guided",
                 findings_dir=_findings_dir(tmp_path),
                 findings_key=findings_key,
             )
@@ -2004,9 +2003,7 @@ async def test_get_findings_is_empty_on_a_first_pass_rather_than_an_error(
     answers with an empty list — which is why round 1 above passes `""`."""
     from kodo.tools import GetFindingsTool
 
-    tool = GetFindingsTool(
-        SimpleNamespace(mode="guided", findings_dir=_findings_dir(tmp_path), findings_key="")
-    )
+    tool = GetFindingsTool(SimpleNamespace(findings_dir=_findings_dir(tmp_path), findings_key=""))
     assert json.loads(await tool.handle({})) == {"findings": []}
 
 

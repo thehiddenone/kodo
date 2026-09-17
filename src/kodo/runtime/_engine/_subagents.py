@@ -64,7 +64,6 @@ from ._proto import EngineHost
 from ._shared import (
     _DEPSMGR_AGENT_NAME,
     _DIRECT_ONLY_AGENTS,
-    _GUIDE_AGENT_NAME,
     _WEB_SEARCH_AGENT_NAME,
 )
 
@@ -1798,31 +1797,31 @@ class SubagentMixin:
                 on_stall=self._make_stall_handler(
                     agent_name=name,
                     routing=routing,
-                    is_entry_turn=False,
+                    is_top_agent_turn=False,
                     subsession_id=subsession_id,
                     dispatcher=dispatcher,
                 ),
                 on_cyclic_thinking=self._make_cyclic_thinking_handler(
                     agent_name=name,
                     routing=routing,
-                    is_entry_turn=False,
+                    is_top_agent_turn=False,
                     subsession_id=subsession_id,
                 ),
                 on_think_in_tool_call=self._make_think_in_tool_call_handler(
                     agent_name=name,
-                    is_entry_turn=False,
+                    is_top_agent_turn=False,
                     subsession_id=subsession_id,
                 ),
                 on_tool_call_cyclic=self._make_tool_call_cyclic_handler(
                     agent_name=name,
                     routing=routing,
-                    is_entry_turn=False,
+                    is_top_agent_turn=False,
                     subsession_id=subsession_id,
                 ),
                 on_repeated_tool_calls=self._make_repeated_tool_call_handler(
                     agent_name=name,
                     routing=routing,
-                    is_entry_turn=False,
+                    is_top_agent_turn=False,
                     subsession_id=subsession_id,
                 ),
             )
@@ -1891,7 +1890,7 @@ class SubagentMixin:
         card it reconstructs from the seed message on reload.
         """
         display_name = self._display_name(name)
-        parent_display = self._display_name(self._session.agent or _GUIDE_AGENT_NAME)
+        parent_display = self._display_name(self._session.agent or self._top_agent_name())
         self._transient.append_marker(
             {
                 "type": "subsession_start",
@@ -1932,7 +1931,7 @@ class SubagentMixin:
         self._compactor.clear_subsession_context()
         await self._emitters.emit_context_stats()
         display_name = self._display_name(name)
-        parent_display = self._display_name(self._session.agent or _GUIDE_AGENT_NAME)
+        parent_display = self._display_name(self._session.agent or self._top_agent_name())
         # A sub-agent "failed" when it did not return a schema-compliant result
         # (e.g. it ended without calling return_result, so the engine synthesized
         # the {schema_compliance: False} fallback). The flag drives the red
@@ -2002,7 +2001,9 @@ class SubagentMixin:
         subsession_id = str(active.get("subsession_id", ""))
         name = str(active.get("agent", ""))
         display_name = str(active.get("display_name") or self._display_name(name))
-        parent_display = str(active.get("parent_display_name") or _GUIDE_AGENT_NAME)
+        parent_display = str(
+            active.get("parent_display_name") or self._display_name(self._top_agent_name())
+        )
         self._compactor.clear_subsession_context()
         await self._emitters.emit_context_stats()
         self._transient.append_marker(

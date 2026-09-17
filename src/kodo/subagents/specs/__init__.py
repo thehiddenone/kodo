@@ -7,7 +7,7 @@ built at import time by globbing this directory, so adding a sub-agent's
 contract is adding a file and nothing else — no import to write, no ``__all__``
 entry, no tuple to append to.
 
-Every sub-agent **except** the user-facing entry agents (``guide``,
+Every sub-agent **except** the user-facing top-level agents (``guide``,
 ``problem_solver``, ``judge``) has a spec here. The registry cross-references a
 spec to its ``subagent_<name>.md`` by ``name`` and fails fast if either side is
 missing; ``name`` must equal the filename stem, so the JSON, the prompt and the

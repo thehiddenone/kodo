@@ -20,15 +20,17 @@ from pathlib import Path
 from kodo.llms import Message, ToolSpec
 from kodo.toolspecs import ALL_TOOLS
 
-_GUIDE_AGENT_NAME = "guide"
-_PROBLEM_SOLVER_AGENT_NAME = "problem_solver"
-# Entry agent behind the ``"judge"`` workflow mode (agent_judge.md). Scores a
-# finished run for kodo.validator (kodo.validator._evaluate) — read-only tools
-# only, no editing/execution/ask_user. Reachable only by sending
-# ``workflow.set`` with ``mode: "judge"`` over the wire; kodo-vsix's workflow
-# picker only ever sends ``"guided"``/``"problem_solving"``, so this mode is
-# never exposed to or selectable from the extension.
-_JUDGE_AGENT_NAME = "judge"
+# Last-resort agent name, for the two places that cannot ask the registry: the
+# ``agent_name`` default on the generic turn/tool-result helpers (a default
+# argument is evaluated at import time, and every real call site passes the name
+# explicitly anyway), and nothing else. Which top-level agent is *actually* the
+# fallback is the registry's answer — ``AgentRegistry.default_top_agent()`` —
+# and every runtime path asks it rather than this constant.
+#
+# The per-mode constants that used to sit here (``_PROBLEM_SOLVER_AGENT_NAME``,
+# ``_JUDGE_AGENT_NAME``) are gone: which agent backs which selection is data in
+# the registry now, not a name the engine knows (doc/TOP_AGENT_PLAN.md §4.1).
+_FALLBACK_AGENT_NAME = "guide"
 _COMPACTOR_AGENT_NAME = "compactor"
 # Dependency-management sub-agent behind the ``toolchain_deps`` tool. Spawned only
 # through the tool's dedicated ungated service (``_run_dependency_manager``), so

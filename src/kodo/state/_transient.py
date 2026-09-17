@@ -557,7 +557,7 @@ class TransientStore:
 
     @property
     def workflow_mode(self) -> str:
-        """Persisted workflow mode (``"guided"`` | ``"problem_solving"`` | ``"judge"``).
+        """Persisted top-level agent selection, exactly as last written.
 
         ``"judge"`` is validator-only (kodo.validator._evaluate) and never sent
         by kodo-vsix. Per-session so a window hosting several sessions can keep
@@ -1236,9 +1236,15 @@ class TransientStore:
             self.__stage = str(data.get("stage", "IDLE"))
             self.__last_prompt = str(data.get("last_prompt", ""))
             self.__autonomous = bool(data.get("autonomous", False))
+            # Stored verbatim, deliberately unvalidated: which values name a
+            # real top-level agent is the AgentRegistry's answer, and this
+            # package imports nothing from ``kodo`` so it cannot ask. The engine
+            # resolves it on restore (``WorkflowEngine.start``). Validating here
+            # too is what used to let a new selection work until the session was
+            # resumed and then silently revert.
             raw_workflow_mode = data.get("workflow_mode")
             self.__workflow_mode = (
-                raw_workflow_mode if raw_workflow_mode in ("problem_solving", "judge") else "guided"
+                raw_workflow_mode if isinstance(raw_workflow_mode, str) else "guided"
             )
             edit = data.get("edit_control")
             self.__edit_control = edit if edit in ("review_all", "allow_all", "smart") else "smart"

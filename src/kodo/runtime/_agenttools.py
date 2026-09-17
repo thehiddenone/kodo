@@ -34,7 +34,7 @@ def agent_tool_specs(registry: AgentRegistry, agent: SubAgent) -> list[ToolSpec]
       agent may invoke, each declaring that sub-agent's own ``input_schema``.
       An agent whose allow-list is empty gets none at all.
     - ``return_result`` → the same tool with ``result`` bound to this agent's
-      own ``output_schema``. An entry agent (no ``SubAgentSpec``) gets none,
+      own ``output_schema``. A top-level agent (no ``SubAgentSpec``) gets none,
       which is correct: it never returns a result to anybody.
 
     Args:

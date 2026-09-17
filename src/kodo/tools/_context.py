@@ -638,11 +638,6 @@ class ToolContext:
     on the context, so no per-run snapshot can drift from the session.
 
     Attributes:
-        mode: The run's workflow mode, ``"guided"`` or ``"problem_solving"``.
-            Frozen for the whole prompt, mirroring
-            ``session.effective_workflow_mode``. Used to gate Guided-only
-            tools (``guided_dev_status``, ``get_findings``) and to tag
-            ``new_revision`` jsonl entries with which workflow produced them.
         resolver: Path resolver for the native file/shell tools — a logical
             (bound-root-name keyed) resolver, shared by both workflow modes.
         gate: Approval/question gate (protocol).
@@ -665,7 +660,7 @@ class ToolContext:
         output_schema: The running sub-agent's declared ``output_schema`` (from
             its :class:`~kodo.subagents.SubAgentSpec`), injected by the engine so
             ``return_result`` can validate/normalize the agent's result against
-            it. ``None`` for the entry agents (guide/problem_solver), which have
+            it. ``None`` for the top-level agents (guide/problem_solver), which have
             no spec and never call ``return_result``.
         current_tool_use_id: The ``tool_use`` block id of the call currently
             being handled, set by :class:`~kodo.tools.ToolDispatcher` before
@@ -711,7 +706,6 @@ class ToolContext:
     agent_name: str
     session_id: str
     security: SecurityLike | None = None
-    mode: str = "problem_solving"
     util_paths: dict[str, Path] = field(default_factory=dict)
     output_schema: dict[str, object] | None = None
     current_tool_use_id: str = ""

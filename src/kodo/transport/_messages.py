@@ -422,7 +422,7 @@ MSG_SKILLS_INSTALL = "skills.install"
 MSG_SKILLS_INSTALL_LOCAL = "skills.install_local"
 
 # Client → Server. Manually trigger context compaction for this session. Honoured
-# only when the entry agent is idle (``state.phase == "awaiting_user"``) and
+# only when the top-level agent is idle (``state.phase == "awaiting_user"``) and
 # there is context to compact; otherwise ignored. Drives the same path as the
 # automatic 90%-threshold trigger — the engine runs the ``compactor`` sub-agent,
 # writes a ``compaction`` marker to ``session.jsonl``, and resets the live LLM
@@ -767,7 +767,7 @@ SREQ_PROMPT_PERMISSION = "prompt.permission"
 # off by the output-length cap) and interactive mode is not configured to
 # nudge automatically (``stuck_detection.auto_unstuck_interactive``, always
 # effectively True in autonomous mode instead — no prompt fires there). For
-# the entry-agent scope this fires ~5s after the turn already ended normally
+# the top-level agent scope this fires ~5s after the turn already ended normally
 # (the session looks idle, chat input already usable) — a fully decoupled
 # follow-up, not something blocking the turn. For the sub-agent scope it
 # fires inline, blocking that sub-agent's turn exactly like
@@ -866,7 +866,7 @@ SREQ_WORKSPACE_CONFIRM_FOLDER = "workspace.confirm_folder"
 EVT_STATE = "state"
 
 # Server → Client events. Bracket one agent turn holding the floor — fired for
-# every entry-agent turn (Guide/Problem Solver) and every sub-agent turn alike
+# every top-level agent turn (Guide/Problem Solver) and every sub-agent turn alike
 # (``EngineEmitters.emit_agent_started``/``emit_agent_finished``, also used by
 # the crash-resume path). ``component`` is the Guide's current responsibility
 # code, or ``null`` outside Guided mode. Client uses these — not
@@ -974,7 +974,7 @@ EVT_PLAN_STATE = "plan.state"
 # ``plan_conflict_critical`` marker so a reload still shows why the session ended.
 EVT_PLAN_CONFLICT_CRITICAL = "plan.conflict_critical"
 
-# Context-compaction events (in-place compaction of an entry agent's main
+# Context-compaction events (in-place compaction of a top-level agent's main
 # context; see runtime/_engine/_compaction.py + doc/STATE_AND_LIFECYCLE.md §4.5).
 # Server → Client events.
 # - context.stats   {current_tokens, limit_tokens, percent, can_compact,
@@ -1052,7 +1052,7 @@ EVT_SECURITY_RULE_ADDED = "security.rule_added"
 # nudge, the missing-``return_result`` reminder, or either mid-stream
 # detector below (§2.7/§2.9/§2.10) — immediately in most cases, or once the
 # user answers "unstick" on a ``prompt.stuck_alert`` for the deferred
-# entry-agent stall path. The nudge itself is a real ``user``- or
+# top-level agent stall path. The nudge itself is a real ``user``- or
 # ``assistant``-role turn the agent responds to/reads back (so the live token
 # stream that follows makes sense), but the client never typed it and has no
 # local echo, so this event carries what to show instead of the raw
@@ -1070,7 +1070,7 @@ EVT_SECURITY_RULE_ADDED = "security.rule_added"
 # files with the legacy ``kind``s still replay (see ``_history.py``).
 EVT_NUDGE = "agent.nudge"
 
-# Server → Client event. Fired when an entry-agent turn stalls for the
+# Server → Client event. Fired when a top-level agent turn stalls for the
 # *second* consecutive time since its last real response — the first stall
 # already got one nudge (``EVT_NUDGE``), and stalling again right after
 # means nudging is not working. Unlike the nudge, this ends the turn instead
@@ -1083,7 +1083,7 @@ EVT_AGENT_STUCK_CRITICAL = "agent.stuck_critical"
 # Server → Client event. Fired when the mid-stream cyclic-thinking detector
 # (kodo.runtime._cyclic_thinking, doc/STUCK_DETECTION.md §2.7) catches a
 # thinking block degenerating into a repetition loop and aborts the stream
-# (the first such hit since the entry-agent's last real response, or a
+# (the first such hit since the top-level agent's last real response, or a
 # sub-agent's Nth inline retry). Ends the turn instead of retrying again:
 # ``{message}`` is a single user-facing sentence, client-only (never fed back
 # to the LLM). Also persisted as an ``agent_cyclic_thinking_critical`` marker
@@ -1095,7 +1095,7 @@ EVT_AGENT_CYCLIC_THINKING_CRITICAL = "agent.cyclic_thinking_critical"
 # Server → Client event. Fired when the mid-stream think-in-tool-call
 # detector (kodo.runtime._think_tag_guard, doc/STUCK_DETECTION.md §2.9)
 # catches a literal ``<think>`` tag inside tool-call arguments for the
-# *second* consecutive time since the entry-agent's last real response.
+# *second* consecutive time since the top-level agent's last real response.
 # Same client-only, turn-ending shape as ``EVT_AGENT_STUCK_CRITICAL``.
 # Persisted as an ``agent_think_in_tool_call_critical`` marker.
 EVT_AGENT_THINK_IN_TOOL_CALL_CRITICAL = "agent.think_in_tool_call_critical"
@@ -1103,7 +1103,7 @@ EVT_AGENT_THINK_IN_TOOL_CALL_CRITICAL = "agent.think_in_tool_call_critical"
 # Server → Client event. Fired when the mid-stream tool-call-argument
 # cyclic detector (doc/STUCK_DETECTION.md §2.10) catches a repetition loop
 # inside tool-call arguments for the *second* consecutive time since the
-# entry-agent's last real response. Same client-only, turn-ending shape as
+# top-level agent's last real response. Same client-only, turn-ending shape as
 # ``EVT_AGENT_STUCK_CRITICAL``. Persisted as an
 # ``agent_tool_call_cyclic_critical`` marker.
 EVT_AGENT_TOOL_CALL_CYCLIC_CRITICAL = "agent.tool_call_cyclic_critical"

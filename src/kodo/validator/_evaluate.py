@@ -152,7 +152,7 @@ async def run_evaluation(
         await judge.hello(thinking_level=thinking_level)
         await judge.request(MSG_WORKSPACE_FOLDERS, dict(workspace_payload))
         # The validator-only "judge" workflow (agent_judge.md): a read-only
-        # entry agent scoped to read_file/find_files/find_text_in_files/
+        # top-level agent scoped to read_file/find_files/find_text_in_files/
         # submit_evaluation, so it can't edit or run anything in the workspace
         # being scored — a narrower tool surface than the problem_solver run
         # this used to share. Autonomous + friction-minimized regardless, since

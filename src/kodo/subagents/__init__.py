@@ -38,6 +38,7 @@ from ._registry import (
     shared_token,
 )
 from ._subagentspec import RESPONSIBILITY_CODE_KEY, SubAgentSpec
+from ._topagent import TopAgent
 
 __all__: list[str] = [
     "ALL_PHASES",
@@ -70,6 +71,7 @@ __all__: list[str] = [
     "AgentRegistry",
     "SubAgent",
     "SubAgentSpec",
+    "TopAgent",
     "load_agent",
     "phase_token",
     "render_phase",

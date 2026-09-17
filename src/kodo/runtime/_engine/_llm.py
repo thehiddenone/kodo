@@ -54,7 +54,6 @@ from kodo.tools import ToolDispatcher
 
 from .._agenttools import agent_tool_specs
 from ._proto import EngineHost
-from ._shared import _GUIDE_AGENT_NAME, _JUDGE_AGENT_NAME, _PROBLEM_SOLVER_AGENT_NAME
 
 # Dotted plugin module (kodo.llms._cloud_registry's _CLOUD_VENDOR_MODULE
 # value) -> a (api_key, settings) constructor for that vendor's LLMPlugin.
@@ -271,7 +270,7 @@ class LLMPlumbingMixin:
         if str(settings.get("mode", "cloud")) == "cloud":
             vendor = str(settings.get("active_cloud_vendor", "anthropic"))
             return vendor if vendor in CLOUD_THINKING_FAMILIES else ""
-        model_key = self._resolve_model_key(self._entry_capability())
+        model_key = self._resolve_model_key(self._top_agent_capability())
         entry = get_local_registry(kodo_user_dir()).get(model_key)
         return entry.base_llm if entry is not None else ""
 
@@ -319,7 +318,7 @@ class LLMPlumbingMixin:
         """
         if routing.residence != "local":
             return {}
-        model_key = self._resolve_model_key(self._entry_capability())
+        model_key = self._resolve_model_key(self._top_agent_capability())
         entry = get_local_registry(kodo_user_dir()).get(model_key)
         if entry is None:
             return {}
@@ -455,18 +454,21 @@ class LLMPlumbingMixin:
             else:
                 entry.unlink()
 
-    def _entry_agent_name(self: EngineHost) -> str:
-        """The top-level entry agent for the current workflow mode."""
-        if self._session.workflow_mode == "problem_solving":
-            return _PROBLEM_SOLVER_AGENT_NAME
-        if self._session.workflow_mode == "judge":
-            return _JUDGE_AGENT_NAME
-        return _GUIDE_AGENT_NAME
+    def _top_agent_name(self: EngineHost) -> str:
+        """Name of the top-level agent this session's selection resolves to.
 
-    def _entry_capability(self: EngineHost) -> str:
-        """Capability tier of the current entry agent (defaults to medium)."""
+        The selection is data, not a branch: the registry maps a stored value —
+        an agent name, or a legacy alias left by a session persisted under the
+        old workflow-mode vocabulary — onto a real agent, falling back to its
+        declared default for anything it does not recognize. Adding a top-level
+        agent therefore changes nothing here.
+        """
+        return self._registry.resolve_top_agent(self._session.top_agent)
+
+    def _top_agent_capability(self: EngineHost) -> str:
+        """Capability tier of the current top-level agent (defaults to medium)."""
         try:
-            return self._registry.get(self._entry_agent_name()).capability
+            return self._registry.get(self._top_agent_name()).capability
         except Exception:  # noqa: BLE001 — unregistered agent → safe default
             return "medium"
 

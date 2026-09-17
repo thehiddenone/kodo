@@ -4,7 +4,7 @@ Some model turns end without actually finishing the task — most commonly a
 local model whose final call produces no tool call *and* no visible text
 (the ``"(no text)"`` sentinel in :mod:`._turns`), one truncated by the
 output-token cap mid-generation, or one that boils down to at most one word
-("Done.") once punctuation is stripped. Left alone, an entry-agent turn like
+("Done.") once punctuation is stripped. Left alone, a top-level agent turn like
 this just goes idle (``session.phase == "awaiting_user"``) with the task
 unfinished and no explanation, and a sub-agent turn like this hands its
 parent a near-empty ``return_result`` fallback.
@@ -16,11 +16,11 @@ other wiring required.
 
 Remediation is governed by the ``stuck_detection`` settings block
 (``kodo/server/_config.py``, doc/SETTINGS.md): ``active`` gates by model
-residence, ``scope`` by entry-agent-only vs. entry-agent-and-sub-agents, and
+residence, ``scope`` by top-level agent-only vs. top-level agent-and-sub-agents, and
 ``auto_unstuck_interactive`` picks (outside autonomous mode) between nudging
 immediately and asking first via the ``prompt.stuck_alert`` gate
 (:meth:`~.._gates.GateOrchestrator.fire_stuck_alert`). Autonomous mode always
-nudges immediately. An entry-agent turn only ever gets one nudge per streak
+nudges immediately. A top-level agent turn only ever gets one nudge per streak
 (:data:`WatchdogMixin._stuck_streak`, cleared on the next genuine response
 *or* the next round that actually produces a tool call — a round that calls
 a tool is evidence of progress even if the stall that preceded it was never
@@ -120,10 +120,10 @@ __all__ = ["RedFlag", "StallDecision", "TurnSignal", "WatchdogMixin", "detect_re
 
 _log = logging.getLogger(__name__)
 
-# How long an entry-agent turn's stall sits quietly (session already idle,
+# How long a top-level agent turn's stall sits quietly (session already idle,
 # chat input already usable) before the interactive alarm fires — long enough
 # that a prompt already queued up behind this one gets a chance to start
-# first (which cancels the alarm; see WatchdogMixin._schedule_entry_turn_alarm).
+# first (which cancels the alarm; see WatchdogMixin._schedule_top_agent_turn_alarm).
 _ENTRY_TURN_ALARM_DELAY_S = 1.0
 
 # Safety valve against a sub-agent that never recovers: caps how many times
@@ -155,7 +155,7 @@ _NUDGE_LLM_TEXT = (
 # apart) are new. Deliberately independent of `stuck_detection` settings
 # entirely (unlike every other check in this module): this is a hard tool
 # contract, not a stall heuristic, so it must not go quiet just because a user
-# turned stuck-detection off or scoped it to entry-agent-only.
+# turned stuck-detection off or scoped it to top-level agent-only.
 _MISSING_RETURN_RESULT_FLAG = RedFlag(
     code="missing_return_result",
     hint="it finished without calling `return_result`, a hard requirement for sub-agents",
@@ -337,12 +337,12 @@ class _StuckSettings:
     scope: str
     auto_unstuck_interactive: bool
 
-    def applies(self, *, residence: str, is_entry_turn: bool) -> bool:
+    def applies(self, *, residence: str, is_top_agent_turn: bool) -> bool:
         if self.active == "off":
             return False
         if self.active == "local_only" and residence != "local":
             return False
-        return is_entry_turn or self.scope == "top_level_and_subagents"
+        return is_top_agent_turn or self.scope == "top_level_and_subagents"
 
 
 def _stuck_settings(settings: dict[str, object]) -> _StuckSettings:
@@ -375,7 +375,7 @@ def _nudge_note(flags: list[RedFlag], display_name: str, mode: str) -> str:
 class WatchdogMixin:
     """Builds the per-turn stall-handling closure and drives its side effects."""
 
-    _entry_turn_seq: int
+    _top_agent_turn_seq: int
     _stuck_watchdog_task: asyncio.Task[None] | None
     _stuck_streak: bool
     _cycle_streak: bool
@@ -388,7 +388,7 @@ class WatchdogMixin:
         *,
         agent_name: str,
         routing: LLMRouting,
-        is_entry_turn: bool,
+        is_top_agent_turn: bool,
         subsession_id: str | None = None,
         dispatcher: ToolDispatcher | None = None,
     ) -> Callable[[TurnSignal], Awaitable[StallDecision]]:
@@ -399,20 +399,20 @@ class WatchdogMixin:
         never needs to reset or reach into it.
 
         Args:
-            agent_name: The agent whose turn this is (entry agent or
+            agent_name: The agent whose turn this is (top-level agent or
                 sub-agent name).
             routing: This turn's resolved :class:`LLMRouting` — ``residence``
                 gates the ``active`` setting.
-            is_entry_turn: ``True`` for the shared main entry-agent turn
+            is_top_agent_turn: ``True`` for the shared main top-level-agent turn
                 (mirrors ``_run_agent_turn``'s own ``track_context``),
                 ``False`` for a sub-agent subsession.
-            subsession_id: The owning subsession id when ``is_entry_turn`` is
+            subsession_id: The owning subsession id when ``is_top_agent_turn`` is
                 ``False`` — routes the persisted nudge to the right log.
             dispatcher: The subsession's :class:`~kodo.tools.ToolDispatcher`
-                when ``is_entry_turn`` is ``False`` — read-only here, used
+                when ``is_top_agent_turn`` is ``False`` — read-only here, used
                 only to check ``returned_output`` for the missing-
                 ``return_result`` gate (doc/STUCK_DETECTION.md §2.8). Never
-                passed for an entry-agent turn, which has no such contract.
+                passed for a top-level agent turn, which has no such contract.
         """
         stall_count = 0
         return_result_nudged = False
@@ -437,7 +437,7 @@ class WatchdogMixin:
             """
             nonlocal return_result_nudged
             if (
-                is_entry_turn
+                is_top_agent_turn
                 or dispatcher is None
                 or dispatcher.returned_output is not None
                 or return_result_nudged
@@ -461,7 +461,7 @@ class WatchdogMixin:
             nonlocal stall_count
             flags = detect_red_flags(signal)
             if not flags:
-                if is_entry_turn:
+                if is_top_agent_turn:
                     # A genuine, non-stalled final response — whatever streak
                     # was building (if any) is over.
                     self._stuck_streak = False
@@ -471,7 +471,7 @@ class WatchdogMixin:
                     self._repeat_streak = False
                 return await _end_or_nudge_missing_return_result()
             cfg = _stuck_settings(self._get_settings())
-            if not cfg.applies(residence=routing.residence, is_entry_turn=is_entry_turn):
+            if not cfg.applies(residence=routing.residence, is_top_agent_turn=is_top_agent_turn):
                 return await _end_or_nudge_missing_return_result()
 
             # Resolved only once a stall is actually going to be acted on —
@@ -479,7 +479,7 @@ class WatchdogMixin:
             # entirely.
             display_name = self._display_name(agent_name)
 
-            if is_entry_turn:
+            if is_top_agent_turn:
                 if self._stuck_streak:
                     # One nudge already went out since the last real response
                     # and this turn stalled again right after it (with no
@@ -514,9 +514,9 @@ class WatchdogMixin:
                 # Deferred: the turn ends normally (session goes idle, input
                 # stays usable) — remediation is a decoupled follow-up, not
                 # an inline retry. _stuck_streak is set once the nudge
-                # actually lands (_run_entry_agent's nudge_detail branch),
+                # actually lands (_run_top_agent's nudge_detail branch),
                 # not merely offered — a dismissed alarm never sets it.
-                self._schedule_entry_turn_alarm(agent_name, display_name, flags)
+                self._schedule_top_agent_turn_alarm(agent_name, display_name, flags)
                 return StallDecision(retry=False)
 
             # Sub-agent scope: capped at _MAX_CONSECUTIVE_NUDGES inline
@@ -564,13 +564,13 @@ class WatchdogMixin:
         return _on_stall
 
     def _make_progress_handler(
-        self: EngineHost, *, is_entry_turn: bool
+        self: EngineHost, *, is_top_agent_turn: bool
     ) -> Callable[[], None] | None:
         """Build the ``on_tool_calls`` callback for one ``_run_agent_turn`` call.
 
         Entry-agent scope only: a round that produces a real tool call is
         evidence the agent is not actually stuck, so it clears every
-        entry-agent streak (:data:`_stuck_streak`, :data:`_cycle_streak`,
+        top-level agent streak (:data:`_stuck_streak`, :data:`_cycle_streak`,
         :data:`_think_tag_streak`, :data:`_tool_call_cycle_streak`) exactly
         like a genuine no-tool-call final response does in ``_on_stall`` —
         without this, one early stall stays "armed" through any number of
@@ -578,10 +578,10 @@ class WatchdogMixin:
         goes straight to :meth:`_persist_stuck_critical` (or the equivalent
         critical for the other failure modes) instead of getting its own
         nudge. Sub-agent scope has no cross-turn streak (all four streaks
-        are entry-agent-only, doc/STUCK_DETECTION.md §2.4a), so this returns
+        are top-level agent-only, doc/STUCK_DETECTION.md §2.4a), so this returns
         ``None`` for it and ``_run_agent_turn`` simply skips the callback.
         """
-        if not is_entry_turn:
+        if not is_top_agent_turn:
             return None
 
         def _on_tool_calls() -> None:
@@ -604,7 +604,7 @@ class WatchdogMixin:
         """Persist *nudge* as a real, LLM-visible turn with a client-only ``detail``.
 
         The single place every closure in this module (and
-        :meth:`~._turns.TurnLoopMixin._run_entry_agent`'s deferred-nudge
+        :meth:`~._turns.TurnLoopMixin._run_top_agent`'s deferred-nudge
         branch, which persists the queued-alarm case the same way, by hand)
         goes to turn a :class:`~._shared.Nudge` into a persisted message:
         ``detail`` (``kind="nudge"``) never reaches the LLM —
@@ -663,7 +663,7 @@ class WatchdogMixin:
     async def _persist_stuck_critical(
         self: EngineHost, *, agent_name: str, flags: list[RedFlag], display_name: str
     ) -> None:
-        """End an entry-agent turn for good instead of nudging (or asking) again.
+        """End a top-level agent turn for good instead of nudging (or asking) again.
 
         Only reached once :data:`_stuck_streak` is already set — i.e. this is
         the *second* consecutive stall since the last real response (with no
@@ -690,26 +690,26 @@ class WatchdogMixin:
         )
         await self._emitters.emit_agent_stuck_critical(message)
 
-    def _schedule_entry_turn_alarm(
+    def _schedule_top_agent_turn_alarm(
         self: EngineHost, agent_name: str, display_name: str, flags: list[RedFlag]
     ) -> None:
-        """Background-watch an idle entry-agent turn; alarm the user if it stays idle.
+        """Background-watch an idle top-level agent turn; alarm the user if it stays idle.
 
         Runs decoupled from the turn that detected the stall (which has
         already ended normally by the time this fires). ``seq`` pins this
         watcher to the exact turn that triggered it: if a new prompt starts
         — or starts *and finishes* — before the delay or the gate resolves,
-        ``_entry_turn_seq`` has moved on and this watcher quietly no-ops
+        ``_top_agent_turn_seq`` has moved on and this watcher quietly no-ops
         rather than alarming about a turn the user has already moved past.
         """
-        seq = self._entry_turn_seq
+        seq = self._top_agent_turn_seq
 
         async def _watch() -> None:
             try:
                 await asyncio.sleep(_ENTRY_TURN_ALARM_DELAY_S)
             except asyncio.CancelledError:
                 return
-            if self._entry_turn_seq != seq or self._session.phase != "awaiting_user":
+            if self._top_agent_turn_seq != seq or self._session.phase != "awaiting_user":
                 return
             try:
                 response = await self._gate.fire_stuck_alert(
@@ -724,12 +724,12 @@ class WatchdogMixin:
                 return
             if response.action != "unstick":
                 return
-            if self._entry_turn_seq != seq or self._session.phase != "awaiting_user":
+            if self._top_agent_turn_seq != seq or self._session.phase != "awaiting_user":
                 return
             # Same shape _persist_nudge would build (doc/STUCK_DETECTION.md
             # §2.5) — but this crosses the worker-queue boundary as a plain
             # dict (`Envelope`s aren't picklable across that boundary; see
-            # _turns.py's `_run_entry_agent`, which persists it once the
+            # _turns.py's `_run_top_agent`, which persists it once the
             # queued prompt is actually processed) rather than a `Nudge`
             # object.
             detail = {
@@ -746,7 +746,7 @@ class WatchdogMixin:
         # fire-and-forget create_task is only weakly referenced); overwriting
         # a still-running previous watcher here is harmless — it is stale by
         # construction (a new stall only schedules once the prior turn ended)
-        # and will simply no-op on its own _entry_turn_seq check.
+        # and will simply no-op on its own _top_agent_turn_seq check.
         self._stuck_watchdog_task = asyncio.create_task(_watch(), name="kodo-stuck-watchdog")
 
     # ------------------------------------------------------------------
@@ -758,7 +758,7 @@ class WatchdogMixin:
         *,
         agent_name: str,
         routing: LLMRouting,
-        is_entry_turn: bool,
+        is_top_agent_turn: bool,
         subsession_id: str | None = None,
     ) -> Callable[[str], Awaitable[StallDecision]] | None:
         """Build the ``on_cyclic_thinking`` callback for one ``_run_agent_turn`` call.
@@ -784,13 +784,13 @@ class WatchdogMixin:
             agent_name: The agent whose round this is.
             routing: This turn's resolved :class:`LLMRouting` — ``residence``
                 gates the ``active`` setting, exactly like ordinary stalls.
-            is_entry_turn: ``True`` for the shared main entry-agent turn,
+            is_top_agent_turn: ``True`` for the shared main top-level-agent turn,
                 ``False`` for a sub-agent subsession.
-            subsession_id: The owning subsession id when ``is_entry_turn`` is
+            subsession_id: The owning subsession id when ``is_top_agent_turn`` is
                 ``False`` — routes the persisted notice to the right log.
         """
         cfg = _stuck_settings(self._get_settings())
-        if not cfg.applies(residence=routing.residence, is_entry_turn=is_entry_turn):
+        if not cfg.applies(residence=routing.residence, is_top_agent_turn=is_top_agent_turn):
             return None
 
         cycle_stall_count = 0  # sub-agent scope only; local to this one call
@@ -809,7 +809,7 @@ class WatchdogMixin:
                 preview,
             )
 
-            if is_entry_turn:
+            if is_top_agent_turn:
                 if self._cycle_streak:
                     await self._persist_cyclic_thinking_critical(
                         agent_name=agent_name,
@@ -857,7 +857,7 @@ class WatchdogMixin:
     async def _persist_cyclic_thinking_critical(
         self: EngineHost, *, agent_name: str, display_name: str, preview: str
     ) -> None:
-        """End an entry-agent turn for good after a *second* cyclic-thinking hit.
+        """End a top-level agent turn for good after a *second* cyclic-thinking hit.
 
         Only reached once :data:`_cycle_streak` is already set — the first
         hit's notice did not stop the model from looping again. Client-only,
@@ -890,7 +890,7 @@ class WatchdogMixin:
         self: EngineHost,
         *,
         agent_name: str,
-        is_entry_turn: bool,
+        is_top_agent_turn: bool,
         subsession_id: str | None = None,
     ) -> Callable[[str], Awaitable[StallDecision]]:
         """Build the ``on_think_in_tool_call`` callback for one ``_run_agent_turn`` call.
@@ -908,9 +908,9 @@ class WatchdogMixin:
 
         Args:
             agent_name: The agent whose turn this is.
-            is_entry_turn: ``True`` for the shared main entry-agent turn,
+            is_top_agent_turn: ``True`` for the shared main top-level-agent turn,
                 ``False`` for a sub-agent subsession.
-            subsession_id: The owning subsession id when ``is_entry_turn`` is
+            subsession_id: The owning subsession id when ``is_top_agent_turn`` is
                 ``False``.
         """
         tool_call_count = 0  # sub-agent scope only; local to this one call
@@ -931,7 +931,7 @@ class WatchdogMixin:
                     source="think_in_tool_call",
                 )
 
-            if is_entry_turn:
+            if is_top_agent_turn:
                 if self._think_tag_streak:
                     await self._persist_think_in_tool_call_critical(
                         agent_name=agent_name, display_name=display_name, tool_name=tool_name
@@ -959,7 +959,7 @@ class WatchdogMixin:
     async def _persist_think_in_tool_call_critical(
         self: EngineHost, *, agent_name: str, display_name: str, tool_name: str
     ) -> None:
-        """End an entry-agent turn for good after a *second* think-in-tool-call hit.
+        """End a top-level agent turn for good after a *second* think-in-tool-call hit.
 
         Only reached once :data:`_think_tag_streak` is already set. Client-only,
         never fed back to the LLM, mirroring ``_persist_stuck_critical``/
@@ -988,7 +988,7 @@ class WatchdogMixin:
         *,
         agent_name: str,
         routing: LLMRouting,
-        is_entry_turn: bool,
+        is_top_agent_turn: bool,
         subsession_id: str | None = None,
     ) -> Callable[[str], Awaitable[StallDecision]] | None:
         """Build the ``on_tool_call_cyclic`` callback for one ``_run_agent_turn`` call.
@@ -1002,7 +1002,7 @@ class WatchdogMixin:
         remediation is always immediate for both strikes and both scopes.
         """
         cfg = _stuck_settings(self._get_settings())
-        if not cfg.applies(residence=routing.residence, is_entry_turn=is_entry_turn):
+        if not cfg.applies(residence=routing.residence, is_top_agent_turn=is_top_agent_turn):
             return None
 
         cycle_stall_count = 0  # sub-agent scope only; local to this one call
@@ -1021,7 +1021,7 @@ class WatchdogMixin:
                 preview,
             )
 
-            if is_entry_turn:
+            if is_top_agent_turn:
                 if self._tool_call_cycle_streak:
                     await self._persist_tool_call_cyclic_critical(
                         agent_name=agent_name,
@@ -1062,7 +1062,7 @@ class WatchdogMixin:
     async def _persist_tool_call_cyclic_critical(
         self: EngineHost, *, agent_name: str, display_name: str, preview: str
     ) -> None:
-        """End an entry-agent turn for good after a *second* tool-call-repetition hit.
+        """End a top-level agent turn for good after a *second* tool-call-repetition hit.
 
         Only reached once :data:`_tool_call_cycle_streak` is already set.
         Client-only, never fed back to the LLM, mirroring
@@ -1092,7 +1092,7 @@ class WatchdogMixin:
         *,
         agent_name: str,
         routing: LLMRouting,
-        is_entry_turn: bool,
+        is_top_agent_turn: bool,
         subsession_id: str | None = None,
     ) -> Callable[[str], Awaitable[StallDecision]] | None:
         """Build the ``on_repeated_tool_calls`` callback for one ``_run_agent_turn`` call.
@@ -1107,7 +1107,7 @@ class WatchdogMixin:
         Escalation mirrors the mid-stream detectors: immediate remediation
         (the loop is already proven, so there is nothing for
         ``auto_unstuck_interactive``/``fire_stuck_alert`` to usefully ask
-        about), one nudge per streak for an entry-agent turn then a critical,
+        about), one nudge per streak for a top-level agent turn then a critical,
         and :data:`_MAX_CONSECUTIVE_NUDGES` inline retries for a sub-agent.
         Note that the detector is *not* reset by a nudge: once past the
         threshold, every further identical round is its own strike. A model
@@ -1116,7 +1116,7 @@ class WatchdogMixin:
         the threshold was asking.
         """
         cfg = _stuck_settings(self._get_settings())
-        if not cfg.applies(residence=routing.residence, is_entry_turn=is_entry_turn):
+        if not cfg.applies(residence=routing.residence, is_top_agent_turn=is_top_agent_turn):
             return None
 
         repeat_stall_count = 0  # sub-agent scope only; local to this one call
@@ -1125,7 +1125,7 @@ class WatchdogMixin:
             nonlocal repeat_stall_count
             notice = _repeated_tool_call_llm_text(preview)
 
-            if is_entry_turn:
+            if is_top_agent_turn:
                 if self._repeat_streak:
                     await self._persist_repeated_tool_call_critical(
                         agent_name=agent_name,
@@ -1165,7 +1165,7 @@ class WatchdogMixin:
     async def _persist_repeated_tool_call_critical(
         self: EngineHost, *, agent_name: str, preview: str
     ) -> None:
-        """End an entry-agent turn for good after a *second* repeated-call hit.
+        """End a top-level agent turn for good after a *second* repeated-call hit.
 
         Only reached once :data:`_repeat_streak` is already set. Deliberately
         reuses ``emit_agent_stuck_critical`` rather than introducing a fifth

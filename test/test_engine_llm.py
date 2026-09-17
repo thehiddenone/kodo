@@ -29,6 +29,9 @@ from kodo.llms import (
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._engine import _llm
 from kodo.runtime._session import SessionState
+from kodo.subagents import AgentRegistry
+
+_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents"
 
 _FAR_FUTURE_DEADLINE = time.time() + 10_000
 # Cloud routing for call sites that don't exercise thinking_level: makes
@@ -673,41 +676,52 @@ def test_clear_llm_request_logs_removes_files_and_dirs(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _entry_agent_name / _entry_capability
+# _top_agent_name / _top_agent_capability
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("mode", "expected"),
+    ("selection", "expected"),
     [
-        ("problem_solving", "problem_solver"),
+        # Agent names, the vocabulary the selection is moving to...
+        ("problem_solver", "problem_solver"),
+        ("guide", "guide"),
         ("judge", "judge"),
+        # ...and the legacy workflow-mode aliases a persisted session still holds.
+        ("problem_solving", "problem_solver"),
         ("guided", "guide"),
+        # Anything unrecognized resolves to the registry's declared default
+        # rather than failing: this runs on every prompt and every resume.
         ("anything_else", "guide"),
+        ("", "guide"),
     ],
 )
-def test_entry_agent_name(mode: str, expected: str) -> None:
+def test_top_agent_name(selection: str, expected: str) -> None:
     engine = _make_engine()
-    engine._session.workflow_mode = mode
-    assert engine._entry_agent_name() == expected
+    engine._registry = AgentRegistry(_AGENTS_DIR)
+    engine._session.top_agent = selection
+    assert engine._top_agent_name() == expected
 
 
-def test_entry_capability_reads_registry() -> None:
+def test_top_agent_capability_reads_registry() -> None:
     engine = _make_engine()
-    engine._session.workflow_mode = "guided"
-    engine._registry = SimpleNamespace(get=lambda name: SimpleNamespace(capability="high"))
-    assert engine._entry_capability() == "high"
+    engine._session.top_agent = "guide"
+    engine._registry = SimpleNamespace(
+        get=lambda name: SimpleNamespace(capability="high"),
+        resolve_top_agent=lambda value: value,
+    )
+    assert engine._top_agent_capability() == "high"
 
 
-def test_entry_capability_defaults_to_medium_on_error() -> None:
+def test_top_agent_capability_defaults_to_medium_on_error() -> None:
     engine = _make_engine()
-    engine._session.workflow_mode = "guided"
+    engine._session.top_agent = "guide"
 
     def _raise(name: str):
         raise RuntimeError("not registered")
 
-    engine._registry = SimpleNamespace(get=_raise)
-    assert engine._entry_capability() == "medium"
+    engine._registry = SimpleNamespace(get=_raise, resolve_top_agent=lambda value: value)
+    assert engine._top_agent_capability() == "medium"
 
 
 # ---------------------------------------------------------------------------
