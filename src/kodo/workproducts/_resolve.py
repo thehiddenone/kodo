@@ -18,7 +18,7 @@ from ._records import WorkProduct
 
 __all__ = ["ResolvedNeed", "resolve_needs"]
 
-# Scope names, duplicated from kodo.subagents._artifacts rather than imported:
+# Scope names, duplicated from kodo.agents.subagents._artifacts rather than imported:
 # kodo.workproducts is a leaf package that imports nothing from kodo, the same
 # rule kodo.findings and kodo.guided_state follow. A test pins the two sets
 # equal so they cannot drift.

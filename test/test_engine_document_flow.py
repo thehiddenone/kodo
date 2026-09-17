@@ -188,7 +188,7 @@ class _FakeAgentRegistry:
         )
 
     def spec_for(self, name: str):
-        from kodo.subagents._registry import SUBAGENT_SPECS_BY_NAME
+        from kodo.agents._registry import SUBAGENT_SPECS_BY_NAME
 
         if self._specs is not None:
             return self._specs.get(name)
@@ -1097,7 +1097,7 @@ async def test_review_block_matches_the_generated_run_subagent_output_schema(
     "this sub-agent failed" signal. So the real loop output is run through the
     real ``normalize_output`` against the real generated schema here.
     """
-    from kodo.subagents import AgentRegistry
+    from kodo.agents import AgentRegistry
     from kodo.toolspecs import normalize_output
 
     gate = _FakeGate()
@@ -1122,7 +1122,7 @@ async def test_review_block_matches_the_generated_run_subagent_output_schema(
         "architect", "architect_critic", {"instructions": "Produce it."}, 1
     )
 
-    registry = AgentRegistry(Path("src/kodo/subagents"))
+    registry = AgentRegistry(Path("src/kodo/agents"))
     spec = next(
         s for s in registry.run_subagent_specs("guide") if s.name == "run_subagent_architect"
     )

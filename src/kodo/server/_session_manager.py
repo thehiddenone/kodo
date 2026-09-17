@@ -17,11 +17,11 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
+from kodo.agents import AgentRegistry
 from kodo.llms import LLMGateway
 from kodo.project import SessionWorkspace, WorkspaceLayout
 from kodo.runtime import GateOrchestrator, WorkflowEngine
 from kodo.state import TransientStore, new_session_id, workspace_shape_compatible
-from kodo.subagents import AgentRegistry
 from kodo.transport import Connection, Outbox, SessionChannel
 
 from ._key_broker import KeyBroker

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kodo.agents import AgentRegistry
 from kodo.common import ApiKey
 from kodo.llms import (
     CLOUD_THINKING_FAMILIES,
@@ -29,9 +30,8 @@ from kodo.llms import (
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._engine import _llm
 from kodo.runtime._session import SessionState
-from kodo.subagents import AgentRegistry
 
-_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents"
+_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "agents"
 
 _FAR_FUTURE_DEADLINE = time.time() + 10_000
 # Cloud routing for call sites that don't exercise thinking_level: makes

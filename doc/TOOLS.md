@@ -450,7 +450,7 @@ fallback.
 ## 5A. Sub-agents as tools: `run_subagent_<name>` and `return_result`
 
 A sub-agent is "a tool with agentic behavior": its
-[`SubAgentSpec`](../src/kodo/subagents/_subagentspec.py) declares an
+[`SubAgentSpec`](../src/kodo/agents/_subagentspec.py) declares an
 `input_schema` (what the caller supplies) and an `output_schema` (what it
 returns via `return_result`), exactly as a `ToolSpec` does. Both of those
 schemas reach the model as **real JSON Schema on a real tool definition** —
@@ -595,7 +595,7 @@ blocking `summary` in place of the usual "what I produced" line, and `options`
 when the decision is between discrete alternatives.
 
 The fields are built by
-[`author_output()`](../src/kodo/subagents/specs/_shapes.py) and reach the model
+[`author_output()`](../src/kodo/agents/subagents/specs/_shapes.py) and reach the model
 on `return_result`'s `result` parameter like everything else. The prompt half is
 the shared `shared_escalation.md` block, opted into per agent by including
 `{SHARED:escalation}` in its body — the two must ship together, and a test
@@ -747,7 +747,7 @@ knowable once you know *which* agent is running (§5A):
 | `return_result` | the same tool with `result` bound to **this agent's** `output_schema` |
 
 Both expansions come from `AgentRegistry` (`run_subagent_specs` /
-`return_result_specs`), which lives in `kodo.subagents` — a *sibling* of
+`return_result_specs`), which lives in `kodo.agents` — a *sibling* of
 `kodo.tools` at T3, so neither may import the other. `agent_tool_specs` is the
 join, one tier up in `runtime`, and it is the **only** place any caller builds a
 tool payload: the live turn loop, crash-resume, sub-agent subsessions, the
@@ -755,7 +755,7 @@ silent engine-driven turns, and `kodo --tools` all go through it, so the surface
 a model sees cannot differ by code path.
 
 **(b) Load-time validation.** Independently,
-[subagents/_registry.py](../src/kodo/subagents/_registry.py) checks every
+[subagents/_registry.py](../src/kodo/agents/_registry.py) checks every
 declared name against `ALL_TOOLS` when the registry is built, so a typo in
 `tools:` fails fast rather than at first dispatch.
 
@@ -1076,7 +1076,7 @@ context. A crash mid-answer re-drives the whole batch (SESSIONS.md).
    from `tools/__init__.py`. (The row is the *only* binding step — both
    `_CLASSES_BY_NAME` and `DISPATCHABLE_TOOLS_BY_NAME` derive from it.)
 4. **Grant** — add the tool name to the relevant agent's frontmatter `tools:`
-   list in `src/kodo/subagents/subagent_<agent>.md`.
+   list in `src/kodo/agents/subagents/subagent_<agent>.md`.
 5. If the handler needs a new collaborator from above its tier, add a **Protocol**
    to `tools/_context.py` and a field to `ToolContext`; inject the concrete
    implementation from the engine's `_make_dispatcher`.
@@ -1103,7 +1103,7 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [plan/](../src/kodo/plan/) | The per-session work plan `get_plan` reads and `plan_step_forward` advances, created by the engine from a `planner: true` sub-agent's result (doc/PLANNING.md). A leaf package, so `tools` may import it. |
 | [project/_layout.py](../src/kodo/project/_layout.py) | `session_temp_dir(session_id)` — `~/.kodo/sessions/<id>/tmp`, the `temporary` scratch root (§5a). |
 | [skills/](../src/kodo/skills/) | `SkillStore`/`load_skill`/`render_catalog` — the user-installed Agent Skills `use_skill` reads (doc/SKILLS.md). A leaf package, so `tools` may import it. |
-| [subagents/_registry.py](../src/kodo/subagents/_registry.py) | Validates each agent's `tools:` frontmatter against `ALL_TOOLS`; autonomous filtering. Renders no tool text into the prompt. |
+| [subagents/_registry.py](../src/kodo/agents/_registry.py) | Validates each agent's `tools:` frontmatter against `ALL_TOOLS`; autonomous filtering. Renders no tool text into the prompt. |
 | [toolspecs/_describe.py](../src/kodo/toolspecs/_describe.py) | `tool_description()` — prose + dense `output_schema` sketch; the only tool text the model reads. |
 | [llms/anthropic/_claude.py](../src/kodo/llms/anthropic/_claude.py) | Converts `ToolSpec` → API `tools` param; parses `tool_use` → `ToolCallEvent`. |
 | [llms/_interface.py](../src/kodo/llms/_interface.py) | `Message`, `ToolCallEvent`, `TurnEnd`, the `stream_query` contract. |

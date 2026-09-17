@@ -27,7 +27,7 @@ The shapes mirror the contracts the agent prompts already describe:
   has the last word on: it is declared **only** by the per-component stages
   (``require_responsibility=True``), and a task carrying one for any other
   agent has it dropped before anything reads it
-  (:attr:`~kodo.subagents.SubAgentSpec.takes_responsibility_code`).
+  (:attr:`~kodo.agents.SubAgentSpec.takes_responsibility_code`).
 - **Author/solo output** — the path(s) a producing sub-agent wrote, plus which
   one is primary (what a critic reviews / what the author-critic loop tracks) —
   *or*, when the author is blocked, the escalation described next.
@@ -127,7 +127,7 @@ def pipeline_input(
             of the schema entirely, so it never appears on the
             ``run_subagent_<name>`` tool and the caller is not invited to send
             one. The engine drops a stray one anyway
-            (:attr:`~kodo.subagents.SubAgentSpec.takes_responsibility_code`) —
+            (:attr:`~kodo.agents.SubAgentSpec.takes_responsibility_code`) —
             omitting it here is what keeps the tool honest, not what enforces
             it.
         extra_properties: Agent-specific extra input properties to merge in.

@@ -22,6 +22,7 @@ import json
 import logging
 from typing import Protocol
 
+from kodo.agents import AgentRegistry, SubAgent
 from kodo.common import Envelope, MessageSink
 from kodo.llms import (
     LLMPlugin,
@@ -32,7 +33,6 @@ from kodo.llms import (
 )
 from kodo.project import kodo_user_dir
 from kodo.state import TransientStore
-from kodo.subagents import AgentRegistry, SubAgent
 from kodo.transport import EVT_CONTEXT_COMPACTED
 
 from .._session import SessionState

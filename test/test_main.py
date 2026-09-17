@@ -27,11 +27,11 @@ from pathlib import Path
 import pytest
 
 import kodo.__main__ as main_mod
-import kodo.subagents as subagents_pkg
+import kodo.agents as subagents_pkg
+from kodo.agents import AgentRegistry
 from kodo.llms import LocalLLMEntry, add_local_entry, get_cloud_registry, get_local_registry
 from kodo.llms.llamacpp import build_openai_tools
 from kodo.runtime import agent_tool_specs
-from kodo.subagents import AgentRegistry
 
 _REAL_AGENTS_DIR = Path(subagents_pkg.__file__).parent
 

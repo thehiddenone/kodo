@@ -16,7 +16,7 @@ one generic engine, and give kodo-vsix a data-driven agent picker.
 ## 0. Scope
 
 **In scope.** The three packaged top-level agents become fully declarative: an
-`agent_<name>.md` prompt plus a `top_agents/<name>.json` config, with no Python
+`agent_<name>.md` prompt plus a `<name>.json` config beside it, with no Python
 branch anywhere naming them. The engine runs whichever one the session selects.
 kodo-vsix renders its Agent picker from a catalog the server serves.
 
@@ -73,7 +73,7 @@ against the tree. The distinction being protected is real and load-bearing:
 | `_last_entry_agent` | — | `_last_top_agent` |
 | `_entry_turn_seq` | `_run_agent_turn` | `_top_agent_turn_seq` |
 | `is_entry_turn` (watchdog kwarg) | — | `is_top_agent_turn` |
-| config directory | `subagents/agents/` reads as nonsense next to `subagents/specs/` | `subagents/top_agents/` |
+| config directory | *(resolved by the §4.3b layout change: the configs sit beside their prompts in `agents/`, so there is no directory to name)* | — |
 | kodo-vsix `workflowMode` | `agentName` (`webview/types.ts:205`, `session/types.ts:172`) | `topAgent` / `effectiveTopAgent` |
 
 In **prose**, say "top-level agent" (or "top agent") wherever "agent" alone
@@ -96,15 +96,25 @@ would be ambiguous against a sub-agent.
 ## 3. Target shape
 
 ```
-src/kodo/subagents/
-  agent_guide.md              # unchanged prompt, minus `display_name:`
+src/kodo/agents/               # top-level agents + what both kinds share
+  agent_guide.md               #   prompt, keeping its `display_name:` (see §4.3a)
   agent_problem_solver.md
   agent_judge.md
-  top_agents/
-    guide.json                # NEW — the config half
-    problem_solver.json
-    judge.json
+  shared_*.md                  #   included by BOTH kinds, hence the top level
+  guide.json                   #   the config half — label, description, rank
+  problem_solver.json
+  judge.json
+  subagents/                   # everything sub-agent-shaped
+    subagent_*.md
+    specs/<name>.json          #   the typed I/O contract only sub-agents have
 ```
+
+The package split mirrors the directory split: `kodo.agents` holds the shared
+machinery (`AgentRegistry`, `SubAgent`, `load_agent`, `TopAgent`),
+`kodo.agents.subagents` holds `SubAgentSpec` and the artifact-role vocabulary.
+The parent re-exports exactly one name from the child — `SubAgentSpec`, which
+`AgentRegistry.spec_for` returns — so the separation stays visible at every
+other call site. (Renamed from `kodo.subagents` on 2026-09-16; §4.3b.)
 
 ```json
 {
@@ -164,7 +174,7 @@ labels; phase 2 moves it to JSON. Splitting it this way keeps phase 1 a pure
 refactor with no new file format to review.
 
 **Discriminator:** the `agent_` filename prefix, which
-[_loader.py:195](../src/kodo/subagents/_loader.py#L195) already distinguishes.
+[_loader.py:195](../src/kodo/agents/_loader.py#L195) already distinguishes.
 Add `SubAgent.is_top_level` from the matched stem. Do **not** add a frontmatter
 flag — a second source of truth that can disagree with the filename.
 
@@ -238,7 +248,7 @@ and the agents come from an *injected* directory, the second direction is wrong:
 building a registry over a temp dir of synthetic agents is a normal thing for a
 test to do (30 in `test_agents.py` do it), and such a registry legitimately has
 none of the packaged three. Phase 2 moves the metadata to
-`top_agents/<name>.json` beside the prompts, at which point both halves come from
+`<name>.json` beside the prompts, at which point both halves come from
 the same directory and the symmetric check becomes meaningful — **add it there.**
 A registry that loads no top-level agents also has no default, so
 `default_top_agent()` returns `""` in that case.
@@ -252,7 +262,7 @@ Smaller notes:
 - The phase-1 table had no `label`, so labels came from frontmatter
   `display_name` — which for `guide` is **"Kōdo"**, where the picker has always
   said "Guide". **Settled in phase 2** (§4.3a deviation 1): `label` and
-  `display_name` are separate fields, and `top_agents/guide.json` sets
+  `display_name` are separate fields, and `guide.json` sets
   `"label": "Guide"`.
 - Test fakes that stub `AgentRegistry` now **delegate** the three top-agent
   methods to a real registry rather than returning fixed values. A fake that
@@ -261,14 +271,14 @@ Smaller notes:
 
 ### 4.2 Phase 2 — config as data
 
-`src/kodo/subagents/top_agents/_loader.py`, mirroring
-[specs/_loader.py](../src/kodo/subagents/specs/_loader.py) exactly: glob at
+the loader in `src/kodo/agents/_topagent.py`, mirroring
+[specs/_loader.py](../src/kodo/agents/subagents/specs/_loader.py) exactly: glob at
 import time, `name` must equal the stem, **unknown keys are errors** at every
 level. No new conventions to learn.
 
 Five new load-time errors, all fail-fast:
 
-1. An `agent_*.md` with **no** `top_agents/<name>.json`, and vice versa.
+1. An `agent_*.md` with **no** `<name>.json` beside it, and vice versa.
 2. An `agent_*.md` that **also** has a `specs/<name>.json` — a top-level agent
    has no typed I/O contract by definition; a spec on one is a category error.
 3. An `agent_*.md` declaring frontmatter `display_name:` while its config
@@ -279,7 +289,7 @@ Five new load-time errors, all fail-fast:
 ### 4.3 The attributable-validation refactor
 
 Today the second validation pass
-([_registry.py:576-620](../src/kodo/subagents/_registry.py#L576)) and
+([_registry.py:576-620](../src/kodo/agents/_registry.py#L576)) and
 `__validate_artifact_roles` **raise on the first problem**, with no notion of
 *which agent is at fault* or whether just that one could be demoted.
 
@@ -301,8 +311,8 @@ against untrusted files.
 Implemented 2026-09-16. `3969 passed` (30 new), lint and mypy clean.
 
 The `_TOP_AGENT_TABLE` constant phase 1 parked in `_registry.py` is gone:
-`subagents/top_agents/{guide,problem_solver,judge}.json` are the source, loaded
-by `subagents/top_agents/_loader.py`. All five §4.2 cross-checks are in, and
+`agents/{guide,problem_solver,judge}.json` are the source, loaded by the
+loader in `agents/_topagent.py`. All five §4.2 cross-checks are in, and
 §4.3's collector is in — `AgentRegistry` now reports **every** problem in one
 raise, grouped by the agent at fault:
 
@@ -315,7 +325,7 @@ broken (…/subagent_broken.md)
   - critic 'ghost' has no subagent_ghost.md in the registry
 
 orphan (…/agent_orphan.md)
-  - no top_agents/orphan.json — a top-level agent declares how it is selected …
+  - no orphan.json — a top-level agent declares how it is selected …
 ```
 
 Three deviations, all discovered while building it:
@@ -357,6 +367,54 @@ Smaller notes:
   its file, exactly as `SubAgentSpec` mirrors a `specs/*.json`.
 - `notes` is required by *test*, not by the loader — the same split `specs/`
   uses, since it is a convention for humans and nothing reads it.
+
+### 4.3b Package layout — `kodo.subagents` → `kodo.agents`
+
+Done 2026-09-16, after phase 2 and independently of the remaining phases: the
+package was named for the *minority* of what it held. `kodo.subagents` contained
+three top-level agents, 23 sub-agents, the shared blocks both include, and one
+registry over the lot.
+
+Now: **`kodo.agents`** holds the top-level agents (`agent_*.md` +
+`<name>.json`), the `shared_*.md` blocks both kinds include, and the shared
+machinery — `AgentRegistry`, `SubAgent`, `load_agent`, `TopAgent`.
+**`kodo.agents.subagents`** holds `subagent_*.md`, `specs/`, `SubAgentSpec` and
+the artifact roles/scopes that only sub-agent contracts use.
+
+Four decisions, all deliberate:
+
+- **The sub-agent-only Python moved too**, not just the data. `SubAgentSpec` and
+  `_artifacts` now sit beside the specs that use them, which also turns
+  `specs/_loader.py`'s `from .._subagentspec import …` into a same-package
+  import. The dependency runs one way: `kodo.agents` imports its child, never
+  the reverse.
+- **The parent re-exports exactly one child name** — `SubAgentSpec`, because
+  `AgentRegistry.spec_for` returns it and so it is part of *this* package's API.
+  Re-exporting the roles, scopes, `Need` and `ALL_SUBAGENTS` as well would have
+  put one import away the separation the split exists to draw.
+- **`shared_*.md` stays at the top level**, because both kinds include it. That
+  in turn is why the **`agent_`/`subagent_` filename prefixes are kept**: a bare
+  `*.md` glob in `kodo/agents/` would otherwise pick up the shared blocks as
+  agents. The prefix is now redundant with the directory, and that is fine — a
+  prompt file names its own kind wherever you meet it.
+- **No `kodo.subagents` shim.** Same reasoning as the `agent.set` rename in §5.1:
+  everything is first-party and ships in lockstep.
+
+**Follow-up, same day: `kodo.agents.top_agents` was flattened away.** A
+subpackage named `top_agents` *inside* a package that already means top-level
+agents was saying it twice, and it separated each config from the prompt it
+describes. The three JSON files now sit beside their `agent_<name>.md` as
+`kodo/agents/<name>.json`, and the loader moved into `_topagent.py` next to the
+`TopAgent` record it builds — the shape and its parser in one module, rather
+than a second module whose only job was to be somewhere else.
+
+`load_top_agents` globs the agents directory itself, and `glob` does not
+descend, so `subagents/specs/*.json` one level down is never mistaken for a
+top-level agent config.
+
+`AgentRegistry` globs two directories now (`SUBAGENTS_SUBDIR = "subagents"`), so
+test fixtures that write a `subagent_*.md` must write it there — the one
+`_write_agent` helper in `test_agents.py` covers 279 of them.
 
 ## 5. Phase 3 — protocol
 

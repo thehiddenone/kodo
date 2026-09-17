@@ -3,7 +3,7 @@
 Tool dispatch lives in :mod:`kodo.tools` (a lower import tier); the engine
 builds a per-run :class:`~kodo.tools.ToolDispatcher` and resolves each agent's
 tools via :func:`agent_tool_specs`, the one place that joins the static tool
-catalog with the per-agent schemas only :mod:`kodo.subagents` knows (see
+catalog with the per-agent schemas only :mod:`kodo.agents` knows (see
 :mod:`._agenttools`). Both are re-exported here for convenience.
 """
 

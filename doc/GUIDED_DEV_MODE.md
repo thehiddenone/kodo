@@ -291,7 +291,7 @@ is never spawned with a phase, so the text would render nowhere.
 This is the part that is easy to get wrong, and was.
 
 Each spec declares its contract in a closed vocabulary of **artifact roles**
-(`kodo/subagents/_artifacts.py`):
+(`kodo/agents/_artifacts.py`):
 
 ```python
 REQUIREMENTS_CRITIC = SubAgentSpec(
@@ -592,12 +592,12 @@ building per iteration is too expensive to be worth it.
 
 | File | What it owns |
 | --- | --- |
-| [subagents/agent_guide.md](../src/kodo/subagents/agent_guide.md) | The pipeline order, triage rules, cascade, forward-progress layers |
-| [subagents/_artifacts.py](../src/kodo/subagents/_artifacts.py) | Artifact roles, scopes, `Need` |
-| [subagents/_subagentspec.py](../src/kodo/subagents/_subagentspec.py) | `produces` / `consumes` / `component_paths` |
-| [subagents/specs/](../src/kodo/subagents/specs/) | One `<name>.json` spec per sub-agent, loaded by `_loader.py`; `_shapes.py` builds the shared envelopes a spec names as a *shape*, including which stages declare a `responsibility_code`; `_order.py` derives the catalog order from `produces`/`consumes` |
-| [subagents/_loader.py](../src/kodo/subagents/_loader.py) | Frontmatter: `critic:`, `user_review:`, `role:`, `standalone:` |
-| [subagents/_registry.py](../src/kodo/subagents/_registry.py) | Load-time validation, `run_subagent_specs`, `render_phase` |
+| [subagents/agent_guide.md](../src/kodo/agents/agent_guide.md) | The pipeline order, triage rules, cascade, forward-progress layers |
+| [subagents/_artifacts.py](../src/kodo/agents/_artifacts.py) | Artifact roles, scopes, `Need` |
+| [subagents/_subagentspec.py](../src/kodo/agents/_subagentspec.py) | `produces` / `consumes` / `component_paths` |
+| [subagents/specs/](../src/kodo/agents/subagents/specs/) | One `<name>.json` spec per sub-agent, loaded by `_loader.py`; `_shapes.py` builds the shared envelopes a spec names as a *shape*, including which stages declare a `responsibility_code`; `_order.py` derives the catalog order from `produces`/`consumes` |
+| [subagents/_loader.py](../src/kodo/agents/_loader.py) | Frontmatter: `critic:`, `user_review:`, `role:`, `standalone:` |
+| [subagents/_registry.py](../src/kodo/agents/_registry.py) | Load-time validation, `run_subagent_specs`, `render_phase` |
 | [runtime/_engine/_subagents.py](../src/kodo/runtime/_engine/_subagents.py) | `_run_review_loop`, resolution, refusal, work-product recording |
 | [runtime/_engine/_core.py](../src/kodo/runtime/_engine/_core.py) | `_finalize_work_product` — the acceptance flow |
 | [workproducts/](../src/kodo/workproducts/) | Membership, roles, component graph, `resolve_needs` |

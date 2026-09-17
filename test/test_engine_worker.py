@@ -17,12 +17,12 @@ from pathlib import Path
 
 import pytest
 
+from kodo.agents import AgentRegistry
 from kodo.llms.anthropic import UnrecoverableError
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._session import SessionState
-from kodo.subagents import AgentRegistry
 
-_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents"
+_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "agents"
 # Derived from the live registry, not hardcoded: the worker no longer branches
 # per agent, so what these tests must prove is that *every* registered
 # top-level agent reaches the one generic call — including any added later.

@@ -14,13 +14,13 @@ from pathlib import Path
 
 import pytest
 
+from kodo.agents import AgentRegistry
 from kodo.llms import Message
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._session import SessionState
-from kodo.subagents import AgentRegistry
 
-_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents"
-_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents")
+_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "agents"
+_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "agents")
 
 # ---------------------------------------------------------------------------
 # _has_dangling_tool_use

@@ -5,7 +5,7 @@ that the engine validates against its ``output_schema``, a sub-agent does the sa
 through this terminal tool. Calling it ends the sub-agent's run (it joins the same
 ``stop_requested`` mechanism as ``submit_evaluation``). It is the *only* way out:
 an author that is blocked returns an escalation through this same call rather
-than a separate tool (see :mod:`kodo.subagents.specs._shapes`).
+than a separate tool (see :mod:`kodo.agents.subagents.specs._shapes`).
 
 :data:`RETURN_RESULT` is the **canonical** spec — the catalog entry the registry
 validates a ``tools:`` reference against and the engine normalizes results with.
@@ -76,7 +76,7 @@ def build_return_result_spec(output_schema: dict[str, object]) -> ToolSpec:
 
     Args:
         output_schema: The running sub-agent's declared ``output_schema`` (from
-            its :class:`~kodo.subagents.SubAgentSpec`), *without*
+            its :class:`~kodo.agents.SubAgentSpec`), *without*
             ``schema_compliance``.
 
     Returns:

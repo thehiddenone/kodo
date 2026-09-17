@@ -130,10 +130,10 @@ class SubAgent:
             A declaration, never an inference: nothing in the engine knows that
             the agent *named* ``planner`` plans, and a second or third planner
             added later needs no engine change. What it does imply is a
-            **contract** on the agent's :class:`~kodo.subagents.SubAgentSpec` —
+            **contract** on the agent's :class:`~kodo.agents.SubAgentSpec` —
             its ``output_schema`` must declare ``tasks`` and
             ``codebase_context``, which
-            :class:`~kodo.subagents.AgentRegistry` checks at load time so a
+            :class:`~kodo.agents.AgentRegistry` checks at load time so a
             planner whose result the engine could not read fails fast rather
             than at first spawn.
 

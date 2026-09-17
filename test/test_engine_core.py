@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kodo.agents import AgentLoadError, AgentRegistry, SubAgent
 from kodo.llms import CLOUD_THINKING_FAMILIES
 from kodo.project import SessionWorkspace, WorkspaceLayout
 from kodo.runtime import WorkflowEngine
@@ -27,10 +28,9 @@ from kodo.runtime._checkpoints import CheckpointState
 from kodo.runtime._engine import _core
 from kodo.runtime._gates import ApprovalResponse, ConfirmFolderResponse
 from kodo.state import TransientStore
-from kodo.subagents import AgentLoadError, AgentRegistry, SubAgent
 from kodo.workproducts import WorkProduct
 
-_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents")
+_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "agents")
 
 
 class _FakeSink:

@@ -155,7 +155,7 @@ without changing the id.
 
 An agent's ``input_paths`` is built by the engine from what the session has
 actually produced. Each spec declares its contract in artifact **roles**
-(`kodo.subagents._artifacts`):
+(`kodo.agents.subagents._artifacts`):
 
 ```python
 REQUIREMENTS_CRITIC = SubAgentSpec(
@@ -511,10 +511,10 @@ granted `get_findings` that includes neither block fails to load.
 | [toolspecs/_get_findings.py](../src/kodo/toolspecs/_get_findings.py) | the `get_findings` spec |
 | [tools/_get_findings.py](../src/kodo/tools/_get_findings.py) | its handler |
 | [tools/_document_status.py](../src/kodo/tools/_document_status.py) | `document_status()` — the two-store merge seam (§6) |
-| [subagents/specs/_shapes.py](../src/kodo/subagents/specs/_shapes.py) | `finding_item()` / `critic_output()` |
-| [subagents/shared_findings_author.md](../src/kodo/subagents/shared_findings_author.md) | author half of the protocol |
-| [subagents/shared_findings_critic.md](../src/kodo/subagents/shared_findings_critic.md) | critic half |
+| [subagents/specs/_shapes.py](../src/kodo/agents/subagents/specs/_shapes.py) | `finding_item()` / `critic_output()` |
+| [subagents/shared_findings_author.md](../src/kodo/agents/shared_findings_author.md) | author half of the protocol |
+| [subagents/shared_findings_critic.md](../src/kodo/agents/shared_findings_critic.md) | critic half |
 | [runtime/_engine/_subagents.py](../src/kodo/runtime/_engine/_subagents.py) | `_run_review_loop`, `_run_review_round`, `_record_findings`, `_findings_dir`/`_findings_snapshot`/`_document_status` |
-| [subagents/_registry.py](../src/kodo/subagents/_registry.py) | `_review_output_schema` (the `review` block) + the shared-block pairing check |
+| [subagents/_registry.py](../src/kodo/agents/_registry.py) | `_review_output_schema` (the `review` block) + the shared-block pairing check |
 | [runtime/_engine/_core.py](../src/kodo/runtime/_engine/_core.py) | `_finalize_work_product` |
 | [workproducts/](../src/kodo/workproducts/) | `WorkProduct`, `work_product_id`, `record_membership`, `work_product_for_path` — the membership half (§2) |

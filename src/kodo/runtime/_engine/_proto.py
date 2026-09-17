@@ -20,6 +20,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Protocol
 
+from kodo.agents import PHASE_INITIAL, AgentRegistry, SubAgent
 from kodo.common import ApiKeyProvider, MessageSink
 from kodo.findings import RoundSummary
 from kodo.llms import (
@@ -34,7 +35,6 @@ from kodo.llms import (
 from kodo.project import WorkspaceLayout
 from kodo.security import SecurityLayer
 from kodo.state import TransientStore
-from kodo.subagents import PHASE_INITIAL, AgentRegistry, SubAgent
 from kodo.tools import PathResolver, RootPath, ToolDispatcher
 from kodo.workproducts import WorkProduct
 

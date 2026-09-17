@@ -14,6 +14,8 @@ import time
 import uuid
 from pathlib import Path, PurePosixPath
 
+from kodo.agents import PHASE_INITIAL, PHASE_REVISION, AgentLoadError
+from kodo.agents.subagents import PRODUCES_REMAINDER, RESPONSIBILITY_CODE_KEY, ROLE_ARCHITECTURE
 from kodo.common import Envelope
 from kodo.findings import (
     STATE_OUTSTANDING,
@@ -31,14 +33,6 @@ from kodo.plan import (
     PLAN_TASKS_FIELD,
     create_plan,
     plan_for_widget,
-)
-from kodo.subagents import (
-    PHASE_INITIAL,
-    PHASE_REVISION,
-    PRODUCES_REMAINDER,
-    RESPONSIBILITY_CODE_KEY,
-    ROLE_ARCHITECTURE,
-    AgentLoadError,
 )
 from kodo.tools import document_status, root_for
 from kodo.toolspecs import MAX_ROUNDS_DEFAULT, SCHEMA_COMPLIANCE_KEY
@@ -277,7 +271,7 @@ class SubagentMixin:
         """Strip a ``responsibility_code`` the target agent has no business with.
 
         Only a **per-component** agent declares the field
-        (:attr:`~kodo.subagents.SubAgentSpec.takes_responsibility_code`);
+        (:attr:`~kodo.agents.SubAgentSpec.takes_responsibility_code`);
         stages 5-7 and nothing else. Aimed at any other agent it is not merely
         inert — it feeds the work-product id, so one stray code splits the
         record of a product-level stage across calls and every later stage
@@ -626,8 +620,8 @@ class SubagentMixin:
         the task: both halves read them through ``get_findings``.
 
         What *does* change between rounds is the author's own prompt. A round
-        with a prior member set is spawned in :data:`~kodo.subagents.PHASE_REVISION`
-        and one without in :data:`~kodo.subagents.PHASE_INITIAL`, so an author
+        with a prior member set is spawned in :data:`~kodo.agents.PHASE_REVISION`
+        and one without in :data:`~kodo.agents.PHASE_INITIAL`, so an author
         that declares ``{PHASE:…}`` blocks speaks to the job it is actually
         doing — writing from its inputs, or resolving a backlog against files it
         already wrote. Note this is seeded from the ledger *before* round 1, so
@@ -982,7 +976,7 @@ class SubagentMixin:
         the spec says *what* those files are for.
 
         A role mapped to a named output field takes the path that field holds;
-        the role mapped to :data:`~kodo.subagents.PRODUCES_REMAINDER` takes
+        the role mapped to :data:`~kodo.agents.PRODUCES_REMAINDER` takes
         everything no named field claimed. That remainder rule is what keeps
         ``functional_designer``'s Design Plan out of the pile of Functional
         Designs it wrote in the same run, without either of them having to be

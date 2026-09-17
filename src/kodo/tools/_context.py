@@ -658,7 +658,7 @@ class ToolContext:
             yet installed.  Injected by the engine from ``kodo.binutils`` so the
             search tools never import that package directly (tier rule).
         output_schema: The running sub-agent's declared ``output_schema`` (from
-            its :class:`~kodo.subagents.SubAgentSpec`), injected by the engine so
+            its :class:`~kodo.agents.SubAgentSpec`), injected by the engine so
             ``return_result`` can validate/normalize the agent's result against
             it. ``None`` for the top-level agents (guide/problem_solver), which have
             no spec and never call ``return_result``.

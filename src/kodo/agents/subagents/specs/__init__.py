@@ -1,7 +1,7 @@
 """Sub-agent specifications — the typed input/output contract of each sub-agent.
 
 This package holds **one ``<name>.json`` file per sub-agent**, each describing a
-single :class:`~kodo.subagents.SubAgentSpec`, plus the code that turns them into
+single :class:`~kodo.agents.SubAgentSpec`, plus the code that turns them into
 objects. Nothing in the catalog is hardcoded in Python: :data:`ALL_SUBAGENTS` is
 built at import time by globbing this directory, so adding a sub-agent's
 contract is adding a file and nothing else — no import to write, no ``__all__``
@@ -42,7 +42,7 @@ The per-agent constants (``CODER``, ``PLANNER``, …) are gone with the modules
 that defined them. Nothing outside this package ever imported one — the registry
 and the tests consume :data:`ALL_SUBAGENTS` — and a name bound at import time is
 exactly what a runtime-built catalog cannot provide. Look one up with
-:data:`~kodo.subagents.SUBAGENT_SPECS_BY_NAME`.
+:data:`~kodo.agents.SUBAGENT_SPECS_BY_NAME`.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ __all__ = [
 SPECS_DIR: Path = Path(__file__).parent
 
 # Every sub-agent spec in the catalog, in declared-dependency order. Consumed by
-# kodo.subagents._registry to auto-grant `return_result` (bound to each spec's
+# kodo.agents._registry to auto-grant `return_result` (bound to each spec's
 # output_schema) and the Input Parameters note, to mint each caller's
 # `run_subagent_<name>` tools, and to validate spec <-> subagent_<name>.md
 # correspondence. Built from the JSON files at import time: a malformed file or

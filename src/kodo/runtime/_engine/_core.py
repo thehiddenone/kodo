@@ -40,6 +40,7 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
+from kodo.agents import AgentLoadError, AgentRegistry, SubAgent
 from kodo.binutils import find_util
 from kodo.common import ApiKeyProvider, Envelope, MessageSink
 from kodo.findings import (
@@ -61,7 +62,6 @@ from kodo.project import (
 )
 from kodo.security import SecurityLayer, add_global_path_rule, add_global_rule
 from kodo.state import TransientStore
-from kodo.subagents import AgentLoadError, AgentRegistry, SubAgent
 from kodo.titling import generate_project_name
 from kodo.tools import LogicalPathResolver, PathResolver, RootPath, root_for
 from kodo.transport import (

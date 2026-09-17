@@ -3,7 +3,7 @@ and tool-definition diagnostics.
 
 ``--system-prompt AGENT`` (``-p AGENT``) prints the exact system prompt kodo
 would send for that agent, by calling the real runtime code rather than
-reimplementing it: :meth:`~kodo.subagents.AgentRegistry.get` renders the
+reimplementing it: :meth:`~kodo.agents.AgentRegistry.get` renders the
 agent's body with every ``{SHARED:…}`` block expanded — exactly as
 ``kodo/server/_app.py`` does for a live session.
 
@@ -82,7 +82,8 @@ import os
 import sys
 from pathlib import Path
 
-import kodo.subagents as _subagents_pkg
+import kodo.agents as _agents_pkg
+from kodo.agents import AgentLoadError, AgentRegistry, SubAgent
 from kodo.llms import CloudLLMEntry, get_cloud_registry, get_local_registry
 from kodo.llms.llamacpp import build_openai_tools, get_local_model_manager
 from kodo.project import kodo_skills_dir, kodo_user_dir
@@ -95,9 +96,8 @@ from kodo.skills import (
     install_skills,
     scan_repository,
 )
-from kodo.subagents import AgentLoadError, AgentRegistry, SubAgent
 
-_AGENTS_DIR = Path(_subagents_pkg.__file__).parent
+_AGENTS_DIR = Path(_agents_pkg.__file__).parent
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -9,7 +9,7 @@ Per the project decision, a ``SubAgentSpec`` carries **only** the agent's
 input/output *contract*; every other piece of agent metadata — tools,
 capability, ``display_name``, ``critic``/``standalone``, and the prose
 describing the agent (``## Purpose``) — stays in the ``subagent_*.md``
-frontmatter/body and is loaded by :func:`~kodo.subagents._loader.load_agent`.
+frontmatter/body and is loaded by :func:`~kodo.agents._loader.load_agent`.
 
 Since 2026-09-05 the contract is more than the two schemas: ``produces`` and
 ``consumes`` declare, in artifact *roles* (:mod:`._artifacts`), what this agent
@@ -17,7 +17,7 @@ writes and what it must be given. They live here rather than in frontmatter
 because they *are* the contract — ``consumes`` is what the engine turns into a
 concrete ``input_paths`` — where the frontmatter holds behavioural policy
 (which critic reviews me, which tools I may call). The registry cross-references a spec
-to its :class:`~kodo.subagents._loader.SubAgent` by ``name``.
+to its :class:`~kodo.agents._loader.SubAgent` by ``name``.
 
 There was once a ``description`` field here too, a one-line caller-facing
 summary. It was deleted because it competed with ``## Purpose`` for the same
@@ -27,9 +27,9 @@ was removed both wanted the same destination — the generated
 text, it lives with the prose, and it was already written caller-agnostic), so
 the schemas here and the prose there no longer overlap at all.
 
-One spec per file under :mod:`kodo.subagents.specs` — but a **JSON** file, not a
+One spec per file under :mod:`kodo.agents.subagents.specs` — but a **JSON** file, not a
 Python literal: the catalog is data, built at import time by
-:mod:`kodo.subagents.specs._loader`, so a contract can be added or changed
+:mod:`kodo.agents.subagents.specs._loader`, so a contract can be added or changed
 without editing this package. This is where it diverges from the
 ``kodo.toolspecs`` one-literal-per-file convention it otherwise mirrors.
 """

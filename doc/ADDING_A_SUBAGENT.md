@@ -59,22 +59,30 @@ of a caller's tool — see [recipe 5.6](#56-an-engine-driven-sub-agent-no-caller
 
 ## 2. Anatomy of an agent
 
-Everything the registry loads lives in one directory, `src/kodo/subagents/`:
+Everything the registry loads lives under `src/kodo/agents/`, split by kind:
 
-| File | What it is |
-|---|---|
-| `agent_<name>.md` | An **entry agent**: frontmatter + system prompt body. |
-| `subagent_<name>.md` | A **sub-agent**: frontmatter + system prompt body. |
-| `specs/<name>.json` | That sub-agent's typed I/O contract (`SubAgentSpec`). |
-| `shared_<name>.md` | A reusable prompt block, pulled in with `{SHARED:<name>}`. |
+```
+src/kodo/agents/
+  agent_<name>.md          a top-level agent: frontmatter + system prompt body
+  <name>.json              how that agent is selected (label, description, rank)
+  shared_<name>.md         a reusable prompt block, pulled in with {SHARED:<name>}
+  subagents/
+    subagent_<name>.md     a sub-agent: frontmatter + system prompt body
+    specs/<name>.json      that sub-agent's typed I/O contract (SubAgentSpec)
+```
 
-`AgentRegistry` (`_registry.py`) globs all of them at construction, expands every
+The shared blocks sit at the top because **both** kinds include them. Everything
+else is filed by which kind it belongs to, and the Python follows the same split:
+`kodo.agents` holds the parser, the registry and `TopAgent`; `kodo.agents.subagents`
+holds `SubAgentSpec` and the artifact-role vocabulary only sub-agents use.
+
+`AgentRegistry` (`_registry.py`) globs all of it at construction, expands every
 `{SHARED:…}` token in one pass, and **validates the whole set**. Almost every
 mistake in this document is an `AgentLoadError` at startup rather than a bad run
 later — that is deliberate, and it is why the checks are worth knowing.
 
 The catalog side is separate: `ALL_SUBAGENTS` is built at import time by globbing
-`specs/*.json` (`specs/_loader.py`), so a spec file is self-registering. The
+`subagents/specs/*.json` (`specs/_loader.py`), so a spec file is self-registering. The
 registry then cross-references spec ↔ `subagent_*.md` **by name** and fails if
 either half is missing.
 
@@ -88,7 +96,7 @@ typed contract, invoked like a tool and running like an agent.
 A new sub-agent named `foo` needs the pieces below. Miss one and the registry
 raises `AgentLoadError` at construction.
 
-### 3.1 The prompt — `src/kodo/subagents/subagent_foo.md`
+### 3.1 The prompt — `src/kodo/agents/subagents/subagent_foo.md`
 
 - **Filename stem must be exactly `subagent_foo`**, matching `name: foo`.
 - **Frontmatter** — see the [full key table](#frontmatter-keys) in §11. The
@@ -110,7 +118,7 @@ raises `AgentLoadError` at construction.
   (minimal edits, silent reasoning, injection resistance, the `ask_user`
   discipline).
 
-### 3.2 The spec — `src/kodo/subagents/specs/foo.json`
+### 3.2 The spec — `src/kodo/agents/subagents/specs/foo.json`
 
 JSON, not Python. `"name"` must equal the filename stem, and **the file is the
 whole registration** — no import to add, no list to append to.
@@ -202,7 +210,7 @@ A standalone, read-only specialist the Problem Solver can call to audit
 dependencies. It is the simplest complete shape: no artifact roles, no critic,
 its own contract.
 
-**`src/kodo/subagents/specs/dependency_auditor.json`**
+**`src/kodo/agents/subagents/specs/dependency_auditor.json`**
 
 ```json
 {
@@ -255,7 +263,7 @@ its own contract.
 }
 ```
 
-**`src/kodo/subagents/subagent_dependency_auditor.md`**
+**`src/kodo/agents/subagents/subagent_dependency_auditor.md`**
 
 ````markdown
 ---
@@ -334,7 +342,7 @@ one: most "new top-level capability" ideas are better served by a sub-agent an
 existing entry agent can call.
 
 > **Planned change.** [TOP_AGENT_PLAN.md](TOP_AGENT_PLAN.md) makes top-level
-> agents data-driven too — a prompt plus a `top_agents/<name>.json` config, with
+> agents data-driven too — a prompt plus a `<name>.json` config beside it, with
 > no engine or kodo-vsix edit. When that lands, §4.3's six engine edits and
 > §4.4's VSIX grep list collapse to "add two files", the "not data-driven"
 > sentence above is deleted, and the term **"entry agent"** is retired in favour
@@ -362,7 +370,7 @@ Two prompt rules differ from a sub-agent's:
 is doing) and usually wrong for a sub-agent (its caller already decided). It is
 mandatory iff you grant `use_skill`.
 
-### 4.2 The prompt — `src/kodo/subagents/agent_<name>.md`
+### 4.2 The prompt — `src/kodo/agents/agent_<name>.md`
 
 Same format as a sub-agent's, stem `agent_<name>` instead of `subagent_<name>`.
 `{SHARED:working_rules}` and `{SHARED:security}` are still mandatory and still
@@ -615,7 +623,7 @@ Only `functional_designer` needs this today.
 ## 6. Artifact roles: `produces` / `consumes`
 
 Nothing is hand-written and nothing is inherited. Each spec declares, in artifact
-**roles**, what it produces and what it needs (`kodo.subagents._artifacts`), and
+**roles**, what it produces and what it needs (`kodo.agents.subagents._artifacts`), and
 the engine resolves those needs against the session's work-product ledger
 (`kodo.workproducts`) to hand the agent a fully-formed `input_paths`.
 
@@ -797,8 +805,8 @@ tests don't need them):
 ```bash
 PYTHONPATH=src python3 -m pytest test/test_agents.py test/test_subagentspecs.py test/test_main.py -q
 PYTHONPATH=src python3 -m pytest test/test_subagent_spec_loading.py -q
-PYTHONPATH=src python3 -c "from pathlib import Path; from kodo.subagents import AgentRegistry; AgentRegistry(Path('src/kodo/subagents'))"
-ruff check src/kodo/subagents/specs/
+PYTHONPATH=src python3 -c "from pathlib import Path; from kodo.agents import AgentRegistry; AgentRegistry(Path('src/kodo/agents'))"
+ruff check src/kodo/agents/subagents/specs/
 ```
 
 Your JSON must also **ship**: `pyproject.toml`'s wheel/sdist `include` covers

@@ -2,7 +2,7 @@
 
 ``test_subagentspecs.py`` asserts what the specs *say* (schemas well-formed,
 roles resolvable, registry wiring). This file asserts the machinery that
-produces them: that every ``<name>.json`` in :mod:`kodo.subagents.specs` loads,
+produces them: that every ``<name>.json`` in :mod:`kodo.agents.subagents.specs` loads,
 that a malformed one fails loudly instead of silently yielding a half-built
 contract, and that :data:`ALL_SUBAGENTS`'s order is derived from the declared
 ``produces``/``consumes`` graph rather than from a hand-kept list or from
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from kodo.subagents.specs import (
+from kodo.agents.subagents.specs import (
     ALL_SUBAGENTS,
     SPEC_SUFFIX,
     SPECS_DIR,
@@ -33,7 +33,7 @@ from kodo.subagents.specs import (
     load_specs,
     pipeline_order,
 )
-from kodo.subagents.specs._shapes import author_output, critic_output, pipeline_input
+from kodo.agents.subagents.specs._shapes import author_output, critic_output, pipeline_input
 
 _SPEC_FILES = sorted(SPECS_DIR.glob(f"*{SPEC_SUFFIX}"))
 
@@ -328,7 +328,7 @@ def _spec(
     produces: dict[str, str] | None = None,
     consumes: tuple[tuple[str, str], ...] = (),
 ) -> SubAgentSpec:
-    from kodo.subagents import Need  # local import: only the order tests need it
+    from kodo.agents.subagents import Need  # local import: only the order tests need it
 
     return SubAgentSpec(
         name=name,

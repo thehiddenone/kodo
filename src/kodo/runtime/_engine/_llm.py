@@ -13,6 +13,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from kodo.agents import SubAgent
 from kodo.common import ApiKey
 from kodo.llms import (
     DEFAULT_BEDROCK_REGION,
@@ -49,7 +50,6 @@ from kodo.llms.meta import MusePlugin
 from kodo.llms.openai import GPTPlugin
 from kodo.llms.openrouter import OpenRouterPlugin
 from kodo.project import kodo_user_dir
-from kodo.subagents import SubAgent
 from kodo.tools import ToolDispatcher
 
 from .._agenttools import agent_tool_specs

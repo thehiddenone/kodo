@@ -78,7 +78,7 @@ class WorkProduct:
             ``responsibility_code`` already says which component it is.
         roles: ``{artifact role: the member files filling it}``. Derived by the
             engine from the producing agent's declared
-            :attr:`~kodo.subagents.SubAgentSpec.produces` map — never from
+            :attr:`~kodo.agents.SubAgentSpec.produces` map — never from
             anything the model said — so a consumer asking for "the
             architecture" can be handed exactly that. Most work products have a
             single entry covering every path; ``narrative_author`` and

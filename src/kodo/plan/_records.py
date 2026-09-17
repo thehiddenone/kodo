@@ -78,7 +78,7 @@ ENTRY_PLAN_ABANDONED = "plan_abandoned"
 # The one field a task cannot do without: it is the task's identity in the
 # widget, and a row the user cannot read is not a task. The engine also keeps a
 # task's body (see :class:`PlanTask`), but only ``title`` is *required* — which
-# is why this stays the whole of what :class:`~kodo.subagents.AgentRegistry`
+# is why this stays the whole of what :class:`~kodo.agents.AgentRegistry`
 # type-checks a planner's ``tasks`` items against at load time.
 PLAN_TASK_TITLE_FIELD = "title"
 
@@ -88,7 +88,7 @@ PLAN_TASK_TITLE_FIELD = "title"
 #: Fixed names rather than per-agent frontmatter on purpose: these *are* the
 #: planner role, the way ``paths`` is the shape of a reported work product, so a
 #: second planner conforms to the same two names instead of teaching the engine a
-#: third vocabulary. :class:`~kodo.subagents.AgentRegistry` enforces them at load
+#: third vocabulary. :class:`~kodo.agents.AgentRegistry` enforces them at load
 #: time against the agent's ``output_schema``, so the coupling is checked rather
 #: than assumed.
 PLAN_TASKS_FIELD = "tasks"

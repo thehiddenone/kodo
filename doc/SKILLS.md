@@ -359,7 +359,7 @@ half added alone.
 | [project/_layout.py](../src/kodo/project/_layout.py) | `kodo_skills_dir()` — `~/.kodo/skills`. |
 | [toolspecs/_use_skill.py](../src/kodo/toolspecs/_use_skill.py) | The `USE_SKILL` spec. |
 | [tools/_use_skill.py](../src/kodo/tools/_use_skill.py) | `UseSkillTool` — re-scans the store per call. |
-| [subagents/_registry.py](../src/kodo/subagents/_registry.py) | `SKILLS_TOKEN`, `__validate_skills`, and the per-turn expansion in `__finalize`. |
+| [subagents/_registry.py](../src/kodo/agents/_registry.py) | `SKILLS_TOKEN`, `__validate_skills`, and the per-turn expansion in `__finalize`. |
 | [server/_app.py](../src/kodo/server/_app.py) | `skills.list` / `skills.delete` / `skills.install_scan` / `skills.install` handlers; `ensure_root()` on startup. |
 | [transport/_messages.py](../src/kodo/transport/_messages.py) | `MSG_SKILLS_LIST` / `MSG_SKILLS_DELETE` / `MSG_SKILLS_INSTALL_SCAN` / `MSG_SKILLS_INSTALL`. |
 | [\_\_main\_\_.py](../src/kodo/__main__.py) | `python -m kodo --list-skills` / `--install-skill REPO_URL [--yes]` — the CLI installer. |

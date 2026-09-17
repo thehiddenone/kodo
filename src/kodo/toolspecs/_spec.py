@@ -107,7 +107,7 @@ class ToolSpec:
             least one tool declaring this must include ``{SHARED:editing}`` —
             the shared editing discipline (``shared_editing.md``: minimal
             change, no drive-by edits, read before you write, scratch work) —
-            and :class:`~kodo.subagents.AgentRegistry` refuses to load one that
+            and :class:`~kodo.agents.AgentRegistry` refuses to load one that
             does not. The pairing runs both ways: roughly half the agents never
             write a file (every critic, the investigator, the compactor, the
             planner, the web searcher), and that block is worse than noise in

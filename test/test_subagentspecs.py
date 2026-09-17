@@ -18,20 +18,21 @@ from pathlib import Path
 
 import pytest
 
-from kodo.subagents import (
+from kodo.agents import SUBAGENTS_SUBDIR, AgentRegistry, shared_token
+from kodo.agents.subagents import (
     PRODUCES_REMAINDER,
     RESPONSIBILITY_CODE_KEY,
     ROLE_CODE,
     ROLE_TECH_STACK,
     SCOPE_DEPENDENCIES,
     SCOPE_UNDER_REVIEW,
-    AgentRegistry,
-    shared_token,
 )
-from kodo.subagents.specs import ALL_SUBAGENTS, SubAgentSpec
+from kodo.agents.subagents.specs import ALL_SUBAGENTS, SubAgentSpec
 from kodo.toolspecs import ENGINE_OWNED_TASK_FIELDS, ToolSpec, normalize_output
 
-_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents"
+_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "agents"
+#: Where the sub-agent prompts themselves live, one level down.
+_SUBAGENTS_DIR = _AGENTS_DIR / SUBAGENTS_SUBDIR
 # Entry agents the user talks to directly; they have no caller and no spec.
 _ENTRY_AGENTS = {"guide", "problem_solver"}
 
@@ -55,7 +56,7 @@ _SPECS_BY_NAME = {s.name: s for s in ALL_SUBAGENTS}
 
 
 def _agent_names() -> set[str]:
-    return {p.stem[len("subagent_") :] for p in _AGENTS_DIR.glob("subagent_*.md")}
+    return {p.stem[len("subagent_") :] for p in _SUBAGENTS_DIR.glob("subagent_*.md")}
 
 
 def test_every_non_entry_agent_has_a_spec() -> None:
@@ -163,7 +164,7 @@ def _escalation_capable_names() -> set[str]:
     return {
         name
         for name in _agent_names() - _ENTRY_AGENTS
-        if token in (_AGENTS_DIR / f"subagent_{name}.md").read_text(encoding="utf-8")
+        if token in (_SUBAGENTS_DIR / f"subagent_{name}.md").read_text(encoding="utf-8")
     }
 
 
@@ -225,7 +226,7 @@ def test_every_critic_prompt_carries_its_concern_vocabulary() -> None:
     """The other half of the contract above: since the kinds left the schema,
     each critic's prompt must actually contain the section the schema points at."""
     for name in _critic_names():
-        body = (_AGENTS_DIR / f"subagent_{name}.md").read_text(encoding="utf-8")
+        body = (_SUBAGENTS_DIR / f"subagent_{name}.md").read_text(encoding="utf-8")
         assert "### Concern vocabulary" in body, f"{name} has no concern catalogue in its prompt"
 
 
@@ -251,7 +252,7 @@ def test_test_coder_normalizes_author_output() -> None:
 def test_test_design_critic_vocabulary_leads_with_behavioral_kinds() -> None:
     """The behavioral kinds are this critic's whole reason to exist, so they must
     survive the move of the catalogue from schema enum to prompt prose."""
-    body = (_AGENTS_DIR / "subagent_test_design_critic.md").read_text(encoding="utf-8")
+    body = (_SUBAGENTS_DIR / "subagent_test_design_critic.md").read_text(encoding="utf-8")
     vocabulary = body.split("### Concern vocabulary", 1)[1]
     assert "non_behavioral_test" in vocabulary
     assert "over_specified_test" in vocabulary

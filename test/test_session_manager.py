@@ -12,15 +12,15 @@ from pathlib import Path
 
 import pytest
 
-import kodo.subagents
+import kodo.agents
+from kodo.agents import AgentRegistry
 from kodo.llms import LLMGateway
 from kodo.project import WorkspaceLayout
 from kodo.server import SessionManager
 from kodo.server._session_manager import Session
-from kodo.subagents import AgentRegistry
 from kodo.transport import Connection
 
-_AGENTS_DIR = Path(kodo.subagents.__file__).parent
+_AGENTS_DIR = Path(kodo.agents.__file__).parent
 _SETTINGS: dict[str, object] = {"mode": "local", "models": {"local": "llamacpp-qwen36-27b"}}
 
 
@@ -307,8 +307,6 @@ async def test_delete_removes_files_and_frees_ownership(manager_factory) -> None
 
 def test_session_manager_does_not_import_connection_registry() -> None:
     """SessionManager must not depend on the ConnectionRegistry (one-way edge)."""
-    source = (
-        Path(kodo.subagents.__file__).parents[1] / "server" / "_session_manager.py"
-    ).read_text()
+    source = (Path(kodo.agents.__file__).parents[1] / "server" / "_session_manager.py").read_text()
     assert "_connection_registry" not in source
     assert "ConnectionRegistry" not in source

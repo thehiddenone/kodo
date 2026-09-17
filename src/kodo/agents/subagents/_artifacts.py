@@ -20,7 +20,7 @@ file ~1133 times (session ``1788543589``; doc/FINDINGS.md, doc/STUCK_DETECTION.m
 **Roles are not files.** A role says *what a document is for*, and one role may
 be filled by several files (a component's whole implementation) while one agent
 may fill several roles (``narrative_author`` writes both the Narrative and the
-Tech Stack). That is why :attr:`~kodo.subagents.SubAgentSpec.produces` maps a
+Tech Stack). That is why :attr:`~kodo.agents.SubAgentSpec.produces` maps a
 role to the *output field* carrying its paths, rather than being a single name:
 see :data:`PRODUCES_REMAINDER`.
 

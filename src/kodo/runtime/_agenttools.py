@@ -3,7 +3,7 @@
 Most tools resolve straight from the static catalog by name, but two cannot: a
 sub-agent's task shape and result shape are only knowable once you know *which*
 agent is running and *which* sub-agents it may invoke. Those two live in
-:mod:`kodo.subagents` (the registry) while tool resolution lives in
+:mod:`kodo.agents` (the registry) while tool resolution lives in
 :mod:`kodo.tools` — sibling packages at the same import tier, neither of which
 may import the other. :func:`agent_tool_specs` is the join, one tier up in
 ``runtime``, which imports both.
@@ -16,7 +16,7 @@ surface a model sees is identical no matter which of those produced it.
 
 from __future__ import annotations
 
-from kodo.subagents import AgentRegistry, SubAgent
+from kodo.agents import AgentRegistry, SubAgent
 from kodo.tools import tools_for_agent
 from kodo.toolspecs import RETURN_RESULT, RUN_SUBAGENT, ToolSpec
 
@@ -40,7 +40,7 @@ def agent_tool_specs(registry: AgentRegistry, agent: SubAgent) -> list[ToolSpec]
     Args:
         registry: The loaded agent registry (the source of both expansions).
         agent: The agent whose tools to resolve — already rendered by
-            :meth:`~kodo.subagents.AgentRegistry.get`, so its ``tools`` set is
+            :meth:`~kodo.agents.AgentRegistry.get`, so its ``tools`` set is
             the effective one for the run's mode (autonomous-filtered, with
             ``return_result`` auto-granted where it applies).
 

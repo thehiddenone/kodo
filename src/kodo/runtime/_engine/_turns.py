@@ -26,6 +26,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from kodo.agents import AgentLoadError
 from kodo.common import Envelope
 from kodo.llms import (
     LLMPlugin,
@@ -44,7 +45,6 @@ from kodo.llms import (
 )
 from kodo.plan import PlanConflictError
 from kodo.state import render_tool_call_markdown
-from kodo.subagents import AgentLoadError
 from kodo.tools import ToolDispatcher, canonical_tool_call
 from kodo.toolspecs import (
     ALL_TOOLS,
@@ -1028,7 +1028,7 @@ class TurnLoopMixin:
         even though the same subsession's ``subsession_end`` marker correctly
         recorded it as ``failed``. The target sub-agent's own declared output
         schema — the exact one its ``run_subagent_<name>`` variant advertised
-        to the caller (:meth:`~kodo.subagents.AgentRegistry.run_subagent_specs`,
+        to the caller (:meth:`~kodo.agents.AgentRegistry.run_subagent_specs`,
         review-block-merged when it has a critic) — is looked up and used for
         this one call instead, so the caller's compliance signal matches what
         actually happened.

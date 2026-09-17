@@ -157,17 +157,16 @@ from kodo.toolspecs import (
     build_run_subagent_spec,
 )
 
-from ._artifacts import (
+from ._loader import AgentLoadError, SubAgent, load_agent
+from ._topagent import TopAgent, TopAgentLoadError, load_top_agents
+from .subagents import (
     ALL_ROLES,
     ALL_SCOPES,
+    ALL_SUBAGENTS,
     PRODUCES_REMAINDER,
     SCOPE_UNDER_REVIEW,
+    SubAgentSpec,
 )
-from ._loader import AgentLoadError, SubAgent, load_agent
-from ._subagentspec import SubAgentSpec
-from ._topagent import TopAgent
-from .specs import ALL_SUBAGENTS
-from .top_agents import TopAgentLoadError, load_top_agents
 
 # ``shared_<name>.md`` in this package ⇄ ``{SHARED:<name>}`` in an agent body.
 # The lowercase-only name pattern is deliberate: it matches the filenames, so a
@@ -372,8 +371,15 @@ _USE_SKILL_TOOL = USE_SKILL.name
 # it into one variant per sub-agent the agent may invoke.
 _RUN_SUBAGENT_TOOL = RUN_SUBAGENT.name
 
-#: Directory, relative to ``agents_dir``, holding the top-level agent configs.
-TOP_AGENTS_SUBDIR = "top_agents"
+#: Directory, relative to ``agents_dir``, holding the sub-agent prompts and
+#: their specs. Top-level agents sit in ``agents_dir`` itself, beside the
+#: ``shared_*.md`` blocks both kinds include.
+SUBAGENTS_SUBDIR = "subagents"
+
+#: Attribution key for a problem that belongs to the top-level agent *set*
+#: rather than to any one of them (two defaults, an unreadable config file).
+#: Bracketed so it cannot collide with a real agent name.
+_TOP_AGENT_SET_KEY = "(top-level agents)"
 
 
 class _Problems:
@@ -624,10 +630,15 @@ class AgentRegistry:
         # Every failure is collected rather than raised, so construction reports
         # the whole broken set at once instead of one problem per run.
         problems = _Problems()
-        # Sub-agents (``subagent_*.md``) and the user-facing top-level agents
-        # (``agent_*.md`` — ``guide``, ``problem_solver``, ``judge``) share one
-        # registry, looked up by name regardless of which prefix they use.
-        agent_paths = sorted(agents_dir.glob("subagent_*.md")) + sorted(
+        # One registry holds both kinds, looked up by name regardless of which
+        # it is — but they are read from different places, because they are
+        # different things: top-level agents sit in ``agents_dir`` itself
+        # (beside the ``shared_*.md`` blocks both kinds include), sub-agents in
+        # ``agents_dir/subagents`` alongside the specs that are theirs alone.
+        # The ``agent_``/``subagent_`` prefixes are kept even though the
+        # directory now says the same thing: a prompt file names its own kind,
+        # wherever you meet it.
+        agent_paths = sorted((agents_dir / SUBAGENTS_SUBDIR).glob("subagent_*.md")) + sorted(
             agents_dir.glob("agent_*.md")
         )
         for path in agent_paths:
@@ -709,12 +720,12 @@ class AgentRegistry:
                         agent.source_path,
                     )
         self.__validate_artifact_roles(problems)
-        self.__build_top_agents(agents_dir / TOP_AGENTS_SUBDIR, problems)
+        self.__build_top_agents(agents_dir, problems)
         if problems.any:
             raise AgentLoadError(problems.report())
 
     def __build_top_agents(self, config_dir: Path, problems: _Problems) -> None:
-        """Load ``top_agents/<name>.json`` and index the selectable agents.
+        """Load the ``<name>.json`` configs and index the selectable agents.
 
         Runs last in construction, once every agent is loaded, so it can check
         **both** directions of the pairing: a top-level agent with no config
@@ -725,7 +736,8 @@ class AgentRegistry:
         a directory of sub-agents has neither half and passes.
 
         Args:
-            config_dir: ``<agents_dir>/top_agents``. Need not exist.
+            config_dir: The agents directory — each config sits beside the
+                ``agent_<name>.md`` prompt it describes.
             problems: Accumulator; every failure is recorded against the agent
                 (or config stem) at fault rather than raised here.
         """
@@ -734,7 +746,7 @@ class AgentRegistry:
         except TopAgentLoadError as exc:
             # One unreadable config file. Nothing downstream can be trusted to
             # describe the set, so record it and leave the table empty.
-            problems.add(TOP_AGENTS_SUBDIR, str(exc))
+            problems.add(_TOP_AGENT_SET_KEY, str(exc))
             self.__top_agents: tuple[TopAgent, ...] = ()
             self.__top_agent_by_value = {}
             self.__default_top_agent = ""
@@ -744,14 +756,14 @@ class AgentRegistry:
         for name in sorted(loaded - configs.keys()):
             problems.add(
                 name,
-                f"no {TOP_AGENTS_SUBDIR}/{name}.json — a top-level agent declares how it "
-                f"is selected (label, description, rank) beside its prompt",
+                f"no {name}.json — a top-level agent declares how it is selected "
+                f"(label, description, rank) in a config beside its prompt",
                 self.__agents[name].source_path,
             )
         for name in sorted(configs.keys() - loaded):
             problems.add(
                 name,
-                f"{TOP_AGENTS_SUBDIR}/{name}.json has no agent_{name}.md in the registry",
+                f"{name}.json has no agent_{name}.md in the registry",
             )
         # A top-level agent talks to a human in prose and is never called with
         # arguments, so a typed I/O contract on one is a category error rather
@@ -790,7 +802,7 @@ class AgentRegistry:
         # only) is legitimate and simply has no default to declare.
         if agents and len(defaults) != 1:
             problems.add(
-                TOP_AGENTS_SUBDIR,
+                _TOP_AGENT_SET_KEY,
                 f'exactly one top-level agent must declare "default": true; found {defaults}',
             )
 

@@ -76,8 +76,8 @@ Five findings, in order of importance:
 | Terminal behavior | a *tool* property. `judge` ends its run via `submit_evaluation`, which sets `ToolContext.stop_requested` from its own dispatch — no engine branch exists for it |
 | Sub-agent roster | frontmatter `subagents:`, gated at dispatch by `AgentRegistry.allowed_subagents` |
 | Capability tier / display name | frontmatter `capability:` / `display_name:` |
-| Prompt validation | `{SHARED:working_rules}` + `{SHARED:security}` required ([_registry.py:325](../src/kodo/subagents/_registry.py#L325)); editing discipline bound to `modifies_files`; findings blocks bound to `get_findings`; `{SKILLS}` bound to `use_skill`; `{SHARED:task_input}` and `{PHASE:…}` **rejected** on any agent with no `SubAgentSpec` |
-| Registration | `AgentRegistry` globs `agent_*.md` beside `subagent_*.md` ([_registry.py:556](../src/kodo/subagents/_registry.py#L556)) — dropping the file in *is* the registration |
+| Prompt validation | `{SHARED:working_rules}` + `{SHARED:security}` required ([_registry.py:325](../src/kodo/agents/_registry.py#L325)); editing discipline bound to `modifies_files`; findings blocks bound to `get_findings`; `{SKILLS}` bound to `use_skill`; `{SHARED:task_input}` and `{PHASE:…}` **rejected** on any agent with no `SubAgentSpec` |
+| Registration | `AgentRegistry` globs `agent_*.md` beside `subagent_*.md` ([_registry.py:556](../src/kodo/agents/_registry.py#L556)) — dropping the file in *is* the registration |
 
 Every one of those rules is keyed on **"has a `SubAgentSpec`"**, never on a
 hardcoded list of entry-agent names. A fourth entry agent inherits all of them
@@ -227,7 +227,7 @@ is what the **engine and the UI** read:
 
 Three reasons to prefer JSON over more frontmatter keys, all sharpened by D:
 
-- The frontmatter parser ([_loader.py:294](../src/kodo/subagents/_loader.py#L294))
+- The frontmatter parser ([_loader.py:294](../src/kodo/agents/_loader.py#L294))
   is hand-rolled, flat-only, and returns everything as `str`. It already carries
   bespoke coercion for `standalone` / `user_review` / `planner`. Adding
   `rank: 30` and `selectable: true` makes that worse — and under D it is parsing
@@ -267,12 +267,12 @@ has required fields (`system_prompt`, `tools`) a broken file cannot supply.
 **Keep one parser.** `kodo.skills` deliberately has its own tolerant parser
 because *"that one parses first-party agent files and may fail loudly … while
 this one parses third-party text and must always produce something."* Do **not**
-fork `kodo.subagents`'s parser to match. Instead wrap `load_agent` in a
+fork `kodo.agents`'s parser to match. Instead wrap `load_agent` in a
 try/except **at the user root only**: the parser stays strict, and the failure
 becomes a row instead of a crash. One parser, two call sites, two regimes.
 
 **The cross-agent pass must become attributable.** The second validation pass
-([_registry.py:576-620](../src/kodo/subagents/_registry.py#L576)) — `critic:`
+([_registry.py:576-620](../src/kodo/agents/_registry.py#L576)) — `critic:`
 resolution, `subagents:` entries, `## Purpose` presence — plus
 `__validate_artifact_roles` currently **raise on the first problem**, with no
 notion of "which agent is at fault, and can I demote just that one?". Restructure

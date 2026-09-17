@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kodo.agents import AgentRegistry
 from kodo.llms import Message
 from kodo.runtime._engine import _compaction
 from kodo.runtime._engine._compaction import (
@@ -24,9 +25,8 @@ from kodo.runtime._engine._compaction import (
 )
 from kodo.runtime._engine._events import EngineEmitters
 from kodo.runtime._session import SessionState
-from kodo.subagents import AgentRegistry
 
-_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents")
+_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "agents")
 
 # ---------------------------------------------------------------------------
 # Module-level pure helpers

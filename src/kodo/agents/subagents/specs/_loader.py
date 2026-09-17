@@ -1,8 +1,8 @@
-"""Build :class:`~kodo.subagents.SubAgentSpec` objects from their JSON definitions.
+"""Build :class:`~kodo.agents.SubAgentSpec` objects from their JSON definitions.
 
 Every catalog entry is a ``<name>.json`` file in this package. Nothing about a
 sub-agent's contract is hardcoded in Python any more: this module is the one
-place that turns such a file into a spec, and :mod:`kodo.subagents.specs` runs
+place that turns such a file into a spec, and :mod:`kodo.agents.subagents.specs` runs
 it over the package directory at import time to build ``ALL_SUBAGENTS``.
 
 The file format
@@ -166,7 +166,7 @@ def load_specs(directory: Path) -> tuple[SubAgentSpec, ...]:
     Every ``*.json`` file in the directory is a spec — there is no manifest to
     keep in step, so adding one is adding a file. Callers that want the catalog
     in dependency order pass the result through
-    :func:`~kodo.subagents.specs._order.pipeline_order`.
+    :func:`~kodo.agents.subagents.specs._order.pipeline_order`.
 
     Two files cannot collide on a name, because a name *is* its filename stem —
     so there is no duplicate check here. Merging several spec directories (phase

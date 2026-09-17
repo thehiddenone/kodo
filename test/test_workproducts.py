@@ -387,7 +387,7 @@ def test_an_unwired_scope_resolves_to_nothing_rather_than_raising() -> None:
 def test_resolver_scope_names_match_the_spec_vocabulary() -> None:
     """`kodo.workproducts` is a leaf and duplicates the scope names rather than
     importing them, so the two sets are pinned equal here."""
-    from kodo.subagents import ALL_SCOPES
+    from kodo.agents.subagents import ALL_SCOPES
     from kodo.workproducts import _resolve
 
     duplicated = {

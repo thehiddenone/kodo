@@ -45,7 +45,7 @@ compactor) don't need to know which one it came from.
 
 Sub-agents declare a `capability` in their markdown frontmatter — unchanged
 field name, now four values instead of three: `low`, `medium`, `high`, `max`
-(default `medium` when absent/invalid; see `kodo/subagents/_loader.py`).
+(default `medium` when absent/invalid; see `kodo/agents/_loader.py`).
 Conceptually, for Anthropic: `low` ~ Haiku, `medium` ~ Sonnet, `high` ~ Opus,
 `max` ~ Fable — but this is only the *default* mapping shown in the Cloud AI
 Settings webview; each of the four effort panels lets the user assign **any**

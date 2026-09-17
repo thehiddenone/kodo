@@ -21,6 +21,7 @@ import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 
+from kodo.agents import AgentRegistry
 from kodo.llms import (
     LLMRouting,
     Message,
@@ -44,9 +45,8 @@ from kodo.runtime._engine._watchdog import (
 from kodo.runtime._gates import StuckAlertResponse
 from kodo.runtime._repeated_tool_calls import RepeatedToolCallDetector
 from kodo.runtime._session import SessionState
-from kodo.subagents import AgentRegistry
 
-_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents")
+_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "agents")
 
 # ---------------------------------------------------------------------------
 # Fakes

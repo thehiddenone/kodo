@@ -15,15 +15,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from kodo.agents import AgentLoadError, AgentRegistry
 from kodo.llms import Message, UnrecoverableError
 from kodo.plan import PlanConflictError, abandon_plan, create_plan, read_plan, step_plan
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._engine._watchdog import _MAX_CONSECUTIVE_NUDGES
 from kodo.runtime._session import SessionState
-from kodo.subagents import AgentLoadError, AgentRegistry
 from kodo.toolspecs import SCHEMA_COMPLIANCE_KEY
 
-_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents")
+_REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "kodo" / "agents")
 
 # ---------------------------------------------------------------------------
 # Fakes

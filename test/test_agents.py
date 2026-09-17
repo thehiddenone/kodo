@@ -1,4 +1,4 @@
-"""Behavior tests for kodo.subagents._loader and ._registry."""
+"""Behavior tests for kodo.agents._loader and ._registry."""
 
 from __future__ import annotations
 
@@ -7,27 +7,25 @@ from pathlib import Path
 
 import pytest
 
+from kodo.agents import (
+    SHARED_FILE_PREFIX,
+    SKILLS_TOKEN,
+    SUBAGENTS_SUBDIR,
+    AgentLoadError,
+    AgentRegistry,
+    SubAgent,
+    SubAgentSpec,
+    load_agent,
+    shared_token,
+)
+from kodo.agents.subagents import ROLE_ARCHITECTURE, ROLE_NARRATIVE, SCOPE_UNDER_REVIEW, Need
+from kodo.agents.subagents.specs import ALL_SUBAGENTS
 from kodo.plan import (
     PLAN_CONTEXT_FIELD,
     PLAN_OUTPUT_FIELDS,
     PLAN_TASK_TITLE_FIELD,
     PLAN_TASKS_FIELD,
 )
-from kodo.subagents import (
-    ROLE_ARCHITECTURE,
-    ROLE_NARRATIVE,
-    SCOPE_UNDER_REVIEW,
-    SHARED_FILE_PREFIX,
-    SKILLS_TOKEN,
-    AgentLoadError,
-    AgentRegistry,
-    Need,
-    SubAgent,
-    SubAgentSpec,
-    load_agent,
-    shared_token,
-)
-from kodo.subagents.specs import ALL_SUBAGENTS
 from kodo.toolspecs import ALL_TOOLS, USE_SKILL, ToolSpec
 
 # ---------------------------------------------------------------------------
@@ -67,8 +65,15 @@ def _shared(body: str, *extra: str) -> str:
 
 
 def _write_agent(tmp_path: Path, name: str, frontmatter: str, body: str) -> Path:
+    """Write a sub-agent prompt where an ``AgentRegistry`` over *tmp_path* looks.
+
+    Sub-agents live in ``<agents_dir>/subagents``; top-level agents and the
+    shared blocks sit in ``<agents_dir>`` itself.
+    """
     content = f"---\n{frontmatter}---\n{body}"
-    p = tmp_path / f"subagent_{name}.md"
+    directory = tmp_path / SUBAGENTS_SUBDIR
+    directory.mkdir(exist_ok=True)
+    p = directory / f"subagent_{name}.md"
     p.write_text(content, encoding="utf-8")
     return p
 
@@ -538,7 +543,7 @@ def test_registry_autonomous_filter_matches_live_spec_and_spares_ask_user(
     synthesizes its own answer when no user is present (see
     ``kodo.tools.AskUserTool``), so agent prompts never need to branch on
     mode to use it."""
-    from kodo.subagents._registry import _AUTONOMOUS_DISABLED
+    from kodo.agents._registry import _AUTONOMOUS_DISABLED
 
     assert "ask_user" not in _AUTONOMOUS_DISABLED
 
@@ -665,7 +670,7 @@ def test_load_agent_preserves_subagent_order(tmp_path: Path) -> None:
 # the `run_subagent_<name>` tool the caller actually holds.
 # ---------------------------------------------------------------------------
 
-_REAL_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "subagents"
+_REAL_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "agents"
 
 
 def _tool_by_name(specs: list[ToolSpec], name: str) -> ToolSpec:
@@ -857,7 +862,7 @@ def test_real_judge_has_scoped_toolchain_build_tool() -> None:
 
 
 def _shipped_agent_files() -> list[Path]:
-    files = sorted(_REAL_AGENTS_DIR.glob("subagent_*.md")) + sorted(
+    files = sorted((_REAL_AGENTS_DIR / SUBAGENTS_SUBDIR).glob("subagent_*.md")) + sorted(
         _REAL_AGENTS_DIR.glob("agent_*.md")
     )
     assert files, "no agent files found; the fixture path is wrong"
@@ -1019,7 +1024,7 @@ def test_every_shared_file_is_used_by_some_agent() -> None:
 # Every other frontmatter check above can be settled inside the file it scans.
 # This one cannot: the flag is written in the agent's `.md`, while the schema
 # the engine reads a plan out of is declared in a `SubAgentSpec` under
-# `kodo/subagents/specs/` (doc/PLANNING.md §2). Nothing in either file mentions
+# `kodo/agents/subagents/specs/` (doc/PLANNING.md §2). Nothing in either file mentions
 # the other, so the scan below reads the raw frontmatter of every shipped agent
 # — what the author actually wrote — and holds each one that claims the flag to
 # the whole output contract.
@@ -1157,7 +1162,7 @@ def test_every_planner_frontmatter_is_backed_by_the_plan_output_contract() -> No
 
 def _registry_with_specs(monkeypatch, specs: dict[str, object]) -> None:
     """Point the registry's spec table at *specs* for one test."""
-    from kodo.subagents import _registry
+    from kodo.agents import _registry
 
     monkeypatch.setattr(_registry, "SUBAGENT_SPECS_BY_NAME", specs)
 
@@ -1520,7 +1525,7 @@ def test_registry_rejects_a_phase_block_in_an_agent_with_no_spec(tmp_path: Path)
     anywhere else renders nowhere and nothing would say so."""
     _write_preamble(tmp_path)
     _write_agent(tmp_path, "guide", "name: guide\n", _shared("{PHASE:initial}\nx\n{/PHASE}"))
-    (tmp_path / "subagent_guide.md").rename(tmp_path / "agent_guide.md")
+    (tmp_path / SUBAGENTS_SUBDIR / "subagent_guide.md").rename(tmp_path / "agent_guide.md")
 
     with pytest.raises(AgentLoadError, match="phase blocks are only valid"):
         AgentRegistry(tmp_path)

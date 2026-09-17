@@ -24,6 +24,7 @@ from typing import cast
 from aiohttp import web
 from huggingface_hub.errors import GatedRepoError
 
+from kodo.agents import AgentRegistry
 from kodo.binutils import ensure_all_utils
 from kodo.llms import (
     CLOUD_THINKING_FAMILIES,
@@ -99,7 +100,6 @@ from kodo.skills import (
     install_skills,
     scan_repository,
 )
-from kodo.subagents import AgentRegistry
 from kodo.titling import (
     DEFAULT_HOUSEKEEPER_LLM_ID,
     HOUSEKEEPER_LLM_OPTIONS,
@@ -196,8 +196,8 @@ _log = logging.getLogger(__name__)
 _SERVER_VERSION: str = "0.2.0b1"
 _MANAGER_KEY: web.AppKey[SessionManager] = web.AppKey("session_manager")
 
-# Subagents directory: kodo/subagents/ next to kodo/server/
-_AGENTS_DIR = Path(__file__).parent.parent / "subagents"
+# Agents directory: kodo/agents/ next to kodo/server/
+_AGENTS_DIR = Path(__file__).parent.parent / "agents"
 
 
 # ------------------------------------------------------------------

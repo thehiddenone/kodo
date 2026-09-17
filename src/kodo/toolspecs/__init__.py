@@ -152,7 +152,7 @@ __all__ = [
 ]
 
 # Every tool spec in the catalog. Agents' granted tools are validated against it
-# at load time by kodo.subagents._registry.
+# at load time by kodo.agents._registry.
 ALL_TOOLS: tuple[ToolSpec, ...] = (
     ASK_USER,
     CREATE_DIRECTORY,

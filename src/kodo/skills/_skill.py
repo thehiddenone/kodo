@@ -13,7 +13,7 @@ never raises, it returns a :class:`Skill` whose :attr:`Skill.error` says what is
 wrong. Only error-free skills reach an agent's prompt catalog.
 
 The frontmatter parser is deliberately its own, not shared with
-:mod:`kodo.subagents`'s: that one parses first-party agent files and may fail
+:mod:`kodo.agents`'s: that one parses first-party agent files and may fail
 loudly on anything it does not recognise, while this one parses third-party
 text and must always produce *something*. It covers the shapes real skills use
 — plain scalars, quoted scalars, ``>``/``|`` block scalars, and block

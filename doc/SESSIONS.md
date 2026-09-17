@@ -378,7 +378,7 @@ instead.
 
 Agent↔sub-agent interaction is typed, mirroring tools. Every sub-agent except
 the entry agents (`guide`, `problem_solver`) has a `SubAgentSpec`
-(`kodo.subagents.specs`, one JSON file per agent) declaring an `input_schema` and an
+(`kodo.agents.subagents.specs`, one JSON file per agent) declaring an `input_schema` and an
 `output_schema`. Neither schema is ever restated as prose in a system prompt.
 The registry auto-grants such agents the terminal `return_result` tool and a
 short, fixed note pointing at where its real task lands (no schema, no
@@ -719,5 +719,5 @@ reconstructed from the `kind="subagent_task"` seed message).
 | Crash resume | `runtime/_engine/` (`start`, `_has_dangling_tool_use`, `_resume_main_turn`, `_last_entry_agent`, `_build_replay_ledger`) |
 | History rebuild (one file at a time) | `runtime/_engine/_history.py` (`HistoryProjector.full_history`, `.history_entries`, `.subsession_entries`, `._message_to_entries`, `._divider_entry`) |
 | Orphan detection by subsession log | `kodo/runtime/_bootstrap.py` (`__is_orphan`) |
-| Display names | `kodo/subagents/_loader.py` (`SubAgent.display_name`) |
+| Display names | `kodo/agents/_loader.py` (`SubAgent.display_name`) |
 | Client dividers | `kodo-vsix/src/extension.ts`, `kodo-vsix/src/webview/main.tsx` |

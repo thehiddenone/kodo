@@ -8,7 +8,7 @@ setting ``stop_requested``.
 It is a sub-agent's **only** way out, so it carries both terminal outcomes: a
 normal result and — for an author whose schema declares the escalation fields —
 a blocker handed to whoever delegated the work (a non-empty ``reason``; see
-:mod:`kodo.subagents.specs._shapes`).
+:mod:`kodo.agents.subagents.specs._shapes`).
 """
 
 from __future__ import annotations

@@ -557,7 +557,7 @@ not masquerade as a low-scoring run), `run_scenario` calls
    follow-up turn asking for the verdict again (default 3 attempts), then
    `EvaluationError`.
 
-**The `judge` workflow** (`workflow.set` mode `"judge"`, `kodo.subagents.agent_judge.md`)
+**The `judge` workflow** (`workflow.set` mode `"judge"`, `kodo.agents.agent_judge.md`)
 is a **dedicated, validator-only entry agent** — almost entirely read-only
 (`read_file`, `find_files`, `find_text_in_files`, `submit_evaluation`), no
 editing, no general command execution, no sub-agents, no `ask_user`. It also

@@ -503,8 +503,8 @@ Not a schema problem. See §4: abandon the plan with a reason, then re-plan.
 | records, statuses, `derive_state`, `closed`, `PlanConflictError` | `kodo/plan/_records.py` |
 | log append/replay, `create_plan`, `step_plan`, `abandon_plan` | `kodo/plan/_store.py` |
 | the model / widget projections | `kodo/plan/_views.py` |
-| the `planner:` frontmatter flag | `kodo/subagents/_loader.py` |
-| load-time contract check | `kodo/subagents/_registry.py` (`__validate_planner`) |
+| the `planner:` frontmatter flag | `kodo/agents/_loader.py` |
+| load-time contract check | `kodo/agents/_registry.py` (`__validate_planner`) |
 | the engine hook | `kodo/runtime/_engine/_subagents.py` (`_is_planner`, `_initialize_plan`, `_plan_dir`, `_reported_task_count`, `_plan_issue`) |
 | `PlanConflictError` propagation | `kodo/runtime/_engine/_turns.py` |
 | session stop | `kodo/runtime/_engine/_worker.py` |
